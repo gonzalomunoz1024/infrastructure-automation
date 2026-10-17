@@ -47,6 +47,7 @@ final class TemporalTestEngine implements AutoCloseable {
 
     final RunsTestWiring w = new RunsTestWiring();
     final TestWorkflowEnvironment env;
+    final Worker worker;
     final WorkflowClient client;
     final TemporalWorkflowExecution execution;
     final List<DomainEvent> published = new CopyOnWriteArrayList<>();
@@ -63,7 +64,7 @@ final class TemporalTestEngine implements AutoCloseable {
         env = TestWorkflowEnvironment.newInstance(TestEnvironmentOptions.newBuilder()
                 .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json())).build())
                 .build());
-        Worker worker = env.newWorker(QUEUE);
+        worker = env.newWorker(QUEUE);
         worker.registerWorkflowImplementationTypes(InterpreterWorkflowImpl.class);
         worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock));
         env.start();
@@ -118,6 +119,15 @@ final class TemporalTestEngine implements AutoCloseable {
             return client.newUntypedWorkflowStub(id).getResult(WAIT.toSeconds(), TimeUnit.SECONDS, Outcome.class);
         } catch (TimeoutException e) {
             throw new AssertionError("job " + id + " did not end within " + WAIT, e);
+        }
+    }
+
+    /** Replay the job's recorded history against the workflow code; throws when the code took another path (not deterministic). */
+    void replay(String jobId) {
+        try {
+            worker.replayWorkflowExecution(client.fetchHistory(jobId));
+        } catch (Exception e) {
+            throw new AssertionError("job " + jobId + " does not replay: " + e, e);
         }
     }
 

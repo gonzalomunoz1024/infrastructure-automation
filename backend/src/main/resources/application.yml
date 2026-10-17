@@ -26,8 +26,8 @@ platform:
     mode: dev             # dev | oidc
     default-user: gonzalo
   execution:
-    mode: in-memory       # in-memory | temporal
-  temporal:
+    mode: in-memory       # in-memory | temporal; the temporal profile (end of this file) sets temporal
+  temporal:               # used with the temporal profile: the server, namespace and task queue of the interpreter
     target: 127.0.0.1:7233
     namespace: default
     task-queue: platform-interpreter
@@ -52,3 +52,15 @@ platform:
     signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
+
+---
+# The temporal profile (docker compose, scripts/dev.sh --temporal): jobs run as Temporal workflows on
+# platform.temporal.*, with the interpreter worker inside this process. Without it the in-memory
+# engine runs them and nothing connects to Temporal.
+spring:
+  config:
+    activate:
+      on-profile: temporal
+platform:
+  execution:
+    mode: temporal

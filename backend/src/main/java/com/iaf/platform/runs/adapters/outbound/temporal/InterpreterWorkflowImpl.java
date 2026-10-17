@@ -75,7 +75,9 @@ import io.temporal.workflow.Workflow;
  * interpreter does its own retries and classifies the failure); records (an approval, a child
  * job) are created at most once; events are published with a few retries, since a lost event
  * would leave the projection behind. A cancel requested through Temporal itself (the UI, the
- * CLI) ends the job like the {@code cancel} signal does, by {@code temporal}.</p>
+ * CLI) ends the job like the {@code cancel} signal does, by {@code temporal}; the execution then
+ * closes as cancelled instead of completing with the outcome, as the SDK closes every workflow
+ * whose cancel was requested, so the events, not the result, are what the platform reads.</p>
  *
  * <p>Deterministic by construction: no clock but {@code Workflow.currentTimeMillis()}, no
  * threads, no Spring beans; the interpreter and the expression engine are pure.</p>
@@ -308,7 +310,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
 
     /**
      * Run a job as a child workflow (its id the job's) to its end. While it runs, a cancel of
-     * this job is forwarded to it once, and the child ends cancelled after its own unwinding.
+     * this job is forwarded to it once, and the child ends cancelled after its own unwinding. A
+     * child cancelled through Temporal itself closes as cancelled rather than returning its
+     * outcome (it published its own {@code job.cancelled} first), so that reads as a cancelled
+     * outcome too.
      */
     private Outcome runChildWorkflow(Job child) {
         ChildWorkflowOptions options = ChildWorkflowOptions.newBuilder()
@@ -336,6 +341,9 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         } catch (ChildWorkflowFailure f) {
             if (CancellationScope.current().isCancelRequested()) {
                 throw temporalCancel();
+            }
+            if (f.getCause() instanceof CanceledFailure) {
+                return Outcome.cancelled();
             }
             throw f;
         }

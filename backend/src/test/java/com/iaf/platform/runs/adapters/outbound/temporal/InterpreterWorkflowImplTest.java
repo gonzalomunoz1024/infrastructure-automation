@@ -1,9 +1,13 @@
 package com.iaf.platform.runs.adapters.outbound.temporal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -36,6 +40,9 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import io.temporal.api.enums.v1.WorkflowExecutionStatus;
 import io.temporal.client.WorkflowExecutionDescription;
+import io.temporal.client.WorkflowFailedException;
+import io.temporal.failure.CanceledFailure;
+import reactor.core.publisher.Mono;
 
 /**
  * The interpreter as a Temporal workflow on the test server: the same scenarios as the in-memory
@@ -110,6 +117,20 @@ class InterpreterWorkflowImplTest {
                 - after:
                     name: After
                     notify: { channel: "#x", message: "after the wait" }
+            """;
+
+    private static final String PARENT = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-parent, title: Parent, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - child:
+                    name: Child
+                    run: { workflow: t-wait, version: "^1" }
+                - after:
+                    name: After
+                    notify: { channel: "#x", message: "never" }
             """;
 
     private static final String BATCH = """
@@ -198,6 +219,7 @@ class InterpreterWorkflowImplTest {
         assertThat(t.workflow(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
         verify(t.w.telemetry, atLeastOnce()).record(any());
+        t.replay(job.id());
     }
 
     @Test
@@ -221,6 +243,7 @@ class InterpreterWorkflowImplTest {
         assertThat(t.event(job.id(), "job.approval-escalated").data().path("to").asText()).isEqualTo("compute-leads");
         assertThat(failed.step("notifyOwner").status()).isEqualTo(StepStatus.SUCCEEDED);
         assertThat(failed.step("restart")).isNull();
+        t.replay(job.id());
     }
 
     @Test
@@ -250,6 +273,7 @@ class InterpreterWorkflowImplTest {
         DomainEvent resolved = t.event(job.id(), "job.attention-resolved");
         assertThat(resolved.data().path("action").asText()).isEqualTo("retry");
         assertThat(resolved.data().path("by").asText()).isEqualTo("ana");
+        t.replay(job.id());
     }
 
     @Test
@@ -270,6 +294,7 @@ class InterpreterWorkflowImplTest {
         assertThat(done.step("broken").status()).isEqualTo(StepStatus.SKIPPED);
         assertThat(done.step("after").output().path("message").asText()).isEqualTo("after web-1042");
         assertThat(t.event(job.id(), "job.attention-resolved").data().path("action").asText()).isEqualTo("skip");
+        t.replay(job.id());
     }
 
     @Test
@@ -290,6 +315,7 @@ class InterpreterWorkflowImplTest {
         assertThat(done.step("undo").output().path("message").asText()).isEqualTo("undo web-1042");
         assertThat(t.steps(job.id())).containsSubsequence("broken:failed", "undo:succeeded", "get:compensated");
         assertThat(t.event(job.id(), "job.attention-resolved").data().path("action").asText()).isEqualTo("abort");
+        t.replay(job.id());
     }
 
     @Test
@@ -309,6 +335,73 @@ class InterpreterWorkflowImplTest {
         assertThat(t.event(job.id(), "job.cancelled").data().path("by").asText()).isEqualTo("mateo");
         assertThat(t.types(job.id())).doesNotContain("job.finished");
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
+        t.replay(job.id());
+    }
+
+    @Test
+    void aCancelRequestedThroughTemporalEndsTheJobCancelledByTemporal() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml(WAIT), Map.of());
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> t.job(job.id()).step("pause") != null);
+
+        // the Temporal UI or CLI, not the platform's API
+        t.client.newUntypedWorkflowStub(job.id()).cancel();
+
+        // the SDK closes a workflow whose cancel was requested as cancelled, whatever it returns
+        assertThatThrownBy(() -> t.result(job.id())).isInstanceOf(WorkflowFailedException.class).hasCauseInstanceOf(CanceledFailure.class);
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> !t.execution.isRunning(job.id()).block());
+        Job cancelled = t.job(job.id());
+        assertThat(cancelled.status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(cancelled.step("after")).isNull();
+        assertThat(t.event(job.id(), "job.cancelled").data().path("by").asText()).isEqualTo("temporal");
+        t.replay(job.id());
+    }
+
+    @Test
+    void aCancelReachesTheChildWorkflowsOfTheJob() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-wait"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(WAIT))));
+        Job job = t.start(yaml(PARENT), Map.of());
+        RunsTestWiring.await(TemporalTestEngine.WAIT,
+                () -> t.w.projection.children(job.id()).stream().anyMatch(c -> c.step("pause") != null));
+        Job child = t.w.projection.children(job.id()).get(0);
+        assertThat(t.execution.isRunning(child.id()).block()).isTrue();
+
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(t.result(child.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(t.job(child.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(t.job(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(t.job(job.id()).step("after")).isNull();
+        assertThat(t.event(child.id(), "job.cancelled").data().path("by").asText()).isEqualTo("mateo");
+        assertThat(t.event(job.id(), "job.cancelled").data().path("by").asText()).isEqualTo("mateo");
+        t.replay(job.id());
+        t.replay(child.id());
+    }
+
+    @Test
+    void aChildCancelledThroughTemporalFailsTheStepThatRanIt() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-wait"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(WAIT))));
+        Job job = t.start(yaml(PARENT), Map.of());
+        RunsTestWiring.await(TemporalTestEngine.WAIT,
+                () -> t.w.projection.children(job.id()).stream().anyMatch(c -> c.step("pause") != null));
+        Job child = t.w.projection.children(job.id()).get(0);
+
+        t.client.newUntypedWorkflowStub(child.id()).cancel();
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("cancelled");
+        assertThat(outcome.failedStep()).isEqualTo("child");
+        assertThat(t.job(child.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(t.event(child.id(), "job.cancelled").data().path("by").asText()).isEqualTo("temporal");
+        Job failed = t.job(job.id());
+        assertThat(failed.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(failed.attention()).isNull();
+        assertThat(failed.step("after")).isNull();
+        t.replay(job.id());
     }
 
     @Test
@@ -324,6 +417,7 @@ class InterpreterWorkflowImplTest {
         Job done = t.job(job.id());
         assertThat(done.step("pause").status()).isEqualTo(StepStatus.SUCCEEDED);
         assertThat(done.step("after").output().path("message").asText()).isEqualTo("after the wait");
+        t.replay(job.id());
     }
 
     @Test
@@ -352,6 +446,8 @@ class InterpreterWorkflowImplTest {
         assertThat(done.output().path("url").asText()).isNotBlank();
         assertThat(done.output().path("databaseId").asText()).isNotBlank();
         assertThat(done.step("registerEnv").output().path("type").asText()).isEqualTo("environment");
+        t.replay(job.id());
+        children.forEach(c -> t.replay(c.id()));
     }
 
     @Test
@@ -396,6 +492,8 @@ class InterpreterWorkflowImplTest {
         assertThat(t.w.projection.approvals()).hasSize(1);
         assertThat(t.events(batch.id(), "batch.wave")).extracting(e -> e.data().path("status").asText()).containsExactly("running", "done", "skipped");
         assertThat(t.types(batch.id())).endsWith("job.finished");
+        t.replay(batch.id());
+        children.forEach(c -> t.replay(c.id()));
     }
 
     @Test
@@ -435,5 +533,7 @@ class InterpreterWorkflowImplTest {
         assertThat(resumed.output().path("vmName").asText()).isNotBlank();
         assertThat(t.events(attentionId, "job.attention")).hasSize(announced);
         assertThat(t.events(attentionId, "job.step")).noneMatch(e -> e.data().path("replayed").asBoolean());
+        t.replay(waitingId);
+        t.replay(attentionId);
     }
 }

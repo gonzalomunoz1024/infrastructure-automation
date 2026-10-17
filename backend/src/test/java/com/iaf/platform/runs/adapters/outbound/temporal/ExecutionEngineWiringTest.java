@@ -6,9 +6,13 @@ import static org.mockito.Mockito.mock;
 import java.time.Clock;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.Banner;
+import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jackson.JacksonAutoConfiguration;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 
@@ -41,6 +45,15 @@ class ExecutionEngineWiringTest {
     @Configuration
     @ComponentScan(basePackageClasses = {RunsCommandHandler.class, InMemoryWorkflowExecution.class})
     static class RunsSlice {
+    }
+
+    @Configuration
+    static class NoBeans {
+    }
+
+    private static ConfigurableApplicationContext configOnly(String... profiles) {
+        return new SpringApplicationBuilder(NoBeans.class).web(WebApplicationType.NONE).bannerMode(Banner.Mode.OFF).logStartupInfo(false)
+                .profiles(profiles).run();
     }
 
     private static ApplicationContextRunner runner(PlatformProperties props) {
@@ -89,5 +102,17 @@ class ExecutionEngineWiringTest {
             // polling starts on ApplicationReadyEvent, which a bare context never publishes
             assertThat(ctx.getBean(WorkerFactory.class).isStarted()).isFalse();
         });
+    }
+
+    @Test
+    void applicationYmlSetsTheExecutionModeWithTheTemporalProfile() {
+        try (ConfigurableApplicationContext ctx = configOnly()) {
+            assertThat(ctx.getEnvironment().getProperty("platform.execution.mode")).isEqualTo("in-memory");
+        }
+        try (ConfigurableApplicationContext ctx = configOnly("demo", "temporal")) {
+            assertThat(ctx.getEnvironment().getProperty("platform.execution.mode")).isEqualTo("temporal");
+            assertThat(ctx.getEnvironment().getProperty("platform.temporal.target")).isEqualTo("127.0.0.1:7233");
+            assertThat(ctx.getEnvironment().getProperty("platform.temporal.task-queue")).isEqualTo("platform-interpreter");
+        }
     }
 }
