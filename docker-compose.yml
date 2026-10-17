@@ -1,0 +1,63 @@
+# Local stack: a Temporal dev server (with its UI), the backend running the interpreter on it,
+# and the frontend served by Vite.
+#
+#   docker compose up temporal temporal-ui        just Temporal, then scripts/dev.sh --temporal
+#   docker compose up                              everything: app on :3000, api on :8080, Temporal UI on :8233
+services:
+  temporal:
+    image: temporalio/temporal:1.4.1
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db", "--ui-port", "8233"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    volumes:
+      - temporal-data:/data
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal-ui:
+    # the dev server already serves its UI on :8233; this alias keeps `docker compose up temporal temporal-ui` working
+    image: busybox:1.37
+    command: ["sh", "-c", "echo 'Temporal UI: http://localhost:8233'; sleep infinity"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: demo,temporal
+      PLATFORM_TEMPORAL_TARGET: temporal:7233
+      PLATFORM_CONTENT_DIR: /content
+    volumes:
+      - ./workflows:/content/workflows:ro
+      - ./providers:/content/providers:ro
+      - ./resource-types:/content/resource-types:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["sh", "-c", "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"]
+    environment:
+      VITE_API_PROXY: http://backend:8080
+    volumes:
+      - ./:/app
+      - frontend-modules:/app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  temporal-data:
+  frontend-modules:
