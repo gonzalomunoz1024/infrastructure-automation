@@ -7,7 +7,7 @@ import { useQuery } from '../lib/queries'
 import type { EvidenceRecord, ShareLink } from '../lib/types'
 import { EvidenceTimeline } from '../components/EvidenceTimeline'
 import { downloadBlob } from '../components/download'
-import { CopyableId, ErrorState, Facts, Mono, TextLink, When, shortJobId } from '../components/common'
+import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId } from '../components/common'
 
 export default function AuditRecordPage({ route }: PageProps) {
   const jobId = route.params.jobId
@@ -145,7 +145,7 @@ function RecordFacts({ record }: { record: EvidenceRecord }) {
           { label: 'Job', value: <TextLink to={pathFor('job', { id: record.jobId })} mono>{shortJobId(record.jobId)}</TextLink> },
           { label: 'Requester', value: record.requester },
           ...(record.change
-            ? [{ label: 'Change request', value: <TextLink to={pathFor('change-request', { id: record.change.id })} mono>{record.change.id}</TextLink>, wide: true }]
+            ? [{ label: 'Change', value: record.change.url ? <ExternalLink href={record.change.url}>{record.change.id}</ExternalLink> : <Mono className="text-primary">{record.change.id}</Mono>, wide: true }]
             : []),
           { label: 'Kept until', value: <When at={record.retention.until} /> },
           { label: 'Sealed', value: record.sealed ? <When at={record.sealed.at} /> : <span className="text-tertiary">not yet</span> },

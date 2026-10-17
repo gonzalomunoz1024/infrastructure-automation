@@ -12,7 +12,7 @@ import { BatchPanel } from '../components/BatchPanel'
 import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { PreviewCard } from '../components/PreviewCard'
 import { StepTimeline } from '../components/StepTimeline'
-import { CopyableId, ErrorState, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
+import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
 import { isActiveJob } from './JobsPage'
 
 type Tab = 'steps' | 'batch' | 'replay' | 'activity'
@@ -229,12 +229,11 @@ export default function JobPage({ route }: PageProps) {
                   ...(data.change
                     ? [
                         {
-                          label: 'Change request',
+                          // the change ticket the workflow's policy opened (ITSM), not a platform change request
+                          label: 'Change',
                           value: (
                             <span className="inline-flex items-center gap-1.5">
-                              <TextLink to={pathFor('change-request', { id: data.change.id })} mono>
-                                {data.change.id}
-                              </TextLink>
+                              {data.change.url ? <ExternalLink href={data.change.url}>{data.change.id}</ExternalLink> : <Mono className="text-primary">{data.change.id}</Mono>}
                               <StateTag status={data.change.state} size="sm" />
                             </span>
                           ),
@@ -347,7 +346,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
     <div className="space-y-4">
       <Card title="Replay" subtitle="Walk the run again from its recorded inputs and outputs; compare it with another run of the same workflow to see where they diverged.">
         <div className="flex flex-wrap items-end gap-3">
-          <Field label="Compare with" htmlFor="replay-compare" className="min-w-64">
+          <Field label="Compare with" className="min-w-64">
             <Select
               ariaLabel="Compare with"
               value={compareTo}
@@ -399,7 +398,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
       <Card title="Re-run from a step" subtitle="Starts a new job with this one's input, skipping straight to the step you choose.">
         <div className="space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="From step" htmlFor="rerun-step">
+            <Field label="From step">
               <Select ariaLabel="From step" value={fromStep} onChange={setFromStep} mono options={steps.map((s) => ({ value: s.id, label: s.id, hint: `${s.name} · ${s.status}` }))} />
             </Field>
             <Field label="Input" hint="Leave empty to reuse this job's input" htmlFor="rerun-input">

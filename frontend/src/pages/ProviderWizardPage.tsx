@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, useCurrentUser } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { Effect, ProviderAuth, ProviderDraft, ProviderType, ProviderValidation, RetryPolicy, Schema, SpecImport, Strategy, TestConnectionResult, TryResult } from '../lib/types'
 import { CredentialPicker } from '../components/CredentialPicker'
@@ -287,12 +287,15 @@ export function stepIssues(s: WizardState, step: number): string[] {
   return out
 }
 
-/** dev / test / prod from a server URL, else env1, env2… */
-function envName(url: string, index: number): string {
-  if (/(^|[-.])dev([-.]|$)/i.test(url)) return 'dev'
-  if (/(^|[-.])(test|staging|stage|qa)([-.]|$)/i.test(url)) return 'test'
-  if (/(^|[-.])prod([-.]|$)/i.test(url) || index === 0) return 'prod'
-  return `env${index + 1}`
+/** dev / test / prod for each server URL; an unmarked one is prod, and a repeat becomes env<n>. */
+export function envNames(urls: string[]): string[] {
+  const used = new Set<string>()
+  return urls.map((url, i) => {
+    let name = /(^|[-./])dev([-./]|$)/i.test(url) ? 'dev' : /(^|[-./])(test|staging|stage|qa)([-./]|$)/i.test(url) ? 'test' : 'prod'
+    if (used.has(name)) name = `env${i + 1}`
+    used.add(name)
+    return name
+  })
 }
 
 function authTypeOf(t: string | undefined): AuthType {
@@ -324,7 +327,9 @@ function describe(s: WizardState): string {
    ------------------------------------------------------------------------- */
 
 export default function ProviderWizardPage(_: PageProps) {
-  const me = useQuery('me', () => api.me())
+  // the same cache entry as the shell's, so the owner defaults to the signed-in user's team
+  const user = useCurrentUser()
+  const me = useQuery(['me', user ?? 'default'], () => api.me())
   const [state, setState] = useState<WizardState>(initialState)
   const [step, setStep] = useState(0)
   const [furthest, setFurthest] = useState(0)
@@ -461,7 +466,7 @@ function ConnectStep({ state, update }: StepProps) {
       title: state.title.trim() || spec.title,
       name: state.nameTouched || state.name ? state.name : kebab(spec.title),
       version: state.version === '1.0.0' && VERSION_RE.test(spec.version) ? spec.version : state.version,
-      environments: keepEnvs || spec.servers.length === 0 ? state.environments : spec.servers.map((url, i) => ({ key: nextKey(), name: envName(url, i), url })),
+      environments: keepEnvs || spec.servers.length === 0 ? state.environments : envNames(spec.servers).map((name, i) => ({ key: nextKey(), name, url: spec.servers[i] })),
       auth: { ...state.auth, type: authTypeOf(spec.auth?.type), header: spec.auth?.where && !state.auth.header ? spec.auth.where : state.auth.header },
       actions: spec.operations.map((op) =>
         blankAction({
@@ -633,7 +638,7 @@ function ConnectStep({ state, update }: StepProps) {
 
       <Card title="Authentication" subtitle="Only the credential's name goes in the file; its value stays in the store.">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Type" htmlFor="auth-type">
+          <Field label="Type">
             <Select
               ariaLabel="Authentication type"
               value={state.auth.type}
@@ -651,7 +656,7 @@ function ConnectStep({ state, update }: StepProps) {
               <Input id="auth-header" mono value={state.auth.header} onChange={(e) => update({ auth: { ...state.auth, header: e.target.value }, tested: null })} placeholder="X-Api-Key" />
             </Field>
           )}
-          <Field label="Credential" htmlFor="auth-credential" required={state.auth.type !== 'none'} className={state.auth.type === 'header' ? 'sm:col-span-2' : undefined}>
+          <Field label="Credential" required={state.auth.type !== 'none'} className={state.auth.type === 'header' ? 'sm:col-span-2' : undefined}>
             <CredentialPicker id="auth-credential" value={state.auth.credential} onChange={(ref) => update({ auth: { ...state.auth, credential: ref }, tested: null })} required={state.auth.type !== 'none'} />
           </Field>
         </div>
@@ -784,13 +789,13 @@ function ActionsStep({ state, update }: StepProps) {
                 <Input id={`act-${a.key}-activity`} mono value={a.operation} onChange={(e) => patch(a.key, { operation: e.target.value })} placeholder={a.id || 'resizeCluster'} aria-label="Activity" />
               </Field>
             )}
-            <Field label="Effect" htmlFor={`act-${a.key}-effect`}>
+            <Field label="Effect">
               <Select ariaLabel="Effect" value={a.effect} onChange={(v) => patch(a.key, { effect: v as Effect, approval: v === 'delete' ? true : a.approval })} options={effectOptions} />
             </Field>
-            <Field label="Retry" htmlFor={`act-${a.key}-retry`}>
+            <Field label="Retry">
               <Select ariaLabel="Retry" value={a.retry} onChange={(v) => patch(a.key, { retry: v as RetryPolicy })} options={retryOptions} />
             </Field>
-            <Field label="Plan via" htmlFor={`act-${a.key}-plan`} hint="Another action that previews this one">
+            <Field label="Plan via" hint="Another action that previews this one">
               <Select ariaLabel="Plan via" value={a.plan} onChange={(v) => patch(a.key, { plan: v })} options={planOptions(a)} mono disabled={a.effect === 'read'} />
             </Field>
             <div className="sm:col-span-2 lg:col-span-3">
@@ -875,10 +880,10 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
       <Card title="One real call" subtitle="Optional, and worth it: the answer becomes the sample dry runs use, and it proves the schema.">
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Action" htmlFor="try-action">
+            <Field label="Action">
               <Select ariaLabel="Action" value={action?.id ?? ''} onChange={pick} mono options={selected.map((a) => ({ value: a.id, label: a.id, hint: `${a.title || a.id} · ${a.effect}` }))} />
             </Field>
-            <Field label="Environment" htmlFor="try-env">
+            <Field label="Environment">
               <Select ariaLabel="Environment" value={environment} onChange={setEnvironment} mono options={(envs.length ? envs : ['dev']).map((e) => ({ value: e, label: e }))} />
             </Field>
           </div>
@@ -1095,7 +1100,7 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
 
         <Card title="Publish">
           <div className="space-y-4">
-            <Field label="Strategy" htmlFor="pub-strategy" hint={state.strategy === 'canary' ? 'New jobs move to this version in stages, gated on its health' : 'Every new job uses this version as soon as it merges'}>
+            <Field label="Strategy" hint={state.strategy === 'canary' ? 'New jobs move to this version in stages, gated on its health' : 'Every new job uses this version as soon as it merges'}>
               <Segmented
                 ariaLabel="Strategy"
                 full

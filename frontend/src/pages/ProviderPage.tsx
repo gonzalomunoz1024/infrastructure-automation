@@ -592,10 +592,10 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
       <OverlayHeader title="Try an action" subtitle="A real call with the provider's credential; the answer is compared with the declared output." icon="play" />
       <OverlayBody className="space-y-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Action" htmlFor="try-action">
+          <Field label="Action">
             <Select ariaLabel="Action" value={actionId} onChange={pick} mono options={provider.actions.map((a) => ({ value: a.id, label: a.id, hint: `${a.title} · ${a.effect}` }))} />
           </Field>
-          <Field label="Environment" htmlFor="try-env">
+          <Field label="Environment">
             <Select ariaLabel="Environment" value={environment} onChange={setEnvironment} mono options={(provider.environments.length ? provider.environments : ['dev']).map((e) => ({ value: e, label: e }))} />
           </Field>
         </div>

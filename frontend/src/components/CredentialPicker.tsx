@@ -108,7 +108,7 @@ function AddCredentialForm({ onCreated }: { onCreated?: (ref: string, name: stri
         <Field label="Name" htmlFor="cred-name" required hint="Its path in the store, like vsphere/token" error={name && !nameOk ? 'Letters, digits, slashes, dots, dashes and underscores' : undefined}>
           <Input id="cred-name" mono value={name} onChange={(e) => setName(e.target.value.trim())} invalid={!!name && !nameOk} autoFocus placeholder="team/system-token" />
         </Field>
-        <Field label="Type" htmlFor="cred-type">
+        <Field label="Type">
           <Select ariaLabel="Credential type" value={type} onChange={setType} options={CREDENTIAL_TYPES} />
         </Field>
         <Field label="Value" htmlFor="cred-value" required hint="Written once; nobody, including you, can read it back from here">

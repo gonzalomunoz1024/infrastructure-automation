@@ -101,7 +101,7 @@ export default function AuditPage({ route }: PageProps) {
         }
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,14rem)_minmax(0,14rem)_10rem_10rem_auto]">
-          <Field label="Workflow" htmlFor="audit-workflow">
+          <Field label="Workflow">
             <Select ariaLabel="Workflow" size="sm" mono value={workflow} onChange={setWorkflow} options={[{ value: '', label: 'Every workflow' }, ...(workflows.data ?? []).map((w) => ({ value: w.name, label: w.name, hint: w.title }))]} />
           </Field>
           <Field label="Requester" htmlFor="audit-requester">

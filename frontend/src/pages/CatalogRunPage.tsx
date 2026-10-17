@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Button, Card, CardRow, CodeBlock, Field, Icon, IconButton, Input, PageHeader, Segmented, SkeletonRows, Table, Tag, Textarea, cx, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage, isApiError } from '../lib/api'
+import { API_BASE, api, errorMessage, isApiError } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { BatchRowProblem, CatalogEntry, Preview, Problem, Rollout } from '../lib/types'
 import { PreviewCard } from '../components/PreviewCard'
@@ -100,6 +100,16 @@ function About({ entry }: { entry: CatalogEntry }) {
         <CardRow label="Bulk runs" description={`waves ${entry.batch.rollout.waves.join(' / ')}% · ${entry.batch.rollout.maxParallel} in parallel`}>
           <span>up to {entry.batch.max}</span>
         </CardRow>
+        {entry.batchPath && (
+          <CardRow label="Batch endpoint">
+            <span className="inline-flex items-center gap-1.5">
+              <Tag size="sm" mono outline>
+                POST
+              </Tag>
+              <Mono className="text-primary">{entry.batchPath}</Mono>
+            </span>
+          </CardRow>
+        )}
         <CardRow label="Workflow">
           <TextLink to={pathFor('workflow', { name: entry.workflow })} mono>
             {entry.workflow}
@@ -114,10 +124,15 @@ function About({ entry }: { entry: CatalogEntry }) {
    One: the generated form, a preview, then the run
    ------------------------------------------------------------------------- */
 
-function curlFor(entry: CatalogEntry, input: SchemaValue): string {
-  const path = entry.path.replace(/\{([^}]+)\}/g, (_, k: string) => (input[k] === undefined ? `{${k}}` : encodeURIComponent(String(input[k]))))
-  const body = JSON.stringify(input)
-  return `curl -X ${entry.method.toUpperCase()} '${path}' \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}'`
+/** The same call as a shell command, against this origin; the body is the form's input. */
+export function curlFor(entry: Pick<CatalogEntry, 'method' | 'path'>, input: SchemaValue, origin = typeof window === 'undefined' ? '' : window.location.origin): string {
+  const filled = entry.path.replace(/\{([^}]+)\}/g, (_, k: string) => (input[k] === undefined ? `{${k}}` : encodeURIComponent(String(input[k]))))
+  const path = /^https?:\/\//.test(filled) || filled.startsWith('/api/') ? filled : `${API_BASE}${filled}`
+  const url = /^https?:\/\//.test(path) ? path : `${origin}${path}`
+  const method = entry.method.toUpperCase()
+  const quote = (t: string) => `'${t.replace(/'/g, `'\\''`)}'`
+  if (method === 'GET' || method === 'HEAD') return `curl ${quote(url)}`
+  return `curl -X ${method} ${quote(url)} \\\n  -H 'Content-Type: application/json' \\\n  -d ${quote(JSON.stringify(input))}`
 }
 
 function OneRun({ entry }: { entry: CatalogEntry }) {
