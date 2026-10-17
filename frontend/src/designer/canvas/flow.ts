@@ -265,7 +265,8 @@ export function toFlow(input: FlowInput): Flow {
       case 'step': {
         const run = input.runs.get(n.data.stepId)
         if (run) runOfNode.set(n.id, run)
-        nodes.push({ id: n.id, type: 'step', position, data: stepNodeData(n as GraphNode & { data: { kind: 'step' } }, edgesFrom, issues.get(n.id), run, input), draggable: !input.readOnly, connectable: !input.readOnly })
+        const data = stepNodeData(n as GraphNode & { data: { kind: 'step' } }, edgesFrom, issues.get(n.id), run, input)
+        nodes.push({ id: n.id, type: 'step', position, data, draggable: !input.readOnly, connectable: !input.readOnly, ariaLabel: `${data.name}, ${data.typeTitle}` })
         break
       }
       case 'trigger': {
@@ -277,6 +278,7 @@ export function toFlow(input: FlowInput): Flow {
           data: { kind: 'trigger', triggerType: d.triggerType, index: d.index, label: d.label, subtitle: d.subtitle, glyph: triggerGlyph(d.triggerType), free: !edgesFrom.has(n.id), issues: issues.get(n.id) ?? null, run: null, readOnly: input.readOnly },
           draggable: !input.readOnly,
           connectable: !input.readOnly,
+          ariaLabel: `${d.label}, trigger`,
         })
         break
       }
@@ -288,6 +290,7 @@ export function toFlow(input: FlowInput): Flow {
           data: { kind: 'trigger', triggerType: 'error', index: null, label: 'Error trigger', subtitle: 'when a step fails', glyph: triggerGlyph('error'), free: !edgesFrom.has(n.id), issues: null, run: null, readOnly: input.readOnly },
           draggable: !input.readOnly,
           connectable: !input.readOnly,
+          ariaLabel: 'Error trigger',
         })
         break
       case 'end':
@@ -320,7 +323,7 @@ export function toFlow(input: FlowInput): Flow {
       target: e.target,
       sourceHandle: e.sourceHandle,
       targetHandle: e.targetHandle,
-      selectable: false,
+      selectable: !input.readOnly,
       data: {
         role: e.role,
         state,

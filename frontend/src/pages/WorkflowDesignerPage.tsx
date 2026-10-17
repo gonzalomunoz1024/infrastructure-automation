@@ -1,23 +1,18 @@
-import { EmptyState, Kbd } from '@iaf/ui'
+import { lazy, Suspense } from 'react'
 import type { PageProps } from '../app/router'
+import { DesignerSkeleton } from '../designer/DesignerSkeleton'
+
+/** The designer is its own chunk (it brings @xyflow/react); the page shows its skeleton meanwhile. */
+const DesignerRoute = lazy(() => import('../designer/DesignerRoute'))
 
 /**
- * Full-bleed route: the shell gives this page the whole content area with no
- * padding. The designer agent replaces it with the n8n-style canvas.
+ * Full-bleed route for `#/workflows/new` and `#/workflows/:name`: the n8n-style designer,
+ * edge to edge under the shell's header.
  */
 export default function WorkflowDesignerPage({ route }: PageProps) {
   return (
-    <div className="bg-dot-grid relative h-full w-full">
-      <EmptyState
-        className="h-full"
-        icon="workflow"
-        title={route.params.name}
-        message={
-          <>
-            The designer canvas renders here, edge to edge: nodes, ports, edges, the node detail view and the node creator. <Kbd>Tab</Kbd> opens the node creator, <Kbd>⌘S</Kbd> saves, <Kbd>⌘↩</Kbd> test-runs.
-          </>
-        }
-      />
-    </div>
+    <Suspense fallback={<DesignerSkeleton />}>
+      <DesignerRoute route={route} />
+    </Suspense>
   )
 }

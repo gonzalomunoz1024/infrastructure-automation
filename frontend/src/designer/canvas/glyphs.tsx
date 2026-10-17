@@ -181,6 +181,66 @@ export function stepGlyph(step: Pick<ParsedStep, 'type' | 'with'>, providers: re
   return TYPE_GLYPH[step.type]
 }
 
+/** Small interface glyphs the kit does not have: canvas controls, pins, sticky notes, the test flask. */
+export type UiGlyphName = 'fit' | 'zoom-reset' | 'tidy' | 'flask' | 'pin' | 'sticky' | 'drag'
+
+const UI: Record<UiGlyphName, ReactNode> = {
+  fit: (
+    <>
+      <path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9" />
+      <path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9" />
+      <path d="M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15" />
+      <path d="M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15" />
+    </>
+  ),
+  'zoom-reset': (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m20 20-4.9-4.9" />
+      <path d="M9.2 8.6 10.8 7.5v6" />
+    </>
+  ),
+  tidy: (
+    <>
+      <path d="m4 20 11-11" />
+      <path d="m14.5 4.2.9 1.9 1.9.9-1.9.9-.9 1.9-.9-1.9-1.9-.9 1.9-.9z" />
+      <path d="m19 11.6.5 1 1 .5-1 .5-.5 1-.5-1-1-.5 1-.5z" />
+    </>
+  ),
+  flask: (
+    <>
+      <path d="M9 3h6" />
+      <path d="M10 3v6.2L4.8 18.4A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.6L14 9.2V3" />
+      <path d="M7.4 15h9.2" />
+    </>
+  ),
+  pin: <path d="M15 4.5 19.5 9l-3 1.5-3.8 3.8.6 3.7-1.3 1.3-3.4-3.4L4.5 19.5M8.6 12.6l-3.4-3.4 1.3-1.3 3.7.6 3.8-3.8z" />,
+  sticky: (
+    <>
+      <path d="M5 4h14v10l-6 6H5z" />
+      <path d="M13 20v-6h6" />
+    </>
+  ),
+  drag: (
+    <>
+      <circle cx="9" cy="6" r="1" />
+      <circle cx="15" cy="6" r="1" />
+      <circle cx="9" cy="12" r="1" />
+      <circle cx="15" cy="12" r="1" />
+      <circle cx="9" cy="18" r="1" />
+      <circle cx="15" cy="18" r="1" />
+    </>
+  ),
+}
+
+export function UiGlyph({ name, size = 16, className, strokeWidth = 1.8 }: { name: UiGlyphName; size?: number; className?: string; strokeWidth?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      {UI[name]}
+    </svg>
+  )
+}
+
 export function triggerGlyph(kind: 'api' | 'alert' | 'event' | 'other' | 'error'): Glyph {
   switch (kind) {
     case 'api':

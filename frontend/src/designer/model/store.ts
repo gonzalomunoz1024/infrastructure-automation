@@ -54,6 +54,8 @@ export interface TestRun {
   revealed: number
   error: string | null
   startedAt: number
+  /** when the result came back */
+  finishedAt: number | null
   /** the step a "Test step" asked for, null for the whole workflow */
   focus: string | null
 }
@@ -95,6 +97,25 @@ export interface DesignerState {
   saving: boolean
   /** bumps on every document change */
   version: number
+  /** the tab the node detail view opens on */
+  ndvTab: NdvTab
+  /** the canvas context menu */
+  menu: CanvasMenu | null
+  /** the step whose id/name the rename dialog edits */
+  renaming: string | null
+  /** the input of the last test run, to start the next one from */
+  lastInput: JsonObject | null
+}
+
+export type NdvTab = 'parameters' | 'settings'
+
+export type CanvasMenuTarget = { kind: 'node'; id: string } | { kind: 'pane'; flowX: number; flowY: number } | { kind: 'edge'; id: string } | { kind: 'selection'; ids: string[] }
+
+export interface CanvasMenu {
+  /** viewport coordinates of the pointer */
+  x: number
+  y: number
+  target: CanvasMenuTarget
 }
 
 interface Snapshot {
@@ -218,6 +239,10 @@ export class DesignerStore {
       stickies: init.name ? loadStickies(init.name) : [],
       saving: false,
       version: 0,
+      ndvTab: 'parameters',
+      menu: null,
+      renaming: null,
+      lastInput: null,
     }
     this.runChecks()
     if (init.registry === undefined) {
@@ -629,8 +654,12 @@ export class DesignerStore {
     this.set({ tab })
   }
 
-  openNdv(nodeId: string | null): void {
-    this.set({ ndv: nodeId, creator: null })
+  openNdv(nodeId: string | null, tab: NdvTab = 'parameters'): void {
+    this.set({ ndv: nodeId, ndvTab: tab, creator: null, menu: null })
+  }
+
+  setNdvTab(tab: NdvTab): void {
+    if (this.state.ndvTab !== tab) this.set({ ndvTab: tab })
   }
 
   closeNdv(): void {
@@ -638,11 +667,32 @@ export class DesignerStore {
   }
 
   openCreator(point: InsertPoint | null = null, query = ''): void {
-    this.set({ creator: { point, query }, ndv: null })
+    this.set({ creator: { point, query }, ndv: null, menu: null })
   }
 
   closeCreator(): void {
     if (this.state.creator) this.set({ creator: null })
+  }
+
+  openMenu(menu: CanvasMenu): void {
+    this.set({ menu })
+  }
+
+  closeMenu(): void {
+    if (this.state.menu) this.set({ menu: null })
+  }
+
+  startRename(stepId: string): void {
+    this.set({ renaming: stepId, menu: null })
+  }
+
+  stopRename(): void {
+    if (this.state.renaming !== null) this.set({ renaming: null })
+  }
+
+  /** The workflow as the server knows it (versions, status), without touching the document. */
+  setDetail(detail: WorkflowDetail | null): void {
+    this.set({ detail })
   }
 
   // ------------------------------------------------------------------ pins, stickies
@@ -691,17 +741,17 @@ export class DesignerStore {
 
   async testRun(input: JsonObject, focus: string | null = null): Promise<DryRunResult | null> {
     if (this.revealTimer) clearTimeout(this.revealTimer)
-    this.set({ testRun: { status: 'running', input, result: null, revealed: 0, error: null, startedAt: Date.now(), focus } })
+    this.set({ testRun: { status: 'running', input, result: null, revealed: 0, error: null, startedAt: Date.now(), finishedAt: null, focus }, lastInput: input })
     try {
       const result = await api.dryRunWorkflow({ definition: this.state.doc }, input)
       const run = this.state.testRun
       if (!run || run.status !== 'running') return result
-      this.set({ testRun: { ...run, result } })
+      this.set({ testRun: { ...run, result, finishedAt: Date.now() } })
       this.reveal()
       return result
     } catch (e) {
       const run = this.state.testRun
-      if (run) this.set({ testRun: { ...run, status: 'failed', error: errorMessage(e) } })
+      if (run) this.set({ testRun: { ...run, status: 'failed', error: errorMessage(e), finishedAt: Date.now() } })
       return null
     }
   }
@@ -721,6 +771,14 @@ export class DesignerStore {
   clearTestRun(): void {
     if (this.revealTimer) clearTimeout(this.revealTimer)
     this.set({ testRun: null })
+  }
+
+  /** "Debug in editor": a job's step outputs become pinned data on the editor's nodes. */
+  pinOutputs(outputs: Record<string, JsonValue>): void {
+    const ids = new Set(stepIds(this.state.graph))
+    const pins = { ...this.state.pins }
+    for (const [k, v] of Object.entries(outputs)) if (ids.has(k)) pins[k] = v
+    this.set({ pins })
   }
 
   /** Outputs by step id: pinned ones, then the test run's, then the job's in an execution view. */
