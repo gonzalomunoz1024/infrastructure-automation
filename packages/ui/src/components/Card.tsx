@@ -51,11 +51,13 @@ export interface CardRowProps {
 export function CardRow({ label, description, children, className }: CardRowProps) {
   return (
     <div className={cx('flex items-center justify-between gap-6 border-b border-stroke-light py-3 last:border-b-0 last:pb-0 first:pt-0', className)}>
-      <div className="min-w-0">
+      <div className="min-w-40 shrink-0 basis-1/3">
         <div className="text-sm text-primary">{label}</div>
         {description && <div className="mt-0.5 text-caption text-tertiary">{description}</div>}
       </div>
-      {children !== undefined && <div className="flex shrink-0 items-center gap-2 text-sm text-secondary">{children}</div>}
+      {children !== undefined && (
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-sm text-secondary">{children}</div>
+      )}
     </div>
   )
 }
