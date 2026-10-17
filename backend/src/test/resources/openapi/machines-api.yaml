@@ -1,0 +1,166 @@
+openapi: 3.1.0
+info:
+  title: Machines API
+  version: 2.4.0
+  description: "A small fleet API used by the importer tests: $refs, path parameters, a request body, security schemes."
+servers:
+  - url: https://machines.example.com/api
+  - url: https://machines-dev.example.com/api
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    apiKey: { type: apiKey, in: header, name: X-Api-Key }
+  parameters:
+    machineId:
+      name: machineId
+      in: path
+      required: true
+      description: The machine id
+      schema: { type: string }
+  schemas:
+    Machine:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        powerState: { type: string, enum: [on, off] }
+        disks:
+          type: array
+          items: { $ref: '#/components/schemas/Disk' }
+        owner: { $ref: '#/components/schemas/Team' }
+    Disk:
+      type: object
+      properties:
+        id: { type: string }
+        sizeGb: { type: integer }
+    Team:
+      type: object
+      properties:
+        id: { type: string }
+        parent: { $ref: '#/components/schemas/Team' }
+    MachineBase:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        cpu: { type: integer, default: 2 }
+    NewMachine:
+      allOf:
+        - $ref: '#/components/schemas/MachineBase'
+        - type: object
+          required: [templateId]
+          properties:
+            templateId: { type: string }
+    MachineList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Machine' }
+        total: { type: integer }
+paths:
+  /machines:
+    get:
+      operationId: listMachines
+      summary: List machines
+      parameters:
+        - name: environment
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MachineList' }
+    post:
+      operationId: createMachine
+      summary: Create a machine
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewMachine' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Machine' }
+  /machines/{machineId}:
+    parameters:
+      - $ref: '#/components/parameters/machineId'
+    get:
+      operationId: getMachine
+      summary: Get a machine
+      responses:
+        '404':
+          description: missing
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Machine' }
+    delete:
+      operationId: deleteMachine
+      summary: Delete a machine
+      responses:
+        '204':
+          description: gone
+    patch:
+      summary: Update a machine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Machine' }
+  /machines/{machineId}:restart:
+    parameters:
+      - $ref: '#/components/parameters/machineId'
+    post:
+      operationId: restartMachine
+      summary: Restart a machine
+      responses:
+        '202':
+          description: accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task: { type: string }
+  /machines/{machineId}/logs:
+    post:
+      summary: Search the machine's logs
+      parameters:
+        - $ref: '#/components/parameters/machineId'
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: ok
+  /machines/{machineId}:terminate:
+    post:
+      operationId: terminateMachine
+      summary: Delete the machine permanently
+      parameters:
+        - $ref: '#/components/parameters/machineId'
+      responses:
+        '202':
+          description: accepted
