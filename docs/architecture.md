@@ -123,17 +123,18 @@ The `temporal` profile (`docker compose up`, `scripts/dev.sh --temporal`) sets
 `platform.execution.mode: temporal` and swaps the engine: `TemporalWorkflowExecution` starts each
 job as an `InterpreterWorkflow` execution whose workflow id is the job id, on
 `platform.temporal.task-queue` at `platform.temporal.target` (namespace
-`platform.temporal.namespace`). The worker runs inside the backend process (`TemporalConfig`
-starts it once the application is ready, retrying in the background while the server is down),
-because its activities are the slice's own beans: a step's calls go through the same
-`PortStepExecutor` as in memory, once, with the step's timeout (the interpreter does the
-retrying), and every event goes through `JobEvents`, so the projection, the audit log and the
-streams cannot tell the engines apart. Approvals, attention decisions and cancels are the signals
-`approve`, `attention` and `cancel`; `status` and `waitingOn` are queries. Waits, timeouts, retry
-backoffs and `use … waitUntil: ready` polls are timers; `run` steps and batch rows are child
-workflows whose ids are the child job ids. A cancel from the Temporal UI or CLI ends the job as
-cancelled by `temporal`. The job list is still each instance's in-memory projection, so jobs
-started before a backend restart are not listed again, although their executions carry on.
+`platform.temporal.namespace`). The worker runs inside the backend process
+(`InterpreterWorkerLifecycle` starts it once the application is ready, retrying in the background
+while the server is down, and drains it on shutdown), because its activities are the slice's own
+beans: a step's calls go through the same `PortStepExecutor` as in memory, once, with the step's
+timeout (the interpreter does the retrying), and every event goes through `JobEvents`, so the
+projection, the audit log and the streams cannot tell the engines apart. Approvals, attention
+decisions and cancels are the signals `approve`, `attention` and `cancel`; `status` and `waitingOn`
+are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` polls are timers; `run`
+steps and batch rows are child workflows whose ids are the child job ids. A cancel from the
+Temporal UI or CLI ends the job as cancelled by `temporal`. The job list is still each instance's
+in-memory projection, so jobs started before a backend restart are not listed again, although their
+executions carry on.
 
 ## Frontend
 

@@ -1,14 +1,8 @@
 package com.iaf.platform.runs.adapters.outbound.temporal;
 
-import java.time.Duration;
-
-import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.context.event.EventListener;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -28,7 +22,6 @@ import io.temporal.serviceclient.WorkflowServiceStubs;
 import io.temporal.serviceclient.WorkflowServiceStubsOptions;
 import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * The Temporal wiring of the {@code temporal} profile: the service stubs for
@@ -41,17 +34,13 @@ import lombok.extern.slf4j.Slf4j;
  * <p>The worker runs inside the same Spring process as the API, because the activities need the
  * slice's ports (providers, resources, the projection, the event bus). That is the intended
  * deployment for now: every backend instance is an API node and an interpreter worker, and the
- * projection it feeds is that instance's own. The worker starts polling once the application is
- * ready (retrying in the background while the server is not reachable yet, so the API comes up
- * either way) and is shut down with the context.</p>
+ * projection it feeds is that instance's own. {@link InterpreterWorkerLifecycle} starts polling once
+ * the application is ready (retrying in the background while the server is not reachable yet, so
+ * the API comes up either way) and drains the worker when the context closes.</p>
  */
-@Slf4j
 @Configuration
 @Profile("temporal")
 public class TemporalConfig {
-
-    static final Duration FIRST_RETRY = Duration.ofSeconds(2);
-    static final Duration MAX_RETRY = Duration.ofSeconds(30);
 
     @Bean(destroyMethod = "shutdown")
     public WorkflowServiceStubs temporalServiceStubs(PlatformProperties props) {
@@ -91,7 +80,8 @@ public class TemporalConfig {
                 .build());
     }
 
-    @Bean(destroyMethod = "shutdown")
+    /** Started and stopped by {@link InterpreterWorkerLifecycle}, not by the context. */
+    @Bean(destroyMethod = "")
     public WorkerFactory temporalWorkerFactory(WorkflowClient client) {
         return WorkerFactory.newInstance(client);
     }
@@ -104,49 +94,8 @@ public class TemporalConfig {
         return worker;
     }
 
-    /** Polling starts once the whole context is up; the seeder, which runs last, can already hand jobs to the engine. */
-    @EventListener(ApplicationReadyEvent.class)
-    @Order(Ordered.HIGHEST_PRECEDENCE)
-    public void startWorker(ApplicationReadyEvent event) {
-        PlatformProperties.Temporal temporal = event.getApplicationContext().getBean(PlatformProperties.class).getTemporal();
-        WorkerFactory factory = event.getApplicationContext().getBean(WorkerFactory.class);
-        if (tryStart(factory, temporal)) {
-            return;
-        }
-        Thread starter = new Thread(() -> {
-            Duration delay = FIRST_RETRY;
-            while (!factory.isStarted() && !factory.isShutdown()) {
-                try {
-                    Thread.sleep(delay.toMillis());
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-                if (tryStart(factory, temporal)) {
-                    return;
-                }
-                delay = delay.multipliedBy(2).compareTo(MAX_RETRY) > 0 ? MAX_RETRY : delay.multipliedBy(2);
-            }
-        }, "temporal-worker-start");
-        starter.setDaemon(true);
-        starter.start();
-    }
-
-    /** {@code WorkerFactory.start} asks the server about the namespace first; false while it cannot be reached. */
-    static boolean tryStart(WorkerFactory factory, PlatformProperties.Temporal temporal) {
-        try {
-            if (!factory.isStarted()) {
-                factory.start();
-            }
-            log.info("Temporal worker polling task queue {} on {} (namespace {})", temporal.getTaskQueue(), temporal.getTarget(), temporal.getNamespace());
-            return true;
-        } catch (RuntimeException e) {
-            if (factory.isShutdown()) {
-                return true;
-            }
-            log.warn("Temporal at {} is not reachable yet ({}); jobs wait in task queue {} until the worker starts", temporal.getTarget(), e.toString(),
-                    temporal.getTaskQueue());
-            return false;
-        }
+    @Bean
+    public InterpreterWorkerLifecycle interpreterWorkerLifecycle(WorkerFactory factory, Worker interpreterWorker, PlatformProperties props) {
+        return new InterpreterWorkerLifecycle(factory, props.getTemporal());
     }
 }
