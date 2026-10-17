@@ -27,6 +27,13 @@ public interface ResourceQueries {
      */
     Mono<Resource> use(String type, String id, Identity requester, boolean checkAccess);
 
+    /**
+     * {@code use} with {@code waitUntil}: the same, but the registry is polled until the resource
+     * reaches that state ({@code ready}); a {@link com.iaf.platform.common.domain.ConflictException}
+     * ("resource not ready") when it does not within the wait window. Null means no wait.
+     */
+    Mono<Resource> use(String type, String id, Identity requester, boolean checkAccess, String waitUntil);
+
     record Lineage(Resource resource, List<Resource> builtFrom, List<Resource> dependents) {
     }
 

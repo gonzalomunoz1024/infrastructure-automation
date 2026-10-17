@@ -1,0 +1,167 @@
+package com.iaf.platform.resources.application;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.catalog.SampleCatalog;
+import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.resources.adapters.outbound.InMemoryResourceStore;
+import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.resources.ports.inbound.ResourceCommands.RegisterResource;
+
+import reactor.test.StepVerifier;
+
+class ResourceCommandHandlerTest {
+
+    static final JsonNodeFactory F = JsonNodeFactory.instance;
+    static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-17T12:00:00Z"), ZoneOffset.UTC);
+
+    InMemoryResourceStore store;
+    EventBus events = new EventBus(CLOCK);
+    List<DomainEvent> published = new ArrayList<>();
+    ResourceCommandHandler handler;
+
+    @BeforeEach
+    void setUp() {
+        PlatformProperties props = new PlatformProperties();
+        props.getContent().setDir("/nowhere");
+        store = new InMemoryResourceStore(props, CLOCK);
+        SampleCatalog.types().forEach(store::saveType);
+        events.register(published::add);
+        handler = new ResourceCommandHandler(store, events, CLOCK);
+    }
+
+    static ObjectNode attrs(String... kv) {
+        ObjectNode o = F.objectNode();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            o.put(kv[i], kv[i + 1]);
+        }
+        return o;
+    }
+
+    @Test
+    void registerMintsAnIdOwnsItByTheRequestersFirstTeamAndPublishes() {
+        RegisterResource cmd = new RegisterResource("vm", null, null, attrs("name", "web-1", "image", "image-demo01"), List.of("image-demo01"),
+                "job_1", "create-vm", "2.0.1", SampleCatalog.OPS);
+        StepVerifier.create(handler.register(cmd)).assertNext(r -> {
+            assertThat(r.id()).matches("^vm-[a-z2-9]{6}$");
+            assertThat(r.type()).isEqualTo("vm");
+            assertThat(r.name()).isEqualTo("web-1");
+            assertThat(r.status()).isEqualTo("ready");
+            assertThat(r.owner()).isEqualTo("team-compute");
+            assertThat(r.visibility()).isEqualTo("team");
+            assertThat(r.createdBy()).isEqualTo(new Resource.Origin("job_1", "create-vm", "2.0.1"));
+            assertThat(r.builtFrom()).containsExactly("image-demo01");
+            assertThat(r.createdAt()).isEqualTo(CLOCK.instant());
+            assertThat(store.resource(r.id())).isPresent();
+        }).verifyComplete();
+        assertThat(published).hasSize(1);
+        DomainEvent e = published.get(0);
+        assertThat(e.type()).isEqualTo("resource.registered");
+        assertThat(e.aggregate()).isEqualTo("resource");
+        assertThat(e.actor()).isEqualTo("mateo");
+        assertThat(e.data().path("type").asText()).isEqualTo("vm");
+        assertThat(e.data().path("state").asText()).isEqualTo("ready");
+        assertThat(e.data().path("jobId").asText()).isEqualTo("job_1");
+        assertThat(e.data().path("workflow").asText()).isEqualTo("create-vm");
+        assertThat(e.data().path("by").asText()).isEqualTo("mateo");
+    }
+
+    @Test
+    void registerAnExistingIdUpdatesAttributesAndKeepsTheStateWhenNoneIsGiven() {
+        Resource created = handler.register(new RegisterResource("image", "image-x1", "building", attrs("name", "img", "templateId", "tpl-1", "os", "rhel-9"),
+                null, "job_1", "build-vm-image", "1.1.0", SampleCatalog.ADMIN)).block();
+        assertThat(created.status()).isEqualTo("building");
+        Resource updated = handler.register(new RegisterResource("image", "image-x1", null, attrs("templateId", "tpl-2").put("scanned", true),
+                null, "job_1", "build-vm-image", "1.1.0", SampleCatalog.ADMIN)).block();
+        assertThat(updated.status()).isEqualTo("building");
+        assertThat(updated.attributes().path("templateId").asText()).isEqualTo("tpl-2");
+        assertThat(updated.attributes().path("os").asText()).isEqualTo("rhel-9");
+        assertThat(updated.attributes().path("scanned").asBoolean()).isTrue();
+        assertThat(updated.createdAt()).isEqualTo(created.createdAt());
+        Resource ready = handler.register(new RegisterResource("image", "image-x1", "ready", null, null, "job_1", "build-vm-image", "1.1.0", SampleCatalog.ADMIN)).block();
+        assertThat(ready.status()).isEqualTo("ready");
+        assertThat(store.resources()).hasSize(1);
+        assertThat(published).extracting(DomainEvent::type).containsOnly("resource.registered");
+        assertThat(published.get(1).data().path("created").asBoolean()).isFalse();
+    }
+
+    @Test
+    void attributesAreValidatedAgainstTheTypeSchemaOnCreateOnly() {
+        // image needs templateId
+        StepVerifier.create(handler.register(new RegisterResource("image", null, null, attrs("name", "no-template"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("templateId"))
+                .verify();
+        assertThat(published).isEmpty();
+        handler.register(new RegisterResource("image", "image-ok", null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
+        // a partial update does not need the required fields again
+        StepVerifier.create(handler.register(new RegisterResource("image", "image-ok", "failed", attrs("error", "boom"), null, "job_2", "build-vm-image", null, SampleCatalog.ADMIN)))
+                .assertNext(r -> assertThat(r.status()).isEqualTo("failed")).verifyComplete();
+    }
+
+    @Test
+    void unknownTypesAndStatesAreBadRequests() {
+        StepVerifier.create(handler.register(new RegisterResource("spaceship", null, null, attrs(), null, "job_1", "x", null, SampleCatalog.ADMIN)))
+                .expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(handler.register(new RegisterResource("vm", null, "exploded", attrs("name", "v"), null, "job_1", "x", null, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("exploded")).verify();
+    }
+
+    @Test
+    void retireRefusesWhileSomethingIsBuiltFromTheResource() {
+        Resource image = handler.register(new RegisterResource("image", "image-base", null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
+        Resource vm = handler.register(new RegisterResource("vm", "vm-web", null, attrs("name", "web"), List.of(image.id()), "job_2", "create-vm", null, SampleCatalog.OPS)).block();
+        published.clear();
+        StepVerifier.create(handler.retire(image.id()).contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ConflictException.class).hasMessage("resource has dependents");
+                    @SuppressWarnings("unchecked")
+                    List<Resource> dependents = (List<Resource>) ((ConflictException) e).detail();
+                    assertThat(dependents).extracting(Resource::id).containsExactly(vm.id());
+                })
+                .verify();
+        assertThat(store.resource(image.id()).orElseThrow().status()).isEqualTo("ready");
+        assertThat(published).isEmpty();
+    }
+
+    @Test
+    void retireMarksTheResourceRetiredAndPublishes() {
+        Resource image = handler.register(new RegisterResource("image", "image-old", null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
+        published.clear();
+        StepVerifier.create(handler.retire(image.id()).contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.OPS)))
+                .assertNext(a -> {
+                    assertThat(a.id()).isEqualTo(image.id());
+                    assertThat(a.status()).isEqualTo("retired");
+                }).verifyComplete();
+        assertThat(store.resource(image.id()).orElseThrow().status()).isEqualTo("retired");
+        assertThat(published).hasSize(1);
+        assertThat(published.get(0).type()).isEqualTo("resource.retired");
+        assertThat(published.get(0).data().path("id").asText()).isEqualTo(image.id());
+        assertThat(published.get(0).data().path("type").asText()).isEqualTo("image");
+        assertThat(published.get(0).data().path("by").asText()).isEqualTo("mateo");
+        // a retired dependent no longer blocks its source
+        Resource vm = handler.register(new RegisterResource("vm", "vm-gone", "retired", attrs("name", "gone"), List.of("image-old"), "job_2", "delete-vm", null, SampleCatalog.OPS)).block();
+        assertThat(vm.status()).isEqualTo("retired");
+        StepVerifier.create(handler.retire("image-old")).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void retireOfAnUnknownIdIsNotFound() {
+        StepVerifier.create(handler.retire("vm-nope")).expectError(NotFoundException.class).verify();
+    }
+}
