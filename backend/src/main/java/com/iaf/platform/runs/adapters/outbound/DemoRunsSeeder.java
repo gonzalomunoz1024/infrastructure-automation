@@ -77,9 +77,9 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Demo history ({@code platform.demo.seed-history}): about sixty finished jobs over the last two
  * weeks across the sample workflows, walked for real on the recorded samples with a virtual
- * clock (so steps, outputs and durations are what the interpreter would produce), about eight
- * percent of them failed with realistic error classes and a few cancelled; a telemetry sample for
- * every provider call; and three live states: a MongoDB upgrade waiting for approval, a VM
+ * clock (so steps, outputs and durations are what the interpreter would produce), one in twelve
+ * running into a failure with a realistic error class (some are retried after attention and
+ * finish) and a few cancelled; a telemetry sample for every provider call; and three live states: a MongoDB upgrade waiting for approval, a VM
  * restart that needs attention, and a patch batch in its second wave. The live jobs are handed
  * to the execution engine so approving or retrying them continues the real walk. Everything is
  * published as events, so the audit, telemetry and release slices see the same history.
@@ -172,8 +172,8 @@ public class DemoRunsSeeder {
             Instant startedAt = now.minus(Duration.ofMinutes(45 + rnd.nextInt(14 * 24 * 60 - 60)));
             Identity who = pick(rnd, List.copyOf(PEOPLE.values()));
             String channel = pick(rnd, List.of("catalog", "catalog", "catalog", "rest", "mcp", "trigger", "catalog"));
-            boolean fail = rnd.nextInt(100) < 8;
-            boolean cancel = !fail && rnd.nextInt(100) < 5;
+            boolean fail = i % 12 == 0;              // five of sixty run into a failure
+            boolean cancel = !fail && i % 20 == 10;  // three of sixty are cancelled
             runs.add(new Run(def, SeedInputs.inputFor(def, rnd), who, channel, startedAt, fail, cancel));
         }
         runs.sort(Comparator.comparing(Run::startedAt));
