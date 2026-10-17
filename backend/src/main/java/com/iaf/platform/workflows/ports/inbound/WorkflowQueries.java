@@ -1,10 +1,15 @@
 package com.iaf.platform.workflows.ports.inbound;
 
+import java.time.Instant;
 import java.util.List;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.resources.domain.ResourceTypeDefinition;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
+import com.iaf.platform.workflows.domain.WorkflowStatus;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -31,4 +36,82 @@ public interface WorkflowQueries {
 
     /** Run the checks on YAML text against the current catalog. */
     Mono<List<Problem>> check(String yaml);
+
+    // ------------------------------------------------------------------ the API read models
+
+    /** One row of {@code GET /workflows}. {@code status} is draft or published. */
+    record WorkflowSummary(String name, String title, String noun, String verb, String persona, String folder, String owner,
+            List<String> tags, String status, String latestVersion, String publishedVersion, int stepCount, Instant updatedAt, boolean mcp) {
+    }
+
+    record WorkflowVersion(String version, WorkflowStatus status, String contentHash, Instant publishedAt, String publishedBy,
+            String releaseId, String notes) {
+    }
+
+    /** {@code GET /workflows/{name}}: the summary plus the current file (the draft when there is one). */
+    record WorkflowDetail(String name, String title, String noun, String verb, String persona, String folder, String owner,
+            List<String> tags, String status, String latestVersion, String publishedVersion, int stepCount, Instant updatedAt, boolean mcp,
+            String yaml, JsonNode definition, List<WorkflowVersion> versions, List<Problem> problems, List<ChangeRequest> changeRequests) {
+    }
+
+    /** {@code GET /workflows/{name}/versions/{version}}; {@code definition} is the YAML document as JSON. */
+    record VersionDetail(String version, WorkflowStatus status, String yaml, JsonNode definition, String contentHash) {
+    }
+
+    record Template(String id, String title, String description, String yaml) {
+    }
+
+    record StepTypeInfo(String type, String title, String category, JsonNode schema, String description) {
+    }
+
+    record RegistryAction(String id, String title, String effect, String retry, String approval, JsonNode input, JsonNode output, JsonNode sample) {
+    }
+
+    record RegistryProvider(String name, String title, String type, String owner, List<RegistryAction> actions) {
+    }
+
+    record RegistryWorkflow(String name, String title, String version, JsonNode input, JsonNode output) {
+    }
+
+    record Playbook(String name, String version, String path, String owner) {
+    }
+
+    record CredentialName(String name, String type) {
+    }
+
+    /** {@code GET /workflows?folder=&status=&q=}; every filter may be null. */
+    Flux<WorkflowSummary> list(String folder, String status, String q);
+
+    /** 404 (NotFoundException) when unknown. */
+    Mono<WorkflowDetail> detail(String name);
+
+    Flux<WorkflowVersion> versions(String name);
+
+    /** 404 when unknown. */
+    Mono<VersionDetail> versionDetail(String name, String version);
+
+    /** {@code status} is open, merged, closed or null. Rows carry no yaml or diff. */
+    Flux<ChangeRequest> changeRequests(String status);
+
+    /** With diff and yaml; 404 when unknown. */
+    Mono<ChangeRequest> changeRequest(String id);
+
+    Flux<Template> templates();
+
+    Flux<StepTypeInfo> stepTypes();
+
+    Flux<RegistryProvider> registryProviders();
+
+    /** {@code published} null or true: published versions; false: the latest version of every workflow. */
+    Flux<RegistryWorkflow> registryWorkflows(Boolean published);
+
+    /** Up to five summaries by fuzzy match on name, title, tags, noun and verb. */
+    Flux<WorkflowSummary> searchWorkflows(String q);
+
+    /** The registry's resource types, as the resources slice serves them. */
+    Flux<ResourceTypeDefinition> resourceTypes();
+
+    Flux<Playbook> playbooks();
+
+    Flux<CredentialName> credentials();
 }
