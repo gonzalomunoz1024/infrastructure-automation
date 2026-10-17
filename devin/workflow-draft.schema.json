@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CapabilityDraft",
+  "description": "What Devin returns to the platform. The designer loads capabilityYaml onto the canvas; a person reviews and saves it.",
+  "type": "object",
+  "required": ["status", "summary", "capabilityYaml", "validation"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["working", "ready", "needs_input", "failed"],
+      "description": "working while drafting, ready when validation passes, needs_input when only the user can unblock it."
+    },
+    "summary": { "type": "string", "maxLength": 600, "description": "Two or three plain sentences on what the capability does." },
+    "capabilityYaml": { "type": "string", "description": "The whole Capability file (apiVersion iaf.platform/v1, kind Capability). Empty string until the first valid draft." },
+    "changes": {
+      "type": "array",
+      "description": "What changed since the previous structured output, one line each, so the canvas can show a diff.",
+      "items": { "type": "string", "maxLength": 200 }
+    },
+    "assumptions": {
+      "type": "array",
+      "description": "Defaults Devin chose where the description was silent.",
+      "items": { "type": "string", "maxLength": 200 }
+    },
+    "questions": {
+      "type": "array",
+      "description": "Only when status is needs_input. Each answerable in a word, with options.",
+      "items": {
+        "type": "object",
+        "required": ["question"],
+        "additionalProperties": false,
+        "properties": {
+          "question": { "type": "string", "maxLength": 200 },
+          "options": { "type": "array", "items": { "type": "string", "maxLength": 80 }, "maxItems": 4 }
+        }
+      }
+    },
+    "missing": {
+      "type": "array",
+      "description": "Building blocks the flow needs that do not exist yet in the registry.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "why"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "type": "string", "enum": ["provider_action", "capability", "resource_type", "playbook", "credential"] },
+          "name": { "type": "string", "maxLength": 120 },
+          "why": { "type": "string", "maxLength": 200 }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["valid"],
+      "additionalProperties": false,
+      "properties": {
+        "valid": { "type": "boolean" },
+        "rounds": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "array", "items": { "type": "string", "maxLength": 300 } }
+      }
+    },
+    "dryRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "path": { "type": "array", "description": "Step ids in the order the dry run executed them.", "items": { "type": "string" } },
+        "error": { "type": "string", "maxLength": 300 }
+      }
+    }
+  }
+}

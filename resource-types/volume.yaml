@@ -1,0 +1,16 @@
+apiVersion: iaf.platform/v1
+kind: ResourceType
+metadata:
+  name: volume
+  plural: volumes
+  owner: team-platform
+  description: A block volume requested through the IDP tile.
+schema:
+  type: object
+  required: [sizeGb]
+  properties:
+    sizeGb: { type: integer }
+    tier: { type: string }
+    attachedTo: { type: string }
+states: [building, ready, deprecated, retired]
+producedBy: request-storage

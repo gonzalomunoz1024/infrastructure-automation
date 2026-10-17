@@ -1,0 +1,100 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: create-database
+  title: Create database
+  noun: database
+  verb: create
+  persona: developer
+  owner: team-data
+  folder: Data
+  tags: [mongodb, provisioning]
+  version: 1.4.0
+  description: Create a MongoDB cluster sized for the environment and register it.
+api:
+  method: POST
+  path: /api/v1/databases
+  input:
+    type: object
+    required: [name, environment]
+    properties:
+      name:
+        type: string
+        title: Database name
+        pattern: "^[a-z][a-z0-9-]{2,30}$"
+      environment:
+        type: string
+        title: Environment
+        enum: [dev, test, prod]
+      tier:
+        type: string
+        title: Tier
+        enum: [M10, M30, M60]
+        default: M10
+      owner:
+        type: string
+        title: Owner team
+  response: { status: 202 }
+  preview: true
+mcp:
+  expose: true
+  description: Create a MongoDB cluster. Returns a job id; the job output has the connection string name.
+policy:
+  rbac: [developer, dba, ops]
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - prodNeedsApproval:
+        name: Production?
+        switch:
+          - case: { when: "{{ $input.environment == 'prod' }}", then: approval }
+          - default: create
+    - approval:
+        name: Approve production database
+        approval:
+          group: data-approvers
+          message: "Create production cluster {{ $input.name }} ({{ $input.tier }})?"
+          timeout: 24h
+    - create:
+        name: Create cluster
+        call: provider
+        with:
+          provider: mongodb
+          action: cluster.create
+          input: { name: "{{ $input.name }}", tier: "{{ $input.tier }}", environment: "{{ $input.environment }}" }
+        output: { as: cluster }
+        retry: { maxAttempts: 2, backoff: exponential }
+        timeout: 30m
+    - waitReady:
+        name: Wait until ready
+        call: provider
+        with:
+          provider: mongodb
+          action: cluster.waitForState
+          input: { id: "{{ $cluster.id }}", state: healthy, timeout: 1200 }
+        timeout: 25m
+    - storeConnection:
+        name: Store connection secret
+        call: provider
+        with:
+          provider: vault
+          action: secret.write
+          input: { path: "databases/{{ $input.name }}", data: { uri: "{{ $cluster.connectionString }}" } }
+    - registerDb:
+        name: Register database
+        register:
+          type: database
+          id: "{{ $cluster.id }}"
+          attributes:
+            name: "{{ $input.name }}"
+            engine: mongodb
+            version: "{{ $cluster.version }}"
+            tier: "{{ $input.tier }}"
+            environment: "{{ $input.environment }}"
+            secret: "vault:databases/{{ $input.name }}"
+            owner: "{{ $input.owner ?? $job.requester }}"
+  outputs:
+    databaseId: "{{ $cluster.id }}"
+    secret: "vault:databases/{{ $input.name }}"

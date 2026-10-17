@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: infrastructure-automation
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+  profiles:
+    default: demo
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+
+platform:
+  # the content repo: workflows, providers and resource types as config as code
+  content:
+    dir: ..               # the repo root: workflows/, providers/ and resource-types/ live under it
+    git: false            # true: commit every draft/publish through JGit (GitWorkflowStore)
+  identity:
+    mode: dev             # dev | oidc
+    default-user: gonzalo
+  execution:
+    mode: in-memory       # in-memory | temporal
+  temporal:
+    target: 127.0.0.1:7233
+    namespace: default
+    task-queue: platform-interpreter
+  policy:
+    mode: mock            # mock | opa
+    opa-url: http://localhost:8181/v1/data/platform
+  credentials:
+    mode: in-memory       # in-memory | vault
+    vault-url: http://localhost:8200
+    vault-mount: secret
+  assistant:
+    mode: mock            # mock | devin
+    devin-url: https://api.devin.ai/v3
+    devin-org: ""
+  audit:
+    retention-years: 7
+    seal-every: PT1H
+  demo:
+    seed-history: true    # generate recent jobs so health, releases and evidence have data

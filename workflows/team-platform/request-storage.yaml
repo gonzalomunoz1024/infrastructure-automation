@@ -1,0 +1,73 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: request-storage
+  title: Request storage
+  noun: volume
+  verb: create
+  persona: developer
+  owner: team-platform
+  folder: Platform
+  tags: [idp, storage]
+  version: 0.3.0
+  description: Request a block volume through the enterprise IDP tile and attach it to a VM. The tile is a mock until the IDP tiles API is wired.
+api:
+  method: POST
+  path: /api/v1/volumes
+  input:
+    type: object
+    required: [vmId, sizeGb]
+    properties:
+      vmId:
+        type: string
+        title: VM id
+        x-resource: { type: vm }
+      sizeGb:
+        type: integer
+        title: Size (GB)
+        default: 100
+        minimum: 10
+        maximum: 4000
+      tier:
+        type: string
+        title: Tier
+        enum: [standard, premium]
+        default: standard
+  response: { status: 202 }
+mcp:
+  expose: true
+  description: Request a block volume and attach it to a VM.
+policy:
+  rbac: [developer, ops]
+rollout:
+  strategy: all
+workflow:
+  do:
+    - useVm:
+        name: Use VM
+        use: { type: vm, id: "{{ $input.vmId }}" }
+        output: { as: vm }
+    - requestVolume:
+        name: Request volume (IDP tile)
+        call: idp
+        with:
+          tile: block-storage-request
+          input: { sizeGb: "{{ $input.sizeGb }}", tier: "{{ $input.tier }}", requester: "{{ $job.requester }}" }
+        output: { as: volume }
+        timeout: 1h
+    - attach:
+        name: Attach to VM
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.attachDisk
+          input: { id: "{{ $input.vmId }}", volumeId: "{{ $volume.id }}" }
+    - registerVolume:
+        name: Register volume
+        register:
+          type: volume
+          id: "{{ $volume.id }}"
+          attributes: { sizeGb: "{{ $input.sizeGb }}", tier: "{{ $input.tier }}", attachedTo: "{{ $input.vmId }}" }
+          builtFrom: [ "{{ $input.vmId }}" ]
+  outputs:
+    volumeId: "{{ $volume.id }}"

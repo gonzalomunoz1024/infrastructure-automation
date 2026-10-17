@@ -1,0 +1,13 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+workflow:
+  do:
+    - first:
+        set: { a: 1 }
+    - pick:
+        switch:
+          - case: { when: "{{ $vars.a == 1 }}", then: nowhere }
+          - default: first
+    - last:
+        set: { b: 2 }

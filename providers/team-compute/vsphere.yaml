@@ -1,0 +1,206 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: vsphere
+  title: VMware vSphere
+  owner: team-compute
+  version: 1.3.0
+  description: Virtual machines, templates and snapshots in the vCenter of each environment.
+spec:
+  type: openapi
+  spec:
+    url: https://vcenter.example.com/rest/openapi.json
+    sha256: 9f2c1b7e0a4d5c6b8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d
+  endpoints:
+    dev: https://vcenter-dev.example.com
+    test: https://vcenter-test.example.com
+    prod: https://vcenter.example.com
+  auth: { type: bearer, credential: vault:vsphere/token }
+  actions:
+    - id: vm.get
+      title: Get VM
+      operation: getVm
+      effect: read
+      retry: safe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string }
+          powerState: { type: string, enum: [poweredOn, poweredOff, suspended] }
+          cpu: { type: integer }
+          memoryGb: { type: integer }
+          environment: { type: string }
+      sample:
+        id: "{{ $input.id }}"
+        name: "web-{{ $input.id.replace('vm-', '') }}"
+        powerState: poweredOn
+        cpu: 4
+        memoryGb: 16
+        environment: dev
+    - id: vm.list
+      title: List VMs
+      operation: listVms
+      effect: read
+      retry: safe
+      input:
+        type: object
+        properties:
+          environment: { type: string }
+      output:
+        type: object
+        properties:
+          items: { type: array, items: { type: object } }
+      sample:
+        items:
+          - { id: vm-1042, name: web-1042, powerState: poweredOn }
+          - { id: vm-1043, name: web-1043, powerState: poweredOn }
+          - { id: vm-2001, name: db-2001, powerState: poweredOff }
+    - id: vm.create
+      title: Create VM
+      operation: createVm
+      effect: create
+      retry: unsafe
+      plan: vm.get
+      input:
+        type: object
+        required: [name, templateId]
+        properties:
+          name: { type: string }
+          templateId: { type: string }
+          cpu: { type: integer, default: 2 }
+          memoryGb: { type: integer, default: 8 }
+          environment: { type: string }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string }
+          powerState: { type: string }
+      sample:
+        id: "vm-{{ $job.seq }}"
+        name: "{{ $input.name }}"
+        powerState: poweredOff
+    - id: vm.restart
+      title: Restart VM
+      operation: restartVm
+      effect: change
+      retry: unsafe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      sample: { id: "{{ $input.id }}", task: "task-{{ $job.seq }}" }
+    - id: vm.powerOff
+      title: Power off VM
+      operation: powerOffVm
+      effect: change
+      retry: unsafe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      sample: { id: "{{ $input.id }}", powerState: poweredOff }
+    - id: vm.powerOn
+      title: Power on VM
+      operation: powerOnVm
+      effect: change
+      retry: safe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      sample: { id: "{{ $input.id }}", powerState: poweredOn }
+    - id: vm.waitForPowerState
+      title: Wait for power state
+      operation: getVm
+      effect: read
+      retry: safe
+      description: Polls getVm until the VM reaches the state or the timeout passes.
+      input:
+        type: object
+        required: [id, state]
+        properties:
+          id: { type: string }
+          state: { type: string, enum: [poweredOn, poweredOff] }
+          timeout: { type: integer, default: 600 }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          powerState: { type: string }
+          waitedSeconds: { type: integer }
+      sample: { id: "{{ $input.id }}", powerState: "{{ $input.state }}", waitedSeconds: 42 }
+    - id: vm.snapshot
+      title: Snapshot VM
+      operation: createSnapshot
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [id, name]
+        properties:
+          id: { type: string }
+          name: { type: string }
+          keepDays: { type: integer, default: 7 }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string }
+      sample: { id: "snap-{{ $job.seq }}", name: "{{ $input.name }}" }
+    - id: vm.delete
+      title: Delete VM
+      operation: deleteVm
+      effect: delete
+      retry: unsafe
+      approval: required
+      plan: vm.get
+      verify: { action: vm.get, expect: notFound }
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      sample: { id: "{{ $input.id }}", deleted: true }
+    - id: vm.attachDisk
+      title: Attach disk
+      operation: attachDisk
+      effect: change
+      retry: unsafe
+      input:
+        type: object
+        required: [id, volumeId]
+        properties:
+          id: { type: string }
+          volumeId: { type: string }
+      sample: { id: "{{ $input.id }}", volumeId: "{{ $input.volumeId }}", device: /dev/sdb }
+    - id: template.list
+      title: List templates
+      operation: listTemplates
+      effect: read
+      retry: safe
+      sample:
+        items:
+          - { id: tpl-ubuntu-2404-cis1, os: ubuntu-24.04 }
+          - { id: tpl-rhel9-cis1, os: rhel-9 }
+  overrides:
+    vm.get:
+      response:
+        properties:
+          powerState: { type: string }
+  errors:
+    - { match: { status: 404 }, class: not_found, retry: false }
+    - { match: { status: 409 }, class: conflict, retry: false }
+    - { match: { status: 429 }, class: rate_limited, retry: true }
+    - { match: { status: 503 }, class: unavailable, retry: true }
+  slo: { successRate: 99.5, p95Ms: 800 }
+  alerts: { channel: "#compute-alerts" }

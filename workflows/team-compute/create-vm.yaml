@@ -1,0 +1,132 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: create-vm
+  title: Create VM
+  noun: vm
+  verb: create
+  persona: developer
+  owner: team-compute
+  folder: Compute
+  tags: [vsphere, provisioning]
+  version: 2.0.1
+  description: Create a virtual machine from a registered image, then record it in the registry.
+api:
+  method: POST
+  path: /api/v1/vms
+  input:
+    type: object
+    required: [name, image, size]
+    properties:
+      name:
+        type: string
+        title: VM name
+        pattern: "^[a-z][a-z0-9-]{2,30}$"
+      image:
+        type: string
+        title: Image
+        description: A registered image id; built on demand when missing
+        x-resource: { type: image, orCreateWith: build-vm-image }
+      size:
+        type: string
+        title: Size
+        enum: [small, medium, large]
+        default: small
+      environment:
+        type: string
+        title: Environment
+        enum: [dev, test, prod]
+        default: dev
+      owner:
+        type: string
+        title: Owner team
+  response: { status: 202 }
+  preview: true
+  batch:
+    max: 200
+    rollout: { waves: [5, 25, 100], maxParallel: 5, stopIfFailedPercent: 10 }
+mcp:
+  expose: true
+  description: Create a virtual machine from an image. Returns a job id; the job output has the vm id.
+policy:
+  rbac: [ops, sre, developer]
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - useImage:
+        name: Use image
+        use:
+          type: image
+          id: "{{ $input.image }}"
+          waitUntil: ready
+          checkAccess: true
+        output: { as: image }
+    - sizeToSpec:
+        name: Size to spec
+        switch:
+          - case:
+              when: "{{ $input.size == 'large' }}"
+              do:
+                - largeSpec:
+                    name: Large spec
+                    set: { cpu: 8, memoryGb: 32 }
+          - case:
+              when: "{{ $input.size == 'medium' }}"
+              do:
+                - mediumSpec:
+                    name: Medium spec
+                    set: { cpu: 4, memoryGb: 16 }
+          - default:
+              do:
+                - smallSpec:
+                    name: Small spec
+                    set: { cpu: 2, memoryGb: 8 }
+    - createVm:
+        name: Create in vSphere
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.create
+          input:
+            name: "{{ $input.name }}"
+            templateId: "{{ $image.attributes.templateId }}"
+            cpu: "{{ $vars.cpu }}"
+            memoryGb: "{{ $vars.memoryGb }}"
+            environment: "{{ $input.environment }}"
+        output: { as: vm }
+        retry: { maxAttempts: 3, backoff: exponential }
+        timeout: 20m
+        compensate:
+          - deleteHalfMade:
+              name: Delete half-made VM
+              call: provider
+              with:
+                provider: vsphere
+                action: vm.delete
+                input: { id: "{{ $vm.id }}" }
+    - waitReady:
+        name: Wait for guest tools
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.waitForPowerState
+          input: { id: "{{ $vm.id }}", state: poweredOn, timeout: 900 }
+        timeout: 15m
+    - registerVm:
+        name: Register VM
+        register:
+          type: vm
+          id: "{{ $vm.id }}"
+          attributes:
+            name: "{{ $input.name }}"
+            image: "{{ $image.id }}"
+            cpu: "{{ $vars.cpu }}"
+            memoryGb: "{{ $vars.memoryGb }}"
+            environment: "{{ $input.environment }}"
+            owner: "{{ $input.owner ?? $job.requester }}"
+          builtFrom: [ "{{ $image.id }}" ]
+  outputs:
+    vmId: "{{ $vm.id }}"
+    name: "{{ $input.name }}"

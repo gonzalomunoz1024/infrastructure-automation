@@ -1,0 +1,94 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: delete-vm
+  title: Delete VM
+  noun: vm
+  verb: delete
+  persona: ops
+  owner: team-compute
+  folder: Compute
+  tags: [vsphere, destructive]
+  version: 1.0.3
+  description: Snapshot, power off and delete a virtual machine, then retire it in the registry.
+api:
+  method: DELETE
+  path: /api/v1/vms/{vmId}
+  input:
+    type: object
+    required: [vmId, reason]
+    properties:
+      vmId:
+        type: string
+        title: VM id
+        x-resource: { type: vm }
+      reason:
+        type: string
+        title: Reason
+        minLength: 10
+      keepSnapshotDays:
+        type: integer
+        title: Keep snapshot for (days)
+        default: 7
+        minimum: 0
+        maximum: 90
+  response: { status: 202 }
+  preview: true
+mcp:
+  expose: true
+  description: Delete a virtual machine. Destructive, always needs an approval.
+policy:
+  approval: { required: true, group: compute-approvers, timeout: 8h }
+  rbac: [ops, sre]
+  change: { required: true }
+rollout:
+  strategy: all
+workflow:
+  do:
+    - useVm:
+        name: Use VM
+        use:
+          type: vm
+          id: "{{ $input.vmId }}"
+          checkAccess: true
+        output: { as: vm }
+    - approval:
+        name: Approve deletion
+        approval:
+          group: compute-approvers
+          message: "Delete {{ $vm.attributes.name }} ({{ $input.vmId }})? {{ $input.reason }}"
+          timeout: 8h
+    - snapshot:
+        name: Snapshot first
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.snapshot
+          input: { id: "{{ $input.vmId }}", name: "pre-delete-{{ $job.id }}", keepDays: "{{ $input.keepSnapshotDays }}" }
+        output: { as: snapshot }
+        timeout: 30m
+    - powerOff:
+        name: Power off
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.powerOff
+          input: { id: "{{ $input.vmId }}" }
+        retry: { maxAttempts: 2, backoff: fixed }
+    - delete:
+        name: Delete in vSphere
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.delete
+          input: { id: "{{ $input.vmId }}" }
+        retry: { maxAttempts: 1 }
+    - retire:
+        name: Retire in registry
+        register:
+          type: vm
+          id: "{{ $input.vmId }}"
+          state: retired
+          attributes: { deletedBy: "{{ $job.requester }}", reason: "{{ $input.reason }}", snapshot: "{{ $snapshot.id }}" }
+  outputs:
+    snapshotId: "{{ $snapshot.id }}"

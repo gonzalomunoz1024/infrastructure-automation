@@ -1,0 +1,5 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-info
+workflow:
+  do: [

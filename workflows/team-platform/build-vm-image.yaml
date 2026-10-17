@@ -1,0 +1,103 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: build-vm-image
+  title: Build VM image
+  noun: image
+  verb: build
+  persona: platform
+  owner: team-platform
+  folder: Platform
+  tags: [images, packer]
+  version: 1.1.0
+  description: Build a hardened VM image from a base OS and register it so other workflows can use it.
+api:
+  method: POST
+  path: /api/v1/images:build
+  input:
+    type: object
+    required: [os]
+    properties:
+      os:
+        type: string
+        title: Base OS
+        enum: [ubuntu-24.04, rhel-9, windows-2022]
+        default: ubuntu-24.04
+      hardening:
+        type: string
+        title: Hardening profile
+        enum: [cis-l1, cis-l2, none]
+        default: cis-l1
+      name:
+        type: string
+        title: Image name
+        description: Defaults to <os>-<hardening>-<date>
+  response: { status: 202 }
+  preview: false
+mcp:
+  expose: true
+  description: Build a hardened VM image. The job output has the image id other tools accept.
+policy:
+  rbac: [platform, ops, developer]
+rollout:
+  strategy: canary
+  stages: [10, 50, 100]
+workflow:
+  do:
+    - imageName:
+        name: Pick a name
+        set:
+          imageName: "{{ $input.name ?? $input.os + '-' + $input.hardening + '-' + $job.startedAt.slice(0, 10) }}"
+    - startBuild:
+        name: Start Packer build
+        call: provider
+        with:
+          provider: image-builder
+          action: build.start
+          input: { os: "{{ $input.os }}", hardening: "{{ $input.hardening }}", name: "{{ $vars.imageName }}" }
+        output: { as: build }
+        timeout: 5m
+    - registerBuilding:
+        name: Register as building
+        register:
+          type: image
+          id: "{{ $build.imageId }}"
+          state: building
+          attributes: { name: "{{ $vars.imageName }}", os: "{{ $input.os }}", hardening: "{{ $input.hardening }}", templateId: "{{ $build.templateId }}" }
+    - waitForBuild:
+        name: Wait for the build
+        call: provider
+        with:
+          provider: image-builder
+          action: build.wait
+          input: { buildId: "{{ $build.id }}", timeout: 3600 }
+        output: { as: result }
+        timeout: 70m
+        pauseOnFailure: true
+    - scan:
+        name: Vulnerability scan
+        call: provider
+        with:
+          provider: image-builder
+          action: image.scan
+          input: { imageId: "{{ $build.imageId }}" }
+        assert: "{{ $json.critical == 0 }}"
+    - registerReady:
+        name: Register as ready
+        register:
+          type: image
+          id: "{{ $build.imageId }}"
+          state: ready
+          attributes: { templateId: "{{ $result.templateId }}", sizeGb: "{{ $result.sizeGb }}", scanned: true }
+  catch:
+    do:
+      - registerFailed:
+          name: Mark image failed
+          register:
+            type: image
+            id: "{{ $build.imageId }}"
+            state: failed
+            attributes: { error: "{{ $error.message }}" }
+  outputs:
+    imageId: "{{ $build.imageId }}"
+    templateId: "{{ $result.templateId }}"

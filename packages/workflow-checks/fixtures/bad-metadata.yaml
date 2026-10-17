@@ -1,0 +1,10 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: VM Restart, title: VM restart, noun: vm, verb: restart, version: "1.2" }
+api:
+  path: /api/v1/jobs:restart
+workflow:
+  do:
+    - restart:
+        call: provider
+        with: { provider: vsphere, action: vm.restart, input: { id: "{{ $input.vmId }}" } }

@@ -1,0 +1,22 @@
+{
+  "name": "infrastructure-automation",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Infrastructure automation platform: n8n-style designer, config as code, Temporal interpreter",
+  "workspaces": [
+    "packages/ui",
+    "packages/workflow-checks",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace frontend",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "check:workflows": "node scripts/check-workflows.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

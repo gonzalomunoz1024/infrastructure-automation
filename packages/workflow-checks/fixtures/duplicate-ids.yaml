@@ -1,0 +1,11 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+workflow:
+  do:
+    - check:
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }
+    - check:
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }

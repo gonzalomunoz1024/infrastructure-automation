@@ -1,0 +1,20 @@
+apiVersion: iaf.platform/v1
+kind: ResourceType
+metadata:
+  name: database
+  plural: databases
+  owner: team-data
+  description: A managed MongoDB cluster.
+schema:
+  type: object
+  required: [name, engine]
+  properties:
+    name: { type: string }
+    engine: { type: string }
+    version: { type: string }
+    tier: { type: string }
+    environment: { type: string }
+    secret: { type: string }
+    owner: { type: string }
+states: [building, ready, deprecated, retired]
+producedBy: create-database

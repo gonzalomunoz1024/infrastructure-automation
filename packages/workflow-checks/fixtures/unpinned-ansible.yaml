@@ -1,0 +1,11 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-restart-lite, title: VM restart lite, noun: vm, verb: restart, owner: team-compute, version: 1.0.0 }
+workflow:
+  do:
+    - restart:
+        call: ansible
+        with:
+          playbook: { git: { repo: github.com/acme/ops, ref: v1, path: vm/restart.yml } }
+          credential: vault:ssh/ops
+        retry: { maxAttempts: 3, backoff: fixed }

@@ -1,0 +1,16 @@
+# build output
+backend/target/
+node_modules/
+frontend/dist/
+packages/*/dist/
+*.log
+.DS_Store
+
+# local state
+.idea/
+.vscode/
+*.iml
+.env
+.env.local
+playwright-report/
+test-results/

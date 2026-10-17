@@ -1,0 +1,8 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-delete, title: Delete VM, noun: vm, verb: delete, owner: team-compute, version: 1.0.0 }
+workflow:
+  do:
+    - delete:
+        call: provider
+        with: { provider: vsphere, action: vm.delete, input: { id: "{{ $input.vmId }}" } }
