@@ -26,7 +26,9 @@ npm run check:workflows                                 # packages/workflow-chec
 - `ports/inbound/<Slice>Commands` + `<Slice>Queries` are interfaces returning `Mono`/`Flux`;
   `application/<Slice>CommandHandler` + `<Slice>QueryHandler` implement them (`@Service`,
   `@RequiredArgsConstructor`); `adapters/inbound/RestController<Slice>Adapter` implements both and
-  maps `POST` to commands and `GET` to queries under `/api/v1`.
+  maps `POST` to commands and `GET` to queries under `/api/v1`. The handlers are also `@Primary`:
+  the REST adapter implements the same ports, so without it any constructor that asks for
+  `<Slice>Commands` would find two beans and the context would not start.
 - Commands return `Mono<CommandAccepted>` and publish a `DomainEvent` on the `EventBus`
   (`events.publish(type, aggregate, id, actor, data)`); projections are event listeners
   registered in a `@PostConstruct` (`events.register(this::on)`).
