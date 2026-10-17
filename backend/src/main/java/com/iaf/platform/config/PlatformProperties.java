@@ -72,6 +72,8 @@ public class PlatformProperties {
         private String devinOrg = "";
         private String devinApiKey = "";
         private String devinPlaybookId = "";
+        /** The playbook behind "Ask Devin" in the Add provider wizard ({@code !provider-draft}). */
+        private String devinProviderPlaybookId = "";
         private String platformTokenSecretId = "";
     }
 

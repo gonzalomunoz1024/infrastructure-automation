@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProviderDraft",
+  "description": "What Devin returns to the Add provider wizard. The wizard shows providerYaml; a person reviews it, names the credential and saves it.",
+  "type": "object",
+  "required": ["status", "summary", "providerYaml"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["working", "ready", "needs_input", "failed"],
+      "description": "working while drafting, ready when validation passes, needs_input when only the user can unblock it."
+    },
+    "summary": { "type": "string", "maxLength": 600, "description": "Two or three plain sentences on what the provider connects and which actions it offers." },
+    "providerYaml": { "type": "string", "description": "The whole Provider file (apiVersion iaf.platform/v1, kind Provider). Empty string until the first valid draft." },
+    "assumptions": {
+      "type": "array",
+      "description": "Guesses Devin made where the description was silent: environments, auth type, effects, retry and approval defaults.",
+      "items": { "type": "string", "maxLength": 200 }
+    },
+    "questions": {
+      "type": "array",
+      "description": "Only when status is needs_input: at most 3 short questions the reviewer answers in the wizard, such as which credential to use.",
+      "items": { "type": "string", "maxLength": 200 },
+      "maxItems": 3
+    }
+  }
+}
