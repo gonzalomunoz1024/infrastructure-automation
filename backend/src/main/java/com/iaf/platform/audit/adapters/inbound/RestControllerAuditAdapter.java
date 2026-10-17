@@ -38,7 +38,7 @@ public class RestControllerAuditAdapter implements AuditCommands, AuditQueries {
     }
 
     @Override
-    @GetMapping("/audit/{jobId}")
+    @GetMapping({"/audit/{jobId}", "/jobs/{jobId}/evidence"})
     public Mono<EvidenceRecord> record(@PathVariable String jobId) {
         return queries.record(jobId);
     }

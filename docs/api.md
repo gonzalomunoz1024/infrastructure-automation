@@ -21,8 +21,8 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | Method | Path                      | Returns |
 |--------|---------------------------|---------|
 | GET    | `/me`                     | `{ id, name, email, teams: string[], roles: string[], admin: boolean }` |
-| GET    | `/service-accounts`       | `{ id, name, roles, createdAt }[]` |
-| POST   | `/service-accounts`       | body `{ name, roles }` → `{ id, token }` (token shown once) |
+| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt }[]` |
+| POST   | `/service-accounts`       | body `{ name, roles, teams? }` → 201 `{ id, token }` (token shown once; admin only) |
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`). Service accounts: `Authorization: Bearer <token>`. OIDC profile: a JWT.
@@ -37,9 +37,10 @@ type WorkflowDetail = WorkflowSummary & { yaml: string; definition: WorkflowDefi
 type WorkflowVersion = { version; status: 'draft' | 'candidate' | 'published' | 'retired';
   contentHash; publishedAt?; publishedBy?; releaseId?; notes? }
 type WorkflowDefinition = { apiVersion; kind: 'Workflow'; metadata; api; mcp; policy; triggers; rollout;
-  workflow: { do: Step[]; catch?; outputs? } }   // mirrors docs/config-as-code.md
-type Step = { id; name; type: StepType; with?: object; output?: { as }; assert?; retry?; timeout?;
-  pauseOnFailure?: boolean; position?: { x; y }; notes?; branches?: Step[][]; cases?; children?: Step[] }
+  workflow: { do: StepEntry[]; catch?: { do: StepEntry[] }; outputs? } }   // the YAML document as JSON (docs/config-as-code.md)
+type StepEntry = { [stepId: string]: { name?; call?: StepType; with?: object; output?: { as }; assert?; retry?; timeout?;
+  pauseOnFailure?: boolean; position?: { x; y }; notes?; compensate?; /* or one of */ run?; approval?; switch?; fork?; for?;
+  try?; wait?; set?; raise?; use?; register?; notify?; script? } }   // exactly one step key per entry; `@iaf/workflow-checks` parses it
 type StepType = 'provider' | 'http' | 'ansible' | 'terraform' | 'idp' | 'activity' | 'run' | 'approval'
   | 'switch' | 'fork' | 'for' | 'try' | 'wait' | 'set' | 'raise' | 'use' | 'register' | 'notify' | 'script'
 type ChangeRequest = { id; kind: 'workflow' | 'provider'; name; version; branch; title; author;
@@ -53,8 +54,10 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | GET    | `/workflows/{name}`                          | `WorkflowDetail` |
 | GET    | `/workflows/{name}/versions`                 | `WorkflowVersion[]` |
 | GET    | `/workflows/{name}/versions/{version}`       | `{ version; yaml; definition }` |
-| PUT    | `/workflows/{name}/draft`                    | `{ yaml }` → `{ name; version; problems: Problem[] }` (200) |
-| POST   | `/workflows`                                 | `{ yaml }` → `CommandAccepted` (creates a draft; name from metadata) |
+| PUT    | `/workflows/{name}/draft`                    | `{ yaml }` or `{ definition }` → `{ name; version; problems: Problem[] }` (200; creates the workflow when the name is new) |
+| POST   | `/workflows`                                 | `{ yaml }` or `{ definition }` → `CommandAccepted` (creates a draft; name from metadata; 409 when it exists) |
+| POST   | `/workflows:render`                          | `{ definition }` → `{ yaml }` (200): the canonical YAML of a document; the browser never renders YAML itself |
+| POST   | `/workflows:parse`                           | `{ yaml }` → `{ definition; problems: Problem[] }` (200): the YAML document as JSON, same shape as `definition` everywhere |
 | DELETE | `/workflows/{name}`                          | drafts only → 204 |
 | POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
@@ -91,9 +94,9 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 | Method | Path                                | Returns |
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
-| GET    | `/openapi.json`                     | OpenAPI 3.1 document of every published workflow and resource type |
+| GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure; 403 on RBAC |
-| POST   | `{path}:batch`                      | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }` |
+| POST   | `{path}:batch`                      | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }` |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200) |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
@@ -132,7 +135,9 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}`                           | `JobDetail` |
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
 | GET    | `/jobs/{id}/replay`                    | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }` |
-| GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` |
+| GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
+| POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
+| POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
 | POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted` |
 | POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input) |
 | POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted` |
@@ -140,8 +145,9 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
+| GET    | `/approvals/{id}`                      | `Approval` |
 | POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
-| POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → `{ started: { workflow; jobId }[] }` |
+| POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → same |
 
 ## Providers
@@ -161,7 +167,7 @@ type TryResult = { ok: boolean; status; durationMs; response; mismatches: { fiel
 |--------|-------------------------------------------|----------------|
 | GET    | `/providers`                              | `ProviderSummary[]` |
 | GET    | `/providers/{name}`                       | `ProviderDetail` |
-| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId? }[]` |
+| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? }` → `SpecImport` (200) |
 | POST   | `/providers:test-connection`              | `{ endpoints; auth }` → `{ results: { environment; ok; durationMs; message }[] }` (200) |
 | POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200) |
@@ -194,12 +200,12 @@ type EvidenceRecord = { jobId; workflow; version; requester; channel; entries: E
 
 | GET `/audit?workflow=&from=&to=&requester=` | `{ jobId; workflow; requester; channel; at; entries; status }[]` |
 | GET `/audit/{jobId}` | `EvidenceRecord` |
-| GET `/audit/{jobId}:verify` | `{ valid: boolean; entries; brokenAt?: number }` |
+| GET `/audit/{jobId}:verify` | `{ valid: boolean; entries; brokenAt?: number; seal?: 'verified' \| 'mismatch' \| 'unverifiable' }` |
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
 | POST `/audit:export-pack` | `{ filter }` → zip (signed manifest) |
 | POST `/audit/{jobId}:share` | → `{ url; expiresAt }` |
 | GET `/audit/shared/{token}` | read-only `EvidenceRecord` |
-| POST `/audit:seal` | → `{ sealedAt; signature }` (also runs hourly) |
+| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed }` (also runs every `platform.audit.seal-every`) |
 
 ## Resources
 
@@ -209,6 +215,7 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 ```
 
 | GET `/resource-types` | `ResourceType[]` |
+| GET `/resource-types/{name}` | `ResourceType` |
 | GET `/resources?type=&owner=&status=` | `Resource[]` |
 | GET `/resources/{id}` | `Resource` |
 | GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[] }` |
@@ -224,6 +231,7 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | POST `/assistant/sessions` | `{ mode: 'create' \| 'edit'; workflow?; draftYaml? }` → `{ sessionId }` |
 | POST `/assistant/sessions/{id}/messages` | `{ text }` → SSE events `{ type: 'status' \| 'draft' \| 'message' \| 'validation' \| 'done'; data }` |
 | GET `/assistant/sessions/{id}` | `{ sessionId; status; draft; history }` |
+| POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
 
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
