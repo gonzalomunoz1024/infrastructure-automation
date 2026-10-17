@@ -79,6 +79,8 @@ public class PlatformProperties {
     public static class Audit {
         private int retentionYears = 7;
         private Duration sealEvery = Duration.ofHours(1);
+        /** HMAC-SHA256 key for seals and export packs; blank = a random key for this run (logged by id only). */
+        private String signingKey = "";
     }
 
     @Data
