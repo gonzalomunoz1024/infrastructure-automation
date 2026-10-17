@@ -43,6 +43,11 @@ class WebClientHttpProbeTest {
                     ex.sendResponseHeaders(302, -1);
                     ex.close();
                 }
+                case "/to-metadata" -> {
+                    ex.getResponseHeaders().add("Location", "http://169.254.169.254/latest/meta-data/");
+                    ex.sendResponseHeaders(302, -1);
+                    ex.close();
+                }
                 case "/ok" -> LocalHttp.respond(ex, 200, "{}");
                 case "/nohead" -> LocalHttp.respond(ex, "HEAD".equals(method) ? 405 : 200, "{}");
                 case "/private" -> LocalHttp.respond(ex, "Bearer tok".equals(auth) ? 200 : 401, "{}");
@@ -64,6 +69,25 @@ class WebClientHttpProbeTest {
     @Test
     void fetchFollowsRedirectsAndReturnsTheDocument() {
         StepVerifier.create(probe.fetch(base + "/redirect")).expectNext("openapi: 3.1.0").verifyComplete();
+    }
+
+    @Test
+    void neverCallsOrFollowsARedirectToACloudMetadataAddress() {
+        StepVerifier.create(probe.fetch("http://169.254.169.254/latest/meta-data/"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("metadata"))
+                .verify();
+        StepVerifier.create(probe.fetch("http://metadata.google.internal/computeMetadata/v1/"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("metadata"))
+                .verify();
+        StepVerifier.create(probe.fetch(base + "/to-metadata"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("HTTP 302"))
+                .verify();
+        StepVerifier.create(probe.probe("http://[fe80::1]:8080/", NONE))
+                .assertNext(r -> {
+                    assertThat(r.ok()).isFalse();
+                    assertThat(r.message()).contains("link-local");
+                })
+                .verifyComplete();
     }
 
     @Test

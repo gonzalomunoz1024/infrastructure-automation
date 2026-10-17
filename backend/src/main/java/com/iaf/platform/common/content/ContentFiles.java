@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -67,6 +68,31 @@ public final class ContentFiles {
     /** {@code workflows/<team>/<name>.yaml} style path for a new file. */
     public static Path pathFor(Path root, String folder, String owner, String name) {
         String team = owner == null || owner.isBlank() ? "shared" : owner;
-        return root.resolve(folder).resolve(team).resolve(name + ".yaml");
+        return inside(root, folder + "/" + requireSlug("The owner team", team) + "/" + requireSlug("The name", name) + ".yaml");
+    }
+
+    /** Names that become folders, file names and URLs: lowercase letters, digits and dashes, starting with a letter. */
+    public static final Pattern SLUG = Pattern.compile("^[a-z][a-z0-9-]*$");
+
+    /**
+     * {@code value} when it is a slug; otherwise a 400 naming {@code what} ("The workflow name",
+     * "The owner team"). Workflow and provider names and owner teams become paths in the content
+     * repo, so nothing else may reach a file name.
+     */
+    public static String requireSlug(String what, String value) {
+        if (value == null || !SLUG.matcher(value).matches()) {
+            throw new IllegalArgumentException(what + " '" + value + "' must be lowercase letters, digits and dashes, starting with a letter, like team-compute");
+        }
+        return value;
+    }
+
+    /** {@code relative} resolved under {@code root}; a path that would land outside it is refused. */
+    public static Path inside(Path root, String relative) {
+        Path base = root.toAbsolutePath().normalize();
+        Path file = base.resolve(relative).normalize();
+        if (!file.startsWith(base) || file.equals(base)) {
+            throw new IllegalArgumentException("The path '" + relative + "' is outside the content repo");
+        }
+        return file;
     }
 }

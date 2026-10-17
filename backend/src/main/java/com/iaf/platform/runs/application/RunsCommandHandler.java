@@ -31,6 +31,7 @@ import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
@@ -42,6 +43,7 @@ import com.iaf.platform.runs.domain.ChangeTicket;
 import com.iaf.platform.runs.domain.DryRunResult;
 import com.iaf.platform.runs.domain.DryRunResult.DryRunStep;
 import com.iaf.platform.runs.domain.InputDefaults;
+import com.iaf.platform.runs.domain.Inventory;
 import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.domain.InvalidInputException.RowProblems;
 import com.iaf.platform.runs.domain.Job;
@@ -130,7 +132,8 @@ public class RunsCommandHandler implements RunsCommands {
             AccessRules.requireInvoke(who, rbac(def), def.name());
             JsonNode input = validate(def, cmd.input());
             String channel = cmd.channel() == null ? "rest" : cmd.channel();
-            return evaluatePolicy(who, def, rec.version(), input, channel, cmd.parentId())
+            return requireKnownResources(def, List.of(input), false)
+                    .then(evaluatePolicy(who, def, rec.version(), input, channel, cmd.parentId()))
                     .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, cmd.parentId() == null)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newJob(def, rec.version(), input, who, channel, cmd.parentId(), cmd.traceId(),
@@ -172,7 +175,8 @@ public class RunsCommandHandler implements RunsCommands {
             RolloutPolicy rollout = rollout(cmd.rollout(), def);
             List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
             String channel = cmd.channel() == null ? "batch" : cmd.channel();
-            return evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null)
+            return requireKnownResources(def, rows, true)
+                    .then(evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null))
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
@@ -486,6 +490,31 @@ public class RunsCommandHandler implements RunsCommands {
     }
 
     /** Defaults filled in, then the schema: a 400 with every problem when it does not fit. */
+    /** The inventory check: an error naming every row whose x-resource ids the registry does not know. */
+    private Mono<Void> requireKnownResources(WorkflowDefinition def, List<JsonNode> rows, boolean batch) {
+        List<Inventory.Field> fields = Inventory.fields(def);
+        if (fields.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(Inventory.ids(fields, rows))
+                .flatMap(id -> resources.get(id))
+                .collectMap(Resource::id)
+                .flatMap(found -> {
+                    List<RowProblems> invalid = new ArrayList<>();
+                    for (int i = 0; i < rows.size(); i++) {
+                        List<Problem> problems = Inventory.problems(fields, rows.get(i), found);
+                        if (!problems.isEmpty()) {
+                            invalid.add(new RowProblems(i, problems));
+                        }
+                    }
+                    if (invalid.isEmpty()) {
+                        return Mono.<Void>empty();
+                    }
+                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                            : new InvalidInputException(def.name(), invalid.get(0).problems()));
+                });
+    }
+
     static JsonNode validate(WorkflowDefinition def, JsonNode input) {
         JsonNode in = InputDefaults.apply(def.inputSchema(), input);
         List<Problem> problems = Schemas.validate(def.inputSchema(), in);

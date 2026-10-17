@@ -31,9 +31,14 @@ class RouteTableTest {
 
     @Test
     void matchesBatchAndPreviewSuffixes() {
-        RouteMatch batch = TABLE.match("POST", "/api/v1/vms/vm-1:restart:batch").orElseThrow();
+        // a path that ends in a parameter batches on the collection: each row names its own VM
+        RouteMatch batch = TABLE.match("POST", "/api/v1/vms:restart:batch").orElseThrow();
         assertThat(batch.route().kind()).isEqualTo(Kind.BATCH);
         assertThat(batch.route().workflow().name()).isEqualTo("vm-restart");
+        assertThat(batch.params()).isEmpty();
+        assertThat(TABLE.match("POST", "/api/v1/vms/vm-1:restart:batch")).isEmpty();
+        assertThat(TABLE.match("POST", "/api/v1/vms:delete:batch")).map(r -> r.route().workflow().name()).contains("delete-vm");
+        assertThat(TABLE.match("POST", "/api/v1/vms:batch")).map(r -> r.route().workflow().name()).contains("create-vm");
         RouteMatch preview = TABLE.match("POST", "/api/v1/vms/vm-1:restart:preview").orElseThrow();
         assertThat(preview.route().kind()).isEqualTo(Kind.PREVIEW);
         // build-vm-image has preview: false, so there is no :preview route, but :batch is always there
@@ -82,6 +87,7 @@ class RouteTableTest {
         RouteTable table = RouteTable.of(records, SampleCatalog.types());
         assertThat(table.match("POST", "/api/v1/jobs/job_1:restart")).isEmpty();
         assertThat(table.match("POST", "/api/v1/jobs/job_1:restart:batch")).isEmpty();
+        assertThat(table.match("POST", "/api/v1/jobs:restart:batch")).isEmpty();
         assertThat(table.routes()).noneMatch(r -> r.path().startsWith("/api/v1/jobs"));
         for (String reserved : ReservedNouns.NOUNS) {
             assertThat(table.match("GET", "/api/v1/" + reserved)).as(reserved).isEmpty();

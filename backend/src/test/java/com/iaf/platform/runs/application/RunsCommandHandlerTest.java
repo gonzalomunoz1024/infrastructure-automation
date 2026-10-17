@@ -35,6 +35,7 @@ import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.DryRunResult;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
@@ -75,6 +76,39 @@ class RunsCommandHandlerTest {
     }
 
     // ---------------------------------------------------------------- startJob
+
+    @Test
+    void startJobRejectsAResourceTheRegistryDoesNotKnow() {
+        StartJob unknown = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "missing-vm-9")), SampleContent.GONZALO,
+                "rest", null, null, null, null);
+        StepVerifier.create(handler.startJob(unknown))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("missing-vm-9");
+                    assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.unknownResource");
+                })
+                .verify();
+        StartJob wrongType = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "db-9")), SampleContent.GONZALO,
+                "rest", null, null, null, null);
+        StepVerifier.create(handler.startJob(wrongType))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.wrongResourceType"))
+                .verify();
+        assertThat(eventTypes()).doesNotContain("job.started");
+    }
+
+    @Test
+    void aBatchNamesEveryRowWhoseResourceIsUnknownOrRetired() {
+        StartBatch batch = new StartBatch("vm-restart", null,
+                List.of(SampleContent.json(Map.of("vmId", "vm-1")), SampleContent.json(Map.of("vmId", "missing-vm-2")), SampleContent.json(Map.of("vmId", "retired-vm-3"))),
+                null, null, SampleContent.GONZALO, "batch", null);
+        StepVerifier.create(handler.startBatch(batch))
+                .expectErrorSatisfies(e -> {
+                    InvalidInputException ii = (InvalidInputException) e;
+                    assertThat(ii.rows()).extracting(r -> r.index()).containsExactly(1, 2);
+                    assertThat(ii.rows().get(1).problems().get(0).code()).isEqualTo("input.retiredResource");
+                })
+                .verify();
+        assertThat(eventTypes()).doesNotContain("job.started");
+    }
 
     @Test
     void startJobValidatesStoresSnapshotsOpensChangeAndStartsTheEngine() {

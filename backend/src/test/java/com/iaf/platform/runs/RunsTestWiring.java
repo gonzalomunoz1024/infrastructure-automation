@@ -84,7 +84,7 @@ public final class RunsTestWiring {
         when(providers.provider(anyString())).thenAnswer(i -> Mono.justOrEmpty(
                 SampleContent.providers().stream().filter(p -> p.name().equals(i.getArgument(0))).findFirst()));
         when(resources.types()).thenAnswer(i -> Flux.fromIterable(SampleContent.types()));
-        when(resources.get(anyString())).thenAnswer(i -> Mono.just(resource("vm", i.getArgument(0), "ready")));
+        when(resources.get(anyString())).thenAnswer(i -> registry(i.getArgument(0)));
         when(resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(resource(i.getArgument(0), i.getArgument(1), "ready")));
         when(resourceCommands.register(any())).thenAnswer(i -> {
             RegisterResource r = i.getArgument(0);
@@ -130,6 +130,16 @@ public final class RunsTestWiring {
     public static WorkflowRecord record(WorkflowDefinition d) {
         return WorkflowRecord.of(d, WorkflowStatus.PUBLISHED, "workflows/" + d.name() + ".yaml", Instant.parse("2026-10-01T00:00:00Z"), "gonzalo")
                 .published(Instant.parse("2026-10-01T00:00:00Z"), "gonzalo", null);
+    }
+
+    /** The registry the tests see: ids that start with {@code missing-} are unknown, the prefix names the type. */
+    static Mono<Resource> registry(String id) {
+        if (id.startsWith("missing-")) {
+            return Mono.empty();
+        }
+        String type = id.startsWith("db-") ? "database" : id.startsWith("img-") || id.startsWith("image-") ? "image"
+                : id.startsWith("env-") ? "environment" : id.startsWith("vol-") ? "volume" : "vm";
+        return Mono.just(resource(type, id, id.startsWith("retired-") ? "retired" : "ready"));
     }
 
     public static Resource resource(String type, String id, String status) {

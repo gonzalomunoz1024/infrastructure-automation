@@ -32,6 +32,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.adapters.http.OutboundAddresses;
 import com.iaf.platform.common.expressions.ExpressionContext;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.ports.CredentialsPort;
@@ -84,10 +85,9 @@ public class HttpProviderCall implements ProviderCallPort {
     private final Map<String, Mono<JsonNode>> specs = new ConcurrentHashMap<>();
 
     public HttpProviderCall(WebClient.Builder builder, CredentialsPort credentials, TelemetryPort telemetry, Clock clock) {
-        HttpClient http = HttpClient.create()
-                .followRedirect(true)
+        HttpClient http = OutboundAddresses.guard(HttpClient.create()
                 .responseTimeout(CALL_TIMEOUT)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000);
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000));
         this.client = builder.clone()
                 .clientConnector(new ReactorClientHttpConnector(http))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(MAX_BODY_BYTES))
@@ -130,6 +130,11 @@ public class HttpProviderCall implements ProviderCallPort {
         String url = environment == null && endpoints.size() == 1 ? endpoints.values().iterator().next() : endpoints.get(environment);
         if (url == null || url.isBlank()) {
             throw new ProviderCallException("misconfigured", "Provider " + p.name() + " has no endpoint for environment '" + environment + "'; one of " + endpoints.keySet(), false, 0);
+        }
+        try {
+            OutboundAddresses.requireAllowed(URI.create(url.trim()));
+        } catch (IllegalArgumentException e) {
+            throw new ProviderCallException("misconfigured", "Provider " + p.name() + ": " + e.getMessage(), false, 0);
         }
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
@@ -174,7 +179,7 @@ public class HttpProviderCall implements ProviderCallPort {
         if (s.content() != null && !s.content().isBlank()) {
             return Mono.fromCallable(() -> OpenApiImporter.read(s.content()));
         }
-        return Mono.defer(() -> client.get().uri(URI.create(s.url().trim())).retrieve().bodyToMono(String.class).timeout(SPEC_TIMEOUT))
+        return Mono.defer(() -> client.get().uri(OutboundAddresses.requireAllowed(URI.create(s.url().trim()))).retrieve().bodyToMono(String.class).timeout(SPEC_TIMEOUT))
                 .map(raw -> {
                     if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(WorkflowYaml.sha256(raw))) {
                         log.warn("the spec of provider {} at {} differs from the pinned sha256; operations may have drifted", p.name(), s.url());

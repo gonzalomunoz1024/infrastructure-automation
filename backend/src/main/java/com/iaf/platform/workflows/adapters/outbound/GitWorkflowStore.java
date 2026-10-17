@@ -323,7 +323,7 @@ public class GitWorkflowStore implements WorkflowStorePort {
             if (repo.isBare() || !branch.equals(repo.getBranch())) {
                 return;
             }
-            Path file = dir.resolve(path);
+            Path file = ContentFiles.inside(dir, path);
             try (Git git = new Git(repo)) {
                 if (bytes == null) {
                     Files.deleteIfExists(file);

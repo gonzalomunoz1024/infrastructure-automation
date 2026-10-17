@@ -117,7 +117,7 @@ public class InMemoryProviderStore implements ProviderStorePort {
             return null;
         }
         if (provider.path() != null && !provider.path().isBlank()) {
-            return root.resolve(provider.path()).normalize();
+            return ContentFiles.inside(root, provider.path());
         }
         ProviderDefinition def = provider.definition();
         return ContentFiles.pathFor(root, "providers", def.owner(), def.name());

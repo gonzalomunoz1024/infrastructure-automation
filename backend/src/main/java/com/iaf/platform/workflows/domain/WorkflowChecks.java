@@ -138,6 +138,8 @@ public final class WorkflowChecks {
             }
             if (m.owner() == null || m.owner().isBlank()) {
                 error("metadata.owner", null, "metadata.owner", "owner is the team that may edit and publish this workflow");
+            } else if (!NAME.matcher(m.owner()).matches()) {
+                error("metadata.owner", null, "metadata.owner", "owner is a team name and a folder: lowercase letters, digits and dashes, like team-compute");
             }
             if (m.version() != null && !SEMVER.matcher(m.version()).matches()) {
                 error("version.semver", null, "metadata.version", "version must be semantic, like 1.2.0");

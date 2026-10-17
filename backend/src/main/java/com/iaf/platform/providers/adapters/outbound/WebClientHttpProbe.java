@@ -10,11 +10,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import com.iaf.platform.common.adapters.http.OutboundAddresses;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
@@ -27,7 +29,8 @@ import reactor.netty.http.client.HttpClient;
 /**
  * The wizard's network adapter. Fetches an OpenAPI document (redirects followed, 10 s) and probes
  * an endpoint (HEAD, then GET when HEAD is refused, 5 s each) with the provider's auth resolved
- * through the {@link CredentialsPort}. In the demo profile there is no network: hosts under
+ * through the {@link CredentialsPort}. Link-local and cloud metadata addresses are refused
+ * (see {@link OutboundAddresses}). In the demo profile there is no network: hosts under
  * {@code example.com} are simulated as reachable with a small latency; anything else is tried for real.
  */
 @Slf4j
@@ -49,10 +52,9 @@ public class WebClientHttpProbe implements HttpProbePort {
     }
 
     WebClientHttpProbe(WebClient.Builder builder, CredentialsPort credentials, boolean simulateExampleHosts) {
-        HttpClient http = HttpClient.create()
-                .followRedirect(true)
+        HttpClient http = OutboundAddresses.guard(HttpClient.create()
                 .responseTimeout(FETCH_TIMEOUT)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) PROBE_TIMEOUT.toMillis());
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) PROBE_TIMEOUT.toMillis()));
         this.client = builder.clone()
                 .clientConnector(new ReactorClientHttpConnector(http))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(MAX_DOCUMENT_BYTES))
@@ -65,7 +67,10 @@ public class WebClientHttpProbe implements HttpProbePort {
     public Mono<String> fetch(String url) {
         return Mono.defer(() -> {
             URI uri = uri(url);
-            return client.get().uri(uri).retrieve().bodyToMono(String.class)
+            return client.get().uri(uri).retrieve()
+                    .onStatus(HttpStatusCode::is3xxRedirection, r -> Mono.error(new IllegalArgumentException(
+                            "HTTP " + r.statusCode().value() + " from " + url + ": the redirect points at a host the platform does not call")))
+                    .bodyToMono(String.class)
                     .timeout(FETCH_TIMEOUT)
                     .onErrorMap(WebClientResponseException.class, e -> new IllegalArgumentException("HTTP " + e.getStatusCode().value() + " from " + url))
                     .onErrorMap(TimeoutException.class, e -> new IllegalArgumentException("No answer from " + url + " within " + FETCH_TIMEOUT.toSeconds() + " s"));
@@ -162,7 +167,7 @@ public class WebClientHttpProbe implements HttpProbePort {
         if (!scheme.equals("http") && !scheme.equals("https") || uri.getHost() == null) {
             throw new IllegalArgumentException("Not an http(s) URL: " + url);
         }
-        return uri;
+        return OutboundAddresses.requireAllowed(uri);
     }
 
     private static long elapsed(long startedNanos) {

@@ -84,4 +84,34 @@ class PublishChecksTest {
         assertThat(PublishChecks.checks(List.of(Problem.error("y", null, null, "bad"))).status()).isEqualTo("failed");
         assertThat(PublishChecks.failed(List.of(lint, PublishChecks.replay(ReplayResult.none(), null)))).isEmpty();
     }
+    @Test
+    void aPathThatEndsInAParameterBatchesOnTheCollection() {
+        assertThat(WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml")).batchPath()).isEqualTo("/api/v1/vms:restart:batch");
+        assertThat(WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/delete-vm.yaml")).batchPath()).isEqualTo("/api/v1/vms:delete:batch");
+        assertThat(WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/create-vm.yaml")).batchPath()).isEqualTo("/api/v1/vms:batch");
+        WorkflowDefinition nested = WorkflowYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: node-drain, noun: node, verb: drain, owner: team-compute, version: 1.0.0 }
+                api: { path: "/api/v1/clusters/{clusterId}/nodes/{nodeId}:drain" }
+                workflow:
+                  do:
+                    - noop:
+                        set: { x: 1 }
+                """);
+        // the parent parameter stays in the path and applies to every row
+        assertThat(nested.batchPath()).isEqualTo("/api/v1/clusters/{clusterId}/nodes:drain:batch");
+    }
+
+    @Test
+    void routesFailWhenAnotherPublishedWorkflowAnswersTheSamePath() {
+        WorkflowDefinition restart = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
+        WorkflowDefinition createVm = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/create-vm.yaml"));
+        assertThat(PublishChecks.routes(restart, List.of(restart, createVm)).status()).isEqualTo("passed");
+        WorkflowDefinition copy = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml")
+                .replace("name: vm-restart", "name: vm-reboot").replace("{vmId}", "{id}"));
+        Check clash = PublishChecks.routes(copy, List.of(restart, createVm));
+        assertThat(clash.status()).isEqualTo("failed");
+        assertThat(clash.detail()).contains("served by vm-restart").contains(":restart:batch");
+    }
 }

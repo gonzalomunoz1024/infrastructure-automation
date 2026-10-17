@@ -120,14 +120,15 @@ public final class OpenApiDocument {
         ObjectNode batch = operation(operationId + "_batch", d.title() + " (batch)",
                 "Run " + d.title() + " for many rows in waves. Every row is validated before anything starts.", tag);
         extensions(batch, w, d);
+        RouteTemplate batchRoute = RouteTemplate.compile("POST", d.batchPath());
         ArrayNode batchParams = batch.putArray("parameters");
-        pathParameters(batchParams, route, input);
-        batch.set("requestBody", requestBody(McpTools.batchSchema(d.inputSchema(), d.batchPolicy()), true));
+        pathParameters(batchParams, batchRoute, input);
+        batch.set("requestBody", requestBody(McpTools.batchSchema(bodySchema(input, batchRoute.params()), d.batchPolicy()), true));
         ObjectNode batchResponses = batch.putObject("responses");
         batchResponses.set("202", response("Batch accepted", ref("BatchAccepted")));
         batchResponses.set("400", response("Invalid rows", ref("BatchProblemResponse")));
         batchResponses.set("403", response("Not allowed: RBAC or policy", ref("ErrorResponse")));
-        pathItem(paths, route.template() + RouteTable.BATCH).set("post", batch);
+        pathItem(paths, batchRoute.template()).set("post", batch);
 
         if (d.previewEnabled()) {
             ObjectNode preview = operation(operationId + "_preview", d.title() + " (preview)",

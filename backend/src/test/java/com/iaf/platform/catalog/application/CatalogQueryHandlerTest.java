@@ -41,7 +41,7 @@ class CatalogQueryHandlerTest {
         assertThat(restart.persona()).isEqualTo("ops");
         assertThat(restart.method()).isEqualTo("POST");
         assertThat(restart.path()).isEqualTo("/api/v1/vms/{vmId}:restart");
-        assertThat(restart.batchPath()).isEqualTo("/api/v1/vms/{vmId}:restart:batch");
+        assertThat(restart.batchPath()).isEqualTo("/api/v1/vms:restart:batch");
         assertThat(restart.previewPath()).isEqualTo("/api/v1/vms/{vmId}:restart:preview");
         assertThat(restart.input().path("required").get(0).asText()).isEqualTo("vmId");
         assertThat(restart.mcpTool()).isEqualTo("vm_restart");

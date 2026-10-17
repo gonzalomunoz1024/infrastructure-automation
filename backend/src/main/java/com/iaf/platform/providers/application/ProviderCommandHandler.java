@@ -211,6 +211,8 @@ public class ProviderCommandHandler implements ProviderCommands {
                 throw new ConflictException("The provider has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published", checks.problems());
             }
             ProviderDefinition def = ProviderYaml.parse(command.yaml());
+            ContentFiles.requireSlug("The provider name", def.name());
+            ContentFiles.requireSlug("The owner team", def.owner());
             AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
             String version = def.metadata().version();
             Optional<StoredProvider> current = store.get(def.name());

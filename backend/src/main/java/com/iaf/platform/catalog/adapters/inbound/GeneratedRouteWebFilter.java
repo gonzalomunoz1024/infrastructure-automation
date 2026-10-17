@@ -43,6 +43,7 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 import lombok.RequiredArgsConstructor;
@@ -196,6 +197,16 @@ public class GeneratedRouteWebFilter implements WebFilter {
         if (e instanceof BatchProblemsException bp) {
             Map<String, Object> b = body(e.getMessage());
             b.put("rows", bp.rows());
+            return write(exchange, HttpStatus.BAD_REQUEST, b);
+        }
+        if (e instanceof InvalidInputException ii) {
+            Map<String, Object> b = body(e.getMessage());
+            if (ii.problems() != null) {
+                b.put("problems", ii.problems());
+            }
+            if (ii.rows() != null) {
+                b.put("rows", ii.rows());
+            }
             return write(exchange, HttpStatus.BAD_REQUEST, b);
         }
         if (e instanceof IllegalArgumentException) {

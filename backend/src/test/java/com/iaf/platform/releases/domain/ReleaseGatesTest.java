@@ -220,6 +220,18 @@ class ReleaseGatesTest {
     }
 
     @Test
+    void aRejectedOrExpiredApprovalIsAPersonsDecisionNotAFaultOfTheVersion() {
+        List<JobOutcome> candidate = all(many(25, () -> ok("1.2.0", 1000)), List.of(failed("1.2.0", "rejected"), failed("1.2.0", "expired")));
+
+        Evaluation e = ReleaseGates.evaluate(candidate, many(30, () -> ok("1.1.0", 1000)), STAGE_START, THREE_HOURS_LATER);
+
+        assertThat(e.jobs().candidate()).isEqualTo(25);
+        assertThat(gate(e, "error-types").passed()).isTrue();
+        assertThat(gate(e, "success-rate").value()).isEqualTo(100.0);
+        assertThat(e.verdict()).isEqualTo(Verdict.ADVANCE);
+    }
+
+    @Test
     void freshGatesOfANewStageAreAllUndecided() {
         List<Gate> fresh = ReleaseGates.fresh(STAGE_START);
 

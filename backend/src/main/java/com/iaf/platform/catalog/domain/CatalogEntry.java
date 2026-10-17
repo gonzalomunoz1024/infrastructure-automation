@@ -34,7 +34,7 @@ public record CatalogEntry(
                 d.metadata().persona(),
                 d.method(),
                 path,
-                path + RouteTable.BATCH,
+                d.batchPath(),
                 d.previewEnabled() ? path + RouteTable.PREVIEW : null,
                 d.inputSchema(),
                 d.mcpExposed() ? d.mcpTool() : null,

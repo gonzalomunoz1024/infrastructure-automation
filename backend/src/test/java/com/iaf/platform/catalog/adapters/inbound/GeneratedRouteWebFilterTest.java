@@ -189,7 +189,7 @@ class GeneratedRouteWebFilterTest {
 
     @Test
     void aValidBatchStartsOnceAndAnswersTheRowCount() {
-        client(SampleCatalog.OPS).post().uri("/api/v1/vms/{vmId}:patch:batch", "fleet")
+        client(SampleCatalog.OPS).post().uri("/api/v1/vms:patch:batch")
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"items\":[{\"vmId\":\"vm-1\"},{\"vmId\":\"vm-2\"},{\"vmId\":\"vm-3\"}],\"defaults\":{\"cve\":\"CVE-2026-1234\"}}")
                 .exchange()
@@ -201,8 +201,8 @@ class GeneratedRouteWebFilterTest {
         ArgumentCaptor<StartBatch> captor = ArgumentCaptor.forClass(StartBatch.class);
         verify(runs).startBatch(captor.capture());
         assertThat(captor.getValue().items()).hasSize(3);
-        // the path parameter is applied on top of every row
-        assertThat(captor.getValue().items()).allMatch(i -> i.path("vmId").asText().equals("fleet"));
+        // the batch lives on the collection, so every row keeps its own vmId
+        assertThat(captor.getValue().items()).extracting(i -> i.path("vmId").asText()).containsExactly("vm-1", "vm-2", "vm-3");
         assertThat(captor.getValue().items()).allMatch(i -> i.path("cve").asText().equals("CVE-2026-1234"));
         verify(policy).evaluate(any());
         verify(runs).preview(any(), any(), any());

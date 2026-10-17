@@ -11,7 +11,9 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 
 /**
  * Every generated route at one moment: for each published workflow its invoke route, its
- * {@code :batch} route and (with {@code api.preview}) its {@code :preview} route; for each resource
+ * {@code :batch} route (on the collection when the path ends in a parameter, see
+ * {@link com.iaf.platform.workflows.domain.WorkflowDefinition#batchPath()}) and (with
+ * {@code api.preview}) its {@code :preview} route; for each resource
  * type the {@code GET /api/v1/<plural>} and {@code GET /api/v1/<plural>/{id}} reads. Built from the
  * live catalog on every request, so a publish changes the routes without a restart. Paths whose
  * first segment is a platform noun are left out: platform routes always win.
@@ -40,7 +42,6 @@ public record RouteTable(List<Route> routes) {
     public record RouteMatch(Route route, Map<String, String> params) {
     }
 
-    public static final String BATCH = ":batch";
     public static final String PREVIEW = ":preview";
 
     public static RouteTable of(List<WorkflowRecord> published, List<ResourceTypeDefinition> types) {
@@ -63,7 +64,7 @@ public record RouteTable(List<Route> routes) {
                 continue;
             }
             routes.add(new Route(Kind.INVOKE, invoke, w, null));
-            routes.add(new Route(Kind.BATCH, invoke.withSuffix("POST", BATCH), w, null));
+            routes.add(new Route(Kind.BATCH, RouteTemplate.compile("POST", d.batchPath()), w, null));
             if (d.previewEnabled()) {
                 routes.add(new Route(Kind.PREVIEW, invoke.withSuffix("POST", PREVIEW), w, null));
             }

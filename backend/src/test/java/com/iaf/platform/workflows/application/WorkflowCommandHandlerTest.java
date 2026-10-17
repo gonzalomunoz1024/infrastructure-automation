@@ -232,8 +232,8 @@ class WorkflowCommandHandlerTest {
         assertThat(cr.author()).isEqualTo("platform");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
-        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "diff", "yaml");
-        assertThat(cr.checks()).extracting(Check::status).containsExactly("passed", "passed", "passed", "passed", "passed", "passed", "passed");
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "diff", "routes", "yaml");
+        assertThat(cr.checks()).extracting(Check::status).containsOnly("passed");
         assertThat(cr.checksPassed()).isTrue();
         assertThat(cr.diff()).contains("--- a/workflows/team-compute/vm-restart.yaml").contains("+  description: Restart a virtual machine after safety checks (edited).");
         assertThat(cr.yaml()).contains("(edited)");
@@ -406,11 +406,17 @@ class WorkflowCommandHandlerTest {
         handler.mergeChangeRequest(crId).block();
         assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.1");
 
+        // the release slice's convention: from is the version being replaced, to is the candidate
         events.publish("release.rolled-back", "release", "rel_1", "platform",
-                F.objectNode().put("workflow", "vm-restart").put("from", "1.2.1").put("to", "1.2.0"));
+                F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));
 
         assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
         assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.RETIRED);
+        // a second rollback of the same release finds the candidate already retired and changes nothing
+        events.publish("release.rolled-back", "release", "rel_1", "platform",
+                F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));
+        assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
+        assertThat(store.all().stream().filter(r -> r.name().equals("vm-restart") && r.isPublished()).count()).isEqualTo(1);
         events.publish("release.promoted", "release", "rel_1", "platform", F.objectNode().put("workflow", "vm-restart"));
         events.publish("release.rolled-back", "release", "rel_2", "platform", F.objectNode().put("workflow", "nope"));
         assertThat(store.published("vm-restart").orElseThrow().version()).as("nothing else changed").isEqualTo("1.2.0");

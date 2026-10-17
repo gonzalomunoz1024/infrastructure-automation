@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -105,6 +107,25 @@ public record WorkflowDefinition(
             default -> "/api/v1/" + plural + ":" + Ids.slug(verb());
         };
     }
+
+    /**
+     * The batch route. A path that ends in a parameter, like {@code /api/v1/vms/{vmId}:restart},
+     * names one resource, so its batch sits on the collection ({@code /api/v1/vms:restart:batch})
+     * and every row brings its own {@code vmId}; any other path just adds {@code :batch}. Parameters
+     * earlier in the path still apply to every row.
+     */
+    public String batchPath() {
+        String path = path();
+        Matcher m = TRAILING_PARAM.matcher(path);
+        if (!m.matches()) {
+            return path + ":batch";
+        }
+        String action = m.group(2) != null ? m.group(2) : ":" + (VERB.matcher(verb()).matches() ? verb() : method().toLowerCase());
+        return m.group(1) + action + ":batch";
+    }
+
+    private static final Pattern TRAILING_PARAM = Pattern.compile("^(.*)/\\{[^/{}]+}(:[^/{}:]+)?$");
+    private static final Pattern VERB = Pattern.compile("^[a-z][a-z0-9-]*$");
 
     public JsonNode inputSchema() {
         return api == null ? null : api.input();

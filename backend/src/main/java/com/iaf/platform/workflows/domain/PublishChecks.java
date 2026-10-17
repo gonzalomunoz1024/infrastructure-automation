@@ -1,7 +1,9 @@
 package com.iaf.platform.workflows.domain;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -127,6 +129,39 @@ public final class PublishChecks {
             return new Check("diff", "Diff", PASSED, "no change against " + previousVersion);
         }
         return new Check("diff", "Diff", PASSED, stats + " against " + previousVersion);
+    }
+
+    /**
+     * Fails when another published workflow already answers one of this workflow's routes: the
+     * invoke route, the batch route or the preview route. Parameter names do not matter, so
+     * {@code /vms/{id}} and {@code /vms/{vmId}} are the same route.
+     */
+    public static Check routes(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        Map<String, String> taken = new LinkedHashMap<>();
+        for (WorkflowDefinition other : published) {
+            if (other != null && !other.name().equals(def.name())) {
+                routeKeys(other).forEach(k -> taken.putIfAbsent(k, other.name()));
+            }
+        }
+        List<String> clashes = routeKeys(def).stream().filter(taken::containsKey).map(k -> k + " is served by " + taken.get(k)).toList();
+        if (clashes.isEmpty()) {
+            return new Check("routes", "Routes", PASSED, def.method() + " " + def.path() + ", POST " + def.batchPath());
+        }
+        return new Check("routes", "Routes", FAILED, String.join("; ", clashes));
+    }
+
+    static List<String> routeKeys(WorkflowDefinition d) {
+        List<String> keys = new ArrayList<>();
+        keys.add(d.method() + " " + shape(d.path()));
+        keys.add("POST " + shape(d.batchPath()));
+        if (d.previewEnabled()) {
+            keys.add("POST " + shape(d.path() + ":preview"));
+        }
+        return keys;
+    }
+
+    private static String shape(String path) {
+        return path.replaceAll("\\{[^/{}]+}", "{}");
     }
 
     /** The canonical YAML round-trips to the same content hash. */

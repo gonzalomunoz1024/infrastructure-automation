@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
@@ -107,7 +108,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<CommandAccepted> createDraft(WorkflowSource source) {
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             WorkflowDefinition parsed = source.parse();
-            String name = parsed.name();
+            String name = requireNames(parsed);
             if (!store.versions(name).isEmpty()) {
                 throw new ConflictException("workflow " + name + " already exists; save its draft with PUT /api/v1/workflows/" + name + "/draft");
             }
@@ -123,10 +124,12 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     @Override
     public Mono<DraftSaved> saveDraft(String name, WorkflowSource source) {
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
+            ContentFiles.requireSlug("The workflow name", name);
             WorkflowDefinition parsed = source.parse();
             if (!name.equals(parsed.name())) {
                 throw new IllegalArgumentException("metadata.name is '" + parsed.name() + "' but the draft is saved as /workflows/" + name);
             }
+            requireNames(parsed);
             List<WorkflowRecord> existing = store.versions(name);
             String owner = existing.isEmpty() ? parsed.metadata().owner() : ownerOf(existing);
             AccessRules.requireEdit(who, owner, "workflow " + name);
@@ -267,6 +270,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 policyCheck,
                 replayCheck,
                 PublishChecks.diff(diff, previousVersion),
+                PublishChecks.routes(def, publishedDefinitions()),
                 PublishChecks.yaml(draft));
         Instant now = clock.instant();
         String title = (previousVersion == null ? "Publish " : "Update ") + def.title() + " " + draft.version();
@@ -295,6 +299,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 WorkflowRecord rec = store.get(cr.name(), cr.version())
                         .orElseThrow(() -> new NotFoundException("workflow version", cr.name() + "@" + cr.version()));
                 AccessRules.requireEdit(who, rec.definition().metadata().owner(), "workflow " + cr.name());
+                Check routes = PublishChecks.routes(rec.definition(), publishedDefinitions());
+                if (PublishChecks.FAILED.equals(routes.status())) {
+                    throw new ConflictException("another workflow was published on the same route: " + routes.detail());
+                }
                 Optional<WorkflowRecord> previous = store.published(cr.name()).filter(p -> !p.version().equals(cr.version()));
                 previous.ifPresent(p -> store.save(p.withStatus(WorkflowStatus.RETIRED)));
                 store.save(rec.published(now, who.id(), null));
@@ -312,6 +320,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             }
             return CommandAccepted.of(id, "merged", links);
         }));
+    }
+
+    private List<WorkflowDefinition> publishedDefinitions() {
+        return store.all().stream().filter(r -> r.status() == WorkflowStatus.PUBLISHED).map(WorkflowRecord::definition).toList();
     }
 
     @Override
@@ -413,22 +425,32 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         }
     }
 
+    /**
+     * A rolled-back release: its candidate ({@code to}) is retired and the version it was replacing
+     * ({@code from}) is published again. Nothing changes when the candidate is no longer the
+     * published version, for example when a newer version superseded it.
+     */
     private void rollBack(JsonNode data) {
         String name = data == null ? null : data.path("workflow").asText(null);
         String from = data == null ? null : data.path("from").asText(null);
         String to = data == null ? null : data.path("to").asText(null);
-        if (name == null || from == null || to == null) {
-            log.warn("release.rolled-back without workflow/from/to: {}", data);
+        if (name == null || to == null) {
+            log.warn("release.rolled-back without workflow/to: {}", data);
             return;
         }
-        store.get(name, from).filter(WorkflowRecord::isPublished).ifPresent(r -> store.save(r.withStatus(WorkflowStatus.RETIRED)));
-        Optional<WorkflowRecord> target = store.get(name, to);
-        if (target.isEmpty()) {
-            log.warn("release.rolled-back: {} has no version {}", name, to);
+        Optional<WorkflowRecord> candidate = store.get(name, to).filter(WorkflowRecord::isPublished);
+        if (candidate.isEmpty()) {
+            log.info("release.rolled-back: {} {} is no longer the published version; nothing to restore", name, to);
             return;
         }
-        store.save(target.get().withStatus(WorkflowStatus.PUBLISHED));
-        log.info("rolled back {} from {} to {}", name, from, to);
+        Optional<WorkflowRecord> previous = from == null ? Optional.empty() : store.get(name, from);
+        if (previous.isEmpty()) {
+            log.warn("release.rolled-back: {} has no version {} to return to", name, from);
+            return;
+        }
+        store.save(previous.get().withStatus(WorkflowStatus.PUBLISHED));
+        store.save(candidate.get().withStatus(WorkflowStatus.RETIRED));
+        log.info("rolled back {} from {} to {}", name, to, from);
     }
 
     // ------------------------------------------------------------------ helpers
@@ -463,6 +485,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     }
 
     /** {@code workflows/<owner>/<name>.yaml}, the file of a new workflow in the content repo. */
+    /** The name and owner become the file's path in the content repo, so both must be slugs (400 otherwise). */
+    static String requireNames(WorkflowDefinition def) {
+        String owner = def.metadata() == null ? null : def.metadata().owner();
+        if (owner != null && !owner.isBlank()) {
+            ContentFiles.requireSlug("The owner team", owner);
+        }
+        return ContentFiles.requireSlug("The workflow name", def.name());
+    }
+
     static String pathFor(WorkflowDefinition def) {
         String owner = def.metadata().owner();
         return "workflows/" + (owner == null || owner.isBlank() ? "shared" : owner) + "/" + def.name() + ".yaml";

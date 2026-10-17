@@ -23,8 +23,9 @@ import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
  * <li>{@code sample}: at least {@value #MIN_JOBS} candidate jobs and two hours in the stage; until then it is undecided.</li>
  * </ul>
  * Verdict: ADVANCE when every gate passed, ROLLBACK as soon as one gate is false, WAIT otherwise.
- * Cancelled jobs say nothing about a version and are left out. Without a baseline the comparison
- * gates stay undecided, except error-types, which judges the candidate alone.
+ * Cancelled jobs, and jobs that ended on a person's decision (an approval rejected or left to
+ * expire), say nothing about a version and are left out. Without a baseline the comparison gates
+ * stay undecided, except error-types, which judges the candidate alone.
  */
 public final class ReleaseGates {
 
@@ -137,7 +138,7 @@ public final class ReleaseGates {
 
         static Stats of(List<JobOutcome> outcomes) {
             List<JobOutcome> relevant = outcomes == null ? List.of()
-                    : outcomes.stream().filter(o -> o != null && counts(o.status())).toList();
+                    : outcomes.stream().filter(o -> o != null && counts(o.status()) && !humanDecision(o.errorClass())).toList();
             List<Long> durations = relevant.stream().filter(o -> "succeeded".equals(o.status())).map(Stats::duration)
                     .filter(d -> d >= 0).sorted().toList();
             Set<String> classes = new TreeSet<>();
@@ -149,6 +150,13 @@ public final class ReleaseGates {
             Double p95 = durations.isEmpty() ? null
                     : (double) durations.get(Math.max(0, (int) Math.ceil(0.95 * durations.size()) - 1));
             return new Stats(relevant.size(), succeeded, rate, p95, classes);
+        }
+
+        /** Error classes that record a person's decision rather than a fault of the version. */
+        static final Set<String> HUMAN_DECISIONS = Set.of("rejected", "expired");
+
+        static boolean humanDecision(String errorClass) {
+            return errorClass != null && HUMAN_DECISIONS.contains(errorClass);
         }
 
         /** Cancelled jobs are nobody's fault; only jobs that ran to an outcome count. */

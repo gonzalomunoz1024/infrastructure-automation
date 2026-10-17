@@ -7,8 +7,10 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 `service-accounts`, `me`, `mcp`, `openapi.json` are reserved for the platform.
 
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
-`{ error: string }` with 400 (bad input), 403 (RBAC), 404 (unknown id), 409 (state conflict),
-500. Commands return 202 with `CommandAccepted` unless noted.
+`{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
+404 (unknown id), 409 (state conflict), 500. Input that fails a workflow's schema or names a
+resource the registry does not know adds `problems: Problem[]` (one job) or
+`rows: { index; problems }[]` (a batch). Commands return 202 with `CommandAccepted` unless noted.
 
 ```ts
 type CommandAccepted = { id: string; status: string; links?: Record<string, string> }
@@ -25,7 +27,9 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | POST   | `/service-accounts`       | body `{ name, roles, teams? }` → 201 `{ id, token }` (token shown once; admin only) |
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
-`team-platform`). Service accounts: `Authorization: Bearer <token>`. OIDC profile: a JWT.
+`team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
+Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A bearer token that
+does not verify is always 401; it never falls back to the dev identity.
 
 ## Workflows
 
@@ -61,7 +65,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | DELETE | `/workflows/{name}`                          | drafts only → 204 |
 | POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
-| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id) |
+| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). Checks: schema, checks, ansible-lint, policy, replay, diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
@@ -95,8 +99,8 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
-| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure; 403 on RBAC |
-| POST   | `{path}:batch`                      | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }` |
+| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure or an `x-resource` id the registry does not know; 403 on RBAC |
+| POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200) |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
@@ -147,8 +151,8 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/approvals?status=pending`            | `Approval[]` |
 | GET    | `/approvals/{id}`                      | `Approval` |
 | POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
-| POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
-| POST   | `/triggers/events`                     | `{ topic; payload }` → same |
+| POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
+| POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
 ## Providers
 
@@ -169,7 +173,7 @@ type TryResult = { ok: boolean; status; durationMs; response; mismatches: { fiel
 | GET    | `/providers/{name}`                       | `ProviderDetail` |
 | GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? }` → `SpecImport` (200) |
-| POST   | `/providers:test-connection`              | `{ endpoints; auth }` → `{ results: { environment; ok; durationMs; message }[] }` (200) |
+| POST   | `/providers:test-connection`              | `{ endpoints; auth }` → `{ results: { environment; ok; durationMs; message }[] }` (200). Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
 | POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200) |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[] }` (200) |
 | POST   | `/providers:publish`                      | `{ yaml; strategy? }` → `CommandAccepted` (change request id) |
@@ -224,7 +228,7 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 ## Credentials
 
 | GET `/credentials` | `{ name; type; path; updatedAt }[]` (never values) |
-| POST `/credentials` | `{ name; type; value }` → `CommandAccepted` (stored through `CredentialsPort`) |
+| POST `/credentials` | `{ name; type; value }` → `CommandAccepted` (stored through `CredentialsPort`). Admins may store any credential; anyone else must be in a team, and a credential that a provider or a published workflow already uses can only be changed by a team that owns one of them (403 otherwise) |
 
 ## Assistant (natural-language builder)
 

@@ -13,13 +13,15 @@ import org.springframework.web.server.ServerWebInputException;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.runs.domain.InvalidInputException;
 
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
 /**
- * Central error mapping: IllegalArgumentException -> 400, NotFound -> 404, Forbidden -> 403,
- * Conflict -> 409 (with its detail), ResponseStatusException -> its status, everything else -> 500.
+ * Central error mapping: IllegalArgumentException -> 400 (with problems or rows when the input
+ * failed its schema), NotFound -> 404, Forbidden -> 403, Conflict -> 409 (with its detail),
+ * ResponseStatusException -> its status, everything else -> 500.
  */
 @Slf4j
 @RestControllerAdvice
@@ -28,6 +30,19 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public Mono<ResponseEntity<Map<String, Object>>> badRequest(IllegalArgumentException ex) {
         return Mono.just(ResponseEntity.badRequest().body(body(ex.getMessage())));
+    }
+
+    /** Input that failed the workflow's schema: {@code { error, problems }} for one job, {@code { error, rows }} for a batch. */
+    @ExceptionHandler(InvalidInputException.class)
+    public Mono<ResponseEntity<Map<String, Object>>> invalidInput(InvalidInputException ex) {
+        Map<String, Object> b = body(ex.getMessage());
+        if (ex.problems() != null) {
+            b.put("problems", ex.problems());
+        }
+        if (ex.rows() != null) {
+            b.put("rows", ex.rows());
+        }
+        return Mono.just(ResponseEntity.badRequest().body(b));
     }
 
     @ExceptionHandler(ServerWebInputException.class)

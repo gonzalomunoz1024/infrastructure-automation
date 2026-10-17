@@ -121,7 +121,7 @@ class RestControllerWorkflowAdapterTest {
                 .jsonPath("$.status").isEqualTo("open")
                 .jsonPath("$.strategy").isEqualTo("canary")
                 .jsonPath("$.author").isEqualTo("gonzalo")
-                .jsonPath("$.checks.length()").isEqualTo(7)
+                .jsonPath("$.checks.length()").isEqualTo(8)
                 .jsonPath("$.checks[?(@.status == 'failed')]").isEmpty()
                 .jsonPath("$.checks[0].id").isEqualTo("schema")
                 .jsonPath("$.diff").value(d -> assertThat((String) d).contains("+  description: Restart a virtual machine after safety checks (edited)."))

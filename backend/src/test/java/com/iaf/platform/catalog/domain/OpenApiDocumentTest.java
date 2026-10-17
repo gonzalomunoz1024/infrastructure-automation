@@ -28,12 +28,12 @@ class OpenApiDocumentTest {
         List<String> paths = new ArrayList<>();
         again.path("paths").fieldNames().forEachRemaining(paths::add);
         assertThat(paths).contains(
-                "/api/v1/vms/{vmId}:restart", "/api/v1/vms/{vmId}:restart:batch", "/api/v1/vms/{vmId}:restart:preview",
-                "/api/v1/vms", "/api/v1/vms/{vmId}", "/api/v1/vms/{vmId}:batch",
+                "/api/v1/vms/{vmId}:restart", "/api/v1/vms:restart:batch", "/api/v1/vms/{vmId}:restart:preview",
+                "/api/v1/vms", "/api/v1/vms/{vmId}", "/api/v1/vms:delete:batch",
                 "/api/v1/images:build", "/api/v1/images:build:batch",
                 "/api/v1/images", "/api/v1/images/{id}", "/api/v1/databases", "/api/v1/environments/{id}",
                 "/api/v1/jobs", "/api/v1/jobs/{id}", "/api/v1/jobs/{id}/events");
-        assertThat(paths).doesNotContain("/api/v1/images:build:preview");
+        assertThat(paths).doesNotContain("/api/v1/images:build:preview", "/api/v1/vms/{vmId}:restart:batch", "/api/v1/vms/{vmId}:batch");
     }
 
     @Test
@@ -72,9 +72,12 @@ class OpenApiDocumentTest {
 
     @Test
     void batchAndPreviewOperations() {
-        JsonNode batch = DOC.path("paths").path("/api/v1/vms/{vmId}:patch:batch").path("post");
+        JsonNode batch = DOC.path("paths").path("/api/v1/vms:patch:batch").path("post");
         assertThat(batch.path("operationId").asText()).isEqualTo("vm_patch_batch");
+        // on the collection: no path parameter, and every row names its VM
+        assertThat(batch.path("parameters")).isEmpty();
         JsonNode schema = batch.path("requestBody").path("content").path("application/json").path("schema");
+        assertThat(schema.path("properties").path("items").path("items").path("properties").has("vmId")).isTrue();
         assertThat(schema.path("required").get(0).asText()).isEqualTo("items");
         assertThat(schema.path("properties").path("items").path("maxItems").asInt()).isEqualTo(1000);
         assertThat(schema.path("properties").path("items").path("items").path("properties").has("cve")).isTrue();

@@ -207,6 +207,8 @@ class Checker {
     }
     if (m.owner === null || isBlank(m.owner)) {
       this.error('metadata.owner', null, 'metadata.owner', 'owner is the team that may edit and publish this workflow');
+    } else if (!NAME.test(m.owner)) {
+      this.error('metadata.owner', null, 'metadata.owner', 'owner is a team name and a folder: lowercase letters, digits and dashes, like team-compute');
     }
     if (m.version !== null && !SEMVER.test(m.version)) {
       this.error('version.semver', null, 'metadata.version', 'version must be semantic, like 1.2.0');

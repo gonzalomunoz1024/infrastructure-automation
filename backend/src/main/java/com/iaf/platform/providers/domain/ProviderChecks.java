@@ -159,8 +159,11 @@ public final class ProviderChecks {
             if (md.path("title").asText("").isBlank()) {
                 warning(SCHEMA, "metadata.title", null, "metadata.title", "Give the provider a title; the registry and the designer show it");
             }
-            if (md.path("owner").asText("").isBlank()) {
+            String owner = md.path("owner").asText("");
+            if (owner.isBlank()) {
                 error(SCHEMA, "metadata.owner", null, "metadata.owner", "owner is the team that may edit and publish this provider");
+            } else if (!NAME.matcher(owner).matches()) {
+                error(SCHEMA, "metadata.owner", null, "metadata.owner", "owner is a team name and a folder: lowercase letters, digits and dashes, like team-compute");
             }
             String version = md.path("version").asText(null);
             if (version == null || !SEMVER.matcher(version).matches()) {

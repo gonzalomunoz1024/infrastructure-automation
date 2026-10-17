@@ -163,6 +163,18 @@ class HttpProviderCallTest {
     }
 
     @Test
+    void refusesAnEndpointAtACloudMetadataAddress() {
+        ProviderDefinition metadata = ProviderYaml.parse(ProviderYaml.toYaml(fleet).replace(LocalHttp.url(server) + "/api/", "http://169.254.169.254/latest/"));
+        StepVerifier.create(call.call(new ProviderCall("job_1", 3, metadata, metadata.action("vm.get").orElseThrow(), "dev", json("{\"id\":\"x\"}"), false)))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ProviderCallException.class).hasMessageContaining("link-local or cloud metadata address");
+                    assertThat(((ProviderCallException) e).errorClass()).isEqualTo("misconfigured");
+                })
+                .verify();
+        assertThat(hits).isEmpty();
+    }
+
+    @Test
     void sendsTheRemainingInputAsTheJsonBody() {
         StepVerifier.create(call.call(callOf("vm.create", "{\"name\":\"web\",\"cpu\":2}", false)))
                 .assertNext(r -> {

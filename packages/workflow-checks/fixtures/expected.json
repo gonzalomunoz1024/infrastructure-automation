@@ -10,6 +10,7 @@
   "bad-expression.yaml": ["error expr.syntax"],
   "unpinned-ansible.yaml": ["warning ansible.retry", "warning ansible.unpinned"],
   "switch-targets.yaml": ["error switch.backwardJump", "error switch.unknownTarget"],
+  "bad-owner.yaml": ["error metadata.owner"],
   "bad-metadata.yaml": ["error api.reservedPath", "error metadata.owner", "error name.format", "error version.semver"],
   "rollout-stages.yaml": ["error batch.waves", "error rollout.stages"],
   "unknown-input-and-var.yaml": ["warning expr.errorOutsideCatch", "warning expr.unknownInput", "warning expr.unknownVar"],

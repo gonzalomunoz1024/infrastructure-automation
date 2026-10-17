@@ -105,7 +105,7 @@ class RestControllerCatalogAdapterTest {
                 .expectBody()
                 .jsonPath("$.length()").isEqualTo(9)
                 .jsonPath("$[?(@.workflow == 'vm-restart')].path").isEqualTo("/api/v1/vms/{vmId}:restart")
-                .jsonPath("$[?(@.workflow == 'vm-restart')].batchPath").isEqualTo("/api/v1/vms/{vmId}:restart:batch")
+                .jsonPath("$[?(@.workflow == 'vm-restart')].batchPath").isEqualTo("/api/v1/vms:restart:batch")
                 .jsonPath("$[?(@.workflow == 'vm-restart')].mcpTool").isEqualTo("vm_restart")
                 .jsonPath("$[?(@.workflow == 'vm-restart')].batch.max").isEqualTo(500);
     }
