@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -46,6 +47,7 @@ import reactor.core.publisher.Mono;
  * {@code release.*} event; the audit slice records them as decisions.
  */
 @Slf4j
+@Primary
 @Service
 @RequiredArgsConstructor
 public class ReleaseCommandHandler implements ReleaseCommands {

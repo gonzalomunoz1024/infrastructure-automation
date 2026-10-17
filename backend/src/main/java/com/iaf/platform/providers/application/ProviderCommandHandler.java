@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -59,6 +60,7 @@ import reactor.core.publisher.Mono;
  * which this handler listens to.
  */
 @Slf4j
+@Primary
 @Service
 @RequiredArgsConstructor
 public class ProviderCommandHandler implements ProviderCommands {

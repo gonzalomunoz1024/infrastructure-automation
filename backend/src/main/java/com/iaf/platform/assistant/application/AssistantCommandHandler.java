@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.springframework.core.env.Environment;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -40,6 +41,7 @@ import reactor.core.publisher.Mono;
  * wizard use. The agent behind it is whatever {@link AssistantPort} is wired.
  */
 @Slf4j
+@Primary
 @Service
 @RequiredArgsConstructor
 public class AssistantCommandHandler implements AssistantCommands {

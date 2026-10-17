@@ -10,6 +10,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -30,6 +31,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /** Reads evidence records and turns them into rows, verifications, files and packs. */
+@Primary
 @Service
 @RequiredArgsConstructor
 public class AuditQueryHandler implements AuditQueries {

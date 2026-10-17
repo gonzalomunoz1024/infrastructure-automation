@@ -5,6 +5,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.common.domain.NotFoundException;
@@ -26,6 +27,7 @@ import reactor.core.publisher.Mono;
  * (every 10th job at 10%, every other job at 50%), and the first job after a canary starts is a
  * candidate job. Jobs already running keep the version they started with.
  */
+@Primary
 @Service
 @RequiredArgsConstructor
 public class ReleaseQueryHandler implements ReleaseQueries {

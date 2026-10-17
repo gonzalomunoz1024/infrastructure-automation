@@ -2,6 +2,7 @@ package com.iaf.platform.identity.application;
 
 import java.util.List;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.common.domain.Identity;
@@ -12,6 +13,7 @@ import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
+@Primary
 @Service
 @RequiredArgsConstructor
 public class IdentityQueryHandler implements IdentityQueries {

@@ -3,6 +3,7 @@ package com.iaf.platform.identity.application;
 import java.time.Clock;
 import java.util.List;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.common.domain.ForbiddenException;
@@ -16,6 +17,7 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
+@Primary
 @Service
 @RequiredArgsConstructor
 public class IdentityCommandHandler implements IdentityCommands {

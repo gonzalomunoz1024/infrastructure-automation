@@ -1,5 +1,6 @@
 package com.iaf.platform.assistant.application;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.assistant.domain.AssistantSession;
@@ -9,6 +10,7 @@ import com.iaf.platform.assistant.ports.outbound.SessionStore;
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
+@Primary
 @Service
 @RequiredArgsConstructor
 public class AssistantQueryHandler implements AssistantQueries {

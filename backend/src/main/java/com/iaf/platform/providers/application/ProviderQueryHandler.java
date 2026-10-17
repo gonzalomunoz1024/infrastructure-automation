@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.common.domain.NotFoundException;
@@ -42,6 +43,7 @@ import reactor.core.publisher.Mono;
  * view (list, detail with two weeks of telemetry, alerts). Health is judged by
  * {@link ProviderHealthRule} over the last 24 hours of {@link TelemetryPort} samples.
  */
+@Primary
 @Service
 @RequiredArgsConstructor
 public class ProviderQueryHandler implements ProviderQueries {

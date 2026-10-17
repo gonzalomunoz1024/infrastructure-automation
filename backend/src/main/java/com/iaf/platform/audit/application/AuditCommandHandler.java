@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +25,7 @@ import reactor.core.publisher.Mono;
 
 /** Seals closed records (on a schedule and on demand) and mints share links. */
 @Slf4j
+@Primary
 @Service
 @RequiredArgsConstructor
 public class AuditCommandHandler implements AuditCommands {

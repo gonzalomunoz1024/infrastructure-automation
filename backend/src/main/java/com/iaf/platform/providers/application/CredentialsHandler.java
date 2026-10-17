@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -20,6 +21,7 @@ import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 /** Credentials by name and type: the value goes to the {@code CredentialsPort} and never comes back. */
+@Primary
 @Service
 @RequiredArgsConstructor
 public class CredentialsHandler implements CredentialsCommands, CredentialsQueries {
