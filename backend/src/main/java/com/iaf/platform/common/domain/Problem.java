@@ -46,6 +46,7 @@ public record Problem(Level level, String code, String step, String field, Strin
         return new Problem(Level.WARNING, code, step, field, message, fix);
     }
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public boolean isError() {
         return level == Level.ERROR;
     }
