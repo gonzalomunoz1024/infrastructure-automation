@@ -61,4 +61,26 @@ public interface RunsCommands {
 
     /** The blast radius of a run: plan operations, affected resources, cost, policy. */
     Mono<Preview> preview(WorkflowDefinition definition, JsonNode input, Identity who);
+
+    /** A job started by a trigger. */
+    record TriggerStarted(String workflow, String jobId) {
+    }
+
+    /** A matching workflow that could not start (the caller may not invoke it, or the trigger's input did not validate). */
+    record TriggerSkipped(String workflow, String reason) {
+    }
+
+    /** What {@code POST /triggers/alerts} and {@code /triggers/events} answer. */
+    record TriggerResult(List<TriggerStarted> started, List<TriggerSkipped> skipped) {
+    }
+
+    /**
+     * {@code POST /triggers/alerts}: start every published workflow whose alert trigger matches
+     * the payload ({@code match.source} equal, every {@code match.labels} entry equal), with the
+     * trigger's {@code input} resolved against {@code $alert}.
+     */
+    Mono<TriggerResult> triggerAlert(JsonNode alert);
+
+    /** {@code POST /triggers/events}: start every published workflow whose event trigger topic matches, with {@code $event} bound to the payload. */
+    Mono<TriggerResult> triggerEvent(String topic, JsonNode payload);
 }

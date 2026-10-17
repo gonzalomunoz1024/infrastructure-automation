@@ -1,0 +1,166 @@
+package com.iaf.platform.runs;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.BooleanSupplier;
+
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.PolicyPort;
+import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
+import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.resources.ports.inbound.ResourceCommands;
+import com.iaf.platform.resources.ports.inbound.ResourceCommands.RegisterResource;
+import com.iaf.platform.resources.ports.inbound.ResourceQueries;
+import com.iaf.platform.runs.adapters.outbound.DemoAutomationRunner;
+import com.iaf.platform.runs.adapters.outbound.InMemoryWorkflowExecution;
+import com.iaf.platform.runs.adapters.outbound.MockServiceNowChangeTickets;
+import com.iaf.platform.runs.adapters.outbound.RecordedProviderCall;
+import com.iaf.platform.runs.application.AutomationRunners;
+import com.iaf.platform.runs.application.JobEvents;
+import com.iaf.platform.runs.application.JobProjection;
+import com.iaf.platform.runs.application.RunsCommandHandler;
+import com.iaf.platform.runs.application.RunsQueryHandler;
+import com.iaf.platform.runs.application.StepExecutors;
+import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
+import com.iaf.platform.workflows.domain.WorkflowRecord;
+import com.iaf.platform.workflows.domain.WorkflowStatus;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+/**
+ * The whole runs slice wired by hand: the other slices' ports are Mockito mocks answering from
+ * the sample content, the slice's own components are real (projection, events, demo adapters,
+ * the in-memory engine). Tests pick the engine (real or a mock) for the command handler.
+ */
+public final class RunsTestWiring {
+
+    private static final JsonNodeFactory F = JsonNodeFactory.instance;
+
+    public final Clock clock = Clock.systemUTC();
+    public final EventBus bus = new EventBus(clock);
+    public final JobProjection projection = new JobProjection(bus);
+    public final JobEvents events = new JobEvents(bus);
+    public final WorkflowQueries workflows = mock(WorkflowQueries.class);
+    public final ProviderQueries providers = mock(ProviderQueries.class);
+    public final ResourceQueries resources = mock(ResourceQueries.class);
+    public final ResourceCommands resourceCommands = mock(ResourceCommands.class);
+    public final ReleaseQueries releases = mock(ReleaseQueries.class);
+    public final PolicyPort policy = mock(PolicyPort.class);
+    public final TelemetryPort telemetry = mock(TelemetryPort.class);
+    public final MockServiceNowChangeTickets changes = new MockServiceNowChangeTickets();
+    public final RecordedProviderCall calls;
+    public final DemoAutomationRunner runner;
+    public final AutomationRunners runners;
+    public final StepExecutors executors;
+    public final InMemoryWorkflowExecution execution;
+    public final RunsQueryHandler queries;
+
+    public RunsTestWiring() {
+        projection.register();
+        when(workflows.publishedAll()).thenAnswer(i -> Flux.fromIterable(SampleContent.workflows()).map(RunsTestWiring::record));
+        when(workflows.published(anyString())).thenAnswer(i -> Mono.justOrEmpty(find(i.getArgument(0))).map(RunsTestWiring::record));
+        when(workflows.version(anyString(), anyString())).thenAnswer(i -> Mono.justOrEmpty(find(i.getArgument(0)))
+                .filter(d -> d.version().equals(i.getArgument(1))).map(RunsTestWiring::record));
+        when(workflows.resolve(anyString(), anyString())).thenAnswer(i -> Mono.justOrEmpty(SampleContent.child(i.getArgument(0), i.getArgument(1)))
+                .map(RunsTestWiring::record));
+        when(providers.all()).thenAnswer(i -> Flux.fromIterable(SampleContent.providers()));
+        when(providers.provider(anyString())).thenAnswer(i -> Mono.justOrEmpty(
+                SampleContent.providers().stream().filter(p -> p.name().equals(i.getArgument(0))).findFirst()));
+        when(resources.types()).thenAnswer(i -> Flux.fromIterable(SampleContent.types()));
+        when(resources.get(anyString())).thenAnswer(i -> Mono.just(resource("vm", i.getArgument(0), "ready")));
+        when(resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(resource(i.getArgument(0), i.getArgument(1), "ready")));
+        when(resourceCommands.register(any())).thenAnswer(i -> {
+            RegisterResource r = i.getArgument(0);
+            String id = r.id() == null || r.id().isBlank() ? r.type() + "-new" : r.id();
+            return Mono.just(new Resource(id, r.type(), id, r.state() == null ? "ready" : r.state(), r.attributes(), "team-x", "team",
+                    new Resource.Origin(r.jobId(), r.workflow(), r.version()), r.builtFrom(), clock.instant(), clock.instant()));
+        });
+        when(releases.route(anyString(), anyString())).thenAnswer(i -> Mono.just(i.getArgument(1)));
+        when(policy.evaluate(any())).thenReturn(Mono.just(PolicyDecision.allow("mock")));
+        when(policy.engine()).thenReturn("mock");
+        calls = new RecordedProviderCall(telemetry, projection, clock);
+        runner = new DemoAutomationRunner(providers, telemetry, projection, clock);
+        runners = new AutomationRunners(List.of(runner));
+        executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
+        execution = new InMemoryWorkflowExecution(executors, projection, events, changes, clock);
+        queries = new RunsQueryHandler(projection);
+    }
+
+    /** The command handler over the real in-memory engine. */
+    public RunsCommandHandler commands() {
+        return commands(execution);
+    }
+
+    public RunsCommandHandler commands(WorkflowExecutionPort engine) {
+        return new RunsCommandHandler(workflows, providers, resources, releases, policy, changes, engine, projection, events, executors, clock);
+    }
+
+    /** A mocked engine that accepts everything and holds nothing. */
+    public static WorkflowExecutionPort idleEngine() {
+        WorkflowExecutionPort engine = mock(WorkflowExecutionPort.class);
+        when(engine.start(any())).thenReturn(Mono.empty());
+        when(engine.isRunning(anyString())).thenReturn(Mono.just(false));
+        when(engine.cancel(anyString(), anyString())).thenReturn(Mono.empty());
+        when(engine.signalApproval(anyString(), anyString(), any())).thenReturn(Mono.empty());
+        when(engine.signalAttention(anyString(), any())).thenReturn(Mono.empty());
+        return engine;
+    }
+
+    public static Optional<WorkflowDefinition> find(String name) {
+        return SampleContent.workflows().stream().filter(d -> d.name().equals(name)).findFirst();
+    }
+
+    public static WorkflowRecord record(WorkflowDefinition d) {
+        return WorkflowRecord.of(d, WorkflowStatus.PUBLISHED, "workflows/" + d.name() + ".yaml", Instant.parse("2026-10-01T00:00:00Z"), "gonzalo")
+                .published(Instant.parse("2026-10-01T00:00:00Z"), "gonzalo", null);
+    }
+
+    public static Resource resource(String type, String id, String status) {
+        ObjectNode attributes = F.objectNode();
+        attributes.put("name", "name-of-" + id);
+        attributes.put("environment", "dev");
+        return new Resource(id, type, "name-of-" + id, status, attributes, "team-compute", "team", null, List.of(),
+                Instant.parse("2026-10-01T00:00:00Z"), Instant.parse("2026-10-01T00:00:00Z"));
+    }
+
+    /** Wait for a condition the engine reaches on another thread. */
+    public static void await(Duration timeout, BooleanSupplier condition) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("condition not reached within " + timeout);
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted");
+            }
+        }
+    }
+
+    public static ObjectNode json(String... keyValues) {
+        ObjectNode o = F.objectNode();
+        for (int i = 0; i + 1 < keyValues.length; i += 2) {
+            o.put(keyValues[i], keyValues[i + 1]);
+        }
+        return o;
+    }
+}
