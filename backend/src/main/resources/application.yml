@@ -45,5 +45,6 @@ platform:
   audit:
     retention-years: 7
     seal-every: PT1H
+    signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
