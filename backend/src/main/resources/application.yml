@@ -39,9 +39,13 @@ platform:
     vault-url: http://localhost:8200
     vault-mount: secret
   assistant:
-    mode: mock            # mock | devin
+    mode: mock            # mock | devin (the devin profile switches the adapter)
     devin-url: https://api.devin.ai/v3
     devin-org: ""
+    devin-api-key: ""                  # Authorization: Bearer <key>
+    devin-playbook-id: ""              # the !workflow-draft playbook (devin/nl-builder-playbook.md)
+    devin-provider-playbook-id: ""     # the !provider-draft playbook (devin/provider-draft-playbook.md)
+    platform-token-secret-id: ""       # the Devin secret holding PLATFORM_TOKEN, attached to every session
   audit:
     retention-years: 7
     seal-every: PT1H

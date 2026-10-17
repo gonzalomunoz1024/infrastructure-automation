@@ -225,6 +225,6 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | POST `/assistant/sessions/{id}/messages` | `{ text }` → SSE events `{ type: 'status' \| 'draft' \| 'message' \| 'validation' \| 'done'; data }` |
 | GET `/assistant/sessions/{id}` | `{ sessionId; status; draft; history }` |
 
-The `draft` event carries the structured output in `devin/capability-draft.schema.json` shape
+The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
 `validation`, `dryRun`).

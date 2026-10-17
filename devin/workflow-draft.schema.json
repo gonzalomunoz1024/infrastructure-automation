@@ -1,9 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "CapabilityDraft",
-  "description": "What Devin returns to the platform. The designer loads capabilityYaml onto the canvas; a person reviews and saves it.",
+  "title": "WorkflowDraft",
+  "description": "What Devin returns to the platform. The designer loads workflowYaml onto the canvas; a person reviews and saves it.",
   "type": "object",
-  "required": ["status", "summary", "capabilityYaml", "validation"],
+  "required": ["status", "summary", "workflowYaml", "validation"],
   "additionalProperties": false,
   "properties": {
     "status": {
@@ -11,8 +11,8 @@
       "enum": ["working", "ready", "needs_input", "failed"],
       "description": "working while drafting, ready when validation passes, needs_input when only the user can unblock it."
     },
-    "summary": { "type": "string", "maxLength": 600, "description": "Two or three plain sentences on what the capability does." },
-    "capabilityYaml": { "type": "string", "description": "The whole Capability file (apiVersion iaf.platform/v1, kind Capability). Empty string until the first valid draft." },
+    "summary": { "type": "string", "maxLength": 600, "description": "Two or three plain sentences on what the workflow does." },
+    "workflowYaml": { "type": "string", "description": "The whole Workflow file (apiVersion iaf.platform/v1, kind Workflow). Empty string until the first valid draft." },
     "changes": {
       "type": "array",
       "description": "What changed since the previous structured output, one line each, so the canvas can show a diff.",
@@ -44,7 +44,7 @@
         "required": ["kind", "name", "why"],
         "additionalProperties": false,
         "properties": {
-          "kind": { "type": "string", "enum": ["provider_action", "capability", "resource_type", "playbook", "credential"] },
+          "kind": { "type": "string", "enum": ["provider_action", "workflow", "resource_type", "playbook", "credential"] },
           "name": { "type": "string", "maxLength": 120 },
           "why": { "type": "string", "maxLength": 200 }
         }
