@@ -1,0 +1,32 @@
+{
+  "name": "@iaf/workflow-checks",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The workflow checks: the rules the Java backend runs, as TypeScript for the editor and CI, plus the expression engine",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./cli.ts"
+  },
+  "files": [
+    "src",
+    "cli.ts"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "check": "node cli.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

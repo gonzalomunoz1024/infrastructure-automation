@@ -1,0 +1,955 @@
+/**
+ * The live checks: the same rules run in the designer as the user edits, on the validate
+ * endpoint, at publish and in CI, so a problem on the canvas is the problem CI would report.
+ * Pure: the only lookups go through the {@link CheckContext}. Every rule mirrors
+ * WorkflowChecks.java, with the same codes, levels, fixes and messages; the shared fixtures under
+ * ./fixtures prove both sides agree.
+ */
+import { parse as parseYaml } from 'yaml';
+import { isTemplate, references, syntaxError } from './expressions.ts';
+import { asText, asTextOr, elements, fieldNames, get, has, isBlank, isObject, isTextual, size, toJson } from './json.ts';
+import { allSteps, mcpExposed, parseDocument, withNode, withText, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
+import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
+import { closest } from './suggest.ts';
+import type { CheckContext, Fix, Problem, ProblemLevel, ProviderDocument } from './types.ts';
+
+const NAME = /^[a-z][a-z0-9-]*$/;
+const STEP_ID = /^[a-z][A-Za-z0-9]*$/;
+const IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+const SEMVER_RANGE = /^(\*|[~^]?\d+(\.\d+){0,2}(\.x)?|latest)$/;
+const DURATION = /^(P(?!$)(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?|\d+(ms|s|m|h|d))$/;
+const SECRET_KEY = /(password|passwd|secret|token|apikey|api_key|credential|privateKey)/i;
+const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const BACKOFFS = new Set(['none', 'fixed', 'exponential']);
+const TERRAFORM_ACTIONS = new Set(['plan', 'apply', 'destroy']);
+
+/** The roots an expression can always start from; an alias may not shadow them. */
+export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
+
+/** The first path segments under /api/v1/ that belong to the platform. */
+export const RESERVED_NOUNS: readonly string[] = [
+  'workflows',
+  'jobs',
+  'providers',
+  'catalog',
+  'releases',
+  'audit',
+  'resources',
+  'me',
+  'service-accounts',
+  'approvals',
+  'credentials',
+  'assistant',
+  'mcp',
+  'batches',
+  'evidence',
+  'resource-types',
+  'registry',
+  'triggers',
+  'openapi',
+];
+
+/** A context without a catalog: unknown providers, workflows and resource types are not reported. */
+export const EMPTY_CONTEXT: CheckContext = { providers: {}, workflows: [], resourceTypes: [], knowsCatalog: false };
+
+/** A context over parsed provider documents, published workflow names and resource type names. */
+export function buildContext(providers: Iterable<ProviderDocument>, workflowNames: Iterable<string>, resourceTypes: Iterable<string>): CheckContext {
+  const byName: Record<string, ProviderDocument> = {};
+  for (const p of providers) {
+    byName[providerName(p)] = p;
+  }
+  return { providers: byName, workflows: [...workflowNames], resourceTypes: [...resourceTypes], knowsCatalog: true };
+}
+
+/** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
+export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
+  let doc: unknown;
+  try {
+    doc = parseYaml(yaml, { uniqueKeys: false }) ?? {};
+  } catch (e) {
+    return [problem('error', 'yaml.invalid', null, null, `YAML syntax: ${firstLine(e)}`)];
+  }
+  return check(doc, ctx);
+}
+
+/** Check a document (the YAML already read into plain values). A structure error is one `yaml.invalid` problem. */
+export function check(doc: unknown, ctx: CheckContext): Problem[] {
+  let def: ParsedWorkflow;
+  try {
+    def = parseDocument(doc);
+  } catch (e) {
+    if (e instanceof WorkflowParseError) {
+      return [problem('error', 'yaml.invalid', null, null, e.message)];
+    }
+    throw e;
+  }
+  return checkParsed(def, ctx);
+}
+
+/** The rule set over an already parsed workflow. */
+export function checkParsed(def: ParsedWorkflow, ctx: CheckContext): Problem[] {
+  const c = new Checker(def, ctx);
+  c.run();
+  return c.problems;
+}
+
+export function hasErrors(problems: readonly Problem[]): boolean {
+  return problems.some((p) => p.level === 'error');
+}
+
+function firstLine(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e);
+  const nl = message.indexOf('\n');
+  return nl < 0 ? message : message.substring(0, nl);
+}
+
+function problem(level: ProblemLevel, code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): Problem {
+  return {
+    level,
+    code,
+    ...(step !== null ? { step } : {}),
+    ...(field !== null ? { field } : {}),
+    message,
+    ...(fix ? { fix } : {}),
+  };
+}
+
+export function replaceFix(label: string, value: string): Fix {
+  return { label, kind: 'replace', value };
+}
+
+export function insertApprovalFix(label: string): Fix {
+  return { label, kind: 'insert-approval' };
+}
+
+export function connectFix(label: string): Fix {
+  return { label, kind: 'connect' };
+}
+
+function isContainerStep(s: ParsedStep): boolean {
+  return s.type === 'switch' || s.type === 'fork' || s.type === 'for' || s.type === 'try';
+}
+
+/** What an expression can see at one point of the flow. */
+class Scope {
+  /** ids and names of steps that ran before */
+  stepNames = new Set<string>();
+  /** output.as, catch.as, for.each */
+  aliases = new Set<string>();
+  /** set keys */
+  vars = new Set<string>();
+  hasPredecessor = false;
+  inCatch = false;
+  /** an approval step ran before */
+  approved = false;
+
+  copy(): Scope {
+    const s = new Scope();
+    s.stepNames = new Set(this.stepNames);
+    s.aliases = new Set(this.aliases);
+    s.vars = new Set(this.vars);
+    s.hasPredecessor = this.hasPredecessor;
+    s.inCatch = this.inCatch;
+    s.approved = this.approved;
+    return s;
+  }
+
+  merge(other: Scope): void {
+    other.stepNames.forEach((n) => this.stepNames.add(n));
+    other.aliases.forEach((a) => this.aliases.add(a));
+    other.vars.forEach((v) => this.vars.add(v));
+    this.approved = this.approved || other.approved;
+  }
+}
+
+class Checker {
+  readonly def: ParsedWorkflow;
+  readonly ctx: CheckContext;
+  readonly problems: Problem[] = [];
+  readonly byId = new Map<string, ParsedStep>();
+  readonly allNames = new Set<string>();
+  readonly inputFields = new Set<string>();
+  readonly policyApproval: boolean;
+
+  constructor(def: ParsedWorkflow, ctx: CheckContext) {
+    this.def = def;
+    this.ctx = ctx;
+    this.policyApproval = def.policy !== null && def.policy.approval !== null && def.policy.approval.required;
+  }
+
+  run(): void {
+    this.metadata();
+    this.api();
+    this.policy();
+    this.rollout();
+    this.steps();
+    this.triggers();
+  }
+
+  // ------------------------------------------------------------ definition level
+
+  metadata(): void {
+    const m = this.def.metadata;
+    if (!NAME.test(m.name)) {
+      this.error('name.format', null, 'metadata.name', 'The name is the file name and the URL: lowercase letters, digits and dashes, like vm-restart');
+    }
+    if (m.title === null || isBlank(m.title)) {
+      this.warning('metadata.title', null, 'metadata.title', 'Give the workflow a title; the catalog and the MCP tool show it');
+    }
+    const needsNounVerb = mcpExposed(this.def) || this.def.api === null || this.def.api.path === null;
+    if (m.noun === null || isBlank(m.noun) || m.verb === null || isBlank(m.verb)) {
+      if (needsNounVerb) {
+        this.error('metadata.nounVerb', null, 'metadata.noun', 'noun and verb are required: they name the endpoint and the MCP tool (vm + restart -> vm_restart)');
+      } else {
+        this.warning('metadata.nounVerb', null, 'metadata.noun', 'Set noun and verb so the catalog can group this workflow');
+      }
+    }
+    if (m.owner === null || isBlank(m.owner)) {
+      this.error('metadata.owner', null, 'metadata.owner', 'owner is the team that may edit and publish this workflow');
+    }
+    if (m.version !== null && !SEMVER.test(m.version)) {
+      this.error('version.semver', null, 'metadata.version', 'version must be semantic, like 1.2.0');
+    }
+  }
+
+  api(): void {
+    const a = this.def.api;
+    if (a === null) {
+      return;
+    }
+    if (a.method !== null && !METHODS.has(a.method.toUpperCase())) {
+      this.error('api.method', null, 'api.method', 'method must be one of GET, POST, PUT, PATCH, DELETE');
+    }
+    if (a.path !== null) {
+      if (!a.path.startsWith('/api/v1/')) {
+        this.error('api.path', null, 'api.path', 'Generated paths live under /api/v1/');
+      } else {
+        const first = a.path.substring('/api/v1/'.length).split(/[/:?]/)[0] as string;
+        if (RESERVED_NOUNS.includes(first)) {
+          this.error('api.reservedPath', null, 'api.path', `/api/v1/${first} belongs to the platform; pick another noun`);
+        }
+      }
+    }
+    const input = a.input;
+    if (input !== undefined) {
+      if (!isObject(input) || (has(input, 'type') && asText(get(input, 'type')) !== 'object')) {
+        this.error('api.input', null, 'api.input', 'api.input is a JSON Schema of type object');
+      } else {
+        const properties = get(input, 'properties');
+        fieldNames(properties).forEach((f) => this.inputFields.add(f));
+        for (const r of elements(get(input, 'required'))) {
+          if (!this.inputFields.has(asText(r))) {
+            this.error('api.inputRequired', null, 'api.input.required', `Required field '${asText(r)}' is not among the properties`);
+          }
+        }
+        for (const key of fieldNames(properties)) {
+          const xr = get(get(properties, key), 'x-resource');
+          if (isObject(xr)) {
+            const type = asTextOr(get(xr, 'type'), null);
+            if (type === null) {
+              this.error('api.resourceType', null, `api.input.${key}`, 'x-resource needs a type');
+            } else if (this.ctx.knowsCatalog && !this.ctx.resourceTypes.includes(type)) {
+              this.error('resource.unknownType', null, `api.input.${key}`, `Unknown resource type '${type}'`, this.suggest(type, this.ctx.resourceTypes));
+            }
+            const create = asTextOr(get(xr, 'orCreateWith'), null);
+            if (create !== null && this.ctx.knowsCatalog && !this.ctx.workflows.includes(create) && create !== this.def.metadata.name) {
+              this.error('run.unknownWorkflow', null, `api.input.${key}`, `orCreateWith names a workflow that is not published: '${create}'`, this.suggest(create, this.ctx.workflows));
+            }
+          }
+        }
+      }
+    }
+    if (a.batch !== null) {
+      if (a.batch.max < 1) {
+        this.error('batch.max', null, 'api.batch.max', 'batch.max must be at least 1');
+      }
+      this.ascending(a.batch.rollout.waves, 'batch.waves', 'api.batch.rollout.waves', false);
+      if (a.batch.rollout.maxParallel < 1) {
+        this.error('batch.maxParallel', null, 'api.batch.rollout.maxParallel', 'maxParallel must be at least 1');
+      }
+      const stop = a.batch.rollout.stopIfFailedPercent;
+      if (stop < 0 || stop > 100) {
+        this.error('batch.stop', null, 'api.batch.rollout.stopIfFailedPercent', 'stopIfFailedPercent is a percentage');
+      }
+    }
+  }
+
+  policy(): void {
+    const p = this.def.policy;
+    if (p === null) {
+      return;
+    }
+    if (p.approval !== null && p.approval.required && (p.approval.group === null || isBlank(p.approval.group))) {
+      this.error('approval.group', null, 'policy.approval.group', 'A required approval needs a group of approvers');
+    }
+    if (p.approval !== null && p.approval.timeout !== null && !DURATION.test(p.approval.timeout)) {
+      this.error('duration.format', null, 'policy.approval.timeout', 'timeout is a duration like 4h, 30m or PT4H');
+    }
+  }
+
+  rollout(): void {
+    const r = this.def.rollout;
+    if (r === null) {
+      return;
+    }
+    if (r.strategy !== 'canary' && r.strategy !== 'all') {
+      this.error('rollout.strategy', null, 'rollout.strategy', 'strategy is canary or all');
+    }
+    if (r.strategy === 'canary') {
+      this.ascending(r.stages, 'rollout.stages', 'rollout.stages', true);
+    }
+  }
+
+  ascending(values: number[] | null, code: string, field: string, endsAt100: boolean): void {
+    if (values === null || values.length === 0) {
+      this.error(code, null, field, `${field} needs at least one value`);
+      return;
+    }
+    let prev = 0;
+    for (const v of values) {
+      if (v <= prev || (v > 100 && endsAt100)) {
+        this.error(code, null, field, `${field} must be ascending percentages${endsAt100 ? ' ending at 100' : ''}`);
+        return;
+      }
+      prev = v;
+    }
+    if (endsAt100 && prev !== 100) {
+      this.error(code, null, field, `${field} must end at 100 so the release completes`);
+    }
+  }
+
+  triggers(): void {
+    let i = 0;
+    for (const t of this.def.triggers) {
+      const field = `triggers[${i++}]`;
+      switch (t.type) {
+        case 'alert': {
+          if (!isObject(get(t.spec, 'match'))) {
+            this.error('trigger.match', null, field, 'An alert trigger needs match: { source, labels }');
+          }
+          const s = new Scope();
+          s.aliases.add('alert');
+          this.expressions(get(t.spec, 'input'), null, `${field}.input`, s);
+          break;
+        }
+        case 'event': {
+          if (asTextOr(get(t.spec, 'topic'), null) === null) {
+            this.error('trigger.topic', null, field, 'An event trigger needs a topic');
+          }
+          const s = new Scope();
+          s.aliases.add('event');
+          this.expressions(get(t.spec, 'input'), null, `${field}.input`, s);
+          break;
+        }
+        case 'schedule':
+          this.warning('trigger.schedule', null, field, 'Schedules are not supported; use an alert or the API');
+          break;
+        default:
+          this.error('trigger.type', null, field, `Unknown trigger type '${t.type}' (alert, event)`);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ steps
+
+  steps(): void {
+    const all = allSteps(this.def);
+    if (this.def.workflow.steps.length === 0) {
+      this.error('workflow.empty', null, 'workflow.do', 'The workflow has no steps');
+    }
+    const seen = new Set<string>();
+    for (const s of all) {
+      if (seen.has(s.id)) {
+        this.error('step.duplicateId', s.id, null, `Step id '${s.id}' is used twice`);
+      } else {
+        seen.add(s.id);
+        this.byId.set(s.id, s);
+      }
+      if (!STEP_ID.test(s.id)) {
+        this.warning('step.idFormat', s.id, null, 'Step ids are camelCase, like checkVmExists');
+      }
+      this.allNames.add(s.id);
+      if (s.name !== null) {
+        this.allNames.add(s.name);
+      }
+    }
+    const scope = this.walk(this.def.workflow.steps, new Scope());
+    const flow = this.def.workflow;
+    if (flow.catchFlow !== null) {
+      const c = scope.copy();
+      c.inCatch = true;
+      c.hasPredecessor = true;
+      this.walk(flow.catchFlow.steps, c);
+    }
+    if (flow.outputs !== null) {
+      for (const [key, value] of Object.entries(flow.outputs)) {
+        this.template(value, null, `workflow.outputs.${key}`, scope);
+      }
+    }
+  }
+
+  /** Walks a step list in order and returns the scope after it. */
+  walk(steps: ParsedStep[], start: Scope): Scope {
+    const scope = start.copy();
+    const siblings = steps.map((s) => s.id);
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i] as ParsedStep;
+      this.step(s, scope, siblings.slice(i + 1));
+      // after the step
+      scope.stepNames.add(s.id);
+      if (s.name !== null) {
+        scope.stepNames.add(s.name);
+      }
+      if (s.output !== null) {
+        const alias = s.output.as;
+        if (!IDENTIFIER.test(alias)) {
+          this.error('output.alias', s.id, 'output.as', 'An alias is an identifier, like vm');
+        } else if (ROOTS.includes(alias)) {
+          this.error('output.alias', s.id, 'output.as', `'${alias}' is a built-in reference; pick another alias`);
+        }
+        scope.aliases.add(alias);
+      }
+      if (s.type === 'set' && s.with !== null) {
+        fieldNames(s.with).forEach((v) => scope.vars.add(v));
+      }
+      if (s.type === 'approval') {
+        scope.approved = true;
+      }
+      if (!isContainerStep(s)) {
+        scope.hasPredecessor = true;
+      }
+    }
+    return scope;
+  }
+
+  step(s: ParsedStep, scope: Scope, later: string[]): void {
+    this.common(s);
+    switch (s.type) {
+      case 'provider':
+        this.provider(s, scope);
+        break;
+      case 'http':
+        this.http(s, scope);
+        break;
+      case 'ansible':
+        this.ansible(s);
+        break;
+      case 'terraform':
+        this.terraform(s, scope);
+        break;
+      case 'idp':
+        this.require(s, 'tile', 'step.missing', 'An IDP step names the tile to run');
+        break;
+      case 'activity':
+        this.require(s, 'taskQueue', 'step.missing', "An activity step names the team's task queue");
+        this.require(s, 'activity', 'step.missing', 'An activity step names the activity to run');
+        break;
+      case 'run':
+        this.runStep(s);
+        break;
+      case 'approval':
+        this.require(s, 'group', 'approval.group', 'An approval needs a group of approvers');
+        if (withText(s, 'message') === null) {
+          this.warning('approval.message', s.id, 'message', 'Tell the approver what they approve');
+        }
+        this.duration(withText(s, 'timeout'), s.id, 'timeout');
+        break;
+      case 'switch':
+        this.switchStep(s, scope, later);
+        break;
+      case 'fork':
+        this.fork(s, scope);
+        break;
+      case 'for':
+        this.forStep(s, scope);
+        break;
+      case 'try':
+        this.tryStep(s, scope);
+        break;
+      case 'wait': {
+        const d = withText(s, 'duration');
+        if (d === null && withText(s, 'until') === null) {
+          this.error('wait.duration', s.id, null, 'wait needs a duration like PT5M or until: <expression>');
+        } else if (d !== null && !DURATION.test(d)) {
+          this.error('duration.format', s.id, 'duration', `'${d}' is not a duration; use PT5M, 30m or 2h`);
+        }
+        break;
+      }
+      case 'set':
+        if (!isObject(s.with) || size(s.with) === 0) {
+          this.error('set.empty', s.id, null, 'set needs at least one variable');
+        }
+        break;
+      case 'raise':
+        this.require(s, 'error', 'step.missing', 'raise needs an error name');
+        break;
+      case 'use':
+        this.resourceType(s);
+        if (withText(s, 'id') === null && withNode(s, 'selector') === undefined) {
+          this.error('step.missing', s.id, 'id', 'use needs the id of the resource (or a selector)');
+        }
+        break;
+      case 'register': {
+        this.resourceType(s);
+        const attrs = withNode(s, 'attributes');
+        if (attrs !== undefined && !isObject(attrs)) {
+          this.error('step.invalidJson', s.id, 'attributes', 'attributes is an object');
+        }
+        break;
+      }
+      case 'notify':
+        this.require(s, 'channel', 'step.missing', 'notify needs a channel');
+        this.require(s, 'message', 'step.missing', 'notify needs a message');
+        break;
+      case 'script': {
+        const lang = withText(s, 'language');
+        if (lang !== null && lang !== 'javascript') {
+          this.error('script.language', s.id, 'language', 'Scripts are JavaScript');
+        }
+        this.require(s, 'code', 'step.missing', 'A script needs code');
+        break;
+      }
+    }
+    if (!isContainerStep(s)) {
+      this.expressions(s.with, s.id, null, scope);
+    }
+    if (s.assert !== null) {
+      if (!isTemplate(s.assert)) {
+        this.warning('assert.literal', s.id, 'assert', 'assert is an expression like {{ $json.ok == true }}');
+      } else {
+        const after = scope.copy();
+        after.hasPredecessor = true; // $json in assert is this step's own output
+        this.template(s.assert, s.id, 'assert', after);
+      }
+    }
+    if (s.compensate !== null) {
+      // compensation undoes this step after a later failure: it sees the step's own output
+      // and may delete what the step created without a fresh approval
+      const c = scope.copy();
+      c.hasPredecessor = true;
+      c.approved = true;
+      c.stepNames.add(s.id);
+      if (s.name !== null) {
+        c.stepNames.add(s.name);
+      }
+      if (s.output !== null) {
+        c.aliases.add(s.output.as);
+      }
+      this.walk(s.compensate, c);
+    }
+  }
+
+  common(s: ParsedStep): void {
+    this.duration(s.timeout, s.id, 'timeout');
+    if (s.retry !== null) {
+      if (s.retry.maxAttempts < 1) {
+        this.error('retry.attempts', s.id, 'retry.maxAttempts', 'maxAttempts is at least 1');
+      }
+      if (!BACKOFFS.has(s.retry.backoff)) {
+        this.error('retry.backoff', s.id, 'retry.backoff', 'backoff is none, fixed or exponential');
+      }
+    }
+    this.secrets(s.with, s.id, '');
+  }
+
+  secrets(node: unknown, step: string | null, path: string): void {
+    if (isObject(node)) {
+      for (const key of fieldNames(node)) {
+        const p = path.length === 0 ? key : `${path}.${key}`;
+        const v = node[key];
+        if (isTextual(v) && SECRET_KEY.test(key) && !v.startsWith('vault:') && !isTemplate(v) && !isBlank(v)) {
+          this.error('credential.plain', step, p, 'Secrets never go in a workflow file; reference Vault with vault:<path>', replaceFix('Use a Vault reference', `vault:${step === null ? '' : `${step}/`}${key}`));
+        } else {
+          this.secrets(v, step, p);
+        }
+      }
+    } else if (Array.isArray(node)) {
+      let i = 0;
+      for (const v of node) {
+        this.secrets(v, step, `${path}[${i++}]`);
+      }
+    }
+  }
+
+  duration(value: string | null, step: string | null, field: string): void {
+    if (value !== null && !DURATION.test(value)) {
+      this.error('duration.format', step, field, `'${value}' is not a duration; use 30m, 4h or PT30M`);
+    }
+  }
+
+  require(s: ParsedStep, field: string, code: string, message: string): void {
+    const v = withNode(s, field);
+    if (v === undefined || v === null || (isTextual(v) && isBlank(v))) {
+      this.error(code, s.id, field, message);
+    }
+  }
+
+  resourceType(s: ParsedStep): void {
+    const type = withText(s, 'type');
+    if (type === null) {
+      this.error('step.missing', s.id, 'type', 'The resource type is required');
+    } else if (this.ctx.knowsCatalog && !this.ctx.resourceTypes.includes(type)) {
+      this.error('resource.unknownType', s.id, 'type', `Unknown resource type '${type}'`, this.suggest(type, this.ctx.resourceTypes));
+    }
+  }
+
+  provider(s: ParsedStep, scope: Scope): void {
+    const provider = withText(s, 'provider');
+    const action = withText(s, 'action');
+    if (provider === null) {
+      this.error('step.missingProvider', s.id, 'provider', 'Pick the provider this step calls');
+    }
+    if (action === null) {
+      this.error('step.missingAction', s.id, 'action', 'Pick the action this step calls');
+    }
+    const input = withNode(s, 'input');
+    if (input !== undefined && input !== null && !isObject(input)) {
+      this.error('step.invalidJson', s.id, 'input', "input is a JSON object of the action's fields");
+    }
+    if (provider === null || !this.ctx.knowsCatalog) {
+      return;
+    }
+    const p = Object.hasOwn(this.ctx.providers, provider) ? this.ctx.providers[provider] : undefined;
+    if (p === undefined) {
+      this.error('step.unknownProvider', s.id, 'provider', `Unknown provider '${provider}'`, this.suggest(provider, Object.keys(this.ctx.providers)));
+      return;
+    }
+    if (action === null) {
+      return;
+    }
+    const a = findAction(p, action);
+    if (a === undefined) {
+      this.error('step.unknownAction', s.id, 'action', `Provider ${provider} has no action '${action}'`, this.suggest(action, actionIds(p)));
+      return;
+    }
+    const schema = get(a, 'input');
+    if (schema !== undefined && schema !== null && input !== undefined && isObject(input)) {
+      for (const r of elements(get(schema, 'required'))) {
+        if (!has(input, asText(r))) {
+          this.error('step.missingInput', s.id, `input.${asText(r)}`, `Action ${action} needs '${asText(r)}'`);
+        }
+      }
+      const known = fieldNames(get(schema, 'properties'));
+      if (known.length > 0) {
+        for (const f of fieldNames(input)) {
+          if (!known.includes(f)) {
+            this.warning('step.unknownInput', s.id, `input.${f}`, `Action ${action} does not take '${f}'`, this.suggest(f, known));
+          }
+        }
+      }
+    } else if (schema !== undefined && schema !== null && input === undefined && size(get(schema, 'required')) > 0) {
+      this.error('step.missingInput', s.id, 'input', `Action ${action} needs ${toJson(get(schema, 'required'))}`);
+    }
+    const destructive = isDestructive(actionEffect(a));
+    if ((destructive || actionApprovalRequired(a)) && !this.policyApproval && !scope.approved) {
+      this.error(
+        'policy.approvalRequired',
+        s.id,
+        null,
+        `Action ${action} ${destructive ? 'is destructive' : 'requires an approval'}; add an approval step before it or require one in policy`,
+        insertApprovalFix('Insert an approval before this step'),
+      );
+    }
+  }
+
+  http(s: ParsedStep, scope: Scope): void {
+    const method = withText(s, 'method');
+    if (method !== null && !METHODS.has(method.toUpperCase())) {
+      this.error('api.method', s.id, 'method', 'method must be one of GET, POST, PUT, PATCH, DELETE');
+    }
+    this.require(s, 'url', 'step.missing', 'An HTTP step needs a url');
+    const url = withText(s, 'url');
+    if (url !== null && !isTemplate(url) && !url.startsWith('http://') && !url.startsWith('https://')) {
+      this.error('http.url', s.id, 'url', 'url starts with https://');
+    }
+    if (method !== null && method.toUpperCase() === 'DELETE' && !this.policyApproval && !scope.approved) {
+      this.error('policy.approvalRequired', s.id, null, 'An HTTP DELETE is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
+    }
+  }
+
+  ansible(s: ParsedStep): void {
+    const pb = withNode(s, 'playbook');
+    if (pb === undefined || pb === null) {
+      this.error('ansible.source', s.id, 'playbook', 'Pick where the playbook comes from: git, upload or library');
+      return;
+    }
+    if (isTextual(pb)) {
+      // playbook: <provider>/<playbook id> form, a library reference
+      if (!pb.includes('/')) {
+        this.error('ansible.source', s.id, 'playbook', 'A library playbook is <provider>/<playbook>, like ops-playbooks/vm.restart');
+      }
+    } else if (isObject(pb)) {
+      const git = get(pb, 'git');
+      const upload = get(pb, 'upload');
+      const library = get(pb, 'library');
+      if (git === undefined && upload === undefined && library === undefined) {
+        this.error('ansible.source', s.id, 'playbook', 'playbook needs git, upload or library');
+      }
+      if (git !== undefined) {
+        for (const f of ['repo', 'ref', 'path']) {
+          if (asTextOr(get(git, f), null) === null) {
+            this.error('ansible.git', s.id, `playbook.git.${f}`, 'git playbooks need repo, ref and path');
+          }
+        }
+        if (asTextOr(get(pb, 'commit'), null) === null) {
+          this.warning('ansible.unpinned', s.id, 'playbook.commit', 'Pin the playbook to a commit so every run uses the same code');
+        }
+      }
+      if (upload !== undefined) {
+        if (asTextOr(get(upload, 'file'), null) === null || asTextOr(get(upload, 'sha256'), null) === null) {
+          this.error('ansible.upload', s.id, 'playbook.upload', 'Uploaded playbooks need file and sha256');
+        }
+      }
+    } else {
+      this.error('ansible.source', s.id, 'playbook', 'playbook is an object with git, upload or library');
+    }
+    if (s.retry !== null && s.retry.maxAttempts > 1) {
+      this.warning('ansible.retry', s.id, 'retry.maxAttempts', 'Playbooks are not always safe to run twice; keep maxAttempts at 1 unless the playbook is idempotent');
+    }
+    const vars = withNode(s, 'extraVars');
+    if (vars !== undefined && !isObject(vars)) {
+      this.error('step.invalidJson', s.id, 'extraVars', 'extraVars is an object');
+    }
+  }
+
+  terraform(s: ParsedStep, scope: Scope): void {
+    const module = withNode(s, 'module');
+    if (!isObject(module) || asTextOr(get(module, 'source'), null) === null) {
+      this.error('terraform.module', s.id, 'module', 'A Terraform step needs module: { source, version }');
+    } else if (asTextOr(get(module, 'version'), null) === null) {
+      this.warning('terraform.unpinned', s.id, 'module.version', 'Pin the module version so every run uses the same code');
+    }
+    const action = withText(s, 'action');
+    if (action === null || !TERRAFORM_ACTIONS.has(action)) {
+      this.error('terraform.action', s.id, 'action', 'action is plan, apply or destroy');
+    }
+    if (action === 'destroy' && !this.policyApproval && !scope.approved) {
+      this.error('policy.approvalRequired', s.id, null, 'terraform destroy is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
+    }
+  }
+
+  runStep(s: ParsedStep): void {
+    const wf = withText(s, 'workflow');
+    if (wf === null) {
+      this.error('step.missing', s.id, 'workflow', 'run needs the workflow to run');
+      return;
+    }
+    if (wf === this.def.metadata.name) {
+      this.error('run.self', s.id, 'workflow', 'A workflow cannot run itself');
+    } else if (this.ctx.knowsCatalog && !this.ctx.workflows.includes(wf)) {
+      this.error('run.unknownWorkflow', s.id, 'workflow', `'${wf}' is not a published workflow`, this.suggest(wf, this.ctx.workflows));
+    }
+    const version = withText(s, 'version');
+    if (version !== null && !SEMVER_RANGE.test(version)) {
+      this.error('run.version', s.id, 'version', 'version is a range like ^1, ~1.2 or 1.2.0');
+    }
+    const input = withNode(s, 'input');
+    if (input !== undefined && !isObject(input)) {
+      this.error('step.invalidJson', s.id, 'input', 'input is a JSON object');
+    }
+  }
+
+  switchStep(s: ParsedStep, scope: Scope, later: string[]): void {
+    if (s.cases === null || s.cases.length === 0) {
+      this.error('switch.empty', s.id, null, 'A switch needs at least one case');
+      return;
+    }
+    let defaults = 0;
+    let i = 0;
+    const after = scope.copy();
+    for (const c of s.cases) {
+      const field = `switch[${i++}]`;
+      if (c.isDefault) {
+        defaults++;
+      } else if (c.when === null || isBlank(c.when)) {
+        this.error('switch.when', s.id, `${field}.when`, 'Each case needs a when expression');
+      } else if (!isTemplate(c.when)) {
+        this.warning('switch.when', s.id, `${field}.when`, "when is an expression like {{ $input.size == 'large' }}");
+      } else {
+        this.template(c.when, s.id, `${field}.when`, scope);
+      }
+      if (c.steps !== null) {
+        after.merge(this.walk(c.steps, scope));
+      } else if (c.then === null) {
+        this.error('switch.target', s.id, field, 'Each case needs then: <step id | end> or do: [steps]');
+      } else if (c.then !== 'end' && !later.includes(c.then)) {
+        if (this.byId.has(c.then)) {
+          this.error('switch.backwardJump', s.id, `${field}.then`, `then must point to a later step at the same level, not '${c.then}'`);
+        } else {
+          this.error('switch.unknownTarget', s.id, `${field}.then`, `No step '${c.then}' after this switch`, this.suggest(c.then, later));
+        }
+      }
+    }
+    if (defaults > 1) {
+      this.error('switch.defaults', s.id, null, 'Only one default branch');
+    }
+    scope.merge(after);
+  }
+
+  fork(s: ParsedStep, scope: Scope): void {
+    if (s.branches === null || s.branches.length === 0) {
+      this.error('fork.empty', s.id, null, 'A fork needs at least one branch');
+      return;
+    }
+    const after = scope.copy();
+    let i = 0;
+    for (const branch of s.branches) {
+      if (branch.length === 0) {
+        this.error('fork.emptyBranch', s.id, `branches[${i}]`, `Branch ${i + 1} has no steps`);
+      }
+      after.merge(this.walk(branch, scope));
+      i++;
+    }
+    scope.merge(after);
+  }
+
+  forStep(s: ParsedStep, scope: Scope): void {
+    const each = withText(s, 'each');
+    const inList = withText(s, 'in');
+    if (each === null || !IDENTIFIER.test(each)) {
+      this.error('for.each', s.id, 'each', 'each names the loop variable, like item');
+    }
+    if (inList === null) {
+      this.error('for.in', s.id, 'in', 'in is the list to loop over, like {{ $json.items }}');
+    } else {
+      this.template(inList, s.id, 'in', scope);
+    }
+    if (s.children === null || s.children.length === 0) {
+      this.error('for.empty', s.id, 'do', 'The loop body has no steps');
+      return;
+    }
+    const inner = scope.copy();
+    if (each !== null) {
+      inner.aliases.add(each);
+    }
+    const after = this.walk(s.children, inner);
+    if (each !== null) {
+      after.aliases.delete(each);
+    }
+    scope.merge(after);
+  }
+
+  tryStep(s: ParsedStep, scope: Scope): void {
+    if (s.children === null || s.children.length === 0) {
+      this.error('try.empty', s.id, 'do', 'try has no steps');
+      return;
+    }
+    const after = this.walk(s.children, scope);
+    if (s.catchBlock === null) {
+      this.warning('try.noCatch', s.id, 'catch', 'try without catch does nothing; add a catch or remove the try');
+    } else {
+      const c = after.copy();
+      c.inCatch = true;
+      c.hasPredecessor = true;
+      if (s.catchBlock.as !== null) {
+        c.aliases.add(s.catchBlock.as);
+      }
+      const afterCatch = this.walk(s.catchBlock.steps, c);
+      if (s.catchBlock.as !== null) {
+        afterCatch.aliases.delete(s.catchBlock.as);
+      }
+      after.merge(afterCatch);
+    }
+    scope.merge(after);
+  }
+
+  // ------------------------------------------------------------ expressions
+
+  expressions(node: unknown, step: string | null, path: string | null, scope: Scope): void {
+    if (isTextual(node)) {
+      this.template(node, step, path, scope);
+    } else if (isObject(node)) {
+      for (const key of fieldNames(node)) {
+        this.expressions(node[key], step, path === null ? key : `${path}.${key}`, scope);
+      }
+    } else if (Array.isArray(node)) {
+      let i = 0;
+      for (const v of node) {
+        this.expressions(v, step, `${path ?? ''}[${i++}]`, scope);
+      }
+    }
+  }
+
+  template(text: string, step: string | null, field: string | null, scope: Scope): void {
+    if (!isTemplate(text)) {
+      return;
+    }
+    const err = syntaxError(text);
+    if (err !== null) {
+      this.error('expr.syntax', step, field, err);
+      return;
+    }
+    for (const r of references(text)) {
+      switch (r.kind) {
+        case 'json':
+          if (!scope.hasPredecessor) {
+            this.error('expr.noPredecessor', step, field, '$json is the previous step\'s output, and this is the first step; use $input or connect a step before it', connectFix('Connect a step before this one'));
+          }
+          break;
+        case 'step': {
+          const name = r.step ?? '';
+          if (!scope.stepNames.has(name)) {
+            if (this.allNames.has(name)) {
+              this.error('expr.stepAfter', step, field, `'${name}' runs after this step, so its output is not available yet`);
+            } else {
+              this.error('expr.unknownStep', step, field, `No step named '${name}'`, this.suggest(name, scope.stepNames));
+            }
+          }
+          break;
+        }
+        case 'alias': {
+          const name = r.step ?? '';
+          if (!scope.aliases.has(name)) {
+            const candidates = [...scope.aliases, ...ROOTS];
+            const fix = this.suggest(name, candidates);
+            this.error(
+              'expr.unknownReference',
+              step,
+              field,
+              `Unknown reference $${name}; save a step's output with output: { as: ${name} } or use $json, $input, $vars`,
+              fix === null ? null : replaceFix(fix.label, `$${fix.value ?? ''}`),
+            );
+          }
+          break;
+        }
+        case 'input': {
+          const first = r.path.length === 0 ? null : (r.path.split('.')[0] as string).replace(/\[.*/, '');
+          if (first !== null && this.inputFields.size > 0 && !this.inputFields.has(first)) {
+            this.warning('expr.unknownInput', step, field, `The input has no field '${first}'`, this.suggest(first, this.inputFields));
+          }
+          break;
+        }
+        case 'vars': {
+          const first = r.path.length === 0 ? null : (r.path.split('.')[0] as string);
+          if (first !== null && !scope.vars.has(first)) {
+            this.warning('expr.unknownVar', step, field, `No earlier set step defines $vars.${first}`, this.suggest(first, scope.vars));
+          }
+          break;
+        }
+        case 'error':
+          if (!scope.inCatch) {
+            this.warning('expr.errorOutsideCatch', step, field, '$error is only set inside catch');
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ helpers
+
+  suggest(wrong: string, candidates: Iterable<string>): Fix | null {
+    const c = closest(wrong, candidates);
+    return c === undefined ? null : replaceFix(`Did you mean ${c}?`, c);
+  }
+
+  error(code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): void {
+    this.problems.push(problem('error', code, step, field, message, fix));
+  }
+
+  warning(code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): void {
+    this.problems.push(problem('warning', code, step, field, message, fix));
+  }
+}
