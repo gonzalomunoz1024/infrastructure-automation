@@ -47,6 +47,7 @@ const NAV_BY_ROUTE: Partial<Record<RouteName, string>> = {
   home: 'workflows',
   workflows: 'workflows',
   workflow: 'workflows',
+  'workflow-new': 'workflows',
   'workflow-versions': 'workflows',
   'change-request': 'workflows',
   templates: 'templates',
@@ -77,6 +78,7 @@ export function navIdFor(name: RouteName): string | null {
 /** The list page a detail route belongs to (for the header breadcrumb). */
 export const PARENT_ROUTE: Partial<Record<RouteName, RouteName>> = {
   workflow: 'workflows',
+  'workflow-new': 'workflows',
   'workflow-versions': 'workflows',
   'change-request': 'workflows',
   'catalog-run': 'catalog',

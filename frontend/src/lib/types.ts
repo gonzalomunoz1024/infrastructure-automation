@@ -7,6 +7,8 @@
    Common
    ------------------------------------------------------------------------- */
 
+import type { ParsedStep, StepType, WorkflowDocument } from '@iaf/workflow-checks'
+
 export type CommandAccepted = { id: string; status: string; links?: Record<string, string> }
 
 export type ProblemLevel = 'error' | 'warning'
@@ -79,93 +81,18 @@ export type WorkflowVersion = {
   notes?: string
 }
 
-export type StepType =
-  | 'provider'
-  | 'http'
-  | 'ansible'
-  | 'terraform'
-  | 'idp'
-  | 'activity'
-  | 'run'
-  | 'approval'
-  | 'switch'
-  | 'fork'
-  | 'for'
-  | 'try'
-  | 'wait'
-  | 'set'
-  | 'raise'
-  | 'use'
-  | 'register'
-  | 'notify'
-  | 'script'
-
-export type StepRetry = { maxAttempts?: number; backoff?: string }
-export type SwitchCase = { case?: { when: string; then?: string; do?: Step[] }; default?: string | { do: Step[] } }
-export type Step = {
-  id: string
-  name: string
-  type: StepType
-  with?: Record<string, unknown>
-  output?: { as: string }
-  assert?: string
-  retry?: StepRetry
-  timeout?: string
-  pauseOnFailure?: boolean
-  position?: { x: number; y: number }
-  notes?: string
-  /** fork */
-  branches?: Step[][]
-  /** switch */
-  cases?: SwitchCase[]
-  /** for, try, switch do-branches */
-  children?: Step[]
-  [key: string]: unknown
-}
+/**
+ * The YAML document as JSON: exactly the `WorkflowDocument` shape of @iaf/workflow-checks
+ * (`workflow.do` is a list of `{ "<stepId>": { ... } }` objects). This is what every endpoint
+ * means by `definition`; the canvas's parsed model is `ParsedStep` from the same package.
+ */
+export type { WorkflowDocument, StepDocument, StepBody, SwitchCaseDocument, TriggerDocument, JsonValue, JsonObject } from '@iaf/workflow-checks'
+export type { ParsedStep, ParsedWorkflow, StepType } from '@iaf/workflow-checks'
+export type WorkflowDefinition = WorkflowDocument
+/** The canvas's parsed step record (ids, type, `with`, children), never sent to the API. */
+export type Step = ParsedStep
 
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
-export type WorkflowMetadata = {
-  name: string
-  title: string
-  noun: string
-  verb: string
-  persona?: string
-  owner: string
-  folder?: string
-  tags?: string[]
-  version: string
-  description?: string
-}
-export type WorkflowApi = {
-  method?: string
-  path?: string
-  input: Schema
-  response?: { status: number }
-  preview?: boolean
-  batch?: { max: number; rollout: Rollout }
-}
-export type WorkflowMcp = { expose: boolean; description?: string }
-export type WorkflowPolicy = {
-  approval?: { required: boolean; group?: string; timeout?: string }
-  rbac?: string[]
-  change?: { required: boolean }
-}
-export type WorkflowTrigger = {
-  alert?: { match: Record<string, unknown>; input?: Record<string, unknown> }
-  event?: { topic: string; input?: Record<string, unknown> }
-}
-export type WorkflowRollout = { strategy: Strategy; stages?: number[] }
-export type WorkflowDefinition = {
-  apiVersion: string
-  kind: 'Workflow'
-  metadata: WorkflowMetadata
-  api: WorkflowApi
-  mcp?: WorkflowMcp
-  policy?: WorkflowPolicy
-  triggers?: WorkflowTrigger[]
-  rollout?: WorkflowRollout
-  workflow: { do: Step[]; catch?: { do: Step[] }; outputs?: Record<string, string> }
-}
 
 export type CheckStatus = 'passed' | 'failed' | 'skipped'
 export type Check = { id: string; label: string; status: CheckStatus; detail?: string }
@@ -196,7 +123,12 @@ export type WorkflowDetail = WorkflowSummary & {
   changeRequests: ChangeRequest[]
 }
 export type WorkflowVersionDetail = { version: string; yaml: string; definition: WorkflowDefinition }
+/** Body of the draft, create, validate and dry-run calls: YAML text or the document as JSON. */
+export type WorkflowSource = { yaml: string; definition?: undefined } | { definition: WorkflowDefinition; yaml?: undefined }
 export type DraftSaved = { name: string; version: string; problems: Problem[] }
+export type RenderResult = { yaml: string }
+/** `definition` is null when the YAML does not parse; the problems say why. */
+export type ParseResult = { definition: WorkflowDefinition | null; problems: Problem[] }
 export type ValidationResult = { valid: boolean; problems: Problem[] }
 export type DryRunStep = { id: string; name: string; status: string; input?: unknown; output?: unknown; error?: string }
 export type DryRunResult = { passed: boolean; path: string[]; steps: DryRunStep[]; error?: string }
@@ -216,13 +148,14 @@ export type RegistryAction = {
   title: string
   effect: Effect
   retry: RetryPolicy
+  /** 'required' | 'none' */
   approval?: string | boolean
-  input: Schema
-  output: Schema
+  input?: Schema | null
+  output?: Schema | null
   sample?: unknown
 }
 export type ProviderType = 'openapi' | 'http' | 'ansible' | 'terraform' | 'idp' | 'sdk'
-export type RegistryProvider = { name: string; title: string; type: ProviderType; actions: RegistryAction[] }
+export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[] }
 export type RegistryWorkflow = { name: string; title: string; version: string; input: Schema; output: Schema }
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }
