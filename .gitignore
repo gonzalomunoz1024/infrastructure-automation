@@ -14,3 +14,6 @@ packages/*/dist/
 .env.local
 playwright-report/
 test-results/
+
+# agent worktrees
+.claude/
