@@ -88,6 +88,7 @@ spec:
         version: "7.0"
         state: creating
         connectionString: "mongodb+srv://{{ $input.name }}.example.com"
+        monthlyCost: 57
     - id: cluster.upgrade
       title: Upgrade cluster
       operation: upgradeCluster

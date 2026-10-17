@@ -86,6 +86,7 @@ spec:
         id: "vm-{{ $job.seq }}"
         name: "{{ $input.name }}"
         powerState: poweredOff
+        monthlyCost: 38.5
     - id: vm.restart
       title: Restart VM
       operation: restartVm
