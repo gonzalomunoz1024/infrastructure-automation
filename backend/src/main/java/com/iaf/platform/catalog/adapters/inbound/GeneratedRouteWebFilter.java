@@ -1,0 +1,257 @@
+package com.iaf.platform.catalog.adapters.inbound;
+
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
+import org.springframework.web.util.UriUtils;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.catalog.application.WorkflowInvoker;
+import com.iaf.platform.catalog.domain.BatchProblemsException;
+import com.iaf.platform.catalog.domain.InputProblemsException;
+import com.iaf.platform.catalog.domain.Inputs;
+import com.iaf.platform.catalog.domain.PolicyDeniedException;
+import com.iaf.platform.catalog.domain.ReservedNouns;
+import com.iaf.platform.catalog.domain.RouteTable;
+import com.iaf.platform.catalog.domain.RouteTable.RouteMatch;
+import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
+import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
+import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.resources.ports.inbound.ResourceQueries;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
+
+/**
+ * The generated REST gateway. Runs right after the identity filter and matches the request's
+ * method and path against the live route table: the published workflows' operations (invoke,
+ * {@code :batch}, {@code :preview}) and the resource reads of every type. Platform routes win:
+ * a path whose first segment is a reserved noun is never matched, and everything that matches
+ * nothing continues down the chain to the controllers (404).
+ */
+@Slf4j
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE + 20)
+@RequiredArgsConstructor
+public class GeneratedRouteWebFilter implements WebFilter {
+
+    public static final String CHANNEL = "rest";
+    public static final String TRACEPARENT = "traceparent";
+    private static final JsonNodeFactory F = JsonNodeFactory.instance;
+    private static final Pattern TRACEPARENT_FORMAT = Pattern.compile("^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$");
+
+    private final CatalogQueries catalog;
+    private final WorkflowInvoker invoker;
+    private final ResourceQueries resources;
+    private final ObjectMapper json;
+
+    @Override
+    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        String path = exchange.getRequest().getPath().pathWithinApplication().value();
+        String method = exchange.getRequest().getMethod().name();
+        if (!ReservedNouns.isGenerated(path) || HttpMethod.OPTIONS.matches(method)) {
+            return chain.filter(exchange);   // platform routes, and CORS preflights, belong to the framework
+        }
+        return catalog.routes().flatMap(table -> {
+            var match = table.match(method, path);
+            if (match.isPresent()) {
+                return handle(exchange, decoded(match.get())).onErrorResume(e -> error(exchange, e));
+            }
+            var allowed = table.allowedMethods(path);
+            if (!allowed.isEmpty()) {
+                exchange.getResponse().getHeaders().set("Allow", String.join(", ", allowed));
+                return write(exchange, HttpStatus.METHOD_NOT_ALLOWED, body(method + " is not allowed on " + path + " (allowed: " + String.join(", ", allowed) + ")"));
+            }
+            return chain.filter(exchange);
+        });
+    }
+
+    private Mono<Void> handle(ServerWebExchange exchange, RouteMatch match) {
+        RouteTable.Route route = match.route();
+        Map<String, String> params = match.params();
+        return switch (route.kind()) {
+            case INVOKE -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
+                    .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange)))
+                    .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
+            case BATCH -> identity(exchange).flatMap(who -> body(exchange)
+                    .flatMap(b -> invoker.batch(route.workflow(), b, params, who, CHANNEL))
+                    .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
+            case PREVIEW -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
+                    .flatMap(in -> invoker.preview(route.workflow(), in, who))
+                    .flatMap(preview -> write(exchange, HttpStatus.OK, preview)));
+            case LIST_RESOURCES -> {
+                var query = exchange.getRequest().getQueryParams();
+                yield resources.list(route.type().name(), query.getFirst("owner"), query.getFirst("status"))
+                        .collectList()
+                        .flatMap(list -> write(exchange, HttpStatus.OK, list));
+            }
+            case GET_RESOURCE -> {
+                String id = params.get("id");
+                yield resources.get(id)
+                        .filter(r -> route.type().name().equals(r.type()))
+                        .switchIfEmpty(Mono.error(new NotFoundException(route.type().name(), id)))
+                        .flatMap(r -> write(exchange, HttpStatus.OK, r));
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------- request pieces
+
+    /** Path parameters arrive percent-encoded; the job input wants the real value. */
+    private static RouteMatch decoded(RouteMatch match) {
+        Map<String, String> params = new LinkedHashMap<>();
+        match.params().forEach((k, v) -> params.put(k, UriUtils.decode(v, StandardCharsets.UTF_8)));
+        return new RouteMatch(match.route(), params);
+    }
+
+    private static Mono<Identity> identity(ServerWebExchange exchange) {
+        Identity who = exchange.getAttribute(IdentityWebFilter.ATTRIBUTE);
+        return who != null ? Mono.just(who) : CurrentIdentity.current();
+    }
+
+    /** A read takes its input from the query string, anything else from the JSON body; the path parameters go on top. */
+    private Mono<ObjectNode> input(ServerWebExchange exchange, WorkflowDefinition d, Map<String, String> params) {
+        JsonNode schema = d.inputSchema();
+        if ("GET".equals(exchange.getRequest().getMethod().name())) {
+            Map<String, String> query = new LinkedHashMap<>();
+            exchange.getRequest().getQueryParams().forEach((k, v) -> query.put(k, v.isEmpty() ? null : v.get(0)));
+            return Mono.fromSupplier(() -> Inputs.of(Inputs.ofQuery(query, schema), params, schema));
+        }
+        return body(exchange).map(b -> Inputs.of(b, params, schema));
+    }
+
+    private Mono<JsonNode> body(ServerWebExchange exchange) {
+        return DataBufferUtils.join(exchange.getRequest().getBody())
+                .map(buffer -> {
+                    try {
+                        byte[] bytes = new byte[buffer.readableByteCount()];
+                        buffer.read(bytes);
+                        return bytes;
+                    } finally {
+                        DataBufferUtils.release(buffer);
+                    }
+                })
+                .defaultIfEmpty(new byte[0])
+                .map(bytes -> {
+                    String text = new String(bytes, StandardCharsets.UTF_8);
+                    if (text.isBlank()) {
+                        return (JsonNode) F.objectNode();
+                    }
+                    try {
+                        JsonNode node = json.readTree(text);
+                        return node == null || node.isNull() ? F.objectNode() : node;
+                    } catch (JsonProcessingException e) {
+                        throw new IllegalArgumentException("Malformed JSON body: " + e.getOriginalMessage());
+                    }
+                });
+    }
+
+    /** The W3C trace id from {@code traceparent}, else a fresh one. */
+    static String traceId(ServerWebExchange exchange) {
+        String header = exchange.getRequest().getHeaders().getFirst(TRACEPARENT);
+        if (header != null) {
+            var m = TRACEPARENT_FORMAT.matcher(header.trim().toLowerCase());
+            if (m.matches()) {
+                return m.group(1);
+            }
+        }
+        return Ids.next("trace");
+    }
+
+    // ---------------------------------------------------------------- responses
+
+    private Mono<Void> error(ServerWebExchange exchange, Throwable e) {
+        if (e instanceof InputProblemsException ip) {
+            Map<String, Object> b = body(e.getMessage());
+            b.put("problems", ip.problems());
+            return write(exchange, HttpStatus.BAD_REQUEST, b);
+        }
+        if (e instanceof BatchProblemsException bp) {
+            Map<String, Object> b = body(e.getMessage());
+            b.put("rows", bp.rows());
+            return write(exchange, HttpStatus.BAD_REQUEST, b);
+        }
+        if (e instanceof IllegalArgumentException) {
+            return write(exchange, HttpStatus.BAD_REQUEST, body(e.getMessage()));
+        }
+        if (e instanceof PolicyDeniedException pd) {
+            Map<String, Object> b = body(e.getMessage());
+            b.put("rules", pd.rules());
+            if (pd.engine() != null) {
+                b.put("engine", pd.engine());
+            }
+            return write(exchange, HttpStatus.FORBIDDEN, b);
+        }
+        if (e instanceof ForbiddenException) {
+            return write(exchange, HttpStatus.FORBIDDEN, body(e.getMessage()));
+        }
+        if (e instanceof NotFoundException) {
+            return write(exchange, HttpStatus.NOT_FOUND, body(e.getMessage()));
+        }
+        if (e instanceof ConflictException c) {
+            Map<String, Object> b = body(e.getMessage());
+            if (c.detail() != null) {
+                b.put("detail", c.detail());
+            }
+            return write(exchange, HttpStatus.CONFLICT, b);
+        }
+        if (e instanceof ResponseStatusException rse) {
+            return write(exchange, rse.getStatusCode(), body(rse.getReason()));
+        }
+        log.error("generated route failed", e);
+        return write(exchange, HttpStatus.INTERNAL_SERVER_ERROR, body(e.getMessage()));
+    }
+
+    private static Map<String, Object> body(String error) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("error", error == null ? "unexpected error" : error);
+        return m;
+    }
+
+    private Mono<Void> write(ServerWebExchange exchange, HttpStatusCode status, Object body) {
+        ServerHttpResponse response = exchange.getResponse();
+        if (response.isCommitted()) {
+            return Mono.empty();
+        }
+        byte[] bytes;
+        try {
+            bytes = json.writeValueAsBytes(body);
+        } catch (JsonProcessingException e) {
+            log.error("cannot serialise response", e);
+            bytes = "{\"error\":\"cannot serialise response\"}".getBytes(StandardCharsets.UTF_8);
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        response.setStatusCode(status);
+        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        response.getHeaders().setContentLength(bytes.length);
+        DataBuffer buffer = response.bufferFactory().wrap(bytes);
+        return response.writeWith(Mono.just(buffer));
+    }
+}
