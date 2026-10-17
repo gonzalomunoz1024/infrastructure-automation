@@ -102,8 +102,13 @@ public final class ProviderYaml {
     }
 
     public static String toYaml(ProviderDefinition p) {
+        return toYaml(toJson(p));
+    }
+
+    /** Write a provider tree as the canonical writer would (for edits that keep the file's own layout). */
+    public static String toYaml(JsonNode tree) {
         try {
-            return YAML.writeValueAsString(toJson(p));
+            return YAML.writeValueAsString(tree);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(e);
         }

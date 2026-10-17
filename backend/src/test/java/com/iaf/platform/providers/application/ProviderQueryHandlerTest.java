@@ -1,0 +1,185 @@
+package com.iaf.platform.providers.application;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.providers.domain.ActionInfo;
+import com.iaf.platform.providers.domain.Health;
+import com.iaf.platform.providers.domain.ProviderDetail.PerAction;
+import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
+import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.workflows.domain.ChangeRequest;
+import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
+
+import reactor.test.StepVerifier;
+
+class ProviderQueryHandlerTest {
+
+    static final Instant NOW = Instant.parse("2026-10-17T10:00:00Z");
+    static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+    static final String YAML = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0, description: The fleet }
+            spec:
+              type: openapi
+              spec: { url: https://fleet.example.com/openapi.json, sha256: 9f2c1b7e0a4d5c6b8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d }
+              endpoints: { dev: https://fleet-dev.example.com, prod: https://fleet.example.com }
+              auth: { type: bearer, credential: vault:fleet/token }
+              actions:
+                - id: vm.get
+                  title: Get VM
+                  operation: getVm
+                  effect: read
+                  retry: safe
+                  output: { type: object, properties: { id: { type: string } } }
+                - id: vm.delete
+                  operation: deleteVm
+                  effect: delete
+                  retry: unsafe
+                  approval: required
+              overrides:
+                vm.get: { response: { properties: { powerState: { type: string } } } }
+              slo: { successRate: 99.5, p95Ms: 800 }
+              alerts: { channel: "#compute-alerts" }
+            """;
+
+    ProviderStorePort store;
+    TelemetryPort telemetry;
+    ChangeRequestPort changeRequests;
+    ProviderQueryHandler handler;
+    StoredProvider fleet;
+
+    @BeforeEach
+    void setUp() {
+        store = mock(ProviderStorePort.class);
+        telemetry = mock(TelemetryPort.class);
+        changeRequests = mock(ChangeRequestPort.class);
+        fleet = new StoredProvider(ProviderYaml.parse(YAML), YAML, "providers/team-compute/fleet.yaml", NOW, "content");
+        when(store.all()).thenReturn(List.of(fleet));
+        when(store.get("fleet")).thenReturn(Optional.of(fleet));
+        when(store.get("nope")).thenReturn(Optional.empty());
+        when(changeRequests.all()).thenReturn(List.of());
+        ProviderAlertEvaluator alerts = new ProviderAlertEvaluator(store, telemetry, new EventBus(CLOCK), CLOCK);
+        handler = new ProviderQueryHandler(store, telemetry, changeRequests, alerts, CLOCK);
+    }
+
+    static CallSample sample(Instant at, String action, boolean ok, long ms, String errorClass) {
+        return new CallSample(at, "fleet", action, "dev", ok, ms, errorClass, ok ? null : "job_7", "vm-restart", "1.2.0");
+    }
+
+    @Test
+    void theDefinitionIsServedByNameOrNot() {
+        StepVerifier.create(handler.provider("fleet")).assertNext(d -> assertThat(d.name()).isEqualTo("fleet")).verifyComplete();
+        StepVerifier.create(handler.provider("nope")).verifyComplete();
+        StepVerifier.create(handler.all()).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void theListJudgesHealthFromTheLastDayOfTelemetry() {
+        when(telemetry.samples(isNull(), any())).thenReturn(List.of());
+        StepVerifier.create(handler.list())
+                .assertNext(s -> {
+                    assertThat(s.name()).isEqualTo("fleet");
+                    assertThat(s.title()).isEqualTo("Fleet API");
+                    assertThat(s.environments()).containsExactly("dev", "prod");
+                    assertThat(s.actionCount()).isEqualTo(2);
+                    assertThat(s.health().status()).isEqualTo(Health.Status.UNKNOWN);
+                    assertThat(s.slo().p95Ms()).isEqualTo(800);
+                    assertThat(s.alerts().channel()).isEqualTo("#compute-alerts");
+                })
+                .verifyComplete();
+        List<CallSample> samples = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            samples.add(sample(NOW.minusSeconds(60L * i), "vm.get", true, 100, null));
+        }
+        when(telemetry.samples(isNull(), eq(NOW.minus(Duration.ofHours(24))))).thenReturn(samples);
+        StepVerifier.create(handler.list())
+                .assertNext(s -> {
+                    assertThat(s.health().status()).isEqualTo(Health.Status.HEALTHY);
+                    assertThat(s.health().calls()).isEqualTo(10);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void theDetailHasTheFileTheActionsTwoWeeksOfTelemetryAndTheChangeRequests() {
+        List<CallSample> samples = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            samples.add(sample(NOW.minusSeconds(60L * (i + 1)), "vm.get", true, 100, null));
+        }
+        samples.add(sample(NOW.minusSeconds(10), "vm.get", false, 2000, "unavailable"));
+        samples.add(sample(NOW.minus(Duration.ofDays(3)), "vm.delete", true, 300, null));
+        samples.add(sample(NOW.minus(Duration.ofDays(3)).plusSeconds(5), "vm.delete", false, 400, "conflict"));
+        when(telemetry.samples(eq("fleet"), eq(NOW.minus(Duration.ofDays(14))))).thenReturn(samples);
+        ChangeRequest mine = new ChangeRequest("cr_1", ChangeRequest.Kind.PROVIDER, "fleet", "1.1.0", "change/provider-fleet-1.1.0", "t", "mateo",
+                ChangeRequest.Status.OPEN, List.of(), "all", YAML, "", NOW.minusSeconds(100), null, null, null);
+        ChangeRequest older = new ChangeRequest("cr_0", ChangeRequest.Kind.PROVIDER, "fleet", "1.0.0", "b", "t", "mateo",
+                ChangeRequest.Status.MERGED, List.of(), "all", YAML, "", NOW.minusSeconds(5000), NOW, "gonzalo", null);
+        ChangeRequest workflow = new ChangeRequest("cr_2", ChangeRequest.Kind.WORKFLOW, "fleet", "1.0.0", "b", "t", "mateo",
+                ChangeRequest.Status.OPEN, List.of(), "all", "", "", NOW, null, null, null);
+        ChangeRequest other = new ChangeRequest("cr_3", ChangeRequest.Kind.PROVIDER, "other", "1.0.0", "b", "t", "mateo",
+                ChangeRequest.Status.OPEN, List.of(), "all", "", "", NOW, null, null, null);
+        when(changeRequests.all()).thenReturn(List.of(older, workflow, mine, other));
+
+        StepVerifier.create(handler.detail("fleet"))
+                .assertNext(d -> {
+                    assertThat(d.yaml()).isEqualTo(YAML);
+                    assertThat(d.description()).isEqualTo("The fleet");
+                    assertThat(d.actions()).extracting(ActionInfo::id).containsExactly("vm.get", "vm.delete");
+                    ActionInfo get = d.actions().get(0);
+                    assertThat(get.overridden()).isTrue();
+                    assertThat(get.output().path("properties").path("powerState").path("type").asText()).isEqualTo("string");
+                    assertThat(get.output().path("properties").path("id").path("type").asText()).isEqualTo("string");
+                    assertThat(get.retry()).isEqualTo("safe");
+                    assertThat(d.actions().get(1).overridden()).isFalse();
+                    assertThat(d.actions().get(1).approval()).isEqualTo("required");
+                    assertThat(d.actions().get(1).title()).isEqualTo("vm.delete");
+                    assertThat(d.health().status()).isEqualTo(Health.Status.FAILING);
+                    assertThat(d.health().calls()).isEqualTo(6);
+                    assertThat(d.daily()).hasSize(14);
+                    assertThat(d.daily().get(13).date()).isEqualTo("2026-10-17");
+                    assertThat(d.daily().get(13).calls()).isEqualTo(6);
+                    assertThat(d.daily().get(13).successRate()).isEqualTo(83.3);
+                    assertThat(d.daily().get(10).date()).isEqualTo("2026-10-14");
+                    assertThat(d.daily().get(10).calls()).isEqualTo(2);
+                    assertThat(d.daily().get(0).calls()).isZero();
+                    assertThat(d.perAction()).extracting(PerAction::action).containsExactly("vm.delete", "vm.get");
+                    PerAction get24 = d.perAction().get(1);
+                    assertThat(get24.calls()).isEqualTo(6);
+                    assertThat(get24.p95Ms()).isEqualTo(2000);
+                    assertThat(get24.topErrors()).hasSize(1);
+                    assertThat(get24.topErrors().get(0).errorClass()).isEqualTo("unavailable");
+                    assertThat(get24.topErrors().get(0).count()).isEqualTo(1);
+                    assertThat(d.changeRequests()).extracting(ChangeRequest::id).containsExactly("cr_1", "cr_0");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void unknownProvidersAre404() {
+        StepVerifier.create(handler.detail("nope")).expectError(NotFoundException.class).verify();
+        StepVerifier.create(handler.alerts("nope")).expectError(NotFoundException.class).verify();
+        StepVerifier.create(handler.alerts("fleet")).verifyComplete();
+    }
+}
