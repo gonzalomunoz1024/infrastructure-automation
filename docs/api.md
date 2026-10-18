@@ -439,7 +439,7 @@ on a bucket without Object Lock). With profile `siem`, every entry also goes to 
 ## Notifications
 
 ```ts
-type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated';
+type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated' | 'review.requested';
   severity: 'info' | 'warning' | 'critical'; title; message; link?; channel?; jobId?; workflow?; provider?;
   users: string[]; teams: string[]; read: boolean }   // read is the caller's own
 ```
@@ -453,6 +453,9 @@ incoming webhook per channel (profile `slack`, the URL a `vault:` reference) and
 `mail`). `platform.notifications.channels` and `teams` say who a channel or an approver group
 reaches; events older than `fresh-for` (seeded or replayed history) notify nobody. `notifications`
 is a reserved noun.
+
+A change request opened for a workflow or a provider notifies the team that owns it
+(`review.requested`, with a link to the change request); one without an owner notifies nobody.
 
 ## Resources
 
