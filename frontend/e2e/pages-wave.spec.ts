@@ -351,7 +351,11 @@ test.describe('workflow versions: the steps of a version', () => {
       'GET /workflows/{name}/versions/{version}': (req: { params: Record<string, string> }) => ({ version: req.params.version, yaml: CREATE_VM_YAML, definition: CREATE_VM_DEFINITION }),
     })
     await page.goto('/#/workflows/create-vm/versions')
-    await page.getByRole('table', { name: 'Versions of Create a VM' }).getByRole('row', { name: /2\.0\.0/ }).click()
+    // the version a release rollback took out says so
+    const table = page.getByRole('table', { name: 'Versions of Create a VM' })
+    await expect(table.getByRole('row', { name: /2\.1\.0/ })).toContainText('rolled back')
+    await expect(table.getByRole('row', { name: /2\.0\.0/ })).not.toContainText('rolled back')
+    await table.getByRole('row', { name: /2\.0\.0/ }).click()
     const drawer = page.getByRole('dialog', { name: 'Version 2.0.0' })
     await expect(drawer).toBeVisible()
     await drawer.getByRole('radio', { name: 'Steps' }).click()

@@ -28,6 +28,10 @@ describe('versionOptions', () => {
   it('has only the routed choice while the versions are not here', () => {
     expect(versionOptions(undefined, '1.2.0')).toHaveLength(1)
   })
+  it('still offers a version a rollback took out, and says so', () => {
+    const options = versionOptions([...VERSIONS, { version: '1.2.1', status: 'retired', contentHash: 'sha256:121', rolledBack: true }], '1.2.0')
+    expect(options.find((o) => o.value === '1.2.1')?.hint).toBe('retired, rolled back')
+  })
 })
 
 describe('curlFor', () => {

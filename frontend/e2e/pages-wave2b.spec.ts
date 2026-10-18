@@ -203,7 +203,7 @@ test.describe('catalog: a run pinned to a version', () => {
       'GET /resource-types': RESOURCE_TYPES,
       'GET /vms': VMS,
       'GET /workflows/{name}/versions': VM_RESTART_VERSIONS,
-      'POST /vms:restart:batch': reply(202, { jobId: 'job-batch', status: 'queued' }),
+      'POST /vms:restart:batch': reply(202, { jobId: 'job-batch', rows: 2, status: 'queued', links: { job: '/api/v1/jobs/job-batch' } }),
       'GET /jobs/{id}': JOB,
       'GET /jobs/{id}/events': sse([]),
     })

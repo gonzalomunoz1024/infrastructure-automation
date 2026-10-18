@@ -157,6 +157,10 @@ export interface ApiErrorBody {
   problems?: Problem[]
   rows?: BatchRowProblem[]
   detail?: unknown
+  /** a 500's trace id (its `error` is always `unexpected error`), which finds the cause in the API's log */
+  correlationId?: string
+  /** a 429's wait in seconds */
+  retryAfter?: number
   [key: string]: unknown
 }
 
@@ -170,6 +174,8 @@ export class ApiError extends Error {
   readonly body: ApiErrorBody | null
   /** seconds until a 429 (over the team's job-start quota) may be retried: the Retry-After header, else the body's `retryAfter` */
   readonly retryAfter?: number
+  /** a 500's correlation id: the request's trace id, which finds the cause in the API's log */
+  readonly correlationId?: string
 
   constructor(status: number, body: ApiErrorBody | null, fallback?: string, retryAfter?: number) {
     const error = body?.error ?? fallback ?? (status === 0 ? 'Backend unreachable' : `Request failed (${status})`)
@@ -182,6 +188,7 @@ export class ApiError extends Error {
     this.detail = body?.detail
     this.body = body
     this.retryAfter = retryAfter ?? (typeof body?.retryAfter === 'number' ? body.retryAfter : undefined)
+    this.correlationId = typeof body?.correlationId === 'string' && body.correlationId ? body.correlationId : undefined
   }
 
   get unreachable(): boolean {
@@ -233,7 +240,8 @@ export function runHeaders(opts?: RunOptions): Record<string, string> {
 
 /** A one-line message for any thrown value. */
 export function errorMessage(e: unknown): string {
-  if (isApiError(e)) return e.error
+  // an unexpected error says which request it was, so the API's log can find the cause
+  if (isApiError(e)) return e.correlationId ? `${e.error} (correlation id ${e.correlationId})` : e.error
   if (e instanceof Error) return e.message
   return String(e)
 }

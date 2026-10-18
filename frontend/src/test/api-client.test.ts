@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, newIdempotencyKey, request, retryAfterSeconds, retryIn, runHeaders } from '../lib/api'
+import { ApiError, api, errorMessage, newIdempotencyKey, request, retryAfterSeconds, retryIn, runHeaders } from '../lib/api'
 
 /*
  * The client's side of docs/api.md "Calls that start jobs": the headers that pin a version and
@@ -110,6 +110,18 @@ describe('run headers', () => {
     await api.retryJob('job_2', { step: 'restart' }, { idempotencyKey: 'k-10' })
     expect(calls[1].url).toBe('/api/v1/jobs/job_2:retry')
     expect((calls[1].init?.headers as Record<string, string>)['Idempotency-Key']).toBe('k-10')
+  })
+})
+
+describe('an unexpected error', () => {
+  it("says the request's correlation id, which finds the cause in the API's log", async () => {
+    mockFetch(() => answer(500, { error: 'unexpected error', correlationId: '4bf92f3577b34da6a3ce929d0e0e4736' }))
+    const e = await request('GET', '/workflows').catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(ApiError)
+    expect((e as ApiError).correlationId).toBe('4bf92f3577b34da6a3ce929d0e0e4736')
+    expect(errorMessage(e)).toBe('unexpected error (correlation id 4bf92f3577b34da6a3ce929d0e0e4736)')
+    // any other error reads as the backend wrote it
+    expect(errorMessage(new ApiError(409, { error: 'checks failed' }))).toBe('checks failed')
   })
 })
 

@@ -660,11 +660,14 @@ Besides the test server of the backend's suite, these ran against a Temporal dev
 See `docs/design-language.md`. The shell (every page but the canvas) is built from
 `packages/ui`, the Atlas design system. The canvas (`frontend/src/designer`) replicates n8n's
 editor on `@xyflow/react`. Routing is a small hash router in `frontend/src/app/router.ts`; no
-router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`.
+router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`; an
+unexpected error (a 500) reads with the request's correlation id, which finds the cause in the
+API's log.
 
 The shell renders what the API judges and never decides for itself: the catalog and the run page
 show an operation's deprecation (since, sunset, successor) as the catalog reports it; a run can be
-pinned to an exact version (`X-Workflow-Version`, bypassing the canary split) and every
+pinned to an exact version (`X-Workflow-Version`, bypassing the canary split; a version a
+release rollback took out is still offered, marked rolled back as the versions page marks it) and every
 submission carries one `Idempotency-Key` per form, so a resend after a 429 (shown with the
 backend's `Retry-After` wait) or a lost answer replays the same job; the header bell is the inbox
 (`/notifications`); the audit page has a tab on the platform stream; the releases, release and

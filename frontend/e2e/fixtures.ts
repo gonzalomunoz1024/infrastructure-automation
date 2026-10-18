@@ -855,6 +855,8 @@ export const CREATE_VM_DEFINITION = {
 export const CREATE_VM_YAML = 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: create-vm\n  version: 2.0.0\nworkflow:\n  do:\n    - build:\n        run: { workflow: build-vm-image, version: "^1" }\n'
 
 export const CREATE_VM_VERSIONS: WorkflowVersion[] = [
+  // its canary failed a gate: the rollback published 2.0.0 again and took 2.1.0 out
+  { version: '2.1.0', status: 'retired', contentHash: 'sha256:3', publishedAt: ago(60 * 30), publishedBy: 'ana', releaseId: 'rel-4', rolledBack: true },
   { version: '2.0.0', status: 'published', contentHash: 'sha256:2', publishedAt: ago(60 * 72), publishedBy: 'gonzalo', releaseId: 'rel-0' },
   { version: '1.9.0', status: 'retired', contentHash: 'sha256:1', publishedAt: ago(60 * 24 * 30), publishedBy: 'maria' },
 ]

@@ -88,6 +88,8 @@ export type WorkflowVersion = {
   publishedBy?: string
   releaseId?: string
   notes?: string
+  /** a retired version a release rollback took out: still readable, but no run step's range resolves to it again */
+  rolledBack?: true
 }
 
 /**
@@ -240,7 +242,8 @@ export type Deprecation = { since: string; sunset: string; replacement?: string;
 export type RunOptions = { version?: string; idempotencyKey?: string }
 export type RunAccepted = { jobId: string; status: 'queued'; links: { job: string } }
 export type BatchRequest = { items: Record<string, unknown>[]; defaults?: Record<string, unknown>; rollout?: Rollout }
-export type BatchAccepted = { jobId: string; rows: BatchRow[] }
+/** 202 of a batch path: the batch job, how many rows it took, and where to read it. */
+export type BatchAccepted = { jobId: string; rows: number; status: string; links: { job: string } & Record<string, string> }
 export type BatchRowProblem = { index: number; problems: Problem[] }
 
 export type PolicyDecision = 'allow' | 'deny' | 'needs-approval'
@@ -370,7 +373,7 @@ export type RerunRequest = { fromStep: string; input?: Record<string, unknown> }
 
 export type AlertPayload = { source: string; labels: Record<string, string>; annotations?: Record<string, string> }
 export type EventPayload = { topic: string; payload: unknown }
-export type TriggerResult = { started: { workflow: string; jobId: string }[] }
+export type TriggerResult = { started: { workflow: string; jobId: string }[]; skipped: { workflow: string; reason: string }[] }
 
 /* ----------------------------------------------------------------------------
    Providers

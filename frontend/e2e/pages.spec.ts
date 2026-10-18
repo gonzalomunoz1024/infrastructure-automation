@@ -93,7 +93,7 @@ test.describe('catalog', () => {
       'POST /vms:restart:batch': () =>
         ++attempts === 1
           ? reply(400, { error: 'Some rows are invalid', rows: [{ index: 1, problems: [{ level: 'error', code: 'not_found', field: 'vmId', message: 'vm-9999 is not a registered vm' }] }] })
-          : { jobId: 'job-5b10e7d2', rows: [] },
+          : { jobId: 'job-5b10e7d2', rows: 3, status: 'queued', links: { job: '/api/v1/jobs/job-5b10e7d2' } },
       'GET /jobs/{id}': { ...JOB, id: 'job-5b10e7d2', attention: undefined, steps: [] },
       'GET /jobs/{id}/events': sse([]),
       'GET /jobs': JOBS,
