@@ -247,6 +247,17 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
+A job's events come two ways, the same events in the same order. `GET /api/v1/jobs/{id}/events`
+sends them as Server-Sent Events: `id:` is the event's `seq`, `event:` its `type` and `data:` the
+`JobEvent` as JSON. `WS /ws/jobs/{id}` (outside `/api/v1`, scope `jobs:read`) sends one text
+frame per event holding that same `JobEvent` JSON, for example
+`{"seq":4,"at":"2026-10-17T10:00:05Z","jobId":"job_a","type":"log","data":{"jobId":"job_a","message":"hello","event":"job.log"}}`.
+Both replay the job's history first, then send its events as they happen, and end after its last
+one (`job.finished` or `job.cancelled`): the SSE response completes and the server closes the
+socket. A job that has already ended replays its history and ends. Frames a client sends on the
+socket are ignored; a client that closes it ends the stream. For a job that does not exist the
+SSE request is a 404 and the socket is closed without a frame.
+
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
 `iaf.provider.call` per provider call, under the span of the request that started it
