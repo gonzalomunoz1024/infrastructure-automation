@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iaf-provider-sdk"
+version = "0.1.0"
+description = "Write a custom-code provider in Python: actions, schemas, a Temporal worker and the provider file"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "temporalio>=1.20,<2",
+    "pydantic>=2.6,<3",
+    "jsonschema>=4.21,<5",
+    "pyyaml>=6,<7",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+iaf_provider = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "examples"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

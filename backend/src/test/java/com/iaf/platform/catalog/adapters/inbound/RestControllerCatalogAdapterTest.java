@@ -103,7 +103,7 @@ class RestControllerCatalogAdapterTest {
         client(SampleCatalog.OPS).get().uri("/api/v1/catalog").exchange()
                 .expectStatus().isOk()
                 .expectBody()
-                .jsonPath("$.length()").isEqualTo(9)
+                .jsonPath("$.length()").isEqualTo(10)
                 .jsonPath("$[?(@.workflow == 'vm-restart')].path").isEqualTo("/api/v1/vms/{vmId}:restart")
                 .jsonPath("$[?(@.workflow == 'vm-restart')].batchPath").isEqualTo("/api/v1/vms:restart:batch")
                 .jsonPath("$[?(@.workflow == 'vm-restart')].mcpTool").isEqualTo("vm_restart")

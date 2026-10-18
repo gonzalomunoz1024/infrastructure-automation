@@ -55,7 +55,7 @@ final class Inventory {
                 .action(Action.of("item.get", Lookup.class, Item.class, this::get)
                         .title("Get an item")
                         .effect(Effect.READ)
-                        .sample(Map.of("id", "{{ input.id }}", "name", "sample", "state", "active")))
+                        .sample(Map.of("id", "{{ $input.id }}", "name", "sample", "state", "active")))
                 .action(Action.of("item.preview", Create.class, Item.class, (ctx, in) -> new Item("(new)", in.name(), "planned"))
                         .title("Preview an item")
                         .effect(Effect.READ))

@@ -64,17 +64,17 @@ public final class Cmdb {
                 .action(Action.of("item.get", ItemRef.class, Item.class, this::get)
                         .title("Get a configuration item")
                         .effect(Effect.READ)
-                        .sample(Map.of("id", "{{ input.id }}", "name", "web-01", "kind", "SERVER", "owner", "team-platform", "state", "active",
+                        .sample(Map.of("id", "{{ $input.id }}", "name", "web-01", "kind", "SERVER", "owner", "team-platform", "state", "active",
                                 "registeredAt", "2026-01-05T09:00:00Z")))
                 .action(Action.of("item.preview", Registration.class, Plan.class, this::preview)
                         .title("Preview a registration")
                         .effect(Effect.READ)
-                        .sample(Map.of("action", "create", "name", "{{ input.name }}", "exists", false, "summary", "Registers {{ input.name }}")))
+                        .sample(Map.of("action", "create", "name", "{{ $input.name }}", "exists", false, "summary", "Registers {{ $input.name }}")))
                 .action(Action.of("item.register", Registration.class, Item.class, this::register)
                         .title("Register a configuration item")
                         .effect(Effect.CREATE)
                         .plan("item.preview")
-                        .sample(Map.of("id", "ci-{{ $job.seq }}", "name", "{{ input.name }}", "kind", "{{ input.kind }}", "owner", "team-platform",
+                        .sample(Map.of("id", "ci-{{ $job.seq }}", "name", "{{ $input.name }}", "kind", "{{ $input.kind }}", "owner", "team-platform",
                                 "state", "active", "registeredAt", "2026-01-05T09:00:00Z")))
                 .build();
     }

@@ -43,7 +43,7 @@ class WorkflowQueryHandlerTest {
     @Test
     void listsEverySampleWorkflowAsPublishedAndFilters() {
         List<WorkflowSummary> all = queries.list(null, null, null).collectList().block();
-        assertThat(all).hasSize(9);
+        assertThat(all).hasSize(10);
         assertThat(all).allSatisfy(s -> {
             assertThat(s.status()).isEqualTo("published");
             assertThat(s.publishedVersion()).isEqualTo(s.latestVersion());
@@ -98,7 +98,7 @@ class WorkflowQueryHandlerTest {
 
     @Test
     void theSharedPortServesPublishedVersionsAndResolvesRanges() {
-        assertThat(queries.publishedAll().collectList().block()).hasSize(9);
+        assertThat(queries.publishedAll().collectList().block()).hasSize(10);
         assertThat(queries.published("create-vm").block().version()).isEqualTo("2.0.1");
         assertThat(queries.version("create-vm", "2.0.1").block()).isNotNull();
         assertThat(queries.version("create-vm", "1.0.0").blockOptional()).isEmpty();
@@ -131,7 +131,7 @@ class WorkflowQueryHandlerTest {
     @Test
     void theRegistryListsProvidersWithActionSchemas() {
         List<RegistryProvider> providers = queries.registryProviders().collectList().block();
-        assertThat(providers).hasSize(8);
+        assertThat(providers).hasSize(10);
         RegistryProvider vsphere = providers.stream().filter(p -> p.name().equals("vsphere")).findFirst().orElseThrow();
         assertThat(vsphere.type()).isEqualTo("openapi");
         var vmDelete = vsphere.actions().stream().filter(a -> a.id().equals("vm.delete")).findFirst().orElseThrow();
@@ -148,12 +148,12 @@ class WorkflowQueryHandlerTest {
     @Test
     void theRegistryListsPublishedWorkflowsWithTheirOutputs() {
         List<RegistryWorkflow> published = queries.registryWorkflows(true).collectList().block();
-        assertThat(published).hasSize(9);
+        assertThat(published).hasSize(10);
         RegistryWorkflow vmRestart = published.stream().filter(w -> w.name().equals("vm-restart")).findFirst().orElseThrow();
         assertThat(vmRestart.version()).isEqualTo("1.2.0");
         assertThat(vmRestart.input().path("required").get(0).asText()).isEqualTo("vmId");
         assertThat(vmRestart.output().path("properties").fieldNames()).toIterable().containsExactly("vmName", "powerState");
-        assertThat(queries.registryWorkflows(null).collectList().block()).hasSize(9);
+        assertThat(queries.registryWorkflows(null).collectList().block()).hasSize(10);
     }
 
     @Test

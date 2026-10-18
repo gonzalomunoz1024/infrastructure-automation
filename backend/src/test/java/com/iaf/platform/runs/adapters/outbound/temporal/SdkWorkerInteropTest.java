@@ -66,7 +66,7 @@ class SdkWorkerInteropTest {
             .error("store_busy", true, "The note store is busy")
             .error("quota_exceeded", false, "The team has no notes left")
             .action(Action.of("note.create", NewNote.class, Note.class, this::create).title("Create a note").effect(Effect.CREATE)
-                    .sample(Map.of("id", "n-{{ $job.seq }}", "title", "{{ input.title }}", "key", "sample", "attempt", 1)))
+                    .sample(Map.of("id", "n-{{ $job.seq }}", "title", "{{ $input.title }}", "key", "sample", "attempt", 1)))
             .action(Action.of("note.flaky", NewNote.class, Note.class, (ctx, in) -> {
                 if (ctx.attempt() < 3) {
                     seen(ctx);

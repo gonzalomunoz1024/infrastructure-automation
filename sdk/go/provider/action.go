@@ -137,7 +137,7 @@ func (a *Action) Input(schema any) *Action { a.input = a.explicit(schema, "input
 func (a *Action) Output(schema any) *Action { a.output = a.explicit(schema, "output"); return a }
 
 // Sample is the answer the platform's demo mode gives for the action; text in it may use
-// expressions like {{ input.name }} or {{ $job.seq }}.
+// expressions like {{ $input.name }} or {{ $job.seq }}.
 func (a *Action) Sample(output any) *Action { a.sample = output; return a }
 
 func (a *Action) explicit(schema any, which string) json.RawMessage {

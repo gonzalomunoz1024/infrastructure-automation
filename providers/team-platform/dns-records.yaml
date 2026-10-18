@@ -1,0 +1,233 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: dns-records
+  title: DNS records
+  owner: team-platform
+  version: 1.0.0
+  description: Creates and deletes records in the internal DNS zones. Example provider of the Python SDK.
+spec:
+  type: sdk
+  worker:
+    taskQueue: provider-dns-records
+    heartbeatTimeout: 30s
+  actions:
+    - id: record.get
+      title: Get a record
+      effect: read
+      input:
+        type: object
+        properties:
+          zone:
+            type: string
+            description: The zone, like lab.example.internal
+          name:
+            type: string
+            description: The name in the zone, like web-01
+        required:
+          - zone
+          - name
+      output:
+        type: object
+        properties:
+          fqdn:
+            type: string
+          zone:
+            type: string
+          name:
+            type: string
+          type:
+            type: string
+            enum:
+              - A
+              - AAAA
+              - CNAME
+              - TXT
+          value:
+            type: string
+          ttl:
+            type: integer
+        required:
+          - fqdn
+          - zone
+          - name
+          - type
+          - value
+          - ttl
+      sample:
+        fqdn: '{{ $input.name }}.{{ $input.zone }}'
+        zone: '{{ $input.zone }}'
+        name: '{{ $input.name }}'
+        type: A
+        value: 10.30.0.2
+        ttl: 300
+    - id: record.preview
+      title: Preview a record
+      effect: read
+      input:
+        type: object
+        properties:
+          zone:
+            type: string
+            description: The zone, like lab.example.internal
+          name:
+            type: string
+            description: The name in the zone, like web-01
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type:
+            type: string
+            enum:
+              - A
+              - AAAA
+              - CNAME
+              - TXT
+            default: A
+            description: The record type
+          value:
+            type: string
+            description: An IPv4 address for A, an IPv6 address for AAAA, a host name for CNAME, any text for TXT
+          ttl:
+            type: integer
+            default: 300
+            description: How long resolvers may cache it, in seconds
+            maximum: 86400
+            minimum: 30
+        required:
+          - zone
+          - name
+          - value
+      output:
+        type: object
+        properties:
+          action:
+            type: string
+            enum:
+              - create
+              - none
+          fqdn:
+            type: string
+          summary:
+            type: string
+        required:
+          - action
+          - fqdn
+          - summary
+      sample:
+        action: create
+        fqdn: '{{ $input.name }}.{{ $input.zone }}'
+        summary: Creates {{ $input.type ?? 'A' }} {{ $input.name }}.{{ $input.zone }} -> {{ $input.value }}
+    - id: record.create
+      title: Create a record
+      effect: create
+      plan: record.preview
+      description: Waits until the zone's secondaries have the record, heartbeating meanwhile.
+      input:
+        type: object
+        properties:
+          zone:
+            type: string
+            description: The zone, like lab.example.internal
+          name:
+            type: string
+            description: The name in the zone, like web-01
+            pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+          type:
+            type: string
+            enum:
+              - A
+              - AAAA
+              - CNAME
+              - TXT
+            default: A
+            description: The record type
+          value:
+            type: string
+            description: An IPv4 address for A, an IPv6 address for AAAA, a host name for CNAME, any text for TXT
+          ttl:
+            type: integer
+            default: 300
+            description: How long resolvers may cache it, in seconds
+            maximum: 86400
+            minimum: 30
+        required:
+          - zone
+          - name
+          - value
+      output:
+        type: object
+        properties:
+          fqdn:
+            type: string
+          zone:
+            type: string
+          name:
+            type: string
+          type:
+            type: string
+            enum:
+              - A
+              - AAAA
+              - CNAME
+              - TXT
+          value:
+            type: string
+          ttl:
+            type: integer
+        required:
+          - fqdn
+          - zone
+          - name
+          - type
+          - value
+          - ttl
+      sample:
+        fqdn: '{{ $input.name }}.{{ $input.zone }}'
+        zone: '{{ $input.zone }}'
+        name: '{{ $input.name }}'
+        type: '{{ $input.type ?? ''A'' }}'
+        value: '{{ $input.value }}'
+        ttl: '{{ $input.ttl ?? 300 }}'
+    - id: record.delete
+      title: Delete a record
+      effect: delete
+      input:
+        type: object
+        properties:
+          zone:
+            type: string
+            description: The zone, like lab.example.internal
+          name:
+            type: string
+            description: The name in the zone, like web-01
+        required:
+          - zone
+          - name
+      output:
+        type: object
+        properties:
+          fqdn:
+            type: string
+          deleted:
+            type: boolean
+            description: False when there was no record to delete
+        required:
+          - fqdn
+          - deleted
+      sample:
+        fqdn: '{{ $input.name }}.{{ $input.zone }}'
+        deleted: true
+  errors:
+    - class: zone_not_found
+      retry: false
+      description: No zone has that name
+    - class: record_not_found
+      retry: false
+      description: The zone has no record of that name
+    - class: record_conflict
+      retry: false
+      description: The name already has a different record
+    - class: dns_busy
+      retry: true
+      description: The zone is taking another change; a retry succeeds
+  alerts:
+    channel: '#platform-alerts'

@@ -169,7 +169,7 @@ public final class Action<I, O> {
         /**
          * The answer the platform's demo mode gives for this action (a record or JSON), published
          * as the action's {@code sample}. Text in it may use expressions like
-         * <code>{{ input.name }}</code> or <code>{{ $job.seq }}</code>.
+         * <code>{{ $input.name }}</code> or <code>{{ $job.seq }}</code>.
          */
         public Builder<I, O> sample(Object output) {
             this.sample = output;

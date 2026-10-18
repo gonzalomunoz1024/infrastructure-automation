@@ -42,6 +42,7 @@ frontend/           React 19 · Vite · TypeScript · Tailwind v4 · the n8n-sty
 packages/ui         the Atlas design system (tokens, kit, hooks) used by every page but the canvas
 packages/workflow-checks   the editor's checks in TypeScript; the same rules run in Java and in CI
 workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType)
+sdk/                provider SDKs (Java, Go, Python) for custom-code providers on a team's own worker
 devin/              the natural-language builder playbooks and their structured-output schemas
 docs/               architecture, config as code, API, design language, contributing
 ```
@@ -74,4 +75,5 @@ cd backend && mvn -B -q test        # backend unit, handler and adapter tests
 npm run typecheck && npm test       # kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 npm run build
+(cd sdk/java && mvn -B -q test); (cd sdk/go && go test ./...); (cd sdk/python && pytest)   # the provider SDKs
 ```

@@ -38,7 +38,7 @@ class ProviderTest {
         assertThat(create.path("output").path("properties").path("state").path("type").asText()).isEqualTo("string");
         JsonNode get = spec.path("actions").get(0);
         assertThat(get.path("input").path("properties").path("id").path("description").asText()).isEqualTo("The item id");
-        assertThat(get.path("sample").path("id").asText()).isEqualTo("{{ input.id }}");
+        assertThat(get.path("sample").path("id").asText()).isEqualTo("{{ $input.id }}");
         assertThat(spec.path("errors").get(0).toString()).isEqualTo("{\"class\":\"not_found\",\"retry\":false,\"description\":\"No item has that id\"}");
         assertThat(spec.path("errors").get(1).path("retry").asBoolean()).isTrue();
         assertThat(spec.path("alerts").path("channel").asText()).isEqualTo("#platform-alerts");

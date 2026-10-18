@@ -93,20 +93,20 @@ func (ps *Pools) Provider() *provider.Provider {
 		Action(provider.NewAction("pool.get", ps.Get).
 			Title("Get a pool").
 			Effect(provider.Read).
-			Sample(map[string]any{"name": "{{ input.pool }}", "cidr": "10.20.0.0/28", "free": 12, "reserved": 2})).
+			Sample(map[string]any{"name": "{{ $input.pool }}", "cidr": "10.20.0.0/28", "free": 12, "reserved": 2})).
 		Action(provider.NewAction("address.preview", ps.Preview).
 			Title("Preview a reservation").
 			Effect(provider.Read).
-			Sample(map[string]any{"action": "reserve", "address": "10.20.0.3", "summary": "Reserves 10.20.0.3 in {{ input.pool }} for {{ input.hostname }}"})).
+			Sample(map[string]any{"action": "reserve", "address": "10.20.0.3", "summary": "Reserves 10.20.0.3 in {{ $input.pool }} for {{ $input.hostname }}"})).
 		Action(provider.NewAction("address.reserve", ps.Reserve).
 			Title("Reserve an address").
 			Effect(provider.Create).
 			Plan("address.preview").
-			Sample(map[string]any{"address": "10.20.0.{{ $job.seq }}", "pool": "{{ input.pool }}", "hostname": "{{ input.hostname }}", "state": "reserved"})).
+			Sample(map[string]any{"address": "10.20.0.{{ $job.seq }}", "pool": "{{ $input.pool }}", "hostname": "{{ $input.hostname }}", "state": "reserved"})).
 		Action(provider.NewAction("address.release", ps.Release).
 			Title("Release an address").
 			Effect(provider.Delete).
-			Sample(map[string]any{"address": "{{ input.address }}", "pool": "office", "hostname": "web-01", "state": "released"})).
+			Sample(map[string]any{"address": "{{ $input.address }}", "pool": "office", "hostname": "web-01", "state": "released"})).
 		MustBuild()
 }
 

@@ -69,7 +69,7 @@ func (inv *inventory) builder() *Builder {
 		Action(NewAction("item.get", inv.get).
 			Title("Get an item").
 			Effect(Read).
-			Sample(map[string]any{"id": "{{ input.id }}", "name": "sample", "state": "active"})).
+			Sample(map[string]any{"id": "{{ $input.id }}", "name": "sample", "state": "active"})).
 		Action(NewAction("item.preview", func(_ context.Context, _ *Call, in create) (item, error) {
 			return item{ID: "(new)", Name: in.Name, State: "active"}, nil
 		}).Title("Preview an item").Effect(Read)).
