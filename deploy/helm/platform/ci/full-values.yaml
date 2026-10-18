@@ -4,9 +4,11 @@ image:
 imagePullSecrets: [registry-credentials]
 
 backend:
-  profiles: [temporal, git, vault, oidc, live]
+  profiles: [temporal, vault, oidc, live]
   config:
     platform:
+      content:
+        git: true          # the Git workflow store over the cloned content repository
       identity:
         mode: oidc
         oidc-issuer: https://login.example.com/realms/platform
@@ -24,6 +26,10 @@ temporal:
   address: temporal-frontend.temporal.svc.cluster.local:7233
   namespace: platform
   uiUrl: https://temporal.example.com
+  tls:
+    secretName: temporal-client-tls
+  apiKeySecret: { name: temporal-cloud, key: api-key }
+  payloadKeySecret: { name: temporal-payload-key, key: key }
 
 postgres:
   enabled: true
@@ -35,6 +41,20 @@ content:
   repository: https://git.example.com/platform/content.git
   ref: main
   credentialsSecret: { name: content-repo-credentials }
+
+audit:
+  signingKeySecret: { name: platform-audit, key: signing-key }
+  retentionYears: 10
+  siem:
+    enabled: true
+    hec:
+      url: https://splunk.example.com:8088/services/collector/event
+      token: vault:splunk/hec-token
+      index: platform-audit
+    syslog: { host: syslog.example.internal, port: 6514, protocol: tcp }
+  worm:
+    mode: s3
+    s3: { bucket: platform-evidence, prefix: prod, region: eu-west-1 }
 
 secrets:
   envFrom: [platform-assistant]

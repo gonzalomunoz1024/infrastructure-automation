@@ -1,6 +1,35 @@
 {{- $temporal := dict "target" .Values.temporal.address "namespace" .Values.temporal.namespace "task-queue" .Values.temporal.taskQueue "ui-url" .Values.temporal.uiUrl -}}
+{{- with .Values.temporal.tls -}}
+{{- if .secretName -}}
+{{- $tls := dict -}}
+{{- if .caKey }}{{ $_ := set $tls "ca" "/etc/temporal-tls/ca.crt" }}{{ end -}}
+{{- if .certKey }}{{ $_ := set $tls "cert" "/etc/temporal-tls/tls.crt" }}{{ end -}}
+{{- if .keyKey }}{{ $_ := set $tls "key" "/etc/temporal-tls/tls.key" }}{{ end -}}
+{{- $_ := set $temporal "tls" $tls -}}
+{{- end -}}
+{{- end -}}
+{{- $platform := dict "content" (dict "dir" "/content/repo") "temporal" $temporal -}}
+{{- $audit := dict -}}
+{{- with .Values.audit.retentionYears }}{{ $_ := set $audit "retention-years" . }}{{ end -}}
+{{- $worm := .Values.audit.worm -}}
+{{- if eq (toString $worm.mode) "files" -}}
+{{- $_ := set $audit "worm" (dict "dir" $worm.files.dir) -}}
+{{- else if eq (toString $worm.mode) "s3" -}}
+{{- $s3 := dict "bucket" (required "audit.worm.s3.bucket is required with audit.worm.mode s3" $worm.s3.bucket) "prefix" $worm.s3.prefix "region" $worm.s3.region "endpoint" $worm.s3.endpoint "path-style" $worm.s3.pathStyle -}}
+{{- $_ := set $audit "worm" (dict "s3" $s3) -}}
+{{- end -}}
+{{- if $audit }}{{ $_ := set $platform "audit" $audit }}{{ end -}}
+{{- with .Values.audit.siem -}}
+{{- if .enabled -}}
+{{- if and .hec.url (not (hasPrefix "vault:" (toString .hec.token))) -}}
+{{- fail "audit.siem.hec.token is a vault: reference to the HEC token, never the token itself" -}}
+{{- end -}}
+{{- $siem := dict "hec" (dict "url" .hec.url "token" .hec.token "index" .hec.index) "syslog" (dict "host" .syslog.host "port" .syslog.port "protocol" .syslog.protocol) -}}
+{{- $_ := set $platform "siem" $siem -}}
+{{- end -}}
+{{- end -}}
 {{- $chart := dict
-      "platform" (dict "content" (dict "dir" "/content/repo") "temporal" $temporal)
+      "platform" $platform
       "management" (dict "endpoint" (dict "health" (dict "probes" (dict "enabled" true)))) -}}
 {{- $config := mustMergeOverwrite $chart (deepCopy (.Values.backend.config | default dict)) -}}
 apiVersion: v1

@@ -17,6 +17,11 @@ Open http{{ if .Values.ingress.tlsSecretName }}s{{ end }}://{{ .Values.ingress.h
 
 Try it: kubectl port-forward svc/{{ include "platform.fullname" . }}-{{ ternary "frontend" "api" .Values.frontend.enabled }} 8080:8080, then open http://localhost:8080/
 {{- end }}
+{{- if not .Values.audit.signingKeySecret.name }}
+
+Note: audit.signingKeySecret is empty, so every pod signs evidence seals with a random key per run
+and a seal made before a restart can no longer be verified. Name an existing Secret holding the key.
+{{- end }}
 {{- if and .Values.worker.enabled (not .Values.postgres.enabled) }}
 
 Note: the workers run apart from the API but postgres.enabled is false, so the API does not see

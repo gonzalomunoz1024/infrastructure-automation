@@ -40,13 +40,38 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s:%s" $repo (toString (default .ctx.Chart.AppVersion .image.tag)) -}}
 {{- end -}}
 
-{{/* SPRING_PROFILES_ACTIVE */}}
+{{/* SPRING_PROFILES_ACTIVE: backend.profiles, plus the profiles the postgres and audit values turn on */}}
 {{- define "platform.profiles" -}}
 {{- $profiles := .Values.backend.profiles | default list -}}
-{{- if and .Values.postgres.enabled (not (has "postgres" $profiles)) -}}
-{{- $profiles = append $profiles "postgres" -}}
+{{- $implied := list -}}
+{{- if .Values.postgres.enabled -}}
+{{- $implied = append $implied "postgres" -}}
+{{- end -}}
+{{- if .Values.audit.siem.enabled -}}
+{{- $implied = append $implied "siem" -}}
+{{- end -}}
+{{- if eq (toString .Values.audit.worm.mode) "files" -}}
+{{- $implied = append $implied "worm" -}}
+{{- else if eq (toString .Values.audit.worm.mode) "s3" -}}
+{{- $implied = append $implied "worm-s3" -}}
+{{- else if .Values.audit.worm.mode -}}
+{{- fail "audit.worm.mode is files, s3 or empty" -}}
+{{- end -}}
+{{- range $implied -}}
+{{- if not (has . $profiles) -}}
+{{- $profiles = append $profiles . -}}
+{{- end -}}
 {{- end -}}
 {{- join "," $profiles -}}
+{{- end -}}
+
+{{/* An env var from a key of an existing Secret, nothing when no Secret is named: (dict "env" "NAME" "secret" .Values.x.ySecret) */}}
+{{- define "platform.secretEnv" -}}
+{{- if .secret.name -}}
+- name: {{ .env }}
+  valueFrom:
+    secretKeyRef: { name: {{ .secret.name | quote }}, key: {{ .secret.key | quote }} }
+{{- end -}}
 {{- end -}}
 
 {{/* The pod spec of a backend instance: (dict "ctx" $ "roles" "api" "component" "api" "settings" .Values.api) */}}
@@ -145,6 +170,15 @@ spec:
             secretKeyRef: { name: {{ $v.postgres.passwordSecret.name | quote }}, key: {{ $v.postgres.passwordSecret.key | quote }} }
         {{- end }}
         {{- end }}
+        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_AUDIT_SIGNINGKEY" "secret" $v.audit.signingKeySecret) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_TEMPORAL_APIKEY" "secret" $v.temporal.apiKeySecret) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_TEMPORAL_PAYLOADKEY" "secret" $v.temporal.payloadKeySecret) }}
+        {{- . | nindent 8 }}
+        {{- end }}
         {{- range $v.secrets.env }}
         - name: {{ .name }}
           valueFrom:
@@ -177,6 +211,12 @@ spec:
         - { name: config, mountPath: /etc/platform, readOnly: true }
         - { name: content, mountPath: /content }
         - { name: tmp, mountPath: /tmp }
+        {{- if $v.temporal.tls.secretName }}
+        - { name: temporal-tls, mountPath: /etc/temporal-tls, readOnly: true }
+        {{- end }}
+        {{- if eq (toString $v.audit.worm.mode) "files" }}
+        - { name: evidence, mountPath: {{ $v.audit.worm.files.dir | quote }} }
+        {{- end }}
   volumes:
     - name: config
       configMap:
@@ -185,6 +225,29 @@ spec:
       emptyDir: {}
     - name: tmp
       emptyDir: {}
+    {{- with $v.temporal.tls }}
+    {{- if .secretName }}
+    - name: temporal-tls
+      secret:
+        secretName: {{ .secretName | quote }}
+        defaultMode: 288  # 0440: the pod's group (fsGroup) reads the key, nobody else
+        items:
+          {{- if .caKey }}
+          - { key: {{ .caKey | quote }}, path: ca.crt }
+          {{- end }}
+          {{- if .certKey }}
+          - { key: {{ .certKey | quote }}, path: tls.crt }
+          {{- end }}
+          {{- if .keyKey }}
+          - { key: {{ .keyKey | quote }}, path: tls.key }
+          {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- if eq (toString $v.audit.worm.mode) "files" }}
+    - name: evidence
+      persistentVolumeClaim:
+        claimName: {{ required "audit.worm.files.existingClaim names the volume of the write-once evidence (audit.worm.mode files)" $v.audit.worm.files.existingClaim | quote }}
+    {{- end }}
   {{- with .settings.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}

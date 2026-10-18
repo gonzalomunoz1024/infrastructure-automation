@@ -74,13 +74,15 @@ docs/               architecture, config as code, API, design language, contribu
 
 The demo adapters are plain Spring components. Each production adapter sits behind a profile and
 replaces its demo twin when the profile is on: `temporal` (the interpreter as a Temporal
-workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault` (KV v2
+workflow), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
 provider calls, and Ansible, Terraform, script and http steps run for real, see
 [How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `postgres` (the
 stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DATASOURCE_URL`,
 `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3), `github`
-(change requests as pull requests on the content repo).
+(change requests as pull requests on the content repo). The Git workflow store (JGit over the
+content repo, a branch per change request) is not a profile but the property
+`platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`).
 `docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
 
 ## Deployment
@@ -91,7 +93,15 @@ example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter'
 (`platform.roles`), the web app and one deployment per provider worker against an external
 Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
 agent annotations and never holds a value; `values.yaml` describes every setting and
-`ci/full-values.yaml` shows them all in use.
+`ci/full-values.yaml` shows them all in use. `audit.signingKeySecret` names the Secret holding
+the key that signs evidence seals (without it every pod signs with a random key per run, and a
+seal cannot be verified after a restart), `audit.siem` turns on the SIEM export and
+`audit.worm.mode` write-once evidence (`files` on an existing volume claim, `s3` with Object
+Lock); each adds its profile. For Temporal Cloud or a server that requires mTLS,
+`temporal.tls.secretName` mounts the CA, certificate and key (`platform.temporal.tls.ca`, `.cert`,
+`.key`), `temporal.apiKeySecret` sets `platform.temporal.api-key`, and `temporal.payloadKeySecret`
+the key that encrypts what the interpreter writes into Temporal's histories
+(`platform.temporal.payload-key`).
 
 Evidence, notifications and change records have profiles of their own: `worm` (write-once
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in

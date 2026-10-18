@@ -200,7 +200,7 @@ jobs:
           go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
           chart=deploy/helm/platform
           crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          for values in "" "-f $chart/ci/full-values.yaml"; do
+          for values in "" "-f $chart/ci/full-values.yaml" "-f $chart/ci/worm-files-values.yaml"; do
             helm lint $chart $values
             helm template platform $chart $values | "$(go env GOPATH)/bin/kubeconform" -strict -summary \
               -kubernetes-version 1.30.0 -schema-location default -schema-location "$crds"
