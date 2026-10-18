@@ -524,6 +524,23 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void aCancelStopsTheJobWithoutCompensatingWhatItsStepsDid() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml(COMPENSATE), Map.of("id", "vm-1042"));
+
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        Job cancelled = t.job(job.id());
+        assertThat(cancelled.status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(cancelled.step("get").status()).as("cancel stops, abort rolls back").isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(cancelled.step("undo")).isNull();
+        assertThat(t.steps(job.id())).doesNotContain("get:compensated", "undo:succeeded");
+        t.replay(job.id());
+    }
+
+    @Test
     void aCancelSignalWakesAWaitingJob() {
         t = new TemporalTestEngine();
         Job job = t.start(yaml(WAIT), Map.of());

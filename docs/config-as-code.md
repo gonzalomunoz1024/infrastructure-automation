@@ -163,6 +163,14 @@ the step as `invalid_input` at once, without retries. An error outside any step'
 a container, or while the `outputs` are evaluated) fails that step, or `outputs`, like any other:
 compensation and the workflow's `catch` run.
 
+Cancel stops, abort rolls back, on both engines. Cancelling a job (`POST /jobs/{id}:cancel`) stops
+the step that runs (see the runners below), starts no other, and runs neither compensation nor the
+workflow's `catch`: the job ends `cancelled`, and what its steps did stays as it is. Aborting a
+step that waits for a decision (`POST /jobs/{id}:abort`, or its `attentionTimeout` running out)
+fails it for good: the completed steps' `compensate` steps and the workflow's `catch` run as for any
+failure, and the job ends `rolled_back`, or `failed` when no completed step had compensation. A
+cancel that arrives while compensation or the `catch` runs stops them too.
+
 ### Playbook sources and pins
 
 `playbook` comes from one of three places:
