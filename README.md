@@ -27,8 +27,9 @@ that history, not written into it. Switch users in Settings (`gonzalo` is an adm
 `junior` can only run).
 
 With `--postgres` the stores live in PostgreSQL instead of memory: published workflows, change
-requests, jobs with their steps and events, audit evidence and the rest survive a restart, and
-the demo history is written once per database.
+requests, providers with their canary candidates and releases, the wizard's review evidence, jobs
+with their steps and events, provider-call samples, audit evidence and the rest survive a restart,
+and the demo history is written once per database.
 
 The generated surface:
 
