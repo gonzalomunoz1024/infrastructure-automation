@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigInteger;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -93,6 +95,28 @@ class MongoTest {
         assertThatThrownBy(() -> shapes.insertOne(new Document("_id", "too-long").append(Mongo.DOC,
                 db.mongo().doc(new Shape("x", null, 0, 0, tooLong, List.of(), Map.of())))))
                 .as("35 digits do not fit a Decimal128: refused, never rounded").hasStackTraceContaining("inexact rounding");
+    }
+
+    record Note(String title, String owner, JsonNode data, Map<String, Object> labels) {
+    }
+
+    @Test
+    void aNullInsideAJsonValueOrAMapComesBackAndANullComponentIsLeftOut() throws Exception {
+        // a job's input, or an evidence entry's data, whose hash is checked again on every read
+        JsonNode data = new ObjectMapper().readTree("""
+                {"a": 1, "gone": null, "inner": {"x": null, "list": [null, {"y": null}]}}
+                """);
+        Map<String, Object> labels = new LinkedHashMap<>();
+        labels.put("team", "platform");
+        labels.put("unset", null);
+        labels.put("nested", new LinkedHashMap<>(Collections.singletonMap("z", null)));
+        Note note = new Note("web-07", null, data, labels);
+        MongoCollection<Document> notes = db.mongo().collection("notes");
+        notes.insertOne(new Document("_id", "one").append(Mongo.DOC, db.mongo().doc(note)));
+
+        Document stored = notes.find().first();
+        assertThat(db.mongo().read(stored, Note.class)).isEqualTo(note);
+        assertThat(stored.get(Mongo.DOC, Document.class)).as("a null component is left out").doesNotContainKey("owner");
     }
 
     @Test

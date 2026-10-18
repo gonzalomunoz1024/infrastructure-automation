@@ -55,8 +55,10 @@ import reactor.core.scheduler.Schedulers;
  *
  * <p>A record is stored whole, as the {@code doc} field of its document, and read back from it;
  * the other top-level fields are copies of what the adapter queries, sorts and indexes on. The
- * mapping is the application's JSON (ISO instants to the nanosecond, lowercase enums, no nulls)
- * turned into a document field by field, never parsed as extended JSON, so a key such as
+ * mapping is the application's JSON (ISO instants to the nanosecond, lowercase enums, a null
+ * component left out, while a null inside a JSON value or a map is kept both ways, so a job's input
+ * or an evidence entry's hashed data comes back exactly) turned into a document field by field,
+ * never parsed as extended JSON, so a key such as
  * {@code $ref} in an imported schema stays a key, and read back with {@link #codecs}, so a part of
  * a schema that holds {@code $id} beside {@code $ref} stays a document and an integer beyond a long
  * comes back as that integer. Unknown fields are ignored on the way back, so a document written
@@ -70,12 +72,14 @@ public class Mongo {
     /** The field that holds the stored record. */
     public static final String DOC = "doc";
 
+    // Only a null component is left out: the builder's serializationInclusion would also leave out a
+    // map's null values, and a read turns the stored document, which is a map, into the record.
     private static final ObjectMapper MAPPER = Jackson2ObjectMapperBuilder.json()
             .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, SerializationFeature.WRITE_DURATIONS_AS_TIMESTAMPS,
                     DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .serializationInclusion(JsonInclude.Include.NON_NULL)
             .visibility(PropertyAccessor.IS_GETTER, JsonAutoDetect.Visibility.NONE)
-            .build();
+            .build()
+            .setDefaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.ALWAYS));
     private static final TypeReference<Map<String, Object>> FIELDS = new TypeReference<>() {
     };
     private static final String REVISIONS = "store_revisions";
