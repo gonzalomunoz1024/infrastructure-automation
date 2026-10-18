@@ -10,6 +10,7 @@ import type { InsertPoint } from '../model/edits'
 import { findStepNode, triggerNodeId, type Graph } from '../model/graph'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
 import { NodeGlyph } from '../canvas/glyphs'
+import { revealIn } from '../scroll'
 import { buildCatalog, ROOT_VIEW, searchCatalog, type CreatorItem } from './catalog'
 
 /** Where the step lands, in words. */
@@ -56,7 +57,9 @@ export function NodeCreator() {
   }, [stack])
   useEffect(() => setActive(0), [query, stack])
   useEffect(() => {
-    listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' })
+    const list = listRef.current
+    const row = list?.querySelector<HTMLElement>(`[data-index="${active}"]`)
+    if (list && row) revealIn(list, row)
   }, [active])
 
   const open = (id: string) => {

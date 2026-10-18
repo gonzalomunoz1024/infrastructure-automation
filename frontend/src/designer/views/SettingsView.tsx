@@ -5,7 +5,7 @@
  * how a new version rolls out, and the workflow outputs. Every change goes through the store, so
  * it is undoable and checked live like the canvas.
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Checkbox, Icon, Input, Segmented, Select, StateTag, type SelectOption } from '@iaf/ui'
 import type { JsonObject, JsonSchema, JsonValue, WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
@@ -13,6 +13,7 @@ import { useQuery } from '../../lib/queries'
 import { apiTriggerLabel, triggerNodeId } from '../model/graph'
 import { contextAt } from '../model/expressions'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
+import { revealIn } from '../scroll'
 import { NdvContext, type NdvContextValue } from '../ndv/context'
 import { asObject, asString, problemsAt, readDocField, writeDocField } from '../ndv/fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ProblemList, type ParamSpec } from '../ndv/ParameterField'
@@ -418,6 +419,7 @@ export function SettingsView() {
     outputs: counts(['workflow.outputs']),
   }
   const teams = me.data?.teams ?? []
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   return (
     <NdvContext.Provider value={ndv}>
@@ -426,18 +428,22 @@ export function SettingsView() {
           <ul className="space-y-0.5">
             {NAV.map((n) => (
               <li key={n.id}>
-                <a href={`#settings-${n.id}`} onClick={(e) => {
-                  e.preventDefault()
-                  document.getElementById(`settings-${n.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }} className="flex items-center justify-between rounded-sm px-2.5 py-1.5 text-footnote text-secondary hover:bg-surface hover:text-primary">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const section = document.getElementById(`settings-${n.id}`)
+                    if (scrollRef.current && section) revealIn(scrollRef.current, section, { align: 'start', offset: 24, smooth: true })
+                  }}
+                  className="flex w-full items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-footnote text-secondary hover:bg-surface hover:text-primary"
+                >
                   {n.label}
                   {navCount[n.id] > 0 && <span className="rounded-full bg-critical-tint px-1.5 text-caption2 font-medium text-critical">{navCount[n.id]}</span>}
-                </a>
+                </button>
               </li>
             ))}
           </ul>
         </nav>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-4 py-6 sm:px-6">
             <Section id="workflow" title="Workflow" description="How the catalog, the API and the MCP tool name and group this workflow.">
               <div className="grid gap-4 sm:grid-cols-2">

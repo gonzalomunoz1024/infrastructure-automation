@@ -98,16 +98,17 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
           {status === 'published' && version ? `published ${version}` : status}
         </StateTag>
         {owner && (
-          <Tag size="sm" icon="users" outline>
+          <Tag size="sm" icon="users" outline className="hidden min-[1400px]:inline-flex">
             {owner}
           </Tag>
         )}
-        {s.dirty && !s.saving && <span className="hidden truncate text-caption text-tertiary lg:inline">Unsaved changes</span>}
+        {s.dirty && !s.saving && <span className="hidden truncate text-caption text-tertiary 2xl:inline">Unsaved changes</span>}
       </div>
 
       <Tabs<DesignerTab> tabs={tabs} value={s.tab} onChange={(t) => store.setTab(t)} ariaLabel="Designer views" className="shrink-0 flex-nowrap" />
 
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+      {/* never narrower than its buttons: when space runs out the title truncates, not this */}
+      <div className="flex min-w-max flex-1 items-center justify-end gap-1.5">
         <Tooltip label={s.problems.length === 0 ? 'No problems found' : `${errors} errors, ${warnings} warnings`} side="bottom">
           <button
             type="button"
@@ -125,13 +126,13 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
           </button>
         </Tooltip>
         <Tooltip label="The workflow as YAML" side="bottom">
-          <Button variant="ghost" size="sm" icon="document" onClick={onYaml}>
-            YAML
+          <Button variant="ghost" size="sm" icon="document" onClick={onYaml} aria-label="YAML">
+            <span className="hidden min-[1400px]:inline">YAML</span>
           </Button>
         </Tooltip>
         <Tooltip label="Build or change the workflow by describing it" side="bottom">
-          <Button variant="ghost" size="sm" icon="sparkles" onClick={onAssistant} className={cx(assistantOpen && 'bg-accent-tint text-accent')}>
-            Assistant
+          <Button variant="ghost" size="sm" icon="sparkles" onClick={onAssistant} aria-label="Assistant" aria-pressed={assistantOpen} className={cx(assistantOpen && 'bg-accent-tint text-accent')}>
+            <span className="hidden min-[1400px]:inline">Assistant</span>
           </Button>
         </Tooltip>
         <span className="mx-1 h-5 w-px bg-stroke-light" aria-hidden="true" />

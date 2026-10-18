@@ -48,16 +48,21 @@ function JobRow({ job, selected, onSelect }: { job: JobSummary; selected: boolea
   )
 }
 
+function stepTiming(step: JobStep): string {
+  const parts: string[] = []
+  if (step.startedAt) parts.push(`Started ${relativeTime(step.startedAt)}`)
+  else if (step.durationMs === undefined) parts.push(step.status === 'skipped' ? 'Skipped' : 'Not started')
+  if (step.durationMs !== undefined) parts.push(parts.length === 0 ? `Took ${duration(step.durationMs)}` : `took ${duration(step.durationMs)}`)
+  if (step.items !== undefined) parts.push(`${step.items} items`)
+  return parts.join(' · ')
+}
+
 function StepDrawer({ step, job, onClose }: { step: JobStep; job: JobDetail; onClose: () => void }) {
   return (
     <Drawer onClose={onClose} width="max-w-xl" label={`Step ${step.name}`}>
       <OverlayHeader title={step.name || step.id} subtitle={`${step.id} · ${step.type} · attempt ${step.attempt}`} actions={<StateTag status={step.status} />} />
       <OverlayBody className="space-y-5">
-        <p className="text-caption text-tertiary">
-          {step.startedAt ? `Started ${relativeTime(step.startedAt)}` : 'Not started'}
-          {step.durationMs !== undefined ? ` · took ${duration(step.durationMs)}` : ''}
-          {step.items !== undefined ? ` · ${step.items} items` : ''}
-        </p>
+        <p className="text-caption text-tertiary">{stepTiming(step)}</p>
         {step.error && (
           <div className="rounded-md border border-critical/40 bg-critical-tint p-3 text-caption text-critical" role="alert">
             <p className="font-semibold">{step.error.class}</p>

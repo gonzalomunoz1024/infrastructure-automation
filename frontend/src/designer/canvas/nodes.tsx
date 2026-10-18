@@ -137,7 +137,7 @@ export const StepNode = memo(function StepNode({ id, data, selected, isConnectab
     void store.testRun(st.lastInput ?? sampleInput(st.doc), data.stepId)
   }
   return (
-    <div className="group relative" style={{ width: NODE_SIZE, height }} data-step={data.stepId}>
+    <div className="group relative" style={{ width: NODE_SIZE, height }} data-step={data.stepId} data-run={data.run ?? undefined}>
       {!data.readOnly && (
         <HoverToolbar>
           <ToolbarButton label="Test step" icon="play" onClick={testStep} />
@@ -185,7 +185,7 @@ export const TriggerNode = memo(function TriggerNode({ id, data, selected, isCon
   const store = useDesignerStore()
   const removable = data.triggerType !== 'api'
   return (
-    <div className="group relative" style={{ width: NODE_SIZE, height: NODE_SIZE }} data-trigger={data.triggerType}>
+    <div className="group relative" style={{ width: NODE_SIZE, height: NODE_SIZE }} data-trigger={data.triggerType} data-run={data.run ?? undefined}>
       {!data.readOnly && removable && (
         <HoverToolbar>
           <ToolbarButton label="Delete" icon="trash" onClick={() => store.deleteNodes([id])} />
