@@ -22,6 +22,7 @@ import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.NotFoundException;
 
 /**
@@ -171,7 +172,7 @@ public class JdbcEvidenceStore implements EvidenceStore {
         random.nextBytes(bytes);
         ShareToken token = new ShareToken(Base64.getUrlEncoder().withoutPadding().encodeToString(bytes), jobId, expiresAt);
         jdbc.update("INSERT INTO evidence_share_links (token_hash, job_id, expires_at, doc) VALUES (?, ?, ?, ?)",
-                Jdbc.sha256(token.token()), jobId, Jdbc.time(expiresAt), jdbc.json(new ShareToken(null, jobId, expiresAt)));
+                Hashes.sha256(token.token()), jobId, Jdbc.time(expiresAt), jdbc.json(new ShareToken(null, jobId, expiresAt)));
         return token;
     }
 
@@ -181,7 +182,7 @@ public class JdbcEvidenceStore implements EvidenceStore {
             return Optional.empty();
         }
         return jdbc.first("SELECT doc FROM evidence_share_links WHERE token_hash = ?",
-                (rs, i) -> jdbc.read(rs.getString(1), ShareToken.class), Jdbc.sha256(token))
+                (rs, i) -> jdbc.read(rs.getString(1), ShareToken.class), Hashes.sha256(token))
                 .map(link -> new ShareToken(token, link.jobId(), link.expiresAt()));
     }
 

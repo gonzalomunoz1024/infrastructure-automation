@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Effect;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.providers.domain.SpecImport.AuthInfo;
 import com.iaf.platform.providers.domain.SpecImport.Operation;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -98,7 +99,7 @@ public final class OpenApiImporter {
             Effect effect = inferEffect(l.method(), id, summary);
             operations.add(new Operation(id, l.method(), l.path(), summary, effect, retry(l.method()), inputSchema(doc, l), outputSchema(doc, op)));
         }
-        return new SpecImport(info.path("title").asText(null), info.path("version").asText(null), WorkflowYaml.sha256(raw), auth(doc), servers, operations);
+        return new SpecImport(info.path("title").asText(null), info.path("version").asText(null), Hashes.sha256(raw), auth(doc), servers, operations);
     }
 
     /** Every operation of the document, in document order. */

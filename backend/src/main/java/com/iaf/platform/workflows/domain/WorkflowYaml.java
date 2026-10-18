@@ -1,9 +1,6 @@
 package com.iaf.platform.workflows.domain;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,6 +16,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.yaml.snakeyaml.LoaderOptions;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.workflows.domain.Step.CatchBlock;
 import com.iaf.platform.workflows.domain.Step.Output;
 import com.iaf.platform.workflows.domain.Step.Position;
@@ -532,16 +530,7 @@ public final class WorkflowYaml {
 
     /** SHA-256 of the canonical YAML, the version's content hash. */
     public static String contentHash(WorkflowDefinition d) {
-        return sha256(toYaml(d));
-    }
-
-    public static String sha256(String s) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest(s.getBytes(StandardCharsets.UTF_8)));
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
+        return Hashes.sha256(toYaml(d));
     }
 
     /** The definition as the API sends it (records with {@code type}, {@code with} per step). */

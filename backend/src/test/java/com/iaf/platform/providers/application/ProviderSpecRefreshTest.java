@@ -27,6 +27,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.platform.assistant.ports.inbound.AssistantCommands;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
@@ -183,7 +184,7 @@ class ProviderSpecRefreshTest {
         assertThat(cr.strategy()).as("a new spec can change the calls, so it rolls out through a canary").isEqualTo("canary");
         ProviderDefinition next = ProviderYaml.parse(cr.yaml());
         assertThat(next.spec().specSource().commit()).isEqualTo(COMMIT_2);
-        assertThat(next.spec().specSource().sha256()).isEqualTo(WorkflowYaml.sha256(SPEC_V2));
+        assertThat(next.spec().specSource().sha256()).isEqualTo(Hashes.sha256(SPEC_V2));
         assertThat(next.spec().specSource().git().ref()).isEqualTo("main");
         assertThat(next.action("machine.get").orElseThrow().output().path("properties").has("memoryGb")).isTrue();
         assertThat(cr.diff()).contains("+++ b/providers/team-compute/machines.yaml").contains(COMMIT_2).contains("memoryGb");

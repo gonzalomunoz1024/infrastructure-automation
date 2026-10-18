@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobEvent;
@@ -195,7 +196,7 @@ public class JdbcProjectionStore implements ProjectionStore {
             }
         }
         String json = jdbc.json(d);
-        String hash = Jdbc.sha256(json);
+        String hash = Hashes.sha256(json);
         boolean known;
         synchronized (definitions) {
             known = definitions.containsKey(hash);

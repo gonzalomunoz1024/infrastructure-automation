@@ -23,6 +23,7 @@ import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -289,7 +290,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private CommandAccepted refreshed(Identity who, StoredProvider current, LatestSpec latest, RefreshSpec c) {
         ProviderDefinition def = current.definition();
         SpecSource source = def.spec().specSource();
-        String sha = WorkflowYaml.sha256(latest.raw());
+        String sha = Hashes.sha256(latest.raw());
         if (sha.equalsIgnoreCase(source.sha256() == null ? "" : source.sha256())) {
             return CommandAccepted.of(def.name(), "unchanged", Map.of("provider", "/api/v1/providers/" + def.name()));
         }

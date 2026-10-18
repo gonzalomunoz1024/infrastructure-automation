@@ -28,6 +28,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
@@ -298,7 +299,7 @@ class HttpProviderCallTest {
                   actions:
                     - { id: machine.get, operation: getMachine, effect: read, retry: safe }
                     - { id: machine.nope, operation: nothingHere, effect: read, retry: safe }
-                """.formatted(LocalHttp.url(server), WorkflowYaml.sha256(spec), LocalHttp.url(server)));
+                """.formatted(LocalHttp.url(server), Hashes.sha256(spec), LocalHttp.url(server)));
         ProviderCall get = new ProviderCall(null, 1, machines, machines.action("machine.get").orElseThrow(), "dev", json("{\"machineId\":\"m-1\"}"), false);
         StepVerifier.create(call.call(get)).assertNext(r -> assertThat(r.path("name").asText()).isEqualTo("one")).verifyComplete();
         StepVerifier.create(call.call(get)).expectNextCount(1).verifyComplete();
@@ -331,7 +332,7 @@ class HttpProviderCallTest {
                   auth: { type: none }
                   actions:
                     - { id: machine.get, operation: getMachine, effect: read, retry: safe }
-                """.formatted(commit, WorkflowYaml.sha256(spec), LocalHttp.url(server));
+                """.formatted(commit, Hashes.sha256(spec), LocalHttp.url(server));
         ProviderDefinition machines = ProviderYaml.parse(yaml);
         ProviderCall get = new ProviderCall(null, 1, machines, machines.action("machine.get").orElseThrow(), "dev", json("{\"machineId\":\"m-1\"}"), false);
         HttpProviderCall withGit = new HttpProviderCall(WebClient.builder(), credentials, telemetry, Clock.fixed(NOW, ZoneOffset.UTC), git);
@@ -341,7 +342,7 @@ class HttpProviderCallTest {
         verify(git, org.mockito.Mockito.times(1)).file(any(), any(), any(), any());
 
         // a platform without a Git reader says so instead of guessing
-        ProviderDefinition other = ProviderYaml.parse(yaml.replace(WorkflowYaml.sha256(spec), "0".repeat(64)));
+        ProviderDefinition other = ProviderYaml.parse(yaml.replace(Hashes.sha256(spec), "0".repeat(64)));
         StepVerifier.create(call.call(new ProviderCall(null, 1, other, other.action("machine.get").orElseThrow(), "dev", json("{\"machineId\":\"m-1\"}"), false)))
                 .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("spec_unavailable"))
                 .verify();

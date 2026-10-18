@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Effect;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.providers.domain.SpecImport.Operation;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
@@ -39,7 +40,7 @@ class OpenApiImporterTest {
         assertThat(spec.version()).isEqualTo("2.4.0");
         assertThat(spec.servers()).containsExactly("https://machines.example.com/api", "https://machines-dev.example.com/api");
         assertThat(spec.auth().type()).isEqualTo("bearer");
-        assertThat(spec.sha256()).isEqualTo(WorkflowYaml.sha256(raw)).hasSize(64);
+        assertThat(spec.sha256()).isEqualTo(Hashes.sha256(raw)).hasSize(64);
     }
 
     @Test
