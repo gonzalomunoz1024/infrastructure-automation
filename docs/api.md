@@ -482,7 +482,7 @@ type ResolvedRef = { repo: string; ref: string; commit: string }
 ```
 
 | POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload` |
-| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now |
+| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now. 403 naming the credential and its team when the caller may not use `credential` (see Credentials); the same rule judges the publishing identity when a publish pins a git playbook with a credential |
 
 Both need a team (or admin), 403 otherwise. An upload is checked before it is kept: every
 archive entry is a relative path without `..`, backslashes or control characters; links,

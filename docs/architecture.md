@@ -98,7 +98,10 @@ repository, the module registry) only after `AccessRules.requireUseCredential` h
 caller against the owner the store reports, through `CredentialUse` in the providers slice: admins
 pass, so does anyone for a credential without an owner. The check runs before the secret is
 resolved, and a name the store does not know is left to fail where it is resolved, so a refusal
-never reveals a credential another team owns.
+never reveals a credential another team owns. The same rule, as `identity.application.CredentialAccess`,
+guards the playbooks slice: `GET /playbooks:resolve` with a credential, and the pinning of git
+playbooks at publish (`PlaybookPinning`), which judges the publishing identity and refuses the
+publish with 403 rather than sending another team's credential to a repository.
 
 The demo data follows one fixture, `common.demo.DemoReleases`: the release stories (versions,
 stages, outcomes, who decided). `DemoWorkflowHistory` keeps the versions those releases replaced
