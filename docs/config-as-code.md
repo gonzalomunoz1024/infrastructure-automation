@@ -374,6 +374,13 @@ value fills that one segment: a `/` in it is sent encoded (`%2F`), and a value w
 segment fails the call with `invalid_input` before anything is sent. The declared query parameters
 come next, and the rest of the input is the JSON body (query parameters for a method without one).
 
+An error rule matches a failed call by its `status`, narrowed by a `body` text when several classes
+share a status (`match: { status: 400, body: quota }`). The rules are tried in order and the first
+that matches names the class; a call no rule matches falls back to its status (401 and 403
+`unauthorized`, 404 `not_found`, 409 `conflict`, 429 `rate_limited`, 408, 502, 503 and 504
+`unavailable`, any other 5xx `server_error`, any other 4xx `client_error`). A rule without a status
+never matches, and the review refuses it.
+
 The spec can also live in a Git repository. The file then names the repository, the ref and the
 path, and pins the commit it was read from; calls look operations up in that commit, never in
 whatever the ref points at today:

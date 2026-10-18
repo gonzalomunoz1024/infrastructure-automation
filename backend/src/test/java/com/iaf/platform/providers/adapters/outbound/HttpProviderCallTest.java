@@ -221,6 +221,31 @@ class HttpProviderCallTest {
     }
 
     @Test
+    void anErrorRuleNamesTheStatusAndABodyTextOnlyNarrowsIt() {
+        ProviderDefinition p = ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: quotas, owner: team-compute, version: 1.0.0 }
+                spec:
+                  type: http
+                  endpoints: { dev: https://quotas.example.com }
+                  actions: [ { id: x.get, operation: { method: GET, path: /x }, effect: read, retry: safe } ]
+                  errors:
+                    - { match: { body: quota }, class: body_only, retry: true }
+                    - { match: { status: 400, body: quota }, class: quota_exceeded, retry: true }
+                    - { match: { status: 400 }, class: bad_input, retry: false }
+                """);
+        ProviderCallException quota = HttpProviderCall.classify(p, 400, "{\"error\":\"quota exceeded for project\"}");
+        assertThat(quota.errorClass()).isEqualTo("quota_exceeded");
+        assertThat(quota.retryable()).isTrue();
+        assertThat(HttpProviderCall.classify(p, 400, "{\"error\":\"name is required\"}").errorClass()).isEqualTo("bad_input");
+        // a rule without a status never matches (the review refuses it): the status decides
+        ProviderCallException server = HttpProviderCall.classify(p, 500, "quota service down");
+        assertThat(server.errorClass()).isEqualTo("server_error");
+        assertThat(HttpProviderCall.classify(p, 404, "quota").errorClass()).isEqualTo("not_found");
+    }
+
+    @Test
     void aRejectedCredentialIsUnauthorizedByDefault() {
         when(credentials.resolve("vault:fleet/token")).thenReturn(Mono.just("wrong"));
         StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)))

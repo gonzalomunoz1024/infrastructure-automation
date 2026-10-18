@@ -388,7 +388,7 @@ public class HttpProviderCall implements ProviderCallPort {
 
     // ---------------------------------------------------------------- errors
 
-    /** The provider's {@code errors} table first ({@code match.status}, optional {@code match.body} substring), then sensible defaults. */
+    /** The provider's {@code errors} table first, in order ({@code match.status}, narrowed by an optional {@code match.body} substring), then sensible defaults. */
     static ProviderCallException classify(ProviderDefinition p, int status, String body) {
         String message = "HTTP " + status + (body == null || body.isBlank() ? "" : ": " + (body.length() > 300 ? body.substring(0, 300) + "…" : body.trim()));
         if (p.spec().errors() != null) {
@@ -397,9 +397,12 @@ public class HttpProviderCall implements ProviderCallPort {
                 if (match == null || !match.isObject()) {
                     continue;
                 }
-                boolean statusMatches = !match.has("status") || match.get("status").asInt() == status;
-                boolean bodyMatches = !match.has("body") || (body != null && body.contains(match.get("body").asText()));
-                if (match.has("status") && statusMatches && bodyMatches) {
+                // a rule names the status (the review refuses one without: errors.noStatus); a body text only narrows a
+                // status several classes share, so a rule without a status never matches
+                if (!match.has("status") || match.get("status").asInt() != status) {
+                    continue;
+                }
+                if (!match.has("body") || (body != null && body.contains(match.get("body").asText()))) {
                     return new ProviderCallException(e.errorClass(), message, e.retry(), status);
                 }
             }

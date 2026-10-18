@@ -11,7 +11,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.yaml.snakeyaml.LoaderOptions;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.iaf.platform.common.domain.Effect;
@@ -31,8 +30,8 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 /** Reads and writes {@code kind: Provider} files, canonically. */
 public final class ProviderYaml {
 
+    /** Writes only: files are read through {@link WorkflowYaml#readTree}, which refuses a key written twice. */
     private static final ObjectMapper YAML = new ObjectMapper(YAMLFactory.builder()
-            .loaderOptions(strictKeys())
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
             .enable(YAMLGenerator.Feature.INDENT_ARRAYS_WITH_INDICATOR)
@@ -41,13 +40,6 @@ public final class ProviderYaml {
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private ProviderYaml() {
-    }
-
-    /** A key written twice would silently keep one value, so the parser refuses it like the designer does. */
-    private static LoaderOptions strictKeys() {
-        LoaderOptions options = new LoaderOptions();
-        options.setAllowDuplicateKeys(false);
-        return options;
     }
 
     public static ProviderDefinition parse(String yaml) {
