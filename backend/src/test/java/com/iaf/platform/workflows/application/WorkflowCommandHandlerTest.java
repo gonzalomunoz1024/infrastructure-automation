@@ -705,6 +705,21 @@ class WorkflowCommandHandlerTest {
     }
 
     @Test
+    void aDraftUnderReviewIsNotDeleted() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String crId = handler.publish("vm-restart", new PublishWorkflow("all", null)).block().id();
+        // a store that forgot the candidate (a restart before candidates were restored) shows it as a draft
+        store.save(store.get("vm-restart", "1.2.1").orElseThrow().withStatus(WorkflowStatus.DRAFT));
+
+        StepVerifier.create(handler.deleteDraft("vm-restart"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class)
+                        .hasMessage("workflow vm-restart 1.2.1 is under review in change request " + crId + "; close it before deleting the draft"))
+                .verify();
+        assertThat(store.get("vm-restart", "1.2.1")).isPresent();
+        assertThat(eventsOf("workflow.deleted")).isEmpty();
+    }
+
+    @Test
     void theAuthorMayStillCloseTheirOwnChange() {
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block();
         String crId = handler.publish("vm-restart", null).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block().id();

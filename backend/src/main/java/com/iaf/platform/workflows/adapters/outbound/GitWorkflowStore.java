@@ -9,9 +9,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.eclipse.jgit.api.Git;
@@ -41,12 +43,14 @@ import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.VersionRules;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
+import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 import jakarta.annotation.PostConstruct;
@@ -77,6 +81,17 @@ public class GitWorkflowStore implements WorkflowStorePort {
     private final Map<String, Map<String, WorkflowRecord>> index = new ConcurrentHashMap<>();
     private Repository repo;
     private String mainBranch = "main";
+    /**
+     * The change requests, read when the index is built: a version on its change branch is a
+     * candidate while an open change request reviews it, a draft otherwise. Set by Spring (before
+     * {@link #init()}); a store built by hand without it indexes every branch version as a draft.
+     */
+    private ChangeRequestPort changeRequests;
+
+    @Autowired(required = false)
+    public void setChangeRequests(ChangeRequestPort changeRequests) {
+        this.changeRequests = changeRequests;
+    }
 
     @Autowired
     public GitWorkflowStore(PlatformProperties props, Clock clock) {
@@ -392,6 +407,7 @@ public class GitWorkflowStore implements WorkflowStorePort {
                 }
             }
         }
+        Set<String> underReview = underReview();
         for (Ref ref : repo.getRefDatabase().getRefsByPrefix(HEADS + "change/")) {
             String branch = ref.getName().substring(HEADS.length());
             try (RevWalk rw = new RevWalk(repo)) {
@@ -400,11 +416,25 @@ public class GitWorkflowStore implements WorkflowStorePort {
                     parse(e.getKey(), e.getValue(), cache)
                             .filter(p -> branch.equals(VersionRules.branch(p.definition().name(), p.definition().version())))
                             .filter(p -> get(p.definition().name(), p.definition().version()).isEmpty())
-                            .ifPresent(p -> put(record(p, WorkflowStatus.DRAFT, e.getKey(), tip)));
+                            .ifPresent(p -> put(record(p, underReview.contains(branch) ? WorkflowStatus.CANDIDATE : WorkflowStatus.DRAFT, e.getKey(), tip)));
                 }
             }
         }
         log.info("indexed {} workflow version(s) from git at {}", index.values().stream().mapToInt(Map::size).sum(), dir);
+    }
+
+    /** The change branches of the workflow versions open change requests review. */
+    private Set<String> underReview() {
+        if (changeRequests == null) {
+            return Set.of();
+        }
+        Set<String> branches = new HashSet<>();
+        for (ChangeRequest cr : changeRequests.all()) {
+            if (cr.status() == ChangeRequest.Status.OPEN && cr.kind() == ChangeRequest.Kind.WORKFLOW) {
+                branches.add(VersionRules.branch(cr.name(), cr.version()));
+            }
+        }
+        return branches;
     }
 
     private WorkflowRecord record(Parsed p, WorkflowStatus status, String path, RevCommit commit) {

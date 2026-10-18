@@ -193,6 +193,12 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             if (drafts.isEmpty()) {
                 throw new ConflictException("workflow " + name + " has no draft; published versions are never deleted");
             }
+            // a version under review is the change request's, whatever status the store remembers for it
+            for (WorkflowRecord d : drafts) {
+                openChangeRequest(name).filter(cr -> d.version().equals(cr.version())).ifPresent(cr -> {
+                    throw new ConflictException("workflow " + name + " " + d.version() + " is under review in change request " + cr.id() + "; close it before deleting the draft");
+                });
+            }
             for (WorkflowRecord d : drafts) {
                 store.delete(name, d.version());
                 events.publish(DELETED, "workflow", name, who.id(), data().put("name", name).put("version", d.version()).put("by", who.id()));

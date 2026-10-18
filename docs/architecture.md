@@ -368,7 +368,10 @@ router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/ap
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a
 resource type `resource-types/<name>.yaml`, all under the content repo (`workflows/` in this
 monorepo for the samples). Publishing writes the file on a branch `change/<name>-<version>` and
-opens a change request; merging it publishes the version and starts its canary. A provider
+opens a change request; merging it publishes the version and starts its canary. The Git store
+indexes a version on its change branch as the candidate while an open change request reviews it
+and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
+delete (which also asks the change requests before it deletes anything). A provider
 version rolls out the same way: the providers slice keeps the candidate beside the current version
 (`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
 asked by `ProviderQueries.provider` when the lookup carries the job's `ProviderQueries.Use` in its
