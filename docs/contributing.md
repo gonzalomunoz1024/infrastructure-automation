@@ -6,6 +6,7 @@
 # backend (Java 21, Maven)
 cd backend && mvn -B -q compile && mvn -B -q test
 cd backend && mvn spring-boot:run                       # http://localhost:8080, demo profile
+cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=demo,postgres   # state in PostgreSQL (docker compose up postgres)
 
 # frontend (Node 22)
 npm install                                             # workspaces: packages/ui, packages/workflow-checks, frontend
@@ -38,6 +39,15 @@ npm run check:workflows                                 # packages/workflow-chec
   carries `@Profile("<name>")` and `@Primary`, so it replaces the demo one when its profile is on.
 - Blocking work (JGit, process runners, Temporal client) goes through
   `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`.
+- Stores: a store port has one contract test, an abstract `<Port>Contract`, that every adapter's
+  test extends, so the in-memory and the JDBC adapter behave the same. A JDBC adapter
+  (`@Profile("postgres") @Primary`, over `Jdbc`) runs it on `TestDatabase.h2()` (H2 in PostgreSQL
+  mode, migrated by Flyway, no Spring) and, when `PLATFORM_TEST_POSTGRES_URL` names a PostgreSQL
+  (`jdbc:postgresql://localhost:5432/platform?user=platform` with `docker compose up postgres`), on
+  `TestDatabase.postgres()`, a fresh schema per test. A schema change is a new migration: portable
+  SQL in `db/migration/common`, PostgreSQL-only DDL in `db/migration/postgresql` (with its H2 twin
+  under `src/test/resources`); never edit one that has shipped. A JDBC store blocks, so it is
+  reached from `boundedElastic` or a worker thread, never from a timer or `parallel` thread.
 - Records everywhere; enums serialise lowercase with `@JsonValue`; Jackson `non_null`; one
   injectable `Clock`; ids via `Ids.next("job")`.
 - Errors: `IllegalArgumentException` (400), `NotFoundException` (404), `ForbiddenException`

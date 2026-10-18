@@ -22,6 +22,7 @@ import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort;
 import com.iaf.platform.workflows.domain.StepType;
 
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The demo {@link AutomationRunnerPort}: {@code call: ansible} answers from the ansible-type
@@ -63,7 +64,7 @@ public class DemoAutomationRunner implements AutomationRunnerPort {
         }
         long latency = ThreadLocalRandom.current().nextInt(RecordedProviderCall.MIN_LATENCY_MS, RecordedProviderCall.MAX_LATENCY_MS + 1);
         return providers.all().collectList().defaultIfEmpty(java.util.List.of())
-                .delayElement(Duration.ofMillis(latency))
+                .delayElement(Duration.ofMillis(latency), Schedulers.boundedElastic()) // the job read below may be a database read
                 .map(list -> {
                     Instant at = clock.instant().minusMillis(latency);
                     Answer answer = RecordedWorld.automation(list, request.type(), request.with(), request.jobId(), request.seq(), request.checkMode());

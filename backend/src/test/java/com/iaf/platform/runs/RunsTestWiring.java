@@ -26,6 +26,7 @@ import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands.RegisterResource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.adapters.outbound.DemoAutomationRunner;
+import com.iaf.platform.runs.adapters.outbound.InMemoryProjectionStore;
 import com.iaf.platform.runs.adapters.outbound.InMemoryWorkflowExecution;
 import com.iaf.platform.runs.adapters.outbound.MockServiceNowChangeTickets;
 import com.iaf.platform.runs.adapters.outbound.RecordedProviderCall;
@@ -35,6 +36,7 @@ import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.application.RunsCommandHandler;
 import com.iaf.platform.runs.application.RunsQueryHandler;
 import com.iaf.platform.runs.application.StepExecutors;
+import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -55,7 +57,7 @@ public final class RunsTestWiring {
 
     public final Clock clock = Clock.systemUTC();
     public final EventBus bus = new EventBus(clock);
-    public final JobProjection projection = new JobProjection(bus);
+    public final JobProjection projection;
     public final JobEvents events = new JobEvents(bus);
     public final WorkflowQueries workflows = mock(WorkflowQueries.class);
     public final ProviderQueries providers = mock(ProviderQueries.class);
@@ -73,6 +75,12 @@ public final class RunsTestWiring {
     public final RunsQueryHandler queries;
 
     public RunsTestWiring() {
+        this(new InMemoryProjectionStore());
+    }
+
+    /** The same wiring over another runs index, such as the JDBC one. */
+    public RunsTestWiring(ProjectionStore store) {
+        projection = new JobProjection(bus, store);
         projection.register();
         when(workflows.publishedAll()).thenAnswer(i -> Flux.fromIterable(SampleContent.workflows()).map(RunsTestWiring::record));
         when(workflows.published(anyString())).thenAnswer(i -> Mono.justOrEmpty(find(i.getArgument(0))).map(RunsTestWiring::record));

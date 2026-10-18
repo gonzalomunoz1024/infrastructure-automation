@@ -52,6 +52,8 @@ platform:
     signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
+  persistence:            # used with the postgres profile
+    telemetry-retention: P30D   # provider-call samples older than this are deleted
 
 ---
 # The temporal profile (docker compose, scripts/dev.sh --temporal): jobs run as Temporal workflows on
@@ -64,3 +66,18 @@ spring:
 platform:
   execution:
     mode: temporal
+
+---
+# The postgres profile (docker compose, scripts/dev.sh --postgres): the stores live in PostgreSQL
+# instead of memory, so workflow versions, change requests, providers, releases, the resource
+# registry, audit evidence, service accounts, builder sessions, provider-call samples and the jobs
+# (with their steps and events) survive a restart. The connection is spring.datasource.*: set
+# SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD in the
+# environment (a password never goes in this file). Flyway applies db/migration on start.
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: jdbc:postgresql://localhost:5432/platform
+    username: platform

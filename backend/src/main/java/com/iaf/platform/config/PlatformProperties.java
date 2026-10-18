@@ -22,6 +22,7 @@ public class PlatformProperties {
     private Assistant assistant = new Assistant();
     private Audit audit = new Audit();
     private Demo demo = new Demo();
+    private Persistence persistence = new Persistence();
 
     @Data
     public static class Content {
@@ -88,5 +89,12 @@ public class PlatformProperties {
     @Data
     public static class Demo {
         private boolean seedHistory = true;
+    }
+
+    /** The JDBC stores of the postgres profile. */
+    @Data
+    public static class Persistence {
+        /** How long provider-call samples are kept; older ones are deleted. */
+        private Duration telemetryRetention = Duration.ofDays(30);
     }
 }

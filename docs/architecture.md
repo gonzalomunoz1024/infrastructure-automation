@@ -73,8 +73,8 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP)   | `InMemoryCredentials`           |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
-| `ProjectionStore`       | `PostgresProjectionStore` (planned)    | `InMemoryProjectionStore`       |
-| `EvidenceStore`         | write-once object store (planned)      | `InMemoryEvidenceStore`         |
+| `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
+| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres`, append-only); write-once object store (planned) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (v3 API)              | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (planned)       | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 
@@ -90,12 +90,69 @@ their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode
 others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
 platform code.
 
+### Persistence
+
+Without a profile every store is in memory and a restart starts over. The `postgres` profile
+(`docker compose up`, `scripts/dev.sh --postgres`) keeps the platform's state in PostgreSQL 16.
+`PersistenceConfig` builds a connection pool from `spring.datasource.*` (`SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`; a password never goes in a file),
+Flyway applies `db/migration/common` and the database's own folder (`db/migration/postgresql`)
+on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `Jdbc` helper in
+`common/adapters/jdbc`) replaces the in-memory adapter of each store:
+
+| Port (slice)                     | JDBC adapter          | Tables |
+|----------------------------------|-----------------------|--------|
+| `WorkflowStorePort` (workflows)  | `JdbcWorkflowStore`   | `workflow_versions` |
+| `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
+| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers` |
+| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` |
+| `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
+| `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
+| `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
+| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
+| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` |
+| `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
+
+A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
+(workflow, status, requester, times). Times are also kept as epoch nanoseconds, so the order is
+exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, which the tests use.
+
+- Workflow versions, providers and resource types come from the content dir on start. A missing
+  workflow version or provider is added, and one still exactly as seeded takes its file's new
+  content; one changed through the platform is never reset. Resource types are rewritten from
+  their files at every start. Reads come from a copy of the table that is reloaded when
+  `store_revisions` shows a write from any instance.
+- Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
+  deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
+  triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,
+  deleting a header, shrinking one and any change to a sealed one. Appends to a record take a lock
+  on its header row, so concurrent writers cannot fork the hash chain. A share link keeps only
+  the SHA-256 of its token, and a service account only the hash of its token.
+- The runs index: `JobProjection` still folds job events in process, but it keeps the jobs (with
+  their steps), approvals and event history in `ProjectionStore`. The definition a job ran is
+  stored once per distinct definition. Event numbering carries on after a restart, so
+  `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
+  fan-out (SSE, WebSocket) stays in memory.
+- Provider-call samples are queued, and a background thread writes them in batches, so recording
+  never waits for the database (a read writes the queue first). Samples older than
+  `platform.persistence.telemetry-retention` (30 days) are deleted every hour and never served.
+- The demo history (`platform.demo.seed-history`) is written once per database (`store_seeds`).
+  A later start finds it claimed and turns the switch off before any seeder runs.
+
+Run one backend per database: the runs index is folded from the events this instance sees. Jobs
+the in-memory engine was running when the backend stopped keep the status they had.
+
 ### Reactive boundaries
 
 Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners) are wrapped in
 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` or `Mono.fromFuture` on async
 stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` from the
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
+The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
+that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`.
+The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
+there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
+runs on a non-blocking thread, and the wiring test expects none.
 
 ### Conventions
 
@@ -141,9 +198,10 @@ projection, the audit log and the streams cannot tell the engines apart. Approva
 decisions and cancels are the signals `approve`, `attention` and `cancel`; `status` and `waitingOn`
 are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` polls are timers; `run`
 steps and batch rows are child workflows whose ids are the child job ids. A cancel from the
-Temporal UI or CLI ends the job as cancelled by `temporal`. The job list is still each instance's
-in-memory projection, so jobs started before a backend restart are not listed again, although their
-executions carry on.
+Temporal UI or CLI ends the job as cancelled by `temporal`. Without the `postgres` profile the job
+list is each instance's in-memory projection, so jobs started before a backend restart are not
+listed again, although their executions carry on. With it, the jobs, their steps and their event
+history are read back from PostgreSQL.
 
 ## Frontend
 
