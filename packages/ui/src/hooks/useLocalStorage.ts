@@ -20,7 +20,7 @@ export function useLocalStorage<T>(
     } catch {
       /* unavailable or unparsable: use the initial value */
     }
-    return resolve(initialRef.current)
+    return resolve(initial)
   })
 
   useEffect(() => {

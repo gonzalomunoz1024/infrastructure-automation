@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Button, Card, CardRow, CodeBlock, Field, Icon, IconButton, Input, PageHeader, Segmented, SkeletonRows, Table, Tag, Textarea, cx, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
@@ -247,7 +247,7 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
   const load = (source: string) => {
     const trimmed = source.trim()
     if (!trimmed) return
-    let items: SchemaValue[] = []
+    let items: SchemaValue[]
     if (trimmed.startsWith('[')) {
       const parsed = parseJsonText(trimmed)
       if (parsed.error || !Array.isArray(parsed.value)) {
@@ -276,10 +276,13 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
     })
   }
 
-  const setCell = (id: number, name: string, raw: string) => {
-    setRows((rs) => rs.map((r) => (r.id === id ? { id, value: { ...r.value, ...(raw === '' ? { [name]: undefined } : { [name]: coerceScalar(entry.input.properties?.[name], raw) }) } } : r)))
-    setValidated(false)
-  }
+  const setCell = useCallback(
+    (id: number, name: string, raw: string) => {
+      setRows((rs) => rs.map((r) => (r.id === id ? { id, value: { ...r.value, ...(raw === '' ? { [name]: undefined } : { [name]: coerceScalar(entry.input.properties?.[name], raw) }) } } : r)))
+      setValidated(false)
+    },
+    [entry.input],
+  )
 
   const merged = (r: RowState): SchemaValue => ({ ...defaults, ...Object.fromEntries(Object.entries(r.value).filter(([, v]) => v !== undefined)) })
 
@@ -395,7 +398,7 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
       },
     ]
     return cols
-  }, [names, rowProblems, defaults, entry.input])
+  }, [names, rowProblems, defaults, entry.input, setCell])
 
   const problemCount = Array.from(rowProblems.values()).reduce((n, ps) => n + ps.length, 0)
 

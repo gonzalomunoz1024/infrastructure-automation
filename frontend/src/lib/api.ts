@@ -213,7 +213,7 @@ export interface RequestOptions {
 }
 
 async function fail(res: Response): Promise<never> {
-  let body: ApiErrorBody | null = null
+  let body: ApiErrorBody | null
   try {
     body = (await res.json()) as ApiErrorBody
   } catch {
@@ -455,7 +455,7 @@ export async function streamSse<T>(path: string, body: unknown, onEvent: (event:
   const flush = (block: string) => {
     const frame = parseSseBlock(block)
     if (!frame) return
-    let parsed: unknown = frame.data
+    let parsed: unknown
     try {
       parsed = JSON.parse(frame.data)
     } catch {

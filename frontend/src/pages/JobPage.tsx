@@ -59,7 +59,9 @@ export default function JobPage({ route }: PageProps) {
   if (active !== polling) setPolling(active)
 
   const refetchRef = useRef(job.refetch)
-  refetchRef.current = job.refetch
+  useEffect(() => {
+    refetchRef.current = job.refetch
+  })
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const sub = jobEvents(

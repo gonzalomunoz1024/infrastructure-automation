@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
@@ -335,10 +335,9 @@ export default function ProviderWizardPage(_: PageProps) {
   const [furthest, setFurthest] = useState(0)
   const update = (patch: Partial<WizardState>) => setState((s) => ({ ...s, ...patch }))
 
-  useEffect(() => {
-    if (me.data && !state.ownerTouched && !state.owner && me.data.teams?.[0]) update({ owner: me.data.teams[0] })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me.data])
+  // the owner defaults to the signed-in user's first team until they pick one
+  const firstTeam = me.data?.teams?.[0]
+  if (firstTeam && !state.ownerTouched && !state.owner) update({ owner: firstTeam })
 
   const issues = stepIssues(state, step)
   const yaml = useMemo(() => state.draftYaml ?? emitYaml(buildProviderDocument(state)), [state])
@@ -837,7 +836,8 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
   const [actionId, setActionId] = useState(selected[0]?.id ?? '')
   const action = selected.find((a) => a.id === actionId) ?? selected[0]
   const [environment, setEnvironment] = useState(envs[0] ?? 'dev')
-  const schema = useMemo(() => (action ? parseSchema(action.inputText) : undefined), [action])
+  const inputText = action?.inputText
+  const schema = useMemo(() => (inputText === undefined ? undefined : parseSchema(inputText)), [inputText])
   const [input, setInput] = useState<SchemaValue>(() => defaultsFor(schema))
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(false)
@@ -993,10 +993,11 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
 
 function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
   const toast = useToast()
-  const [validation, setValidation] = useState<ProviderValidation | null>(null)
+  const [judged, setJudged] = useState<{ yaml: string; result: ProviderValidation } | null>(null)
+  const validation = judged?.yaml === yaml ? judged.result : null
+  const setValidation = (result: ProviderValidation) => setJudged({ yaml, result })
   const [busy, setBusy] = useState<'validate' | 'publish' | null>(null)
   const [asking, setAsking] = useState(false)
-  useEffect(() => setValidation(null), [yaml])
 
   const validate = async (): Promise<ProviderValidation | null> => {
     setBusy('validate')

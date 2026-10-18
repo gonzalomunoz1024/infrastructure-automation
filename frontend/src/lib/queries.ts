@@ -95,10 +95,12 @@ export function useQuery<T>(key: QueryKey, fn: () => Promise<T>, opts: QueryOpti
     }
     listeners.add(onInvalidate)
     const timer = refetchInterval && refetchInterval > 0 ? setInterval(() => void run(), refetchInterval) : undefined
+    // the live counter, not a snapshot: bumping it drops answers still in flight
+    const requests = seq
     return () => {
       listeners.delete(onInvalidate)
       if (timer) clearInterval(timer)
-      seq.current++
+      requests.current++
     }
   }, [k, enabled, refetchInterval, run])
 

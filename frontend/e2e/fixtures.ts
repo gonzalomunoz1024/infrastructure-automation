@@ -108,7 +108,7 @@ export async function mockApi(page: Page, routes: Routes = {}): Promise<ApiMock>
     const url = new URL(request.url())
     const path = url.pathname.replace(/^\/api\/v1/, '')
     const method = request.method()
-    let body: unknown = undefined
+    let body: unknown
     try {
       body = request.postDataJSON()
     } catch {

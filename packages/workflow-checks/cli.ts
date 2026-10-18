@@ -71,7 +71,7 @@ export function scan(root: string): ContentFile[] {
   const files: ContentFile[] = [];
   for (const folder of CONTENT_FOLDERS) {
     const dir = join(root, folder);
-    let isDir = false;
+    let isDir: boolean;
     try {
       isDir = statSync(dir).isDirectory();
     } catch {

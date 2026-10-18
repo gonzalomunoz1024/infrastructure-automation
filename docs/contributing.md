@@ -10,7 +10,7 @@ cd backend && mvn spring-boot:run                       # http://localhost:8080,
 # frontend (Node 22)
 npm install                                             # workspaces: packages/ui, packages/workflow-checks, frontend
 npm run dev                                             # http://localhost:3000, proxies /api and /ws to :8080
-npm run typecheck && npm run build && npm test
+npm run lint && npm run typecheck && npm run build && npm test
 
 # both
 scripts/dev.sh

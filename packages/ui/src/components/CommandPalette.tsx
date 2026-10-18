@@ -90,7 +90,10 @@ export function CommandPalette({
       if (!fn) return
       fn(query)
         .then((rs) => {
-          if (!cancelled) setRemote(rs)
+          if (!cancelled) {
+            setRemote(rs)
+            setActive(0)
+          }
         })
         .catch(() => {
           if (!cancelled) setRemote([])
@@ -131,7 +134,6 @@ export function CommandPalette({
     return { list: order.flatMap((g) => all.filter((x) => x.item.group === g)), groups: order }
   }, [items, remote, query, groups])
 
-  useEffect(() => setActive(0), [query, remote])
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-idx="${active}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [active])
@@ -150,7 +152,10 @@ export function CommandPalette({
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            setActive(0)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown') {
               e.preventDefault()

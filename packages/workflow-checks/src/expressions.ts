@@ -438,8 +438,8 @@ class Member implements Node {
 
   /** The dotted path from a root, or null when the target is not a plain member chain. */
   path(): Reference | null {
-    const parts: string[] = [];
-    let n: Node = this;
+    const parts: string[] = [this.field];
+    let n: Node = this.target;
     while (n instanceof Member) {
       parts.unshift(n.field);
       n = n.target;

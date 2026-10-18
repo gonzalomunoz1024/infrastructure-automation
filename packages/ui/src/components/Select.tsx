@@ -35,12 +35,12 @@ export function Select({ value, onChange, options, ariaLabel, className, mono, p
   const close = useCallback(() => setOpen(false), [])
   useDismiss(ref, open, close)
 
-  useEffect(() => {
-    if (open) {
-      const idx = options.findIndex((o) => o.value === value)
-      setActive(idx >= 0 ? idx : 0)
-    }
-  }, [open, options, value])
+  // the list opens on the current value
+  const openList = () => {
+    const idx = options.findIndex((o) => o.value === value)
+    setActive(idx >= 0 ? idx : 0)
+    setOpen(true)
+  }
 
   useEffect(() => {
     listRef.current
@@ -60,7 +60,7 @@ export function Select({ value, onChange, options, ariaLabel, className, mono, p
     if (disabled) return
     if (!open && (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown')) {
       e.preventDefault()
-      setOpen(true)
+      openList()
       return
     }
     if (!open) return
@@ -88,7 +88,7 @@ export function Select({ value, onChange, options, ariaLabel, className, mono, p
     <div ref={ref} className={cx('relative', className)} onKeyDown={onKeyDown}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? close() : openList())}
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-haspopup="listbox"

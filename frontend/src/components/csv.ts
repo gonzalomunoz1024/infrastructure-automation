@@ -6,7 +6,7 @@
 
 /** Rows of cells; blank lines are skipped. */
 export function parseCsv(text: string, delimiter?: string): string[][] {
-  const src = text.replace(/^﻿/, '')
+  const src = text.replace(/^\uFEFF/, '')
   const firstLine = src.split(/\r?\n/, 1)[0] ?? ''
   const sep = delimiter ?? (firstLine.includes(',') || !firstLine.includes('\t') ? ',' : '\t')
   const rows: string[][] = []

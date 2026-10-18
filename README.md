@@ -71,7 +71,7 @@ provider calls). `docker-compose.yml` starts a Temporal dev server and the stack
 
 ```bash
 cd backend && mvn -B -q test        # backend unit, handler and adapter tests
-npm run typecheck && npm test       # kit, checks package and frontend
+npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 npm run build
 ```

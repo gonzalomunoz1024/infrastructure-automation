@@ -31,6 +31,8 @@ jobs:
         # npm ci needs the root lockfile; until every workspace has landed it may be missing
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      - name: Lint
+        run: npm run lint
       - name: Typecheck
         run: npm run typecheck
       - name: Test
