@@ -2,6 +2,7 @@ package com.iaf.platform.providers.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -40,7 +41,9 @@ class CredentialsHandlerTest {
     static final Instant NOW = Instant.parse("2026-10-17T10:00:00Z");
     static final Identity MATEO = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
     static final Identity DANA = new Identity("dana", "Dana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity LEA = new Identity("lea", "Lea", null, List.of("team-data", "team-platform"), List.of("ops"), false, Identity.Kind.USER);
     static final Identity GUEST = new Identity("guest", "Guest", null, List.of(), List.of("user"), false, Identity.Kind.USER);
+    static final Identity ROOT = new Identity("root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
 
     static final String VSPHERE = """
             apiVersion: iaf.platform/v1
@@ -72,6 +75,7 @@ class CredentialsHandlerTest {
     @BeforeEach
     void setUp() {
         port = mock(CredentialsPort.class);
+        when(port.info(any())).thenReturn(Mono.empty());
         EventBus events = new EventBus(Clock.fixed(NOW, ZoneOffset.UTC));
         published = new ArrayList<>();
         events.register(published::add);
@@ -82,10 +86,24 @@ class CredentialsHandlerTest {
         handler = new CredentialsHandler(port, events, providers, workflows);
     }
 
+    static CredentialInfo info(String name, String owner) {
+        return new CredentialInfo(name, "token", "vault:" + name, owner, NOW);
+    }
+
+    /** The port answers any store with the credential as stored, owner included. */
+    void storeAnswers() {
+        when(port.store(any(), any(), any(), any(), any())).thenAnswer(inv -> Mono.just(new CredentialInfo(inv.getArgument(0), inv.getArgument(1),
+                "vault:" + inv.getArgument(0), inv.getArgument(4), NOW)));
+    }
+
+    static <T> Mono<T> as(Mono<T> mono, Identity who) {
+        return mono.contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+    }
+
     @Test
     void storesThroughThePortAndPublishesWithoutTheValue() {
-        when(port.store("fleet/token", "token", "s3cret", "mateo")).thenReturn(Mono.just(new CredentialInfo("fleet/token", "token", "vault:fleet/token", NOW)));
-        StepVerifier.create(handler.storeCredential(new StoreCredential("vault:fleet/token", "token", "s3cret")).contextWrite(ctx -> CurrentIdentity.with(ctx, MATEO)))
+        when(port.store("fleet/token", "token", "s3cret", "mateo", "team-compute")).thenReturn(Mono.just(info("fleet/token", "team-compute")));
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("vault:fleet/token", "token", "s3cret")), MATEO))
                 .assertNext(a -> {
                     assertThat(a.id()).isEqualTo("vault:fleet/token");
                     assertThat(a.status()).isEqualTo("stored");
@@ -96,6 +114,7 @@ class CredentialsHandlerTest {
         assertThat(e.type()).isEqualTo("credential.stored");
         assertThat(e.data().path("name").asText()).isEqualTo("fleet/token");
         assertThat(e.data().path("type").asText()).isEqualTo("token");
+        assertThat(e.data().path("owner").asText()).isEqualTo("team-compute");
         assertThat(e.data().path("by").asText()).isEqualTo("mateo");
         assertThat(e.data().toString()).doesNotContain("s3cret");
     }
@@ -106,52 +125,99 @@ class CredentialsHandlerTest {
         StepVerifier.create(handler.storeCredential(new StoreCredential("bad name!", "token", "x"))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.storeCredential(new StoreCredential("a/b", "magic", "x"))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.storeCredential(new StoreCredential("a/b", "token", ""))).expectError(IllegalArgumentException.class).verify();
-        verify(port, never()).store(any(), any(), any(), any());
+        StepVerifier.create(handler.storeCredential(new StoreCredential("a/b", "token", "x", "Team Compute")))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("owner team"))
+                .verify();
+        verify(port, never()).store(any(), any(), any(), any(), any());
+        verify(port, never()).info(any());
+    }
+
+    @Test
+    void theOwnerIsTheCallersFirstTeamUnlessTheyNameAnotherOfTheirs() {
+        storeAnswers();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), LEA)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "x", "lea", "team-data");
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", " team-platform ")), LEA)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "x", "lea", "team-platform");
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", "team-compute")), LEA))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("team-compute").hasMessageNotContaining("x"))
+                .verify();
+        verify(port, never()).store(any(), any(), any(), any(), eq("team-compute"));
+        assertThat(published).extracting(e -> e.data().path("owner").asText()).containsExactly("team-data", "team-platform");
+    }
+
+    @Test
+    void anAdminNamesAnyTeamAndNeedsOneWhenTheyHaveNone() {
+        storeAnswers();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", "team-net")), ROOT)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "x", "root", "team-net");
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), ROOT))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("owner is required"))
+                .verify();
+        // an existing owner stays when the admin names none
+        when(port.info("fleet/token")).thenReturn(Mono.just(info("fleet/token", "team-data")));
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "y")), ROOT)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "y", "root", "team-data");
+    }
+
+    @Test
+    void aNewValueKeepsTheOwnerAndOnlyThatTeamOrAnAdminMayWriteIt() {
+        storeAnswers();
+        when(port.info("fleet/token")).thenReturn(Mono.just(info("fleet/token", "team-data")));
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), MATEO))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessageContaining("vault:fleet/token is owned by team-data").hasMessageNotContaining("x"))
+                .verify();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", "team-compute")), MATEO))
+                .expectError(ForbiddenException.class).verify();
+        verify(port, never()).store(any(), any(), any(), any(), any());
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), DANA)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "x", "dana", "team-data");
+        // the owner team may hand it to another of their teams
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", "team-platform")), LEA)).expectNextCount(1).verifyComplete();
+        verify(port).store("fleet/token", "token", "x", "lea", "team-platform");
     }
 
     @Test
     void onlyTheOwningTeamOrAnAdminChangesACredentialThatIsInUse() {
-        StepVerifier.create(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, DANA)))
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x")), DANA))
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
                         .hasMessageContaining("provider vsphere").hasMessageContaining("team-compute"))
                 .verify();
-        StepVerifier.create(handler.storeCredential(new StoreCredential("ssh/dba", "ssh-key", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, MATEO)))
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("ssh/dba", "ssh-key", "x")), MATEO))
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("workflow db-setup"))
                 .verify();
-        verify(port, never()).store(any(), any(), any(), any());
+        verify(port, never()).store(any(), any(), any(), any(), any());
 
-        when(port.store(any(), any(), any(), any())).thenReturn(Mono.just(new CredentialInfo("vsphere/token", "token", "vault:vsphere/token", NOW)));
-        StepVerifier.create(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, MATEO)))
-                .expectNextCount(1).verifyComplete();
-        Identity admin = new Identity("root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
-        StepVerifier.create(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, admin)))
-                .expectNextCount(1).verifyComplete();
+        storeAnswers();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x")), MATEO)).expectNextCount(1).verifyComplete();
+        verify(port).store("vsphere/token", "token", "x", "mateo", "team-compute");
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("vsphere/token", "token", "x", "team-compute")), ROOT)).expectNextCount(1).verifyComplete();
     }
 
     @Test
     void anyTeamMemberMayStoreANewCredentialButNotSomeoneWithoutATeam() {
-        when(port.store(any(), any(), any(), any())).thenReturn(Mono.just(new CredentialInfo("fleet/token", "token", "vault:fleet/token", NOW)));
-        StepVerifier.create(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, DANA)))
-                .expectNextCount(1).verifyComplete();
+        storeAnswers();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), DANA)).expectNextCount(1).verifyComplete();
         // a longer path that merely starts with an existing one is a different credential
-        StepVerifier.create(handler.storeCredential(new StoreCredential("vsphere/token-2", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, DANA)))
-                .expectNextCount(1).verifyComplete();
-        StepVerifier.create(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, GUEST)))
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("vsphere/token-2", "token", "x")), DANA)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), GUEST))
+                .expectError(ForbiddenException.class).verify();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x", "team-compute")), GUEST))
                 .expectError(ForbiddenException.class).verify();
     }
 
     @Test
     void aDraftThatMentionsACredentialGivesItsTeamNoClaimOnIt() {
         when(workflows.all()).thenReturn(List.of(WorkflowRecord.of(WorkflowYaml.parse(DB_SETUP.replace("team-data", "team-web")), WorkflowStatus.DRAFT, "workflows/team-web/db-setup.yaml", NOW, "eve")));
-        when(port.store(any(), any(), any(), any())).thenReturn(Mono.just(new CredentialInfo("ssh/dba", "ssh-key", "vault:ssh/dba", NOW)));
+        storeAnswers();
         // the draft does not count as a use, so the credential is still unclaimed
-        StepVerifier.create(handler.storeCredential(new StoreCredential("ssh/dba", "ssh-key", "x")).contextWrite(ctx -> CurrentIdentity.with(ctx, MATEO)))
-                .expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("ssh/dba", "ssh-key", "x")), MATEO)).expectNextCount(1).verifyComplete();
     }
 
     @Test
     void listsWhatThePortLists() {
-        when(port.list()).thenReturn(Mono.just(List.of(new CredentialInfo("a", "token", "vault:a", NOW))));
+        when(port.list()).thenReturn(Mono.just(List.of(info("a", "team-data"))));
         StepVerifier.create(handler.credentials()).assertNext(l -> assertThat(l).hasSize(1)).verifyComplete();
     }
 }

@@ -73,8 +73,8 @@ public final class SampleFixtures {
         CredentialsPort c = mock(CredentialsPort.class);
         Instant at = Instant.parse("2026-10-01T00:00:00Z");
         when(c.list()).thenReturn(Mono.just(List.of(
-                new CredentialsPort.CredentialInfo("vsphere/token", "token", "vault:vsphere/token", at),
-                new CredentialsPort.CredentialInfo("ssh/ops-automation", "ssh-key", "vault:ssh/ops-automation", at))));
+                new CredentialsPort.CredentialInfo("vsphere/token", "token", "vault:vsphere/token", null, at),
+                new CredentialsPort.CredentialInfo("ssh/ops-automation", "ssh-key", "vault:ssh/ops-automation", null, at))));
         return c;
     }
 

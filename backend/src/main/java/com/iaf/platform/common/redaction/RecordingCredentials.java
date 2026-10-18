@@ -36,8 +36,13 @@ public final class RecordingCredentials implements CredentialsPort {
     }
 
     @Override
-    public Mono<CredentialInfo> store(String name, String type, String value, String by) {
+    public Mono<CredentialInfo> info(String reference) {
+        return delegate.info(reference);
+    }
+
+    @Override
+    public Mono<CredentialInfo> store(String name, String type, String value, String by, String owner) {
         secrets.remember(value);
-        return delegate.store(name, type, value, by);
+        return delegate.store(name, type, value, by, owner);
     }
 }

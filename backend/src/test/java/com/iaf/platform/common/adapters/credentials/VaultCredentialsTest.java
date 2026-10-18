@@ -27,7 +27,9 @@ class VaultCredentialsTest {
 
     HttpServer server;
     AtomicInteger dataHits = new AtomicInteger();
+    AtomicInteger deniedDataWrites = new AtomicInteger();
     AtomicReference<String> posted = new AtomicReference<>();
+    AtomicReference<String> postedMetadata = new AtomicReference<>();
     VaultCredentials vault;
 
     @BeforeEach
@@ -52,13 +54,22 @@ class VaultCredentialsTest {
                     posted.set(LocalHttp.body(ex));
                     LocalHttp.respond(ex, 200, "{\"data\":{\"version\":1}}");
                 }
-                case "POST /v1/secret/metadata/new/one" -> LocalHttp.respond(ex, 204, "");
+                case "POST /v1/secret/metadata/new/one" -> {
+                    postedMetadata.set(LocalHttp.body(ex));
+                    LocalHttp.respond(ex, 204, "");
+                }
+                case "POST /v1/secret/metadata/new/denied" -> LocalHttp.respond(ex, 403, "{\"errors\":[\"permission denied\"]}");
+                case "POST /v1/secret/data/new/denied" -> {
+                    deniedDataWrites.incrementAndGet();
+                    LocalHttp.respond(ex, 200, "{\"data\":{\"version\":1}}");
+                }
                 case "GET /v1/secret/metadata/?list" -> LocalHttp.respond(ex, 200, "{\"data\":{\"keys\":[\"vsphere/\",\"db/\"]}}");
                 case "GET /v1/secret/metadata/vsphere/?list" -> LocalHttp.respond(ex, 200, "{\"data\":{\"keys\":[\"token\"]}}");
                 case "GET /v1/secret/metadata/db/?list" -> LocalHttp.respond(ex, 200, "{\"data\":{\"keys\":[\"single\"]}}");
                 case "GET /v1/secret/metadata/vsphere/token" -> LocalHttp.respond(ex, 200,
-                        "{\"data\":{\"custom_metadata\":{\"type\":\"token\",\"by\":\"mateo\"},\"updated_time\":\"2026-10-01T00:00:00Z\"}}");
+                        "{\"data\":{\"custom_metadata\":{\"type\":\"token\",\"by\":\"mateo\",\"owner\":\"team-compute\"},\"updated_time\":\"2026-10-01T00:00:00Z\"}}");
                 case "GET /v1/secret/metadata/db/single" -> LocalHttp.respond(ex, 200, "{\"data\":{\"custom_metadata\":null,\"updated_time\":\"2026-10-02T00:00:00Z\"}}");
+                case "GET /v1/secret/metadata/db/broken" -> LocalHttp.respond(ex, 500, "{\"errors\":[\"sealed\"]}");
                 default -> LocalHttp.respond(ex, 404, "{\"errors\":[\"unknown " + key + "\"]}");
             }
         });
@@ -91,30 +102,65 @@ class VaultCredentialsTest {
     }
 
     @Test
-    void listsTheMetadataTreeWithoutValues() {
+    void listsTheMetadataTreeWithOwnersAndWithoutValues() {
         StepVerifier.create(vault.list())
                 .assertNext(list -> {
                     assertThat(list).extracting(CredentialInfo::name).containsExactly("db/single", "vsphere/token");
                     assertThat(list.get(1).type()).isEqualTo("token");
+                    assertThat(list.get(1).owner()).isEqualTo("team-compute");
                     assertThat(list.get(1).updatedAt()).isEqualTo(Instant.parse("2026-10-01T00:00:00Z"));
                     assertThat(list.get(1).path()).isEqualTo("vault:vsphere/token");
                     assertThat(list.get(0).type()).isEqualTo("token");
+                    assertThat(list.get(0).owner()).as("kept in Vault before owners existed: anyone may use it").isNull();
                     assertThat(list.toString()).doesNotContain("s3cret").doesNotContain("pw");
                 })
                 .verifyComplete();
     }
 
     @Test
-    void storesTheValueAndItsType() {
-        StepVerifier.create(vault.store("vault:new/one", "api-key", "k-1", "mateo"))
+    void describesOneSecretFromItsMetadataAndNothingWhenThereIsNone() {
+        StepVerifier.create(vault.info("vault:vsphere/token"))
+                .assertNext(info -> {
+                    assertThat(info.name()).isEqualTo("vsphere/token");
+                    assertThat(info.owner()).isEqualTo("team-compute");
+                    assertThat(info.type()).isEqualTo("token");
+                    assertThat(info.toString()).doesNotContain("s3cret");
+                })
+                .verifyComplete();
+        StepVerifier.create(vault.info("db/single")).assertNext(info -> assertThat(info.owner()).isNull()).verifyComplete();
+        StepVerifier.create(vault.info("vault:missing")).verifyComplete();
+        StepVerifier.create(vault.info("")).verifyComplete();
+        assertThat(dataHits.get()).as("metadata only, never the value").isZero();
+        // Vault failing to answer is an error, never a guess that the credential has no owner
+        StepVerifier.create(vault.info("vault:db/broken"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalStateException.class).hasMessageContaining("vault:db/broken"))
+                .verify();
+    }
+
+    @Test
+    void storesTheOwnerInTheMetadataBeforeTheValue() {
+        StepVerifier.create(vault.store("vault:new/one", "api-key", "k-1", "mateo", "team-compute"))
                 .assertNext(info -> {
                     assertThat(info.name()).isEqualTo("new/one");
                     assertThat(info.type()).isEqualTo("api-key");
+                    assertThat(info.owner()).isEqualTo("team-compute");
                     assertThat(info.updatedAt()).isEqualTo(NOW);
                 })
                 .verifyComplete();
         assertThat(posted.get()).contains("\"value\":\"k-1\"").contains("\"type\":\"api-key\"");
-        StepVerifier.create(vault.store("", "token", "x", "mateo")).expectError(IllegalArgumentException.class).verify();
+        assertThat(postedMetadata.get()).contains("\"type\":\"api-key\"").contains("\"by\":\"mateo\"").contains("\"owner\":\"team-compute\"").doesNotContain("k-1");
+        StepVerifier.create(vault.store("vault:new/one", "api-key", "k-2", "root", null)).expectNextCount(1).verifyComplete();
+        assertThat(postedMetadata.get()).doesNotContain("owner");
+        StepVerifier.create(vault.store("", "token", "x", "mateo", null)).expectError(IllegalArgumentException.class).verify();
+    }
+
+    @Test
+    void aTokenThatCannotWriteTheMetadataStoresNothing() {
+        StepVerifier.create(vault.store("vault:new/denied", "token", "k-3", "mateo", "team-compute"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalStateException.class)
+                        .hasMessageContaining("vault:new/denied").hasMessageContaining("nothing was stored").hasMessageNotContaining("k-3"))
+                .verify();
+        assertThat(deniedDataWrites.get()).isZero();
     }
 
     @Test

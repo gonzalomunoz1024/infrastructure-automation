@@ -29,8 +29,10 @@ import reactor.core.publisher.Mono;
 /**
  * HashiCorp Vault KV v2 over HTTP: {@code GET {vaultUrl}/v1/{mount}/data/{path}} with
  * {@code X-Vault-Token}, reading {@code data.data.value} (or the single field of the secret),
- * cached for {@value #CACHE_SECONDS} seconds. {@code store} writes {@code { value, type }} and
- * the type into the secret's custom metadata; {@code list} walks the mount's metadata tree.
+ * cached for {@value #CACHE_SECONDS} seconds. {@code store} writes the type, the author and the
+ * owner team into the secret's custom metadata first (a token that cannot write metadata stores
+ * nothing, so a credential never loses its owner), then {@code { value, type }}; {@code list}
+ * walks the mount's metadata tree and {@code info} reads one secret's metadata, owner included.
  */
 @Slf4j
 @Component
@@ -100,8 +102,21 @@ public class VaultCredentials implements CredentialsPort {
 
     @Override
     public Mono<List<CredentialInfo>> list() {
-        return keys("", 0).flatMap(this::info, 4).collectList()
+        return keys("", 0).flatMap(this::described, 4).collectList()
                 .map(list -> list.stream().sorted(Comparator.comparing(CredentialInfo::name)).toList());
+    }
+
+    /** One secret's metadata; empty when the path does not exist, an error when Vault cannot be read (never a guess about the owner). */
+    @Override
+    public Mono<CredentialInfo> info(String reference) {
+        if (reference == null || reference.isBlank()) {
+            return Mono.empty();
+        }
+        String path = pathOf(reference);
+        return metadata(path)
+                .map(body -> infoOf(path, body))
+                .onErrorResume(WebClientResponseException.NotFound.class, e -> Mono.empty())
+                .onErrorMap(e -> new IllegalStateException("Could not read the metadata of " + CredentialsPort.referenceOf(path) + " from Vault: " + e.getMessage(), e));
     }
 
     private Flux<String> keys(String prefix, int depth) {
@@ -117,21 +132,31 @@ public class VaultCredentials implements CredentialsPort {
                 .flatMap(key -> key.endsWith("/") ? keys(prefix + key, depth + 1) : Flux.just(prefix + key));
     }
 
-    private Mono<CredentialInfo> info(String path) {
+    /** A listed secret as its metadata describes it; a type guessed from the path and no owner when the metadata cannot be read. */
+    private Mono<CredentialInfo> described(String path) {
+        return metadata(path)
+                .map(body -> infoOf(path, body))
+                .onErrorResume(e -> Mono.just(new CredentialInfo(path, InMemoryCredentials.typeOf(path, null), CredentialsPort.referenceOf(path), null, null)));
+    }
+
+    private Mono<JsonNode> metadata(String path) {
         return client.get().uri(base + "/v1/" + mount + "/metadata/" + path).header("X-Vault-Token", token)
                 .retrieve().bodyToMono(JsonNode.class)
-                .timeout(TIMEOUT)
-                .map(body -> {
-                    JsonNode data = body.path("data");
-                    String type = data.path("custom_metadata").path("type").asText(InMemoryCredentials.typeOf(path, null));
-                    Instant updated = parseInstant(data.path("updated_time").asText(null));
-                    return new CredentialInfo(path, type, CredentialsPort.referenceOf(path), updated);
-                })
-                .onErrorResume(e -> Mono.just(new CredentialInfo(path, InMemoryCredentials.typeOf(path, null), CredentialsPort.referenceOf(path), null)));
+                .timeout(TIMEOUT);
+    }
+
+    /** The credential the metadata of {@code path} describes: its type, owner team and last update, never a value. */
+    static CredentialInfo infoOf(String path, JsonNode body) {
+        JsonNode data = body.path("data");
+        JsonNode custom = data.path("custom_metadata");
+        String type = custom.path("type").asText(InMemoryCredentials.typeOf(path, null));
+        String owner = custom.path("owner").asText(null);
+        Instant updated = parseInstant(data.path("updated_time").asText(null));
+        return new CredentialInfo(path, type, CredentialsPort.referenceOf(path), owner == null || owner.isBlank() ? null : owner, updated);
     }
 
     @Override
-    public Mono<CredentialInfo> store(String name, String type, String value, String by) {
+    public Mono<CredentialInfo> store(String name, String type, String value, String by, String owner) {
         if (name == null || name.isBlank()) {
             return Mono.error(new IllegalArgumentException("name is required"));
         }
@@ -140,6 +165,7 @@ public class VaultCredentials implements CredentialsPort {
         }
         String path = pathOf(name);
         String kind = type == null || type.isBlank() ? InMemoryCredentials.typeOf(path, null) : type;
+        String team = owner == null || owner.isBlank() ? null : owner.trim();
         ObjectNode secret = F.objectNode();
         ObjectNode data = secret.putObject("data");
         data.put("value", value);
@@ -150,20 +176,23 @@ public class VaultCredentials implements CredentialsPort {
         if (by != null) {
             custom.put("by", by);
         }
-        return client.post().uri(base + "/v1/" + mount + "/data/" + path).header("X-Vault-Token", token)
-                .contentType(MediaType.APPLICATION_JSON).bodyValue(secret)
+        if (team != null) {
+            custom.put("owner", team);
+        }
+        // the metadata first: a value is only written once its owner is kept
+        return client.post().uri(base + "/v1/" + mount + "/metadata/" + path).header("X-Vault-Token", token)
+                .contentType(MediaType.APPLICATION_JSON).bodyValue(metadata)
                 .retrieve().toBodilessEntity()
                 .timeout(TIMEOUT)
-                .then(client.post().uri(base + "/v1/" + mount + "/metadata/" + path).header("X-Vault-Token", token)
-                        .contentType(MediaType.APPLICATION_JSON).bodyValue(metadata)
-                        .retrieve().toBodilessEntity().timeout(TIMEOUT)
-                        .onErrorResume(e -> {
-                            log.warn("could not write metadata of {}: {}", path, e.toString());
-                            return Mono.empty();
-                        }))
+                .onErrorMap(e -> new IllegalStateException("Could not write the metadata (type, author, owner) of " + CredentialsPort.referenceOf(path)
+                        + " to Vault, so nothing was stored: " + e.getMessage(), e))
+                .then(client.post().uri(base + "/v1/" + mount + "/data/" + path).header("X-Vault-Token", token)
+                        .contentType(MediaType.APPLICATION_JSON).bodyValue(secret)
+                        .retrieve().toBodilessEntity()
+                        .timeout(TIMEOUT))
                 .then(Mono.fromSupplier(() -> {
                     cache.remove(path);
-                    return new CredentialInfo(path, kind, CredentialsPort.referenceOf(path), clock.instant());
+                    return new CredentialInfo(path, kind, CredentialsPort.referenceOf(path), team, clock.instant());
                 }));
     }
 

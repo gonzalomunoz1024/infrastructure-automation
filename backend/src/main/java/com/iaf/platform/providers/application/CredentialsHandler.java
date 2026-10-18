@@ -3,6 +3,7 @@ package com.iaf.platform.providers.application;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
@@ -32,9 +34,13 @@ import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 /**
- * Credentials by name and type: the value goes to the {@code CredentialsPort} and never comes back.
- * Admins may store any credential. Anyone else must belong to a team, and a credential that a
- * provider or a published workflow already uses can only be changed by a team that owns one of them.
+ * Credentials by name, type and owner team: the value goes to the {@code CredentialsPort} and
+ * never comes back. The owner is the team that may use the credential in the provider wizard and
+ * the imports: one of the caller's teams (their first when the command names none; a new value
+ * keeps the owner the credential already has), any team for an admin. Admins may store any
+ * credential. Anyone else must belong to a team, can only change a credential their team owns,
+ * and a credential that a provider or a published workflow already uses can only be changed by a
+ * team that owns one of them.
  */
 @Primary
 @Service
@@ -72,25 +78,58 @@ public class CredentialsHandler implements CredentialsCommands, CredentialsQueri
             if (command.value() == null || command.value().isBlank()) {
                 throw new IllegalArgumentException("value is required");
             }
-            requireChange(who, name);
-            return credentials.store(name, type, command.value(), who.id()).map(info -> {
-                ObjectNode data = F.objectNode();
-                data.put("name", info.name());
-                data.put("type", info.type());
-                data.put("by", who.id());
-                events.publish(STORED_EVENT, "credential", info.name(), who.id(), data);
-                return CommandAccepted.of(CredentialsPort.referenceOf(info.name()), "stored");
-            });
+            String wanted = command.owner() == null || command.owner().isBlank() ? null : ContentFiles.requireSlug("The owner team", command.owner().trim());
+            String key = name;
+            return credentials.info(key).map(Optional::of).defaultIfEmpty(Optional.empty())
+                    .flatMap(existing -> {
+                        requireChange(who, key, existing.orElse(null));
+                        String owner = ownerOf(who, wanted, existing.orElse(null));
+                        return credentials.store(key, type, command.value(), who.id(), owner);
+                    })
+                    .map(info -> {
+                        ObjectNode data = F.objectNode();
+                        data.put("name", info.name());
+                        data.put("type", info.type());
+                        if (info.owner() != null) {
+                            data.put("owner", info.owner());
+                        }
+                        data.put("by", who.id());
+                        events.publish(STORED_EVENT, "credential", info.name(), who.id(), data);
+                        return CommandAccepted.of(CredentialsPort.referenceOf(info.name()), "stored");
+                    });
         });
     }
 
-    /** Throws unless {@code who} may set the credential {@code name} (a Vault path without the prefix). */
-    void requireChange(Identity who, String name) {
+    /**
+     * The team the stored credential belongs to: the one named (one of the caller's, or any for
+     * an admin), else the owner it already has, else the caller's first team.
+     */
+    static String ownerOf(Identity who, String wanted, CredentialInfo existing) {
+        if (wanted != null) {
+            if (!who.admin() && !who.teams().contains(wanted)) {
+                throw new ForbiddenException(who.name() + " is not in team " + wanted + "; a credential's owner is one of the caller's teams");
+            }
+            return wanted;
+        }
+        if (existing != null && existing.owner() != null) {
+            return existing.owner();
+        }
+        if (!who.teams().isEmpty()) {
+            return who.teams().get(0);
+        }
+        throw new IllegalArgumentException("owner is required: the team that may use the credential");
+    }
+
+    /** Throws unless {@code who} may set the credential {@code name} (a Vault path without the prefix), {@code existing} as the store has it now. */
+    void requireChange(Identity who, String name, CredentialInfo existing) {
         if (who.admin()) {
             return;
         }
         if (who.teams().isEmpty()) {
             throw new ForbiddenException("Only members of a team can store credentials");
+        }
+        if (existing != null && existing.owner() != null && !who.teams().contains(existing.owner())) {
+            throw new ForbiddenException("vault:" + name + " is owned by " + existing.owner() + "; only " + existing.owner() + " or an admin can change it");
         }
         Pattern uses = Pattern.compile(Pattern.quote("vault:" + name) + "(?![A-Za-z0-9_./-])");
         List<String> owners = new ArrayList<>();
