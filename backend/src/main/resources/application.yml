@@ -50,5 +50,12 @@ platform:
     retention-years: 7
     seal-every: PT1H
     signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
+    worm:                 # write-once evidence; every object is kept retention-years after it was written
+      dir: data/evidence  # profile worm: one read-only file per entry, seal and checkpoint, each with a retention sidecar
+      s3:                 # profile worm-s3: S3 Object Lock in COMPLIANCE mode; AWS credentials from the SDK's default chain
+        bucket: ""        # created with Object Lock enabled, or the store refuses to start
+        prefix: ""
+        region: ""        # blank = AWS_REGION / the profile / instance metadata
+        endpoint: ""      # blank = AWS; set for an S3-compatible store with Object Lock
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
