@@ -81,8 +81,8 @@ public final class StepTypeSchemas {
                     .build();
             case ANSIBLE -> object("playbook")
                     .props(playbook(),
-                            prop("inventory", "string", "dynamic or an inventory name"),
-                            prop("limit", "string", "Hosts to limit the run to"),
+                            inventory(),
+                            limit(),
                             prop("extraVars", "object", "Playbook variables"),
                             prop("credential", "string", "A vault:<path> reference to the SSH key"),
                             prop("executionEnvironment", "string", "The execution environment image"),
@@ -254,6 +254,42 @@ public final class StepTypeSchemas {
         p.putArray("oneOf").add(asText).add(asObject);
         p.put("description", "Where the playbook comes from: git, upload or library, pinned to a commit");
         return wrap("playbook", p);
+    }
+
+    /** As the ansible runner reads it: dynamic or a path in the playbook's source, a list of hosts, or { hosts, group?, vars? }. */
+    private static ObjectNode inventory() {
+        ObjectNode hosts = F.objectNode();
+        hosts.putArray("oneOf").add(hostList("Host names")).add(text("Host names separated by commas"));
+        hosts.put("description", "The hosts of the group");
+        ObjectNode group = object("hosts")
+                .props(obj("hosts", hosts), prop("group", "string", "The group the hosts make up; all when absent"), prop("vars", "object", "Variables of the group"))
+                .build();
+        group.put("additionalProperties", false);
+        ObjectNode p = F.objectNode();
+        p.putArray("oneOf").add(text("dynamic (the configured dynamic inventory) or a path inside the playbook's source")).add(hostList("The hosts to run on")).add(group);
+        p.put("description", "dynamic, a path in the playbook's source, a list of hosts or { hosts, group, vars }");
+        return wrap("inventory", p);
+    }
+
+    /** A host pattern, or a list of hosts the runner joins with commas. */
+    private static ObjectNode limit() {
+        ObjectNode p = F.objectNode();
+        p.putArray("oneOf").add(text("A host pattern like web1,web2 or db*")).add(hostList("Host names"));
+        p.put("description", "Hosts to limit the run to");
+        return wrap("limit", p);
+    }
+
+    private static ObjectNode hostList(String description) {
+        ObjectNode a = F.objectNode();
+        a.put("type", "array");
+        a.set("items", F.objectNode().put("type", "string"));
+        a.put("minItems", 1);
+        a.put("description", description);
+        return a;
+    }
+
+    private static ObjectNode text(String description) {
+        return F.objectNode().put("type", "string").put("description", description);
     }
 
     private static ObjectNode wrap(String name, ObjectNode schema) {
