@@ -2,6 +2,8 @@ package com.iaf.platform.workflows.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Clock;
@@ -22,6 +24,7 @@ import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.ArtifactStorePort;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.ports.GitRemotePort;
 import com.iaf.platform.common.ports.GitRemotePort.RemoteUnavailable;
@@ -293,6 +296,70 @@ class WorkflowCommandHandlerTest {
 
     static String unpinned(String yaml) {
         return yaml.replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "");
+    }
+
+    static final String DIGEST = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
+
+    static String uploadWorkflow(String sha256) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: site-deploy, title: Site deploy, noun: site, verb: deploy, owner: team-compute, version: 1.0.0 }
+                policy:
+                  rbac: [ops]
+                workflow:
+                  do:
+                    - deploy:
+                        call: ansible
+                        with:
+                          playbook: { upload: { file: site.zip, sha256: "%s", path: site.yml } }
+                          inventory: dynamic
+                        retry: { maxAttempts: 1 }
+                """.formatted(sha256);
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<Problem> problemsOf(Throwable e) {
+        assertThat(e).isInstanceOf(ConflictException.class).hasMessage("checks failed");
+        return (List<Problem>) ((ConflictException) e).detail();
+    }
+
+    @Test
+    void publishIsRefusedWhenTheArtifactStoreNoLongerHoldsAnUploadedPlaybook() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.just(false));
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow(DIGEST))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).singleElement().satisfies(p -> {
+                    assertThat(p.code()).isEqualTo("playbook.missing");
+                    assertThat(p.step()).isEqualTo("deploy");
+                    assertThat(p.field()).isEqualTo("playbook.upload.sha256");
+                    assertThat(p.message()).contains("upload the file again");
+                }))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("site-deploy")).as("the draft stays a draft").isPresent();
+
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.just(true));
+        ChangeRequest cr = changeRequests.get(handler.publish("site-deploy", null).block().id()).orElseThrow();
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit"));
+    }
+
+    @Test
+    void publishIsRefusedWhenAnUploadDigestIsNotOneWithoutAskingTheArtifactStore() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow("SHA256:9F2C0B7E"))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).containsExactly("playbook.digest"))
+                .verify();
+        verifyNoInteractions(artifacts);
+        assertThat(changeRequests.all()).isEmpty();
     }
 
     @Test

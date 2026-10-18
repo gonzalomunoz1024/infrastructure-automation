@@ -713,8 +713,12 @@ public final class WorkflowChecks {
                     }
                 }
                 if (upload != null) {
-                    if (upload.path("file").asText(null) == null || upload.path("sha256").asText(null) == null) {
+                    String sha256 = upload.path("sha256").asText(null);
+                    if (upload.path("file").asText(null) == null || sha256 == null) {
                         error("ansible.upload", s.id(), "playbook.upload", "Uploaded playbooks need file and sha256");
+                    } else if (!ExpressionEngine.isTemplate(sha256) && !PlaybookPins.DIGEST.matcher(sha256).matches()) {
+                        error("playbook.digest", s.id(), "playbook.upload.sha256",
+                                "sha256 is the upload's digest as POST /playbooks:upload answered it: 64 lowercase hex digits");
                     }
                 }
             } else {

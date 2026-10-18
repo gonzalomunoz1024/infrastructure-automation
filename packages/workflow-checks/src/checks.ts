@@ -27,6 +27,8 @@ const TERRAFORM_ACTIONS = new Set(['plan', 'apply', 'destroy']);
 const ON_FAILURE: readonly string[] = ['fail', 'continue'];
 const API_PREFIX = /^\/api\/v[1-9][0-9]*\//;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+/** An upload's digest as POST /playbooks:upload answers it: 64 lowercase hex digits. */
+const DIGEST = /^[0-9a-f]{64}$/;
 
 /** The roots an expression can always start from; an alias may not shadow them. */
 export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
@@ -852,8 +854,11 @@ class Checker {
         }
       }
       if (upload !== undefined) {
-        if (asTextOr(get(upload, 'file'), null) === null || asTextOr(get(upload, 'sha256'), null) === null) {
+        const sha256 = asTextOr(get(upload, 'sha256'), null);
+        if (asTextOr(get(upload, 'file'), null) === null || sha256 === null) {
           this.error('ansible.upload', s.id, 'playbook.upload', 'Uploaded playbooks need file and sha256');
+        } else if (!isTemplate(sha256) && !DIGEST.test(sha256)) {
+          this.error('playbook.digest', s.id, 'playbook.upload.sha256', "sha256 is the upload's digest as POST /playbooks:upload answered it: 64 lowercase hex digits");
         }
       }
     } else {

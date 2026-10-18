@@ -165,7 +165,9 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
   checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
-  artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+  artifact store under its SHA-256, `sha256` exactly as the upload answered it (64 lowercase hex
+  digits; anything else is `playbook.digest`); `path` names the playbook to run inside a `.zip`
+  or `.tar.gz`. A publish checks the store still holds the upload (`playbook.missing`).
 - `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
   pinned by the provider's `source.commit`.
 
@@ -273,6 +275,8 @@ finding is a `Problem` (docs/api.md). Among them:
 | `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
 | `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
 | `trigger.schedule`        | error   | a `schedule` trigger: the platform runs no schedules; use an alert, an event or the API |
+| `playbook.digest`         | error   | an uploaded playbook's `sha256` is not a digest: 64 lowercase hex digits, as `POST /api/v1/playbooks:upload` answered it |
+| `playbook.missing`        | error   | only at publish, from the platform: the artifact store holds no upload with the digest the step pins; upload the file again. The TypeScript twin cannot see the store and leaves this to the backend |
 | `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
 
 ### Versions and contracts

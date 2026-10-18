@@ -7,6 +7,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import com.iaf.platform.workflows.domain.PlaybookPins.Pin;
+import com.iaf.platform.workflows.domain.PlaybookPins.Upload;
 
 public class PlaybookPinsTest {
 
@@ -73,5 +74,17 @@ public class PlaybookPinsTest {
         assertThat(WorkflowYaml.toYaml(pinned)).contains("commit: " + COMMIT);
         assertThat(WorkflowYaml.toYaml(def)).as("the original is untouched").isEqualTo(before);
         assertThat(PlaybookPins.apply(def, Map.of())).isSameAs(def);
+    }
+
+    @Test
+    void uploadsNameTheStepsRunningAnUploadedPlaybookAndJudgeTheDigest() {
+        WorkflowDefinition def = WorkflowYaml.parse(YAML);
+
+        assertThat(PlaybookPins.uploads(def)).containsExactly(new Upload("uploaded", "aaaa"));
+        assertThat(new Upload("uploaded", "aaaa").validDigest()).isFalse();
+        assertThat(new Upload("uploaded", "SHA256:" + COMMIT + "9f2c0b7e1d4a9f2c0b7e1d4a").validDigest()).as("as answered: no prefix, lower case").isFalse();
+        assertThat(new Upload("uploaded", COMMIT + "9f2c0b7e1d4a9f2c0b7e1d4a").validDigest()).isTrue();
+        assertThat(PlaybookPins.uploads(WorkflowYaml.parse(YAML.replace("sha256: aaaa", "sha256: \"{{ $input.sha256 }}\""))))
+                .as("a digest from an expression is judged when the step runs").isEmpty();
     }
 }

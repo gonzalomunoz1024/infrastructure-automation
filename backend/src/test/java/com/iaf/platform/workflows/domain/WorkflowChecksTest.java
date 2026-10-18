@@ -226,6 +226,12 @@ class WorkflowChecksTest {
     }
 
     @Test
+    void anUploadDigestFromAnExpressionIsJudgedWhenTheStepRuns() throws IOException {
+        String yaml = Files.readString(FIXTURES.resolve("bad-upload-digest.yaml")).replace("\"SHA256:9F2C0B7E\"", "\"{{ $input.sha256 }}\"");
+        assertThat(WorkflowChecks.check(yaml, SampleContentTest.context())).extracting(Problem::code).doesNotContain("playbook.digest");
+    }
+
+    @Test
     void aKeyWrittenTwiceIsAYamlErrorNamingTheKey() throws IOException {
         List<Problem> problems = WorkflowChecks.check(Files.readString(FIXTURES.resolve("duplicate-key.yaml")), SampleContentTest.context());
         assertThat(problems).extracting(Problem::code).containsExactly("yaml.invalid");

@@ -99,5 +99,8 @@
   ],
   "schedule-trigger.yaml": [
     "error trigger.schedule"
+  ],
+  "bad-upload-digest.yaml": [
+    "error playbook.digest"
   ]
 }

@@ -72,6 +72,43 @@ class PublishChecksTest {
         assertThat(PublishChecks.ansibleLint(pinned, ctx(), PlaybookPins.Outcome.NONE)).isEqualTo(PublishChecks.ansibleLint(pinned, ctx()));
     }
 
+    static final String DIGEST = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
+
+    static String upload(String sha256) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: site-deploy, title: Site deploy, noun: site, verb: deploy, owner: team-platform, version: 1.0.0 }
+                policy:
+                  rbac: [ops]
+                workflow:
+                  do:
+                    - deploy:
+                        call: ansible
+                        with:
+                          playbook: { upload: { file: site.zip, sha256: "%s", path: site.yml } }
+                          inventory: dynamic
+                        retry: { maxAttempts: 1 }
+                """.formatted(sha256);
+    }
+
+    @Test
+    void anUploadIsPinnedByADigestOf64HexDigitsAndNothingElse() {
+        Check passed = PublishChecks.ansibleLint(WorkflowYaml.parse(upload(DIGEST)), ctx());
+        assertThat(passed.status()).isEqualTo("passed");
+        assertThat(passed.detail()).isEqualTo("1 playbook(s) pinned to a commit");
+
+        Check failed = PublishChecks.ansibleLint(WorkflowYaml.parse(upload("SHA256:9F2C0B7E")), ctx());
+        assertThat(failed.status()).isEqualTo("failed");
+        assertThat(failed.detail()).isEqualTo("upload digest is not 64 hex digits (playbook.digest): deploy");
+
+        // the designer checks already say playbook.digest; :validate does not add publish.ansibleLint on top
+        assertThat(WorkflowChecks.check(upload("SHA256:9F2C0B7E"), ctx())).extracting(Problem::code).containsExactly("playbook.digest");
+        assertThat(PublishChecks.problems(WorkflowYaml.parse(upload("SHA256:9F2C0B7E")), ctx(), DependencyRulesTest.samples(), null, graph()))
+                .extracting(Problem::code).doesNotContain("publish.ansibleLint");
+        assertThat(WorkflowChecks.check(upload(DIGEST), ctx())).isEmpty();
+    }
+
     @Test
     void policyAndReplayAndDiffChecksReportTheirDetail() {
         assertThat(PublishChecks.policy(PolicyDecision.allow("mock")).status()).isEqualTo("passed");

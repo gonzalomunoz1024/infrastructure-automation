@@ -1,0 +1,13 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: site-deploy, title: Site deploy, noun: site, verb: deploy, owner: team-platform, version: 1.0.0 }
+policy:
+  rbac: [ops]
+workflow:
+  do:
+    - deploy:
+        call: ansible
+        with:
+          playbook: { upload: { file: site.zip, sha256: "SHA256:9F2C0B7E", path: site.yml } }
+          inventory: dynamic
+        retry: { maxAttempts: 1 }

@@ -53,17 +53,13 @@ public final class PublishChecks {
         return new Check("checks", "Checks", errors > 0 ? FAILED : PASSED, detail);
     }
 
-    /** Passes when every ansible step is pinned to a commit; skipped when the workflow has none. */
+    /**
+     * Passes when every ansible step is pinned: a git playbook to a commit, an upload to a digest
+     * of 64 hex digits, a library playbook through its provider's commit. Skipped when the
+     * workflow has no ansible step.
+     */
     public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx) {
-        List<Step> ansible = def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE).toList();
-        if (ansible.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", SKIPPED, "no ansible step");
-        }
-        List<String> unpinned = ansible.stream().filter(s -> !pinned(s, ctx)).map(Step::id).toList();
-        if (unpinned.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", PASSED, ansible.size() + " playbook(s) pinned to a commit");
-        }
-        return new Check("ansible-lint", "ansible-lint", FAILED, "not pinned to a commit: " + String.join(", ", unpinned));
+        return ansibleLint(def, ctx, null);
     }
 
     /**
@@ -72,37 +68,65 @@ public final class PublishChecks {
      * are named in the detail.
      */
     public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins) {
-        Check check = ansibleLint(def, ctx);
-        if (pins == null || (pins.failures().isEmpty() && pins.pinned().isEmpty())) {
-            return check;
+        List<Step> ansible = def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE).toList();
+        if (ansible.isEmpty()) {
+            return new Check("ansible-lint", "ansible-lint", SKIPPED, "no ansible step");
         }
-        if (!pins.failures().isEmpty()) {
+        if (pins != null && !pins.failures().isEmpty()) {
+            // the step whose ref did not resolve is unpinned as well; the reason is the message
             return new Check("ansible-lint", "ansible-lint", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
         }
-        String pinned = pins.pinned().entrySet().stream().map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length())))
-                .collect(Collectors.joining(", "));
-        return new Check(check.id(), check.label(), check.status(), check.detail() + "; pinned at publish: " + pinned);
+        List<String> failures = new ArrayList<>();
+        List<String> unpinned = ansible.stream().filter(s -> pinState(s, ctx) == PinState.UNPINNED).map(Step::id).toList();
+        if (!unpinned.isEmpty()) {
+            failures.add("not pinned to a commit: " + String.join(", ", unpinned));
+        }
+        List<String> badDigests = ansible.stream().filter(s -> pinState(s, ctx) == PinState.BAD_DIGEST).map(Step::id).toList();
+        if (!badDigests.isEmpty()) {
+            failures.add("upload digest is not 64 hex digits (playbook.digest): " + String.join(", ", badDigests));
+        }
+        if (!failures.isEmpty()) {
+            return new Check("ansible-lint", "ansible-lint", FAILED, String.join("; ", failures));
+        }
+        String detail = ansible.size() + " playbook(s) pinned to a commit";
+        if (pins != null && !pins.pinned().isEmpty()) {
+            detail += "; pinned at publish: " + pins.pinned().entrySet().stream()
+                    .map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length()))).collect(Collectors.joining(", "));
+        }
+        return new Check("ansible-lint", "ansible-lint", PASSED, detail);
+    }
+
+    /** How an ansible step's playbook is pinned: to a commit or a digest, not at all, or to a digest that is not one. */
+    enum PinState {
+        PINNED, UNPINNED, BAD_DIGEST
     }
 
     static boolean pinned(Step s, CheckContext ctx) {
+        return pinState(s, ctx) == PinState.PINNED;
+    }
+
+    static PinState pinState(Step s, CheckContext ctx) {
         JsonNode pb = s.withNode("playbook");
         if (pb == null || pb.isNull()) {
-            return false;
+            return PinState.UNPINNED;
         }
         if (pb.isTextual()) {
-            return libraryPinned(pb.asText(), ctx);
+            return libraryPinned(pb.asText(), ctx) ? PinState.PINNED : PinState.UNPINNED;
         }
         if (!pb.isObject()) {
-            return false;
+            return PinState.UNPINNED;
         }
         if (pb.path("commit").asText(null) != null) {
-            return true;
+            return PinState.PINNED;
         }
-        if (pb.has("upload") && pb.path("upload").path("sha256").asText(null) != null) {
-            return true;
+        if (pb.path("upload").isObject()) {
+            String sha256 = pb.path("upload").path("sha256").asText(null);
+            if (sha256 != null) {
+                return PlaybookPins.DIGEST.matcher(sha256).matches() ? PinState.PINNED : PinState.BAD_DIGEST;
+            }
         }
         JsonNode library = pb.get("library");
-        return library != null && library.isTextual() && libraryPinned(library.asText(), ctx);
+        return library != null && library.isTextual() && libraryPinned(library.asText(), ctx) ? PinState.PINNED : PinState.UNPINNED;
     }
 
     private static boolean libraryPinned(String ref, CheckContext ctx) {
@@ -223,8 +247,10 @@ public final class PublishChecks {
     public static List<Problem> problems(WorkflowDefinition def, CheckContext ctx, List<WorkflowDefinition> published, WorkflowDefinition previous,
             DependencyRules.Graph graph) {
         List<Problem> out = new ArrayList<>();
-        def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && !pinned(s, ctx)).forEach(s -> out.add(Problem.error("publish.ansibleLint", s.id(), "playbook",
-                "The ansible-lint check of the change request fails: pin the playbook to a commit")));
+        // a digest that is not one is already playbook.digest from the designer checks
+        def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && pinState(s, ctx) == PinState.UNPINNED)
+                .forEach(s -> out.add(Problem.error("publish.ansibleLint", s.id(), "playbook",
+                        "The ansible-lint check of the change request fails: pin the playbook to a commit")));
         if (def.path() != null) {
             routeClashes(def, published).forEach(c -> out.add(Problem.error("publish.routes", null, "api.path", "The routes check of the change request fails: " + c)));
         }

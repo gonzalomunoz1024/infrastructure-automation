@@ -3,6 +3,7 @@ package com.iaf.platform.workflows.domain;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -16,8 +17,18 @@ import com.iaf.platform.common.expressions.ExpressionEngine;
  */
 public final class PlaybookPins {
 
+    /** An upload's digest as {@code POST /playbooks:upload} answers it: 64 lowercase hex digits. */
+    public static final Pattern DIGEST = Pattern.compile("^[0-9a-f]{64}$");
+
     /** One step to pin: its git source and the optional {@code vault:} credential of a private repository. */
     public record Pin(String step, String repo, String ref, String credential) {
+    }
+
+    /** One uploaded playbook: the step and the digest the file names (as written, judged by {@link #DIGEST}). */
+    public record Upload(String step, String sha256) {
+        public boolean validDigest() {
+            return sha256 != null && DIGEST.matcher(sha256).matches();
+        }
     }
 
     /** What a publish did: the steps pinned (step id to commit) and why the others could not be. */
@@ -47,6 +58,26 @@ public final class PlaybookPins {
             }
             String credential = text(git, "credential");
             out.add(new Pin(s.id(), repo, ref, credential.isEmpty() ? null : credential));
+        }
+        return out;
+    }
+
+    /** The ansible steps that run an uploaded playbook, with the digest each names (templated digests are left alone). */
+    public static List<Upload> uploads(WorkflowDefinition def) {
+        List<Upload> out = new ArrayList<>();
+        for (Step s : def.allSteps()) {
+            if (s.type() != StepType.ANSIBLE) {
+                continue;
+            }
+            JsonNode pb = s.withNode("playbook");
+            if (pb == null || !pb.isObject() || !pb.path("upload").isObject()) {
+                continue;
+            }
+            String sha = text(pb.get("upload"), "sha256");
+            if (sha.isEmpty() || ExpressionEngine.isTemplate(sha)) {
+                continue;
+            }
+            out.add(new Upload(s.id(), sha));
         }
         return out;
     }

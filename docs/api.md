@@ -92,7 +92,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | DELETE | `/workflows/{name}`                          | drafts only → 204 |
 | POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200); also reports, as `publish.ansibleLint`, `publish.routes` and `publish.contracts` errors, the change-request checks the file would fail when published (docs/config-as-code.md, Checks) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
-| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema, checks, ansible-lint, policy, replay, contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
+| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema, checks, ansible-lint, policy, replay, contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes. 409 `checks failed` with the problems when the file has errors, among them `playbook.missing` for an uploaded playbook the artifact store no longer holds; nothing is opened then |
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
@@ -489,7 +489,9 @@ capped while reading (`platform.playbooks.max-entries`, `max-unpacked-size`); `p
 `.yml`/`.yaml` file in the archive; a single playbook, and the one `path` names, must parse as a
 YAML list of plays. A file over `platform.playbooks.max-upload-size` is a 413. The bytes are
 kept once in the artifact store under their SHA-256, which a workflow pins as
-`playbook: { upload: { file, sha256, path? } }`; each upload is a `playbook.uploaded` event.
+`playbook: { upload: { file, sha256, path? } }` with the `sha256` as answered (64 lowercase hex
+digits: `playbook.digest` refuses anything else, and a publish refuses a digest the store no
+longer holds: `playbook.missing`); each upload is a `playbook.uploaded` event.
 
 `repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
 URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding

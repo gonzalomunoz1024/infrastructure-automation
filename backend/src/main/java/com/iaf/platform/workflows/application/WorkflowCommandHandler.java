@@ -29,6 +29,7 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.ArtifactStorePort;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -108,6 +109,14 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     @Autowired(required = false)
     void setPlaybookPinning(PlaybookPinning pinning) {
         this.pinning = pinning;
+    }
+
+    /** Holds uploaded playbooks; a publish checks each upload the file names is still there. Set by Spring; without it the check is skipped. */
+    private ArtifactStorePort artifacts;
+
+    @Autowired(required = false)
+    void setArtifacts(ArtifactStorePort artifacts) {
+        this.artifacts = artifacts;
     }
 
     @PostConstruct
@@ -281,9 +290,11 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 throw new ConflictException("change request " + cr.id() + " is already open for workflow " + name, Map.of("changeRequest", cr.id()));
             });
             return new Candidate(withVersionRanges(draft), store.published(name).orElse(null), who);
-        })).flatMap(this::pinned).flatMap(c -> queries.checkContext().flatMap(ctx -> {
+        })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext(), missingUploads(c.record().definition())).flatMap(judged -> {
+            CheckContext ctx = judged.getT1();
             WorkflowDefinition def = c.record().definition();
-            List<Problem> problems = WorkflowChecks.check(def, ctx);
+            List<Problem> problems = new ArrayList<>(WorkflowChecks.check(def, ctx));
+            problems.addAll(judged.getT2());
             if (WorkflowChecks.hasErrors(problems)) {
                 return Mono.error(new ConflictException("checks failed", problems));
             }
@@ -315,6 +326,23 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     private Check contracts(Candidate c, List<ResourceTypeDefinition> types) {
         DependencyRules.Graph graph = DependencyRules.of(publishedDefinitions(), WorkflowQueryHandler.producedBy(types));
         return PublishChecks.contracts(c.record().definition(), c.previous() == null ? null : c.previous().definition(), graph);
+    }
+
+    /**
+     * One {@code playbook.missing} error per ansible step whose uploaded playbook the artifact
+     * store does not hold any more: the designer checks already refused a digest that is not one,
+     * and a digest from an expression is judged when the step runs.
+     */
+    private Mono<List<Problem>> missingUploads(WorkflowDefinition def) {
+        List<PlaybookPins.Upload> uploads = PlaybookPins.uploads(def).stream().filter(PlaybookPins.Upload::validDigest).toList();
+        if (artifacts == null || uploads.isEmpty()) {
+            return Mono.just(List.of());
+        }
+        return Flux.fromIterable(uploads)
+                .filterWhen(u -> artifacts.exists(u.sha256()).map(exists -> !exists))
+                .map(u -> Problem.error("playbook.missing", u.step(), "playbook.upload.sha256",
+                        "The artifact store holds no upload with this digest; upload the file again (POST /api/v1/playbooks:upload) and pin the sha256 it answers"))
+                .collectList();
     }
 
     /** The candidate with its git playbooks pinned to the commits their refs name now (written into the version). */
