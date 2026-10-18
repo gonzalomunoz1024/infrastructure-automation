@@ -98,5 +98,10 @@ platform:
     idempotency:          # Idempotency-Key on POST generated routes, /jobs and /jobs:batch; idempotencyKey on MCP tools/call
       ttl: PT24H          # a key gives back its first answer this long; per caller
       keep: 100000        # keys kept at most, the oldest dropped first
+    quotas:               # token bucket per team (the caller's first team) on job starts; a batch takes one token
+      enabled: true
+      per-minute: 60      # every team's sustained starts per minute
+      burst: 60           # and how many at once
+      teams: {}           # overrides: { team-data: { per-minute: 120, burst: 120 } }
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data

@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -23,6 +24,7 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.common.schema.Schemas;
+import com.iaf.platform.gateway.application.JobQuotas;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.runs.domain.Preview;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
@@ -32,17 +34,16 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 
-import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
 
 /**
  * The one path from "someone calls a generated operation" to "a job starts", shared by the REST
- * gateway and the MCP server: validate the input against {@code api.input}, judge RBAC
+ * gateway and the MCP server: take a token from the caller's team quota (a batch takes one),
+ * validate the input against {@code api.input}, judge RBAC
  * ({@code policy.rbac}), ask the policy engine, compute the preview when the workflow publishes
  * one, then start the job (or the batch) through the runs slice.
  */
 @Service
-@RequiredArgsConstructor
 public class WorkflowInvoker {
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
@@ -50,6 +51,19 @@ public class WorkflowInvoker {
 
     private final RunsCommands runs;
     private final PolicyPort policy;
+    private final JobQuotas quotas;
+
+    public WorkflowInvoker(RunsCommands runs, PolicyPort policy) {
+        this(runs, policy, JobQuotas.unlimited());
+    }
+
+    /** {@code quotas}: every invoke or batch takes a token from the caller's team first (429 when there is none). */
+    @Autowired
+    public WorkflowInvoker(RunsCommands runs, PolicyPort policy, JobQuotas quotas) {
+        this.runs = runs;
+        this.policy = policy;
+        this.quotas = quotas;
+    }
 
     /** What the caller gets back: {@code { jobId, status, links: { job } }}. */
     public record Started(String jobId, String status, Map<String, String> links) {
@@ -78,7 +92,7 @@ public class WorkflowInvoker {
     // ---------------------------------------------------------------- one job
 
     public Mono<Started> invoke(WorkflowRecord workflow, JsonNode input, Identity who, String channel, String traceId) {
-        return Mono.defer(() -> {
+        return quotas.take(who).then(Mono.defer(() -> {
             WorkflowDefinition d = workflow.definition();
             ObjectNode in = Inputs.merge(input, null);
             validate(d, in);
@@ -87,7 +101,7 @@ public class WorkflowInvoker {
                     .then(preview(d, in, who))
                     .flatMap(p -> runs.startJob(new StartJob(d.name(), null, in, who, channel, null, traceId, p.orElse(null), null)))
                     .map(Started::of);
-        });
+        }));
     }
 
     /** {@code :preview}: the blast radius without starting anything. The input is validated and RBAC judged as for a run. */
@@ -109,7 +123,7 @@ public class WorkflowInvoker {
      * are judged once, one preview is computed for the batch (from its first row).
      */
     public Mono<BatchStarted> batch(WorkflowRecord workflow, JsonNode body, Map<String, String> params, Identity who, String channel) {
-        return Mono.defer(() -> {
+        return quotas.take(who).then(Mono.defer(() -> {
             WorkflowDefinition d = workflow.definition();
             BatchPlan plan = plan(d, body, params);
             AccessRules.requireInvoke(who, rbac(d), d.name());
@@ -121,7 +135,7 @@ public class WorkflowInvoker {
                     .then(preview(d, plan.rows().get(0), who))
                     .flatMap(p -> runs.startBatch(new StartBatch(d.name(), null, plan.rows(), plan.defaults(), plan.rollout(), who, channel, p.orElse(null))))
                     .map(a -> BatchStarted.of(a, plan.rows().size()));
-        });
+        }));
     }
 
     /** Merge defaults under every row, apply the path parameters, validate every row. */

@@ -28,6 +28,7 @@ import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.gateway.application.IdempotencyHandler;
 import com.iaf.platform.gateway.domain.IdempotencyKeys;
@@ -321,6 +322,12 @@ public class McpServer {
             ObjectNode data = F.objectNode();
             data.put("conflict", true);
             return JsonRpc.error(id, JsonRpc.INVALID_PARAMS, e.getMessage(), data);
+        }
+        if (e instanceof TooManyRequestsException tm) {
+            ObjectNode data = F.objectNode();
+            data.put("tooManyRequests", true);
+            data.put("retryAfter", tm.retryAfterSeconds());
+            return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage(), data);
         }
         log.error("mcp call failed", e);
         return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage() == null ? "internal error" : e.getMessage(), null);

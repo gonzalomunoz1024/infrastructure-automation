@@ -9,6 +9,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -40,6 +41,7 @@ import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -236,8 +238,19 @@ public class GeneratedRouteWebFilter implements WebFilter {
         if (e instanceof ResponseStatusException rse) {
             return write(exchange, rse.getStatusCode(), body(rse.getReason()));
         }
+        if (e instanceof TooManyRequestsException tm) {
+            return tooManyRequests(exchange, tm);
+        }
         log.error("generated route failed", e);
         return write(exchange, HttpStatus.INTERNAL_SERVER_ERROR, body(e.getMessage()));
+    }
+
+    /** Over the team's quota: 429 with {@code Retry-After}. */
+    private Mono<Void> tooManyRequests(ServerWebExchange exchange, TooManyRequestsException e) {
+        Map<String, Object> b = body(e.getMessage());
+        b.put("retryAfter", e.retryAfterSeconds());
+        exchange.getResponse().getHeaders().set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
+        return write(exchange, HttpStatus.TOO_MANY_REQUESTS, b);
     }
 
     private static Map<String, Object> body(String error) {

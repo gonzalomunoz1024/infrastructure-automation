@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -20,6 +21,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.gateway.application.JobQuotas;
+import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.runs.application.RunsCommandHandler;
 import com.iaf.platform.runs.application.RunsQueryHandler;
 import com.iaf.platform.runs.domain.DryRunResult;
@@ -44,10 +47,18 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
 
     private final RunsCommandHandler commands;
     private final RunsQueryHandler queries;
+    private final JobQuotas quotas;
 
     public RestControllerRunsAdapter(RunsCommandHandler commands, RunsQueryHandler queries) {
+        this(commands, queries, JobQuotas.unlimited());
+    }
+
+    /** {@code quotas}: {@code POST /jobs} and {@code /jobs:batch} take a token from the caller's team first. */
+    @Autowired
+    public RestControllerRunsAdapter(RunsCommandHandler commands, RunsQueryHandler queries, JobQuotas quotas) {
         this.commands = commands;
         this.queries = queries;
+        this.quotas = quotas;
     }
 
     /** {@code POST /api/v1/jobs}: {@code { workflow, version?, input, channel?, traceId?, changeId? }}. */
@@ -123,15 +134,15 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     @PostMapping("/jobs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> start(@RequestBody StartJobRequest body) {
-        return commands.startJob(new StartJob(body.workflow(), body.version(), body.input(), null,
-                body.channel() == null ? "rest" : body.channel(), null, body.traceId(), null, body.changeId()));
+        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> commands.startJob(new StartJob(body.workflow(), body.version(),
+                body.input(), null, body.channel() == null ? "rest" : body.channel(), null, body.traceId(), null, body.changeId()))));
     }
 
     @PostMapping("/jobs:batch")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> batch(@RequestBody StartBatchRequest body) {
-        return commands.startBatch(new StartBatch(body.workflow(), body.version(), body.items() == null ? List.of() : body.items(),
-                body.defaults(), body.rollout(), null, body.channel() == null ? "batch" : body.channel(), null));
+        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> commands.startBatch(new StartBatch(body.workflow(), body.version(),
+                body.items() == null ? List.of() : body.items(), body.defaults(), body.rollout(), null, body.channel() == null ? "batch" : body.channel(), null))));
     }
 
     @Override
