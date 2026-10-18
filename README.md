@@ -174,6 +174,17 @@ Temporal and PostgreSQL. It references secrets by the names of existing Secrets 
 agent annotations and never holds a value; `values.yaml` describes every setting and
 `ci/full-values.yaml` shows them all in use.
 
+The Helm values point the backend at Temporal with `temporal.address` and `namespace`. Three
+more settings secure that connection, as environment variables or Spring properties of the
+backend: `platform.temporal.tls.ca`, `.cert` and `.key` are PEM files (mounted from a Secret) for
+TLS to the server and, with a client certificate and its PKCS#8 key, mTLS;
+`platform.temporal.api-key` is a `vault:` reference to a Temporal Cloud API key, which turns TLS
+on by itself; and `platform.temporal.payload-key` is a `vault:` reference to a 32-byte AES key
+(base64, for example `openssl rand -base64 32`) that encrypts every payload the platform writes
+to Temporal's history. Without a payload key the history holds the jobs' inputs and the steps'
+results in clear, and the backend says so at startup. Keep the key for as long as the executions
+it encrypted may be replayed or read.
+
 Evidence, notifications and change records have profiles of their own: `worm` (write-once
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
 COMPLIANCE mode), `siem` (every evidence entry also to Splunk HEC and syslog), `slack`

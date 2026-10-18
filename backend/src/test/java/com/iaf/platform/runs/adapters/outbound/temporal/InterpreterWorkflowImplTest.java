@@ -2,49 +2,81 @@ package com.iaf.platform.runs.adapters.outbound.temporal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.ports.PolicyPort;
+import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
+import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.config.RunnersProperties;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.runs.FlakyProjectionStore;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.adapters.outbound.ChangeProperties;
 import com.iaf.platform.runs.adapters.outbound.DemoRunsSeeder;
+import com.iaf.platform.runs.adapters.outbound.live.ProcessScriptRunner;
+import com.iaf.platform.runs.application.AutomationRunners;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Job;
+import com.iaf.platform.runs.domain.JobCancelled;
 import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
 import com.iaf.platform.runs.domain.WaveScheduler;
+import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort;
+import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import io.temporal.api.enums.v1.WorkflowExecutionStatus;
+import io.temporal.api.history.v1.HistoryEvent;
 import io.temporal.client.WorkflowExecutionDescription;
 import io.temporal.client.WorkflowFailedException;
+import io.temporal.common.WorkflowExecutionHistory;
 import io.temporal.failure.CanceledFailure;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The interpreter as a Temporal workflow on the test server: the same scenarios as the in-memory
@@ -121,6 +153,85 @@ class InterpreterWorkflowImplTest {
                     notify: { channel: "#x", message: "after the wait" }
             """;
 
+    /** A script step, then a step after it; {@code CODE} stands for the script. */
+    private static final String SCRIPT = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-script, title: Script, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - long:
+                    name: Long
+                    script: { language: bash, code: "CODE" }
+                    pauseOnFailure: false
+                - after:
+                    name: After
+                    notify: { channel: "#x", message: "after the script" }
+            """;
+
+    /**
+     * A script runner that runs until the step's heartbeat says the job was cancelled, or for 30 s:
+     * an interrupt does not stop it, so only {@code cancelled()} can.
+     */
+    static final class UntilCancelled implements AutomationRunnerPort {
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch heard = new CountDownLatch(1);
+
+        @Override
+        public boolean supports(StepType type) {
+            return type == StepType.SCRIPT;
+        }
+
+        @Override
+        public Mono<JsonNode> run(RunRequest request) {
+            return run(request, Progress.NONE);
+        }
+
+        @Override
+        public Mono<JsonNode> run(RunRequest request, Progress progress) {
+            return Mono.fromCallable(() -> {
+                started.countDown();
+                long end = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+                while (System.nanoTime() < end) {
+                    try {
+                        progress.heartbeat();
+                    } catch (JobCancelled e) {
+                        heard.countDown();
+                        throw e;
+                    }
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        // keep going: the heartbeat is what has to stop this run
+                    }
+                }
+                return (JsonNode) JsonNodeFactory.instance.objectNode();
+            }).subscribeOn(Schedulers.boundedElastic());
+        }
+    }
+
+    @TempDir
+    Path work;
+
+    /** The engine with {@code runner} in front of the wiring's runners, heartbeating every 100 ms. */
+    private static TemporalTestEngine withRunner(AutomationRunnerPort runner) {
+        return new TemporalTestEngine(new TemporalTestEngine.Options()
+                .runners(r -> new AutomationRunners(Stream.concat(Stream.of(runner), r.all().stream()).toList()))
+                .config(temporal -> {
+                    temporal.setHeartbeatTimeout(Duration.ofSeconds(2));
+                    temporal.setHeartbeatInterval(Duration.ofMillis(100));
+                }));
+    }
+
+    private static long pid(Path file) {
+        try {
+            String text = Files.exists(file) ? Files.readString(file).trim() : "";
+            return text.isEmpty() ? -1 : Long.parseLong(text);
+        } catch (IOException | NumberFormatException e) {
+            return -1;
+        }
+    }
+
     private static final String PARENT = """
             apiVersion: iaf.platform/v1
             kind: Workflow
@@ -157,6 +268,80 @@ class InterpreterWorkflowImplTest {
                     name: Ask
                     approval: { group: approvers, message: "ok?" }
             """;
+
+    /** A child with an input schema (one required field, one default). */
+    private static final String QUICK = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-quick, title: Quick, noun: thing, verb: do, owner: team-x, version: 1.0.0 }
+            api:
+              method: POST
+              path: "/api/v1/things:do"
+              input: { type: object, required: [id], properties: { id: { type: string }, note: { type: string, default: none } } }
+            workflow:
+              do:
+                - say:
+                    name: Say
+                    notify: { channel: "#x", message: "{{ $input.id }} {{ $input.note }}" }
+            """;
+
+    /** A child only one team may invoke. */
+    private static final String SECRET = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-secret, title: Secret, noun: thing, verb: hide, owner: team-x, version: 1.0.0 }
+            policy:
+              rbac: [team-secret]
+            workflow:
+              do:
+                - say:
+                    name: Say
+                    notify: { channel: "#x", message: "hidden" }
+            """;
+
+    /** A child whose one step fails outright. */
+    private static final String BROKEN = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-broken, title: Broken, noun: thing, verb: break, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - check:
+                    name: Check
+                    notify: { channel: "#x", message: "checking" }
+                    assert: "{{ $json.message == 'never' }}"
+                    pauseOnFailure: false
+            """;
+
+    /** A parent of one run step ({@code run} is the step's own line) that fails the job outright, then a notify. */
+    private static String parent(String run) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-parent, title: Parent, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - child:
+                        name: Child
+                        run: %s
+                        pauseOnFailure: false
+                    - after:
+                        name: After
+                        notify: { channel: "#x", message: "after the child" }
+                """.formatted(run);
+    }
+
+    private static WorkflowExecutionHistory history(String resource) throws IOException {
+        try (InputStream in = InterpreterWorkflowImplTest.class.getResourceAsStream(resource)) {
+            assertThat(in).as(resource).isNotNull();
+            return WorkflowExecutionHistory.fromJson(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
+    private static List<String> activities(WorkflowExecutionHistory history) {
+        return history.getEvents().stream().filter(HistoryEvent::hasActivityTaskScheduledEventAttributes)
+                .map(e -> e.getActivityTaskScheduledEventAttributes().getActivityType().getName()).toList();
+    }
 
     private TemporalTestEngine t;
 
@@ -279,6 +464,24 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void anEditInputDecisionPublishesTheEditedInputForTheAudit() {
+        t = new TemporalTestEngine(calls -> TemporalTestEngine.failing(calls, "vm.get", 1));
+        Job job = t.start(yaml(FLAKY), Map.of("id", "vm-1042"));
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        t.awaitWorkflowStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+
+        t.execution.signalAttention(job.id(), AttentionDecision.editInput(SampleContent.json(Map.of("input", Map.of("id", "vm-2001"))), "ana")).block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        DomainEvent resolved = t.event(job.id(), "job.attention-resolved");
+        assertThat(resolved.data().path("action").asText()).isEqualTo("edit-input");
+        assertThat(resolved.data().path("by").asText()).isEqualTo("ana");
+        assertThat(resolved.data().at("/input/input/id").asText()).isEqualTo("vm-2001");
+        assertThat(t.job(job.id()).step("after").output().path("message").asText()).isEqualTo("after web-2001");
+        t.replay(job.id());
+    }
+
+    @Test
     void skipLeavesTheFailedStepBehindAndContinues() {
         t = new TemporalTestEngine();
         Job job = t.start(yaml(ATTENTION), Map.of("id", "vm-1042"));
@@ -321,6 +524,23 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void aCancelStopsTheJobWithoutCompensatingWhatItsStepsDid() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml(COMPENSATE), Map.of("id", "vm-1042"));
+
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        Job cancelled = t.job(job.id());
+        assertThat(cancelled.status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(cancelled.step("get").status()).as("cancel stops, abort rolls back").isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(cancelled.step("undo")).isNull();
+        assertThat(t.steps(job.id())).doesNotContain("get:compensated", "undo:succeeded");
+        t.replay(job.id());
+    }
+
+    @Test
     void aCancelSignalWakesAWaitingJob() {
         t = new TemporalTestEngine();
         Job job = t.start(yaml(WAIT), Map.of());
@@ -338,6 +558,66 @@ class InterpreterWorkflowImplTest {
         assertThat(t.types(job.id())).doesNotContain("job.finished");
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
         t.replay(job.id());
+    }
+
+    @Test
+    void aCancelEndsARunningScriptAtOnceAndItsRunnerSeesTheJobCancelledOnItsHeartbeat() throws InterruptedException {
+        UntilCancelled runner = new UntilCancelled();
+        t = withRunner(runner);
+        Job job = t.start(yaml(SCRIPT.replace("CODE", "sleep 30")), Map.of());
+        assertThat(runner.started.await(TemporalTestEngine.WAIT.toSeconds(), TimeUnit.SECONDS)).as("the script started").isTrue();
+        long asked = System.nanoTime();
+
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(runner.heard.await(15, TimeUnit.SECONDS)).as("the runner's heartbeat saw cancelled()").isTrue();
+        assertThat(Duration.ofNanos(System.nanoTime() - asked)).as("long before the script's 30 s were up").isLessThan(Duration.ofSeconds(20));
+        Job cancelled = t.job(job.id());
+        assertThat(cancelled.status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(cancelled.step("after")).isNull();
+        assertThat(t.event(job.id(), "job.cancelled").data().path("by").asText()).isEqualTo("mateo");
+        assertThat(t.client.fetchHistory(job.id()).getEvents()).as("the workflow asked Temporal to cancel the activity")
+                .anyMatch(HistoryEvent::hasActivityTaskCancelRequestedEventAttributes);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aCancelKillsTheProcessOfARunningScript() {
+        assumeTrue(Stream.of("/usr/local/bin", "/usr/bin", "/bin").anyMatch(d -> Files.isExecutable(Path.of(d, "bash"))), "bash is not installed");
+        RunnersProperties runners = new RunnersProperties();
+        runners.setWorkDir(work.resolve("runners").toString());
+        runners.setHeartbeat(Duration.ofMillis(200));
+        t = withRunner(new ProcessScriptRunner(runners, mock(ProviderQueries.class)));
+        Path pidFile = work.resolve("script.pid");
+        Job job = t.start(yaml(SCRIPT.replace("CODE", "echo $$ > " + pidFile + "; sleep 60; echo '{}'")), Map.of());
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> pid(pidFile) > 0);
+        ProcessHandle shell = ProcessHandle.of(pid(pidFile)).orElseThrow(() -> new AssertionError("the script's shell is not running"));
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> shell.descendants().findAny().isPresent());
+        List<ProcessHandle> tree = Stream.concat(Stream.of(shell), shell.descendants()).toList();
+
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        RunsTestWiring.await(Duration.ofSeconds(30), () -> tree.stream().noneMatch(ProcessHandle::isAlive));
+        assertThat(t.job(job.id()).step("after")).isNull();
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeCancellableCallsStillReplayLettingTheCallRunToItsEnd() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory recorded = history("/temporal/before-cancellable-calls/cancel-during-call.json");
+        List<HistoryEvent> events = recorded.getEvents();
+        HistoryEvent call = events.stream().filter(e -> e.hasActivityTaskScheduledEventAttributes()
+                && e.getActivityTaskScheduledEventAttributes().getActivityType().getName().equals("CallProvider")).findFirst().orElseThrow();
+        HistoryEvent answered = events.stream().filter(e -> e.hasActivityTaskCompletedEventAttributes()
+                && e.getActivityTaskCompletedEventAttributes().getScheduledEventId() == call.getEventId()).findFirst().orElseThrow();
+        HistoryEvent cancel = events.stream().filter(HistoryEvent::hasWorkflowExecutionSignaledEventAttributes).findFirst().orElseThrow();
+        assertThat(cancel.getEventId()).as("the job was cancelled while its call ran").isBetween(call.getEventId(), answered.getEventId());
+        assertThat(events).as("recorded letting the call run to its end").noneMatch(HistoryEvent::hasActivityTaskCancelRequestedEventAttributes);
+
+        t.replay(recorded);
     }
 
     @Test
@@ -433,6 +713,292 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void aChildIsRecordedByItsOwnFirstActivityNotByTheParentBeforeItStarts() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-quick"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(QUICK))));
+        Job job = t.start(yaml(parent("{ workflow: t-quick, version: \"^1\", input: { id: thing-1 } }")), Map.of());
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        Job child = t.w.projection.children(job.id()).get(0);
+        assertThat(child.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(child.input().path("note").asText()).as("the child's own defaults").isEqualTo("none");
+        assertThat(child.step("say").output().path("message").asText()).isEqualTo("thing-1 none");
+        assertThat(t.types(child.id())).startsWith("job.started").endsWith("job.finished");
+        assertThat(activities(t.client.fetchHistory(child.id()))).as("the child records itself first").startsWith("Started");
+        assertThat(activities(t.client.fetchHistory(job.id()))).as("the parent only resolves and checks it").contains("ChildJob").doesNotContain("Started");
+        t.replay(job.id());
+        t.replay(child.id());
+    }
+
+    @Test
+    void historiesRecordedWhileTheParentStoredItsChildStillReplay() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory parent = history("/temporal/before-child-records-itself/run-step-parent.json");
+        WorkflowExecutionHistory child = history("/temporal/before-child-records-itself/run-step-child.json");
+        assertThat(activities(parent)).contains("ChildJob");
+        assertThat(activities(child)).as("recorded before children recorded themselves").doesNotContain("Started");
+
+        t.replay(parent);
+        t.replay(child);
+    }
+
+    @Test
+    void aForkBranchOutsideAnyTryPausesForAttentionWhileItsSiblingWaitsInsideOne() {
+        t = new TemporalTestEngine();
+        Job job = t.start(HistoryRecorder.FORK_GUARD, Map.of());
+
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        Job paused = t.job(job.id());
+        assertThat(paused.attention().step()).isEqualTo("broken");
+        assertThat(paused.attention().error().errorClass()).isEqualTo("unknown_action");
+        t.awaitWorkflowStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+
+        t.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.failedStep()).isEqualTo("broken");
+        assertThat(outcome.message()).endsWith("(aborted by ana)");
+        assertThat(t.job(job.id()).step("guarded").status()).as("the sibling ran to its end").isEqualTo(StepStatus.SUCCEEDED);
+        t.replay(job.id());
+    }
+
+    /** A step whose failure waits at most an hour for a person's decision. */
+    private static final String ATTENTION_HOUR = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-attention-hour, title: Attention hour, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - broken:
+                    name: Broken
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+                    attentionTimeout: PT1H
+            """;
+
+    @Test
+    void aStepsAttentionTimeoutIsTheTimerThatEndsTheWaitForADecision() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml(ATTENTION_HOUR), Map.of());
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        assertThat(t.job(job.id()).attention().timeout()).isEqualTo("PT1H");
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.failedStep()).isEqualTo("broken");
+        assertThat(outcome.message()).endsWith("(aborted by timeout)");
+        assertThat(t.client.fetchHistory(job.id()).getEvents().stream().filter(HistoryEvent::hasTimerStartedEventAttributes)
+                .map(e -> e.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds()))
+                .as("the hour, less what passed since the step failed").singleElement().satisfies(s -> assertThat(s).isBetween(3500L, 3600L));
+        t.replay(job.id());
+    }
+
+    private static List<Long> timers(WorkflowExecutionHistory history) {
+        return history.getEvents().stream().filter(HistoryEvent::hasTimerStartedEventAttributes)
+                .map(e -> e.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds()).toList();
+    }
+
+    @Test
+    void aDayLongWaitUntilBacksOffSoItsHistoryStaysSmall() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-day, title: Day, noun: thing, verb: wait, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - never:
+                        name: Never
+                        wait: { until: "{{ $input.ready == true }}" }
+                        timeout: 24h
+                        pauseOnFailure: false
+                """), Map.of("ready", false));
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.errorClass()).isEqualTo("timeout");
+        assertThat(outcome.message()).isEqualTo("Condition did not hold within 1d");
+        WorkflowExecutionHistory history = t.client.fetchHistory(job.id());
+        assertThat(timers(history)).startsWith(5L, 10L, 20L, 40L, 80L, 160L, 300L, 300L);
+        assertThat(timers(history).stream().mapToLong(Long::longValue).sum()).as("the waits add up to the day (whole seconds)")
+                .isBetween(Duration.ofHours(24).toSeconds() - 5, Duration.ofHours(24).toSeconds());
+        assertThat(history.getEvents()).as("every 5 s for a day would be ~86,000 events").hasSizeLessThan(2000);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aUseThatWaitsForAResourceBacksOffAndLooksSoonAgainOnceItsStatusMoves() {
+        t = new TemporalTestEngine();
+        Deque<String> states = new ArrayDeque<>(List.of("building", "building", "configuring", "configuring", "ready"));
+        when(t.w.resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(
+                RunsTestWiring.resource(i.getArgument(0), i.getArgument(1), states.size() > 1 ? states.poll() : states.peek())));
+        Job job = t.start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-use, title: Use, noun: thing, verb: use, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - ready:
+                        name: Ready
+                        use: { type: vm, id: vm-201, waitUntil: ready }
+                        timeout: 1h
+                """), Map.of());
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(timers(t.client.fetchHistory(job.id()))).as("5 s, doubled, then 5 s again once building turned configuring").containsExactly(5L, 10L, 5L, 10L);
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeBackedOffPollsStillReplayLookingEveryFiveSeconds() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory polls = history("/temporal/before-poll-backoff/polls.json");
+        assertThat(timers(polls)).as("recorded looking every 5 s").containsOnly(5L).hasSize(14);
+
+        t.replay(polls);
+    }
+
+    @Test
+    void aMalformedWaitDurationFailsTheStepOnceAsInvalidInput() {
+        t = new TemporalTestEngine();
+        Job job = t.start(HistoryRecorder.LEAF_ERROR, Map.of());
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("invalid_input");
+        assertThat(t.steps(job.id())).containsExactly("pause:running", "pause:failed");
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeTheInterpreterRulesStillReplayWithTheRulesTheyRanWith() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory leaf = history("/temporal/before-interpreter-rules/leaf-error-retried.json");
+        WorkflowExecutionHistory fork = history("/temporal/before-interpreter-rules/fork-guarded-sibling.json");
+        assertThat(activities(leaf)).as("recorded retrying the malformed duration: two attempts, each running then failed")
+                .filteredOn("PublishStep"::equals).hasSize(4);
+        assertThat(activities(fork)).as("recorded failing the fork without a pause for attention").doesNotContain("PublishAttention");
+
+        t.replay(leaf);
+        t.replay(fork);
+    }
+
+    @Test
+    void aRunStepWithoutAVersionRunsTheChildsCurrentMajorAndSaysSo() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.published("t-quick")).thenReturn(Mono.just(RunsTestWiring.record(yaml(QUICK))));
+        when(t.w.workflows.resolve(eq("t-quick"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(QUICK))));
+        Job job = t.start(yaml(parent("{ workflow: t-quick, input: { id: thing-1 } }")), Map.of());
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        verify(t.w.workflows).resolve("t-quick", "^1");
+        assertThat(t.events(job.id(), "job.log")).extracting(e -> e.data().path("message").asText())
+                .contains("child: no version given, running t-quick ^1 (its current major)");
+        assertThat(t.w.projection.children(job.id())).singleElement().satisfies(c -> assertThat(c.status()).isEqualTo(JobStatus.SUCCEEDED));
+        t.replay(job.id());
+    }
+
+    @Test
+    void aChildTheRequesterMayNotInvokeFailsTheParentStepAsForbiddenAndNeverStarts() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-secret"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(SECRET))));
+        WorkflowDefinition def = yaml(parent("{ workflow: t-secret, version: \"^1\" }"));
+        Job job = t.start(JobFactory.newJob(def, def.version(), SampleContent.json(Map.of()), SampleContent.ANA, "rest", null, null, null, null, null,
+                t.w.clock.instant()));
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("forbidden");
+        assertThat(outcome.failedStep()).isEqualTo("child");
+        assertThat(outcome.message()).isEqualTo("Ana may not invoke t-secret (needs one of [team-secret])");
+        Job failed = t.job(job.id());
+        assertThat(failed.step("child").error().errorClass()).isEqualTo("forbidden");
+        assertThat(failed.step("after")).isNull();
+        assertThat(t.w.projection.children(job.id())).isEmpty();
+        assertThat(activities(t.client.fetchHistory(job.id()))).doesNotContain("Started");
+        t.replay(job.id());
+    }
+
+    @Test
+    void aChildThePolicyEngineDeniesFailsTheParentStepAsForbidden() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-wait"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(WAIT))));
+        when(t.w.policy.evaluate(argThat(in -> in != null && "t-wait".equals(in.workflow()))))
+                .thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("no-waits", "deny", "nothing waits under a parent")), "mock")));
+        Job job = t.start(yaml(parent("{ workflow: t-wait, version: \"^1\" }")), Map.of());
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("forbidden");
+        assertThat(outcome.message()).isEqualTo("Policy denies running t-wait: nothing waits under a parent");
+        ArgumentCaptor<PolicyInput> asked = ArgumentCaptor.forClass(PolicyInput.class);
+        verify(t.w.policy, atLeastOnce()).evaluate(asked.capture());
+        PolicyInput in = asked.getAllValues().stream().filter(i -> "t-wait".equals(i.workflow())).findFirst().orElseThrow();
+        assertThat(in.phase()).isEqualTo(PolicyPort.Phase.INVOKE);
+        assertThat(in.who()).isEqualTo(SampleContent.GONZALO);
+        assertThat(in.version()).isEqualTo("1.0.0");
+        assertThat(in.context().path("parentId").asText()).isEqualTo(job.id());
+        assertThat(in.context().path("channel").asText()).isEqualTo("rest");
+        assertThat(t.w.projection.children(job.id())).isEmpty();
+        t.replay(job.id());
+    }
+
+    @Test
+    void aChildWhoseInputDoesNotFitItsSchemaFailsTheParentStepNamingTheField() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-quick"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(QUICK))));
+        Job job = t.start(yaml(parent("{ workflow: t-quick, version: \"^1\", input: { note: late } }")), Map.of());
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("invalid_input");
+        assertThat(outcome.message()).startsWith("The input of t-quick does not fit its schema: ").contains("id");
+        assertThat(t.w.projection.children(job.id())).isEmpty();
+        t.replay(job.id());
+    }
+
+    @Test
+    void aRunStepWithOnFailureContinueRecordsTheChildFailureAndGoesOn() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-broken"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(BROKEN))));
+        Job job = t.start(yaml(parent("{ workflow: t-broken, version: \"^1\", onFailure: continue }")), Map.of());
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        Job child = t.w.projection.children(job.id()).get(0);
+        assertThat(child.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(child.errorClass()).isEqualTo("assertion_failed");
+        Job done = t.job(job.id());
+        JobStep step = done.step("child");
+        assertThat(step.status()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(step.output().path("jobId").asText()).isEqualTo(child.id());
+        assertThat(step.output().path("status").asText()).isEqualTo("failed");
+        assertThat(step.output().path("error").path("class").asText()).isEqualTo("assertion_failed");
+        assertThat(step.output().path("error").path("step").asText()).as("the child's step that failed").isEqualTo("check");
+        assertThat(done.step("after").status()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(t.events(job.id(), "job.log")).extracting(e -> e.data().path("message").asText())
+                .anyMatch(m -> m.contains("continuing (onFailure: continue)"));
+        t.replay(job.id());
+        t.replay(child.id());
+    }
+
+    @Test
+    void aRunStepWithoutOnFailureContinueFailsWithTheChildsErrorClass() {
+        t = new TemporalTestEngine();
+        when(t.w.workflows.resolve(eq("t-broken"), anyString())).thenReturn(Mono.just(RunsTestWiring.record(yaml(BROKEN))));
+        Job job = t.start(yaml(parent("{ workflow: t-broken, version: \"^1\" }")), Map.of());
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("assertion_failed");
+        assertThat(outcome.failedStep()).isEqualTo("child");
+        Job child = t.w.projection.children(job.id()).get(0);
+        assertThat(outcome.message()).isEqualTo("Child job " + child.id() + " (t-broken) failed: Assertion failed: {{ $json.message == 'never' }}");
+        assertThat(t.job(job.id()).step("after")).isNull();
+        t.replay(job.id());
+        t.replay(child.id());
+    }
+
+    @Test
     void aWaitIsATimerThatTheTestServerSkips() {
         t = new TemporalTestEngine();
         long before = t.env.currentTimeMillis();
@@ -445,6 +1011,27 @@ class InterpreterWorkflowImplTest {
         Job done = t.job(job.id());
         assertThat(done.step("pause").status()).isEqualTo(StepStatus.SUCCEEDED);
         assertThat(done.step("after").output().path("message").asText()).isEqualTo("after the wait");
+        t.replay(job.id());
+    }
+
+    @Test
+    void aFinalEventTheStoreRefusesIsRetriedUntilTheStoreKeepsItInsteadOfLeavingTheJobRunning() {
+        // more refusals than the five attempts an event used to get
+        FlakyProjectionStore store = FlakyProjectionStore.refusingTerminalSaves(7);
+        t = new TemporalTestEngine(new TemporalTestEngine.Options().wiring(new RunsTestWiring(store)));
+        Job job = t.start(yaml(WAIT), Map.of());
+
+        Outcome outcome = t.result(job.id());
+
+        assertThat(outcome.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(store.refused()).isEqualTo(7);
+        assertThat(t.job(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(t.types(job.id())).as("a refused event is not published; the one kept is, once").containsOnlyOnce("job.finished");
+        assertThat(t.w.projection.history(job.id()).stream().filter(e -> e.terminal()).count()).isOne();
+        List<HistoryEvent> attempts = t.client.fetchHistory(job.id()).getEvents().stream()
+                .filter(HistoryEvent::hasActivityTaskStartedEventAttributes)
+                .filter(e -> e.getActivityTaskStartedEventAttributes().getAttempt() == 8).toList();
+        assertThat(attempts).as("the finished activity's eighth attempt kept the event").hasSize(1);
         t.replay(job.id());
     }
 

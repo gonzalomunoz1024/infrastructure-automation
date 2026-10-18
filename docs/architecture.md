@@ -197,7 +197,14 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   their steps), approvals and event history in `ProjectionStore`. The definition a job ran is
   stored once per distinct definition. Event numbering carries on after a restart, so
   `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
-  fan-out (SSE, WebSocket) stays in memory.
+  fan-out (SSE, WebSocket) stays in memory: one stream per job that is not over, dropped when the
+  job ends, never made for an id the store does not have, and dropped after 30 minutes without an
+  event or a subscriber (numbering then resumes from the stored history). `JobEvents` folds each
+  event into the projection before it publishes it, so a store failure reaches the publisher
+  instead of losing the event: nothing is kept or published, a Temporal activity retries (see
+  Running on Temporal), a command fails, and the in-memory engine fails the step (its final event
+  is logged as lost). An event that cannot be applied at all, a bug no retry mends, is logged and
+  kept in the history without changing the job.
 - Provider-call samples are queued, and a background thread writes them in batches, so recording
   never waits for the database (a read writes the queue first). Each row keeps the provider
   version that served the call, so a provider canary's gates judge the candidate's calls against
@@ -286,7 +293,9 @@ runs on a non-blocking thread, and the wiring test expects none.
   (`RequestedTraceIds` makes it the root of that trace when nothing started it from a span);
   `TracedProviderCalls` proxies every `ProviderCallPort` bean so each call is an
   `iaf.provider.call` span under its step. `JobMetrics` counts and times jobs per workflow. Step
-  spans come from the in-memory engine's events.
+  spans come from the job events on either engine (on Temporal the activities publish them, and a
+  provider call hangs under the job's span); `JobTracing` also answers a step's `traceparent`
+  (`StepTraces`) for its calls on a team's worker.
 
 ## The interpreter
 
@@ -306,11 +315,22 @@ result through `ChildResults`, which carries those registrations. The same class
 
 A `use` step asks the policy engine whether the requester may use the resource (phase
 `RESOURCE_ACCESS`, the resource's owner and visibility in the input) unless it says
-`checkAccess: false`; the YAML parsers of both twins apply that default. One that waits for a
-resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
-in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
-bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
-signal a registry listener sends to the waiting workflow.
+`checkAccess: false`; the YAML parsers of both twins apply that default.
+
+A failure pauses for a person's decision only outside every `try`, and each `fork` branch counts
+only the `try` blocks it is itself inside (in process the branches run at once, on threads), so a
+branch inside a `try` does not keep a sibling's failure from pausing. A leaf's bad input
+(`IllegalArgumentException`, `NullPointerException`, such as a `wait` duration that is no duration)
+fails it as `invalid_input`, never retried. An exception outside a step's own handling (a
+container, the seed of a rerun, the build of a requested resource, the `outputs`) fails that step,
+or `outputs`, like any step failure: compensation and the workflow's `catch` run, and the engine
+never ends the job as `engine_error` for it. A `catch` names the failure it caught (`$error`, or
+`$<as>`) only while it runs.
+
+A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`
+in process: the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
+bounded by the step's timeout and ended by a cancel. On Temporal the workflow polls instead: a
+`useResource` activity reads the resource, then a timer waits before the next read (see below).
 
 The registry judges its own writes (`resources.domain.ResourceRules`): a resource is its owner
 team's, so only that team, the job that created it or an admin may update it through a `register`
@@ -342,9 +362,39 @@ beans: a step's calls go through the same `PortStepExecutor` as in memory, once,
 timeout (the interpreter does the retrying), and every event goes through `JobEvents`, so the
 projection, the audit log and the streams cannot tell the engines apart. Approvals, attention
 decisions and cancels are the signals `approve`, `attention` and `cancel`; `status` and `waitingOn`
-are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` polls are timers; `run`
-steps and batch rows are child workflows whose ids are the child job ids. A cancel from the
-Temporal UI or CLI ends the job as cancelled by `temporal`. Without the `postgres` profile the job
+are queries. Waits, timeouts, retry backoffs and the polls of `wait until` and `use … waitUntil: ready`
+are timers. Every timer and every lookup is history, and an execution stops at Temporal's limit of
+51,200 events, so a poll backs off: it looks again after 5 s, then after twice the last wait up to
+5 minutes, and after 5 s again once what it watches changed (the condition's value, the resource's
+status); its last wait ends at the step's timeout. A day-long `wait until` is a few hundred timers
+instead of 17,000. In process a `wait until` looks every 5 s and a `use` waits for the registry's
+events. The backoff is gated with `Workflow.getVersion` (`poll-backoff`): an execution recorded
+before it (fixture `before-poll-backoff`) keeps looking every 5 s. `run`
+steps and batch rows are child workflows whose ids are the child job ids. A run step's child is
+resolved and checked by the parent's `childJob` activity through `ChildStarts`, the same code the
+in-memory engine runs: the range as written, else the workflow's current major; then the child's
+schema defaults, its schema, the requester's right to invoke it and the policy engine's decision,
+which the child carries. The child records itself (`started`, its own first activity: the job
+with its definition snapshot into the projection, then `job.started`), so a child whose start
+never happened leaves no queued job behind; a batch row is built from the batch's `JobRef` alone
+and gets the batch's snapshot from the workflow, so the activity reads nothing from the
+projection of the instance it runs on. A child that did not succeed reaches the parent's step as
+a `ChildFailure` on both engines, so `onFailure: continue` means the same there. Executions
+recorded before children recorded themselves (fixture `before-child-records-itself`) still
+replay: the change is gated with `Workflow.getVersion` (`child-records-itself`), as the
+team-worker change was. The interpreter's failure rules above are gated the same way
+(`interpreter-rules`): an execution recorded before them (fixture `before-interpreter-rules`)
+replays with the rules it ran with, `WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES`.
+The fixtures are histories the test-only `HistoryRecorder` writes from scenarios run on the test
+server (`-Diaf.record.histories=<dir>`) before a change alters the commands a workflow issues.
+Every event an execution publishes (its start as a child, the step
+records, decisions, waves, log lines, `job.finished` and `job.cancelled`) is an activity retried
+without a maximum, backing off from 1 s to one attempt a minute: a store that is down holds the
+job where it is until the projection keeps the event, rather than losing a `job.finished` and
+leaving the job running for good; the Temporal UI shows the activity retrying with the store's
+error. Records that mint an id (an approval, a child) still run once and fail the step instead,
+so a retry never creates a second one. A cancel from the Temporal UI or CLI ends the job as cancelled by
+`temporal`. Without the `postgres` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
 history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
@@ -352,11 +402,31 @@ history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the 
 (`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
 "Open in Temporal".
 
+The connection and the history can be secured. `platform.temporal.tls.ca`, `.cert` and `.key`
+(PEM files) give TLS to the server and, with a client certificate, mTLS;
+`platform.temporal.api-key`, a `vault:` reference resolved at startup, authenticates to Temporal
+Cloud on every call (and turns TLS on). With `platform.temporal.payload-key`, a `vault:` reference
+to a 32-byte AES key, every payload the platform writes (the job, its signals and queries, the
+inputs and results of its own activities, which may echo a secret a step read) is sealed with
+AES-256-GCM through a `CodecDataConverter` (`PayloadEncryption`): the Temporal UI and CLI then
+show ciphertext (`binary/encrypted` with the key's id), since no codec server decodes it for
+them; failure messages stay readable, masked like every error message. A call on a team's worker
+(an activity on another task queue) stays readable, because its payload is the contract the
+provider SDKs read and the worker holds no key; what was written before the key was set still
+replays. A key setting that is not a `vault:` reference stops the start, and a blank payload key
+is logged as a warning.
+
 The platform's own step calls heartbeat while they run: a provider call, an automation run or a
 script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`
 after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one, so a backend that
 dies mid-call fails the step, which its retry policy can run again on another instance, instead of
-waiting out the step's timeout.
+waiting out the step's timeout. A cancel stops such a call too: the workflow runs it in a
+cancellation scope that the `cancel` signal cancels, so the step and the job end at once, and
+Temporal answers the call's next heartbeat with the cancel (the worker sends one at least every
+heartbeat interval, `WorkerOptions.maxHeartbeatThrottleInterval`). The call's engine then reads as
+cancelled, so the runner ends its process as it does in memory, and a provider call still running
+10 s later is interrupted. The change is gated with `Workflow.getVersion` (`cancellable-calls`): an
+execution recorded before it (fixture `before-cancellable-calls`) lets the call run to its end.
 
 `platform.roles` (`api, worker` by default) splits that work. An instance with the `api` role
 serves the REST API, the streams, MCP and the generated routes, and starts, signals and queries
@@ -378,10 +448,19 @@ and write the provider file, so the code and the file cannot drift.
 
 - The activity type is the action id (`address.reserve`); a `call: activity` step names its own.
 - The one argument is a JSON object: `input` (the step's resolved input), `idempotencyKey`,
-  `job { id, workflow, version, traceId }`, `step`, `environment` and `attempt` (from 1). The
-  key is `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
+  `job { id, workflow, version, traceId }`, `step`, `environment`, `attempt` (from 1) and
+  `traceparent`, the W3C trace context of the step's span, for the worker's spans to continue the
+  job's trace under the step (a local activity asks `JobTracing` for it; without that span, the
+  job's, else a span id made up in the job's trace). The key is
+  `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
   of the step and when a restarted worker picks the call up again, new for a new run of the step.
   The result is the action's output, a JSON object.
+- Each answered call of an sdk provider's action is a telemetry sample, as the platform's own
+  provider calls are (provider, action, outcome, error class, the provider version of the route,
+  and the workflow time from asking to the answer, queueing included), recorded by a local
+  activity: the health band, the alerts and a release's gate judge sdk providers too. The
+  `traceparent` and the sample are gated with `Workflow.getVersion` (`worker-telemetry`): an
+  execution recorded before them (fixture `before-worker-telemetry`) sends neither.
 - The activity runs once. The step's `timeout` (10m by default) is both its schedule-to-close and
   its start-to-close timeout, so a call that no worker picks up fails the step instead of waiting
   in the queue for good; its heartbeat timeout is the provider's `worker.heartbeatTimeout` (none

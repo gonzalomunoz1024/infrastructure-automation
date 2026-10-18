@@ -151,7 +151,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
 | GET    | `/swagger-ui` (outside `/api/v1`)   | Swagger UI over that document: redirects to `/swagger-ui/index.html`, assets from the swagger-ui webjar under `/webjars/swagger-ui/`; the page and its assets load without a caller, a bearer token typed into the page goes with every request it makes |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
-| POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
+| POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry, and judged by the policy engine on its own input and environment, before anything starts: a row the policy denies refuses the whole batch (403 naming the rows), the batch keeps the strictest of its rows' decisions with every rule applied, and it asks for its one approval when any row needs one |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200); judged like a run: the same 400s for the schema and for an `x-resource` id the registry does not know, 403 on RBAC |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
@@ -193,7 +193,7 @@ and MCP `tools/call` read besides the input. The OpenAPI operations document the
 |---------------------------------------|--------|
 | `Idempotency-Key` (`idempotencyKey`)  | Up to 255 characters, scoped to the caller. The first request with a key runs and, when it succeeds, its answer is kept for `platform.gateway.idempotency.ttl` (24h); the same key with the same request (method, path, sorted query, pinned version, canonical JSON body) gets that answer again with `Idempotent-Replay: true` (MCP: `_meta.idempotentReplay`). The same key with another request, or while the first still runs, is 409; a failed request frees its key |
 | `X-Workflow-Version` or `?version=` (`version`) | Runs exactly that version, published or retired, without the release router's canary split; input, RBAC, policy and preview are judged against it. A draft is 409, an unknown version 404, a header and query that disagree 400. On a GET whose own input has a `version` field, `?version=` stays input. `POST /jobs` pins with its body's `version` |
-| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id. A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
+| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id; the job's calls on a team's worker pass the trace on (the worker payload's `traceparent`). A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
 
 Every call that starts jobs takes a token from its caller's team first (the caller's first team,
 or a bucket of their own when they have none): `platform.gateway.quotas` sets 60 a minute with a
@@ -238,16 +238,16 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
-| POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
+| POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count); every row is validated and judged by the policy engine as the generated `:batch` routes do |
 | POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
 | POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input); 403 as cancel |
 | POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted`; 403 as cancel |
 | POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back); 403 as cancel |
-| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
+| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job). The source job's input with `input` merged over it is checked as a start's is (the schema, the registry's resources, requests to build) and judged by the policy engine; the new job keeps the source's preview while the input is the same and gets a fresh one when it changed |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
 | GET    | `/approvals/{id}`                      | `Approval` |
-| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
+| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted`. The engine takes the decision first, then it is recorded: 409 when the job is not running in the engine (the approval stays pending) or the approval was already decided |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
@@ -256,10 +256,30 @@ workflow's owner team, anyone the workflow's `policy.rbac` roles or approver gro
 admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
 (`policy.rbac`), and approvals by their group.
 
+A job's events come two ways, the same events in the same order. `GET /api/v1/jobs/{id}/events`
+sends them as Server-Sent Events: `id:` is the event's `seq`, `event:` its `type` and `data:` the
+`JobEvent` as JSON. `WS /ws/jobs/{id}` (outside `/api/v1`, scope `jobs:read`) sends one text
+frame per event holding that same `JobEvent` JSON, for example
+`{"seq":4,"at":"2026-10-17T10:00:05Z","jobId":"job_a","type":"log","data":{"jobId":"job_a","message":"hello","event":"job.log"}}`.
+Both replay the job's history first, then send its events as they happen, and end after its last
+one (`job.finished` or `job.cancelled`): the SSE response completes and the server closes the
+socket. A job that has already ended replays its history and ends. Frames a client sends on the
+socket are ignored; a client that closes it ends the stream. For a job that does not exist the
+SSE request is a 404 and the socket is closed without a frame.
+
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
-`iaf.provider.call` per provider call (in-memory engine), under the span of the request that
-started it (`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). `change.evidenceUrl`
+`iaf.provider.call` per provider call, under the span of the request that started it
+(`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). They come from the job's events,
+on either engine: the instance that published `job.started` holds the job's span, and the steps
+whose events it publishes are spans under it. On Temporal, with one instance holding both roles
+that is every step (a provider call hangs under the job's span there, since its activity's thread
+is not the step's); with several instances a step whose activities ran on another one has no
+span, and a worker-only instance traces only the jobs it started itself (children, batch rows).
+A step's call on a team's worker carries the `traceparent` of the step's span in its payload
+(`traceparent`, a string; `job.traceId` stays), so the worker's spans continue the trace under
+the step; an instance without that span sends the job's, or a span id made up in the job's trace.
+`change.evidenceUrl`
 is the link back to the job's evidence that its change record carries
 (`platform.change.evidence-url`). The platform's own provider alerts are matched
 against the published alert triggers like an external alert, as `{ source: 'platform', labels:
@@ -445,11 +465,12 @@ A job's record holds `requested` (with `publish`: the version's `contentHash` an
 published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, `publishedBy`,
 `changeRequestId`), `preview`, `policy`, `change` (opened, then closed with its state),
 `approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
-provider, action, effect, target), `decision` (on a job that needed attention, with the edited
-input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
-requests, publishes, provider changes and the wizard's imports, connection tests and tries,
-credentials by name and type, service accounts, release decisions, builder sessions, retired
-resources, seals, uploaded playbooks) go on the platform stream, a chain of its own
+provider, action, effect, target), `decision` (on a job that needed attention: the action, who
+took it and, for `edit-input`, the edited input, on either engine) and `closed` (with the
+retention date). Commands that are not about a job (drafts, change requests, publishes, provider
+changes and the wizard's imports, connection tests and tries, credentials by name and type,
+service accounts, release decisions, builder sessions, retired resources, seals, uploaded
+playbooks) go on the platform stream, a chain of its own
 whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the
 file. Every entry is redacted before it is chained: secret-looking fields and values resolved from
 Vault during the run become `***`, `vault:` references stay; job views are redacted the same way.

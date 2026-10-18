@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -322,6 +323,51 @@ class RunsCommandHandlerTest {
                 .verify();
     }
 
+    @Test
+    void aBatchIsJudgedRowByRowAndADeniedRowRefusesTheWholeBatchNamingTheRows() {
+        when(w.policy.evaluate(argThat(in -> in != null && "prod".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("prod-freeze", "deny", "prod is frozen until Monday")), "mock")));
+        List<JsonNode> items = List.of(
+                SampleContent.json(Map.of("vmId", "vm-1", "environment", "dev")),
+                SampleContent.json(Map.of("vmId", "vm-2", "environment", "prod")),
+                SampleContent.json(Map.of("vmId", "vm-3", "environment", "prod")));
+
+        StepVerifier.create(handler.startBatch(new StartBatch("vm-restart", null, items, null, null, SampleContent.GONZALO, "batch", null)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessageContaining("rows [1, 2]").hasMessageContaining("prod is frozen until Monday"))
+                .verify();
+
+        verify(w.policy, times(3)).evaluate(any());
+        verify(engine, never()).start(any());
+        assertThat(w.projection.all()).isEmpty();
+        assertThat(eventTypes()).doesNotContain("job.started");
+    }
+
+    @Test
+    void aBatchKeepsTheStrictestOfItsRowsDecisionsWithEveryRule() {
+        Rule prodRule = new Rule("prod-approval", "needs-approval", "prod needs a sign-off");
+        when(w.policy.evaluate(argThat(in -> in != null && "prod".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("needs-approval", List.of(prodRule), "mock")));
+        Rule devRule = new Rule("dev-open", "pass", "dev is open");
+        when(w.policy.evaluate(argThat(in -> in != null && "dev".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("allow", List.of(devRule), "mock")));
+        List<JsonNode> items = List.of(
+                SampleContent.json(Map.of("vmId", "vm-1", "environment", "dev")),
+                SampleContent.json(Map.of("vmId", "vm-2", "environment", "prod")),
+                SampleContent.json(Map.of("vmId", "vm-3", "environment", "dev")));
+
+        CommandAccepted acc = handler.startBatch(new StartBatch("vm-restart", null, items, null, null, SampleContent.GONZALO, "batch", null)).block();
+
+        Job batch = w.projection.get(acc.id()).orElseThrow();
+        assertThat(batch.policy().decision()).isEqualTo("needs-approval");
+        assertThat(batch.policy().needsApproval()).isTrue();
+        assertThat(batch.policy().rules()).as("every distinct rule of every row, once").containsExactly(devRule, prodRule);
+        assertThat(batch.environment()).as("the batch's environment is still its first row's").isEqualTo("dev");
+        assertThat(published.get(0).data().path("policy").path("decision").asText()).isEqualTo("needs-approval");
+        verify(w.policy, times(3)).evaluate(any());
+        verify(engine).start(any());
+    }
+
     // ---------------------------------------------------------------- approvals
 
     private Approval pendingApproval(String jobId) {
@@ -363,6 +409,39 @@ class RunsCommandHandlerTest {
                 .expectError(ConflictException.class)
                 .verify();
         StepVerifier.create(handler.approve("apr_missing", null)).expectError(NotFoundException.class).verify();
+    }
+
+    @Test
+    void theEngineTakesADecisionBeforeItIsPublished() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        List<Approval.Status> whenSignalled = new ArrayList<>();
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any()))
+                .thenReturn(Mono.fromRunnable(() -> whenSignalled.add(w.projection.approval("apr_1").orElseThrow().status())));
+
+        handler.approve(a.id(), "fine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
+
+        assertThat(whenSignalled).as("still pending while the engine takes it").containsExactly(Approval.Status.PENDING);
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.APPROVED);
+    }
+
+    @Test
+    void aDecisionTheEngineCannotTakeAnswersConflictAndTheApprovalStaysPending() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any())).thenReturn(Mono.error(new ConflictException("Job " + jobId + " is not running")));
+
+        StepVerifier.create(handler.approve(a.id(), "fine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("is not running"))
+                .verify();
+
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.PENDING);
+        assertThat(eventTypes()).doesNotContain("job.approval-decided");
+
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any())).thenReturn(Mono.empty()); // the job runs again (a resumed job)
+        CommandAccepted acc = handler.reject(a.id(), "not now").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
+        assertThat(acc.status()).as("a later decision is not refused as already decided").isEqualTo("rejected");
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.REJECTED);
     }
 
     @Test
@@ -514,6 +593,69 @@ class RunsCommandHandlerTest {
 
         String running = startedJob("vm-restart", Map.of("vmId", "vm-1"));
         StepVerifier.create(handler.rerun(running, "checkVmExists", null)).expectError(ConflictException.class).verify();
+    }
+
+    /** {@code jobId}'s job as a rerun finds it: ended as failed, after {@code steps}. */
+    private void failed(String jobId, List<JobStep> steps) {
+        Job source = w.projection.get(jobId).orElseThrow();
+        w.projection.put(source.toBuilder().status(JobStatus.FAILED).steps(steps).endedAt(Instant.now()).build());
+        published.clear();
+    }
+
+    private Mono<CommandAccepted> rerunAs(String jobId, String fromStep, Map<String, Object> input) {
+        return handler.rerun(jobId, fromStep, input == null ? null : SampleContent.json(input)).contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO));
+    }
+
+    @Test
+    void aRerunChecksItsMergedInputAgainstTheRegistryAsAStartDoes() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042", "reason", "stuck"));
+        failed(jobId, List.of());
+
+        StepVerifier.create(rerunAs(jobId, null, Map.of("vmId", "missing-vm-9")))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("missing-vm-9");
+                    assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.unknownResource");
+                })
+                .verify();
+        StepVerifier.create(rerunAs(jobId, null, Map.of("vmId", "retired-vm-3")))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.retiredResource"))
+                .verify();
+
+        assertThat(eventTypes()).doesNotContain("job.started");
+        verify(engine, times(1)).start(any());
+    }
+
+    @Test
+    void aRerunJudgesARequestToBuildAgainstTheProducerAsAStartDoes() {
+        String jobId = startedJob("create-vm", Map.of("name", "web-01", "image", "img-77"));
+        failed(jobId, List.of());
+
+        StepVerifier.create(rerunAs(jobId, null, Map.of("image", Map.of("create", Map.of("os", "beos")))))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems())
+                        .extracting(p -> p.code(), p -> p.field()).containsExactly(tuple("schema", "image.create.os")))
+                .verify();
+        assertThat(eventTypes()).doesNotContain("job.started");
+
+        CommandAccepted acc = rerunAs(jobId, null, Map.of("image", Map.of("create", Map.of("os", "rhel-9")))).block();
+        assertThat(w.projection.get(acc.id()).orElseThrow().input().path("image").path("create").path("os").asText()).isEqualTo("rhel-9");
+    }
+
+    @Test
+    void aRerunWithNewInputGetsAFreshPreviewAndOneWithTheSameInputKeepsTheSourcesPreview() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042", "reason", "stuck"));
+        failed(jobId, List.of());
+        Preview before = w.projection.get(jobId).orElseThrow().preview();
+        assertThat(before.affectedResources()).extracting(AffectedResource::id).contains("vm-1042");
+
+        CommandAccepted same = rerunAs(jobId, null, null).block();
+        CommandAccepted sameValues = rerunAs(jobId, null, Map.of("reason", "stuck")).block();
+        CommandAccepted other = rerunAs(jobId, null, Map.of("vmId", "vm-7")).block();
+
+        assertThat(w.projection.get(same.id()).orElseThrow().preview()).as("no new input").isEqualTo(before);
+        assertThat(w.projection.get(sameValues.id()).orElseThrow().preview()).as("the input it already had").isEqualTo(before);
+        Preview fresh = w.projection.get(other.id()).orElseThrow().preview();
+        assertThat(fresh).isNotNull();
+        assertThat(fresh.affectedResources()).extracting(AffectedResource::id).contains("vm-7").doesNotContain("vm-1042");
     }
 
     @Test

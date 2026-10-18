@@ -8,22 +8,26 @@ import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.runs.application.ChildStarts;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.application.PortStepExecutor;
+import com.iaf.platform.runs.application.PortStepExecutor.Ports;
 import com.iaf.platform.runs.application.StepExecutors;
-import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
@@ -41,9 +45,9 @@ import com.iaf.platform.runs.domain.StepExecutor.RegisterRequest;
 import com.iaf.platform.runs.domain.StepExecutor.UseRequest;
 import com.iaf.platform.runs.domain.StepFailure;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort;
+import com.iaf.platform.runs.ports.outbound.StepTraces;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowRecord;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -63,11 +67,20 @@ public class StepActivitiesImpl implements StepActivities {
     static final Duration CHANGE_TIMEOUT = Duration.ofSeconds(15);
 
     /**
-     * The engine the executor sees inside an activity: never cancelled, and everything that waits
-     * or walks belongs to the workflow (a {@code use} that waits until ready is polled there with
-     * timers, so the activity only ever does one lookup).
+     * The engine the executor sees inside an activity: cancelled once the activity heard of the
+     * job's cancel on a heartbeat ({@link #cancel}), and everything that waits or walks belongs to
+     * the workflow (a {@code use} that waits until ready is polled there with timers, so the
+     * activity only ever does one lookup).
      */
-    static final PortStepExecutor.Engine ENGINE = new PortStepExecutor.Engine() {
+    static final class CallEngine implements PortStepExecutor.Engine {
+
+        private volatile boolean cancelled;
+
+        /** The activity heard of the job's cancel (or that it is gone): the call reads as cancelled from now on, and its runner stops. */
+        void cancel() {
+            cancelled = true;
+        }
+
         @Override
         public Optional<ApprovalDecision> awaitDecision(JobContext ctx, String approvalId, Duration timeout) {
             throw new UnsupportedOperationException("approvals are decided inside the workflow");
@@ -85,11 +98,11 @@ public class StepActivitiesImpl implements StepActivities {
 
         @Override
         public boolean cancelled(JobContext ctx) {
-            return false;
+            return cancelled;
         }
 
         @Override
-        public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
+        public JsonNode runChild(JobContext ctx, Step step, Job child, Duration timeout) {
             throw new UnsupportedOperationException("children run as child workflows");
         }
 
@@ -97,36 +110,57 @@ public class StepActivitiesImpl implements StepActivities {
         public List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches) {
             throw new UnsupportedOperationException("branches run inside the workflow");
         }
-    };
+    }
+
+    /** The engine of the activities that do not heartbeat (lookups, records, a notify): nothing cancels them mid-way. */
+    static final PortStepExecutor.Engine ENGINE = new CallEngine();
 
     private final StepExecutors executors;
     private final JobProjection projection;
     private final JobEvents events;
     private final ChangeTicketPort changes;
+    private final TelemetryPort telemetry;
+    private final StepTraces traces;
     private final Clock clock;
     private final Duration heartbeatInterval;
 
-    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock,
-            PlatformProperties props) {
+    /** The spans of the tracing slice when it is there; without it a worker call's {@code traceparent} is only in the job's trace. */
+    @Autowired
+    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, TelemetryPort telemetry,
+            ObjectProvider<StepTraces> traces, Clock clock, PlatformProperties props) {
+        this(executors, projection, events, changes, telemetry, traces.getIfAvailable(() -> StepTraces.UNTRACED), clock, props);
+    }
+
+    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, TelemetryPort telemetry,
+            StepTraces traces, Clock clock, PlatformProperties props) {
         this.executors = executors;
         this.projection = projection;
         this.events = events;
         this.changes = changes;
+        this.telemetry = telemetry;
+        this.traces = traces == null ? StepTraces.UNTRACED : traces;
         this.clock = clock;
         this.heartbeatInterval = props.getTemporal().getHeartbeatInterval();
     }
 
     // ---------------------------------------------------------------- the calls of a step
 
-    /** The calls that can take long heartbeat while they run ({@link TemporalConfig} sets their heartbeat timeout). */
+    /**
+     * The calls that can take long heartbeat while they run ({@link TemporalConfig} sets their
+     * heartbeat timeout); a heartbeat Temporal answers with the job's cancel cancels the call's
+     * own engine, so the executor stops the runner and its process.
+     */
     @Override
     public JsonNode callProvider(StepCall call, String provider, String action, JsonNode input) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel,
+                () -> step(call, engine, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout())));
     }
 
     @Override
     public JsonNode runAutomation(StepCall call, JsonNode with) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel, () -> step(call, engine, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout())));
     }
 
     @Override
@@ -136,7 +170,9 @@ public class StepActivitiesImpl implements StepActivities {
 
     @Override
     public JsonNode script(StepCall call, String language, String code, JsonNode input) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel,
+                () -> step(call, engine, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout())));
     }
 
     @Override
@@ -169,16 +205,34 @@ public class StepActivitiesImpl implements StepActivities {
         }
         String heartbeat = p.spec().worker() == null ? null : p.spec().worker().heartbeatTimeout();
         try {
-            return new WorkerRoute(p.taskQueue(), Durations.parse(heartbeat, null));
+            return new WorkerRoute(p.taskQueue(), Durations.parse(heartbeat, null), p.metadata() == null ? null : p.metadata().version());
         } catch (IllegalArgumentException e) {
             throw new StepFailureData(stepId, "misconfigured", "Provider " + provider + ": worker.heartbeatTimeout " + e.getMessage(), false, false)
                     .toApplicationFailure();
         }
     }
 
-    private JsonNode step(StepCall call, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {
+    @Override
+    public String traceparent(JobRef job, String stepId) {
+        return job == null ? null : traces.traceparent(job.id(), job.traceId(), stepId);
+    }
+
+    @Override
+    public void recordCall(CallSample sample) {
         try {
-            return body.apply(executors.live(call.job().toJob(), ENGINE), call.context());
+            telemetry.record(sample);
+        } catch (RuntimeException e) {
+            log.warn("telemetry of {}.{} failed: {}", sample.provider(), sample.action(), e.toString());
+        }
+    }
+
+    private JsonNode step(StepCall call, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {
+        return step(call, ENGINE, body);
+    }
+
+    private JsonNode step(StepCall call, PortStepExecutor.Engine engine, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {
+        try {
+            return body.apply(executors.live(call.job().toJob(), engine), call.context());
         } catch (StepFailure f) {
             throw StepFailureData.of(f).toApplicationFailure();
         }
@@ -187,37 +241,35 @@ public class StepActivitiesImpl implements StepActivities {
     // ---------------------------------------------------------------- records and ids
 
     @Override
-    public Job childJob(JobRef parent, String stepId, String workflow, String range, JsonNode input) {
-        WorkflowDefinition child;
+    public Job childJob(JobRef parent, String stepId, String workflow, String version, JsonNode input) {
+        Ports ports = executors.ports();
+        Job parentJob = parent.toJob();
         try {
-            child = executors.ports().workflows().resolve(workflow, range)
-                    .map(WorkflowRecord::definition)
-                    .blockOptional(PortStepExecutor.LOOKUP_TIMEOUT)
-                    .orElseThrow(() -> new StepFailure(stepId, "unknown_workflow", "No published version of '" + workflow + "' satisfies " + range, false));
+            String range = ChildStarts.range(ports, stepId, workflow, version, message -> events.log(parent.id(), message));
+            WorkflowDefinition child = ChildStarts.resolve(ports, stepId, workflow, range);
+            return ChildStarts.prepare(ports, parentJob, stepId, child, input, clock.instant());
         } catch (StepFailure f) {
             throw StepFailureData.of(f).toApplicationFailure();
-        } catch (RuntimeException e) {
-            String msg = e.getMessage() == null ? e.toString() : e.getMessage();
-            boolean timeout = e instanceof IllegalStateException && msg.contains("Timeout");
-            throw new StepFailureData(stepId, timeout ? "timeout" : "error", timeout ? "Step " + stepId + " timed out" : msg, true, false)
-                    .toApplicationFailure();
         }
-        // the child gets its schema's defaults, as a start through its own route would
-        JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? JsonNodeFactory.instance.objectNode() : input);
-        Job job = JobFactory.child(parent.toJob(), child, in, clock.instant());
-        projection.put(job);
-        events.started(job);
-        return job;
     }
 
+    /** The row's definition is the workflow's own (attached there), so this reads nothing from the projection of the instance it runs on. */
     @Override
     public Job rowJob(JobRef batch, BatchRow row) {
-        // the projection keeps each row's definition snapshot (a row can be rerun from its own page)
-        WorkflowDefinition definition = projection.get(batch.id()).map(Job::definition).orElse(null);
-        Job job = JobFactory.row(batch.toJob().withDefinition(definition), row, clock.instant());
-        projection.put(job);
+        return JobFactory.row(batch.toJob(), row, clock.instant()).withDefinition(null);
+    }
+
+    /** Idempotent: a retry after the store refused the event, or a child its parent recorded before, publishes the start once. */
+    @Override
+    public void started(Job job) {
+        if (projection.history(job.id()).stream().anyMatch(e -> "job.started".equals(e.data().path("event").asText()))) {
+            log.info("job {} is already recorded; its start is not published again", job.id());
+            return;
+        }
+        if (!projection.has(job.id())) {
+            projection.put(job);
+        }
         events.started(job);
-        return job.withDefinition(null);
     }
 
     @Override
@@ -262,8 +314,8 @@ public class StepActivitiesImpl implements StepActivities {
     }
 
     @Override
-    public void attentionResolved(String jobId, String stepId, String action, String by) {
-        events.attentionResolved(jobId, stepId, action, by);
+    public void attentionResolved(String jobId, String stepId, String action, String by, JsonNode input) {
+        events.attentionResolved(jobId, stepId, action, by, input, null);
     }
 
     @Override

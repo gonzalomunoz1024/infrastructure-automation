@@ -23,6 +23,7 @@ import com.iaf.platform.audit.ports.outbound.SiemPort;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.runs.application.JobEvents;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
@@ -238,6 +239,23 @@ class AuditListenerTest {
         assertThat(step.at("/output/vm").asText()).isEqualTo("vm-1");
         assertThat(record.toString()).doesNotContain("hunter2", "raw-key", "resolved-vault-token");
         assertThat(HashChain.verify(record.entries())).isEqualTo(-1);
+    }
+
+    @Test
+    void theEditedInputOfAnAttentionDecisionAsTheRunsSlicePublishesItIsEvidenced() {
+        JobEvents jobEvents = new JobEvents(events);
+        job("job.started", "ana", node().put("jobId", "job_e").put("workflow", "delete-vm").put("version", "1.0.0").put("requester", "ana"));
+
+        jobEvents.attentionResolved("job_e", "delete", "edit-input", "ana", node().set("input", node().put("id", "vm-3")), NOW);
+        jobEvents.attentionResolved("job_e", "delete", "retry", "mateo", null, NOW);
+
+        List<EvidenceEntry> decisions = store.record("job_e").orElseThrow().entries().stream().filter(e -> e.kind() == EvidenceKind.DECISION).toList();
+        assertThat(decisions).hasSize(2);
+        assertThat(decisions.get(0).actor()).isEqualTo("ana");
+        assertThat(decisions.get(0).data().path("action").asText()).isEqualTo("edit-input");
+        assertThat(decisions.get(0).data().at("/input/input/id").asText()).isEqualTo("vm-3");
+        assertThat(decisions.get(1).actor()).isEqualTo("mateo");
+        assertThat(decisions.get(1).data().has("input")).as("a retry carries no input").isFalse();
     }
 
     @Test

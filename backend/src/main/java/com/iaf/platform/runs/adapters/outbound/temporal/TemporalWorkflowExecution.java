@@ -11,7 +11,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.util.UriUtils;
 
 import com.iaf.platform.common.domain.ConflictException;
-import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.AttentionDecision;
@@ -146,12 +145,13 @@ public class TemporalWorkflowExecution implements WorkflowExecutionPort {
                 : WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE;
     }
 
+    /** A job whose execution has ended (or never started) is not running: 409, as the in-memory engine answers. */
     private Mono<Void> signal(String jobId, Consumer<InterpreterWorkflow> signal) {
         return blocking(() -> {
             try {
                 signal.accept(client.newWorkflowStub(InterpreterWorkflow.class, jobId));
             } catch (WorkflowNotFoundException e) {
-                throw new NotFoundException("job", jobId);
+                throw new ConflictException("Job " + jobId + " is not running");
             }
         });
     }

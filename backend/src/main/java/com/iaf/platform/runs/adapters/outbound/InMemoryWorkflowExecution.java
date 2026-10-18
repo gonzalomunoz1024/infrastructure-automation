@@ -16,7 +16,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
@@ -42,6 +41,7 @@ import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
@@ -92,8 +92,12 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         final AtomicBoolean cancelled = new AtomicBoolean();
         final CountDownLatch cancelLatch = new CountDownLatch(1);
         final Map<String, CompletableFuture<ApprovalDecision>> approvals = new ConcurrentHashMap<>();
-        final AtomicReference<CompletableFuture<AttentionDecision>> attention = new AtomicReference<>();
-        final AtomicReference<AttentionDecision> earlyAttention = new AtomicReference<>();
+        /** Guards {@link #attention} and {@link #earlyAttention}: a decision and a pause never pass each other by. */
+        final Object attentionLock = new Object();
+        /** The pause for attention the walker waits in, if any. */
+        Pause attention;
+        /** A decision that came while no pause was open, for the step it answers; the next pause of that step takes it. */
+        EarlyDecision earlyAttention;
         final Set<String> children = ConcurrentHashMap.newKeySet();
         /** use steps waiting for a resource; a cancel ends them */
         final Set<CompletableFuture<?>> resourceWaits = ConcurrentHashMap.newKeySet();
@@ -104,6 +108,14 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         Execution(Job job) {
             this.job = job;
         }
+    }
+
+    /** A pause for attention on a step, and the future its decision completes. */
+    private record Pause(String step, CompletableFuture<AttentionDecision> decision) {
+    }
+
+    /** A decision for {@code step} (null: whichever pause comes first) that arrived before its pause opened. */
+    private record EarlyDecision(String step, AttentionDecision decision) {
     }
 
     public InMemoryWorkflowExecution(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock) {
@@ -152,6 +164,11 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         });
     }
 
+    /**
+     * The open pause takes the decision; without one (the walker has not reached the pause yet, as
+     * a resumed job may not have) it is kept for the step the job reads as paused on, and only a
+     * pause of that step takes it later.
+     */
     @Override
     public Mono<Void> signalAttention(String jobId, AttentionDecision decision) {
         return Mono.fromRunnable(() -> {
@@ -159,9 +176,12 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             if (exec == null) {
                 throw new ConflictException("Job " + jobId + " is not running");
             }
-            CompletableFuture<AttentionDecision> f = exec.attention.get();
-            if (f == null || !f.complete(decision)) {
-                exec.earlyAttention.set(decision);
+            String step = projection.get(jobId).map(Job::attention).map(Attention::step).orElse(null);
+            synchronized (exec.attentionLock) {
+                Pause pause = exec.attention;
+                if (pause == null || !pause.decision().complete(decision)) {
+                    exec.earlyAttention = new EarlyDecision(step, decision);
+                }
             }
         });
     }
@@ -183,9 +203,10 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         exec.cancelLatch.countDown();
         JobCancelled cause = new JobCancelled(exec.job.id());
         exec.approvals.values().forEach(f -> f.completeExceptionally(cause));
-        CompletableFuture<AttentionDecision> a = exec.attention.get();
-        if (a != null) {
-            a.completeExceptionally(cause);
+        synchronized (exec.attentionLock) {
+            if (exec.attention != null) {
+                exec.attention.decision().completeExceptionally(cause);
+            }
         }
         exec.resourceWaits.forEach(f -> f.completeExceptionally(cause));
         for (String child : exec.children) {
@@ -235,11 +256,16 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         Job job = exec.job;
         Instant now = clock.instant();
         long duration = job.startedAt() == null ? 0 : Math.max(0, now.toEpochMilli() - job.startedAt().toEpochMilli());
-        if (outcome.status() == JobStatus.CANCELLED) {
-            events.cancelled(job.id(), exec.cancelledBy == null ? Identity.SYSTEM.id() : exec.cancelledBy);
-        } else {
-            events.finished(job.id(), job.workflow(), job.version(), outcome.status(), duration, outcome.errorClass(), outcome.failedStep(),
-                    outcome.output(), outcome.message(), now);
+        try {
+            if (outcome.status() == JobStatus.CANCELLED) {
+                events.cancelled(job.id(), exec.cancelledBy == null ? Identity.SYSTEM.id() : exec.cancelledBy);
+            } else {
+                events.finished(job.id(), job.workflow(), job.version(), outcome.status(), duration, outcome.errorClass(), outcome.failedStep(),
+                        outcome.output(), outcome.message(), now);
+            }
+        } catch (RuntimeException e) {
+            // the store refused the final event: this engine has no activity to retry it (Temporal's does)
+            log.error("job {} ended {} but its final event could not be recorded: {}", job.id(), outcome.status().json(), e.toString());
         }
         if (job.change() != null && job.change().id() != null && !"linked".equals(job.change().state())) {
             changes.close(job.change().id(), outcome.succeeded())
@@ -265,19 +291,27 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         if (exec == null) {
             return Optional.empty();
         }
-        AttentionDecision early = exec.earlyAttention.getAndSet(null);
-        if (early != null) {
-            return Optional.of(early);
+        Pause pause = new Pause(attention.step(), new CompletableFuture<>());
+        synchronized (exec.attentionLock) {
+            EarlyDecision early = exec.earlyAttention;
+            exec.earlyAttention = null;
+            if (early != null && (early.step() == null || early.step().equals(attention.step()))) {
+                pause.decision().complete(early.decision());
+            }
+            // an early decision for another step answered a pause that is over: it is dropped
+            exec.attention = pause;
         }
-        CompletableFuture<AttentionDecision> f = new CompletableFuture<>();
-        exec.attention.set(f);
         try {
-            if (exec.cancelled.get()) {
+            if (exec.cancelled.get() && !pause.decision().isDone()) {
                 throw new JobCancelled(ctx.jobId());
             }
-            return await(ctx, f, timeout);
+            return await(ctx, pause.decision(), timeout);
         } finally {
-            exec.attention.compareAndSet(f, null);
+            synchronized (exec.attentionLock) {
+                if (exec.attention == pause) {
+                    exec.attention = null;
+                }
+            }
         }
     }
 
@@ -343,13 +377,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
     }
 
     @Override
-    public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
+    public JsonNode runChild(JobContext ctx, Step step, Job childJob, Duration timeout) {
         Execution parent = executions.get(ctx.jobId());
-        Job parentJob = parent == null ? projection.get(ctx.jobId()).orElse(null) : parent.job;
-        if (parentJob == null) {
-            throw new StepFailure(step.id(), "engine_error", "Parent job " + ctx.jobId() + " is unknown to the engine", false);
-        }
-        Job childJob = JobFactory.child(parentJob, child, input, clock.instant());
         Execution cexec = new Execution(childJob);
         projection.put(childJob);
         events.started(childJob);
@@ -374,7 +403,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
+            throw ChildFailure.of(step.id(), childJob.id(), childJob.workflow(), outcome);
         }
         return ChildResults.of(childJob.id(), outcome, cexec.context);
     }
@@ -422,16 +451,16 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         waves.sort(Comparator.comparingInt(Wave::index));
         List<Wave> pending = waves.stream().filter(w -> "pending".equals(w.status())).toList();
 
-        // one approval for the whole batch
-        if (approvalRequired(def) && !batch.preApproved() && batch.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
-            WorkflowDefinition.ApprovalPolicy ap = def.policy().approval();
-            String timeout = ap.timeout() == null ? Durations.format(WorkflowInterpreter.DEFAULT_APPROVAL_TIMEOUT) : ap.timeout();
+        // one approval for the whole batch: the policy block asks for it, or the policy engine did for one of its rows
+        if (BatchApprovals.required(batch) && !batch.preApproved() && batch.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
+            String group = BatchApprovals.group(def);
+            String timeout = BatchApprovals.timeout(def);
             Approval a = Approval.builder()
                     .id(Ids.next("apr"))
                     .jobId(batch.id())
                     .workflow(batch.workflow())
                     .step("batch")
-                    .group(ap.group())
+                    .group(group)
                     .message("Run " + batch.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?")
                     .requestedAt(clock.instant())
                     .timeout(timeout)
@@ -450,7 +479,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             if (decision.isEmpty()) {
                 events.approvalDecided(a, new ApprovalDecision("expired", Identity.SYSTEM.id(), "nobody decided within " + timeout, clock.instant()));
                 skipWaves(batch.id(), pending, b, "approval expired");
-                finish(exec, new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + ap.group() + " decided within " + timeout));
+                finish(exec, new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + group + " decided within " + timeout));
                 return;
             }
             if (!decision.get().approved()) {
@@ -524,9 +553,6 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
                 .map(x -> "pending".equals(x.status())).orElse(true);
     }
 
-    private static boolean approvalRequired(WorkflowDefinition def) {
-        return def.policy() != null && def.policy().approval() != null && def.policy().approval().required();
-    }
 
     private long skipWaves(String batchId, List<Wave> waves, Batch b, String reason) {
         long rows = 0;

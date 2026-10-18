@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.outbound;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
@@ -20,7 +21,12 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.ports.PolicyPort;
+import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
+import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.RunsTestWiring;
@@ -28,6 +34,7 @@ import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
+import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Job;
@@ -57,7 +64,11 @@ class InMemoryWorkflowExecutionTest {
     }
 
     private Job start(WorkflowDefinition def, Map<String, Object> input) {
-        Job job = JobFactory.newJob(def, def.version(), SampleContent.json(input), SampleContent.GONZALO, "rest", null, null, null, null, null, w.clock.instant());
+        return start(def, input, SampleContent.GONZALO);
+    }
+
+    private Job start(WorkflowDefinition def, Map<String, Object> input, Identity who) {
+        Job job = JobFactory.newJob(def, def.version(), SampleContent.json(input), who, "rest", null, null, null, null, null, w.clock.instant());
         w.projection.put(job);
         w.events.started(job);
         w.execution.start(job).block();
@@ -260,6 +271,58 @@ class InMemoryWorkflowExecutionTest {
         w.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
     }
 
+    /** A slow first step, then one that fails and pauses for attention. */
+    private static final String SLOW_THEN_BROKEN = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-slow-broken, title: Slow then broken, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - slow:
+                    wait: { duration: 3s }
+                - broken:
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: "{{ $input.id }}" } }
+                - after:
+                    notify: { channel: "#x", message: "after" }
+            """;
+
+    /** The job reads as paused on {@code step} (a resumed job does before its walker gets there) while the walker is in its slow step. */
+    private Job pausedOnPaperWhileSlow(String step) {
+        Job job = start(yaml(SLOW_THEN_BROKEN), Map.of("id", "vm-1042"));
+        RunsTestWiring.await(WAIT, () -> job(job.id()).step("slow") != null && job(job.id()).step("slow").status() == StepStatus.RUNNING);
+        w.events.attention(job.id(), new Attention(step, null, Attention.OPTIONS, w.clock.instant(), Attention.DEFAULT_TIMEOUT));
+        return job;
+    }
+
+    @Test
+    void aDecisionThatComesBeforeItsPauseOpensIsTakenByThatPause() {
+        Job job = pausedOnPaperWhileSlow("broken");
+
+        w.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block();
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(job(job.id()).step("broken").status()).isEqualTo(StepStatus.SKIPPED);
+        assertThat(job(job.id()).step("after").status()).isEqualTo(StepStatus.SUCCEEDED);
+    }
+
+    @Test
+    void aDecisionForAnotherStepIsNotTakenByTheNextPause() {
+        Job job = pausedOnPaperWhileSlow("elsewhere");
+
+        w.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block();
+
+        awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        RunsTestWiring.await(WAIT, () -> job(job.id()).attention() != null && "broken".equals(job(job.id()).attention().step()));
+        assertThat(published.stream().filter(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id())))
+                .as("the decision for the other step does not answer this pause").isEmpty();
+
+        w.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+        awaitStatus(job.id(), JobStatus.FAILED);
+        assertThat(published.stream().filter(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id())))
+                .extracting(e -> e.data().path("action").asText()).containsExactly("abort");
+    }
+
     @Test
     void abortRollsBackCompletedStepsWithCompensation() {
         Job job = start(SampleContent.workflow("create-vm"), Map.of("name", "web-01", "image", "img-77", "size", "small"));
@@ -344,6 +407,84 @@ class InMemoryWorkflowExecutionTest {
             assertThat(child.input().path("environment").asText()).isEqualTo("dev");
         });
         assertThat(job(job.id()).output().path("vmId").asText()).isNotBlank();
+    }
+
+    /** A child only one team may invoke. */
+    private static final String SECRET = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-secret, title: Secret, noun: thing, verb: hide, owner: team-x, version: 1.0.0 }
+            policy:
+              rbac: [team-secret]
+            workflow:
+              do:
+                - say:
+                    name: Say
+                    notify: { channel: "#x", message: "hidden" }
+            """;
+
+    /** A parent of one run step ({@code run} is the step's own line) that fails the job outright, then a notify. */
+    private static String parent(String run) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-parent, title: Parent, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - child:
+                        name: Child
+                        run: %s
+                        pauseOnFailure: false
+                    - after:
+                        name: After
+                        notify: { channel: "#x", message: "after the child" }
+                """.formatted(run);
+    }
+
+    @Test
+    void aChildTheRequesterMayNotInvokeFailsTheParentStepAsForbiddenAndNeverStarts() {
+        when(w.workflows.resolve(eq("t-secret"), any())).thenReturn(Mono.just(RunsTestWiring.record(yaml(SECRET))));
+        Job job = start(yaml(parent("{ workflow: t-secret, version: \"^1\" }")), Map.of(), SampleContent.ANA);
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("forbidden");
+        assertThat(failed.step("child").error().message()).isEqualTo("Ana may not invoke t-secret (needs one of [team-secret])");
+        assertThat(failed.step("after")).isNull();
+        assertThat(w.projection.children(job.id())).isEmpty();
+        assertThat(published.stream().filter(e -> e.type().equals("job.started"))).as("only the parent started").hasSize(1);
+    }
+
+    @Test
+    void aChildThePolicyEngineDeniesFailsTheParentStepAsForbidden() {
+        when(w.policy.evaluate(argThat(in -> in != null && "create-vm".equals(in.workflow()))))
+                .thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("no-vms", "deny", "no VMs under a parent")), "mock")));
+        Job job = start(yaml(parent("{ workflow: create-vm, version: \"^2\", input: { name: web-1, image: img-1 } }")), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("forbidden");
+        assertThat(failed.step("child").error().message()).isEqualTo("Policy denies running create-vm: no VMs under a parent");
+        ArgumentCaptor<PolicyInput> asked = ArgumentCaptor.forClass(PolicyInput.class);
+        verify(w.policy, atLeastOnce()).evaluate(asked.capture());
+        PolicyInput in = asked.getAllValues().stream().filter(i -> "create-vm".equals(i.workflow())).findFirst().orElseThrow();
+        assertThat(in.phase()).isEqualTo(PolicyPort.Phase.INVOKE);
+        assertThat(in.who()).isEqualTo(SampleContent.GONZALO);
+        assertThat(in.input().path("size").asText()).as("judged with its defaults filled in").isEqualTo("small");
+        assertThat(in.context().path("parentId").asText()).isEqualTo(job.id());
+        assertThat(in.context().path("environment").asText()).isEqualTo("dev");
+        assertThat(w.projection.children(job.id())).isEmpty();
+    }
+
+    @Test
+    void aChildWhoseInputDoesNotFitItsSchemaFailsTheParentStepNamingTheField() {
+        Job job = start(yaml(parent("{ workflow: create-vm, version: \"^2\", input: { image: img-1 } }")), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("invalid_input");
+        assertThat(failed.step("child").error().message()).startsWith("The input of create-vm does not fit its schema: ").contains("name");
+        assertThat(w.projection.children(job.id())).isEmpty();
     }
 
     @Test
@@ -501,6 +642,47 @@ class InMemoryWorkflowExecutionTest {
         assertThat(types(batch.id())).contains("batch.wave").endsWith("job.finished");
         assertThat(published.stream().filter(e -> e.type().equals("batch.wave")).map(e -> e.data().path("status").asText()).toList())
                 .containsExactly("running", "done", "running", "done", "skipped");
+    }
+
+    @Test
+    void aBatchWhosePolicyDecisionNeedsApprovalAsksForItOnceEvenWithoutAnApprovalPolicy() {
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-judged, title: Judged, noun: thing, verb: touch, owner: team-x, version: 1.0.0 }
+                api:
+                  method: POST
+                  path: "/api/v1/things:judge"
+                  input: { type: object, required: [id], properties: { id: { type: string } } }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                    - ask:
+                        name: Ask
+                        approval: { group: compute-approvers, message: "ok?" }
+                """);
+        List<JsonNode> rows = List.of(SampleContent.json(Map.of("id", "vm-1")), SampleContent.json(Map.of("id", "vm-2")));
+        RolloutPolicy rollout = new RolloutPolicy(List.of(100), 2, 0);
+        PolicyDecision strictest = new PolicyDecision("needs-approval", List.of(new Rule("prod-approval", "needs-approval", "prod needs a sign-off")), "mock");
+        Job batch = JobFactory.newBatch(def, "1.0.0", rows, null, rollout, WaveScheduler.plan(2, rollout), SampleContent.GONZALO, "batch", null, strictest,
+                null, w.clock.instant());
+        w.projection.put(batch);
+        w.events.started(batch);
+        w.execution.start(batch).block();
+
+        awaitStatus(batch.id(), JobStatus.WAITING_APPROVAL);
+        Approval a = job(batch.id()).approvals().get(0);
+        assertThat(a.step()).isEqualTo("batch");
+        assertThat(a.group()).as("the group of the workflow's approval step, since the policy block names none").isEqualTo("compute-approvers");
+        w.events.approvalDecided(a, ApprovalDecision.approved("gonzalo", null, Instant.now()));
+        w.execution.signalApproval(batch.id(), a.id(), ApprovalDecision.approved("gonzalo", null, Instant.now())).block();
+
+        awaitStatus(batch.id(), JobStatus.SUCCEEDED);
+        assertThat(w.projection.children(batch.id())).hasSize(2).allMatch(c -> c.preApproved() && c.approvals().isEmpty());
+        assertThat(w.projection.approvals()).hasSize(1);
     }
 
     @Test

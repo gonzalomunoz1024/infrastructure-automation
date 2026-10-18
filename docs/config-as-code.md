@@ -136,23 +136,40 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `call: terraform`        | `with: { module: { source, version | ref, credential? }, action: plan | apply | destroy, workspace?, vars, credential }` |
 | `call: idp`              | `with: { tile, input }` (mock until the IDP tiles API is wired)                |
 | `call: activity`         | `with: { taskQueue, activity, input }` (team-owned worker, any SDK language)   |
-| `run: { workflow, version, input, onFailure }` | runs a published workflow as a child job and returns `{ jobId, status, outputs, resources }` (`resources`: the `{ id, type }` its register steps recorded). `version` is a range ("^1"); left out, publish writes `^<major>` of the workflow's current version (a run without one takes the current major). `onFailure: continue` makes a failed child the step's output (`status`, `error: { step, message, class }`) and goes on; the default `fail` fails the step |
+| `run: { workflow, version, input, onFailure }` | runs a published workflow as a child job and returns `{ jobId, status, outputs, resources }` (`resources`: the `{ id, type }` its register steps recorded). `version` is a range ("^1"); left out, publish writes `^<major>` of the workflow's current version (a run without one takes the current major). `onFailure: continue` makes a failed child the step's output (`status`, `error: { step, message, class }`) and goes on; the default `fail` fails the step with the child's error class, on both engines. The child is checked as a start through its own route is: its schema's defaults are filled in, its schema is applied (`invalid_input`, naming the field), the requester must be allowed to invoke it (`policy.rbac`) and the policy engine judges it with `parentId` in the context; a child the requester may not invoke, or that the policy denies, fails the step as `forbidden` before the child starts |
 | `approval: { group, message, timeout, escalation }` | human sign-off                                         |
 | `switch: [ { case: { when, then \| do } }, { default: then \| { do } } ]` | `then` jumps to a later step id or `end`; `do` runs a nested branch and continues after the switch |
 | `fork: { branches: [ [steps], [steps] ] }` | parallel branches, joined                                     |
 | `for: { each, in, do }`  | loop                                                                           |
-| `try: { do, catch: { as, do } }` | scoped error handling                                                  |
-| `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
+| `try: { do, catch: { as, do } }` | scoped error handling: inside `catch` the failure is `$error` (with `as`, `$<as>`): `{ step, message, class, retryable }`; the name holds only while the catch runs |
+| `wait: PT5M`             | ISO duration or `{ until: expression }`: the condition is looked at every 5 s in process; on Temporal after 5 s, then twice as long each time up to 5 minutes; at most the step's `timeout` (24h when unset) |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: false }` | resolve a registry resource; policy judges whether the requester may use it unless `checkAccess: false` opts the step out (the demo policy: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always); with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
+| `use: { type, id, waitUntil: ready, checkAccess: false }` | resolve a registry resource; policy judges whether the requester may use it unless `checkAccess: false` opts the step out (the demo policy: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always); with `waitUntil: ready` a resource still building holds the step until the registry reports it ready, for at most the step's `timeout` (10m when unset): in process the registry's events wake the step; on Temporal the step looks again after 5 s, backing off to one look every 5 minutes, and soon again once the status moves |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |
 
 Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, backoff }`,
-`timeout`, `pauseOnFailure` (default true), `compensate: [steps]` (run when a later step fails),
+`timeout`, `pauseOnFailure` (default true), `attentionTimeout` (how long a step paused on its
+failure waits for a person's decision before it aborts, an ISO-8601 duration like `PT1H` or `4h`;
+seven days when unset, on both engines), `compensate: [steps]` (run when a later step fails),
 `position: { x, y }`, `notes`.
+
+A failed step is retried as `retry` says when its error is retryable, then pauses for a person's
+decision (`pauseOnFailure`) unless a `try` around it catches the failure; each `fork` branch counts
+only the `try` blocks it is inside. Bad input, such as a `wait` duration that is no duration, fails
+the step as `invalid_input` at once, without retries. An error outside any step's own handling (in
+a container, or while the `outputs` are evaluated) fails that step, or `outputs`, like any other:
+compensation and the workflow's `catch` run.
+
+Cancel stops, abort rolls back, on both engines. Cancelling a job (`POST /jobs/{id}:cancel`) stops
+the step that runs (see the runners below), starts no other, and runs neither compensation nor the
+workflow's `catch`: the job ends `cancelled`, and what its steps did stays as it is. Aborting a
+step that waits for a decision (`POST /jobs/{id}:abort`, or its `attentionTimeout` running out)
+fails it for good: the completed steps' `compensate` steps and the workflow's `catch` run as for any
+failure, and the job ends `rolled_back`, or `failed` when no completed step had compensation. A
+cancel that arrives while compensation or the `catch` runs stops them too.
 
 ### Playbook sources and pins
 
@@ -185,8 +202,11 @@ that is removed afterwards; a dry run still answers from the samples and never t
 Every executable, image and limit is a `platform.runners.*` setting; with
 `platform.runners.container-runtime: docker` (or `podman`) every step runs in a container with no
 new privileges and every kernel privilege dropped, and secrets reach it by variable name, never on
-a command line. A step's `timeout` (10 minutes when it names none) ends the process; cancelling the job
-stops it too. Values read from the vault are masked in every log line and error message.
+a command line. A step's `timeout` (10 minutes when it names none) ends the process and fails the
+step as `timeout` (retryable), as it fails a provider call that outlives it. Cancelling the job
+stops it too, on both engines: in process within a second; on Temporal the job ends at once and
+the process within about `platform.temporal.heartbeat-interval` (15s), when the call hears of the
+cancel on its heartbeat. Values read from the vault are masked in every log line and error message.
 
 - `call: ansible` runs `ansible-runner` (or `ansible-playbook` with the JSON callback when
   ansible-runner is not installed) on the pinned playbook. `inventory` is `dynamic` (the

@@ -11,7 +11,7 @@ export const API_VERSION = 'iaf.platform/v1';
 export const WORKFLOW_KIND = 'Workflow';
 
 /** The keys every step may carry besides its one step key. */
-export const COMMON_KEYS: readonly string[] = ['name', 'with', 'output', 'assert', 'retry', 'timeout', 'pauseOnFailure', 'position', 'notes', 'compensate'];
+export const COMMON_KEYS: readonly string[] = ['name', 'with', 'output', 'assert', 'retry', 'timeout', 'pauseOnFailure', 'attentionTimeout', 'position', 'notes', 'compensate'];
 
 /** A document that is not a workflow at all: the structural errors of WorkflowYaml.java. */
 export class WorkflowParseError extends Error {
@@ -63,6 +63,8 @@ export interface ParsedStep {
   retry: ParsedRetry | null;
   timeout: string | null;
   pauseOnFailure: boolean;
+  /** How long a failed step paused for a person's decision waits for one (a duration); null: the platform's default. */
+  attentionTimeout: string | null;
   position: ParsedPosition | null;
   notes: string | null;
   branches: ParsedStep[][] | null;
@@ -448,6 +450,7 @@ export function parseStep(id: string, body: JsonObject): ParsedStep {
     retry,
     timeout: text(body, 'timeout'),
     pauseOnFailure: asBoolean(get(body, 'pauseOnFailure'), true),
+    attentionTimeout: text(body, 'attentionTimeout'),
     position,
     notes: text(body, 'notes'),
     branches,

@@ -74,13 +74,11 @@ class RecordedWorldTest {
         assertThat(versionOf(world, "db-1")).isEqualTo("8.0");
 
         // a fork may make again what the world deleted, and the world keeps it deleted
-        JsonNode made = fork.call(mongodb, create, input("name", "db-3", "id", "db-3"), "dry_1", 5, true);
-        assertThat(made.path("id").asText()).isNotBlank();
-        String id = made.path("id").asText();
-        if (id.equals("db-3")) {
-            assertThat(fork.isDeleted("mongodb", "db-3")).isFalse();
-            assertThat(world.isDeleted("mongodb", "db-3")).isTrue();
-        }
+        // (the sample names what it creates db-{{ $job.seq }}: the call's seq 3 makes db-3)
+        JsonNode made = fork.call(mongodb, create, input("name", "db-3", "id", "db-3"), "dry_1", 3, true);
+        assertThat(made.path("id").asText()).isEqualTo("db-3");
+        assertThat(fork.isDeleted("mongodb", "db-3")).isFalse();
+        assertThat(world.isDeleted("mongodb", "db-3")).isTrue();
 
         // changes stack: the world's later change shows through where the fork changed nothing
         world.call(mongodb, upgrade, input("id", "db-4", "version", "8.0"), "job_1", 6, true);

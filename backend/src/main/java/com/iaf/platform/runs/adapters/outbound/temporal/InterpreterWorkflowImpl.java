@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.runs.application.PortStepExecutor;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
@@ -28,6 +29,8 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
+import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
@@ -36,6 +39,7 @@ import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
+import com.iaf.platform.runs.domain.Polling;
 import com.iaf.platform.runs.domain.StepEvent;
 import com.iaf.platform.runs.domain.StepExecutor;
 import com.iaf.platform.runs.domain.StepFailure;
@@ -44,7 +48,6 @@ import com.iaf.platform.runs.domain.WorkflowInterpreter;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowDefinition.ApprovalPolicy;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 
 import io.temporal.activity.ActivityOptions;
@@ -80,8 +83,9 @@ import io.temporal.workflow.WorkflowThreadLocal;
  *
  * <p>Activities: the calls of a step run once with the step's timeout plus a grace (the
  * interpreter does its own retries and classifies the failure); records (an approval, a child
- * job) are created at most once; events are published with a few retries, since a lost event
- * would leave the projection behind. A cancel requested through Temporal itself (the UI, the
+ * job) are created at most once; events, the final one included, are retried until the
+ * projection keeps them (a store that is down holds the job at that point rather than losing
+ * its {@code job.finished} and leaving it running for good). A cancel requested through Temporal itself (the UI, the
  * CLI) ends the job like the {@code cancel} signal does, by {@code temporal}; the execution then
  * closes as cancelled instead of completing with the outcome, as the SDK closes every workflow
  * whose cancel was requested, so the events, not the result, are what the platform reads.</p>
@@ -105,11 +109,50 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     static final String TEMPORAL = "temporal";
     /** The change id of sending team steps to the team's worker (version 1); executions without its marker ran them on the platform's activities. */
     static final String TEAM_WORKERS = "team-workers";
+    /**
+     * The change id of a child (a run step's, a batch row's) recording its own start as its first
+     * activity (version 1); executions without its marker were recorded by their parent's activity
+     * before they started.
+     */
+    static final String CHILD_RECORDS = "child-records-itself";
+    /**
+     * The change id of the interpreter's {@link WorkflowInterpreter.Rules#CURRENT} rules (version
+     * 1): a try depth per fork branch, bad input never retried, an exception outside a step
+     * failing it through compensation and the catch flow, a catch's name ({@code $error} or its
+     * {@code as}) bound to its failure only while it runs. Executions without its marker walk
+     * with the rules they were recorded with (fixture {@code before-interpreter-rules}).
+     */
+    static final String INTERPRETER_RULES = "interpreter-rules";
+    /**
+     * The change id of backed-off polls (version 1): a {@code wait until} and a {@code use …
+     * waitUntil: ready} look again after 5 s, then after twice the last wait up to 5 minutes, and
+     * after 5 s again once what they watch changed, so a day-long wait stays a few hundred timers.
+     * Executions without its marker look every 5 s (fixture {@code before-poll-backoff}).
+     */
+    static final String POLL_BACKOFF = "poll-backoff";
+    /**
+     * The change id of cancellable platform calls (version 1): a step's provider call, automation
+     * or script runs in a cancellation scope that the job's cancel cancels, so the step ends at
+     * once and the activity hears of the cancel on its next heartbeat and stops, its runner ending
+     * the process. Executions without its marker let the call run to its end (fixture
+     * {@code before-cancellable-calls}).
+     */
+    static final String CANCELLABLE_CALLS = "cancellable-calls";
+    /**
+     * The change id of worker telemetry (version 1): a step's call on a team's worker carries the
+     * {@code traceparent} of the step's span (a local activity asks for it), and an sdk provider's
+     * call records its telemetry sample once it is answered (another), as the platform's own
+     * provider calls do. Executions without its marker send neither (fixture
+     * {@code before-worker-telemetry}).
+     */
+    static final String WORKER_TELEMETRY = "worker-telemetry";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
-    private static final RetryOptions PUBLISH = RetryOptions.newBuilder()
-            .setMaximumAttempts(5)
+    /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
+    static final RetryOptions PUBLISH = RetryOptions.newBuilder()
+            .setMaximumAttempts(0)
             .setInitialInterval(Duration.ofSeconds(1))
-            .setMaximumInterval(Duration.ofSeconds(30))
+            .setBackoffCoefficient(2)
+            .setMaximumInterval(Duration.ofMinutes(1))
             .build();
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
@@ -150,6 +193,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         status = JobStatus.RUNNING;
         Outcome outcome;
         try {
+            if (job.parentId() != null && Workflow.getVersion(CHILD_RECORDS, Workflow.DEFAULT_VERSION, 1) >= 1) {
+                // a child records itself once it runs: a start that never happens leaves no queued job behind
+                events.started(job);
+            }
             outcome = job.isBatch() ? runBatch() : runSingle();
         } catch (JobCancelled e) {
             outcome = Outcome.cancelled();
@@ -204,7 +251,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (cancelled) {
             return Outcome.cancelled();
         }
-        return new WorkflowInterpreter(job.definition(), this, ctx, resumeOf(job)).run();
+        WorkflowInterpreter.Rules rules = Workflow.getVersion(INTERPRETER_RULES, Workflow.DEFAULT_VERSION, 1) >= 1
+                ? WorkflowInterpreter.Rules.CURRENT
+                : WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES;
+        return new WorkflowInterpreter(job.definition(), this, ctx, resumeOf(job), rules).run();
     }
 
     static WorkflowInterpreter.Resume resumeOf(Job job) {
@@ -215,7 +265,11 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return new WorkflowInterpreter.Resume(job.resume().fromStep(), job.resume().seed(), pending == null ? null : pending.id(), job.attention());
     }
 
-    /** The final event, published even when Temporal cancelled the workflow: a cancelled scope refuses new activities, a detached one does not. */
+    /**
+     * The final event, published even when Temporal cancelled the workflow: a cancelled scope
+     * refuses new activities, a detached one does not. Its activity retries until the projection
+     * keeps the event, so the workflow ends only once the job reads as ended.
+     */
     private void finish(Outcome outcome) {
         Instant at = now();
         String by = cancelledBy == null ? Identity.SYSTEM.id() : cancelledBy;
@@ -243,10 +297,11 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (teamWorkers()) {
             WorkerRoute route = invoke(step, () -> lookups.providerRoute(ref, step.id(), provider, action));
             if (route != null) {
-                return onWorker(step, call, action, route, in);
+                return onWorker(step, call, provider, action, route, in);
             }
         }
-        return invoke(step, () -> calls(timeout).callProvider(call, provider, action, in));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::callProvider, call, provider, action, in));
     }
 
     @Override
@@ -259,9 +314,34 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (queue.isBlank() || activity.isBlank()) {
                 throw new StepFailure(step.id(), "invalid_input", "call: activity needs with.taskQueue and with.activity", false, true);
             }
-            return onWorker(step, call, activity, new WorkerRoute(queue, null), w.get("input"));
+            return onWorker(step, call, null, activity, new WorkerRoute(queue, null), w.get("input"));
         }
-        return invoke(step, () -> calls(timeout).runAutomation(call, w));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::runAutomation, call, w));
+    }
+
+    /**
+     * A step's call on the platform's own activities. A cancel of the job cancels the call's
+     * scope and ends the step at once; the activity hears of it on its next heartbeat and its
+     * runner ends the process. Executions recorded before {@link #CANCELLABLE_CALLS} let the call
+     * run to its end, as they did.
+     */
+    private JsonNode platformCall(Step step, Supplier<Promise<JsonNode>> start) {
+        if (Workflow.getVersion(CANCELLABLE_CALLS, Workflow.DEFAULT_VERSION, 1) < 1) {
+            return invoke(step, () -> start.get().get());
+        }
+        List<Promise<JsonNode>> result = new ArrayList<>(1);
+        CancellationScope scope = Workflow.newCancellationScope(() -> {
+            result.add(start.get());
+        });
+        scope.run();
+        Promise<JsonNode> done = result.get(0);
+        await(null, () -> done.isCompleted() || cancelled);
+        if (!done.isCompleted()) {
+            scope.cancel("job " + ref.id() + " was cancelled");
+            throw new JobCancelled(ref.id());
+        }
+        return invoke(step, done::get);
     }
 
     /** Whether this execution sends team steps to the team's worker: every new one does, one recorded before replays as it ran. */
@@ -273,17 +353,21 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * Run a step's call on a team's worker: one activity of {@code activityType} on the route's
      * queue with the {@link WorkerCalls} payload. The idempotency key is minted by the step's
      * first attempt and kept by its retries. A cancel of the job cancels the activity (the worker
-     * sees it on its next heartbeat) and ends the step at once instead of after the call.
+     * sees it on its next heartbeat) and ends the step at once instead of after the call. The
+     * payload carries the step span's {@code traceparent}, and the answered call of an sdk
+     * provider ({@code provider} not null) is a telemetry sample ({@link #WORKER_TELEMETRY}).
      */
-    private JsonNode onWorker(Step step, StepCall call, String activityType, WorkerRoute route, JsonNode input) {
+    private JsonNode onWorker(Step step, StepCall call, String provider, String activityType, WorkerRoute route, JsonNode input) {
         Attempts a = attempts.get();
         int attempt = step.id().equals(a.step) ? Math.max(1, a.attempt) : 1;
         if (attempt == 1 || !a.firstSeq.containsKey(step.id())) {
             a.firstSeq.put(step.id(), call.seq());
         }
         String key = WorkerCalls.idempotencyKey(ref.id(), step.id(), a.firstSeq.get(step.id()));
-        ObjectNode payload = WorkerCalls.payload(ref, step.id(), key, attempt, input);
+        boolean telemetry = Workflow.getVersion(WORKER_TELEMETRY, Workflow.DEFAULT_VERSION, 1) >= 1;
+        ObjectNode payload = WorkerCalls.payload(ref, step.id(), key, attempt, input, telemetry ? traceparent(step) : null);
         ActivityStub stub = Workflow.newUntypedActivityStub(WorkerCalls.options(route, call.timeout()));
+        long asked = Workflow.currentTimeMillis();
         List<Promise<JsonNode>> result = new ArrayList<>(1);
         CancellationScope scope = Workflow.newCancellationScope(() -> {
             result.add(stub.executeAsync(activityType, JsonNode.class, payload));
@@ -297,12 +381,54 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         }
         try {
             JsonNode out = done.get();
+            if (telemetry && provider != null) {
+                recordCall(provider, activityType, route, asked, null);
+            }
             return out == null || out.isNull() ? F.objectNode() : out;
         } catch (ActivityFailure f) {
             if (f.getCause() instanceof CanceledFailure) {
                 throw temporalCancel();
             }
-            throw WorkerCalls.failure(step.id(), route, call.timeout(), f);
+            StepFailure failure = WorkerCalls.failure(step.id(), route, call.timeout(), f);
+            if (telemetry && provider != null) {
+                recordCall(provider, activityType, route, asked, failure.errorClass());
+            }
+            throw failure;
+        } catch (CanceledFailure e) {
+            throw temporalCancel();
+        }
+    }
+
+    /** The {@code traceparent} of the step's span for its call on a team's worker; none when it cannot be had (tracing never fails a step). */
+    private String traceparent(Step step) {
+        return bestEffort("the traceparent of step " + step.id(), () -> lookups.traceparent(ref, step.id()));
+    }
+
+    /**
+     * The telemetry sample of an sdk provider's call a team's worker answered: workflow time from
+     * the moment it was asked to its answer, the provider version of the route; telemetry never
+     * fails a step.
+     */
+    private void recordCall(String provider, String action, WorkerRoute route, long asked, String errorClass) {
+        long latency = Math.max(0, Workflow.currentTimeMillis() - asked);
+        CallSample sample = new CallSample(Instant.ofEpochMilli(asked), provider, action, ref.environment(), errorClass == null, latency, errorClass,
+                ref.id(), ref.workflow(), ref.version(), route.providerVersion());
+        bestEffort("the telemetry of " + provider + "." + action, () -> {
+            lookups.recordCall(sample);
+            return null;
+        });
+    }
+
+    /** A local activity that only adds something (a trace, a sample): its failure is logged and null; a cancel from Temporal still cancels the job. */
+    private <T> T bestEffort(String what, Supplier<T> activity) {
+        try {
+            return activity.get();
+        } catch (ActivityFailure f) {
+            if (f.getCause() instanceof CanceledFailure) {
+                throw temporalCancel();
+            }
+            log.warn("job {}: {} failed: {}", ref.id(), what, f.toString());
+            return null;
         } catch (CanceledFailure e) {
             throw temporalCancel();
         }
@@ -325,7 +451,8 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     public JsonNode script(JobContext ctx, Step step, String language, String code, JsonNode input, Duration timeout) {
         StepCall call = call(step, timeout, true);
         JsonNode in = node(input);
-        return invoke(step, () -> calls(timeout).script(call, language, code, in));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::script, call, language, code, in));
     }
 
     /**
@@ -339,6 +466,9 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         StepActivities activities = calls(PortStepExecutor.LOOKUP_TIMEOUT);
         Duration limit = timeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : timeout;
         Instant deadline = now().plus(limit);
+        Polling polling = null;
+        Duration interval = null;
+        String seen = null;
         while (true) {
             JsonNode resource = invoke(step, () -> activities.useResource(call, lookup));
             String state = resource == null ? null : resource.path("status").asText(null);
@@ -352,8 +482,20 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (cancelled) {
                 throw new JobCancelled(ctx.jobId());
             }
-            sleep(ctx, PortStepExecutor.USE_POLL);
+            if (polling == null) {
+                polling = polling(ctx);
+            }
+            // a lookup is an activity: back off, and look again soon once the resource moved on to another state
+            interval = polling.next(interval, seen != null && !seen.equals(state), Duration.between(now(), deadline));
+            seen = state;
+            sleep(ctx, interval);
         }
+    }
+
+    /** Backed-off polls on Temporal, where every look is history; fixed for executions recorded before ({@link #POLL_BACKOFF}). */
+    @Override
+    public Polling polling(JobContext ctx) {
+        return Workflow.getVersion(POLL_BACKOFF, Workflow.DEFAULT_VERSION, 1) >= 1 ? Polling.BACKOFF : Polling.FIXED;
     }
 
     @Override
@@ -362,12 +504,18 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return invoke(step, () -> calls(PortStepExecutor.LOOKUP_TIMEOUT).registerResource(call, request));
     }
 
+    /**
+     * The child is resolved, checked and built by the {@code childJob} activity ({@code ChildStarts},
+     * as the in-memory engine does it: the range is the current major when the step names none),
+     * then run as a child workflow. A child that did not succeed is a {@link ChildFailure}, so a
+     * step with {@code onFailure: continue} records it and the parent goes on.
+     */
     @Override
     public JsonNode runChild(JobContext ctx, Step step, String workflow, String version, JsonNode input, Duration timeout) {
         if (workflow == null || workflow.isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "run needs a workflow", false, true);
         }
-        String range = version == null || version.isBlank() ? "*" : version;
+        String range = version == null || version.isBlank() ? null : version;
         JsonNode in = input == null || input.isMissingNode() ? F.objectNode() : input;
         Job child = invoke(step, () -> records.childJob(ref, step.id(), workflow, range, in));
         ctx.addChild(child.id());
@@ -375,18 +523,14 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         try {
             outcome = runChildWorkflow(child);
         } catch (ChildWorkflowFailure f) {
-            throw new StepFailure(step.id(), "child_failed", "Child job " + child.id() + " (" + child.workflow() + ") failed in the engine: " + describe(f), false);
+            throw new ChildFailure(step.id(), child.id(), JobStatus.FAILED, "child_failed", null,
+                    "Child job " + child.id() + " (" + child.workflow() + ") failed in the engine: " + describe(f), false);
         }
-        if (outcome.status() == JobStatus.CANCELLED) {
-            if (cancelled) {
-                throw new JobCancelled(ctx.jobId());
-            }
-            throw new StepFailure(step.id(), "cancelled", "Child job " + child.id() + " (" + child.workflow() + ") was cancelled", false, true);
+        if (outcome.status() == JobStatus.CANCELLED && cancelled) {
+            throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw new StepFailure(step.id(), outcome.errorClass() == null ? "child_failed" : outcome.errorClass(),
-                    "Child job " + child.id() + " (" + child.workflow() + ") " + outcome.status().json()
-                            + (outcome.message() == null ? "" : ": " + outcome.message()), false);
+            throw ChildFailure.of(step.id(), child.id(), child.workflow(), outcome);
         }
         return ChildResults.of(child.id(), outcome, null);
     }
@@ -517,7 +661,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (decision != null) {
             AttentionDecision d = decision;
             invoke(step, () -> {
-                events.attentionResolved(ref.id(), step.id(), d.action().json(), d.by());
+                events.attentionResolved(ref.id(), step.id(), d.action().json(), d.by(), d.input());
                 return null;
             });
         }
@@ -555,7 +699,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         });
     }
 
-    /** A {@code job.log} line; one that cannot be published is not worth failing a step for. */
+    /** A {@code job.log} line, retried like every event; a cancel through Temporal while it waits is not worth failing a step for. */
     @Override
     public void log(JobContext ctx, String message) {
         try {
@@ -610,11 +754,11 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         waves.sort(Comparator.comparingInt(Wave::index));
         List<Wave> pending = waves.stream().filter(w -> "pending".equals(w.status())).toList();
 
-        // one approval for the whole batch
-        if (approvalRequired(def) && !job.preApproved() && job.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
-            ApprovalPolicy ap = def.policy().approval();
-            String timeout = ap.timeout() == null ? Durations.format(WorkflowInterpreter.DEFAULT_APPROVAL_TIMEOUT) : ap.timeout();
-            Approval a = records.batchApproval(ref, ap.group(), "Run " + job.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?",
+        // one approval for the whole batch: the policy block asks for it, or the policy engine did for one of its rows
+        if (BatchApprovals.required(job) && !job.preApproved() && job.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
+            String group = BatchApprovals.group(def);
+            String timeout = BatchApprovals.timeout(def);
+            Approval a = records.batchApproval(ref, group, "Run " + job.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?",
                     timeout, job.preview());
             Optional<ApprovalDecision> decision;
             try {
@@ -626,7 +770,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (decision.isEmpty()) {
                 events.approvalDecided(a, new ApprovalDecision("expired", Identity.SYSTEM.id(), "nobody decided within " + timeout, now()));
                 skipWaves(pending, b, "approval expired");
-                return new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + ap.group() + " decided within " + timeout);
+                return new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + group + " decided within " + timeout);
             }
             if (!decision.get().approved()) {
                 skipWaves(pending, b, "rejected by " + decision.get().by());
@@ -694,9 +838,6 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return Outcome.succeeded(output);
     }
 
-    private static boolean approvalRequired(WorkflowDefinition def) {
-        return def.policy() != null && def.policy().approval() != null && def.policy().approval().required();
-    }
 
     /** Mark waves skipped; once Temporal itself cancelled the workflow, the final event settles them in the projection instead. */
     private long skipWaves(List<Wave> waves, Batch b, String reason) {

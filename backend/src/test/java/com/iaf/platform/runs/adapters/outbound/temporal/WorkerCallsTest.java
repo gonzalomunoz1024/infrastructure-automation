@@ -33,18 +33,28 @@ class WorkerCallsTest {
     void thePayloadIsTheStableEnvelopeTheSdksRead() {
         JsonNode input = JsonNodeFactory.instance.objectNode().put("pool", "office");
 
-        JsonNode p = WorkerCalls.payload(JOB, "reserve", WorkerCalls.idempotencyKey(JOB.id(), "reserve", 3), 2, input);
+        JsonNode p = WorkerCalls.payload(JOB, "reserve", WorkerCalls.idempotencyKey(JOB.id(), "reserve", 3), 2, input,
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
 
         assertThat(p.toString()).isEqualTo("{\"input\":{\"pool\":\"office\"},\"idempotencyKey\":\"job-7f3a:reserve:3\","
                 + "\"job\":{\"id\":\"job-7f3a\",\"workflow\":\"reserve-ip\",\"version\":\"1.2.0\",\"traceId\":\"4bf92f3577b34da6a3ce929d0e0e4736\"},"
-                + "\"step\":\"reserve\",\"environment\":\"prod\",\"attempt\":2}");
+                + "\"step\":\"reserve\",\"environment\":\"prod\",\"attempt\":2,"
+                + "\"traceparent\":\"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\"}");
+    }
+
+    @Test
+    void aCallScheduledWithoutATraceparentHasNoSuchKey() {
+        JsonNode p = WorkerCalls.payload(JOB, "reserve", "job-7f3a:reserve:3", 1, null, null);
+
+        assertThat(p.has("traceparent")).isFalse();
+        assertThat(p.path("job").path("traceId").asText()).isEqualTo("4bf92f3577b34da6a3ce929d0e0e4736");
     }
 
     @Test
     void aMissingInputIsAnEmptyObjectAndMissingFieldsStayInTheEnvelope() {
         JobRef bare = new JobRef("job-1", "w", null, "1.0.0", null, null, null, null, null, null, null, null, false, null, null);
 
-        JsonNode p = WorkerCalls.payload(bare, "s", "job-1:s:1", 1, null);
+        JsonNode p = WorkerCalls.payload(bare, "s", "job-1:s:1", 1, null, null);
 
         assertThat(p.path("input").isObject()).isTrue();
         assertThat(p.path("input").size()).isZero();

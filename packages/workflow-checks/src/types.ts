@@ -160,6 +160,8 @@ export interface StepBody {
   retry?: { maxAttempts?: number; backoff?: string };
   timeout?: string;
   pauseOnFailure?: boolean;
+  /** How long a failed step paused for a person's decision waits for one, like PT1H; the default is seven days. */
+  attentionTimeout?: string;
   position?: { x?: number; y?: number };
   notes?: string;
   compensate?: StepDocument[];

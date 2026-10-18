@@ -2,6 +2,8 @@ package com.iaf.platform.runs.adapters.outbound.temporal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -20,11 +22,16 @@ import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.common.tracing.TestTracing;
+import com.iaf.platform.observability.application.JobTracing;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
@@ -39,6 +46,7 @@ import io.temporal.api.history.v1.HistoryEvent;
 import io.temporal.client.ActivityCompletionException;
 import io.temporal.common.WorkflowExecutionHistory;
 import io.temporal.common.converter.EncodedValues;
+import io.opentelemetry.sdk.trace.data.SpanData;
 import io.temporal.failure.ApplicationFailure;
 import reactor.core.publisher.Mono;
 
@@ -168,7 +176,20 @@ class TeamWorkerStepsTest {
         assertThat(p.path("job").path("version").asText()).isEqualTo("1.0.0");
         assertThat(p.path("job").has("traceId")).isTrue();
         assertThat(p.has("environment")).isTrue();
-        assertThat(p.fieldNames()).toIterable().containsExactlyInAnyOrder("input", "idempotencyKey", "job", "step", "environment", "attempt");
+        assertThat(p.fieldNames()).toIterable().containsExactlyInAnyOrder("input", "idempotencyKey", "job", "step", "environment", "attempt", "traceparent");
+        assertThat(p.path("traceparent").asText()).as("the job's trace, W3C").matches("00-" + done.traceId() + "-[0-9a-f]{16}-01");
+        assertThat(team.payload("crunchNumbers").path("traceparent").asText()).matches("00-" + done.traceId() + "-[0-9a-f]{16}-01");
+
+        CallSample sample = sample("reports");
+        assertThat(sample.action()).isEqualTo("report.create");
+        assertThat(sample.ok()).isTrue();
+        assertThat(sample.errorClass()).isNull();
+        assertThat(sample.durationMs()).isNotNegative();
+        assertThat(sample.providerVersion()).isEqualTo("1.0.0");
+        assertThat(sample.jobId()).isEqualTo(job.id());
+        assertThat(sample.workflow()).isEqualTo("t-team");
+        assertThat(sample.version()).isEqualTo("1.0.0");
+        assertThat(sample.environment()).isEqualTo(done.environment());
 
         ActivityTaskScheduledEventAttributes report = scheduled(job.id(), "report.create");
         assertThat(report.getTaskQueue().getName()).isEqualTo(QUEUE);
@@ -179,6 +200,77 @@ class TeamWorkerStepsTest {
         // the openapi provider's step still runs on the platform's activities, the sdk one never does
         assertThat(scheduled(job.id(), "CallProvider").getTaskQueue().getName()).isEqualTo(TemporalTestEngine.QUEUE);
         assertThat(scheduled(job.id())).filteredOn(a -> a.getActivityType().getName().equals("CallProvider")).hasSize(1);
+        t.replay(job.id());
+    }
+
+    /** The one telemetry sample of {@code provider}'s calls. */
+    private CallSample sample(String provider) {
+        ArgumentCaptor<CallSample> samples = ArgumentCaptor.forClass(CallSample.class);
+        verify(t.w.telemetry, atLeastOnce()).record(samples.capture());
+        List<CallSample> mine = samples.getAllValues().stream().filter(s -> provider.equals(s.provider())).toList();
+        assertThat(mine).as("the samples of " + provider).hasSize(1);
+        return mine.get(0);
+    }
+
+    @Test
+    void aWorkerCallCarriesTheTraceparentOfItsStepsSpan() {
+        t.close();
+        try (TestTracing tracing = TestTracing.on()) {
+            RunsTestWiring wiring = new RunsTestWiring();
+            JobTracing spans = new JobTracing(wiring.bus, tracing.traces, wiring.clock);
+            spans.subscribe();
+            t = new TemporalTestEngine(new TemporalTestEngine.Options().wiring(wiring).traces(spans).workers(env -> {
+                env.newWorker(QUEUE).registerActivitiesImplementations(team);
+                env.newWorker(ACTIVITIES).registerActivitiesImplementations(team);
+            }));
+            when(t.w.providers.provider(eq("reports"))).thenReturn(Mono.just(ProviderYaml.parse(PROVIDER)));
+            Job job = run(FLOW);
+
+            assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+
+            RunsTestWiring.await(TemporalTestEngine.WAIT, () -> !tracing.named("job t-team").isEmpty());
+            SpanData report = tracing.one("step report");
+            SpanData crunch = tracing.one("step crunch");
+            assertThat(report.getTraceId()).isEqualTo(t.job(job.id()).traceId());
+            assertThat(team.payload("report.create").path("traceparent").asText()).isEqualTo("00-" + report.getTraceId() + "-" + report.getSpanId() + "-01");
+            assertThat(team.payload("crunchNumbers").path("traceparent").asText()).isEqualTo("00-" + crunch.getTraceId() + "-" + crunch.getSpanId() + "-01");
+            t.replay(job.id());
+        }
+    }
+
+    private static String encoding(io.temporal.api.common.v1.Payloads payloads) {
+        return payloads.getPayloads(0).getMetadataMap().get("encoding").toStringUtf8();
+    }
+
+    private static String result(List<HistoryEvent> events, ActivityTaskScheduledEventAttributes scheduled) {
+        long id = events.stream().filter(e -> e.hasActivityTaskScheduledEventAttributes() && e.getActivityTaskScheduledEventAttributes().equals(scheduled))
+                .findFirst().orElseThrow().getEventId();
+        return encoding(events.stream().filter(e -> e.hasActivityTaskCompletedEventAttributes() && e.getActivityTaskCompletedEventAttributes().getScheduledEventId() == id)
+                .findFirst().orElseThrow().getActivityTaskCompletedEventAttributes().getResult());
+    }
+
+    @Test
+    void withAPayloadKeyTheHistoryHoldsThePlatformsPayloadsSealedAndATeamWorkersCallReadable() {
+        t.close();
+        t = new TemporalTestEngine(new TemporalTestEngine.Options().payloadKey(PayloadEncryptionTest.key()).workers(env -> {
+            env.newWorker(QUEUE).registerActivitiesImplementations(team);
+            env.newWorker(ACTIVITIES).registerActivitiesImplementations(team);
+        }));
+        when(t.w.providers.provider(eq("reports"))).thenReturn(Mono.just(ProviderYaml.parse(PROVIDER)));
+        Job job = run(FLOW);
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+
+        List<HistoryEvent> events = t.client.fetchHistory(job.id()).getEvents();
+        assertThat(encoding(events.get(0).getWorkflowExecutionStartedEventAttributes().getInput())).as("the job").isEqualTo(PayloadEncryption.ENCODING);
+        ActivityTaskScheduledEventAttributes get = scheduled(job.id(), "CallProvider");
+        ActivityTaskScheduledEventAttributes report = scheduled(job.id(), "report.create");
+        assertThat(encoding(get.getInput())).isEqualTo(PayloadEncryption.ENCODING);
+        assertThat(result(events, get)).as("the provider's answer").isEqualTo(PayloadEncryption.ENCODING);
+        assertThat(encoding(report.getInput())).as("the contract the team's worker reads").isEqualTo("json/plain");
+        assertThat(result(events, report)).isEqualTo("json/plain");
+        assertThat(team.payload("report.create").path("input").path("title").asText()).isEqualTo("web-1042");
+        assertThat(t.job(job.id()).step("after").output().path("message").asText()).isEqualTo("done rpt-quarterly");
         t.replay(job.id());
     }
 
@@ -230,6 +322,10 @@ class TeamWorkerStepsTest {
         assertThat(outcome.message()).contains("no address left");
         assertThat(team.payloads("report.fatal")).hasSize(1);
         assertThat(t.job(job.id()).step("call").error().retryable()).isFalse();
+        CallSample sample = sample("reports");
+        assertThat(sample.action()).isEqualTo("report.fatal");
+        assertThat(sample.ok()).isFalse();
+        assertThat(sample.errorClass()).isEqualTo("pool_exhausted");
         t.replay(job.id());
     }
 
@@ -336,6 +432,24 @@ class TeamWorkerStepsTest {
                 .extracting(e -> e.getActivityTaskScheduledEventAttributes().getActivityType().getName())
                 .contains("CallProvider", "RunAutomation")
                 .doesNotContain("report.create", "crunchNumbers");
+
+        t.replay(history);
+    }
+
+    @Test
+    void aHistoryRecordedBeforeWorkerTelemetryStillReplaysWithoutTraceparentOrSample() throws IOException {
+        // recorded with HistoryRecorder (the same FLOW and provider) before worker calls had a traceparent and a sample
+        String json;
+        try (InputStream in = getClass().getResourceAsStream("/temporal/before-worker-telemetry/team-steps.json")) {
+            assertThat(in).isNotNull();
+            json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        WorkflowExecutionHistory history = WorkflowExecutionHistory.fromJson(json);
+        List<ActivityTaskScheduledEventAttributes> calls = history.getEvents().stream().filter(HistoryEvent::hasActivityTaskScheduledEventAttributes)
+                .map(HistoryEvent::getActivityTaskScheduledEventAttributes).toList();
+        assertThat(calls).extracting(a -> a.getActivityType().getName()).contains("report.create", "crunchNumbers");
+        assertThat(calls).filteredOn(a -> a.getActivityType().getName().equals("report.create"))
+                .allSatisfy(a -> assertThat(a.getInput().toString()).doesNotContain("traceparent"));
 
         t.replay(history);
     }

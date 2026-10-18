@@ -1,13 +1,16 @@
 package com.iaf.platform.runs.application;
 
+import java.time.Clock;
 import java.time.Instant;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.runs.domain.Approval;
@@ -19,20 +22,36 @@ import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.StepEvent;
 
-import lombok.RequiredArgsConstructor;
-
 /**
  * Every event the runs slice publishes, with the data shapes the audit, releases and providers
  * slices listen for. The aggregate is always {@code job}; the aggregate id the job's.
+ *
+ * <p>Each event is folded into the {@link JobProjection} before it goes on the bus, so a store
+ * failure throws here: nothing is published, and the caller (a Temporal activity, which then
+ * retries; a command, which then fails) learns of it instead of the event being lost.</p>
  */
 @Component
-@RequiredArgsConstructor
 public class JobEvents {
 
     public static final String AGGREGATE = "job";
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final EventBus events;
+    private final JobProjection projection;
+    private final Clock clock;
+
+    /** Publishing on the bus only: the projection, if any, folds the events as a bus listener. */
+    public JobEvents(EventBus events) {
+        this(events, null, null);
+    }
+
+    /** Folding each event into {@code projection} first; {@code clock} stamps the events published without a time. */
+    @Autowired
+    public JobEvents(EventBus events, JobProjection projection, Clock clock) {
+        this.events = events;
+        this.projection = projection;
+        this.clock = clock;
+    }
 
     /** {@code job.started}: {jobId, workflow, version, requester, channel, input, parentId, kind, preview, policy, change} (+ title, traceId, row, rerunOf). */
     public DomainEvent started(Job job) {
@@ -291,16 +310,19 @@ public class JobEvents {
     }
 
     public DomainEvent publish(String type, String jobId, String actor, ObjectNode data) {
-        return events.publish(type, AGGREGATE, jobId, actor == null ? Identity.SYSTEM.id() : actor, data);
+        return publish(type, jobId, actor, data, null);
     }
 
-    /** Publish with an explicit timestamp (step events carry the walker's clock; the seed shifts history). */
+    /** Publish with an explicit timestamp (step events carry the walker's clock; the seed shifts history); none is now. */
     public DomainEvent publish(String type, String jobId, String actor, ObjectNode data, Instant at) {
-        if (at == null) {
-            return publish(type, jobId, actor, data);
+        String who = actor == null ? Identity.SYSTEM.id() : actor;
+        if (projection == null && at == null) {
+            return events.publish(type, AGGREGATE, jobId, who, data);
         }
-        DomainEvent e = new DomainEvent(com.iaf.platform.common.domain.Ids.next("evt"), at, type, AGGREGATE, jobId,
-                actor == null ? Identity.SYSTEM.id() : actor, data);
+        DomainEvent e = new DomainEvent(Ids.next("evt"), at == null ? clock.instant() : at, type, AGGREGATE, jobId, who, data);
+        if (projection != null) {
+            projection.fold(e);
+        }
         events.publish(e);
         return e;
     }

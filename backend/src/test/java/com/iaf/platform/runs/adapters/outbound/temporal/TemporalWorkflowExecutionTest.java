@@ -12,7 +12,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.iaf.platform.common.domain.ConflictException;
-import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
@@ -145,12 +144,20 @@ class TemporalWorkflowExecutionTest {
     }
 
     @Test
-    void anUnknownJobIsNotFoundAndNotRunning() {
+    void aJobWithoutAnExecutionIsNotRunningAndItsSignalsConflictAsInMemory() {
         ApprovalDecision go = ApprovalDecision.approved("gonzalo", null, Instant.now());
-        assertThatThrownBy(() -> t.execution.signalApproval("job_nope", "apr_1", go).block()).isInstanceOf(NotFoundException.class);
-        assertThatThrownBy(() -> t.execution.signalAttention("job_nope", AttentionDecision.skip("ana")).block()).isInstanceOf(NotFoundException.class);
-        assertThatThrownBy(() -> t.execution.cancel("job_nope", "gonzalo").block()).isInstanceOf(NotFoundException.class);
+        assertThatThrownBy(() -> t.execution.signalApproval("job_nope", "apr_1", go).block())
+                .isInstanceOf(ConflictException.class).hasMessage("Job job_nope is not running");
+        assertThatThrownBy(() -> t.execution.signalAttention("job_nope", AttentionDecision.skip("ana")).block())
+                .isInstanceOf(ConflictException.class).hasMessage("Job job_nope is not running");
+        assertThatThrownBy(() -> t.execution.cancel("job_nope", "gonzalo").block()).isInstanceOf(ConflictException.class);
         assertThat(t.execution.isRunning("job_nope").block()).isFalse();
+
+        RunsTestWiring memory = new RunsTestWiring();
+        assertThatThrownBy(() -> memory.execution.signalApproval("job_nope", "apr_1", go).block())
+                .isInstanceOf(ConflictException.class).hasMessage("Job job_nope is not running");
+        assertThatThrownBy(() -> memory.execution.signalAttention("job_nope", AttentionDecision.skip("ana")).block())
+                .isInstanceOf(ConflictException.class).hasMessage("Job job_nope is not running");
     }
 
     @Test
@@ -160,8 +167,9 @@ class TemporalWorkflowExecutionTest {
         assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
 
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
-        assertThatThrownBy(() -> t.execution.cancel(job.id(), "gonzalo").block()).isInstanceOf(NotFoundException.class);
-        assertThatThrownBy(() -> t.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block()).isInstanceOf(NotFoundException.class);
+        assertThatThrownBy(() -> t.execution.cancel(job.id(), "gonzalo").block()).isInstanceOf(ConflictException.class);
+        assertThatThrownBy(() -> t.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block())
+                .isInstanceOf(ConflictException.class).hasMessageContaining("is not running");
     }
 
     @Test

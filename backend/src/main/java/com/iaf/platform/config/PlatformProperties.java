@@ -67,6 +67,26 @@ public class PlatformProperties {
         private Duration heartbeatInterval = Duration.ofSeconds(15);
         /** The Temporal web UI, for the "Open in Temporal" link of a job; blank = no link. */
         private String uiUrl = "";
+        /**
+         * A {@code vault:} reference to the AES-256 key (32 bytes, base64) that encrypts the payloads
+         * the platform writes to Temporal's history; blank = in clear, which the startup log warns about.
+         */
+        private String payloadKey = "";
+        /** A {@code vault:} reference to a Temporal Cloud API key, sent with every call (over TLS); blank = none. */
+        private String apiKey = "";
+        /** TLS to the Temporal server, from PEM files. */
+        private Tls tls = new Tls();
+
+        /** TLS is on when any of these is set (or an API key is): {@code ca} alone checks the server, {@code cert} and {@code key} add mTLS. */
+        @Data
+        public static class Tls {
+            /** The CA that signed the server's certificate; blank = the JVM's trust store. */
+            private String ca = "";
+            /** The client certificate (chain), for mTLS; with {@code key}. */
+            private String cert = "";
+            /** The client certificate's private key, PKCS#8; with {@code cert}. */
+            private String key = "";
+        }
     }
 
     @Data
