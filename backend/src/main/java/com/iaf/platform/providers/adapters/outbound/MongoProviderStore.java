@@ -17,12 +17,13 @@ import java.util.Optional;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import org.bson.Document;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-import com.iaf.platform.common.adapters.jdbc.Jdbc;
-import com.iaf.platform.common.adapters.jdbc.Revisioned;
+import com.iaf.platform.common.adapters.mongo.Mongo;
+import com.iaf.platform.common.adapters.mongo.Revisioned;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.content.ContentFiles.ContentFile;
 import com.iaf.platform.config.PlatformProperties;
@@ -30,43 +31,56 @@ import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.workflows.domain.Semver;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Indexes;
+import com.mongodb.client.model.ReplaceOptions;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * The provider store of the {@code postgres} profile: one row of {@code providers} per provider,
- * its doc the whole stored provider (parsed definition, YAML as written, who changed it last),
- * and one row of {@code provider_versions} per version kept beside it: the current one and the
- * canary candidates ({@link #saveVersion}), which the provider's release routes calls to until one
- * is promoted and saved as current. At startup each {@code kind: Provider} file under the content
- * dir that the database does not hold yet is added, as in memory; a provider changed through the
- * platform is never reset by its file, and one still as seeded takes its file's new content.
- * Reads come from a copy of both tables reloaded whenever any instance has written to them. With
- * {@code platform.content.git} on, a save also writes the file back, as the in-memory store does;
- * a kept version is not written until it is current.
+ * The provider store of the {@code mongo} profile: one document of {@code providers} per provider,
+ * keyed by name, its doc the whole stored provider (parsed definition, YAML as written, who
+ * changed it last), and one document of {@code provider_versions} per version kept beside it,
+ * keyed {@code <name>@<version>}: the current one and the canary candidates ({@link #saveVersion}),
+ * which the provider's release routes calls to until one is promoted and saved as current. At
+ * startup each {@code kind: Provider} file under the content dir that the database does not hold
+ * yet is added, as in memory; a provider changed through the platform is never reset by its file,
+ * and one still as seeded takes its file's new content. Reads come from a copy of both collections
+ * reloaded whenever any instance has written to them. With {@code platform.content.git} on, a save
+ * also writes the file back, as the in-memory store does; a kept version is not written until it
+ * is current.
+ *
+ * <p>A save writes the provider's document, then its version's: one that stops in between leaves a
+ * current version without a document of its own in {@code provider_versions}, which still counts
+ * among the versions (see {@link Index}). A delete removes the versions first, then the provider:
+ * one that stops in between leaves the provider with its current version alone, and deleting it
+ * again finishes the job.
  */
 @Slf4j
 @Component
 @Primary
-@Profile("postgres")
-public class JdbcProviderStore implements ProviderStorePort {
+@Profile("mongo")
+public class MongoProviderStore implements ProviderStorePort {
 
     static final String STORE = "providers";
+    static final String PROVIDERS = "providers";
+    static final String VERSIONS = "provider_versions";
 
     private static final Comparator<StoredProvider> NEWEST_FIRST = Comparator
             .comparing((StoredProvider p) -> Semver.parse(p.definition().metadata().version())).reversed();
 
-    private final Jdbc jdbc;
+    private final Mongo mongo;
     private final PlatformProperties props;
     private final Clock clock;
     private final Revisioned<Index> table;
 
-    public JdbcProviderStore(Jdbc jdbc, PlatformProperties props, Clock clock) {
-        this.jdbc = jdbc;
+    public MongoProviderStore(Mongo mongo, PlatformProperties props, Clock clock) {
+        this.mongo = mongo;
         this.props = props;
         this.clock = clock;
-        this.table = new Revisioned<>(jdbc, STORE, this::load);
+        this.table = new Revisioned<>(mongo, STORE, this::load);
+        mongo.index(VERSIONS, Indexes.ascending("name"));
     }
 
     @PostConstruct
@@ -101,10 +115,8 @@ public class JdbcProviderStore implements ProviderStorePort {
             writes.add(new StoredProvider(def, f.yaml(), f.relative(root), modifiedAt(f.path()), InMemoryProviderStore.SEED_AUTHOR));
         }
         if (!writes.isEmpty()) {
-            jdbc.inTransaction(() -> {
-                writes.forEach(this::upsert);
-                table.bump();
-            });
+            writes.forEach(this::upsert);
+            table.bump();
         }
         log.info("provider store: {} provider(s) seeded and {} refreshed from {}", added, writes.size() - added, root);
         return writes.size();
@@ -127,10 +139,8 @@ public class JdbcProviderStore implements ProviderStorePort {
 
     @Override
     public void save(StoredProvider provider) {
-        jdbc.inTransaction(() -> {
-            upsert(provider);
-            table.bump();
-        });
+        upsert(provider);
+        table.bump();
         if (props.getContent().isGit()) {
             write(provider);
         }
@@ -138,11 +148,9 @@ public class JdbcProviderStore implements ProviderStorePort {
 
     @Override
     public void saveVersion(StoredProvider provider) {
-        jdbc.inTransaction(() -> {
-            if (keep(provider, jdbc.json(provider))) {
-                table.bump();
-            }
-        });
+        if (keep(provider, mongo.doc(provider))) {
+            table.bump();
+        }
     }
 
     @Override
@@ -151,11 +159,9 @@ public class JdbcProviderStore implements ProviderStorePort {
         if (removed == null) {
             return;
         }
-        jdbc.inTransaction(() -> {
-            jdbc.update("DELETE FROM provider_versions WHERE name = ?", name);
-            jdbc.update("DELETE FROM providers WHERE name = ?", name);
-            table.bump();
-        });
+        mongo.collection(VERSIONS).deleteMany(Filters.eq("name", name));
+        mongo.collection(PROVIDERS).deleteOne(Filters.eq("_id", name));
+        table.bump();
         if (props.getContent().isGit()) {
             Path file = fileOf(removed);
             try {
@@ -168,48 +174,56 @@ public class JdbcProviderStore implements ProviderStorePort {
         }
     }
 
-    /** Makes the provider current and keeps it among its versions. */
+    /** Makes the provider current and keeps it among its versions, in that order. */
     private void upsert(StoredProvider p) {
-        String doc = jdbc.json(p);
+        Document doc = mongo.doc(p);
         String name = p.definition().name();
-        jdbc.upsert("UPDATE providers SET updated_at = ?, doc = ? WHERE name = ?", new Object[] {Jdbc.time(p.updatedAt()), doc, name},
-                "INSERT INTO providers (name, updated_at, doc) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", new Object[] {name, Jdbc.time(p.updatedAt()), doc});
+        mongo.collection(PROVIDERS).replaceOne(Filters.eq("_id", name),
+                new Document("_id", name).append("updatedAt", Mongo.date(p.updatedAt())).append(Mongo.DOC, doc), new ReplaceOptions().upsert(true));
         keep(p, doc);
     }
 
-    /** Keeps a version by its number, as in memory; a provider without one is only ever current. Returns whether a row was written. */
-    private boolean keep(StoredProvider p, String doc) {
+    /** Keeps a version by its number, as in memory; a provider without one is only ever current. Returns whether a document was written. */
+    private boolean keep(StoredProvider p, Document doc) {
         String version = p.definition().metadata().version();
         if (version == null) {
             return false;
         }
         String name = p.definition().name();
-        jdbc.upsert("UPDATE provider_versions SET updated_at = ?, doc = ? WHERE name = ? AND version = ?",
-                new Object[] {Jdbc.time(p.updatedAt()), doc, name, version},
-                "INSERT INTO provider_versions (name, version, updated_at, doc) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                new Object[] {name, version, Jdbc.time(p.updatedAt()), doc});
+        String key = key(name, version);
+        mongo.collection(VERSIONS).replaceOne(Filters.eq("_id", key), new Document("_id", key).append("name", name).append("version", version)
+                .append("updatedAt", Mongo.date(p.updatedAt())).append(Mongo.DOC, doc), new ReplaceOptions().upsert(true));
         return true;
     }
 
+    /** The key of a kept version: provider names are slugs, without an {@code @}, so no two versions share one. */
+    static String key(String name, String version) {
+        return name + "@" + version;
+    }
+
     private Index load() {
-        return Index.of(jdbc.query("SELECT doc FROM providers", (rs, i) -> jdbc.read(rs.getString(1), StoredProvider.class)),
-                jdbc.query("SELECT doc FROM provider_versions", (rs, i) -> jdbc.read(rs.getString(1), StoredProvider.class)));
+        List<StoredProvider> current = new ArrayList<>();
+        mongo.collection(PROVIDERS).find().forEach(d -> current.add(mongo.read(d, StoredProvider.class)));
+        List<StoredProvider> kept = new ArrayList<>();
+        mongo.collection(VERSIONS).find().forEach(d -> kept.add(mongo.read(d, StoredProvider.class)));
+        return Index.of(current, kept);
     }
 
     /**
-     * Both tables as the in-memory store holds them: the current providers in name order, and each
-     * provider's kept versions newest first. A current version with no row of its own (written
-     * before versions were kept) counts among the versions, as the port's default reads it.
+     * Both collections as the in-memory store holds them: the current providers in name order, and
+     * each provider's kept versions newest first. A current version with no document of its own in
+     * {@code provider_versions} (a save that stopped between its two writes) counts among the
+     * versions, as the port's default reads it.
      */
     private record Index(Map<String, StoredProvider> current, Map<String, List<StoredProvider>> versions) {
 
-        static Index of(List<StoredProvider> currentRows, List<StoredProvider> keptRows) {
+        static Index of(List<StoredProvider> currentDocs, List<StoredProvider> keptDocs) {
             Map<String, StoredProvider> current = new TreeMap<>();
-            for (StoredProvider p : currentRows) {
+            for (StoredProvider p : currentDocs) {
                 current.put(p.definition().name(), p);
             }
             Map<String, Map<String, StoredProvider>> kept = new HashMap<>();
-            for (StoredProvider p : keptRows) {
+            for (StoredProvider p : keptDocs) {
                 kept.computeIfAbsent(p.definition().name(), n -> new LinkedHashMap<>()).put(p.definition().metadata().version(), p);
             }
             Map<String, List<StoredProvider>> versions = new HashMap<>();

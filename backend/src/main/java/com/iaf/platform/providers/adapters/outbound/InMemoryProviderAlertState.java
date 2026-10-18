@@ -9,8 +9,11 @@ import org.springframework.stereotype.Component;
 
 import com.iaf.platform.providers.ports.outbound.ProviderAlertStatePort;
 
-/** The demo's alert evaluator state: kept for the life of the process, like the demo's telemetry. */
-@Profile("!postgres")
+/**
+ * The demo's alert evaluator state: kept for the life of the process, like the demo's telemetry.
+ * The {@code mongo} profile keeps it in MongoDB ({@link MongoProviderAlertState}).
+ */
+@Profile("!mongo")
 @Component
 public class InMemoryProviderAlertState implements ProviderAlertStatePort {
 
