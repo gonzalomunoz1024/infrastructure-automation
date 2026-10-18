@@ -1,6 +1,8 @@
 package com.iaf.platform.releases.adapters.outbound;
 
+import java.time.Instant;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -23,7 +25,9 @@ import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 @Profile("postgres")
 public class JdbcReleaseStore implements ReleaseStore {
 
-    private static final String NEWEST_FIRST = " ORDER BY started_ns DESC NULLS LAST, id";
+    private static final Comparator<Release> NEWEST_FIRST = Comparator
+            .comparing((Release r) -> r.startedAt() == null ? Instant.EPOCH : r.startedAt()).reversed()
+            .thenComparing(Release::id);
     private static final String ACTIVE = Arrays.stream(ReleaseStatus.values()).filter(ReleaseStatus::active)
             .map(s -> "'" + s.json() + "'").collect(Collectors.joining(", ", "status IN (", ")"));
 
@@ -52,22 +56,27 @@ public class JdbcReleaseStore implements ReleaseStore {
     @Override
     public List<Release> list(String workflow) {
         if (workflow == null || workflow.isBlank()) {
-            return jdbc.query("SELECT doc FROM releases" + NEWEST_FIRST, (rs, i) -> read(rs.getString(1)));
+            return newestFirst(jdbc.query("SELECT doc FROM releases", (rs, i) -> read(rs.getString(1))));
         }
-        return jdbc.query("SELECT doc FROM releases WHERE workflow = ?" + NEWEST_FIRST, (rs, i) -> read(rs.getString(1)), workflow);
+        return newestFirst(jdbc.query("SELECT doc FROM releases WHERE workflow = ?", (rs, i) -> read(rs.getString(1)), workflow));
     }
 
     @Override
     public List<Release> active() {
-        return jdbc.query("SELECT doc FROM releases WHERE " + ACTIVE + NEWEST_FIRST, (rs, i) -> read(rs.getString(1)));
+        return newestFirst(jdbc.query("SELECT doc FROM releases WHERE " + ACTIVE, (rs, i) -> read(rs.getString(1))));
     }
 
     @Override
     public Optional<Release> active(String workflow) {
-        return jdbc.first("SELECT doc FROM releases WHERE workflow = ? AND " + ACTIVE + NEWEST_FIRST + " LIMIT 1", (rs, i) -> read(rs.getString(1)), workflow);
+        return newestFirst(jdbc.query("SELECT doc FROM releases WHERE workflow = ? AND " + ACTIVE, (rs, i) -> read(rs.getString(1)), workflow))
+                .stream().findFirst();
     }
 
     private Release read(String doc) {
         return jdbc.read(doc, Release.class);
+    }
+
+    private static List<Release> newestFirst(List<Release> releases) {
+        return releases.stream().sorted(NEWEST_FIRST).toList();
     }
 }
