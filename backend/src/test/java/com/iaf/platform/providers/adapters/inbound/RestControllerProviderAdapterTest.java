@@ -32,6 +32,7 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.config.GlobalExceptionHandler;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.adapters.outbound.InMemoryProviderAlertState;
 import com.iaf.platform.providers.application.ProviderAlertEvaluator;
 import com.iaf.platform.providers.application.ProviderCommandHandler;
 import com.iaf.platform.providers.application.ProviderQueryHandler;
@@ -154,7 +155,7 @@ class RestControllerProviderAdapterTest {
         when(telemetry.samples(any(), any())).thenReturn(List.of());
         when(changeRequests.all()).thenReturn(List.of());
         ProviderQueryHandler real = new ProviderQueryHandler(store, telemetry, changeRequests,
-                new ProviderAlertEvaluator(store, telemetry, new EventBus(clock), clock), clock, new ReleaseQueryHandler(new InMemoryReleaseStore()));
+                new ProviderAlertEvaluator(store, telemetry, new EventBus(clock), clock, new InMemoryProviderAlertState()), clock, new ReleaseQueryHandler(new InMemoryReleaseStore()));
         RestControllerProviderAdapter adapter = new RestControllerProviderAdapter(commands, real);
         Identity ana = new Identity("ana", "Ana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
         Identity mateo = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);

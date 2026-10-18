@@ -24,6 +24,7 @@ import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderHealthRule;
+import com.iaf.platform.providers.ports.outbound.ProviderAlertStatePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
 
@@ -36,7 +37,9 @@ import lombok.extern.slf4j.Slf4j;
  * not_found raises a warning naming the job. The last {@value #KEEP} alerts per provider are kept
  * for {@code GET /providers/{name}/alerts}; every alert is also published as {@code provider.alert},
  * carrying the provider's {@code alerts.channel} and owner so a notifier knows where to deliver it,
- * and its {@code class} (the call's error class, or {@value #HEALTH_CLASS}) for alert triggers.
+ * and its {@code class} (the call's error class, or {@value #HEALTH_CLASS}) for alert triggers. The
+ * instant of the last evaluation is kept on the {@link ProviderAlertStatePort}, so a restart judges
+ * only the calls that failed since, never every failed call of the last day again.
  */
 @Slf4j
 @Component
@@ -55,6 +58,7 @@ public class ProviderAlertEvaluator {
     private final TelemetryPort telemetry;
     private final EventBus events;
     private final Clock clock;
+    private final ProviderAlertStatePort state;
 
     private final Map<String, Deque<ProviderAlert>> alerts = new ConcurrentHashMap<>();
     private final Map<String, Health.Status> lastBand = new ConcurrentHashMap<>();
@@ -76,7 +80,7 @@ public class ProviderAlertEvaluator {
         for (CallSample s : telemetry.samples(null, since)) {
             byProvider.computeIfAbsent(s.provider(), k -> new ArrayList<>()).add(s);
         }
-        Instant failuresFrom = lastEvaluatedAt == null ? since : lastEvaluatedAt;
+        Instant failuresFrom = failuresFrom(since);
         List<ProviderAlert> raised = new ArrayList<>();
         for (StoredProvider p : store.all()) {
             ProviderDefinition def = p.definition();
@@ -100,7 +104,25 @@ public class ProviderAlertEvaluator {
             }
         }
         lastEvaluatedAt = now;
+        try {
+            state.lastEvaluatedAt(now);
+        } catch (RuntimeException e) {
+            log.warn("could not keep the alert evaluation time: {}", e.toString());
+        }
         return raised;
+    }
+
+    /**
+     * Failed calls after this instant raise an alert: the last evaluation of this instance, else
+     * the one the state kept (the instance before a restart), else the start of the window, and
+     * never earlier than that.
+     */
+    private Instant failuresFrom(Instant since) {
+        Instant from = lastEvaluatedAt;
+        if (from == null) {
+            from = state.lastEvaluatedAt().orElse(null);
+        }
+        return from == null || from.isBefore(since) ? since : from;
     }
 
     /** Newest first, at most {@value #KEEP}. */

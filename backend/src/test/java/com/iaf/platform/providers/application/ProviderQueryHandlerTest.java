@@ -24,6 +24,7 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.adapters.outbound.InMemoryProviderAlertState;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
@@ -92,7 +93,7 @@ class ProviderQueryHandlerTest {
         when(store.get("fleet")).thenReturn(Optional.of(fleet));
         when(store.get("nope")).thenReturn(Optional.empty());
         when(changeRequests.all()).thenReturn(List.of());
-        ProviderAlertEvaluator alerts = new ProviderAlertEvaluator(store, telemetry, new EventBus(CLOCK), CLOCK);
+        ProviderAlertEvaluator alerts = new ProviderAlertEvaluator(store, telemetry, new EventBus(CLOCK), CLOCK, new InMemoryProviderAlertState());
         releases = new InMemoryReleaseStore();
         handler = new ProviderQueryHandler(store, telemetry, changeRequests, alerts, CLOCK, new ReleaseQueryHandler(releases));
     }

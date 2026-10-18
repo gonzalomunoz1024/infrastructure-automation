@@ -85,6 +85,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
 | `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
+| `ProviderAlertStatePort` | `JdbcProviderAlertState` (profile `postgres`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
@@ -125,6 +126,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
 | `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
 | `ReviewEvidencePort` (providers) | `JdbcReviewEvidence`  | `review_evidence` |
+| `ProviderAlertStatePort` (providers) | `JdbcProviderAlertState` | `provider_alert_state` (one row: when the alert evaluator last ran) |
 | `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` (workflow and provider releases) |
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
@@ -152,8 +154,12 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   first, as in memory, and a kept version is never written back to the content repo until it is current.
 - Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
   is one `review_evidence` row per result, with the in-memory bounds: the last 50 connection
-  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body. A row
-  holds endpoints, credential references and responses, never a credential value.
+  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body, and
+  one count row per provider and kind (`dropped-connection`, `dropped-try`) for what the bounds
+  deleted. A row holds endpoints, credential references and responses, never a credential value.
+- The provider alert evaluator keeps when it last ran in `provider_alert_state`, so the first
+  evaluation after a restart raises alerts only for the calls that failed since, not for every
+  failed call of the last 24 hours again.
 - Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
   deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
   triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,
