@@ -400,9 +400,10 @@ of the other jobs on the candidate (every call of one job uses one version), and
 outside a job and every job while the release is paused use the current version. Promotion makes
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
-The commands need edit rights on the provider's owner team. Release events (`release.started`,
-`release.stage`, `release.promoted`, `release.paused`, `release.resumed`, `release.rolled-back`)
-carry `{ releaseId; workflow | provider; from; to }`.
+The commands need edit rights on the owner team of the release's workflow or provider; when it
+has none (the workflow or provider is gone, or names no owner) only an admin may. Release
+events (`release.started`, `release.stage`, `release.promoted`, `release.paused`,
+`release.resumed`, `release.rolled-back`) carry `{ releaseId; workflow | provider; from; to }`.
 
 | GET `/releases?workflow=&provider=&kind=` | `Release[]`, newest first: a workflow's or a provider's releases, else every release of `kind` (`workflow`, the default, `provider` or `all`; anything else is a 400) |
 | GET `/releases/{id}` | `Release` |
