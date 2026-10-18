@@ -81,21 +81,21 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine; its resource-access rule: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always) |
-| `TelemetryPort`         | `JdbcTelemetry` (profile `postgres`, the samples in `telemetry_samples`) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
-| `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
-| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
+| `TelemetryPort`         | `MongoTelemetry` (profile `mongo`, the samples in `telemetry_samples`, deleted by a TTL index once the retention has passed) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
+| `ProjectionStore`       | `MongoProjectionStore` (profile `mongo`) | `InMemoryProjectionStore`   |
+| `EvidenceStore`         | `MongoEvidenceStore` (profile `mongo` without a `worm` profile, entries only ever inserted); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
-| `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
+| `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with the `mongo` profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
-| `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
-| `ProviderAlertStatePort` | `JdbcProviderAlertState` (profile `postgres`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
+| `ReviewEvidencePort`    | `MongoReviewEvidence` (profile `mongo`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
+| `ProviderAlertStatePort` | `MongoProviderAlertState` (profile `mongo`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
 Every adapter is a `@Component`. A production adapter carries its profile and `@Primary`
 (`@Profile("opa") @Primary` on `OpaPolicy`), so it wins over its demo twin, a plain component,
 when the profile is on; a twin that must not exist beside it carries the opposite guard (the
-in-memory stores are `@Profile("!postgres")`). The Git workflow store is switched by the property
+in-memory stores are `@Profile("!mongo")`). The Git workflow store is switched by the property
 `platform.content.git`, not by a profile. No adapter uses `@ConditionalOnMissingBean`.
 
 A credential belongs to a team: `CredentialInfo.owner`, chosen when it is stored (one of the
@@ -149,83 +149,177 @@ token is the secret (the audit slice keeps only its SHA-256 and refuses an expir
 
 ### Data
 
-PostgreSQL (the `postgres` profile, below) holds the registry (workflow versions while the Git
-store is off, change requests, providers and their versions, releases, resource types and
-resources), the audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index
-(jobs, approvals and their events), the gateway's quotas and idempotency keys, the inbox, and the
-other stores the table below lists. Git is the source of truth for workflows and providers: every
-start seeds them from the content repository in `platform.content.dir`, and with
-`platform.content.git` on that repository is the workflow store itself (`GitWorkflowStore`, below,
-which commits every draft and publish) and a provider saved through the platform is written back
-to its file there, uncommitted. Object storage, through `ArtifactStorePort` (a bucket under the
-`s3` profile, else files under `platform.artifacts.dir`), holds playbook uploads and Terraform's
-saved plans by SHA-256, and each ended job's archive: its log lines (`jobs/<id>/logs.ndjson`) and
-the plan it was started with (`jobs/<id>/plan.json`). WORM evidence goes to object storage under
-its own profile, `worm-s3`: S3 Object Lock objects in `platform.audit.worm.s3.bucket` (or, under
-`worm`, read-only files in `platform.audit.worm.dir`).
+MongoDB (the `mongo` profile, below) holds the registry (workflow versions while the Git store is
+off, change requests, providers and their versions, releases, resource types and resources), the
+audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index (jobs, approvals
+and their events), the gateway's quotas and idempotency keys, the inbox, and the other stores the
+table below lists. Temporal keeps its own database: the dev server's SQLite file in
+`docker-compose.yml`, or a PostgreSQL of its own with `docker-compose.temporal-postgres.yml`. The
+platform reaches Temporal through its API only and never reads that database. Git is the source of
+truth for workflows and providers: every start seeds them from the content repository in
+`platform.content.dir`, and with `platform.content.git` on that repository is the workflow store
+itself (`GitWorkflowStore`, below, which commits every draft and publish) and a provider saved
+through the platform is written back to its file there, uncommitted. Object storage, through
+`ArtifactStorePort` (a bucket under the `s3` profile, else files under `platform.artifacts.dir`),
+holds playbook uploads and Terraform's saved plans by SHA-256, and each ended job's archive: its
+log lines (`jobs/<id>/logs.ndjson`) and the plan it was started with (`jobs/<id>/plan.json`). WORM
+evidence goes to object storage under its own profile, `worm-s3`: S3 Object Lock objects in
+`platform.audit.worm.s3.bucket` (or, under `worm`, read-only files in `platform.audit.worm.dir`).
 
 ### Persistence
 
-Without a profile every store is in memory and a restart starts over. The `postgres` profile
-(`docker compose up`, `scripts/dev.sh --postgres`) keeps the platform's state in PostgreSQL 16.
-`PersistenceConfig` builds a connection pool from `spring.datasource.*` (`SPRING_DATASOURCE_URL`,
-`SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`; a password never goes in a file),
-Flyway applies `db/migration/common` and the database's own folder (`db/migration/postgresql`)
-on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `Jdbc` helper in
-`common/adapters/jdbc`) replaces the in-memory adapter of each store:
+Without a profile every store is in memory and a restart starts over. The `mongo` profile
+(`docker compose up`, `scripts/dev.sh --mongo`) keeps the platform's state in MongoDB, 7 or later
+(docker compose runs 8.0). `MongoConfig` builds one client from `spring.data.mongodb.uri`
+(`SPRING_DATA_MONGODB_URI`; `mongodb://localhost:27017/platform` when unset) and uses the database
+the URI names (or `spring.data.mongodb.database`, else `platform`). A connection string with a
+password belongs in a secret, never in a file: the Helm chart takes it from the Secret that
+`mongo.uriSecret` names and refuses a `mongo.uri` that carries a password. A standalone server
+works; production runs a replica set. `MongoHealthIndicator` adds a `mongo` component to
+`/actuator/health`, up while the database answers. Without the profile no client is made at all. A
+MongoDB adapter (`@Profile("mongo") @Primary`, over the small `Mongo` helper in
+`common/adapters/mongo`) replaces the in-memory adapter of each store:
 
-| Port (slice)                     | JDBC adapter          | Tables |
-|----------------------------------|-----------------------|--------|
-| `WorkflowStorePort` (workflows)  | `JdbcWorkflowStore`   | `workflow_versions` |
-| `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
-| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
-| `ReviewEvidencePort` (providers) | `JdbcReviewEvidence`  | `review_evidence` |
-| `ProviderAlertStatePort` (providers) | `JdbcProviderAlertState` | `provider_alert_state` (one row: when the alert evaluator last ran) |
-| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` (workflow and provider releases) |
-| `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
-| `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
-| `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
-| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` (rows not updated within `platform.assistant.session-retention` are deleted every hour by `SessionRetention`) |
-| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
-| `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
-| `IdempotencyStore` (gateway)     | `JdbcIdempotencyStore` | `idempotency_keys` (claim = insert or take over a stale row; replay from the stored status, headers and body; a release deletes an unanswered row; expired rows swept every ten minutes) |
-| `QuotaStore` (gateway)           | `JdbcQuotaStore`      | `quota_buckets` (one row per team bucket, `SELECT ... FOR UPDATE` on every take, so every replica draws from the same bucket) |
-| `InboxStore` (notifications)     | `JdbcInboxStore`      | `inbox_notifications`, `inbox_audience`, `inbox_reads` (the newest `platform.notifications.keep`, with who read each one) |
+| Port (slice)                     | MongoDB adapter         | Collections |
+|----------------------------------|-------------------------|-------------|
+| `WorkflowStorePort` (workflows)  | `MongoWorkflowStore`    | `workflow_versions` |
+| `ChangeRequestPort` (workflows)  | `MongoChangeRequests`   | `change_requests` (a merge or a close is one write filtered on the open status, so of two decisions only the first lands and the other is a 409 before anything is published or announced) |
+| `ProviderStorePort` (providers)  | `MongoProviderStore`    | `providers`, `provider_versions` |
+| `ReviewEvidencePort` (providers) | `MongoReviewEvidence`   | `review_evidence` |
+| `ProviderAlertStatePort` (providers) | `MongoProviderAlertState` | `provider_alert_state` (one document: when the alert evaluator last ran) |
+| `ReleaseStore` (releases)        | `MongoReleaseStore`     | `releases` (workflow and provider releases) |
+| `ResourceStorePort` (resources)  | `MongoResourceStore`    | `resource_types`, `resources` |
+| `EvidenceStore` (audit)          | `MongoEvidenceStore`    | `evidence_records`, `evidence_entries`, `evidence_checkpoints`, `evidence_share_links` |
+| `ServiceAccountStore` (identity) | `MongoServiceAccounts`  | `service_accounts` (found by the SHA-256 of the token, `tokenHash`, unique among the accounts that have one) |
+| `SessionStore` (assistant)       | `MongoSessionStore`     | `assistant_sessions` (an update holds a session through a lease; sessions not updated within `platform.assistant.session-retention` are deleted every hour by `SessionRetention`, except one an update holds) |
+| `TelemetryPort` (common)         | `MongoTelemetry`        | `telemetry_samples` (each call with the provider version that served it) |
+| `ProjectionStore` (runs)         | `MongoProjectionStore`  | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
+| `IdempotencyStore` (gateway)     | `MongoIdempotencyStore` | `idempotency_keys` (one document per caller and key; a claim is one conditional upsert that inserts the key or takes over an expired or stale one; replay from the stored status, headers and body; a release deletes an unanswered key; a TTL index on `expiresAt` deletes expired keys) |
+| `QuotaStore` (gateway)           | `MongoQuotaStore`       | `quota_buckets` (one document per team bucket, refilled and drawn on the server by atomic updates, a token taken only while the bucket holds one, so every replica draws from the same bucket; a TTL index deletes a bucket idle for 24 hours, which would be full again) |
+| `InboxStore` (notifications)     | `MongoInboxStore`       | `inbox_notifications` (the newest `platform.notifications.keep`, in the order of arrival that one counter in `store_sequences` hands out to every replica, each with its audience and who read it embedded) |
 
 Under that profile the in-memory twins of these stores are not created at all
-(`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only
+(`@Profile("!mongo")`), so nothing seeds the content twice and the MongoDB adapters are the only
 implementations in the context (the evidence store follows its own rule: `worm` or `worm-s3`
-wins when active, else `postgres` keeps it in the database, else it stays in memory). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
-(workflow, status, requester, times). Times are also kept as epoch nanoseconds, so the order is
-exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, which the tests use.
+wins when active, else `mongo` keeps it in the database, else it stays in memory).
+
+A document keeps the record whole under `doc`. Its other top-level fields are copies of what the
+adapter queries, sorts, indexes or keeps unique (workflow, status, provider, requester, times), and
+a few dates kept for reading the data by hand; a new record field needs no migration, since a
+document written before it still reads. An instant that a query compares or sorts on is also kept
+as epoch nanoseconds (`startedNs`, `atNs`), so the order is exact; a TTL index reads a BSON date,
+so a document it expires keeps that date too. A record becomes its document field by field,
+through the application's JSON (ISO instants to the nanosecond, lowercase enums), and is never
+parsed as extended JSON, so a key such as `$ref` in an imported schema stays a key. The codecs keep
+what the driver would change: a sub-document with both `$ref` and `$id` stays a document (the
+driver would read it as a DBRef and drop its other keys); an integer beyond a long (an OpenAPI
+`uint64` bound) is stored as a Decimal128, exact to 34 digits (a longer one is refused, never
+rounded), and reads back as that integer; a null inside a JSON value or a map is kept both ways,
+so a job's input or an evidence entry's hashed data comes back exactly, while a null record
+component is left out. Each adapter creates the indexes it relies on in its constructor, so every
+start makes the missing ones and leaves the others as they are. The adapters' tests run on a real
+MongoDB when `PLATFORM_TEST_MONGO_URI` names one, a fresh database per test (see
+`docs/contributing.md`).
+
+There are no multi-document transactions. A write that must be atomic is one document's, and
+single-document writes stand in for locks and constraints: a unique `_id` or index refuses a second
+writer (an evidence entry's `{jobId, seq}`, a review result's `{provider, kind, seq}`, a job
+event's `{jobId, seq}`, a one-off seed), a filter on the stored state lets a decision land once (a
+change request decided while open, a seal written while the record has none, a quota token taken
+while the bucket holds one, a session written while its update still holds the lease), and `$max`
+only moves a value forward (the alert evaluator's last run). A change that spans documents writes
+them in an order that never leaves one naming another that is missing, and the next write or read
+finishes what a stop in between left.
 
 - Workflow versions, providers and resource types come from the content dir on start. A missing
   workflow version or provider is added, and one still exactly as seeded takes its file's new
   content; one changed through the platform is never reset. Resource types are rewritten from
-  their files at every start. Reads come from a copy of the table that is reloaded when
-  `store_revisions` shows a write from any instance.
-- A provider's current version is its `providers` row; every version saved since the database
-  was made, the current one among them, is also a `provider_versions` row, so a canary candidate
-  (`ProviderStorePort.saveVersion`) is kept beside the current version, routed to by its release,
-  and survives a restart until it is promoted and saved as current. The versions read newest
-  first, as in memory, and a kept version is never written back to the content repo until it is current.
+  their files at every start. Reads come from a copy of the collection (`Revisioned`) that is
+  reloaded when the store's number in `store_revisions` shows a write from any instance; a write
+  moves that number once it is done.
+- A provider's current version is its `providers` document (keyed by name); every version saved
+  since the database was made, the current one among them, is also a `provider_versions` document
+  (keyed `<name>@<version>`), so a canary candidate (`ProviderStorePort.saveVersion`) is kept beside
+  the current version, routed to by its release, and survives a restart until it is promoted and
+  saved as current. A save writes the provider, then its version, and a current version whose
+  version document a stop left unwritten still counts among the versions; a delete removes the
+  versions, then the provider, and deleting again finishes an interrupted one. The versions read
+  newest first, as in memory, and a kept version is never written back to the content repo until
+  it is current.
 - Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
-  is one `review_evidence` row per result, with the in-memory bounds: the last 50 connection
-  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body, and
-  one count row per provider and kind (`dropped-connection`, `dropped-try`) for what the bounds
-  deleted. A row holds endpoints, credential references and responses, never a credential value.
-- The provider alert evaluator keeps when it last ran in `provider_alert_state`, so the first
-  evaluation after a restart raises alerts only for the calls that failed since, not for every
-  failed call of the last 24 hours again.
-- Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
-  deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
-  triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,
-  deleting a header, shrinking one and any change to a sealed one. Appends to a record take a lock
-  on its header row, so concurrent writers cannot fork the hash chain. A share link keeps only
-  the SHA-256 of its token, and a service account only the hash of its token.
+  is one `review_evidence` document per result, with the in-memory bounds: the last 50 connection
+  tests and the last 500 tries of a provider, and a response over 256 KiB kept without its body.
+  The results of a provider and kind (`connection`, `try`) are numbered 1, 2, 3... (`seq`, unique
+  with the two): a write inserts the number after the newest and takes the next one when another
+  writer got there first, then deletes what fell out of the bound. A read returns the newest
+  results within the bound, and the count of the dropped ones is the oldest number shown minus one,
+  exact under concurrent writers; a write that stops before its tidy-up leaves nothing that a read
+  returns or leaves out of the count. A document holds endpoints, credential references and
+  responses, never a credential value.
+- The provider alert evaluator keeps when it last ran in `provider_alert_state`, one document
+  written with one `$max` of the instant (in nanoseconds and as a date), so it only moves forward.
+  The first evaluation after a restart raises alerts only for the calls that failed since, not for
+  every failed call of the last 24 hours again.
+- Audit evidence is append-only twice over. `MongoEvidenceStore` only ever inserts entries
+  (`evidence_entries`, keyed `{jobId, seq}`, unique) and checkpoints (`evidence_checkpoints`, one
+  per head they sign), never updates or deletes one, and refuses entries for a sealed record. Of two
+  writers of one seq the unique key lets one win; the other reads the winner's entry and chains
+  after it, so the hash chain never forks across instances (a striped lock orders the writers of
+  one instance). An append inserts its entry, then grows the header (`evidence_records`: the record
+  without its entries, its count, whether it is closed, and its seal) with an update that matches
+  only while the header has counted fewer entries. Reads fold in entries the header has not counted
+  yet, and the sealing run brings a lagging header up to date. The seal is written once, by an
+  update that matches only while the record has none. Checkpoints have a collection of their own so
+  the header stays small: the platform stream is checkpointed every hour for years, a document holds
+  at most 16 MB, and every append rewrites the header. An append on one instance that races a seal
+  on another can land after the seal, as with the write-once stores; the seal names the entry it
+  covers (`seq`, `hash`), so verification still checks exactly what was sealed. A stop after a
+  record's first entry and before its header leaves the record out of listings until its next
+  append. A share link keeps only the SHA-256 of its token, and a service account only the hash of
+  its token.
+
+  MongoDB has no triggers, so in production the second guard is the database user's role: it may
+  find and insert entries and checkpoints, never update or delete them, and it may never delete a
+  header. Create the role as an admin, then give the platform's user only this role (not
+  `readWrite`, which would allow update, remove and drop on the evidence collections), its
+  password from the secret store:
+
+  ```js
+  // mongosh, as an admin, in the platform's database ("platform" by default)
+  const p = (c, ...a) => ({ resource: { db: "platform", collection: c }, actions: a });
+  db.getSiblingDB("platform").createRole({
+    role: "platformStores",
+    privileges: [
+      // append-only: read and insert, never update or delete
+      p("evidence_entries",     "find", "insert", "createIndex"),
+      p("evidence_checkpoints", "find", "insert", "createIndex"),
+      // the header grows and takes its seal; it is never deleted
+      p("evidence_records",     "find", "insert", "update", "createIndex"),
+      // a changed retention changes the samples' TTL index in place at start
+      p("telemetry_samples",    "find", "insert", "update", "remove", "createIndex", "collMod"),
+      // the usual rights everywhere else
+      ...["workflow_versions", "change_requests", "providers", "provider_versions",
+          "review_evidence", "provider_alert_state", "releases", "resources", "resource_types",
+          "evidence_share_links", "runs_jobs", "runs_approvals", "runs_events", "runs_definitions",
+          "service_accounts", "assistant_sessions", "idempotency_keys", "quota_buckets",
+          "inbox_notifications", "store_revisions", "store_seeds", "store_sequences"]
+        .map(c => p(c, "find", "insert", "update", "remove", "createIndex"))
+    ],
+    roles: []
+  });
+  ```
+
+  A role only grants, so each collection is listed; `createIndex` is there because the stores
+  create their indexes at start.
 - The runs index: `JobProjection` still folds job events in process, but it keeps the jobs (with
-  their steps), approvals and event history in `ProjectionStore`. The definition a job ran is
-  stored once per distinct definition. Event numbering carries on after a restart, so
+  their steps), approvals and event history in `ProjectionStore`. A job is a `runs_jobs` document
+  without its definition, with copies of its workflow, status, parent and start (in nanoseconds),
+  so the lists are filtered, sorted and limited in MongoDB through indexes on the start, the
+  workflow and the parent. The definition a job ran is stored once per distinct definition
+  (`runs_definitions`, keyed by the SHA-256 of its JSON, the 256 most recently used cached). A save
+  writes the definition, then the approvals, then the job, so one cut off never leaves a job naming
+  something missing. An event is one insert into `runs_events` under `{jobId, seq}`, unique, so a
+  taken number fails instead of overwriting. Event numbering carries on after a restart, so
   `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
   fan-out (SSE, WebSocket) stays in memory: one stream per job that is not over, dropped when the
   job ends, never made for an id the store does not have, and dropped after 30 minutes without an
@@ -235,13 +329,17 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   Running on Temporal), a command fails, and the in-memory engine fails the step (its final event
   is logged as lost). An event that cannot be applied at all, a bug no retry mends, is logged and
   kept in the history without changing the job.
-- Provider-call samples are queued, and a background thread writes them in batches, so recording
-  never waits for the database (a read writes the queue first). Each row keeps the provider
-  version that served the call, so a provider canary's gates judge the candidate's calls against
-  the current version's after a restart too. Samples older than
-  `platform.persistence.telemetry-retention` (30 days) are deleted every hour and never served.
-- The demo history (`platform.demo.seed-history`) is written once per database (`store_seeds`).
-  A later start finds it claimed and turns the switch off before any seeder runs.
+- Provider-call samples are queued, and a background thread inserts them in batches (up to 500,
+  every 250 ms), so recording never waits for the database (a read writes the queue first). Each
+  document keeps the provider version that served the call, so a provider canary's gates judge the
+  candidate's calls against the current version's after a restart too. Samples older than
+  `platform.persistence.telemetry-retention` (30 days) are never served. A TTL index on `at` lets
+  MongoDB delete them itself: its lifetime is the retention (at most 2^31 - 1 seconds), changed in
+  place with `collMod` when the retention has changed since the last start. Every instance also
+  deletes them every hour.
+- The demo history (`platform.demo.seed-history`) is written once per database: the first start
+  claims it in `store_seeds`, and a later start finds it claimed and turns the switch off before
+  any seeder runs.
 
 Run one backend per database: the runs index is folded from the events this instance sees. Jobs
 the in-memory engine was running when the backend stopped keep the status they had.
@@ -249,7 +347,7 @@ the in-memory engine was running when the backend stopped keep the status they h
 ### The Git workflow store
 
 With `platform.content.git` on, `GitWorkflowStore` is the workflow store under every profile (it is
-`@Primary`, and neither `JdbcWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
+`@Primary`, and neither `MongoWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
 in `platform.content.dir`, through JGit. A draft or a candidate is its file on the branch
 `change/<name>-<version>`. Publishing commits the file on the checked-out branch (main), as a merge
 of that branch when it exists, and deletes the branch; a retired version is read back from main's
@@ -271,10 +369,10 @@ switches the store on with a content repository (`content.repository`, with
 backend pod (`api.replicas: 1` and `worker.enabled: false`, so the API pod runs the interpreter's
 worker too), its clone on a volume (`content.gitStore.existingClaim`; cloned once with its history,
 then kept), replaced with `Recreate` so that two pods never hold it at once. More replicas need
-`content.gitStore.enabled: false`: the workflows then live in the database (`workflow_versions`),
-seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
-the repository (`github`). Sharing the Git store between replicas would take a push after each
-commit, and a fetch and a reindex whenever the remote moves.
+`content.gitStore.enabled: false`: the workflows then live in MongoDB (`workflow_versions`, with
+`mongo.enabled`), seeded from a fresh shallow clone at every start, and change requests can still
+be pull requests on the repository (`github`). Sharing the Git store between replicas would take a
+push after each commit, and a fetch and a reindex whenever the remote moves.
 
 ### Reactive boundaries
 
@@ -282,15 +380,16 @@ Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners
 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` or `Mono.fromFuture` on async
 stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` from the
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
-The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
-that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`,
-first in the filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and
-generated-route filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
-and the S3 client under any profile, so the audit handlers read and write them on `boundedElastic`
-themselves.
+The store ports are synchronous, and the MongoDB stores of the `mongo` profile block (the
+driver's synchronous client). So under that profile `BlockingStoresWebFilter` subscribes each
+request's whole chain on `boundedElastic` and delivers the request body there too, first in the
+filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and generated-route
+filters). The evidence stores of the `worm` and `worm-s3` profiles block on files and the S3 client
+under any profile, so the audit handlers read and write them on `boundedElastic` themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
-there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
-runs on a non-blocking thread, and the wiring test expects none.
+there, so the job events that follow are stored from there. `Mongo` counts any call that still
+runs on a non-blocking thread (a Netty event loop or a Reactor timer) and logs the first, and the
+wiring test expects none.
 
 ### Conventions
 
@@ -313,7 +412,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set; neither is `@Primary`, every configured SIEM gets every batch) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
-| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `JdbcIdempotencyStore` and `JdbcQuotaStore` under `postgres`, shared by every replica |
+| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `MongoIdempotencyStore` and `MongoQuotaStore` under `mongo`, shared by every replica |
 
 - `AuditListener` folds job events into one hash chain per job, release decisions into
   `release:<id>` and every other recorded command into the platform stream. Each entry is
@@ -327,12 +426,14 @@ runs on a non-blocking thread, and the wiring test expects none.
   seals closed records and checkpoints open ones; it reads only the records still taking
   signatures (`EvidenceStore.unsealed()`: their head, entry count, whether they are closed and
   their last checkpoint, never their entries), so a run costs the open records, not the history.
-  The JDBC store answers it from the headers (`sealed_at IS NULL`), the WORM stores skip every
-  record named in their `sealed/` index (one write-once object per sealed record, written with the
-  seal; a record sealed before the index existed is indexed the first time a run finds it). On
-  demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
-  member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
-  them, the workflow's owner team) or an admin, and each link is published as `audit.shared`
+  The MongoDB store answers it from the headers without a `seal` (a scan of the headers, which no
+  index serves, never of the entries) and first brings a header that lags behind its entries up to
+  date; the WORM stores skip every record named in their `sealed/` index (one write-once object per
+  sealed record, written with the seal; a record sealed before the index existed is indexed the
+  first time a run finds it). On demand (`POST /audit:seal`) only an admin seals. A record is
+  shared by the job's requester, a member of the teams it ran for (`RecordOwners`: the requester's
+  teams as the runs index kept them, the workflow's owner team) or an admin, and each link is
+  published as `audit.shared`
   (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
   is built (the store lists the matching ids; each record is read, serialised straight into the
   zip with its sha256 taken on the way, and let go, so one record is in memory at a time), streamed in
@@ -452,8 +553,8 @@ The registry judges its own writes (`resources.domain.ResourceRules`): a resourc
 team's, so only that team, the job that created it or an admin may update it through a `register`
 step, and only the team or an admin may retire it. Retiring and lineage walk
 `ResourceStorePort.builtFrom` (`ResourceGraph`: depth-first in both directions, each resource once,
-at most 32 hops and 1000 resources) instead of reading the whole registry; the JDBC store finds a
-resource's dependents with a LIKE on the document text and judges the candidates' `builtFrom`.
+at most 32 hops and 1000 resources) instead of reading the whole registry; the MongoDB store finds a
+resource's dependents with one indexed query on the `builtFrom` array each resource document keeps.
 
 A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
 the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
@@ -510,10 +611,11 @@ job where it is until the projection keeps the event, rather than losing a `job.
 leaving the job running for good; the Temporal UI shows the activity retrying with the store's
 error. Records that mint an id (an approval, a child) still run once and fail the step instead,
 so a retry never creates a second one. A cancel from the Temporal UI or CLI ends the job as cancelled by
-`temporal`. Without the `postgres` profile the job
+`temporal`. Without the `mongo` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
-history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
+history are read back from MongoDB; the platform never reads Temporal's own database. With
+`platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
 `docker-compose.yml`), each job's view carries `links.temporal`, its execution there
 (`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
 "Open in Temporal".
@@ -550,7 +652,7 @@ executions; one with the `worker` role runs the interpreter's worker. Without th
 instance answers nothing but the actuator (health, metrics), so its probes and scrapes keep
 working. One role alone needs the `temporal` profile, and the context refuses to start without
 it. Since the worker that runs a job's steps is the instance that records them, API instances see
-that progress only through a shared job store (the Postgres adapters); with the in-memory
+that progress only through a shared job store (the MongoDB adapters); with the in-memory
 projection every instance keeps both roles.
 
 ### Changing the interpreter workflow
@@ -648,7 +750,7 @@ Besides the test server of the backend's suite, these ran against a Temporal dev
   call had finished, replayed the history and finished the job by itself. A job waiting for an
   approval outlived a restart too; its approval went in as the `approve` signal through the
   Temporal CLI, since the new instance's in-memory projection does not know the job (the
-  `postgres` profile fills that gap).
+  `mongo` profile fills that gap).
 - `reserve-ip-address` through `POST /api/v1/addresses` on the Go (`ip-pool`) and Python
   (`dns-records`) example workers, alone and as a three-row batch whose rows ran as child
   workflows; a scratch workflow added the Java example (`cmdb`) as a third step.
@@ -819,7 +921,7 @@ indexes a version on its change branch as the candidate while an open change req
 and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
 delete (which also asks the change requests before it deletes anything). A rolled-back workflow
 release republishes the version it replaced and marks its own version rolled back, which nothing
-resolves to: the JDBC store keeps the mark in the version's `doc`, the Git store as a commit on
+resolves to: the MongoDB store keeps the mark in the version's `doc`, the Git store as a commit on
 main that changes no file (`Rolled-back: <name> <version>`) and that it reads back at startup. A provider
 version rolls out the same way: the providers slice keeps the candidate beside the current version
 (`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
