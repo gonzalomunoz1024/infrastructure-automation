@@ -84,6 +84,24 @@ class WorkflowChecksTest {
     }
 
     @Test
+    void anMcpToolAnotherPublishedWorkflowHasIsAWarningNamingTheToolAndTheWorkflow() throws IOException {
+        String yaml = Files.readString(FIXTURES.resolve("mcp-tool-name.yaml"));
+        CheckContext ctx = SampleContentTest.context();
+        String message = "MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false";
+        assertThat(WorkflowChecks.check(yaml, ctx)).extracting(Problem::level, Problem::code, Problem::field, Problem::message)
+                .containsExactly(tuple(Problem.Level.WARNING, "mcp.toolName", "mcp.expose", message));
+        // the batch tool counts as well
+        assertThat(WorkflowChecks.check(yaml.replace("verb: restart", "verb: restart-batch"), ctx)).extracting(Problem::message)
+                .containsExactly(message.replace("tool vm_restart ", "tool vm_restart_batch "));
+        // a new version of the same workflow, a workflow that is no tool and no registry at all are fine
+        assertThat(WorkflowChecks.check(yaml.replace("name: vm-bounce", "name: vm-restart"), ctx)).isEmpty();
+        assertThat(WorkflowChecks.check(yaml.replace("expose: true", "expose: false"), ctx)).isEmpty();
+        assertThat(WorkflowChecks.check(yaml, CheckContext.EMPTY)).isEmpty();
+        assertThat(ctx.mcpToolHolders("vm_restart")).containsExactly("vm-restart");
+        assertThat(ctx.mcpToolHolders("vm_restart_batch")).containsExactly("vm-restart");
+    }
+
+    @Test
     void didYouMeanFixesCarryTheReplacement() {
         String yaml = """
                 apiVersion: iaf.platform/v1

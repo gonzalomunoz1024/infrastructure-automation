@@ -26,6 +26,7 @@ import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.expressions.Reference;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.catalog.domain.ReservedNouns;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.providers.domain.ActionInfo;
@@ -126,6 +127,11 @@ public final class WorkflowChecks {
                     "api.input is not a valid JSON Schema: " + (where.isEmpty() ? "" : where.substring(1) + ": ") + v.message()));
         }
         return out;
+    }
+
+    /** What {@code mcp.toolName} says, in the designer and at publish: the tool and the workflow that already has it. */
+    static String mcpToolMessage(String tool, String other) {
+        return "MCP tool " + tool + " is already exposed by workflow " + other + "; give this workflow another noun or verb, or set mcp.expose to false";
     }
 
     /** A {@code vault:} reference one of the steps names, and where ({@code credential}, {@code playbook.git.credential}, {@code headers.Authorization}). */
@@ -231,6 +237,22 @@ public final class WorkflowChecks {
             steps();
             triggers();
             credentialOwners();
+            mcpToolName();
+        }
+
+        /**
+         * mcp.toolName: the MCP server lists one tool per name and leaves out the second workflow
+         * whose noun and verb give the same one. A warning here, where the registry can change
+         * before the publish; publishing judges it with the registry and refuses it.
+         */
+        void mcpToolName() {
+            for (String tool : McpTools.toolNames(def)) {
+                Optional<String> other = ctx.mcpToolHolders(tool).stream().filter(n -> !n.equals(def.name())).findFirst();
+                if (other.isPresent()) {
+                    warning("mcp.toolName", null, "mcp.expose", mcpToolMessage(tool, other.get()));
+                    return;
+                }
+            }
         }
 
         /**

@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildContext, check, checkYaml, EMPTY_CONTEXT, hasErrors } from '../src/index.ts';
+import { buildContext, check, checkYaml, EMPTY_CONTEXT, hasErrors, mcpToolNames, parseDocument, parseYamlText } from '../src/index.ts';
 import { fixture, FIXTURES, repoContext } from './repo.ts';
 
 const expected = JSON.parse(readFileSync(join(FIXTURES, 'expected.json'), 'utf8')) as Record<string, string[]>;
@@ -126,6 +126,25 @@ workflow:
 `;
     expect(checkYaml(yaml, EMPTY_CONTEXT)).toEqual([]);
     expect(checkYaml(yaml, ctx).map((p) => p.code)).toEqual(['step.unknownProvider', 'run.unknownWorkflow', 'resource.unknownType']);
+  });
+
+  it('an MCP tool another published workflow has is a warning naming the tool and the workflow', () => {
+    const yaml = fixture('mcp-tool-name.yaml');
+    const told = (text: string, c = ctx) => checkYaml(text, c).map((p) => `${p.level} ${p.code} @${p.field ?? ''}: ${p.message}`);
+    expect(told(yaml)).toEqual([
+      'warning mcp.toolName @mcp.expose: MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false',
+    ]);
+    // the batch tool counts as well
+    expect(told(yaml.replace('verb: restart', 'verb: restart-batch'))).toEqual([
+      'warning mcp.toolName @mcp.expose: MCP tool vm_restart_batch is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false',
+    ]);
+    // a new version of the same workflow, a workflow that is no tool, a registry without that tool and no registry at all are fine
+    expect(told(yaml.replace('name: vm-bounce', 'name: vm-restart'))).toEqual([]);
+    expect(told(yaml.replace('expose: true', 'expose: false'))).toEqual([]);
+    expect(told(yaml, { ...ctx, mcpTools: {} })).toEqual([]);
+    expect(told(yaml, EMPTY_CONTEXT)).toEqual([]);
+    expect(mcpToolNames(parseDocument(parseYamlText(yaml)))).toEqual(['vm_restart', 'vm_restart_batch']);
+    expect(ctx.mcpTools?.['vm_restart']).toEqual(['vm-restart']);
   });
 
   it('a key written twice is one yaml.invalid problem naming the key, in the words of WorkflowYaml.java', () => {

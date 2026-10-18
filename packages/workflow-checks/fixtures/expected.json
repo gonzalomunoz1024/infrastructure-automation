@@ -114,5 +114,8 @@
   ],
   "remote-ref.yaml": [
     "error schema.remoteRef"
+  ],
+  "mcp-tool-name.yaml": [
+    "warning mcp.toolName"
   ]
 }

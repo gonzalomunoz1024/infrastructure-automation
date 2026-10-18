@@ -460,6 +460,61 @@ class WorkflowCommandHandlerTest {
         assertThat(changeRequests.all()).isEmpty();
     }
 
+    static String thing(String name, String verb, String path) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: %s, title: Thing %s, noun: thing, verb: %s, owner: team-compute }
+                api:
+                  path: %s
+                  input: { type: object, required: [thingId], properties: { thingId: { type: string } } }
+                mcp: { expose: true }
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - say:
+                        notify: { channel: "#x", message: "hi {{ $input.thingId }}" }
+                """.formatted(name, verb, verb, path);
+    }
+
+    @Test
+    void aWorkflowWhoseMcpToolAnotherPublishedWorkflowHasIsRefusedAtPublishAndOpensNothing() {
+        // vm-bounce takes vm-restart's noun and verb: the MCP server would list one vm_restart tool for both
+        String bounce = vmRestart.replace("name: vm-restart", "name: vm-bounce").replace("{vmId}:restart", "{vmId}:bounce");
+        handler.createDraft(WorkflowSource.ofYaml(bounce)).block();
+        StepVerifier.create(handler.publish("vm-bounce", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).filteredOn(p -> p.code().equals("mcp.toolName"))
+                        .extracting(Problem::level, Problem::field, Problem::message)
+                        .containsExactly(tuple(Problem.Level.ERROR, "mcp.expose", "MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false")))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("vm-bounce")).as("the draft stays a draft").isPresent();
+        // :validate says the same, once, as the error
+        StepVerifier.create(handler.validate(WorkflowSource.ofYaml(bounce)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).filteredOn(p -> p.code().equals("mcp.toolName")).extracting(Problem::level).containsExactly(Problem.Level.ERROR);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void aMergeIsRefusedWhenAnotherWorkflowGotTheSameMcpToolSinceTheChangeRequestOpened() {
+        handler.createDraft(WorkflowSource.ofYaml(thing("thing-refresh", "refresh", "/api/v1/things/{thingId}:refresh"))).block();
+        handler.createDraft(WorkflowSource.ofYaml(thing("thing-renew", "refresh", "/api/v1/things/{thingId}:renew"))).block();
+        // neither is published yet, so both open
+        String first = handler.publish("thing-refresh", null).block().id();
+        String second = handler.publish("thing-renew", null).block().id();
+        handler.mergeChangeRequest(first).block();
+
+        StepVerifier.create(handler.mergeChangeRequest(second))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::message)
+                        .containsExactly(tuple("mcp.toolName", "MCP tool thing_refresh is already exposed by workflow thing-refresh; give this workflow another noun or verb, or set mcp.expose to false")))
+                .verify();
+        assertThat(changeRequests.get(second).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(store.published("thing-renew")).isEmpty();
+    }
+
     @Test
     void aPolicyEngineThatCannotBeReachedAnswersTryAgainAndOpensNothing() {
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();

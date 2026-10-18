@@ -46,6 +46,7 @@ export {
   hasErrors,
   inputSchemaProblems,
   insertApprovalFix,
+  mcpToolNames,
   replaceFix,
   RESERVED_NOUNS,
   ROOTS,

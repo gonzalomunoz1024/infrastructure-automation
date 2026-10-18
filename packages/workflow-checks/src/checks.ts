@@ -97,19 +97,23 @@ export function buildContext(
 
 /**
  * The schemas {@link buildContext} takes, read from published workflows and resource types the
- * way CheckContext.of reads them in Java: each workflow's `api.input` and output names, each
- * type's attribute schema.
+ * way CheckContext.of reads them in Java: each workflow's `api.input` and output names, the MCP
+ * tools each one gets, each type's attribute schema.
  */
 export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceTypes: Iterable<ResourceTypeDocument>): Required<ContextSchemas> {
   const workflowInputs: Record<string, JsonSchema> = {};
   const workflowOutputs: Record<string, string[]> = {};
   const resourceTypeSchemas: Record<string, JsonSchema> = {};
+  const mcpTools: Record<string, string[]> = {};
   for (const w of workflows) {
     const input = w.api === null ? undefined : w.api.input;
     if (isObject(input)) {
       workflowInputs[w.metadata.name] = input as JsonSchema;
     }
     workflowOutputs[w.metadata.name] = w.workflow.outputs === null ? [] : Object.keys(w.workflow.outputs);
+    for (const tool of mcpToolNames(w)) {
+      mcpTools[tool] = [...(mcpTools[tool] ?? []), w.metadata.name].sort();
+    }
   }
   for (const t of resourceTypes) {
     const schema = get(t, 'schema');
@@ -117,7 +121,34 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
       resourceTypeSchemas[asText(get(get(t, 'metadata'), 'name'))] = schema as JsonSchema;
     }
   }
-  return { workflowInputs, workflowOutputs, resourceTypeSchemas };
+  return { workflowInputs, workflowOutputs, resourceTypeSchemas, mcpTools };
+}
+
+/**
+ * The MCP tools a published workflow gets, as McpTools.toolNames spells them: `<noun>_<verb>`
+ * and its batch tool when `mcp.expose` is set (vm + restart -> `vm_restart`, `vm_restart_batch`),
+ * none otherwise.
+ */
+export function mcpToolNames(def: ParsedWorkflow): string[] {
+  if (!mcpExposed(def)) {
+    return [];
+  }
+  const name = `${slug(def.metadata.noun)}_${slug(def.metadata.verb)}`.replace(/-/g, '_');
+  return name === '_' ? [] : [name, `${name}_batch`];
+}
+
+/** Ids.slug in Java: lowercase words joined by dashes. */
+function slug(s: string | null): string {
+  return (s ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+/** What `mcp.toolName` says, as WorkflowChecks.mcpToolMessage says it. */
+function mcpToolMessage(tool: string, other: string): string {
+  return `MCP tool ${tool} is already exposed by workflow ${other}; give this workflow another noun or verb, or set mcp.expose to false`;
 }
 
 /**
@@ -310,6 +341,26 @@ class Checker {
     this.rollout();
     this.steps();
     this.triggers();
+    this.mcpToolName();
+  }
+
+  /**
+   * mcp.toolName: the MCP server lists one tool per name and leaves out the second workflow whose
+   * noun and verb give the same one. A warning, judged when the context knows the registry's
+   * tools; publishing judges it with the registry and refuses it.
+   */
+  mcpToolName(): void {
+    const holders = this.ctx.mcpTools;
+    if (holders === undefined) {
+      return;
+    }
+    for (const tool of mcpToolNames(this.def)) {
+      const other = (holders[tool] ?? []).find((n) => n !== this.def.metadata.name);
+      if (other !== undefined) {
+        this.warning('mcp.toolName', null, 'mcp.expose', mcpToolMessage(tool, other));
+        return;
+      }
+    }
   }
 
   // ------------------------------------------------------------ definition level

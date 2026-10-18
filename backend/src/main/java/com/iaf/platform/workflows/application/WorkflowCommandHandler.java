@@ -218,9 +218,11 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     @Override
     public Mono<Validation> validate(WorkflowSource source) {
         return Mono.zip(queries.checkContext(), resources.types().collectList()).flatMap(t -> blocking(() -> {
-            List<Problem> problems = new ArrayList<>(problems(source, t.getT1()));
-            if (problems.stream().noneMatch(WorkflowCommandHandler::structural)) {
-                problems.addAll(publishProblems(source.parse(), t.getT1(), t.getT2(), problems));
+            List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
+            List<Problem> problems = designer;
+            if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
+                List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
+                problems = PublishChecks.merge(designer, publish);
             }
             return new Validation(!WorkflowChecks.hasErrors(problems), problems);
         }));
@@ -319,14 +321,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 throw new ConflictException("change request " + cr.id() + " is already open for workflow " + name, Map.of("changeRequest", cr.id()));
             });
             return new Candidate(withVersionRanges(draft), store.published(name).orElse(null), who);
-        })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext(), missingUploads(c.record().definition())).flatMap(judged -> {
+        })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext(), missingUploads(c.record().definition()), blocking(this::publishedDefinitions)).flatMap(judged -> {
             CheckContext ctx = judged.getT1();
             WorkflowDefinition def = c.record().definition();
             // whose each credential is decides credential.owner; a vault that cannot say is no verdict
             if (!ctx.knowsCredentials() && !WorkflowChecks.credentialReferences(def).isEmpty()) {
                 return Mono.error(new ServiceUnavailableException(CREDENTIALS_UNAVAILABLE, null));
             }
-            List<Problem> problems = new ArrayList<>(WorkflowChecks.check(def, ctx));
+            // what the registry refuses (an MCP tool another published workflow has) refuses the publish itself
+            List<Problem> problems = new ArrayList<>(PublishChecks.merge(WorkflowChecks.check(def, ctx), PublishChecks.registryProblems(def, judged.getT3())));
             problems.addAll(judged.getT2());
             if (WorkflowChecks.hasErrors(problems)) {
                 return Mono.error(new ConflictException("checks failed", problems));
@@ -448,9 +451,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         WorkflowRecord rec = store.get(cr.name(), cr.version())
                 .orElseThrow(() -> new NotFoundException("workflow version", cr.name() + "@" + cr.version()));
         requireChangeOwner(who, rec.definition().metadata().owner(), "workflow " + cr.name());
-        Check routes = PublishChecks.routes(rec.definition(), publishedDefinitions());
+        List<WorkflowDefinition> registry = publishedDefinitions();
+        Check routes = PublishChecks.routes(rec.definition(), registry);
         if (PublishChecks.FAILED.equals(routes.status())) {
             throw new ConflictException("another workflow was published on the same route: " + routes.detail());
+        }
+        // what the registry refuses may have changed since the change request opened
+        List<Problem> refused = PublishChecks.registryProblems(rec.definition(), registry);
+        if (!refused.isEmpty()) {
+            throw new ConflictException("checks failed", refused);
         }
         Optional<WorkflowRecord> previous = store.published(cr.name()).filter(p -> !p.version().equals(cr.version()));
         // the change request first: its pull request may refuse the merge, and then nothing is published

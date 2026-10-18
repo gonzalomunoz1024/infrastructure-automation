@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Instant;
 import java.util.List;
@@ -200,6 +201,34 @@ class PublishChecksTest {
         assertThat(clash.detail()).contains("served by vm-restart").contains(":restart:batch");
     }
 
+    @Test
+    void anMcpToolAnotherPublishedWorkflowHasIsARegistryErrorNamingTheToolAndTheWorkflow() {
+        String restartYaml = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+        List<WorkflowDefinition> published = DependencyRulesTest.samples();
+        assertThat(PublishChecks.registryProblems(WorkflowYaml.parse(restartYaml), published)).as("its own published version").isEmpty();
+
+        WorkflowDefinition bounce = WorkflowYaml.parse(restartYaml.replace("name: vm-restart", "name: vm-bounce"));
+        assertThat(PublishChecks.registryProblems(bounce, published)).extracting(Problem::level, Problem::code, Problem::field, Problem::message)
+                .containsExactly(tuple(Problem.Level.ERROR, "mcp.toolName", "mcp.expose", "MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false"));
+        // its tool against another workflow's batch tool
+        WorkflowDefinition batch = WorkflowYaml.parse(restartYaml.replace("name: vm-restart", "name: vm-bounce").replace("verb: restart", "verb: restart-batch"));
+        assertThat(PublishChecks.mcpToolNames(batch, published)).extracting(Problem::message)
+                .containsExactly("MCP tool vm_restart_batch is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false");
+        // a workflow that is no tool takes no tool name
+        WorkflowDefinition hidden = WorkflowYaml.parse(restartYaml.replace("name: vm-restart", "name: vm-bounce").replace("  expose: true", "  expose: false"));
+        assertThat(PublishChecks.mcpToolNames(hidden, published)).isEmpty();
+    }
+
+    @Test
+    void aRegistryErrorReplacesTheDesignersWarningOfTheSameCodeAndIsListedOnce() {
+        Problem warning = Problem.warning("mcp.toolName", null, "mcp.expose", "older");
+        Problem error = Problem.error("mcp.toolName", null, "mcp.expose", "now");
+        Problem other = Problem.warning("metadata.title", null, "metadata.title", "title");
+        Problem same = Problem.error("run.self", "child", "workflow", "A workflow cannot run itself");
+        assertThat(PublishChecks.merge(List.of(other, warning, same), List.of(error, same))).containsExactly(other, same, error);
+        assertThat(PublishChecks.merge(List.of(other, warning), List.of())).containsExactly(other, warning);
+    }
+
     // ------------------------------------------------------------------ contracts
 
     static final String CREATE_VM = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml");
@@ -254,8 +283,8 @@ class PublishChecksTest {
         String unpinned = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml").replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "")
                 .replace("name: vm-restart", "name: vm-reboot").replace("{vmId}", "{id}");
         List<Problem> problems = PublishChecks.problems(WorkflowYaml.parse(unpinned), ctx(), published, null, graph());
-        // the invoke, batch and preview routes all clash
-        assertThat(problems).extracting(Problem::code).containsExactly("publish.ansibleLint", "publish.routes", "publish.routes", "publish.routes");
+        // the invoke, batch and preview routes all clash, and so does the MCP tool
+        assertThat(problems).extracting(Problem::code).containsExactly("publish.ansibleLint", "publish.routes", "publish.routes", "publish.routes", "mcp.toolName");
         assertThat(problems.get(0).step()).isEqualTo("restart");
         assertThat(problems.get(1).message()).contains("is served by vm-restart");
     }

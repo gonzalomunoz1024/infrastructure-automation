@@ -8,8 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 
 /**
@@ -47,6 +49,15 @@ public interface CheckContext {
     /** A resource type's attribute schema; empty when the type or its schema is unknown. */
     default Optional<JsonNode> resourceTypeSchema(String type) {
         return Optional.empty();
+    }
+
+    /**
+     * The published workflows the MCP server gives a tool of this name ({@code vm_restart}, or the
+     * batch tool {@code vm_restart_batch}), by name; empty when none does or the registry is not
+     * known.
+     */
+    default Set<String> mcpToolHolders(String tool) {
+        return Set.of();
     }
 
     /** Whether the vault's credentials were read; when false, whose a credential is is not judged. */
@@ -135,6 +146,8 @@ public interface CheckContext {
         Map<String, JsonNode> types = new HashMap<>(resourceTypes);
         Set<String> names = Set.copyOf(byName.keySet());
         Set<String> typeNames = Set.copyOf(types.keySet());
+        Map<String, Set<String>> tools = new HashMap<>();
+        byName.values().forEach(d -> McpTools.toolNames(d).forEach(t -> tools.computeIfAbsent(t, k -> new TreeSet<>()).add(d.name())));
         return new CheckContext() {
             @Override
             public Optional<ProviderDefinition> provider(String name) {
@@ -170,6 +183,11 @@ public interface CheckContext {
             @Override
             public Optional<JsonNode> resourceTypeSchema(String type) {
                 return Optional.ofNullable(type == null ? null : types.get(type));
+            }
+
+            @Override
+            public Set<String> mcpToolHolders(String tool) {
+                return tool == null ? Set.of() : tools.getOrDefault(tool, Set.of());
             }
 
             @Override

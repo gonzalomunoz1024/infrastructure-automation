@@ -250,6 +250,11 @@ export interface CheckContext {
   workflowOutputs?: Record<string, string[]>;
   /** Resource types' attribute schemas by type. */
   resourceTypeSchemas?: Record<string, JsonSchema>;
+  /**
+   * The published workflows the MCP server gives each tool (`vm_restart`, the batch tool
+   * `vm_restart_batch`), sorted, by tool name; without it `mcp.toolName` is not judged.
+   */
+  mcpTools?: Record<string, string[]>;
 }
 
 /** The optional schemas of a {@link CheckContext}, as `buildContext` takes them. */
@@ -257,4 +262,5 @@ export interface ContextSchemas {
   workflowInputs?: Record<string, JsonSchema>;
   workflowOutputs?: Record<string, string[]>;
   resourceTypeSchemas?: Record<string, JsonSchema>;
+  mcpTools?: Record<string, string[]>;
 }

@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.domain;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +11,7 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
@@ -208,6 +210,47 @@ public final class PublishChecks {
     }
 
     /**
+     * What the registry refuses beyond the change-request checks, as errors: publishing answers
+     * 409 with them and opens nothing, {@code :validate} reports them and merging judges them
+     * again (another workflow may have been published since). Each is judged against the other
+     * published workflows, with {@code def} in place of its own published version.
+     */
+    public static List<Problem> registryProblems(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        return mcpToolNames(def, published);
+    }
+
+    /**
+     * {@code mcp.toolName}: another published workflow already has one of the MCP tools this one
+     * would get ({@code <noun>_<verb>} or its batch tool). The MCP server lists one tool per name,
+     * so one of the two would silently stop being a tool.
+     */
+    public static List<Problem> mcpToolNames(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        List<String> mine = McpTools.toolNames(def);
+        if (mine.isEmpty()) {
+            return List.of();
+        }
+        Map<String, String> taken = new LinkedHashMap<>();
+        published.stream().filter(o -> o != null && o.name() != null && !o.name().equals(def.name()))
+                .sorted(Comparator.comparing(WorkflowDefinition::name))
+                .forEach(o -> McpTools.toolNames(o).forEach(t -> taken.putIfAbsent(t, o.name())));
+        return mine.stream().filter(taken::containsKey).findFirst()
+                .map(t -> List.of(Problem.error("mcp.toolName", null, "mcp.expose", WorkflowChecks.mcpToolMessage(t, taken.get(t)))))
+                .orElse(List.of());
+    }
+
+    /**
+     * The designer's problems with what publishing refuses: an error replaces the designer's
+     * warning of the same code (the designer judged the same thing from a context that can be
+     * older), and a problem both report is listed once.
+     */
+    public static List<Problem> merge(List<Problem> designer, List<Problem> publish) {
+        Set<String> refused = publish.stream().filter(Problem::isError).map(Problem::code).collect(Collectors.toSet());
+        List<Problem> out = new ArrayList<>(designer.stream().filter(p -> p.isError() || !refused.contains(p.code())).toList());
+        publish.stream().filter(p -> !out.contains(p)).forEach(out::add);
+        return out;
+    }
+
+    /**
      * Fails when this version breaks its consumers without a new major version ({@link
      * ContractRules#breakingChanges}). The detail lists every consumer the version reaches: run
      * steps whose range accepts it, {@code orCreateWith} inputs, and the workflows that use a
@@ -244,8 +287,9 @@ public final class PublishChecks {
 
     /**
      * The change-request checks judged from the files alone (ansible-lint, routes, contracts) as
-     * problems, so the validate endpoint reports what the change request would fail on. Policy
-     * and replay need the engine and stay with the change request.
+     * problems, so the validate endpoint reports what the change request would fail on, and the
+     * {@link #registryProblems} publishing refuses. Policy and replay need the engine and stay
+     * with the change request.
      *
      * @param def       the definition with the version it would be published as
      * @param previous  the current published version of the same workflow, null when there is none
@@ -266,6 +310,7 @@ public final class PublishChecks {
             out.add(Problem.error("publish.contracts", null, "metadata.version", "The contracts check of the change request fails: " + contracts.detail(),
                     Fix.replace("Publish as " + major, major)));
         }
+        out.addAll(registryProblems(def, published));
         return out;
     }
 
