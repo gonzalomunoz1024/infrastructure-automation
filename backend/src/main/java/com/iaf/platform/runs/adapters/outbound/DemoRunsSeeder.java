@@ -116,7 +116,7 @@ public class DemoRunsSeeder {
     static final String RUNNING_BATCH = "patch-cve";
     /**
      * The live seeded jobs keep the same ids from one start to the next, so a store that outlives
-     * the process (postgres) is seeded once, and an engine that does (temporal) refuses to start
+     * the process (mongo) is seeded once, and an engine that does (temporal) refuses to start
      * them again instead of piling up executions.
      */
     static final String WAITING_APPROVAL_ID = "job_demo_approval";

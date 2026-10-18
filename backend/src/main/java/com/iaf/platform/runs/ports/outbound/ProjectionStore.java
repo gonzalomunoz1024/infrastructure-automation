@@ -12,8 +12,9 @@ import com.iaf.platform.runs.domain.JobStatus;
  * Where the runs index lives: every job (steps, approvals and definition snapshot included), the
  * approvals by id, and each job's event history. The {@code JobProjection} folds the job events
  * into it and keeps the live fan-out to SSE and WebSocket subscribers in memory. The demo adapter
- * keeps the index in maps; with the {@code postgres} profile it is in tables, so job lists, job
- * pages and event histories survive a restart. Writes come from the projection one at a time.
+ * keeps the index in maps; with the {@code mongo} profile it is in MongoDB collections, so job
+ * lists, job pages and event histories survive a restart. Writes come from the projection one at
+ * a time.
  */
 public interface ProjectionStore {
 
