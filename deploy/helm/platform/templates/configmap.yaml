@@ -8,7 +8,7 @@
 {{- $_ := set $temporal "tls" $tls -}}
 {{- end -}}
 {{- end -}}
-{{- $platform := dict "content" (dict "dir" "/content/repo") "temporal" $temporal -}}
+{{- $platform := dict "content" (dict "dir" "/content/repo") "temporal" $temporal "demo" (dict "seed-history" (.Values.demo.seedHistory | default false)) -}}
 {{- $audit := dict -}}
 {{- with .Values.audit.retentionYears }}{{ $_ := set $audit "retention-years" . }}{{ end -}}
 {{- $worm := .Values.audit.worm -}}

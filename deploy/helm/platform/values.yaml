@@ -118,6 +118,12 @@ postgres:
     name: ""
     key: password
 
+# The demo's generated history: jobs, provider-call samples, releases and their evidence over the
+# sample content (platform.demo.seed-history, which the backend turns on by default). An install
+# leaves it off, so nothing made up lands in its database; turn it on for a demo cluster only.
+demo:
+  seedHistory: false
+
 # The content repository (workflows/, providers/, resource-types/), cloned into each backend pod
 # when it starts. With no repository the platform starts without content.
 content:
