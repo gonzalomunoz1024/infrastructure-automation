@@ -14,10 +14,10 @@ import com.iaf.platform.gateway.ports.outbound.QuotaStore;
 
 /**
  * The demo quotas: one {@link TokenBucket} per team in this instance's memory, so with several
- * API replicas every replica has a bucket of its own; the {@code postgres} profile shares them.
+ * API replicas every replica has a bucket of its own; the {@code mongo} profile shares them.
  */
 @Component
-@Profile("!postgres")
+@Profile("!mongo")
 public class InMemoryQuotaStore implements QuotaStore {
 
     private final Map<String, TokenBucket> buckets = new ConcurrentHashMap<>();

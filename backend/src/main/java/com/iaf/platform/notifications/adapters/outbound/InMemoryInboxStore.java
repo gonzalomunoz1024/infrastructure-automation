@@ -19,10 +19,10 @@ import com.iaf.platform.notifications.ports.outbound.InboxStore;
 
 /**
  * The demo inbox: the newest {@code platform.notifications.keep} notifications in memory, with
- * their readers; gone on restart, so the {@code postgres} profile keeps them in the database.
+ * their readers; gone on restart, so the {@code mongo} profile keeps them in the database.
  */
 @Component
-@Profile("!postgres")
+@Profile("!mongo")
 public class InMemoryInboxStore implements InboxStore {
 
     private final int keep;

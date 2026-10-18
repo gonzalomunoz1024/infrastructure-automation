@@ -25,7 +25,7 @@ import reactor.test.StepVerifier;
 
 /**
  * What the handler does over any {@link IdempotencyStore}: run against the in-memory store and
- * the JDBC one (H2, and PostgreSQL when {@code PLATFORM_TEST_POSTGRES_URL} is set).
+ * the MongoDB one (when {@code PLATFORM_TEST_MONGO_URI} names a server).
  */
 abstract class IdempotencyHandlerContract {
 
