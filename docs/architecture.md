@@ -132,6 +132,8 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
 | `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
+| `IdempotencyStore` (gateway)     | `JdbcIdempotencyStore` | `idempotency_keys` (claim = insert or take over a stale row; replay from the stored status, headers and body; a release deletes an unanswered row; expired rows swept every ten minutes) |
+| `QuotaStore` (gateway)           | `JdbcQuotaStore`      | `quota_buckets` (one row per team bucket, `SELECT ... FOR UPDATE` on every take, so every replica draws from the same bucket) |
 
 Under that profile the in-memory twins of these stores are not created at all
 (`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only
@@ -209,7 +211,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
-| `IdempotencyStore` (gateway)       | `InMemoryIdempotencyStore` (per instance); the per-team quotas (`JobQuotas`) are per instance too, so several API replicas need sticky routing until a shared store backs both |
+| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `JdbcIdempotencyStore` and `JdbcQuotaStore` under `postgres`, shared by every replica |
 
 - `AuditListener` folds job events into one hash chain per job, release decisions into
   `release:<id>` and every other recorded command into the platform stream. Each entry is

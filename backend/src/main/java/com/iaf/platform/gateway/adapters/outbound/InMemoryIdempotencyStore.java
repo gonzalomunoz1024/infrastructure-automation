@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.gateway.application.GatewayProperties;
@@ -17,9 +18,10 @@ import com.iaf.platform.gateway.ports.outbound.IdempotencyStore;
 /**
  * Keys in memory, oldest first, at most {@code platform.gateway.idempotency.keep} of them (the
  * oldest go first); expired entries are dropped as new keys come in. One instance only: behind a
- * load balancer the keys belong in a shared store.
+ * load balancer the keys belong in the shared store of the {@code postgres} profile.
  */
 @Component
+@Profile("!postgres")
 public class InMemoryIdempotencyStore implements IdempotencyStore {
 
     private final int keep;

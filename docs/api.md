@@ -196,8 +196,9 @@ or a bucket of their own when they have none): `platform.gateway.quotas` sets 60
 burst of 60, and per-team overrides. A batch takes one token whatever its size. An empty bucket is
 429 with `Retry-After` and `{ error, retryAfter }` naming the team, the limit and when to retry
 (MCP: a JSON-RPC error with `data.tooManyRequests` and `data.retryAfter`). Jobs the platform
-starts itself (triggers, `run` steps, reruns) are not charged. Idempotency keys and buckets live in
-each instance's memory.
+starts itself (triggers, `run` steps, reruns) are not charged. With the `postgres` profile the keys
+and the buckets are in the database and shared by every API replica; without it they live in each
+instance's memory.
 
 Generated paths may live under any API version (`/api/v1/`, `/api/v2/`, …); the platform's
 nouns, and `notifications`, are reserved under every one. A workflow with `api.deprecated` still
