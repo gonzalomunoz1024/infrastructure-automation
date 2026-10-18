@@ -41,6 +41,10 @@ class ScopesTest {
         assertThat(scope("POST", "/api/v1/triggers/alerts")).isEqualTo(Scopes.JOBS_START);
         assertThat(scope("GET", "/api/v1/jobs/job_1/events")).isEqualTo(Scopes.JOBS_READ);
         assertThat(scope("GET", "/ws/jobs/job_1")).isEqualTo(Scopes.JOBS_READ);
+        assertThat(scope("GET", "/api/v1/audit")).isEqualTo(Scopes.JOBS_READ);
+        assertThat(scope("GET", "/api/v1/audit/platform")).isEqualTo(Scopes.JOBS_READ);
+        assertThat(scope("GET", "/api/v1/audit/job_1:verify")).isEqualTo(Scopes.JOBS_READ);
+        assertThat(scope("GET", "/api/v1/audit/shared/tok_1")).as("the link's token is the credential").isEqualTo(Scopes.ANY);
         assertThat(scope("POST", "/api/v1/providers:publish")).isEqualTo(Scopes.PROVIDERS_WRITE);
         assertThat(scope("POST", "/api/v1/providers/vsphere:refresh-spec")).isEqualTo(Scopes.PROVIDERS_WRITE);
         assertThat(scope("PUT", "/api/v1/providers/vsphere/slo")).isEqualTo(Scopes.PROVIDERS_WRITE);
@@ -55,6 +59,10 @@ class ScopesTest {
         assertThat(scope("POST", "/api/v1/assistant/playbooks:sync")).isEqualTo(Scopes.ADMIN);
         assertThat(scope("POST", "/api/v1/approvals/apr_1:approve")).isEqualTo(Scopes.ADMIN);
         assertThat(scope("POST", "/api/v1/releases/rel_1:promote")).isEqualTo(Scopes.ADMIN);
+        assertThat(scope("POST", "/api/v1/audit:seal")).isEqualTo(Scopes.ADMIN);
+        assertThat(scope("POST", "/api/v1/audit/job_1:share")).isEqualTo(Scopes.ADMIN);
+        assertThat(scope("POST", "/api/v1/audit:export-pack")).isEqualTo(Scopes.ADMIN);
+        assertThat(scope("POST", "/api/v1/audit/shared/tok_1")).isEqualTo(Scopes.ADMIN);
         assertThat(scope("DELETE", "/api/v1/jobs")).isEqualTo(Scopes.ADMIN);
         assertThat(scope("GET", "/")).isEqualTo(Scopes.ADMIN);
         assertThat(scope("POST", "/api/v2/workflows:validate")).isEqualTo(Scopes.WORKFLOWS_VALIDATE);

@@ -3,6 +3,7 @@ package com.iaf.platform.identity.adapters.inbound;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -37,8 +38,10 @@ import reactor.core.publisher.Mono;
  * scopes go along with it ({@link ServiceScopes}) for the scope filter and the code behind it. A
  * signed webhook (POST on one of {@link #SIGNED_WEBHOOKS}, without a credential) runs as
  * {@link #WEBHOOK}, an identity that may change nothing; its controller checks the signature and
- * decides as whom it acts. The Swagger UI page and its assets, which hold no data, load without a
- * caller.
+ * decides as whom it acts. A shared evidence link ({@code GET /api/v1/audit/shared/{token}}, without
+ * a credential) runs as {@link #SHARED_LINK}, an identity with no team, role or scope: the token in
+ * the path is the secret, and the audit slice checks it. The Swagger UI page and its assets, which
+ * hold no data, load without a caller.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -51,6 +54,9 @@ public class IdentityWebFilter implements WebFilter {
     /** Endpoints whose callers prove themselves with a signature over the body instead of a credential. */
     public static final Set<String> SIGNED_WEBHOOKS = Set.of("/api/v1/change-requests:github-webhook");
     public static final Identity WEBHOOK = new Identity("webhook", "Webhook", null, List.of(), List.of(), false, Identity.Kind.SERVICE);
+    /** The read of a shared evidence record: whoever holds the link, which is the credential. */
+    static final Pattern SHARED_EVIDENCE = Pattern.compile("^/api/v\\d+/audit/shared/[A-Za-z0-9_-]+$");
+    public static final Identity SHARED_LINK = new Identity("shared-link", "Shared link", null, List.of(), List.of(), false, Identity.Kind.SERVICE);
 
     private final PlatformProperties props;
     private final ServiceAccountStore serviceAccounts;
@@ -90,11 +96,21 @@ public class IdentityWebFilter implements WebFilter {
         return path.equals(PUBLIC_PAGE) || path.startsWith(PUBLIC_PAGE + "/") || path.startsWith(PUBLIC_ASSETS);
     }
 
+    /** A GET of a shared evidence record by its link; the token is checked by the audit slice. */
+    static boolean isSharedEvidence(ServerHttpRequest request) {
+        HttpMethod method = request.getMethod();
+        return (method == HttpMethod.GET || method == HttpMethod.HEAD)
+                && SHARED_EVIDENCE.matcher(request.getPath().pathWithinApplication().value()).matches();
+    }
+
     private Mono<Optional<Identity>> resolve(ServerWebExchange exchange) {
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (auth == null && "POST".equals(exchange.getRequest().getMethod().name())
                 && SIGNED_WEBHOOKS.contains(exchange.getRequest().getPath().pathWithinApplication().value())) {
             return Mono.just(Optional.of(WEBHOOK));
+        }
+        if (auth == null && isSharedEvidence(exchange.getRequest())) {
+            return Mono.just(Optional.of(SHARED_LINK));
         }
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7).trim();

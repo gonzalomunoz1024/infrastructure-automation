@@ -27,6 +27,8 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` (admin only; 403 otherwise) |
 | POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes, teams, note? }` (token shown once; admin only). `teams` are the teams the account acts for: without any it takes its creator's, and `note` says so (or, when the creator has none either, that the policy refuses every job it starts) |
 
+Shared evidence links (`GET /audit/shared/{token}`) need no credential: the token is the secret.
+
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
 Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT of the configured issuer
@@ -50,11 +52,12 @@ in it. An unknown scope or preset is a 400. People are judged by roles and teams
 | `workflows:dry-run` | `/workflows:dry-run` |
 | `workflows:write` | creating, importing, editing, deleting and publishing workflows; merging and closing change requests; assistant sessions and drafts; the MCP draft tool |
 | `jobs:start` | starting jobs (`/jobs`, `/jobs:batch`, generated routes, the MCP invoke, batch and cancel tools), steering them (cancel, retry, skip, abort, rerun) and `/triggers/*` |
-| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails; the job WebSocket; the MCP job status tool |
+| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails (`/audit`, `/audit/platform`, a record, its verification and export); the job WebSocket; the MCP job status tool |
 | `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and storing credentials (`POST /credentials`) |
 | `admin` | everything, and makes the account an admin; an endpoint the table does not name needs it |
 
-`/me`, `/mcp` (each tool is judged on its own) and GET `/actuator/*` need no scope.
+`/me`, `/mcp` (each tool is judged on its own), GET `/actuator/*` and GET `/audit/shared/{token}` (the
+token is the credential) need no scope. Sealing, sharing and the export pack need `admin`.
 
 ## Workflows
 
@@ -405,7 +408,7 @@ type Verification = { valid: boolean; entries; brokenAt?: number; seal?: 'verifi
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
 | POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest) |
 | POST `/audit/{jobId}:share` | → `{ url; expiresAt }` |
-| GET `/audit/shared/{token}` | read-only `EvidenceRecord` |
+| GET `/audit/shared/{token}` | read-only `EvidenceRecord`; needs no account in any mode (the token is the secret: a request without `Authorization` runs as an identity with no team, role or scope), 404 for an unknown token, 410 once it expired |
 | POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`) |
 
 A job's record holds `requested` (with `publish`: the version's `contentHash` and where it was

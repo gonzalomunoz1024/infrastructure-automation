@@ -126,7 +126,10 @@ an admin). The issuer, the audience and the JWKS URI are required: a blank one f
 with a message that names the property, so no token of the issuer for another audience ever
 verifies. The JWKS is cached and refreshed ahead of its expiry on a schedule, rate limited and
 outage tolerant, and a token is verified on `boundedElastic` (`TokenVerifier` answers a `Mono`),
-since a key the cache lacks is fetched over HTTP.
+since a key the cache lacks is fetched over HTTP. Two kinds of request come in without a
+credential, each as an identity that holds nothing: a signed webhook (its controller checks the
+signature) and the read of a shared evidence link, `GET /api/v1/audit/shared/{token}`, whose
+token is the secret (the audit slice keeps only its SHA-256 and refuses an expired one).
 
 ### Persistence
 

@@ -148,6 +148,29 @@ class IdentityWebFilterTest {
     }
 
     @Test
+    void aSharedEvidenceLinkOpensWithoutACallerAsAnIdentityThatHoldsNothing() {
+        props.getIdentity().setMode("oidc");
+        TokenVerifier verifier = token -> "good".equals(token) ? Mono.just(ANA) : Mono.empty();
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.of(verifier));
+
+        Outcome shared = run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").build());
+        assertThat(shared.status()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(shared.who()).isEqualTo(IdentityWebFilter.SHARED_LINK);
+        assertThat(shared.who().admin()).isFalse();
+        assertThat(shared.who().teams()).isEmpty();
+        assertThat(shared.who().roles()).isEmpty();
+        // a signed-in caller stays who they are; a credential that does not verify is still a 401
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").header("Authorization", "Bearer good").build()).who()).isEqualTo(ANA);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").header("Authorization", "Bearer bad").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        // only the read of a link: the record itself, other audit reads and writes still need a caller
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/audit/shared/shr_4f2a9c").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/job_1").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_1/export").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/..%2Fjob_1").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
     void theSwaggerUiPageAndItsAssetsLoadWithoutACallerAndTheApiDoesNot() {
         props.getIdentity().setMode("oidc");
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
