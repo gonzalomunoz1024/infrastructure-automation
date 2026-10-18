@@ -1,7 +1,9 @@
 package com.iaf.platform.common.adapters.mongo;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.math.BigInteger;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +69,30 @@ class MongoTest {
         for (String id : List.of("inserted", "replaced", "set")) {
             assertThat(db.mongo().read(shapes.find(Filters.eq("_id", id)).first(), Shape.class)).as(id).isEqualTo(shape);
         }
+    }
+
+    @Test
+    void anIntegerBeyondALongComesBackAsThatInteger() throws Exception {
+        // an OpenAPI uint64 bound, which the driver alone cannot write; a long stays a long
+        JsonNode schema = new ObjectMapper().readTree("""
+                {"type": "integer", "format": "uint64", "minimum": 0, "maximum": 18446744073709551615,
+                 "examples": [9223372036854775807, -18446744073709551616, 123456789012345678901234567890123, {"limit": 18446744073709551615}]}
+                """);
+        Shape shape = new Shape("web-07", Instant.parse("2026-10-18T09:15:30.123456789Z"), Long.MAX_VALUE, 0.5, schema, List.of(), Map.of());
+        MongoCollection<Document> shapes = db.mongo().collection("shapes");
+        shapes.insertOne(new Document("_id", "inserted").append(Mongo.DOC, db.mongo().doc(shape)));
+        shapes.replaceOne(Filters.eq("_id", "replaced"), new Document("_id", "replaced").append(Mongo.DOC, db.mongo().doc(shape)),
+                new ReplaceOptions().upsert(true));
+
+        for (String id : List.of("inserted", "replaced")) {
+            Shape read = db.mongo().read(shapes.find(Filters.eq("_id", id)).first(), Shape.class);
+            assertThat(read).as(id).isEqualTo(shape);
+            assertThat(read.schema().get("maximum").bigIntegerValue()).isEqualTo(new BigInteger("18446744073709551615"));
+        }
+        JsonNode tooLong = new ObjectMapper().readTree("{\"maximum\": 12345678901234567890123456789012345}");
+        assertThatThrownBy(() -> shapes.insertOne(new Document("_id", "too-long").append(Mongo.DOC,
+                db.mongo().doc(new Shape("x", null, 0, 0, tooLong, List.of(), Map.of())))))
+                .as("35 digits do not fit a Decimal128: refused, never rounded").hasStackTraceContaining("inexact rounding");
     }
 
     @Test
