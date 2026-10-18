@@ -129,6 +129,14 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * Executions without its marker look every 5 s (fixture {@code before-poll-backoff}).
      */
     static final String POLL_BACKOFF = "poll-backoff";
+    /**
+     * The change id of cancellable platform calls (version 1): a step's provider call, automation
+     * or script runs in a cancellation scope that the job's cancel cancels, so the step ends at
+     * once and the activity hears of the cancel on its next heartbeat and stops, its runner ending
+     * the process. Executions without its marker let the call run to its end (fixture
+     * {@code before-cancellable-calls}).
+     */
+    static final String CANCELLABLE_CALLS = "cancellable-calls";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
     static final RetryOptions PUBLISH = RetryOptions.newBuilder()
@@ -283,7 +291,8 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
                 return onWorker(step, call, action, route, in);
             }
         }
-        return invoke(step, () -> calls(timeout).callProvider(call, provider, action, in));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::callProvider, call, provider, action, in));
     }
 
     @Override
@@ -298,7 +307,32 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             }
             return onWorker(step, call, activity, new WorkerRoute(queue, null), w.get("input"));
         }
-        return invoke(step, () -> calls(timeout).runAutomation(call, w));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::runAutomation, call, w));
+    }
+
+    /**
+     * A step's call on the platform's own activities. A cancel of the job cancels the call's
+     * scope and ends the step at once; the activity hears of it on its next heartbeat and its
+     * runner ends the process. Executions recorded before {@link #CANCELLABLE_CALLS} let the call
+     * run to its end, as they did.
+     */
+    private JsonNode platformCall(Step step, Supplier<Promise<JsonNode>> start) {
+        if (Workflow.getVersion(CANCELLABLE_CALLS, Workflow.DEFAULT_VERSION, 1) < 1) {
+            return invoke(step, () -> start.get().get());
+        }
+        List<Promise<JsonNode>> result = new ArrayList<>(1);
+        CancellationScope scope = Workflow.newCancellationScope(() -> {
+            result.add(start.get());
+        });
+        scope.run();
+        Promise<JsonNode> done = result.get(0);
+        await(null, () -> done.isCompleted() || cancelled);
+        if (!done.isCompleted()) {
+            scope.cancel("job " + ref.id() + " was cancelled");
+            throw new JobCancelled(ref.id());
+        }
+        return invoke(step, done::get);
     }
 
     /** Whether this execution sends team steps to the team's worker: every new one does, one recorded before replays as it ran. */
@@ -362,7 +396,8 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     public JsonNode script(JobContext ctx, Step step, String language, String code, JsonNode input, Duration timeout) {
         StepCall call = call(step, timeout, true);
         JsonNode in = node(input);
-        return invoke(step, () -> calls(timeout).script(call, language, code, in));
+        StepActivities activities = calls(timeout);
+        return platformCall(step, () -> Async.function(activities::script, call, language, code, in));
     }
 
     /**

@@ -127,7 +127,7 @@ final class TemporalTestEngine implements AutoCloseable {
         env = TestWorkflowEnvironment.newInstance(TestEnvironmentOptions.newBuilder()
                 .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json())).build())
                 .build());
-        worker = env.newWorker(QUEUE);
+        worker = env.newWorker(QUEUE, TemporalConfig.workerOptions(props.getTemporal()));
         worker.registerWorkflowImplementationTypes(TemporalConfig.workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
         worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock, props));
         options.workers.accept(env);

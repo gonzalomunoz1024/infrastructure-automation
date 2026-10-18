@@ -188,8 +188,10 @@ Every executable, image and limit is a `platform.runners.*` setting; with
 `platform.runners.container-runtime: docker` (or `podman`) every step runs in a container with no
 new privileges and every kernel privilege dropped, and secrets reach it by variable name, never on
 a command line. A step's `timeout` (10 minutes when it names none) ends the process and fails the
-step as `timeout` (retryable), as it fails a provider call that outlives it; cancelling the job
-stops it too. Values read from the vault are masked in every log line and error message.
+step as `timeout` (retryable), as it fails a provider call that outlives it. Cancelling the job
+stops it too, on both engines: in process within a second; on Temporal the job ends at once and
+the process within about `platform.temporal.heartbeat-interval` (15s), when the call hears of the
+cancel on its heartbeat. Values read from the vault are masked in every log line and error message.
 
 - `call: ansible` runs `ansible-runner` (or `ansible-playbook` with the JSON callback when
   ansible-runner is not installed) on the pinned playbook. `inventory` is `dynamic` (the

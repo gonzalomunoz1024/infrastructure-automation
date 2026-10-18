@@ -62,11 +62,20 @@ public class StepActivitiesImpl implements StepActivities {
     static final Duration CHANGE_TIMEOUT = Duration.ofSeconds(15);
 
     /**
-     * The engine the executor sees inside an activity: never cancelled, and everything that waits
-     * or walks belongs to the workflow (a {@code use} that waits until ready is polled there with
-     * timers, so the activity only ever does one lookup).
+     * The engine the executor sees inside an activity: cancelled once the activity heard of the
+     * job's cancel on a heartbeat ({@link #cancel}), and everything that waits or walks belongs to
+     * the workflow (a {@code use} that waits until ready is polled there with timers, so the
+     * activity only ever does one lookup).
      */
-    static final PortStepExecutor.Engine ENGINE = new PortStepExecutor.Engine() {
+    static final class CallEngine implements PortStepExecutor.Engine {
+
+        private volatile boolean cancelled;
+
+        /** The activity heard of the job's cancel (or that it is gone): the call reads as cancelled from now on, and its runner stops. */
+        void cancel() {
+            cancelled = true;
+        }
+
         @Override
         public Optional<ApprovalDecision> awaitDecision(JobContext ctx, String approvalId, Duration timeout) {
             throw new UnsupportedOperationException("approvals are decided inside the workflow");
@@ -84,7 +93,7 @@ public class StepActivitiesImpl implements StepActivities {
 
         @Override
         public boolean cancelled(JobContext ctx) {
-            return false;
+            return cancelled;
         }
 
         @Override
@@ -96,7 +105,10 @@ public class StepActivitiesImpl implements StepActivities {
         public List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches) {
             throw new UnsupportedOperationException("branches run inside the workflow");
         }
-    };
+    }
+
+    /** The engine of the activities that do not heartbeat (lookups, records, a notify): nothing cancels them mid-way. */
+    static final PortStepExecutor.Engine ENGINE = new CallEngine();
 
     private final StepExecutors executors;
     private final JobProjection projection;
@@ -117,15 +129,22 @@ public class StepActivitiesImpl implements StepActivities {
 
     // ---------------------------------------------------------------- the calls of a step
 
-    /** The calls that can take long heartbeat while they run ({@link TemporalConfig} sets their heartbeat timeout). */
+    /**
+     * The calls that can take long heartbeat while they run ({@link TemporalConfig} sets their
+     * heartbeat timeout); a heartbeat Temporal answers with the job's cancel cancels the call's
+     * own engine, so the executor stops the runner and its process.
+     */
     @Override
     public JsonNode callProvider(StepCall call, String provider, String action, JsonNode input) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel,
+                () -> step(call, engine, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout())));
     }
 
     @Override
     public JsonNode runAutomation(StepCall call, JsonNode with) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel, () -> step(call, engine, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout())));
     }
 
     @Override
@@ -135,7 +154,9 @@ public class StepActivitiesImpl implements StepActivities {
 
     @Override
     public JsonNode script(StepCall call, String language, String code, JsonNode input) {
-        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout())));
+        CallEngine engine = new CallEngine();
+        return Heartbeats.during(heartbeatInterval, engine::cancel,
+                () -> step(call, engine, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout())));
     }
 
     @Override
@@ -176,8 +197,12 @@ public class StepActivitiesImpl implements StepActivities {
     }
 
     private JsonNode step(StepCall call, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {
+        return step(call, ENGINE, body);
+    }
+
+    private JsonNode step(StepCall call, PortStepExecutor.Engine engine, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {
         try {
-            return body.apply(executors.live(call.job().toJob(), ENGINE), call.context());
+            return body.apply(executors.live(call.job().toJob(), engine), call.context());
         } catch (StepFailure f) {
             throw StepFailureData.of(f).toApplicationFailure();
         }

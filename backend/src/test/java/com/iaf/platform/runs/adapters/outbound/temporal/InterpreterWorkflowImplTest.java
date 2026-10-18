@@ -2,53 +2,69 @@ package com.iaf.platform.runs.adapters.outbound.temporal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.config.RunnersProperties;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.runs.FlakyProjectionStore;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.adapters.outbound.ChangeProperties;
 import com.iaf.platform.runs.adapters.outbound.DemoRunsSeeder;
+import com.iaf.platform.runs.adapters.outbound.live.ProcessScriptRunner;
+import com.iaf.platform.runs.application.AutomationRunners;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Job;
+import com.iaf.platform.runs.domain.JobCancelled;
 import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
 import com.iaf.platform.runs.domain.WaveScheduler;
+import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort;
+import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -60,6 +76,7 @@ import io.temporal.client.WorkflowFailedException;
 import io.temporal.common.WorkflowExecutionHistory;
 import io.temporal.failure.CanceledFailure;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The interpreter as a Temporal workflow on the test server: the same scenarios as the in-memory
@@ -135,6 +152,85 @@ class InterpreterWorkflowImplTest {
                     name: After
                     notify: { channel: "#x", message: "after the wait" }
             """;
+
+    /** A script step, then a step after it; {@code CODE} stands for the script. */
+    private static final String SCRIPT = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-script, title: Script, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - long:
+                    name: Long
+                    script: { language: bash, code: "CODE" }
+                    pauseOnFailure: false
+                - after:
+                    name: After
+                    notify: { channel: "#x", message: "after the script" }
+            """;
+
+    /**
+     * A script runner that runs until the step's heartbeat says the job was cancelled, or for 30 s:
+     * an interrupt does not stop it, so only {@code cancelled()} can.
+     */
+    static final class UntilCancelled implements AutomationRunnerPort {
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch heard = new CountDownLatch(1);
+
+        @Override
+        public boolean supports(StepType type) {
+            return type == StepType.SCRIPT;
+        }
+
+        @Override
+        public Mono<JsonNode> run(RunRequest request) {
+            return run(request, Progress.NONE);
+        }
+
+        @Override
+        public Mono<JsonNode> run(RunRequest request, Progress progress) {
+            return Mono.fromCallable(() -> {
+                started.countDown();
+                long end = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+                while (System.nanoTime() < end) {
+                    try {
+                        progress.heartbeat();
+                    } catch (JobCancelled e) {
+                        heard.countDown();
+                        throw e;
+                    }
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException e) {
+                        // keep going: the heartbeat is what has to stop this run
+                    }
+                }
+                return (JsonNode) JsonNodeFactory.instance.objectNode();
+            }).subscribeOn(Schedulers.boundedElastic());
+        }
+    }
+
+    @TempDir
+    Path work;
+
+    /** The engine with {@code runner} in front of the wiring's runners, heartbeating every 100 ms. */
+    private static TemporalTestEngine withRunner(AutomationRunnerPort runner) {
+        return new TemporalTestEngine(new TemporalTestEngine.Options()
+                .runners(r -> new AutomationRunners(Stream.concat(Stream.of(runner), r.all().stream()).toList()))
+                .config(temporal -> {
+                    temporal.setHeartbeatTimeout(Duration.ofSeconds(2));
+                    temporal.setHeartbeatInterval(Duration.ofMillis(100));
+                }));
+    }
+
+    private static long pid(Path file) {
+        try {
+            String text = Files.exists(file) ? Files.readString(file).trim() : "";
+            return text.isEmpty() ? -1 : Long.parseLong(text);
+        } catch (IOException | NumberFormatException e) {
+            return -1;
+        }
+    }
 
     private static final String PARENT = """
             apiVersion: iaf.platform/v1
@@ -445,6 +541,66 @@ class InterpreterWorkflowImplTest {
         assertThat(t.types(job.id())).doesNotContain("job.finished");
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
         t.replay(job.id());
+    }
+
+    @Test
+    void aCancelEndsARunningScriptAtOnceAndItsRunnerSeesTheJobCancelledOnItsHeartbeat() throws InterruptedException {
+        UntilCancelled runner = new UntilCancelled();
+        t = withRunner(runner);
+        Job job = t.start(yaml(SCRIPT.replace("CODE", "sleep 30")), Map.of());
+        assertThat(runner.started.await(TemporalTestEngine.WAIT.toSeconds(), TimeUnit.SECONDS)).as("the script started").isTrue();
+        long asked = System.nanoTime();
+
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(runner.heard.await(15, TimeUnit.SECONDS)).as("the runner's heartbeat saw cancelled()").isTrue();
+        assertThat(Duration.ofNanos(System.nanoTime() - asked)).as("long before the script's 30 s were up").isLessThan(Duration.ofSeconds(20));
+        Job cancelled = t.job(job.id());
+        assertThat(cancelled.status()).isEqualTo(JobStatus.CANCELLED);
+        assertThat(cancelled.step("after")).isNull();
+        assertThat(t.event(job.id(), "job.cancelled").data().path("by").asText()).isEqualTo("mateo");
+        assertThat(t.client.fetchHistory(job.id()).getEvents()).as("the workflow asked Temporal to cancel the activity")
+                .anyMatch(HistoryEvent::hasActivityTaskCancelRequestedEventAttributes);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aCancelKillsTheProcessOfARunningScript() {
+        assumeTrue(Stream.of("/usr/local/bin", "/usr/bin", "/bin").anyMatch(d -> Files.isExecutable(Path.of(d, "bash"))), "bash is not installed");
+        RunnersProperties runners = new RunnersProperties();
+        runners.setWorkDir(work.resolve("runners").toString());
+        runners.setHeartbeat(Duration.ofMillis(200));
+        t = withRunner(new ProcessScriptRunner(runners, mock(ProviderQueries.class)));
+        Path pidFile = work.resolve("script.pid");
+        Job job = t.start(yaml(SCRIPT.replace("CODE", "echo $$ > " + pidFile + "; sleep 60; echo '{}'")), Map.of());
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> pid(pidFile) > 0);
+        ProcessHandle shell = ProcessHandle.of(pid(pidFile)).orElseThrow(() -> new AssertionError("the script's shell is not running"));
+        RunsTestWiring.await(TemporalTestEngine.WAIT, () -> shell.descendants().findAny().isPresent());
+        List<ProcessHandle> tree = Stream.concat(Stream.of(shell), shell.descendants()).toList();
+
+        t.execution.cancel(job.id(), "mateo").block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.CANCELLED);
+        RunsTestWiring.await(Duration.ofSeconds(30), () -> tree.stream().noneMatch(ProcessHandle::isAlive));
+        assertThat(t.job(job.id()).step("after")).isNull();
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeCancellableCallsStillReplayLettingTheCallRunToItsEnd() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory recorded = history("/temporal/before-cancellable-calls/cancel-during-call.json");
+        List<HistoryEvent> events = recorded.getEvents();
+        HistoryEvent call = events.stream().filter(e -> e.hasActivityTaskScheduledEventAttributes()
+                && e.getActivityTaskScheduledEventAttributes().getActivityType().getName().equals("CallProvider")).findFirst().orElseThrow();
+        HistoryEvent answered = events.stream().filter(e -> e.hasActivityTaskCompletedEventAttributes()
+                && e.getActivityTaskCompletedEventAttributes().getScheduledEventId() == call.getEventId()).findFirst().orElseThrow();
+        HistoryEvent cancel = events.stream().filter(HistoryEvent::hasWorkflowExecutionSignaledEventAttributes).findFirst().orElseThrow();
+        assertThat(cancel.getEventId()).as("the job was cancelled while its call ran").isBetween(call.getEventId(), answered.getEventId());
+        assertThat(events).as("recorded letting the call run to its end").noneMatch(HistoryEvent::hasActivityTaskCancelRequestedEventAttributes);
+
+        t.replay(recorded);
     }
 
     @Test

@@ -336,7 +336,13 @@ The platform's own step calls heartbeat while they run: a provider call, an auto
 script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`
 after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one, so a backend that
 dies mid-call fails the step, which its retry policy can run again on another instance, instead of
-waiting out the step's timeout.
+waiting out the step's timeout. A cancel stops such a call too: the workflow runs it in a
+cancellation scope that the `cancel` signal cancels, so the step and the job end at once, and
+Temporal answers the call's next heartbeat with the cancel (the worker sends one at least every
+heartbeat interval, `WorkerOptions.maxHeartbeatThrottleInterval`). The call's engine then reads as
+cancelled, so the runner ends its process as it does in memory, and a provider call still running
+10 s later is interrupted. The change is gated with `Workflow.getVersion` (`cancellable-calls`): an
+execution recorded before it (fixture `before-cancellable-calls`) lets the call run to its end.
 
 `platform.roles` (`api, worker` by default) splits that work. An instance with the `api` role
 serves the REST API, the streams, MCP and the generated routes, and starts, signals and queries

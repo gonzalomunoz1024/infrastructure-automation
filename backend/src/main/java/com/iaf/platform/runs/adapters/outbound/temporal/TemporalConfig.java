@@ -30,6 +30,7 @@ import io.temporal.serviceclient.WorkflowServiceStubs;
 import io.temporal.serviceclient.WorkflowServiceStubsOptions;
 import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
+import io.temporal.worker.WorkerOptions;
 import io.temporal.worker.WorkflowImplementationOptions;
 
 /**
@@ -99,10 +100,24 @@ public class TemporalConfig {
     @Bean
     @ConditionalOnRole(Role.WORKER)
     public Worker interpreterWorker(WorkerFactory factory, StepActivities activities, PlatformProperties props) {
-        Worker worker = factory.newWorker(props.getTemporal().getTaskQueue());
+        Worker worker = factory.newWorker(props.getTemporal().getTaskQueue(), workerOptions(props.getTemporal()));
         worker.registerWorkflowImplementationTypes(workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
         worker.registerActivitiesImplementations(activities);
         return worker;
+    }
+
+    /**
+     * The interpreter worker's options: a running call's heartbeats reach Temporal at least every
+     * {@code platform.temporal.heartbeat-interval} (the SDK otherwise sends one per 80% of the
+     * heartbeat timeout), so a call whose job was cancelled hears of it within about that time.
+     */
+    public static WorkerOptions workerOptions(PlatformProperties.Temporal temporal) {
+        Duration interval = temporal.getHeartbeatInterval();
+        WorkerOptions.Builder options = WorkerOptions.newBuilder();
+        if (interval != null && interval.isPositive()) {
+            options.setMaxHeartbeatThrottleInterval(interval);
+        }
+        return options.build();
     }
 
     /** The activities that heartbeat while a step's call runs ({@link StepActivitiesImpl}), by activity type. */
