@@ -306,6 +306,27 @@ class AnsibleRunnerAutomationTest {
     }
 
     @Test
+    void anInstallThatAnotherProcessFinishedFirstKeepsTheirsAndOneThatCannotMoveFails() throws Exception {
+        Path root = Files.createDirectories(tmp.resolve("requirements"));
+        Path cache = root.resolve("0123abcd");
+        Files.createDirectories(cache.resolve("roles/theirs"));
+        Path mine = Files.createDirectories(root.resolve(".tmp-1/roles/mine")).getParent().getParent();
+
+        AnsibleRunnerAutomation.publish(mine, cache);
+
+        assertThat(cache.resolve("roles/theirs")).exists();
+        assertThat(cache.resolve("roles/mine")).doesNotExist();
+        assertThat(mine).as("this install is cleaned up").doesNotExist();
+
+        Path fresh = Files.createDirectories(root.resolve(".tmp-2/roles/mine")).getParent().getParent();
+        AnsibleRunnerAutomation.publish(fresh, root.resolve("4567cdef"));
+        assertThat(root.resolve("4567cdef/roles/mine")).exists();
+
+        Path lost = root.resolve(".tmp-3");
+        assertThatThrownBy(() -> AnsibleRunnerAutomation.publish(lost, root.resolve("89abef01"))).isInstanceOf(IOException.class);
+    }
+
+    @Test
     void aFailedHostFailsTheStepNamingTheHostAndTheTask() throws Exception {
         events(List.of(
                 "{\"event\":\"playbook_on_task_start\",\"event_data\":{\"task\":\"break here\"}}",

@@ -2,7 +2,6 @@ package com.iaf.platform.runs.adapters.outbound.live;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -534,16 +533,29 @@ public class AnsibleRunnerAutomation implements AutomationRunnerPort {
                         galaxy(List.of("collection", "install", "-r", f, "-p"), "collections", project, tmp, image, log, progress, timeout, f);
                     }
                 }
-                try {
-                    Files.move(tmp, cache, StandardCopyOption.ATOMIC_MOVE);
-                } catch (FileAlreadyExistsException e) {
-                    LiveSteps.delete(tmp);
-                }
+                publish(tmp, cache);
                 return cache;
             } catch (IOException | RuntimeException e) {
                 LiveSteps.delete(tmp);
                 throw e;
             }
+        }
+    }
+
+    /**
+     * Moves an install into the cache. When the cache is there already, another process sharing
+     * the work directory installed the same content first: theirs stays and this one goes. (The
+     * rename of a directory onto one that is not empty fails as a plain {@code FileSystemException},
+     * "Directory not empty", so the cache itself is what tells.)
+     */
+    static void publish(Path tmp, Path cache) throws IOException {
+        try {
+            Files.move(tmp, cache, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            if (!Files.isDirectory(cache)) {
+                throw e;
+            }
+            LiveSteps.delete(tmp);
         }
     }
 
