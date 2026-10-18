@@ -11,10 +11,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -45,6 +47,7 @@ import lombok.extern.slf4j.Slf4j;
  * evidence/&lt;record&gt;/entries/&lt;seq&gt;.json      one chained entry per object (seq zero-padded to 10 digits)
  * evidence/&lt;record&gt;/checkpoints/&lt;seq&gt;.json  an hourly signature over the head entry {@code seq} of an open record
  * evidence/&lt;record&gt;/seal.json               the final seal of a closed record
+ * sealed/&lt;record&gt;.json                       an index entry per sealed record, so a sealing run never reads one
  * share-tokens/&lt;sha256&gt;.json                a read-only link under the SHA-256 of its token (never the token), kept until it expires
  * </pre>
  *
@@ -68,6 +71,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
 
     static final String EVIDENCE = "evidence/";
     static final String SHARE_TOKENS = "share-tokens/";
+    static final String SEALED_INDEX = "sealed/";
     static final String ENTRIES = "entries/";
     static final String CHECKPOINTS = "checkpoints/";
     static final String SEAL = "seal.json";
@@ -220,12 +224,63 @@ public abstract class WormEvidenceStore implements EvidenceStore {
             }
             if (!objects.putIfAbsent(prefix(id) + SEAL, bytes(seal), retainUntil(seal.at()))) {
                 uncache(id);
-                return refresh(id);
+                EvidenceRecord theirs = refresh(id);
+                index(id, theirs);
+                return theirs;
             }
             EvidenceRecord sealed = current.withSeal(seal);
             cache(id, sealed);
+            index(id, sealed);
             return sealed;
         }
+    }
+
+    /**
+     * The records without an entry in the {@code sealed/} index: open ones come from the cache or
+     * their objects, and a record sealed before the index existed is indexed the first time it is
+     * found sealed, so later runs skip it without reading it.
+     */
+    @Override
+    public List<Unsealed> unsealed() {
+        Set<String> indexed = new HashSet<>();
+        for (String key : objects.list(SEALED_INDEX)) {
+            String name = key.substring(SEALED_INDEX.length());
+            indexed.add(name.endsWith(".json") ? name.substring(0, name.length() - ".json".length()) : name);
+        }
+        List<Unsealed> out = new ArrayList<>();
+        for (String folder : objects.folders(EVIDENCE)) {
+            if (indexed.contains(folder)) {
+                continue;
+            }
+            String id = decode(folder);
+            EvidenceRecord r;
+            synchronized (lock(id)) {
+                r = current(id);
+                if (r != null && r.sealed() == null && r.closed() && objects.get(prefix(id) + SEAL).isPresent()) {
+                    uncache(id);
+                    r = refresh(id);
+                }
+            }
+            if (r == null || r.entries().isEmpty()) {
+                continue;
+            }
+            if (r.sealed() != null) {
+                index(id, r);
+                continue;
+            }
+            out.add(Unsealed.of(r));
+        }
+        out.sort(Unsealed.NEWEST_FIRST);
+        return out;
+    }
+
+    /** Notes a sealed record in the {@code sealed/} index (once; kept as long as its seal). */
+    private void index(String id, EvidenceRecord sealed) {
+        if (sealed == null || sealed.sealed() == null) {
+            return;
+        }
+        byte[] entry = bytes(Map.of("jobId", id, "sealedAt", String.valueOf(sealed.sealed().at())));
+        objects.putIfAbsent(SEALED_INDEX + encode(id) + ".json", entry, retainUntil(sealed.sealed().at()));
     }
 
     @Override

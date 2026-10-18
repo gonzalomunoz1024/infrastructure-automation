@@ -24,6 +24,7 @@ import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.domain.ShareToken;
+import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
 import software.amazon.awssdk.core.ResponseBytes;
@@ -132,6 +133,10 @@ class S3ObjectLockEvidenceStoreTest {
         assertThat(r.sealed()).isEqualTo(seal);
         assertThat(r.status()).isEqualTo("failed");
         assertThat(s3.listCalls).isGreaterThan(2);
+        PutObjectRequest sealPut = s3.puts.stream().filter(p -> p.key().equals("iaf/evidence/job_1/seal.json")).findFirst().orElseThrow();
+        PutObjectRequest indexPut = s3.puts.stream().filter(p -> p.key().equals("iaf/sealed/job_1.json")).findFirst().orElseThrow();
+        assertThat(indexPut.objectLockRetainUntilDate()).as("the index entry is locked as long as the seal").isEqualTo(sealPut.objectLockRetainUntilDate());
+        assertThat(restarted.unsealed()).extracting(EvidenceStore.Unsealed::jobId).containsExactly("job_2");
     }
 
     @Test

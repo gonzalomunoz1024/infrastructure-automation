@@ -162,6 +162,23 @@ class AuditCommandHandlerTest {
     }
 
     @Test
+    void aSealingRunReadsOnlyTheRecordsStillTakingSignatures() {
+        InMemoryEvidenceStore guarded = new InMemoryEvidenceStore() {
+            @Override
+            public List<EvidenceRecord> records(com.iaf.platform.audit.domain.EvidenceFilter filter) {
+                throw new AssertionError("a sealing run lists no record with its entries");
+            }
+        };
+        guarded.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", mapper.createObjectNode().put("workflow", "w")));
+        guarded.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "platform", mapper.createObjectNode().put("status", "succeeded")));
+
+        SealResult result = new AuditCommandHandler(guarded, signer, events, clock, mapper, owners).sealAll("platform");
+
+        assertThat(result.sealed()).isEqualTo(1);
+        assertThat(guarded.unsealed()).isEmpty();
+    }
+
+    @Test
     void theScheduledRunUsesTheSameLogic() {
         handler.sealOnSchedule();
 

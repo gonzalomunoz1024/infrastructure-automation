@@ -317,6 +317,88 @@ class FileSystemEvidenceStoreTest {
         assertThat(store.records(EvidenceFilter.ALL)).hasSize(6);
     }
 
+    /** The objects of a folder, counting what is read under one prefix. */
+    static final class CountingObjects implements WormObjects {
+        final FileSystemWormObjects files;
+        final String watched;
+        int reads;
+
+        CountingObjects(Path dir, String watched) {
+            this.files = new FileSystemWormObjects(dir);
+            this.watched = watched;
+        }
+
+        @Override
+        public boolean putIfAbsent(String key, byte[] bytes, Instant retainUntil) {
+            return files.putIfAbsent(key, bytes, retainUntil);
+        }
+
+        @Override
+        public java.util.Optional<byte[]> get(String key) {
+            if (key.startsWith(watched)) {
+                reads++;
+            }
+            return files.get(key);
+        }
+
+        @Override
+        public List<String> list(String prefix) {
+            if (prefix.startsWith(watched)) {
+                reads++;
+            }
+            return files.list(prefix);
+        }
+
+        @Override
+        public List<String> folders(String prefix) {
+            return files.folders(prefix);
+        }
+
+        @Override
+        public String describe() {
+            return files.describe();
+        }
+    }
+
+    @Test
+    void aSealingRunNeverReadsASealedRecordAndIndexesOnesSealedBeforeTheIndex() {
+        FileSystemEvidenceStore first = store();
+        first.append("job_1", requested(AT, "vm-restart"));
+        EvidenceEntry head = first.append("job_1", closed());
+        first.seal("job_1", seal(AT.plusSeconds(60), "sig-1", head));
+        first.append("job_2", requested(AT.plusSeconds(1), "vm-restart"));
+        assertThat(dir.resolve("sealed/job_1.json")).exists();
+
+        // after a restart: the sealed record is skipped by its index entry, unread
+        CountingObjects counting = new CountingObjects(dir, "evidence/job_1/");
+        WormEvidenceStore restarted = new WormEvidenceStore(counting, 7) {
+        };
+        assertThat(restarted.unsealed()).extracting(EvidenceStoreUnsealedIds::id).containsExactly("job_2");
+        assertThat(counting.reads).isZero();
+
+        // a record sealed before the index existed: read once, indexed, then skipped
+        FileSystemWormObjects files = new FileSystemWormObjects(dir);
+        first.append("job_3", requested(AT.plusSeconds(2), "vm-restart"));
+        EvidenceEntry head3 = first.append("job_3", closed());
+        files.putIfAbsent("evidence/job_3/seal.json", WormEvidenceStore.bytes(seal(AT.plusSeconds(90), "sig-3", head3)), AT.plus(Duration.ofDays(1)));
+        CountingObjects legacy = new CountingObjects(dir, "evidence/job_3/");
+        WormEvidenceStore again = new WormEvidenceStore(legacy, 7) {
+        };
+        assertThat(again.unsealed()).extracting(EvidenceStoreUnsealedIds::id).containsExactly("job_2");
+        assertThat(dir.resolve("sealed/job_3.json")).exists();
+        CountingObjects later = new CountingObjects(dir, "evidence/job_3/");
+        assertThat(new WormEvidenceStore(later, 7) {
+        }.unsealed()).extracting(EvidenceStoreUnsealedIds::id).containsExactly("job_2");
+        assertThat(later.reads).isZero();
+    }
+
+    /** The id of an unsealed record, for extracting. */
+    static final class EvidenceStoreUnsealedIds {
+        static String id(com.iaf.platform.audit.ports.outbound.EvidenceStore.Unsealed u) {
+            return u.jobId();
+        }
+    }
+
     @Test
     void anExpiredShareLinkLeavesTheCacheAndMintingSweepsTheRest() {
         MovingClock clock = new MovingClock(AT);

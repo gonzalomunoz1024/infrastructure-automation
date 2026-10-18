@@ -11,11 +11,11 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.inbound.AuditCommands;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
+import com.iaf.platform.audit.ports.outbound.EvidenceStore.Unsealed;
 import com.iaf.platform.audit.ports.outbound.RecordOwners;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
@@ -78,7 +78,8 @@ public class AuditCommandHandler implements AuditCommands {
      * {@code {at, signature(latestHash), keyId, seq, hash}}; an open one (a running job, the
      * platform stream) whose head moved since its last checkpoint gets a checkpoint of the same
      * shape and keeps accepting entries. The run's own signature covers the ledger
-     * "jobId latestHash" of every head it signed.
+     * "jobId latestHash" of every head it signed. Only the records still taking signatures are
+     * read ({@link EvidenceStore#unsealed()}), never a sealed one or any entry.
      */
     SealResult sealAll(String actor) {
         Instant now = clock.instant();
@@ -86,11 +87,11 @@ public class AuditCommandHandler implements AuditCommands {
         int sealed = 0;
         int checkpointed = 0;
         boolean checkpointsRefused = false;
-        for (EvidenceRecord record : store.records(EvidenceFilter.ALL)) {
-            if (record.sealed() != null || record.entries().isEmpty()) {
+        for (Unsealed record : store.unsealed()) {
+            if (record.entries() == 0) {
                 continue;
             }
-            EvidenceRecord.Seal seal = new EvidenceRecord.Seal(now, signer.sign(record.latestHash()), signer.keyId(), record.entries().size(),
+            EvidenceRecord.Seal seal = new EvidenceRecord.Seal(now, signer.sign(record.latestHash()), signer.keyId(), record.entries(),
                     record.latestHash());
             if (record.closed() && !record.platform()) {
                 store.seal(record.jobId(), seal);

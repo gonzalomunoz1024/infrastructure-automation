@@ -59,6 +59,15 @@ public class InMemoryEvidenceStore implements EvidenceStore {
     }
 
     @Override
+    public List<Unsealed> unsealed() {
+        return records.values().stream()
+                .filter(r -> r.sealed() == null && !r.entries().isEmpty())
+                .map(Unsealed::of)
+                .sorted(Unsealed.NEWEST_FIRST)
+                .toList();
+    }
+
+    @Override
     public EvidenceRecord seal(String jobId, EvidenceRecord.Seal seal) {
         EvidenceRecord sealed = records.computeIfPresent(jobId, (id, current) -> current.sealed() != null ? current : current.withSeal(seal));
         if (sealed == null) {

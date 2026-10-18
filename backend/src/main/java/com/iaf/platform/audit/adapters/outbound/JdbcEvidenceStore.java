@@ -117,6 +117,24 @@ public class JdbcEvidenceStore implements EvidenceStore {
         return withEntries(sql, args.toArray()).stream().filter(f::matches).sorted(NEWEST_FIRST).toList();
     }
 
+    /**
+     * The headers of the records not sealed, with whether a {@code closed} entry exists: no entry is
+     * read, and a sealed record is not touched.
+     */
+    @Override
+    public List<Unsealed> unsealed() {
+        return jdbc.query("SELECT r.job_id, r.requested_ns, r.entry_count, r.latest_hash, r.doc,"
+                + " CASE WHEN EXISTS (SELECT 1 FROM evidence_entries e WHERE e.job_id = r.job_id AND e.kind = 'closed') THEN 1 ELSE 0 END"
+                + " FROM evidence_records r WHERE r.sealed_at IS NULL AND r.entry_count > 0",
+                (rs, i) -> {
+                    long ns = rs.getLong(2);
+                    Instant at = rs.wasNull() ? null : Instant.ofEpochSecond(Math.floorDiv(ns, 1_000_000_000L), Math.floorMod(ns, 1_000_000_000L));
+                    EvidenceRecord header = jdbc.read(rs.getString(5), EvidenceRecord.class);
+                    return new Unsealed(rs.getString(1), at, rs.getString(4), rs.getInt(3), rs.getInt(6) == 1, header.latestCheckpoint());
+                })
+                .stream().sorted(Unsealed.NEWEST_FIRST).toList();
+    }
+
     @Override
     public EvidenceRecord seal(String jobId, EvidenceRecord.Seal seal) {
         if (seal == null || seal.at() == null) {

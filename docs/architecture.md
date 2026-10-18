@@ -229,7 +229,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 
 | Port (slice)                       | Adapters |
 |------------------------------------|----------|
-| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects; a share link is kept under the SHA-256 of its token, never the token; the cache holds the open records, the 256 most recently used sealed ones and 1024 share links, and drops a link once it expired): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
+| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects; a `sealed/<record>.json` index object per sealed record, so a sealing run never reads one; a share link is kept under the SHA-256 of its token, never the token; the cache holds the open records, the 256 most recently used sealed ones and 1024 share links, and drops a link once it expired): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
@@ -244,7 +244,12 @@ runs on a non-blocking thread, and the wiring test expects none.
   `/actuator/prometheus`) and logs an error naming the record. The job goes on: evidence never
   stops a job, so alert on that counter. A sealed record refusing a late entry
   (`SealedRecordException`) is a refusal, logged as a warning and not counted. The scheduled seal
-  seals closed records and checkpoints open ones; on
+  seals closed records and checkpoints open ones; it reads only the records still taking
+  signatures (`EvidenceStore.unsealed()`: their head, entry count, whether they are closed and
+  their last checkpoint, never their entries), so a run costs the open records, not the history.
+  The JDBC store answers it from the headers (`sealed_at IS NULL`), the WORM stores skip every
+  record named in their `sealed/` index (one write-once object per sealed record, written with the
+  seal; a record sealed before the index existed is indexed the first time a run finds it). On
   demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
   member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
   them, the workflow's owner team) or an admin, and each link is published as `audit.shared`
