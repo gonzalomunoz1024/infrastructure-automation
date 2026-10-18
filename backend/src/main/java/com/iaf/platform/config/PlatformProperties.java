@@ -21,6 +21,7 @@ public class PlatformProperties {
     private Credentials credentials = new Credentials();
     private Assistant assistant = new Assistant();
     private Providers providers = new Providers();
+    private Github github = new Github();
     private Audit audit = new Audit();
     private Demo demo = new Demo();
 
@@ -102,6 +103,25 @@ public class PlatformProperties {
         private Duration gitTimeout = Duration.ofSeconds(60);
         /** Where registry modules ({@code namespace/name/provider}) of a Terraform import are looked up. */
         private String terraformRegistryUrl = "https://registry.terraform.io";
+    }
+
+    /** The {@code github} profile: change requests become pull requests on the content repository. */
+    @Data
+    public static class Github {
+        /** The REST API: https://api.github.com, or https://<host>/api/v3 for GitHub Enterprise Server. */
+        private String apiUrl = "https://api.github.com";
+        /** The content repository, {@code owner/name}. */
+        private String repo = "";
+        /** The branch pull requests merge into. */
+        private String baseBranch = "main";
+        /** A {@code vault:} reference to the token that opens, merges and closes the pull requests. */
+        private String token = "vault:github/platform-token";
+        /** A {@code vault:} reference to the webhook's shared secret, which signs every delivery. */
+        private String webhookSecret = "vault:github/webhook-secret";
+        /** How the platform merges a pull request: merge, squash or rebase. */
+        private String mergeMethod = "squash";
+        /** How long one GitHub API call may take. */
+        private Duration timeout = Duration.ofSeconds(20);
     }
 
     @Data

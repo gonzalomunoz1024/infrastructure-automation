@@ -60,4 +60,24 @@ public record ChangeRequest(
         return new ChangeRequest(id, kind, name, version, branch, title, author, s, checks, strategy, yaml, diff, createdAt,
                 s == Status.MERGED ? at : mergedAt, s == Status.MERGED ? by : mergedBy, url);
     }
+
+    /** The same change request with the web address of its pull request. */
+    public ChangeRequest withUrl(String pullRequest) {
+        return new ChangeRequest(id, kind, name, version, branch, title, author, status, checks, strategy, yaml, diff, createdAt,
+                mergedAt, mergedBy, pullRequest);
+    }
+
+    /** The file the change request writes, from its diff's {@code +++ b/<path>} line; null when the diff names none. */
+    public String path() {
+        if (diff == null) {
+            return null;
+        }
+        for (String line : diff.split("\n", 8)) {
+            if (line.startsWith("+++ b/")) {
+                String path = line.substring(6).trim();
+                return path.isEmpty() ? null : path;
+            }
+        }
+        return null;
+    }
 }

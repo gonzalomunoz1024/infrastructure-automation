@@ -76,7 +76,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `ProjectionStore`       | `PostgresProjectionStore` (planned)    | `InMemoryProjectionStore`       |
 | `EvidenceStore`         | write-once object store (planned)      | `InMemoryEvidenceStore`         |
 | `AssistantPort`         | `DevinAssistant` (v3 API)              | `MockAssistant` (deterministic drafts) |
-| `ChangeRequestPort`     | `GitHubChangeRequests` (planned)       | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
+| `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `ReviewEvidencePort`    | a persistent store (planned)           | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 

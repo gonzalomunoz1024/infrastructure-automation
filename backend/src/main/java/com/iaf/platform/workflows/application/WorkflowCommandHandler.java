@@ -309,9 +309,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                     throw new ConflictException("another workflow was published on the same route: " + routes.detail());
                 }
                 Optional<WorkflowRecord> previous = store.published(cr.name()).filter(p -> !p.version().equals(cr.version()));
+                // the change request first: its pull request may refuse the merge, and then nothing is published
+                changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, now, who.id()));
                 previous.ifPresent(p -> store.save(p.withStatus(WorkflowStatus.RETIRED)));
                 store.save(rec.published(now, who.id(), null));
-                changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, now, who.id()));
                 events.publish(CR_MERGED, "change-request", id, who.id(), crData(cr).put("yaml", rec.yaml()).put("by", who.id()));
                 ObjectNode published = data().put("name", cr.name()).put("version", cr.version()).put("strategy", cr.strategy()).put("by", who.id());
                 published.put("previous", previous.map(WorkflowRecord::version).orElse(null));
@@ -338,14 +339,14 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             if (cr.status() != ChangeRequest.Status.OPEN) {
                 throw new ConflictException("change request " + id + " is " + cr.status().json());
             }
+            Optional<WorkflowRecord> rec = cr.kind() == ChangeRequest.Kind.WORKFLOW ? store.get(cr.name(), cr.version()) : Optional.empty();
             if (cr.kind() == ChangeRequest.Kind.WORKFLOW) {
-                Optional<WorkflowRecord> rec = store.get(cr.name(), cr.version());
                 AccessRules.requireEdit(who, rec.map(r -> r.definition().metadata().owner()).orElse(null), "workflow " + cr.name());
-                rec.filter(r -> r.status() == WorkflowStatus.CANDIDATE).ifPresent(r -> store.save(r.withStatus(WorkflowStatus.DRAFT)));
             } else {
                 AccessRules.requireEdit(who, providerOwner(cr.yaml()), "provider " + cr.name());
             }
             changeRequests.save(cr.withStatus(ChangeRequest.Status.CLOSED, clock.instant(), who.id()));
+            rec.filter(r -> r.status() == WorkflowStatus.CANDIDATE).ifPresent(r -> store.save(r.withStatus(WorkflowStatus.DRAFT)));
             events.publish(CR_CLOSED, "change-request", id, who.id(), crData(cr).put("by", who.id()));
             return CommandAccepted.of(id, "closed", null);
         }));

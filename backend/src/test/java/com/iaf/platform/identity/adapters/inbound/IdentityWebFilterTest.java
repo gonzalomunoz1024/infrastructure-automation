@@ -110,6 +110,24 @@ class IdentityWebFilterTest {
     }
 
     @Test
+    void aSignedWebhookComesInWithoutACredentialAsAnIdentityThatMayChangeNothing() {
+        props.getIdentity().setMode("oidc");
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
+        Outcome webhook = run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").build());
+        assertThat(webhook.who()).isEqualTo(IdentityWebFilter.WEBHOOK);
+        assertThat(webhook.who().admin()).isFalse();
+        assertThat(webhook.who().teams()).isEmpty();
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/change-requests:github-webhook").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests/cr_1:merge").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").header("Authorization", "Bearer forged").build()).status())
+                .as("a presented credential is judged as usual").isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        props.getIdentity().setMode("dev");
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").header("X-User", "gonzalo").build()).who())
+                .as("never the dev user either").isEqualTo(IdentityWebFilter.WEBHOOK);
+    }
+
+    @Test
     void oidcModeNeedsAVerifiedTokenAndIgnoresTheDevHeader() {
         props.getIdentity().setMode("oidc");
         TokenVerifier verifier = token -> "good".equals(token) ? Optional.of(ANA) : Optional.empty();

@@ -58,6 +58,14 @@ platform:
     git-allow-local: false             # read file: repositories (tests and local demos only)
     git-timeout: PT60S                 # one fetch of a spec, playbook or module repository
     terraform-registry-url: https://registry.terraform.io
+  github:                              # the github profile: change requests are pull requests on the content repo
+    api-url: https://api.github.com    # GitHub Enterprise Server: https://<host>/api/v3
+    repo: ""                           # owner/name of the content repository
+    base-branch: main
+    token: vault:github/platform-token         # opens, merges and closes the pull requests
+    webhook-secret: vault:github/webhook-secret  # signs POST /api/v1/change-requests:github-webhook
+    merge-method: squash               # merge | squash | rebase
+    timeout: PT20S
   audit:
     retention-years: 7
     seal-every: PT1H

@@ -29,7 +29,9 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
 Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A bearer token that
-does not verify is always 401; it never falls back to the dev identity.
+does not verify is always 401; it never falls back to the dev identity. Signed webhooks
+(`POST /change-requests:github-webhook`) carry no credential: they come in as an identity that may
+change nothing, and their controller checks the signature before acting.
 
 ## Workflows
 
@@ -71,12 +73,23 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
 | POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests |
 | POST   | `/change-requests/{id}:close`                | → `CommandAccepted` |
+| POST   | `/change-requests:github-webhook`            | profile `github` only. GitHub's `pull_request` deliveries, signed with the webhook secret (`X-Hub-Signature-256: sha256=<HMAC-SHA256 of the body>`; the secret is the `vault:` reference `platform.github.webhook-secret`). A pull request merged on GitHub merges its change request, closed without merging closes it, as `github:<login>` → 200 `{ status; changeRequest }`. 401 when the signature is missing or wrong, 503 when the secret cannot be read, 409 when the platform refuses the merge (failed checks: the change request stays open). `ping` → 200 `{ status: 'pong' }`; other events and actions, and pull requests of no change request → 202 `{ status: 'ignored'; reason }`. No platform credential is needed or used |
 | POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200) |
 | GET    | `/templates`                                 | `{ id; title; description; yaml }[]` |
 
 ```ts
 type DryRunResult = { passed: boolean; path: string[]; steps: { id; name; status; input?; output?; error? }[]; error? }
 ```
+
+With the `github` profile a change request is a pull request on the content repository
+(`platform.github.repo`): opening it pushes the branch with its one file from `platform.github.base-branch`,
+opens the pull request (title, the checks and the rollout strategy in its body) and posts one commit
+status per check (`iaf/<check>`); `url` is the pull request. When GitHub cannot be reached the change
+request is not opened (502). Merging or closing it on the platform merges (`platform.github.merge-method`)
+or closes the pull request; when GitHub refuses the merge (a required review or status missing) it is a
+409 and nothing is published. A decision taken on GitHub comes back through the webhook above and is
+never sent back to GitHub. Reviews of pull requests merged on GitHub are GitHub's to require (branch
+protection, code owners); the platform's checks still decide whether the version is published.
 
 Registry (read-only, used by the designer and the Devin playbook):
 

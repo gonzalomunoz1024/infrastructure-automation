@@ -330,6 +330,31 @@ class WorkflowCommandHandlerTest {
     }
 
     @Test
+    void aMergeOrCloseThePullRequestRefusesChangesNothing() {
+        InMemoryChangeRequests refusing = new InMemoryChangeRequests() {
+            @Override
+            public void save(ChangeRequest cr) {
+                if (cr.status() != ChangeRequest.Status.OPEN) {
+                    throw new ConflictException("GitHub did not merge pull request #42: Review required");
+                }
+                super.save(cr);
+            }
+        };
+        WorkflowCommandHandler guarded = new WorkflowCommandHandler(store, refusing, queries, providers, resources, runs, runsQueries, policy, events, clock);
+        guarded.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String crId = guarded.publish("vm-restart", new PublishWorkflow("all", null)).block().id();
+
+        StepVerifier.create(guarded.mergeChangeRequest(crId)).expectErrorMessage("GitHub did not merge pull request #42: Review required").verify();
+        assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
+        assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.CANDIDATE);
+        assertThat(eventsOf("workflow.published")).isEmpty();
+
+        StepVerifier.create(guarded.closeChangeRequest(crId)).expectError(ConflictException.class).verify();
+        assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).as("still the candidate of the open change request").isEqualTo(WorkflowStatus.CANDIDATE);
+        assertThat(refusing.get(crId).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+    }
+
+    @Test
     void aProviderChangeRequestIsMergedByEventOnly() {
         String providerYaml = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
         ChangeRequest cr = new ChangeRequest("cr_prov", ChangeRequest.Kind.PROVIDER, "vsphere", "1.4.0", "change/vsphere-1.4.0", "Update vsphere", "mateo",
