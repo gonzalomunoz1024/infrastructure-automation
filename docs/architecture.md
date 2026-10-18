@@ -749,6 +749,14 @@ action's band over the last 24 hours (`perAction[].band`, with the provider's `H
 judged against the action's own SLO when it has one, which the table shows, else the provider's,
 and colours the success rate and the p95 against that SLO.
 
+The wizard's state, YAML and steps live in `frontend/src/components/provider-editor/`, and the
+provider page's band, release card, SLO and spec refresh dialogs and try outcome in
+`frontend/src/components/provider-admin.tsx`, so the designer uses the same pieces. A workflow's
+providers before they are published are drafts (`frontend/src/designer/model/providerDrafts.ts`):
+the wizard's state plus where it came from, its YAML the wizard's, kept in the browser's
+localStorage per workflow as the sticky notes are, outside the document and undo. A stored draft
+keeps credentials only as `vault:` references, no user or password in a URL, and no try's answer.
+
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
 `GET /registry/providers` carries no spec, so the designer's registry reads the module from the
