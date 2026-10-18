@@ -536,7 +536,9 @@ then answers 404.
 A message that asks what the workflow does ("Explain what this workflow does", "describe it",
 "summarise the flow") changes nothing: the answer is a `message` event describing the draft on the
 canvas (what starts it, each step in order with what it calls, the approvals, the outputs) and no
-`draft` event follows. Devin gets it as `MODE: explain`.
+`draft` event follows. On an empty canvas the demo agent answers that there is nothing to explain,
+unless the message names something to build ("Describe a workflow that restarts a VM" is drafted).
+Devin gets it as `MODE: explain` when there is a draft.
 
 Closing the stream before its `done` (the panel closed, the page left) ends the agent's own session:
 with Devin, the platform ends and archives it (`DELETE /sessions/{id}?archive=true`) so it stops
