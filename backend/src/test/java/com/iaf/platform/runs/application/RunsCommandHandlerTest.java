@@ -558,6 +558,16 @@ class RunsCommandHandlerTest {
     }
 
     @Test
+    void previewRefusesAnIdTheRegistryDoesNotKnowLikeARun() {
+        StepVerifier.create(handler.preview(SampleContent.workflow("vm-restart"), SampleContent.json(Map.of("vmId", "missing-vm-9")), SampleContent.GONZALO))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("missing-vm-9");
+                    assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.unknownResource");
+                })
+                .verify();
+    }
+
+    @Test
     void previewListsEffectsResourcesCostAndPolicy() {
         Preview p = handler.preview(SampleContent.workflow("vm-restart"), SampleContent.json(Map.of("vmId", "vm-1042")), SampleContent.GONZALO).block();
 

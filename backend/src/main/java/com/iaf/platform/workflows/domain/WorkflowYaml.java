@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.yaml.snakeyaml.LoaderOptions;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.iaf.platform.workflows.domain.Step.CatchBlock;
@@ -42,6 +43,7 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition.Trigger;
 public final class WorkflowYaml {
 
     private static final ObjectMapper YAML = new ObjectMapper(YAMLFactory.builder()
+            .loaderOptions(strictKeys())
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
             .enable(YAMLGenerator.Feature.INDENT_ARRAYS_WITH_INDICATOR)
@@ -53,6 +55,13 @@ public final class WorkflowYaml {
     private static final List<String> COMMON_KEYS = List.of("name", "with", "output", "assert", "retry", "timeout", "pauseOnFailure", "position", "notes", "compensate");
 
     private WorkflowYaml() {
+    }
+
+    /** A key written twice would silently keep one value, so the parser refuses it like the designer does. */
+    private static LoaderOptions strictKeys() {
+        LoaderOptions options = new LoaderOptions();
+        options.setAllowDuplicateKeys(false);
+        return options;
     }
 
     public static JsonNode readTree(String yaml) {

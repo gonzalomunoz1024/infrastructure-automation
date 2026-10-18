@@ -251,4 +251,17 @@ class ProviderChecksTest {
         assertThat(ProviderChecks.check(ANSIBLE).hasErrors()).isFalse();
         assertThat(ProviderChecks.check("kind: [").hasErrors()).isTrue();
     }
+
+    @Test
+    void aKeyWrittenTwiceIsAYamlError() {
+        String yaml = """
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: twice, title: Twice, owner: team-x, version: 1.0.0 }
+                metadata: { name: twice-again, title: Twice, owner: team-x, version: 1.0.0 }
+                """;
+        Result r = ProviderChecks.check(yaml);
+        assertThat(codes(r)).containsExactly("error yaml.invalid");
+        assertThat(r.problems().get(0).message()).contains("Duplicate field").contains("metadata");
+    }
 }

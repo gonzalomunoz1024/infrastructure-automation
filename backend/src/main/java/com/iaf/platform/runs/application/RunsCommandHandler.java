@@ -401,7 +401,9 @@ public class RunsCommandHandler implements RunsCommands {
         }
         return identity(who).flatMap(w -> {
             JsonNode in = InputDefaults.apply(definition.inputSchema(), input);
-            return evaluatePolicy(w, definition, definition.version(), in, "preview", null)
+            // judged like a run: an id the registry does not know is a 400, not a plan for nothing
+            return requireKnownResources(definition, List.of(in), false)
+                    .then(evaluatePolicy(w, definition, definition.version(), in, "preview", null))
                     .flatMap(decision -> buildPreview(definition, List.of(in), decision, w));
         });
     }

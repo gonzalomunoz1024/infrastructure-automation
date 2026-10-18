@@ -112,7 +112,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
 | POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
-| POST   | `{path}:preview`                    | body = input → `Preview` (200) |
+| POST   | `{path}:preview`                    | body = input → `Preview` (200); judged like a run: the same 400s for the schema and for an `x-resource` id the registry does not know, 403 on RBAC |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
 

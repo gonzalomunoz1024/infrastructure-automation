@@ -103,7 +103,7 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
 export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
   let doc: unknown;
   try {
-    doc = parseYaml(yaml, { uniqueKeys: false }) ?? {};
+    doc = parseYaml(yaml) ?? {};
   } catch (e) {
     return [problem('error', 'yaml.invalid', null, null, `YAML syntax: ${firstLine(e)}`)];
   }

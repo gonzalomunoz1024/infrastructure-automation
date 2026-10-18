@@ -1,26 +1,93 @@
 {
   "valid-minimal.yaml": [],
-  "unknown-provider.yaml": ["error step.unknownProvider"],
-  "unknown-action.yaml": ["error step.unknownAction"],
-  "no-predecessor.yaml": ["error expr.noPredecessor"],
-  "unknown-step-reference.yaml": ["error expr.stepAfter", "error expr.unknownStep"],
-  "delete-without-approval.yaml": ["warning policy.approvalRequired"],
-  "invalid-json.yaml": ["error step.invalidJson"],
-  "plain-secret.yaml": ["error credential.plain", "error credential.plain"],
-  "bad-expression.yaml": ["error expr.syntax"],
-  "unpinned-ansible.yaml": ["warning ansible.retry", "warning ansible.unpinned"],
-  "switch-targets.yaml": ["error switch.backwardJump", "error switch.unknownTarget"],
-  "bad-owner.yaml": ["error metadata.owner"],
-  "bad-metadata.yaml": ["error api.reservedPath", "error metadata.owner", "error name.format", "error version.semver"],
-  "rollout-stages.yaml": ["error batch.waves", "error rollout.stages"],
-  "unknown-input-and-var.yaml": ["warning expr.errorOutsideCatch", "warning expr.unknownInput", "warning expr.unknownVar"],
-  "duplicate-ids.yaml": ["error step.duplicateId"],
-  "missing-required-input.yaml": ["error run.unknownWorkflow", "error step.missingInput", "warning step.unknownInput"],
-  "unknown-resource-type.yaml": ["error resource.unknownType"],
-  "empty-workflow.yaml": ["error workflow.empty"],
-  "invalid-yaml.yaml": ["error yaml.invalid"],
-  "for-and-try.yaml": ["error for.in", "warning try.noCatch"],
-  "run-contract.yaml": ["error contract.missingInput", "error contract.type", "error contract.type", "error run.onFailure", "warning contract.unknownInput"],
-  "unknown-field.yaml": ["warning expr.unknownField", "warning expr.unknownField"],
-  "unreachable-step.yaml": ["warning step.unreachable"]
+  "unknown-provider.yaml": [
+    "error step.unknownProvider"
+  ],
+  "unknown-action.yaml": [
+    "error step.unknownAction"
+  ],
+  "no-predecessor.yaml": [
+    "error expr.noPredecessor"
+  ],
+  "unknown-step-reference.yaml": [
+    "error expr.stepAfter",
+    "error expr.unknownStep"
+  ],
+  "delete-without-approval.yaml": [
+    "warning policy.approvalRequired"
+  ],
+  "invalid-json.yaml": [
+    "error step.invalidJson"
+  ],
+  "plain-secret.yaml": [
+    "error credential.plain",
+    "error credential.plain"
+  ],
+  "bad-expression.yaml": [
+    "error expr.syntax"
+  ],
+  "unpinned-ansible.yaml": [
+    "warning ansible.retry",
+    "warning ansible.unpinned"
+  ],
+  "switch-targets.yaml": [
+    "error switch.backwardJump",
+    "error switch.unknownTarget"
+  ],
+  "bad-owner.yaml": [
+    "error metadata.owner"
+  ],
+  "bad-metadata.yaml": [
+    "error api.reservedPath",
+    "error metadata.owner",
+    "error name.format",
+    "error version.semver"
+  ],
+  "rollout-stages.yaml": [
+    "error batch.waves",
+    "error rollout.stages"
+  ],
+  "unknown-input-and-var.yaml": [
+    "warning expr.errorOutsideCatch",
+    "warning expr.unknownInput",
+    "warning expr.unknownVar"
+  ],
+  "duplicate-ids.yaml": [
+    "error step.duplicateId"
+  ],
+  "missing-required-input.yaml": [
+    "error run.unknownWorkflow",
+    "error step.missingInput",
+    "warning step.unknownInput"
+  ],
+  "unknown-resource-type.yaml": [
+    "error resource.unknownType"
+  ],
+  "empty-workflow.yaml": [
+    "error workflow.empty"
+  ],
+  "invalid-yaml.yaml": [
+    "error yaml.invalid"
+  ],
+  "for-and-try.yaml": [
+    "error for.in",
+    "warning try.noCatch"
+  ],
+  "run-contract.yaml": [
+    "error contract.missingInput",
+    "error contract.type",
+    "error contract.type",
+    "error run.onFailure",
+    "warning contract.unknownInput"
+  ],
+  "unknown-field.yaml": [
+    "warning expr.unknownField",
+    "warning expr.unknownField"
+  ],
+  "unreachable-step.yaml": [
+    "warning step.unreachable"
+  ],
+  "duplicate-key.yaml": [
+    "error yaml.invalid"
+  ]
 }

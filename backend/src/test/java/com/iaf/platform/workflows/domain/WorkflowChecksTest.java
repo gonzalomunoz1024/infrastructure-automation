@@ -224,4 +224,11 @@ class WorkflowChecksTest {
                 """;
         assertThat(WorkflowChecks.check(yaml, CheckContext.EMPTY)).isEmpty();
     }
+
+    @Test
+    void aKeyWrittenTwiceIsAYamlErrorNamingTheKey() throws IOException {
+        List<Problem> problems = WorkflowChecks.check(Files.readString(FIXTURES.resolve("duplicate-key.yaml")), SampleContentTest.context());
+        assertThat(problems).extracting(Problem::code).containsExactly("yaml.invalid");
+        assertThat(problems.get(0).message()).contains("Duplicate field").contains("examples");
+    }
 }

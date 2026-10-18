@@ -224,6 +224,7 @@ finding is a `Problem` (docs/api.md). Among them:
 
 | Code                      | Level   | Finding                                                                 |
 |---------------------------|---------|-------------------------------------------------------------------------|
+| `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`): a duplicate would silently keep one value, so both twins and the designer refuse it |
 | `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
 | `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
 | `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |
