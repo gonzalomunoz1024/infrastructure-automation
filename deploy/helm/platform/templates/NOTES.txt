@@ -31,8 +31,8 @@ backend.config to a vault: reference, or name an existing Secret in audit.signin
 Note: temporal.payloadKey is blank, so Temporal's histories hold the jobs' inputs and the steps'
 results in clear. Set it to a vault: reference to a 32-byte AES key (openssl rand -base64 32).
 {{- end }}
-{{- if and .Values.worker.enabled (not .Values.postgres.enabled) }}
+{{- if and .Values.worker.enabled (not .Values.mongo.enabled) }}
 
-Note: the workers run apart from the API but postgres.enabled is false, so the API does not see
-the progress the workers record. Turn on postgres, or set worker.enabled=false.
+Note: the workers run apart from the API but mongo.enabled is false, so the API does not see
+the progress the workers record. Turn on mongo, or set worker.enabled=false.
 {{- end }}

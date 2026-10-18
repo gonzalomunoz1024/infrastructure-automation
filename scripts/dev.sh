@@ -3,7 +3,7 @@
 #
 #   scripts/dev.sh              backend on :8080, frontend on :3000
 #   scripts/dev.sh --temporal   also runs the interpreter on a local Temporal dev server (:7233, UI :8233)
-#   scripts/dev.sh --postgres   keeps the platform's state in PostgreSQL (docker compose's on :5432, or SPRING_DATASOURCE_URL)
+#   scripts/dev.sh --mongo      keeps the platform's state in MongoDB (docker compose's on :27017, or SPRING_DATA_MONGODB_URI)
 #   scripts/dev.sh --no-frontend
 #
 # Stops both when you press Ctrl-C.
@@ -11,12 +11,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPORAL=false
-POSTGRES=false
+MONGO=false
 FRONTEND=true
 for arg in "$@"; do
   case "$arg" in
     --temporal) TEMPORAL=true ;;
-    --postgres) POSTGRES=true ;;
+    --mongo) MONGO=true ;;
     --no-frontend) FRONTEND=false ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
@@ -53,16 +53,16 @@ else
   SPRING_PROFILES="demo"
 fi
 
-if $POSTGRES; then
-  if [ -n "${SPRING_DATASOURCE_URL:-}" ]; then
-    echo "▸ postgres from SPRING_DATASOURCE_URL"
+if $MONGO; then
+  if [ -n "${SPRING_DATA_MONGODB_URI:-}" ]; then
+    echo "▸ mongodb from SPRING_DATA_MONGODB_URI"
   elif command -v docker >/dev/null; then
-    echo "▸ postgres on :5432 through docker compose"
-    (cd "$ROOT" && docker compose up -d --wait postgres)
+    echo "▸ mongodb on :27017 through docker compose"
+    (cd "$ROOT" && docker compose up -d --wait mongo)
   else
-    echo "--postgres needs docker, or SPRING_DATASOURCE_URL naming a PostgreSQL 16 database" >&2; exit 1
+    echo "--mongo needs docker, or SPRING_DATA_MONGODB_URI naming a MongoDB 7 or later" >&2; exit 1
   fi
-  SPRING_PROFILES="$SPRING_PROFILES,postgres"
+  SPRING_PROFILES="$SPRING_PROFILES,mongo"
 fi
 
 echo "▸ backend on :8080 (profiles: $SPRING_PROFILES)"

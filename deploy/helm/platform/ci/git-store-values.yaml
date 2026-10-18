@@ -7,9 +7,9 @@ api:
 worker:
   enabled: false
 
-postgres:
+mongo:
   enabled: true
-  passwordSecret: { name: platform-db, key: password }
+  uriSecret: { name: platform-db, key: uri }
 
 content:
   repository: https://git.example.com/platform/content.git

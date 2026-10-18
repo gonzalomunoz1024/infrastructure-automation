@@ -1,8 +1,8 @@
-# Local stack: a Temporal dev server (with its UI), PostgreSQL for the platform's state, the backend
+# Local stack: a Temporal dev server (with its UI), MongoDB for the platform's state, the backend
 # running the interpreter on it, and the frontend served by Vite.
 #
 #   docker compose up temporal temporal-ui        just Temporal, then scripts/dev.sh --temporal
-#   docker compose up postgres                    just PostgreSQL, then scripts/dev.sh --postgres
+#   docker compose up mongo                       just MongoDB, then scripts/dev.sh --mongo
 #   docker compose up                              everything: app on :3000, api on :8080, Temporal UI on :8233
 #   docker compose -f docker-compose.yml -f docker-compose.temporal-postgres.yml up
 #                                                  the same with Temporal self-hosted on PostgreSQL (auto-setup)
@@ -32,21 +32,18 @@ services:
       temporal:
         condition: service_healthy
 
-  postgres:
-    # the backend's postgres profile: workflow versions, change requests, jobs, evidence and the
-    # other stores live here, so they survive a restart. Trust auth and a port on 127.0.0.1 only
-    # suit a local stack; elsewhere the backend gets SPRING_DATASOURCE_PASSWORD from a secret store.
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: platform
-      POSTGRES_USER: platform
-      POSTGRES_HOST_AUTH_METHOD: trust
+  mongo:
+    # the backend's mongo profile: workflow versions, change requests, jobs, evidence and the
+    # other stores live here, so they survive a restart. No authentication and a port on 127.0.0.1
+    # only suit a local stack; elsewhere SPRING_DATA_MONGODB_URI, with its credentials, comes from a
+    # secret store.
+    image: mongo:8.0
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:27017:27017"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mongo-data:/data/db
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "platform", "-d", "platform"]
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -56,9 +53,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      SPRING_PROFILES_ACTIVE: demo,temporal,postgres
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/platform
-      SPRING_DATASOURCE_USERNAME: platform
+      SPRING_PROFILES_ACTIVE: demo,temporal,mongo
+      SPRING_DATA_MONGODB_URI: mongodb://mongo:27017/platform
       PLATFORM_TEMPORAL_TARGET: temporal:7233
       PLATFORM_TEMPORAL_UI_URL: http://localhost:8233
       PLATFORM_CONTENT_DIR: /content
@@ -71,7 +67,7 @@ services:
     depends_on:
       temporal:
         condition: service_healthy
-      postgres:
+      mongo:
         condition: service_healthy
 
   frontend:
@@ -110,5 +106,5 @@ services:
 
 volumes:
   temporal-data:
-  postgres-data:
+  mongo-data:
   frontend-modules:

@@ -16,7 +16,7 @@ under `workflows/`. Nothing in `backend/` or `frontend/` knows what a VM is.
 # Java 21, Maven 3.9, Node 22
 scripts/dev.sh                 # backend on :8080 (demo profile), frontend on :3000
 scripts/dev.sh --temporal      # the same, with the interpreter running on a local Temporal dev server
-scripts/dev.sh --postgres      # the same, with the platform's state in PostgreSQL (docker compose's, or SPRING_DATASOURCE_URL)
+scripts/dev.sh --mongo         # the same, with the platform's state in MongoDB (docker compose's, or SPRING_DATA_MONGODB_URI)
 ```
 
 Open <http://localhost:3000>. The demo profile keeps everything in memory, answers provider calls
@@ -27,7 +27,7 @@ resources the jobs worked on. Provider health, canary gates and audit evidence a
 that history, not written into it. Switch users in Settings (`gonzalo` is an admin and approver,
 `junior` can only run).
 
-With `--postgres` the stores live in PostgreSQL instead of memory: published workflows, change
+With `--mongo` the stores live in MongoDB instead of memory: published workflows, change
 requests, providers with their canary candidates and releases, the wizard's review evidence, jobs
 with their steps and events, provider-call samples, audit evidence and the rest survive a restart,
 and the demo history is written once per database.
@@ -110,9 +110,9 @@ replaces its demo twin when the profile is on: `temporal` (the interpreter as a 
 workflow), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
 provider calls, and Ansible, Terraform, script and http steps run for real, see
-[How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `postgres` (the
-stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DATASOURCE_URL`,
-`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3:
+[How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `mongo` (the
+stores in MongoDB, each creating its indexes on start; the connection string, credentials
+included, is `SPRING_DATA_MONGODB_URI`), `s3` (the artifact store on S3:
 playbook uploads, saved plans and each ended job's log lines and plan, see
 [Data](docs/architecture.md#data)), `github`
 (change requests as pull requests on the content repo). The Git workflow store (JGit over the
@@ -120,9 +120,11 @@ content repo, a branch per change request) is not a profile but the property
 `platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`); it commits to its own clone only, so
 it runs on one backend instance (see
 [The Git workflow store](docs/architecture.md#the-git-workflow-store)).
-`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them; adding
+`docker-compose.yml` starts a Temporal dev server, MongoDB and the stack on them; adding
 `-f docker-compose.temporal-postgres.yml` runs Temporal self-hosted on its own PostgreSQL
-(`temporalio/auto-setup`) instead of the dev server's SQLite file.
+(`temporalio/auto-setup`) instead of the dev server's SQLite file. That PostgreSQL is Temporal's
+alone: Temporal's server keeps its state in PostgreSQL, MySQL, Cassandra or SQLite, not MongoDB,
+while the platform keeps its own in MongoDB.
 
 ## Identity and OIDC
 
@@ -209,13 +211,13 @@ draft.
 `/ws` to the backend) build images that run as a non-root user, and so does each provider SDK
 example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter's workers
 (`platform.roles`), the web app and one deployment per provider worker against an external
-Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
+Temporal and MongoDB. It references secrets by the names of existing Secrets or through Vault
 agent annotations and never holds a value; `values.yaml` describes every setting and
 `ci/full-values.yaml` shows them all in use. `content.repository` is cloned into the backend
 pods, and with it the workflows live in the repository (the Git workflow store,
 `content.gitStore`): the chart then runs one backend pod whose clone a volume keeps
 (`content.gitStore.existingClaim`, `ci/git-store-values.yaml`) and refuses more;
-`content.gitStore.enabled: false` keeps the workflows in PostgreSQL, seeded from the repository, for
+`content.gitStore.enabled: false` keeps the workflows in MongoDB, seeded from the repository, for
 any number of replicas. `audit.signingKeySecret` names the Secret holding
 the key that signs evidence seals (without it every pod signs with a random key per run, and a
 seal cannot be verified after a restart), `audit.siem` turns on the SIEM export and
@@ -257,7 +259,7 @@ status, duration percentiles, failed steps by workflow and error class, failed j
 channel, and the provider calls' outcome, success rate and p95), which
 `metrics.grafanaDashboard.enabled` ships as a ConfigMap with the `grafana_dashboard` label for
 Grafana's sidecar.
-With the `postgres` profile the idempotency keys, the per-team job quotas and the in-app inbox
+With the `mongo` profile the idempotency keys, the per-team job quotas and the in-app inbox
 live in the database too (`idempotency_keys`, `quota_buckets`, `inbox_*`), so every API replica
 sees the same keys and draws from the same buckets; without it they are in memory, per instance,
 so run one API replica or route each caller to the same replica.
@@ -276,9 +278,9 @@ on a host the proxy does not guard; the API checks those tokens itself.
 ## Checks
 
 ```bash
-cd backend && mvn -B -q test        # backend unit, handler and adapter tests (JDBC adapters on H2)
-cd backend && PLATFORM_TEST_POSTGRES_URL='jdbc:postgresql://localhost:5432/platform?user=platform' mvn -B -q test
-                                    # the same, with the JDBC adapters also on PostgreSQL (CI does this)
+cd backend && mvn -B -q test        # backend unit, handler and in-memory adapter tests
+cd backend && PLATFORM_TEST_MONGO_URI='mongodb://localhost:27017' mvn -B -q test
+                                    # the same, plus the MongoDB adapters and a two-start test (CI does this)
 npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java

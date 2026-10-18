@@ -117,5 +117,5 @@ from that telemetry, and an alert can itself trigger a workflow.
   `ResourceType` files, the step kinds and the expression language.
 - [API](api.md): every endpoint, the generated ones, MCP, service accounts and scopes.
 - [Architecture](architecture.md): the slices, the interpreter, the engines and the profiles
-  for production (PostgreSQL, Temporal, Vault, OPA, OIDC).
+  for production (MongoDB, Temporal, Vault, OPA, OIDC).
 - [Contributing](contributing.md): build, tests and conventions.
