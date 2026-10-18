@@ -1,0 +1,260 @@
+/*
+ * The designer canvas: xyflow's base.css plus the Atlas look in n8n's shapes. Only Atlas
+ * variables; dark mode comes with them.
+ */
+
+.iaf-canvas .react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--color-text-tertiary);
+  --xy-connectionline-stroke: var(--color-neutral);
+  --xy-connectionline-stroke-width: 2;
+  --xy-selection-background-color: var(--halo-accent);
+  --xy-selection-border: 1px solid var(--color-neutral);
+  --xy-resize-background-color: var(--color-neutral);
+  --xy-minimap-background-color: var(--color-surface);
+  --xy-minimap-mask-background-color: var(--color-surface-secondary);
+  --xy-minimap-mask-stroke-color: var(--color-border-light);
+  --xy-minimap-node-background-color: var(--color-border);
+  --xy-attribution-background-color: transparent;
+}
+
+.iaf-canvas .react-flow__pane.selection,
+.iaf-canvas .react-flow__pane.draggable {
+  cursor: default;
+}
+.iaf-canvas .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.iaf-canvas .react-flow__selection,
+.iaf-canvas .react-flow__nodesselection-rect {
+  border-radius: 6px;
+}
+.iaf-canvas .react-flow__nodesselection-rect {
+  background: transparent;
+  border: 1px dashed var(--color-neutral);
+}
+
+.iaf-canvas .react-flow__node:focus-visible {
+  outline: none;
+}
+.iaf-canvas .react-flow__node:focus-visible .iaf-node-body {
+  box-shadow: 0 0 0 4px var(--halo-accent);
+}
+
+/* handles: an 8px square in, 8px circles out, accent while connecting */
+.iaf-canvas .react-flow__handle.iaf-handle {
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  min-height: 8px;
+  border: none;
+  background: var(--color-text-tertiary);
+  transition:
+    scale 0.15s var(--ease-out-quint),
+    background-color 0.15s;
+}
+.iaf-canvas .react-flow__handle.iaf-handle::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+.iaf-canvas .react-flow__handle.iaf-handle--in {
+  width: 8px;
+  height: 14px;
+  min-height: 14px;
+  border-radius: 2px;
+}
+.iaf-canvas .react-flow__handle.iaf-handle--out {
+  border-radius: 9999px;
+}
+.iaf-canvas .react-flow__handle.iaf-handle--undo {
+  border-radius: 9999px;
+  background: var(--color-warning);
+}
+.iaf-canvas .react-flow__handle.iaf-handle--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.iaf-canvas .react-flow__handle.iaf-handle.connectionindicator:hover,
+.iaf-canvas .react-flow__handle.iaf-handle.connectingfrom,
+.iaf-canvas .react-flow__handle.iaf-handle.connectingto,
+.iaf-canvas .react-flow__handle.iaf-handle.valid {
+  background: var(--color-neutral);
+  scale: 1.5;
+}
+
+/* edges */
+.iaf-canvas .iaf-edge-path {
+  fill: none;
+  stroke: var(--color-text-tertiary);
+  stroke-width: 2;
+  opacity: 0.55;
+  transition:
+    stroke 0.15s,
+    opacity 0.15s;
+}
+.iaf-canvas .iaf-edge-arrow {
+  fill: var(--color-text-tertiary);
+  opacity: 0.55;
+  transition:
+    fill 0.15s,
+    opacity 0.15s;
+}
+.iaf-canvas .is-hover .iaf-edge-path,
+.iaf-canvas .is-highlighted .iaf-edge-path {
+  stroke: var(--color-text-secondary);
+  opacity: 1;
+}
+.iaf-canvas .is-hover .iaf-edge-arrow,
+.iaf-canvas .is-highlighted .iaf-edge-arrow {
+  fill: var(--color-text-secondary);
+  opacity: 1;
+}
+.iaf-canvas .is-selected .iaf-edge-path {
+  stroke: var(--color-neutral);
+  opacity: 1;
+}
+.iaf-canvas .is-selected .iaf-edge-arrow {
+  fill: var(--color-neutral);
+  opacity: 1;
+}
+.iaf-canvas .is-success .iaf-edge-path {
+  stroke: var(--color-healthy);
+  opacity: 1;
+}
+.iaf-canvas .is-success .iaf-edge-arrow {
+  fill: var(--color-healthy);
+  opacity: 1;
+}
+.iaf-canvas .is-running .iaf-edge-path {
+  stroke: var(--color-neutral);
+  opacity: 1;
+  stroke-dasharray: 6 5;
+  animation: iaf-dash 0.6s linear infinite;
+}
+.iaf-canvas .is-running .iaf-edge-arrow {
+  fill: var(--color-neutral);
+  opacity: 1;
+}
+.iaf-canvas .is-muted .iaf-edge-path {
+  stroke-dasharray: 4 5;
+  opacity: 0.4;
+}
+.iaf-canvas .is-undo .iaf-edge-path {
+  stroke: var(--color-warning);
+  stroke-dasharray: 3 4;
+  opacity: 0.75;
+}
+.iaf-canvas .is-undo .iaf-edge-arrow {
+  fill: var(--color-warning);
+  opacity: 0.75;
+}
+@keyframes iaf-dash {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+/* minimap and attribution */
+.iaf-canvas .react-flow__minimap {
+  border: 1px solid var(--color-border-light);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+.iaf-canvas .react-flow__minimap-node.iaf-mini-trigger {
+  fill: var(--color-text-tertiary);
+}
+.iaf-canvas .react-flow__minimap-node.iaf-mini-sticky {
+  fill: var(--color-warning-bg);
+}
+.iaf-canvas .react-flow__attribution {
+  color: var(--color-text-tertiary);
+  opacity: 0.6;
+}
+.iaf-canvas .react-flow__attribution a {
+  color: inherit;
+}
+
+/* sticky notes */
+.iaf-canvas .react-flow__resize-control.handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--color-surface);
+}
+
+/* the expression editor: a transparent textarea over its highlighted mirror */
+.iaf-expr {
+  position: relative;
+}
+.iaf-expr__mirror,
+.iaf-expr__input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 18px;
+  padding: 7px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  letter-spacing: normal;
+}
+.iaf-expr__mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--color-text-primary);
+  border: 0;
+  margin: 0;
+}
+.iaf-expr__input {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  resize: none;
+  overflow: hidden;
+  border: 0;
+  margin: 0;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--color-text-primary);
+}
+.iaf-expr__input::placeholder {
+  color: var(--color-text-tertiary);
+}
+.iaf-expr__input::selection {
+  background: var(--halo-accent);
+  color: transparent;
+}
+.iaf-expr__token {
+  border-radius: 3px;
+  color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+}
+.iaf-expr__token--error {
+  color: var(--color-critical);
+  background: var(--color-critical-bg);
+}
+
+/* a parameter that takes the dragged Input field */
+.iaf-drop-target {
+  outline: 2px dashed color-mix(in srgb, var(--color-neutral) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+.iaf-drop-target.is-over {
+  outline-style: solid;
+  outline-color: var(--color-neutral);
+  background: var(--halo-accent);
+}
+/* the Input pane's draggable fields */
+.iaf-map-pill {
+  cursor: grab;
+}
+.iaf-map-pill:active {
+  cursor: grabbing;
+}

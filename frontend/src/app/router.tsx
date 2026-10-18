@@ -8,6 +8,7 @@ import { useMemo, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEve
 export type RouteName =
   | 'home'
   | 'workflows'
+  | 'workflow-new'
   | 'workflow'
   | 'workflow-versions'
   | 'catalog'
@@ -43,6 +44,7 @@ export interface RouteDef {
 export const ROUTES: RouteDef[] = [
   { name: 'home', pattern: '/', title: 'Home' },
   { name: 'workflows', pattern: '/workflows', title: 'Workflows' },
+  { name: 'workflow-new', pattern: '/workflows/new', title: 'New workflow', fullBleed: true },
   { name: 'workflow', pattern: '/workflows/:name', title: 'Designer', fullBleed: true },
   { name: 'workflow-versions', pattern: '/workflows/:name/versions', title: 'Versions' },
   { name: 'catalog', pattern: '/catalog', title: 'Catalog' },

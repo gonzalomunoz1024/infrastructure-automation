@@ -1,0 +1,215 @@
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { mockDesignerApi, type MockApi } from './designer-fixtures'
+
+/*
+ * The designer against a mocked backend (the backend does not run here): the real
+ * vm-restart workflow, the real providers, and every endpoint the designer calls.
+ */
+
+function node(page: Page, id: string): Locator {
+  return page.locator(`.react-flow__node[data-id="${id}"]`)
+}
+
+async function openVmRestart(page: Page): Promise<MockApi> {
+  const api = await mockDesignerApi(page)
+  await page.goto('/#/workflows/vm-restart')
+  await expect(node(page, 'step:checkVmExists')).toBeVisible()
+  return api
+}
+
+test.describe('workflow designer', () => {
+  test('opens vm-restart on the canvas with its triggers, steps and connections', async ({ page }) => {
+    await openVmRestart(page)
+    for (const id of ['trigger:api', 'trigger:0', 'step:checkVmExists', 'step:noBackupRunning', 'step:approval', 'step:restart', 'step:validate', 'step:notifyDone', 'error-trigger', 'step:notifyOwner']) {
+      await expect(node(page, id)).toBeVisible()
+    }
+    await expect(node(page, 'step:restart')).toContainText('Restart with Ansible')
+    await expect(page.getByTestId('rf__edge-step:checkVmExists:main->step:noBackupRunning')).toBeAttached()
+    await expect(page.getByTestId('rf__edge-step:validate:main->step:notifyDone')).toBeAttached()
+    expect(await page.locator('.react-flow__edge').count()).toBeGreaterThanOrEqual(8)
+    await expect(page.getByRole('tab', { name: 'Editor' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('issues-button')).toHaveAccessibleName('Issues: 0')
+  })
+
+  test('double-clicking a step opens its detail view with input, parameters and output', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:checkVmExists').dblclick()
+    const ndv = page.getByTestId('ndv')
+    await expect(ndv).toBeVisible()
+    await expect(ndv.getByTestId('ndv-input')).toBeVisible()
+    await expect(ndv.getByTestId('ndv-parameters')).toBeVisible()
+    await expect(ndv.getByTestId('ndv-output')).toBeVisible()
+    await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('Check VM exists')
+    await expect(ndv.getByRole('tab', { name: /Parameters/ })).toHaveAttribute('aria-selected', 'true')
+    await page.keyboard.press('Escape')
+    await expect(ndv).toBeHidden()
+  })
+
+  test('Tab opens the node creator and choosing Wait inserts a step', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:noBackupRunning').click()
+    await page.keyboard.press('Tab')
+    const creator = page.getByTestId('node-creator')
+    await expect(creator).toBeVisible()
+    await expect(creator.getByRole('combobox', { name: 'Search steps' })).toBeFocused()
+    await page.keyboard.type('wait')
+    await expect(creator.getByRole('option').first()).toContainText('Wait')
+    await page.keyboard.press('Enter')
+    // like n8n, the new step opens straight away
+    await expect(page.getByTestId('ndv')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(node(page, 'step:wait')).toBeVisible()
+    await expect(page.getByTestId('rf__edge-step:noBackupRunning:main->step:wait')).toBeAttached()
+    await expect(page.getByTestId('rf__edge-step:wait:main->step:approval')).toBeAttached()
+  })
+
+  test('⌘S saves the draft with the workflow definition', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await node(page, 'step:restart').click()
+    await page.keyboard.press('Delete')
+    await expect(node(page, 'step:restart')).toHaveCount(0)
+    await expect(page.getByTestId('save-button')).toHaveText('Save')
+    await page.keyboard.press('ControlOrMeta+s')
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const definition = api.drafts[0].definition as { metadata: { name: string }; workflow: { do: Record<string, unknown>[] } }
+    expect(definition.metadata.name).toBe('vm-restart')
+    expect(definition.workflow.do.map((s) => Object.keys(s)[0])).toEqual(['checkVmExists', 'noBackupRunning', 'approval', 'validate', 'notifyDone'])
+    await expect(page.getByTestId('save-button')).toHaveText('Saved')
+  })
+
+  test('Delete removes a step and ⌘Z brings it back', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:approval').click()
+    await page.keyboard.press('Delete')
+    await expect(node(page, 'step:approval')).toHaveCount(0)
+    await expect(page.getByTestId('rf__edge-step:noBackupRunning:main->step:restart')).toBeAttached()
+    await page.keyboard.press('ControlOrMeta+z')
+    await expect(node(page, 'step:approval')).toBeVisible()
+  })
+
+  test('the Issues drawer lists a problem once a required field is cleared', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:notifyDone').dblclick()
+    const ndv = page.getByTestId('ndv')
+    const channel = ndv.getByRole('textbox', { name: /^Channel/ })
+    await expect(channel).toHaveValue('#compute-ops')
+    await channel.fill('')
+    await expect(ndv.getByText('notify needs a channel')).toBeVisible()
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await expect(ndv).toBeHidden()
+    const issues = page.getByTestId('issues-button')
+    await expect(issues).toHaveAccessibleName('Issues: 1')
+    await issues.click()
+    const list = page.getByTestId('issues-list')
+    await expect(list).toContainText('notify needs a channel')
+    await expect(list).toContainText('Tell the channel')
+  })
+
+  test('the YAML drawer shows the workflow as YAML', async ({ page }) => {
+    await openVmRestart(page)
+    await page.getByRole('button', { name: 'YAML' }).click()
+    const editor = page.getByTestId('yaml-editor')
+    await expect(editor).toBeVisible()
+    await expect(editor).toHaveValue(/name: vm-restart/)
+    await expect(editor).toHaveValue(/checkVmExists:/)
+  })
+
+  test('dragging a field of the input onto a parameter maps it as an expression', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:notifyDone').dblclick()
+    const ndv = page.getByTestId('ndv')
+    const pill = ndv.getByTestId('ndv-input').getByRole('button', { name: /^powerState: drag onto a parameter/ })
+    await expect(pill).toBeVisible()
+    const expression = /map (\{\{.*\}\})$/.exec((await pill.getAttribute('title')) ?? '')?.[1]
+    expect(expression).toBeTruthy()
+    await pill.dragTo(ndv.getByRole('textbox', { name: /^Channel/ }))
+    await expect(ndv.getByRole('textbox', { name: /^Channel/ })).toHaveValue(expression ?? '')
+  })
+
+  test('Test workflow runs a dry run and marks every step on the canvas', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await page.getByTestId('test-workflow').click()
+    const dialog = page.getByRole('dialog', { name: 'Test workflow' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: /Test workflow/ }).click()
+    await expect.poll(() => api.dryRuns.length).toBe(1)
+    await expect(page.getByText(/Test passed/)).toBeVisible()
+    await expect(node(page, 'step:notifyDone').locator('[data-run]')).toHaveAttribute('data-run', 'success')
+  })
+
+  test('Executions shows the jobs of the workflow on its canvas', async ({ page }) => {
+    await openVmRestart(page)
+    await page.getByRole('tab', { name: 'Executions' }).click()
+    const view = page.getByTestId('executions')
+    await expect(view.getByRole('button', { name: /job_1042/ })).toBeVisible()
+    await expect(view.getByRole('button', { name: /job_1041/ })).toBeVisible()
+    await expect(view.getByText('web-1042: host unreachable').first()).toBeVisible()
+    await expect(node(page, 'step:restart').locator('[data-run]')).toHaveAttribute('data-run', 'failure')
+    await expect(node(page, 'step:checkVmExists').locator('[data-run]')).toHaveAttribute('data-run', 'success')
+    await page.getByTestId('debug-in-editor').click()
+    await expect(page.getByRole('tab', { name: 'Editor' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByText('Debugging in the editor')).toBeVisible()
+  })
+
+  test('Settings edits the workflow outside the steps without moving the page', async ({ page }) => {
+    await openVmRestart(page)
+    await page.getByRole('tab', { name: 'Settings' }).click()
+    const view = page.getByTestId('settings-view')
+    await expect(view.getByRole('heading', { name: 'Workflow' })).toBeVisible()
+    await expect(view.getByTestId('input-schema')).toContainText('Required')
+    await view.getByRole('navigation', { name: 'Settings sections' }).getByRole('button', { name: 'Outputs' }).click()
+    await expect(view.getByRole('heading', { name: 'Outputs' })).toBeInViewport()
+    // the designer header stays where it was
+    await expect(page.getByRole('tab', { name: 'Settings' })).toBeInViewport()
+    const title = view.getByRole('region', { name: 'Workflow' }).getByRole('textbox', { name: /^Title/ })
+    await title.fill('VM reboot')
+    await expect(page.getByTitle('Rename workflow')).toHaveText('VM reboot')
+    await expect(page.getByTestId('save-button')).toHaveText('Save')
+  })
+
+  test('Publish opens a change request and merging it starts the canary', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await page.getByRole('button', { name: 'Publish', exact: true }).click()
+    await page.getByTestId('publish-confirm').click()
+    await expect.poll(() => api.publishes.length).toBe(1)
+    expect(api.publishes[0].strategy).toBe('canary')
+    const checks = page.getByTestId('cr-checks')
+    await expect(checks.getByRole('listitem')).toHaveCount(3)
+    await page.getByTestId('cr-merge').click()
+    const merged = page.getByTestId('publish-merged')
+    await expect(merged).toContainText('Published 1.3.0, canary at 10%')
+    await expect(merged.getByRole('link', { name: /Follow the release/ })).toHaveAttribute('href', /releases\/rel_9/)
+  })
+
+  test('the assistant drafts a change and applies it to the canvas', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await page.getByRole('button', { name: 'Assistant' }).click()
+    const panel = page.getByTestId('assistant-panel')
+    await expect(panel).toBeVisible()
+    await panel.getByRole('textbox', { name: 'Message the assistant' }).fill('Tell #compute-ops before restarting')
+    await page.keyboard.press('Enter')
+    await expect(panel.getByText('Announce the restart in #compute-ops first.')).toBeVisible()
+    expect(api.assistant).toEqual(['Tell #compute-ops before restarting'])
+    await panel.getByRole('button', { name: 'Apply to canvas' }).click()
+    await expect(node(page, 'step:announce')).toBeVisible()
+    await expect(panel.getByRole('button', { name: 'Applied' })).toBeDisabled()
+  })
+
+  test('a new workflow starts from the dialog and the first save creates it', async ({ page }) => {
+    const api = await mockDesignerApi(page)
+    await page.goto('/#/workflows/new')
+    const dialog = page.getByRole('dialog', { name: 'New workflow' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByLabel('Title').fill('Disk resize')
+    await dialog.getByLabel('Noun').fill('disk')
+    await dialog.getByLabel('Verb').fill('resize')
+    await dialog.getByRole('button', { name: 'Create workflow' }).click()
+    await expect(node(page, 'placeholder').getByRole('button', { name: 'Add first step' })).toBeVisible()
+    await expect(node(page, 'trigger:api')).toBeVisible()
+    await page.keyboard.press('ControlOrMeta+s')
+    await expect.poll(() => api.created.length).toBe(1)
+    expect((api.created[0].definition as { metadata: { name: string } }).metadata.name).toBe('disk-resize')
+    await expect(page).toHaveURL(/#\/workflows\/disk-resize$/)
+    await expect(node(page, 'trigger:api')).toBeVisible()
+  })
+})

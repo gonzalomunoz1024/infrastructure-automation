@@ -33,6 +33,7 @@ describe('resolve', () => {
       ['/', 'home'],
       ['/workflows', 'workflows'],
       ['/workflows/vm-restart', 'workflow'],
+      ['/workflows/new', 'workflow-new'],
       ['/workflows/vm-restart/versions', 'workflow-versions'],
       ['/catalog', 'catalog'],
       ['/catalog/vm-restart', 'catalog-run'],
