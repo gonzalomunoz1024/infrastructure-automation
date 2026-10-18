@@ -675,6 +675,12 @@ class RunsCommandHandlerTest {
         w.projection.put(batch.toBuilder().batch(batch.batch().withRows(rows).withStoppedReason("stopped")).status(JobStatus.FAILED).endedAt(Instant.now()).build());
         published.clear();
 
+        StepVerifier.create(handler.retryFailedRows(batchId).contextWrite(c -> CurrentIdentity.with(c, OUTSIDER)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining(batchId))
+                .verify();
+        assertThat(w.projection.get(batchId).orElseThrow().status()).as("a stranger re-queues nothing").isEqualTo(JobStatus.FAILED);
+        assertThat(published).isEmpty();
+
         CommandAccepted acc = handler.retryFailedRows(batchId).contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
 
         assertThat(acc.id()).isEqualTo(batchId);

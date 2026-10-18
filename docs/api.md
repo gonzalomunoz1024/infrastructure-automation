@@ -288,7 +288,7 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
-Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`) is for its requester, a member of the
+Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`, a batch's `:retry-failed-rows`) is for its requester, a member of the
 workflow's owner team, anyone the workflow's `policy.rbac` roles or approver groups name, and
 admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
 (`policy.rbac`), and approvals by their group.

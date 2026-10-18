@@ -242,9 +242,10 @@ public class RunsCommandHandler implements RunsCommands {
     }
 
     /**
-     * Who may steer a job (cancel it, or retry, skip and abort a step waiting for attention): its
-     * requester, a member of the workflow's owner team, anyone the workflow's {@code policy.rbac}
-     * or approver groups name, and admins. Anyone else is refused with the job's id.
+     * Who may steer a job (cancel it, retry a batch's failed rows, or retry, skip and abort a step
+     * waiting for attention): its requester, a member of the workflow's owner team, anyone the
+     * workflow's {@code policy.rbac} or approver groups name, and admins. Anyone else is refused
+     * with the job's id.
      */
     static boolean canControl(Identity who, Job job) {
         if (who.admin() || (who.id() != null && who.id().equals(job.requesterId()))) {
@@ -351,6 +352,7 @@ public class RunsCommandHandler implements RunsCommands {
     public Mono<CommandAccepted> retryFailedRows(String batchJobId) {
         return CurrentIdentity.current().flatMap(who -> {
             Job job = job(batchJobId);
+            requireControl(who, job);
             if (!job.isBatch() || job.batch() == null) {
                 throw new ConflictException("Job " + batchJobId + " is not a batch");
             }
