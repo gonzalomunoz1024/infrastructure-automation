@@ -70,7 +70,36 @@ docs/               architecture, config as code, API, design language, contribu
 
 ## A tour in pictures
 
-<!-- screenshots: filled in by the end-to-end run, see docs/screenshots -->
+The demo profile, as a new user meets it (light mode, 1440x900). Every page below is live in the demo: `scripts/dev.sh`, then <http://localhost:3000>.
+
+![Workflows: every published workflow, its owner, version and release state](docs/screenshots/02-workflows.png)
+*Workflows: every published workflow, its owner, version and release state*
+
+![Designer: the n8n-style canvas for a workflow](docs/screenshots/03-designer.png)
+*Designer: the n8n-style canvas for a workflow*
+
+![Run form: inputs from the schema; Preview shows the blast radius before Run](docs/screenshots/05-run-form.png)
+*Run form: inputs from the schema; Preview shows the blast radius before Run*
+
+![Job detail: steps, inputs and outputs; a failed step waits for a decision](docs/screenshots/07-job-attention.png)
+*Job detail: steps, inputs and outputs; a failed step waits for a decision*
+
+![Bulk run: one job per target, in waves, stopping on errors](docs/screenshots/08-batch.png)
+*Bulk run: one job per target, in waves, stopping on errors*
+
+![Providers: health, success rate and timings per provider](docs/screenshots/10-providers.png)
+*Providers: health, success rate and timings per provider*
+
+![A running canary: traffic split, gates and history](docs/screenshots/15-release-canary.png)
+*A running canary: traffic split, gates and history*
+
+![Change request: checks, diff and the release strategy](docs/screenshots/17-change-request.png)
+*Change request: checks, diff and the release strategy*
+
+![Add provider: onboarding from an OpenAPI document, a playbook repo or a module](docs/screenshots/21-provider-wizard.png)
+*Add provider: onboarding from an OpenAPI document, a playbook repo or a module*
+
+More pages: [Catalog](docs/screenshots/04-catalog.png), [Jobs](docs/screenshots/06-jobs.png), [Approvals](docs/screenshots/09-approvals.png), [Provider detail](docs/screenshots/11-provider.png), [Resources](docs/screenshots/12-resources.png), [Resource lineage](docs/screenshots/13-lineage.png), [Releases](docs/screenshots/14-releases.png), [A rolled-back canary](docs/screenshots/16-release-rolled-back.png), [Audit](docs/screenshots/18-audit.png), [Audit evidence](docs/screenshots/19-evidence.png), [Assistant](docs/screenshots/20-assistant.png).
 
 ## Production adapters
 

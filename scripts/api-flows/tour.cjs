@@ -22,7 +22,7 @@ const items = (d) => (Array.isArray(d) ? d : d.items || [])
     ['02-workflows', '/workflows', 'Workflows: every published workflow, its owner, version and release state'],
     ['03-designer', '/workflows/vm-restart', 'Designer: the n8n-style canvas for a workflow'],
     ['04-catalog', '/catalog', 'Catalog: the generated run forms, one per published workflow'],
-    ['05-run-form', '/catalog/vm-restart', 'Run form: inputs from the schema, a blast-radius preview before the run'],
+    ['05-run-form', '/catalog/vm-restart', 'Run form: inputs from the schema; Preview shows the blast radius before Run'],
     ['06-jobs', '/jobs', 'Jobs: two weeks of history, live jobs on top'],
     ['07-job-attention', attention ? `/jobs/${attention.id}` : null, 'Job detail: steps, inputs and outputs; a failed step waits for a decision'],
     ['08-batch', running ? `/jobs/${running.id}` : null, 'Bulk run: one job per target, in waves, stopping on errors'],
