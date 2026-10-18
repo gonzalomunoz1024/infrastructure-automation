@@ -507,6 +507,10 @@ read 502.
 | POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
 | POST `/assistant/playbooks:sync` | → `{ playbooks: { file; macro; playbookId; action: 'created' \| 'updated' \| 'unchanged' }[] }`. Creates the Devin playbooks of `devin/*.md` that Devin does not have (by macro) and updates the ones whose title, body or schema changed; also at startup with `platform.assistant.sync-playbooks-on-startup`. Admins only |
 
+A session belongs to the identity that started it: only that identity reads it or sends it
+messages, plus an admin who is a person; anyone else gets 403 naming the session and who
+started it. A service account, admin or not, only uses the sessions it started itself.
+
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
 `validation`, `dryRun`).

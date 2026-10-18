@@ -211,6 +211,8 @@ if sid:
     check('done' in types_ or '"done"' in body, 'assistant stream had no done event')
     s, sd = call('GET', A + f'/assistant/sessions/{sid}', expect=200)
     check(isinstance(sd, dict) and sd.get('draft'), 'assistant session has no draft')
+    s, _ = call('GET', A + f'/assistant/sessions/{sid}', user='ana', expect=403, note="ana reads gonzalo's session")
+    s, _ = call('POST', A + f'/assistant/sessions/{sid}/messages', {'text': 'add an approval'}, user='ana', headers={'Accept': 'text/event-stream'}, expect=403, note="ana writes to gonzalo's session")
 s, d1 = call('POST', A + '/assistant/drafts', {'description': 'Create a database and register it'}, expect=200)
 check(isinstance(d1, dict) and d1.get('workflowYaml'), f'assistant draft: {str(d1)[:200]}')
 s, _ = call('POST', A + '/assistant/drafts', {}, expect=400, note='draft without description')
