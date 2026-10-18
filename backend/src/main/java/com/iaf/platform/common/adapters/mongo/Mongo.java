@@ -2,16 +2,21 @@ package com.iaf.platform.common.adapters.mongo;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.bson.BsonBinary;
+import org.bson.BsonBinarySubType;
+import org.bson.BsonInvalidOperationException;
 import org.bson.BsonReader;
 import org.bson.BsonType;
 import org.bson.BsonWriter;
 import org.bson.Document;
+import org.bson.Transformer;
 import org.bson.codecs.BsonTypeClassMap;
 import org.bson.codecs.Codec;
 import org.bson.codecs.CollectionCodecProvider;
@@ -23,6 +28,7 @@ import org.bson.codecs.MapCodecProvider;
 import org.bson.codecs.configuration.CodecRegistries;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.conversions.Bson;
+import org.bson.types.Binary;
 import org.bson.types.Decimal128;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
@@ -61,7 +67,7 @@ import reactor.core.scheduler.Schedulers;
  * never parsed as extended JSON, so a key such as
  * {@code $ref} in an imported schema stays a key, and read back with {@link #codecs}, so a part of
  * a schema that holds {@code $id} beside {@code $ref} stays a document and an integer beyond a long
- * comes back as that integer. Unknown fields are ignored on the way back, so a document written
+ * comes back as that integer, however long. Unknown fields are ignored on the way back, so a document written
  * before a record grew a field still reads, and records are their components (no is-getter
  * discovery, so {@code Job.isBatch()} does not shadow {@code batch}). Instants that a query
  * compares are also kept as epoch nanoseconds ({@link #nanos}), which order exactly.
@@ -96,29 +102,71 @@ public class Mongo {
      * The codecs documents are written and read with: the driver's, with two changes so a record
      * comes back as stored. A sub-document stays a document: the driver reads one that has both
      * {@code $ref} and {@code $id} keys as a DBRef, dropping its other keys, and a JSON schema may
-     * well have both. And an integer beyond a long (an OpenAPI {@code uint64} bound), which the
-     * driver cannot write, is stored as a Decimal128, exact to 34 digits (a longer one is refused,
-     * never rounded); a Decimal128 reads back as the integer it holds.
+     * well have both. And an integer beyond a long (an OpenAPI {@code uint64} bound, or any number
+     * in a run's input or a step's response), which the driver cannot write, is stored as a
+     * Decimal128 up to 34 digits and, longer, as a binary of the user-defined subtype holding its
+     * decimal digits ({@link #LONG_INTEGER}); either reads back as that integer, a BigInteger.
      */
     static CodecRegistry codecs(CodecRegistry driver) {
         BsonTypeClassMap types = new BsonTypeClassMap(Map.of(BsonType.DECIMAL128, Number.class));
+        Transformer longIntegers = Mongo::longInteger;
         return CodecRegistries.fromRegistries(
                 CodecRegistries.fromCodecs(new BigIntegerCodec(), new DecimalCodec()),
-                CodecRegistries.fromProviders(new DocumentCodecProvider(types), new CollectionCodecProvider(types),
-                        new IterableCodecProvider(types), new MapCodecProvider(types)),
+                CodecRegistries.fromProviders(new DocumentCodecProvider(types, longIntegers), new CollectionCodecProvider(types, longIntegers),
+                        new IterableCodecProvider(types, longIntegers), new MapCodecProvider(types, longIntegers)),
                 driver);
     }
 
-    /** An integer beyond a long, as a Decimal128. */
+    /** The binary subtype an integer too long for a Decimal128 is stored as: its decimal digits, an optional minus sign first, in ASCII. */
+    static final byte LONG_INTEGER = BsonBinarySubType.USER_DEFINED.getValue();
+    /** The most digits a Decimal128 holds exactly. */
+    private static final int DECIMAL128_DIGITS = 34;
+
+    /** A stored value as read: a binary holding a long integer's digits becomes that integer, anything else stays as it is. */
+    private static Object longInteger(Object value) {
+        if (value instanceof Binary b && b.getType() == LONG_INTEGER) {
+            BigInteger integer = digits(b.getData());
+            return integer == null ? value : integer;
+        }
+        return value;
+    }
+
+    /** The integer these ASCII digits (an optional minus sign first) spell; null when they spell none. */
+    private static BigInteger digits(byte[] data) {
+        int start = data.length > 1 && data[0] == '-' ? 1 : 0;
+        if (data.length == start) {
+            return null;
+        }
+        for (int i = start; i < data.length; i++) {
+            if (data[i] < '0' || data[i] > '9') {
+                return null;
+            }
+        }
+        return new BigInteger(new String(data, StandardCharsets.US_ASCII));
+    }
+
+    /** An integer beyond a long: a Decimal128 up to 34 digits, else a {@link #LONG_INTEGER} binary of its digits. */
     private static final class BigIntegerCodec implements Codec<BigInteger> {
 
         @Override
         public void encode(BsonWriter writer, BigInteger value, EncoderContext context) {
-            writer.writeDecimal128(new Decimal128(new BigDecimal(value)));
+            BigDecimal exact = new BigDecimal(value);
+            if (exact.precision() <= DECIMAL128_DIGITS) {
+                writer.writeDecimal128(new Decimal128(exact));
+            } else {
+                writer.writeBinaryData(new BsonBinary(LONG_INTEGER, value.toString().getBytes(StandardCharsets.US_ASCII)));
+            }
         }
 
         @Override
         public BigInteger decode(BsonReader reader, DecoderContext context) {
+            if (reader.getCurrentBsonType() == BsonType.BINARY && reader.peekBinarySubType() == LONG_INTEGER) {
+                BigInteger integer = digits(reader.readBinaryData().getData());
+                if (integer == null) {
+                    throw new BsonInvalidOperationException("a binary of subtype " + LONG_INTEGER + " that holds no integer");
+                }
+                return integer;
+            }
             return reader.readDecimal128().bigDecimalValue().toBigIntegerExact();
         }
 
