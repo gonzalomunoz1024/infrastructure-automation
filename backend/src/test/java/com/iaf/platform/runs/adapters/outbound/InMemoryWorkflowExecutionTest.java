@@ -474,6 +474,100 @@ class InMemoryWorkflowExecutionTest {
                 """.formatted(run);
     }
 
+    /** A child whose second step fails for good after its first, which has compensation, succeeded. */
+    private static final String UNDOABLE = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-undoable, title: Undoable, noun: thing, verb: undo, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - get:
+                    name: Get
+                    call: provider
+                    with: { provider: vsphere, action: vm.get, input: { id: vm-1042 } }
+                    compensate:
+                      - undo:
+                          name: Undo
+                          notify: { channel: "#x", message: "undo {{ $json.name }}" }
+                - broken:
+                    name: Broken
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1042 } }
+                    pauseOnFailure: false
+            """;
+
+    /** A child that waits ten minutes. */
+    private static final String SLOW = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-slow, title: Slow, noun: thing, verb: wait, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - pause:
+                    name: Pause
+                    wait: { duration: 10m }
+            """;
+
+    @Test
+    void aFailedChildRollsBackBeforeTheParentFails() {
+        when(w.workflows.resolve(eq("t-undoable"), any())).thenReturn(Mono.just(RunsTestWiring.record(yaml(UNDOABLE))));
+        Job job = start(yaml(parent("{ workflow: t-undoable, version: \"^1\" }")), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job child = w.projection.children(job.id()).get(0);
+        assertThat(child.status()).isEqualTo(JobStatus.ROLLED_BACK);
+        assertThat(child.step("get").status()).isEqualTo(StepStatus.COMPENSATED);
+        assertThat(child.step("undo").status()).isEqualTo(StepStatus.SUCCEEDED);
+        assertThat(child.step("undo").output().path("message").asText()).isEqualTo("undo web-1042");
+        Job failed = job(job.id());
+        assertThat(failed.step("child").status()).isEqualTo(StepStatus.FAILED);
+        assertThat(failed.step("after")).as("the parent fails at the run step").isNull();
+        assertThat(published.stream().filter(e -> e.type().equals("job.finished")).map(DomainEvent::aggregateId))
+                .as("the child has rolled back before the parent ends").containsSubsequence(child.id(), job.id());
+    }
+
+    @Test
+    void cancellingTheParentCancelsItsChildren() {
+        when(w.workflows.resolve(eq("t-slow"), any())).thenReturn(Mono.just(RunsTestWiring.record(yaml(SLOW))));
+        Job job = start(yaml(parent("{ workflow: t-slow, version: \"^1\" }")), Map.of());
+        RunsTestWiring.await(WAIT, () -> w.projection.children(job.id()).stream().anyMatch(c -> c.step("pause") != null));
+        String childId = w.projection.children(job.id()).get(0).id();
+
+        w.execution.cancel(job.id(), "mateo").block();
+
+        awaitStatus(job.id(), JobStatus.CANCELLED);
+        awaitStatus(childId, JobStatus.CANCELLED);
+        assertThat(job(job.id()).step("after")).isNull();
+    }
+
+    @Test
+    void aUseStepChecksAccessByDefaultAndAPolicyRefusalFailsItAsForbidden() {
+        when(w.resources.use(eq("image"), eq("img-team-x"), any(), anyBoolean()))
+                .thenReturn(Mono.error(new com.iaf.platform.common.domain.ForbiddenException("Policy denies team-compute the use of image img-team-x (owner team-x)")));
+        when(w.resources.use(eq("image"), eq("img-open"), any(), anyBoolean()))
+                .thenAnswer(i -> Mono.just(RunsTestWiring.resource("image", "img-open", "ready")));
+        Job job = start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: use-others, title: Use others, noun: image, verb: borrow, owner: team-compute, version: 1.0.0 }
+                workflow:
+                  do:
+                    - useOpen:
+                        use: { type: image, id: img-open, checkAccess: false }
+                    - useIt:
+                        use: { type: image, id: img-team-x }
+                        pauseOnFailure: false
+                """), Map.of(), SampleContent.ANA);
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        verify(w.resources).use(eq("image"), eq("img-open"), any(), eq(false));
+        verify(w.resources).use(eq("image"), eq("img-team-x"), argThat(who -> "ana".equals(who.id())), eq(true));
+        JobStep use = job(job.id()).step("useIt");
+        assertThat(use.status()).isEqualTo(StepStatus.FAILED);
+        assertThat(use.error().errorClass()).isEqualTo("forbidden");
+        assertThat(use.error().message()).contains("img-team-x");
+    }
+
     @Test
     void aChildTheRequesterMayNotInvokeFailsTheParentStepAsForbiddenAndNeverStarts() {
         when(w.workflows.resolve(eq("t-secret"), any())).thenReturn(Mono.just(RunsTestWiring.record(yaml(SECRET))));

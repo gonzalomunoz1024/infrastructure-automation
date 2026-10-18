@@ -659,6 +659,33 @@ class RunsCommandHandlerTest {
     }
 
     @Test
+    void aBatchOpensOneChangeTicketAndItsRowsNone() {
+        RunsCommandHandler real = w.commands();
+        List<JsonNode> items = List.of(SampleContent.json(Map.of("vmId", "vm-1", "reason", "patch night")), SampleContent.json(Map.of("vmId", "vm-2", "reason", "patch night")),
+                SampleContent.json(Map.of("vmId", "vm-3", "reason", "patch night")));
+        String batchId = real.startBatch(new StartBatch("vm-restart", null, items, null, new RolloutPolicy(List.of(100), 3, 50),
+                SampleContent.GONZALO, "batch", null)).block().id();
+
+        Job batch = w.projection.get(batchId).orElseThrow();
+        assertThat(batch.change()).isNotNull();
+        RunsTestWiring.await(java.time.Duration.ofSeconds(15), () -> w.projection.get(batchId).orElseThrow().pendingApproval(null) != null
+                || w.projection.get(batchId).orElseThrow().status().terminal());
+        Approval approval = w.projection.get(batchId).orElseThrow().pendingApproval(null);
+        if (approval != null) {
+            ApprovalDecision yes = ApprovalDecision.approved("gonzalo", "once for the batch", Instant.now());
+            w.events.approvalDecided(approval, yes);
+            w.execution.signalApproval(batchId, approval.id(), yes).block();
+        }
+        RunsTestWiring.await(java.time.Duration.ofSeconds(15), () -> w.projection.get(batchId).orElseThrow().status().terminal());
+
+        List<Job> rows = w.projection.children(batchId);
+        assertThat(rows).hasSize(3).allSatisfy(row -> assertThat(row.change()).as("a row opens no change of its own").isNull());
+        assertThat(w.changes.tickets()).as("one change ticket for the whole batch").hasSize(1);
+        assertThat(eventTypes().stream().filter("job.change-opened"::equals)).hasSize(1);
+        assertThat(w.projection.get(batchId).orElseThrow().approvals()).as("one approval for the whole batch").hasSizeLessThanOrEqualTo(1);
+    }
+
+    @Test
     void retryFailedRowsAddsAWaveWithTheFailedRowsAndRestartsTheBatch() {
         List<JsonNode> items = List.of(SampleContent.json(Map.of("vmId", "a")), SampleContent.json(Map.of("vmId", "b")),
                 SampleContent.json(Map.of("vmId", "c")), SampleContent.json(Map.of("vmId", "d")));
