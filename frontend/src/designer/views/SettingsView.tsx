@@ -417,7 +417,7 @@ export function SettingsView() {
   const counts = (prefix: string[]) => docProblems.filter((p) => p.field !== undefined && prefix.some((x) => p.field === x || p.field?.startsWith(`${x}.`) || p.field?.startsWith(`${x}[`))).length
   const navCount: Record<string, number> = {
     workflow: counts(['metadata']),
-    api: counts(['api.method', 'api.path', 'api.batch', 'api.response']),
+    api: counts(['api.method', 'api.path', 'api.batch', 'api.response', 'api.deprecated']),
     input: counts(['api.input']),
     mcp: counts(['mcp']),
     policy: counts(['policy']),
@@ -497,6 +497,17 @@ export function SettingsView() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <DocField field="api.response.status" label="Response status" type="number" placeholder="202" />
                 <DocField field="api.preview" label="Preview endpoint" type="boolean" description="Also serve :preview, which shows what a run would do without running it" />
+              </div>
+              <DocField field="api.response.body" label="Response body" type="object" description="The JSON Schema of a succeeded job's output: the keys of the workflow outputs. OpenAPI publishes it as the operation's output" />
+              <div className="rounded-md border border-stroke-light p-4" data-testid="api-deprecation">
+                <p className="text-footnote font-medium text-primary">Deprecation</p>
+                <p className="mt-0.5 text-caption text-tertiary">The operation keeps answering until the sunset date, with Deprecation, Sunset and Link headers; the catalog and the OpenAPI document mark it deprecated.</p>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  <DocField field="api.deprecated.since" label="Deprecated since" type="string" mono placeholder="2026-11-01" description="YYYY-MM-DD or an ISO date-time" />
+                  <DocField field="api.deprecated.sunset" label="Sunset" type="string" mono placeholder="2027-05-01" description="When the operation goes away; after since" />
+                  <DocField field="api.deprecated.replacement" label="Replacement" type="string" mono placeholder="/api/v2/vms/{vmId}:restart" description="The successor's path under /api/v<n>/, or a URL" />
+                  <DocField field="api.deprecated.message" label="Message" type="string" placeholder="Use the v2 restart" />
+                </div>
               </div>
               <div className="rounded-md border border-stroke-light p-4">
                 <p className="text-footnote font-medium text-primary">Batch runs</p>

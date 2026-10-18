@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react'
-import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
+import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
-import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, TryResult } from '../lib/types'
+import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
+import { useChangeRequestToast } from '../components/ChangeRequestToast'
 import { HealthBand } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { EffectTag, ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
+import { currentRelease, gateDot, isActiveRelease, stageLabel } from './ReleasesPage'
 
 type Tab = 'overview' | 'actions' | 'alerts' | 'changes' | 'yaml'
 
@@ -22,11 +24,14 @@ export default function ProviderPage({ route }: PageProps) {
   const name = route.params.name
   const [tab, setTab] = useState<Tab>('overview')
   const [editSlo, setEditSlo] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [trying, setTrying] = useState<{ action?: string } | null>(null)
   const [openAction, setOpenAction] = useState<ActionInfo | null>(null)
   const provider = useQuery(['provider', name], () => api.provider(name), { refetchInterval: 60_000 })
   const alerts = useQuery(['provider-alerts', name], () => api.providerAlerts(name), { enabled: !!provider.data })
+  const releases = useQuery(['releases', 'provider', name], () => api.releases({ provider: name }), { enabled: !!provider.data, refetchInterval: 30_000 })
   const data = provider.data
+  const release = currentRelease(releases.data)
 
   const daily = useMemo(() => (data?.daily ?? []).slice().sort((a, b) => a.date.localeCompare(b.date)), [data])
   // each point is a whole 24-hour window, labelled by the day it starts
@@ -138,6 +143,13 @@ export default function ProviderPage({ route }: PageProps) {
               </Tag>
               <span>{data.owner}</span>
               <Mono>{data.version}</Mono>
+              {release && isActiveRelease(release) && (
+                <TextLink to={pathFor('release', { id: release.id })}>
+                  <Tag size="sm" tone="accent" dot pulse={release.status === 'canary'} title="A new version is rolling out through a canary">
+                    {release.status === 'paused' ? 'canary paused' : 'canary'} {release.to} at {release.stagePercent}%
+                  </Tag>
+                </TextLink>
+              )}
               {data.environments.map((e) => (
                 <Tag key={e} size="sm" mono outline>
                   {e}
@@ -150,6 +162,14 @@ export default function ProviderPage({ route }: PageProps) {
         actions={
           data && (
             <>
+              <Button icon="edit" onClick={() => navigate(pathFor('provider-edit', { name: data.name }))} title="Test and try it again, then publish the next patch with the evidence">
+                Edit provider
+              </Button>
+              {data.type === 'openapi' && (
+                <Button icon="refresh" onClick={() => setRefreshing(true)}>
+                  Refresh spec
+                </Button>
+              )}
               <Button icon="settings" onClick={() => setEditSlo(true)}>
                 SLO
               </Button>
@@ -244,6 +264,22 @@ export default function ProviderPage({ route }: PageProps) {
           </div>
 
           <aside className="min-w-0 space-y-4">
+            {openChanges.length > 0 && (
+              <Card title="Pending change requests" subtitle="Edits waiting for review; merging publishes the next version." data-testid="pending-change-requests">
+                <ul className="space-y-2">
+                  {openChanges.map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                      <TextLink to={pathFor('change-request', { id: c.id })} mono>
+                        {c.id}
+                      </TextLink>
+                      <span className="min-w-0 flex-1 truncate text-primary">{c.title}</span>
+                      <Mono className="text-tertiary">{c.version}</Mono>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
+            {release && <ReleaseCard release={release} />}
             <Card title="Health">
               <HealthBand health={data.health} showReasons />
               {data.health.errorTrend?.length > 1 && (
@@ -348,6 +384,7 @@ export default function ProviderPage({ route }: PageProps) {
       )}
 
       {editSlo && data && <SloModal provider={data} onClose={() => setEditSlo(false)} />}
+      {refreshing && data && <RefreshSpecModal provider={data} onClose={() => setRefreshing(false)} />}
       {trying && data && <TryActionDrawer provider={data} preset={trying.action} onClose={() => setTrying(null)} />}
       {openAction && data && (
         <ActionDrawer
@@ -361,6 +398,42 @@ export default function ProviderPage({ route }: PageProps) {
         />
       )}
     </>
+  )
+}
+
+/** The provider's release: the version rolling out (or the last one), its stage, and the gates judged over its calls. */
+function ReleaseCard({ release }: { release: Release }) {
+  const active = isActiveRelease(release)
+  const passed = release.gates.filter((g) => g.passed).length
+  return (
+    <Card title={active ? 'Release in flight' : 'Last release'} actions={<StateTag status={release.status} size="sm" />} data-testid="provider-release">
+      <div className="space-y-3">
+        <p className="text-sm text-primary">
+          <Mono className="text-secondary">{release.from ?? 'new'}</Mono> → <Mono className="text-primary">{release.to}</Mono>
+          <span className="text-secondary"> · {stageLabel(release)}</span>
+        </p>
+        <ProgressBar size="sm" value={release.status === 'promoted' ? 100 : release.status === 'rolled-back' ? 0 : release.stagePercent} tone={release.status === 'rolled-back' ? 'critical' : release.status === 'paused' ? 'warning' : 'accent'} label={`${release.stagePercent}% of calls on ${release.to}`} showLabel showValue />
+        {release.gates.length > 0 && (
+          <ul className="space-y-1" aria-label="Gates">
+            {release.gates.map((g) => (
+              <li key={g.id} className="flex items-center gap-2 text-caption">
+                <StatusDot kind={gateDot(g)} />
+                <span className="min-w-0 flex-1 truncate text-primary" title={g.detail}>
+                  {g.label}
+                </span>
+                <span className="text-tertiary">{g.passed === null ? 'pending' : g.passed ? 'passed' : 'failed'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center justify-between gap-2 text-caption">
+          <span className="text-tertiary">
+            {passed}/{release.gates.length} gates · judged over calls
+          </span>
+          <TextLink to={pathFor('release', { id: release.id })}>{active ? 'Follow the release' : 'Open the release'}</TextLink>
+        </div>
+      </div>
+    </Card>
   )
 }
 
@@ -429,6 +502,7 @@ function SloModal({ provider, onClose }: { provider: ProviderDetail; onClose: ()
 function SloForm({ provider }: { provider: ProviderDetail }) {
   const close = useOverlayClose()
   const toast = useToast()
+  const notify = useChangeRequestToast()
   const [successRate, setSuccessRate] = useState(String(provider.slo?.successRate ?? 99))
   const [p95Ms, setP95Ms] = useState(String(provider.slo?.p95Ms ?? 1000))
   const [channel, setChannel] = useState(provider.slo?.channel ?? (typeof provider.alerts?.channel === 'string' ? provider.alerts.channel : ''))
@@ -437,13 +511,14 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
   const p95 = Number(p95Ms)
   const ok = Number.isFinite(rate) && rate > 0 && rate <= 100 && Number.isFinite(p95) && p95 > 0
 
+  // the SLO changes through a change request for the next patch version; a blank channel removes it
   const save = async () => {
     if (!ok) return
     setBusy(true)
     try {
-      await api.setProviderSlo(provider.name, { successRate: rate, p95Ms: p95, channel: channel.trim() || undefined })
+      const accepted = await api.setProviderSlo(provider.name, { successRate: rate, p95Ms: p95, channel: channel.trim() || undefined })
       invalidate('provider')
-      toast.success('SLO saved', `${provider.title} is judged against ${percent(rate, { digits: 1 })} and ${duration(p95)}.`)
+      notify(accepted, `The SLO of ${provider.title} (${percent(rate, { digits: 1 })}, ${duration(p95)})`)
       close()
     } catch (e) {
       toast.error('Could not save the SLO', errorMessage(e))
@@ -460,7 +535,7 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
       }}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <OverlayHeader title="Service level objective" subtitle="The health band turns amber, then red, when the provider falls below these." icon="settings" />
+      <OverlayHeader title="Service level objective" subtitle="The health band turns amber, then red, when the provider falls below these. Saving opens a change request." icon="settings" />
       <OverlayBody className="space-y-4">
         <Field label="Success rate (%)" htmlFor="slo-rate" required>
           <Input id="slo-rate" type="number" min={1} max={100} step={0.1} value={successRate} onChange={(e) => setSuccessRate(e.target.value)} autoFocus />
@@ -478,6 +553,65 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
         </Button>
         <Button type="submit" variant="primary" loading={busy} disabled={!ok}>
           Save SLO
+        </Button>
+      </OverlayFooter>
+    </form>
+  )
+}
+
+/* ----------------------------------------------------------------------------
+   Refresh the spec: read it again and open a change request for the next minor version
+   ------------------------------------------------------------------------- */
+
+function RefreshSpecModal({ provider, onClose }: { provider: ProviderDetail; onClose: () => void }) {
+  return (
+    <Modal onClose={onClose} width="max-w-md" label="Refresh spec">
+      <RefreshSpecForm provider={provider} />
+    </Modal>
+  )
+}
+
+function RefreshSpecForm({ provider }: { provider: ProviderDetail }) {
+  const close = useOverlayClose()
+  const toast = useToast()
+  const notify = useChangeRequestToast()
+  const [ref, setRef] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async () => {
+    setBusy(true)
+    try {
+      const accepted = await api.refreshSpec(provider.name, ref.trim() ? { ref: ref.trim() } : {})
+      invalidate('provider')
+      notify(accepted, `The spec of ${provider.title}`)
+      close()
+    } catch (e) {
+      toast.error('Could not refresh the spec', errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        void refresh()
+      }}
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      <OverlayHeader title="Refresh the spec" subtitle="Reads the spec again from where the file says: its URL, or Git at the file's ref. A changed spec opens a change request for the next minor version; the same document changes nothing." icon="refresh" />
+      <OverlayBody className="space-y-4">
+        <Field label="Ref" htmlFor="refresh-ref" hint="For a spec in Git: a tag, branch or commit to read instead of the file's ref; it is then written to the file. Leave empty to keep it.">
+          <Input id="refresh-ref" mono value={ref} onChange={(e) => setRef(e.target.value)} placeholder="v8.0.3" autoFocus />
+        </Field>
+      </OverlayBody>
+      <OverlayFooter>
+        <Button type="button" variant="ghost" onClick={close} disabled={busy}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" icon="refresh" loading={busy}>
+          Refresh spec
         </Button>
       </OverlayFooter>
     </form>
@@ -556,6 +690,7 @@ function ActionDrawer({ action, stats, onTry, onClose }: { action: ActionInfo; s
 
 function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDetail; preset?: string; onClose: () => void }) {
   const toast = useToast()
+  const notify = useChangeRequestToast()
   const [actionId, setActionId] = useState(preset ?? provider.actions[0]?.id ?? '')
   const action = provider.actions.find((a) => a.id === actionId)
   const [environment, setEnvironment] = useState(provider.environments[0] ?? 'dev')
@@ -581,13 +716,14 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
     }
   }
 
+  // "Use the real response": the schema inferred from the answer goes into the file's overrides through a change request
   const fix = async () => {
     if (!result || !result.response || typeof result.response !== 'object') return
     setBusy('fix')
     try {
-      await api.overrideAction(provider.name, { action: actionId, response: result.response as Record<string, unknown> })
+      const accepted = await api.overrideAction(provider.name, { action: actionId, response: result.response as Record<string, unknown> })
       invalidate('provider')
-      toast.success('Override recorded', `${actionId} now expects what the real API answered. The vendor spec stays untouched.`)
+      notify(accepted, `The override of ${actionId}, from the real answer,`)
     } catch (e) {
       toast.error('Could not record the override', errorMessage(e))
     } finally {
@@ -660,9 +796,10 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
               />
             )}
             {result.mismatches.length > 0 && (
-              <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <span className="text-caption text-tertiary">Opens a change request with the schema of this answer as the action's override.</span>
                 <Button icon="edit" loading={busy === 'fix'} onClick={() => void fix()}>
-                  Fix schema from response
+                  Use the real response
                 </Button>
               </div>
             )}
