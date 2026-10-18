@@ -36,7 +36,7 @@ final class LiveSteps {
     /** Previews and dry runs never touch a system: they answer as the demo runner does, from the provider samples. */
     static Mono<JsonNode> recorded(ProviderQueries providers, RunRequest r) {
         return providers.all().collectList().defaultIfEmpty(List.of())
-                .map(list -> RecordedWorld.automation(list, r.type(), r.with(), r.jobId(), r.seq(), r.checkMode()).output());
+                .map(list -> RecordedWorld.automation(r.providers(list), r.type(), r.with(), r.jobId(), r.seq(), r.checkMode()).output());
     }
 
     /** The step's own timeout, or the engine's. */

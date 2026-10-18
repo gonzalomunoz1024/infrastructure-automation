@@ -67,7 +67,8 @@ public class DemoAutomationRunner implements AutomationRunnerPort {
                 .delayElement(Duration.ofMillis(latency), Schedulers.boundedElastic()) // the job read below may be a database read
                 .map(list -> {
                     Instant at = clock.instant().minusMillis(latency);
-                    Answer answer = RecordedWorld.automation(list, request.type(), request.with(), request.jobId(), request.seq(), request.checkMode());
+                    Answer answer = RecordedWorld.automation(request.providers(list), request.type(), request.with(), request.jobId(), request.seq(),
+                            request.checkMode());
                     if (answer.provider() != null && !request.dryRun()) {
                         Job job = request.jobId() == null ? null : projection.get(request.jobId()).orElse(null);
                         telemetry.record(new CallSample(at, answer.provider().name(), answer.action().id(), request.environment(), true, latency, null,

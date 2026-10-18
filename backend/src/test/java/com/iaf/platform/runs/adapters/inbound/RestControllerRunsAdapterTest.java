@@ -24,14 +24,17 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.config.GlobalExceptionHandler;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.RunsCommandHandler;
 import com.iaf.platform.runs.application.RunsQueryHandler;
+import com.iaf.platform.runs.domain.DryRunResult;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartBatch;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartJob;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.TriggerResult;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.TriggerStarted;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -91,6 +94,18 @@ class RestControllerRunsAdapterTest {
                 .returnResult(JsonNode.class).getResponseBody().collectList().block();
         assertThat(typed).hasSize(2);
         assertThat(typed.get(1).path("type").asText()).isEqualTo("step");
+    }
+
+    @Test
+    void aDryRunWithDraftsReachesTheHandlerWithThem() {
+        WorkflowDefinition def = SampleContent.workflow("vm-restart");
+        JsonNode input = SampleContent.json(Map.of("vmId", "vm-1"));
+        List<ProviderDefinition> drafts = List.of(SampleContent.provider("vsphere"));
+        DryRunResult passed = new DryRunResult(true, List.of(), List.of(), null);
+        when(commands.dryRun(def, input, SampleContent.GONZALO, drafts)).thenReturn(Mono.just(passed));
+
+        assertThat(new RestControllerRunsAdapter(commands, queries).dryRun(def, input, SampleContent.GONZALO, drafts).block()).isSameAs(passed);
+        verify(commands).dryRun(def, input, SampleContent.GONZALO, drafts);
     }
 
     @Test

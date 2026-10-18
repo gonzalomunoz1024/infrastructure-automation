@@ -27,6 +27,7 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -426,15 +427,21 @@ public class RunsCommandHandler implements RunsCommands {
 
     @Override
     public Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who) {
+        return dryRun(definition, input, who, List.of());
+    }
+
+    @Override
+    public Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who, List<ProviderDefinition> drafts) {
         if (definition == null) {
             return Mono.error(new IllegalArgumentException("definition is required"));
         }
+        List<ProviderDefinition> own = drafts == null ? List.of() : List.copyOf(drafts);
         return identity(who).flatMap(w -> Mono.fromCallable(() -> {
             JsonNode in = InputDefaults.apply(definition.inputSchema(), input);
             Job job = JobFactory.newJob(definition, definition.version(), in, w, "dry-run", null, null, null, null, null, now())
                     .withId(Ids.next("dry"));
             List<RecordedStep> recorded = java.util.Collections.synchronizedList(new ArrayList<>());
-            PortStepExecutor executor = executors.dryRun(job, (prefix, e) -> recorded.add(new RecordedStep(prefix + e.id(), e)));
+            PortStepExecutor executor = executors.dryRun(job, (prefix, e) -> recorded.add(new RecordedStep(prefix + e.id(), e)), own);
             Outcome outcome = new WorkflowInterpreter(definition, executor, JobContext.of(job)).run();
             return dryRunResult(outcome, recorded);
         }).subscribeOn(Schedulers.boundedElastic()));
