@@ -353,6 +353,10 @@ answered when tried against dev, every error class has a match rule, every delet
 or an `effectDetail`, and no real response still disagrees with its schema after the
 `overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
 
+Endpoints are https URLs. The one exception is plain http to a loopback host (`localhost`,
+`127.x.x.x`, `::1`) for a provider under development on the same machine: the file checks let it
+through with a warning (`endpoints.https`) instead of an error.
+
 The spec can also live in a Git repository. The file then names the repository, the ref and the
 path, and pins the commit it was read from; calls look operations up in that commit, never in
 whatever the ref points at today:

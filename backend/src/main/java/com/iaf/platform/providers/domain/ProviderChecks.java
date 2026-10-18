@@ -6,6 +6,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -200,11 +201,27 @@ public final class ProviderChecks {
                     error(SCHEMA, "endpoints.url", null, field, "The " + env + " endpoint is not a URL: " + url);
                     return;
                 }
-                if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
+                boolean loopback = "http".equalsIgnoreCase(uri.getScheme()) && isLoopback(uri.getHost());
+                if (uri.getHost() == null || (!"https".equalsIgnoreCase(uri.getScheme()) && !loopback)) {
                     error(SCHEMA, "endpoints.https", null, field, "Endpoints are https URLs; " + env + " is " + url,
                             url.startsWith("http://") ? Fix.replace("Use https", "https://" + url.substring("http://".length())) : null);
+                } else if (loopback) {
+                    warning(SCHEMA, "endpoints.https", null, field, "The " + env + " endpoint is plain http to " + uri.getHost()
+                            + "; only a loopback host may skip TLS, for local development");
                 }
             });
+        }
+
+        /** localhost and the loopback addresses: the one place plain http is tolerated, for a provider under development. */
+        static boolean isLoopback(String host) {
+            if (host == null) {
+                return false;
+            }
+            String h = host.toLowerCase(Locale.ROOT);
+            if (h.startsWith("[") && h.endsWith("]")) {
+                h = h.substring(1, h.length() - 1);
+            }
+            return h.equals("localhost") || h.matches("127\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}") || h.equals("::1") || h.equals("0:0:0:0:0:0:0:1");
         }
 
         void typeSpecific(ProviderType type, JsonNode spec) {

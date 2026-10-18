@@ -88,6 +88,17 @@ class ProviderChecksTest {
     }
 
     @Test
+    void plainHttpToALoopbackHostIsOnlyAWarningForLocalDevelopment() {
+        for (String host : List.of("localhost:8080", "127.0.0.1:18083", "[::1]:9")) {
+            Result r = ProviderChecks.check(VALID.replace("dev: https://fleet-dev.example.com", "dev: \"http://" + host + "/api\""));
+            assertThat(codes(r)).as(host).containsExactly("warning endpoints.https");
+            assertThat(problem(r, "endpoints.https").orElseThrow().field()).isEqualTo("spec.endpoints.dev");
+        }
+        Result other = ProviderChecks.check(VALID.replace("dev: https://fleet-dev.example.com", "dev: http://127.0.0.1.example.com"));
+        assertThat(codes(other)).containsExactly("error endpoints.https");
+    }
+
+    @Test
     void anHttpProviderNeedsEndpointsButAnAnsibleOneDoesNot() {
         String http = VALID.replace("type: openapi", "type: http")
                 .replace("endpoints: { dev: https://fleet-dev.example.com, prod: https://fleet.example.com }", "")
