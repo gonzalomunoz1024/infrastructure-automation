@@ -21,6 +21,8 @@ import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.RunsTestWiring;
@@ -501,6 +503,47 @@ class InMemoryWorkflowExecutionTest {
         assertThat(types(batch.id())).contains("batch.wave").endsWith("job.finished");
         assertThat(published.stream().filter(e -> e.type().equals("batch.wave")).map(e -> e.data().path("status").asText()).toList())
                 .containsExactly("running", "done", "running", "done", "skipped");
+    }
+
+    @Test
+    void aBatchWhosePolicyDecisionNeedsApprovalAsksForItOnceEvenWithoutAnApprovalPolicy() {
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-judged, title: Judged, noun: thing, verb: touch, owner: team-x, version: 1.0.0 }
+                api:
+                  method: POST
+                  path: "/api/v1/things:judge"
+                  input: { type: object, required: [id], properties: { id: { type: string } } }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                    - ask:
+                        name: Ask
+                        approval: { group: compute-approvers, message: "ok?" }
+                """);
+        List<JsonNode> rows = List.of(SampleContent.json(Map.of("id", "vm-1")), SampleContent.json(Map.of("id", "vm-2")));
+        RolloutPolicy rollout = new RolloutPolicy(List.of(100), 2, 0);
+        PolicyDecision strictest = new PolicyDecision("needs-approval", List.of(new Rule("prod-approval", "needs-approval", "prod needs a sign-off")), "mock");
+        Job batch = JobFactory.newBatch(def, "1.0.0", rows, null, rollout, WaveScheduler.plan(2, rollout), SampleContent.GONZALO, "batch", null, strictest,
+                null, w.clock.instant());
+        w.projection.put(batch);
+        w.events.started(batch);
+        w.execution.start(batch).block();
+
+        awaitStatus(batch.id(), JobStatus.WAITING_APPROVAL);
+        Approval a = job(batch.id()).approvals().get(0);
+        assertThat(a.step()).isEqualTo("batch");
+        assertThat(a.group()).as("the group of the workflow's approval step, since the policy block names none").isEqualTo("compute-approvers");
+        w.events.approvalDecided(a, ApprovalDecision.approved("gonzalo", null, Instant.now()));
+        w.execution.signalApproval(batch.id(), a.id(), ApprovalDecision.approved("gonzalo", null, Instant.now())).block();
+
+        awaitStatus(batch.id(), JobStatus.SUCCEEDED);
+        assertThat(w.projection.children(batch.id())).hasSize(2).allMatch(c -> c.preApproved() && c.approvals().isEmpty());
+        assertThat(w.projection.approvals()).hasSize(1);
     }
 
     @Test

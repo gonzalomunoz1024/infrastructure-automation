@@ -42,6 +42,7 @@ import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
@@ -422,16 +423,16 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         waves.sort(Comparator.comparingInt(Wave::index));
         List<Wave> pending = waves.stream().filter(w -> "pending".equals(w.status())).toList();
 
-        // one approval for the whole batch
-        if (approvalRequired(def) && !batch.preApproved() && batch.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
-            WorkflowDefinition.ApprovalPolicy ap = def.policy().approval();
-            String timeout = ap.timeout() == null ? Durations.format(WorkflowInterpreter.DEFAULT_APPROVAL_TIMEOUT) : ap.timeout();
+        // one approval for the whole batch: the policy block asks for it, or the policy engine did for one of its rows
+        if (BatchApprovals.required(batch) && !batch.preApproved() && batch.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
+            String group = BatchApprovals.group(def);
+            String timeout = BatchApprovals.timeout(def);
             Approval a = Approval.builder()
                     .id(Ids.next("apr"))
                     .jobId(batch.id())
                     .workflow(batch.workflow())
                     .step("batch")
-                    .group(ap.group())
+                    .group(group)
                     .message("Run " + batch.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?")
                     .requestedAt(clock.instant())
                     .timeout(timeout)
@@ -450,7 +451,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             if (decision.isEmpty()) {
                 events.approvalDecided(a, new ApprovalDecision("expired", Identity.SYSTEM.id(), "nobody decided within " + timeout, clock.instant()));
                 skipWaves(batch.id(), pending, b, "approval expired");
-                finish(exec, new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + ap.group() + " decided within " + timeout));
+                finish(exec, new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + group + " decided within " + timeout));
                 return;
             }
             if (!decision.get().approved()) {
@@ -524,9 +525,6 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
                 .map(x -> "pending".equals(x.status())).orElse(true);
     }
 
-    private static boolean approvalRequired(WorkflowDefinition def) {
-        return def.policy() != null && def.policy().approval() != null && def.policy().approval().required();
-    }
 
     private long skipWaves(String batchId, List<Wave> waves, Batch b, String reason) {
         long rows = 0;

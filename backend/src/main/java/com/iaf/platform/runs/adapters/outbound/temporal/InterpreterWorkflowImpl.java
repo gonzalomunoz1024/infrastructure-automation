@@ -28,6 +28,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
@@ -44,7 +45,6 @@ import com.iaf.platform.runs.domain.WorkflowInterpreter;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowDefinition.ApprovalPolicy;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 
 import io.temporal.activity.ActivityOptions;
@@ -610,11 +610,11 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         waves.sort(Comparator.comparingInt(Wave::index));
         List<Wave> pending = waves.stream().filter(w -> "pending".equals(w.status())).toList();
 
-        // one approval for the whole batch
-        if (approvalRequired(def) && !job.preApproved() && job.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
-            ApprovalPolicy ap = def.policy().approval();
-            String timeout = ap.timeout() == null ? Durations.format(WorkflowInterpreter.DEFAULT_APPROVAL_TIMEOUT) : ap.timeout();
-            Approval a = records.batchApproval(ref, ap.group(), "Run " + job.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?",
+        // one approval for the whole batch: the policy block asks for it, or the policy engine did for one of its rows
+        if (BatchApprovals.required(job) && !job.preApproved() && job.approvals().stream().noneMatch(a -> a.status() == Approval.Status.APPROVED)) {
+            String group = BatchApprovals.group(def);
+            String timeout = BatchApprovals.timeout(def);
+            Approval a = records.batchApproval(ref, group, "Run " + job.title() + " on " + b.total() + " rows (" + waves.size() + " waves)?",
                     timeout, job.preview());
             Optional<ApprovalDecision> decision;
             try {
@@ -626,7 +626,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (decision.isEmpty()) {
                 events.approvalDecided(a, new ApprovalDecision("expired", Identity.SYSTEM.id(), "nobody decided within " + timeout, now()));
                 skipWaves(pending, b, "approval expired");
-                return new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + ap.group() + " decided within " + timeout);
+                return new Outcome(JobStatus.FAILED, null, "expired", "batch", "Nobody in " + group + " decided within " + timeout);
             }
             if (!decision.get().approved()) {
                 skipWaves(pending, b, "rejected by " + decision.get().by());
@@ -694,9 +694,6 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return Outcome.succeeded(output);
     }
 
-    private static boolean approvalRequired(WorkflowDefinition def) {
-        return def.policy() != null && def.policy().approval() != null && def.policy().approval().required();
-    }
 
     /** Mark waves skipped; once Temporal itself cancelled the workflow, the final event settles them in the projection instead. */
     private long skipWaves(List<Wave> waves, Batch b, String reason) {

@@ -37,6 +37,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
 import com.iaf.platform.runs.domain.ChangeTicket;
 import com.iaf.platform.runs.domain.DryRunResult;
 import com.iaf.platform.runs.domain.DryRunResult.DryRunStep;
@@ -85,6 +86,9 @@ import reactor.core.scheduler.Schedulers;
 public class RunsCommandHandler implements RunsCommands {
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
+
+    /** How many rows of a batch are judged by the policy engine at once. */
+    static final int POLICY_CONCURRENCY = 8;
 
     private final WorkflowQueries workflows;
     private final com.iaf.platform.providers.ports.inbound.ProviderQueries providers;
@@ -174,7 +178,7 @@ public class RunsCommandHandler implements RunsCommands {
             String channel = cmd.channel() == null ? "batch" : cmd.channel();
             return requireKnownResources(def, rows, true)
                     .then(requireBuildable(def, rows, true))
-                    .then(evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null))
+                    .then(evaluateBatchPolicy(who, def, rec.version(), rows, channel))
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true, who)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
@@ -557,7 +561,57 @@ public class RunsCommandHandler implements RunsCommands {
         return in;
     }
 
+    /**
+     * A batch is judged row by row: every row carries its own input and environment, so the
+     * engine sees each one. A deny of any row refuses the whole batch, naming the rows; the
+     * batch keeps the strictest decision, which asks for the batch approval when any row needs
+     * one ({@link BatchApprovals}).
+     */
+    private Mono<PolicyDecision> evaluateBatchPolicy(Identity who, WorkflowDefinition def, String version, List<JsonNode> rows, String channel) {
+        return Flux.range(0, rows.size())
+                .flatMapSequential(i -> judge(who, def, version, rows.get(i), channel, null).map(d -> Map.entry(i, d)), POLICY_CONCURRENCY)
+                .collectList()
+                .map(judged -> {
+                    List<Integer> denied = new ArrayList<>();
+                    List<String> why = new ArrayList<>();
+                    for (Map.Entry<Integer, PolicyDecision> e : judged) {
+                        if (BatchApprovals.DENY.equals(e.getValue().decision())) {
+                            denied.add(e.getKey());
+                            denyMessages(e.getValue()).forEach(m -> {
+                                if (!why.contains(m)) {
+                                    why.add(m);
+                                }
+                            });
+                        }
+                    }
+                    if (!denied.isEmpty()) {
+                        throw new ForbiddenException("Policy denies running " + def.name() + " for row" + (denied.size() == 1 ? " " : "s ") + denied
+                                + (why.isEmpty() ? "" : ": " + String.join("; ", why)));
+                    }
+                    return BatchApprovals.strictest(judged.stream().map(Map.Entry::getValue).toList(), policy.engine());
+                });
+    }
+
+    private static List<String> denyMessages(PolicyDecision decision) {
+        return decision.rules() == null ? List.of() : decision.rules().stream()
+                .filter(r -> BatchApprovals.DENY.equals(r.result()))
+                .map(PolicyPort.Rule::message)
+                .filter(m -> m != null && !m.isBlank())
+                .toList();
+    }
+
     private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
+        return judge(who, def, version, input, channel, parentId).map(decision -> {
+            if (BatchApprovals.DENY.equals(decision.decision())) {
+                List<String> why = denyMessages(decision);
+                throw new ForbiddenException("Policy denies running " + def.name() + (why.isEmpty() ? "" : ": " + String.join("; ", why)));
+            }
+            return decision;
+        });
+    }
+
+    /** The engine's answer for one input, an allow when it has none; a deny is the caller's to refuse. */
+    private Mono<PolicyDecision> judge(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
         ObjectNode context = F.objectNode();
         context.put("channel", channel);
         context.put("environment", JobFactory.environmentOf(input));
@@ -571,18 +625,7 @@ public class RunsCommandHandler implements RunsCommands {
             }
         }
         return policy.evaluate(new PolicyInput(PolicyPort.Phase.INVOKE, who, def.name(), version, input, context))
-                .defaultIfEmpty(PolicyDecision.allow(policy.engine()))
-                .map(decision -> {
-                    if (decision.decision() != null && "deny".equals(decision.decision())) {
-                        String why = decision.rules() == null ? "" : decision.rules().stream()
-                                .filter(r -> "deny".equals(r.result()))
-                                .map(PolicyPort.Rule::message)
-                                .filter(m -> m != null && !m.isBlank())
-                                .reduce((a, b) -> a + "; " + b).map(m -> ": " + m).orElse("");
-                        throw new ForbiddenException("Policy denies running " + def.name() + why);
-                    }
-                    return decision;
-                });
+                .defaultIfEmpty(PolicyDecision.allow(policy.engine()));
     }
 
     private Mono<Optional<Preview>> previewFor(Preview given, WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision, boolean topLevel,

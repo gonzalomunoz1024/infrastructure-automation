@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -316,6 +317,51 @@ class RunsCommandHandlerTest {
         StepVerifier.create(handler.startBatch(new StartBatch("mongodb-upgrade", null, tooMany, null, null, SampleContent.GONZALO, "batch", null)))
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("at most 50"))
                 .verify();
+    }
+
+    @Test
+    void aBatchIsJudgedRowByRowAndADeniedRowRefusesTheWholeBatchNamingTheRows() {
+        when(w.policy.evaluate(argThat(in -> in != null && "prod".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("prod-freeze", "deny", "prod is frozen until Monday")), "mock")));
+        List<JsonNode> items = List.of(
+                SampleContent.json(Map.of("vmId", "vm-1", "environment", "dev")),
+                SampleContent.json(Map.of("vmId", "vm-2", "environment", "prod")),
+                SampleContent.json(Map.of("vmId", "vm-3", "environment", "prod")));
+
+        StepVerifier.create(handler.startBatch(new StartBatch("vm-restart", null, items, null, null, SampleContent.GONZALO, "batch", null)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessageContaining("rows [1, 2]").hasMessageContaining("prod is frozen until Monday"))
+                .verify();
+
+        verify(w.policy, times(3)).evaluate(any());
+        verify(engine, never()).start(any());
+        assertThat(w.projection.all()).isEmpty();
+        assertThat(eventTypes()).doesNotContain("job.started");
+    }
+
+    @Test
+    void aBatchKeepsTheStrictestOfItsRowsDecisionsWithEveryRule() {
+        Rule prodRule = new Rule("prod-approval", "needs-approval", "prod needs a sign-off");
+        when(w.policy.evaluate(argThat(in -> in != null && "prod".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("needs-approval", List.of(prodRule), "mock")));
+        Rule devRule = new Rule("dev-open", "pass", "dev is open");
+        when(w.policy.evaluate(argThat(in -> in != null && "dev".equals(in.context().path("environment").asText()))))
+                .thenReturn(Mono.just(new PolicyDecision("allow", List.of(devRule), "mock")));
+        List<JsonNode> items = List.of(
+                SampleContent.json(Map.of("vmId", "vm-1", "environment", "dev")),
+                SampleContent.json(Map.of("vmId", "vm-2", "environment", "prod")),
+                SampleContent.json(Map.of("vmId", "vm-3", "environment", "dev")));
+
+        CommandAccepted acc = handler.startBatch(new StartBatch("vm-restart", null, items, null, null, SampleContent.GONZALO, "batch", null)).block();
+
+        Job batch = w.projection.get(acc.id()).orElseThrow();
+        assertThat(batch.policy().decision()).isEqualTo("needs-approval");
+        assertThat(batch.policy().needsApproval()).isTrue();
+        assertThat(batch.policy().rules()).as("every distinct rule of every row, once").containsExactly(devRule, prodRule);
+        assertThat(batch.environment()).as("the batch's environment is still its first row's").isEqualTo("dev");
+        assertThat(published.get(0).data().path("policy").path("decision").asText()).isEqualTo("needs-approval");
+        verify(w.policy, times(3)).evaluate(any());
+        verify(engine).start(any());
     }
 
     // ---------------------------------------------------------------- approvals
