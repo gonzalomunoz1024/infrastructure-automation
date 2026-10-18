@@ -27,6 +27,7 @@ platform:
     default-user: gonzalo
   execution:
     mode: in-memory       # in-memory | temporal; the temporal profile (end of this file) sets temporal
+  roles: api, worker      # api (the API) and/or worker (the interpreter's Temporal worker); one alone needs the temporal profile
   temporal:               # used with the temporal profile: the server, namespace and task queue of the interpreter
     target: 127.0.0.1:7233
     namespace: default

@@ -142,6 +142,15 @@ after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one,
 dies mid-call fails the step, which its retry policy can run again on another instance, instead of
 waiting out the step's timeout.
 
+`platform.roles` (`api, worker` by default) splits that work. An instance with the `api` role
+serves the REST API, the streams, MCP and the generated routes, and starts, signals and queries
+executions; one with the `worker` role runs the interpreter's worker. Without the `api` role an
+instance answers nothing but the actuator (health, metrics), so its probes and scrapes keep
+working. One role alone needs the `temporal` profile, and the context refuses to start without
+it. Since the worker that runs a job's steps is the instance that records them, API instances see
+that progress only through a shared job store (the Postgres adapters); with the in-memory
+projection every instance keeps both roles.
+
 ### Custom-code providers
 
 A provider of type `sdk` is code a team owns, served by the team's own worker on its own task

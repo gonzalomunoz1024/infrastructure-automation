@@ -16,7 +16,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.iaf.platform.config.ConditionalOnRole;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.config.Role;
 
 import io.temporal.activity.ActivityOptions;
 import io.temporal.client.WorkflowClient;
@@ -38,12 +40,13 @@ import io.temporal.worker.WorkflowImplementationOptions;
  * exactly), and one worker on {@code platform.temporal.task-queue} that runs
  * {@link InterpreterWorkflowImpl} and the Spring-managed {@link StepActivities}.
  *
- * <p>The worker runs inside the same Spring process as the API, because the activities need the
- * slice's ports (providers, resources, the projection, the event bus). That is the intended
- * deployment for now: every backend instance is an API node and an interpreter worker, and the
- * projection it feeds is that instance's own. {@link InterpreterWorkerLifecycle} starts polling once
- * the application is ready (retrying in the background while the server is not reachable yet, so
- * the API comes up either way) and drains the worker when the context closes.</p>
+ * <p>The worker runs inside the same Spring application as the API, because the activities need
+ * the slice's ports (providers, resources, the projection, the event bus). An instance is an API
+ * node and an interpreter worker unless {@code platform.roles} says otherwise: without the worker
+ * role it only starts, signals and queries executions, and neither the worker nor its lifecycle
+ * exists. {@link InterpreterWorkerLifecycle} starts polling once the application is ready
+ * (retrying in the background while the server is not reachable yet, so the API comes up either
+ * way) and drains the worker when the context closes.</p>
  */
 @Configuration
 @Profile("temporal")
@@ -94,6 +97,7 @@ public class TemporalConfig {
     }
 
     @Bean
+    @ConditionalOnRole(Role.WORKER)
     public Worker interpreterWorker(WorkerFactory factory, StepActivities activities, PlatformProperties props) {
         Worker worker = factory.newWorker(props.getTemporal().getTaskQueue());
         worker.registerWorkflowImplementationTypes(workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
@@ -122,6 +126,7 @@ public class TemporalConfig {
     }
 
     @Bean
+    @ConditionalOnRole(Role.WORKER)
     public InterpreterWorkerLifecycle interpreterWorkerLifecycle(WorkerFactory factory, Worker interpreterWorker, PlatformProperties props) {
         return new InterpreterWorkerLifecycle(factory, props.getTemporal());
     }
