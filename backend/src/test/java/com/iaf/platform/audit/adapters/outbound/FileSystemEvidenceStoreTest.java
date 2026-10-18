@@ -334,6 +334,7 @@ class FileSystemEvidenceStoreTest {
         assertThat(HashChain.verify(back.entries())).as("an intact chain").isEqualTo(-1);
         assertThat(store.cachedRecords()).isEqualTo(2);
         assertThat(store.records(EvidenceFilter.ALL)).hasSize(5);
+        EvidenceStoreContract.sameIds(store, EvidenceFilter.ALL, new EvidenceFilter(null, AT.plusSeconds(3), null, null));
     }
 
     /** The objects of a folder, counting what is read under one prefix. */

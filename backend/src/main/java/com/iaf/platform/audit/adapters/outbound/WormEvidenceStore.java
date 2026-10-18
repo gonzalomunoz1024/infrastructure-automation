@@ -219,6 +219,29 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         return all;
     }
 
+    /** Each record is read (from the bounded cache or its objects) and let go: only its id and time are kept. */
+    @Override
+    public List<String> recordIds(EvidenceFilter filter) {
+        EvidenceFilter f = filter == null ? EvidenceFilter.ALL : filter;
+        List<Map.Entry<Instant, String>> found = new ArrayList<>();
+        for (String folder : objects.folders(EVIDENCE)) {
+            String id = decode(folder);
+            EvidenceRecord r = cached(id);
+            if (r == null) {
+                synchronized (lock(id)) {
+                    r = current(id);
+                }
+            }
+            if (r != null && f.matches(r)) {
+                found.add(Map.entry(r.at() == null ? Instant.EPOCH : r.at(), id));
+            }
+        }
+        return found.stream()
+                .sorted(Map.Entry.<Instant, String>comparingByKey().reversed().thenComparing(Map.Entry.comparingByValue()))
+                .map(Map.Entry::getValue)
+                .toList();
+    }
+
     @Override
     public EvidenceRecord seal(String jobId, EvidenceRecord.Seal seal) {
         String id = requireId(jobId);

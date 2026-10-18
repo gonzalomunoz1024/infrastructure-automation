@@ -51,6 +51,15 @@ public interface EvidenceStore {
     List<EvidenceRecord> records(EvidenceFilter filter);
 
     /**
+     * The ids of the records {@link #records} answers, in its order, for a reader that takes them one
+     * at a time (an evidence pack). The stores answer it without holding every record at once; this
+     * default, for a store that cannot, lists the records.
+     */
+    default List<String> recordIds(EvidenceFilter filter) {
+        return records(filter).stream().map(EvidenceRecord::jobId).toList();
+    }
+
+    /**
      * The records that are not sealed and have entries, newest first, without their entries: what a
      * sealing run looks at. The stores answer it without reading a sealed record; this default,
      * for a store that cannot, filters every record.

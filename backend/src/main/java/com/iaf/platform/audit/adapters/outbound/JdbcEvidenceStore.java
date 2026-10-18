@@ -96,8 +96,25 @@ public class JdbcEvidenceStore implements EvidenceStore {
     @Override
     public List<EvidenceRecord> records(EvidenceFilter filter) {
         EvidenceFilter f = filter == null ? EvidenceFilter.ALL : filter;
-        StringBuilder where = new StringBuilder();
         List<Object> args = new ArrayList<>();
+        String where = where(f, args);
+        String sql = WITH_ENTRIES + (where.isEmpty() ? "" : " WHERE" + where.substring(4)) + " ORDER BY r.job_id, e.seq";
+        return withEntries(sql, args.toArray()).stream().filter(f::matches).sorted(NEWEST_FIRST).toList();
+    }
+
+    /** The ids from the records' own columns, newest first (a record with no request time last), no entry read. */
+    @Override
+    public List<String> recordIds(EvidenceFilter filter) {
+        EvidenceFilter f = filter == null ? EvidenceFilter.ALL : filter;
+        List<Object> args = new ArrayList<>();
+        String where = where(f, args);
+        return jdbc.query("SELECT r.job_id FROM evidence_records r" + (where.isEmpty() ? "" : " WHERE" + where.substring(4))
+                + " ORDER BY COALESCE(r.requested_ns, 0) DESC, r.job_id", (rs, i) -> rs.getString(1), args.toArray());
+    }
+
+    /** The filter as {@code AND} clauses on the records' columns (empty for none), its values added to {@code args}. */
+    private static String where(EvidenceFilter f, List<Object> args) {
+        StringBuilder where = new StringBuilder();
         if (f.workflow() != null) {
             where.append(" AND r.workflow = ?");
             args.add(f.workflow());
@@ -114,8 +131,7 @@ public class JdbcEvidenceStore implements EvidenceStore {
             where.append(" AND r.requested_ns < ?");
             args.add(Jdbc.nanos(f.to()));
         }
-        String sql = WITH_ENTRIES + (where.isEmpty() ? "" : " WHERE" + where.substring(4)) + " ORDER BY r.job_id, e.seq";
-        return withEntries(sql, args.toArray()).stream().filter(f::matches).sorted(NEWEST_FIRST).toList();
+        return where.toString();
     }
 
     /**
