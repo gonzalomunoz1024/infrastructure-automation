@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -29,6 +30,8 @@ import com.iaf.platform.assistant.ports.outbound.AssistantPort;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.AssistantRequest;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
@@ -109,6 +112,8 @@ class AssistantCommandHandlerTest {
     InMemorySessionStore store;
     WorkflowQueries workflows;
     MockEnvironment env;
+    final EventBus bus = new EventBus(CLOCK);
+    final List<DomainEvent> published = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -116,10 +121,11 @@ class AssistantCommandHandlerTest {
         workflows = mock(WorkflowQueries.class);
         when(workflows.check(anyString())).thenReturn(Mono.just(List.of()));
         env = new MockEnvironment().withProperty("server.port", "9090");
+        bus.register(published::add);
     }
 
     AssistantCommandHandler handler(AssistantPort agent) {
-        return new AssistantCommandHandler(agent, store, workflows, CLOCK, env);
+        return new AssistantCommandHandler(agent, store, workflows, CLOCK, env, bus);
     }
 
     static WorkflowDraft draft(String summary) {
@@ -150,6 +156,12 @@ class AssistantCommandHandlerTest {
         assertThat(fresh.status()).isEqualTo(AssistantSession.IDLE);
         assertThat(fresh.requester()).isEqualTo(WHO.id());
         assertThat(fresh.draft()).isNull();
+        assertThat(published).singleElement().satisfies(e -> {
+            assertThat(e.type()).isEqualTo(AssistantCommandHandler.SESSION_STARTED);
+            assertThat(e.aggregateId()).isEqualTo(id);
+            assertThat(e.actor()).isEqualTo(WHO.id());
+            assertThat(e.data().get("mode").asText()).isEqualTo("create");
+        });
 
         List<AssistantEvent> events = as(h.send(id, "restart a vm"));
         assertThat(events).extracting(AssistantEvent::type)

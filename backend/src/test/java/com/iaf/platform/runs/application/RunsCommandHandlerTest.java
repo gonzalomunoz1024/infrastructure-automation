@@ -313,6 +313,25 @@ class RunsCommandHandlerTest {
     }
 
     @Test
+    void anEscalatedApprovalMayBeDecidedByTheEscalationGroupToo() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        StepVerifier.create(handler.approve(a.id(), "mine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.ANA)))
+                .expectError(ForbiddenException.class)
+                .verify();
+
+        w.events.approvalEscalated(jobId, a.id(), a.step(), "data-approvers");
+
+        Approval escalated = w.projection.approval(a.id()).orElseThrow();
+        assertThat(escalated.escalatedTo()).isEqualTo("data-approvers");
+        assertThat(escalated.approverGroups()).containsExactly("compute-approvers", "data-approvers");
+        assertThat(w.queries.approval(a.id()).block().get("escalatedTo").asText()).isEqualTo("data-approvers");
+        CommandAccepted acc = handler.approve(a.id(), "covering").contextWrite(c -> CurrentIdentity.with(c, SampleContent.ANA)).block();
+        assertThat(acc.status()).isEqualTo("approved");
+        assertThat(w.projection.approval(a.id()).orElseThrow().decidedBy()).isEqualTo("ana");
+    }
+
+    @Test
     void rejectRecordsTheDecisionAsRejected() {
         String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
         Approval a = pendingApproval(jobId);

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.domain.Approval;
@@ -53,6 +54,33 @@ class RunsQueryHandlerTest {
 
     private void finished(String jobId, Instant at, JobStatus status, String errorClass, String failedStep) {
         w.events.finished(jobId, "vm-restart", def.version(), status, 1234, errorClass, failedStep, SampleContent.json(Map.of("vmName", "web")), null, at);
+    }
+
+    @Test
+    void jobViewsAndEventsAreRedactedButTheProjectionKeepsWhatRan() {
+        SecretValues secrets = new SecretValues();
+        secrets.remember("tok-resolved-123");
+        RunsQueryHandler redacting = new RunsQueryHandler(w.projection, secrets);
+        Instant t = Instant.parse("2026-10-17T10:00:00Z");
+        started("job_s", t, Map.of("vmId", "vm-1", "password", "hunter2"));
+        step("job_s", "checkVmExists", t.plusSeconds(1), SampleContent.json(Map.of("name", "web", "auth", "Bearer tok-resolved-123")), 1);
+        finished("job_s", t.plusSeconds(5), JobStatus.SUCCEEDED, null, null);
+
+        JsonNode detail = redacting.job("job_s").block();
+        assertThat(detail.path("input").path("password").asText()).isEqualTo("***");
+        assertThat(detail.path("input").path("vmId").asText()).isEqualTo("vm-1");
+        assertThat(detail.path("steps").get(0).path("output").path("auth").asText()).isEqualTo("Bearer ***");
+        assertThat(detail.path("steps").get(0).path("output").path("name").asText()).isEqualTo("web");
+        List<JsonNode> steps = redacting.steps("job_s").block();
+        assertThat(steps.get(0).path("output").path("auth").asText()).isEqualTo("Bearer ***");
+        List<JsonNode> events = redacting.events("job_s").collectList().block();
+        assertThat(events.toString()).doesNotContain("hunter2", "tok-resolved-123");
+        JsonNode replay = redacting.replay("job_s", null).block();
+        assertThat(replay.toString()).doesNotContain("tok-resolved-123");
+
+        Job kept = w.projection.get("job_s").orElseThrow();
+        assertThat(kept.input().path("password").asText()).isEqualTo("hunter2");
+        assertThat(kept.step("checkVmExists").output().path("auth").asText()).isEqualTo("Bearer tok-resolved-123");
     }
 
     @Test

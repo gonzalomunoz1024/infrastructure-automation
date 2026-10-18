@@ -30,6 +30,7 @@ import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.assistant.domain.WorkflowDraft;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.config.GlobalExceptionHandler;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
@@ -68,7 +69,7 @@ class RestControllerAssistantAdapterTest {
         InMemorySessionStore store = new InMemorySessionStore();
         WorkflowQueries workflows = mock(WorkflowQueries.class);
         when(workflows.check(anyString())).thenReturn(Mono.just(List.of()));
-        AssistantCommandHandler commands = new AssistantCommandHandler(AGENT, store, workflows, CLOCK, new MockEnvironment().withProperty("server.port", "8080"));
+        AssistantCommandHandler commands = new AssistantCommandHandler(AGENT, store, workflows, CLOCK, new MockEnvironment().withProperty("server.port", "8080"), new EventBus(CLOCK));
         AssistantQueryHandler queries = new AssistantQueryHandler(store);
         client = WebTestClient.bindToController(new RestControllerAssistantAdapter(commands, queries))
                 .controllerAdvice(new GlobalExceptionHandler())

@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
@@ -13,6 +14,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
@@ -22,7 +24,12 @@ import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** The read side of the runs slice, served from the {@link JobProjection}. */
+/**
+ * The read side of the runs slice, served from the {@link JobProjection}. Every view of a job's
+ * input, step input and output and events is redacted on the way out (secret-looking fields and
+ * secrets the platform resolved become {@code ***}); the projection itself keeps what ran, so a
+ * rerun replays the real values.
+ */
 @Service
 @Primary
 public class RunsQueryHandler implements RunsQueries {
@@ -31,9 +38,16 @@ public class RunsQueryHandler implements RunsQueries {
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final JobProjection projection;
+    private final SecretValues secrets;
 
     public RunsQueryHandler(JobProjection projection) {
+        this(projection, new SecretValues());
+    }
+
+    @Autowired
+    public RunsQueryHandler(JobProjection projection, SecretValues secrets) {
         this.projection = projection;
+        this.secrets = secrets;
     }
 
     @Override
@@ -51,13 +65,13 @@ public class RunsQueryHandler implements RunsQueries {
     @Override
     public Mono<JsonNode> job(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> JobViews.detail(j, projection.children(j.id())));
+                .map(j -> secrets.redact(JobViews.detail(j, projection.children(j.id()))));
     }
 
     @Override
     public Flux<JsonNode> events(String id) {
         return Flux.defer(() -> projection.has(id)
-                ? projection.events(id).map(JobViews::event)
+                ? projection.events(id).map(e -> secrets.redact(JobViews.event(e)))
                 : Flux.error(new NotFoundException("job", id)));
     }
 
@@ -115,7 +129,7 @@ public class RunsQueryHandler implements RunsQueries {
                 });
                 steps.add(row);
             }
-            return (JsonNode) out;
+            return secrets.redact(out);
         });
     }
 
@@ -167,6 +181,6 @@ public class RunsQueryHandler implements RunsQueries {
     @Override
     public Mono<List<JsonNode>> steps(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> j.steps().stream().map(s -> (JsonNode) JobViews.step(s)).toList());
+                .map(j -> j.steps().stream().map(s -> secrets.redact(JobViews.step(s))).toList());
     }
 }

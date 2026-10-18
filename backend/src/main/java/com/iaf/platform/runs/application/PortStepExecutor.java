@@ -14,6 +14,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -27,6 +28,7 @@ import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
+import com.iaf.platform.runs.domain.ChangeTargets;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
@@ -147,6 +149,9 @@ public class PortStepExecutor implements StepExecutor {
         try {
             JsonNode out = ports.calls().call(new ProviderCall(ctx.jobId(), ctx.nextSeq(), p, a, ctx.environment(), in, dryRun))
                     .block(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout);
+            if (!dryRun && a.effect() != null && (a.effect() == Effect.CREATE || a.effect() == Effect.CHANGE || a.effect() == Effect.DELETE)) {
+                ports.events().changed(ctx.jobId(), step.id(), provider, a.id(), a.effect().json(), ChangeTargets.of(a.path(), in, out));
+            }
             return out == null ? F.objectNode() : out;
         } catch (ProviderCallException e) {
             throw new StepFailure(step.id(), e.errorClass(), e.getMessage(), e.retryable());
@@ -270,7 +275,7 @@ public class PortStepExecutor implements StepExecutor {
             remaining = Duration.ZERO;
         }
         Optional<AttentionDecision> decision = engine.awaitAttention(ctx, attention, remaining);
-        decision.ifPresent(d -> ports.events().attentionResolved(ctx.jobId(), step.id(), d.action().json(), d.by()));
+        decision.ifPresent(d -> ports.events().attentionResolved(ctx.jobId(), step.id(), d.action().json(), d.by(), d.input(), null));
         return decision;
     }
 

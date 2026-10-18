@@ -10,6 +10,8 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.assistant.domain.AssistantEvent;
 import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.domain.Events;
@@ -24,6 +26,7 @@ import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -46,11 +49,15 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class AssistantCommandHandler implements AssistantCommands {
 
+    /** {@code assistant.session-started}: {sessionId, mode, workflow, by}, recorded on the platform audit stream. */
+    public static final String SESSION_STARTED = "assistant.session-started";
+
     private final AssistantPort agent;
     private final SessionStore sessions;
     private final WorkflowQueries workflows;
     private final Clock clock;
     private final Environment environment;
+    private final EventBus events;
 
     @Override
     public Mono<String> startSession(String mode, String workflow, String draftYaml) {
@@ -63,6 +70,7 @@ public class AssistantCommandHandler implements AssistantCommands {
             String id = Ids.next("asst");
             if (AssistantSession.CREATE.equals(m)) {
                 sessions.save(new AssistantSession(id, m, blankToNull(workflow), who.id(), AssistantSession.IDLE, null, List.of(), null, now, now));
+                started(id, m, blankToNull(workflow), who);
                 return Mono.just(id);
             }
             return seedYaml(workflow, draftYaml).flatMap(yaml -> workflows.check(yaml).defaultIfEmpty(List.of()).map(problems -> {
@@ -75,9 +83,18 @@ public class AssistantCommandHandler implements AssistantCommands {
                     }
                 }
                 sessions.save(new AssistantSession(id, m, name, who.id(), AssistantSession.IDLE, seedDraft(yaml, problems), List.of(), null, now, now));
+                started(id, m, name, who);
                 return id;
             }));
         });
+    }
+
+    private void started(String id, String mode, String workflow, Identity who) {
+        ObjectNode data = JsonNodeFactory.instance.objectNode().put("sessionId", id).put("mode", mode).put("by", who.id());
+        if (workflow != null) {
+            data.put("workflow", workflow);
+        }
+        events.publish(SESSION_STARTED, "assistant-session", id, who.id(), data);
     }
 
     /** Edit mode starts from the YAML on the canvas, or from the published version of the named workflow. */

@@ -350,7 +350,9 @@ public class RunsCommandHandler implements RunsCommands {
             if (!a.pending()) {
                 throw new ConflictException("Approval " + approvalId + " was already " + a.status().json());
             }
-            AccessRules.requireApprove(who, a.group(), a.workflow());
+            if (a.approverGroups().stream().noneMatch(g -> AccessRules.canApprove(who, g))) {
+                AccessRules.requireApprove(who, a.group(), a.workflow());   // escalated: the escalation group may decide too
+            }
             ApprovalDecision d = approved ? ApprovalDecision.approved(who.id(), comment, now()) : ApprovalDecision.rejected(who.id(), comment, now());
             events.approvalDecided(a, d);
             return execution.isRunning(a.jobId())

@@ -11,14 +11,22 @@ import reactor.core.publisher.Mono;
  */
 public interface AuditCommands {
 
-    /** One sealing run: {@code signature} signs the ledger of every record sealed in it. */
-    record SealResult(Instant sealedAt, String signature, String keyId, int sealed) {
+    /**
+     * One sealing run: {@code sealed} closed records got their final seal, {@code checkpointed}
+     * open ones (and the platform stream) a signature over their head; {@code signature} signs the
+     * ledger of every head signed in the run.
+     */
+    record SealResult(Instant sealedAt, String signature, String keyId, int sealed, int checkpointed) {
+
+        public SealResult(Instant sealedAt, String signature, String keyId, int sealed) {
+            this(sealedAt, signature, keyId, sealed, 0);
+        }
     }
 
     record ShareLink(String url, Instant expiresAt) {
     }
 
-    /** Sign the latest hash of every closed, unsealed record. */
+    /** Sign the latest hash of every record: closed ones are sealed for good, open ones checkpointed. */
     Mono<SealResult> seal();
 
     /** A read-only link to one record, valid for seven days. */
