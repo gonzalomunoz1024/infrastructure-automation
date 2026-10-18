@@ -26,6 +26,18 @@ class Submission:
     status: str | None
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows no redirect. urllib's own handler repeats the request to wherever ``Location``
+    points, with every header but the Content-* ones, so a redirect would hand the service
+    account's token to another host. A 3xx answer stays an error."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects())
+
+
 def write_file(provider: Provider, path: str | Path) -> Path:
     """Write the provider file, creating the folders; returns the path."""
     p = Path(path)
@@ -70,11 +82,17 @@ def _post(base: str, path: str, body: dict[str, Any], token: str, expected: int)
         method="POST",
         headers={"Content-Type": "application/json", "Accept": "application/json", "Authorization": f"Bearer {token}"},
     )
+    location = None
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+        with _OPENER.open(request, timeout=_TIMEOUT) as response:
             status, text = response.status, response.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        status, text = e.code, e.read().decode("utf-8", errors="replace")
+        status, text, location = e.code, e.read().decode("utf-8", errors="replace"), e.headers.get("Location")
+    if 300 <= status < 400:
+        raise RuntimeError(
+            f"POST {path} answered {status}, a redirect to {location or 'another address'}: the platform answers its API"
+            f" itself and the token is not sent on. Set {URL_ENV} to the platform's own address"
+        )
     data: Any = {}
     if text.strip():
         try:

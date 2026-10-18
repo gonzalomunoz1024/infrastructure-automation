@@ -111,7 +111,7 @@ the platform's demo mode returns for it with `sample=` (text in it may use expre
 | `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend |
 | `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in |
 | `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish; a value that is not a whole number of seconds is logged and falls back to 30 |
-| `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `submit` |
+| `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `submit`; a redirect fails the submit, so the token never goes to another address |
 | `IAF_PLATFORM_TOKEN` | | a service-account token (`iaf_...`), for `submit`; sent, never printed |
 
 To connect with TLS or an API key, connect your own `temporalio.client.Client` and use
