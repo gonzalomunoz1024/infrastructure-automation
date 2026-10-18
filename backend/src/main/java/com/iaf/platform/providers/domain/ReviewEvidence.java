@@ -1,9 +1,12 @@
 package com.iaf.platform.providers.domain;
 
 import java.time.Instant;
+import java.util.AbstractMap;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -18,24 +21,40 @@ public record ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> t
 
     public static final ReviewEvidence NONE = new ReviewEvidence(List.of(), List.of());
 
-    /** One environment of a Test connection, with the endpoint and credential reference it used. */
+    /**
+     * One environment of a Test connection, with the endpoint and credential reference it used.
+     * {@code team} is the team it was recorded for (null on a test recorded before teams were kept).
+     */
     public record ConnectionTest(String environment, String endpoint, String credential, boolean ok, long durationMs, String message,
-            Instant at, String by) {
+            Instant at, String by, String team) {
+
+        /** A test recorded for no team. */
+        public ConnectionTest(String environment, String endpoint, String credential, boolean ok, long durationMs, String message,
+                Instant at, String by) {
+            this(environment, endpoint, credential, ok, durationMs, message, at, by, null);
+        }
     }
 
     /**
      * One Try it call. {@code response} is the real answer of a call that went through (null for a
      * failure); {@code status} is the HTTP status (0 when nothing answered). {@code endpoint} and
      * {@code credential} are the URL of the environment and the credential reference (never a
-     * value) the call used; both are null on a try recorded before they were kept.
+     * value) the call used; both are null on a try recorded before they were kept. {@code team} is
+     * the team it was recorded for (null on a try recorded before teams were kept).
      */
     public record ActionTry(String action, String environment, boolean ok, int status, long durationMs, String errorClass,
-            JsonNode response, Boolean verified, Instant at, String by, String endpoint, String credential) {
+            JsonNode response, Boolean verified, Instant at, String by, String endpoint, String credential, String team) {
+
+        /** A try recorded for no team. */
+        public ActionTry(String action, String environment, boolean ok, int status, long durationMs, String errorClass,
+                JsonNode response, Boolean verified, Instant at, String by, String endpoint, String credential) {
+            this(action, environment, ok, status, durationMs, errorClass, response, verified, at, by, endpoint, credential, null);
+        }
 
         /** A try without the endpoint and credential it used. */
         public ActionTry(String action, String environment, boolean ok, int status, long durationMs, String errorClass,
                 JsonNode response, Boolean verified, Instant at, String by) {
-            this(action, environment, ok, status, durationMs, errorClass, response, verified, at, by, null, null);
+            this(action, environment, ok, status, durationMs, errorClass, response, verified, at, by, null, null, null);
         }
     }
 
@@ -49,6 +68,20 @@ public record ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> t
     /** Evidence of which nothing was dropped. */
     public ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> tries) {
         this(connections, tries, 0, 0);
+    }
+
+    /**
+     * The team drafting a provider that is not published yet: the team of the oldest entry that
+     * names one. Only that team adds to the evidence after it, so no other team can push its
+     * entries out of the window.
+     */
+    public Optional<String> claim() {
+        Stream<Map.Entry<Instant, String>> all = Stream.concat(
+                connections.stream().map(c -> new AbstractMap.SimpleEntry<>(c.at(), c.team())),
+                tries.stream().map(t -> new AbstractMap.SimpleEntry<>(t.at(), t.team())));
+        return all.filter(e -> e.getValue() != null && !e.getValue().isBlank())
+                .min(Map.Entry.comparingByKey(Comparator.nullsFirst(Comparator.naturalOrder())))
+                .map(Map.Entry::getValue);
     }
 
     /** The newest connection test of an environment. */

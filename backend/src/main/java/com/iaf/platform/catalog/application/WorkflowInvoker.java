@@ -65,7 +65,7 @@ public class WorkflowInvoker {
         this(runs, policy, JobQuotas.unlimited());
     }
 
-    /** {@code quotas}: every invoke or batch takes a token from the caller's team first (429 when there is none). */
+    /** {@code quotas}: every invoke or batch takes a token from the caller's team (429 when there is none), given back when the start refuses it. */
     public WorkflowInvoker(RunsCommands runs, PolicyPort policy, JobQuotas quotas) {
         this(runs, policy, quotas, null);
     }
@@ -117,9 +117,10 @@ public class WorkflowInvoker {
             validate(d, in);
             AccessRules.requireInvoke(who, rbac(d), d.name());
             return decide(d, rec.version(), who, in, pinContext(context(channel, traceId, 0), version))
-                    .then(quotas.take(who))   // a token only once the request is valid, allowed and not denied
-                    .then(preview(d, in, who))
-                    .flatMap(p -> runs.startJob(new StartJob(d.name(), version, in, who, channel, null, traceId, p.orElse(null), null)))
+                    // a token only once the request is valid, allowed and not denied; given back when the
+                    // start still refuses it (an unknown resource id is a 400 only the runs slice can tell)
+                    .then(quotas.charged(who, preview(d, in, who)
+                            .flatMap(p -> runs.startJob(new StartJob(d.name(), version, in, who, channel, traceId, p.orElse(null), null)))))
                     .map(Started::of);
         });
     }
@@ -192,10 +193,11 @@ public class WorkflowInvoker {
             ArrayNode rows = policyInput.putArray("items");
             plan.rows().forEach(rows::add);
             return decide(d, rec.version(), who, policyInput, pinContext(context(channel, traceId, plan.rows().size()), version))
-                    .then(quotas.take(who))   // a token only once every row is valid, the caller allowed and the policy not against
-                    .then(preview(d, plan.rows().get(0), who))
-                    .flatMap(p -> runs.startBatch(new StartBatch(d.name(), version, plan.rows(), plan.defaults(), plan.rollout(), who, channel,
-                            p.orElse(null), traceId)))
+                    // a token only once every row is valid, the caller allowed and the policy not against;
+                    // given back when the start still refuses the batch
+                    .then(quotas.charged(who, preview(d, plan.rows().get(0), who)
+                            .flatMap(p -> runs.startBatch(new StartBatch(d.name(), version, plan.rows(), plan.defaults(), plan.rollout(), who,
+                                    channel, p.orElse(null), traceId)))))
                     .map(a -> BatchStarted.of(a, plan.rows().size()));
         });
     }

@@ -30,6 +30,7 @@ import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.ProviderRequest;
 import com.iaf.platform.assistant.ports.outbound.SessionStore;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -350,7 +351,7 @@ public class AssistantCommandHandler implements AssistantCommands {
         d.put("status", draft.path("status").asText(""));
         String yaml = draft.path("workflowYaml").asText("");
         if (!yaml.isBlank()) {
-            d.put("contentHash", WorkflowYaml.sha256(yaml));
+            d.put("contentHash", Hashes.sha256(yaml));
         }
         if (draft.path("validation").isObject()) {
             d.put("valid", draft.path("validation").path("valid").asBoolean());
@@ -409,7 +410,7 @@ public class AssistantCommandHandler implements AssistantCommands {
             return agent.draftProvider(request).doOnNext(d -> {
                 ObjectNode data = base.deepCopy();
                 if (d.yaml() != null && !d.yaml().isBlank()) {
-                    data.put("contentHash", WorkflowYaml.sha256(d.yaml()));
+                    data.put("contentHash", Hashes.sha256(d.yaml()));
                 }
                 data.put("questions", d.questions() == null ? 0 : d.questions().size());
                 events.publish(DRAFT_UPDATED_EVENT, AGGREGATE, draftId, who.id(), data);

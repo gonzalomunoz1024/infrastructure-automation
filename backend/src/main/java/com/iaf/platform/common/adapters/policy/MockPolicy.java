@@ -18,9 +18,10 @@ import reactor.core.publisher.Mono;
  * show a real decision. Deny when the requester belongs to no team; needs-approval when the
  * workflow's policy requires it or the preview has a destructive step; allow otherwise.
  *
- * <p>The {@code context} of a {@link PolicyInput} may carry {@code policy.approval.required}
- * (the definition's policy block), {@code preview.steps[].effect} (the preview) and
- * {@code destructive} (a shortcut the caller already judged).</p>
+ * <p>The {@code context} of a {@link PolicyInput} may carry {@code approvalRequired} (the
+ * workflow's policy block, as the runs slice sends it; {@code policy.approval.required} is read
+ * too), {@code preview.steps[].effect} (the preview) and {@code destructive} (a shortcut the
+ * caller already judged).</p>
  *
  * <p>Resource access (a {@code use} step, phase {@code RESOURCE_ACCESS}) reads the resource the
  * registry puts in {@code input} ({@code owner}, {@code visibility}): a resource whose visibility
@@ -68,7 +69,8 @@ public class MockPolicy implements PolicyPort {
             rules.add(owner);
             return new PolicyDecision("deny".equals(owner.result()) ? "deny" : "allow", rules, ENGINE);
         }
-        boolean policyApproval = context.path("policy").path("approval").path("required").asBoolean(false)
+        boolean policyApproval = context.path("approvalRequired").asBoolean(false)
+                || context.path("policy").path("approval").path("required").asBoolean(false)
                 || context.path("approval").path("required").asBoolean(false);
         rules.add(new Rule("workflow.approval", policyApproval ? "needs-approval" : "pass",
                 policyApproval ? "The workflow's policy requires an approval" : "The workflow's policy requires no approval"));

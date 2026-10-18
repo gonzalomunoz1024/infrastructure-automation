@@ -36,6 +36,7 @@ import com.iaf.platform.assistant.ports.outbound.AssistantPort.AssistantRequest;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.ProviderRequest;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
@@ -646,10 +647,10 @@ class AssistantCommandHandlerTest {
         assertThat(published.get(1).data().path("role").asText()).isEqualTo("user");
         assertThat(published.get(1).data().path("text").asText()).isEqualTo("restart a vm");
         assertThat(published.get(2).data().path("status").asText()).isEqualTo(WorkflowDraft.READY);
-        assertThat(published.get(2).data().path("contentHash").asText()).isEqualTo(WorkflowYaml.sha256(YAML));
+        assertThat(published.get(2).data().path("contentHash").asText()).isEqualTo(Hashes.sha256(YAML));
         assertThat(published.get(2).data().path("externalId").asText()).isEqualTo("devin-1");
         assertThat(published.get(3).data().path("role").asText()).isEqualTo("assistant");
-        assertThat(published.get(4).data().path("contentHash").asText()).isEqualTo(WorkflowYaml.sha256(YAML));
+        assertThat(published.get(4).data().path("contentHash").asText()).isEqualTo(Hashes.sha256(YAML));
         assertThat(published).noneSatisfy(e -> assertThat(e.data().toString()).contains("kind: Workflow"));
     }
 

@@ -46,6 +46,7 @@ import io.micrometer.observation.Observation;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 /**
  * The MCP server: JSON-RPC 2.0 over one HTTP POST per message (Streamable HTTP, no stream). A
@@ -158,7 +159,7 @@ public class McpServer {
             case "tools/call" -> call(params, who);
             default -> Mono.error(new MethodNotFound(method));
         };
-        return result.map(r -> (JsonNode) JsonRpc.result(id, r)).onErrorResume(e -> Mono.just(error(id, e)));
+        return result.map(r -> (JsonNode) JsonRpc.result(id, r)).onErrorResume(e -> Mono.deferContextual(ctx -> Mono.just(error(id, e, ctx))));
     }
 
     private ObjectNode initialize() {
@@ -337,7 +338,7 @@ public class McpServer {
         }
     }
 
-    private JsonNode error(JsonNode id, Throwable e) {
+    private JsonNode error(JsonNode id, Throwable e, ContextView ctx) {
         if (e instanceof MethodNotFound) {
             return JsonRpc.error(id, JsonRpc.METHOD_NOT_FOUND, e.getMessage(), null);
         }
@@ -382,7 +383,18 @@ public class McpServer {
             data.put("retryAfter", tm.retryAfterSeconds());
             return JsonRpc.error(id, JsonRpc.TOO_MANY_REQUESTS, e.getMessage(), data);
         }
-        log.error("mcp call failed", e);
-        return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage() == null ? "internal error" : e.getMessage(), null);
+        // An unexpected failure says nothing of its cause (a message may name a host, a path or a
+        // query), as a REST 500 does; the correlation id finds it in the log.
+        String correlationId = correlationId(ctx);
+        log.error("mcp call failed [{}]", correlationId, e);
+        ObjectNode data = F.objectNode();
+        data.put("correlationId", correlationId);
+        return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, "unexpected error", data);
+    }
+
+    /** The call's trace id, or a fresh one when it has none. */
+    private static String correlationId(ContextView ctx) {
+        String traced = Traces.traceIdOf(Traces.current(ctx));
+        return traced != null ? traced : TraceIds.newTraceId();
     }
 }

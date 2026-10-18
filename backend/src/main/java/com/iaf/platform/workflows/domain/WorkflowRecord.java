@@ -3,6 +3,7 @@ package com.iaf.platform.workflows.domain;
 import java.time.Instant;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.iaf.platform.common.domain.Hashes;
 
 /**
  * One stored version of a workflow: the file as written plus what the store knows about it.
@@ -38,7 +39,7 @@ public record WorkflowRecord(
 
     public static WorkflowRecord of(WorkflowDefinition d, WorkflowStatus status, String path, Instant at, String by) {
         String yaml = WorkflowYaml.toYaml(d);
-        return new WorkflowRecord(d.name(), d.version(), status, yaml, d, WorkflowYaml.sha256(yaml), path, at, by, null, null, null, null);
+        return new WorkflowRecord(d.name(), d.version(), status, yaml, d, Hashes.sha256(yaml), path, at, by, null, null, null, null);
     }
 
     /** The version with another status; published again, it is no longer rolled back. */
@@ -59,7 +60,7 @@ public record WorkflowRecord(
 
     public WorkflowRecord withDefinition(WorkflowDefinition d, Instant at, String by) {
         String y = WorkflowYaml.toYaml(d);
-        return new WorkflowRecord(d.name(), d.version(), status, y, d, WorkflowYaml.sha256(y), path, at, by, publishedAt, publishedBy, releaseId, notes,
+        return new WorkflowRecord(d.name(), d.version(), status, y, d, Hashes.sha256(y), path, at, by, publishedAt, publishedBy, releaseId, notes,
                 rolledBack);
     }
 

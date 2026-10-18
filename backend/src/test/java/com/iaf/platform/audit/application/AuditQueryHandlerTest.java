@@ -421,6 +421,39 @@ class AuditQueryHandlerTest {
     }
 
     @Test
+    void aPackReadsItsRecordsOneAtATimeNeverTheWholeList() throws IOException {
+        List<String> read = new ArrayList<>();
+        InMemoryEvidenceStore oneByOne = new InMemoryEvidenceStore() {
+            @Override
+            public List<EvidenceRecord> records(EvidenceFilter filter) {
+                throw new AssertionError("a pack never holds every record at once");
+            }
+
+            @Override
+            public List<String> recordIds(EvidenceFilter filter) {
+                return super.records(filter).stream().map(EvidenceRecord::jobId).toList();
+            }
+
+            @Override
+            public Optional<EvidenceRecord> record(String jobId) {
+                read.add(jobId);
+                return super.record(jobId);
+            }
+        };
+        oneByOne.append("job_a", EvidenceEntry.draft(NOW.minusSeconds(60), EvidenceKind.REQUESTED, "ana",
+                JSON.createObjectNode().put("workflow", "vm-restart").put("version", "1.2.0").put("channel", "rest")));
+        oneByOne.append("job_b", EvidenceEntry.draft(NOW.minusSeconds(30), EvidenceKind.REQUESTED, "mateo",
+                JSON.createObjectNode().put("workflow", "vm-restart").put("version", "1.2.0").put("channel", "rest")));
+        oneByOne.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW.minusSeconds(10), EvidenceKind.DECISION, "ana",
+                JSON.createObjectNode().put("event", "workflow.draft-saved")));
+
+        SpooledFile file = new AuditQueryHandler(oneByOne, signer, clock, JSON, spool).exportPack(null).block();
+
+        assertThat(unzip(file).keySet()).containsExactly("records/job_b.json", "records/job_a.json", "platform.json", "manifest.json");
+        assertThat(read).containsExactly("job_b", "job_a", EvidenceRecord.PLATFORM);
+    }
+
+    @Test
     void aPackOfARecordWithManyEntriesIsSpooledToAFileAndDiscardedAfter() throws IOException {
         int many = 5_000;
         for (int i = 0; i < many; i++) {

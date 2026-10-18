@@ -5,7 +5,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
-/** What the platform keeps instead of a secret it hands out (tokens, share links): its SHA-256. */
+/** The one SHA-256 helper: what the platform keeps instead of a secret it hands out (tokens, share links), and the content hash of a workflow version, a spec or a projection row. */
 public final class Hashes {
 
     private Hashes() {

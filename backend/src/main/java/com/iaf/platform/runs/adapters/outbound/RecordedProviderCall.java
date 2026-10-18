@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.RecordedWorld;
@@ -27,7 +28,9 @@ import reactor.core.scheduler.Schedulers;
  * simulated 20-80 ms. The world remembers: a {@code delete} makes later reads of the same id
  * answer {@code not_found} (so {@code verify: { expect: notFound }} comes true), a {@code change}
  * is read back. A dry run answers from a fork of the world kept for its job, so it reads back its
- * own changes and never changes the shared world. Every real call lands in the telemetry as a sample.
+ * own changes and never changes the shared world. Every real call lands in the telemetry as a sample,
+ * but a review call ({@link ReviewCall}: the wizard's tries and their verify), which reaches the
+ * world like any call and never counts towards a provider's health or alerts.
  */
 @Component
 public class RecordedProviderCall implements ProviderCallPort {
@@ -60,23 +63,26 @@ public class RecordedProviderCall implements ProviderCallPort {
         if (call == null || call.provider() == null || call.action() == null) {
             return Mono.error(new IllegalArgumentException("a provider call needs a provider and an action"));
         }
-        long latency = ThreadLocalRandom.current().nextInt(MIN_LATENCY_MS, MAX_LATENCY_MS + 1);
-        // bounded-elastic, not the parallel timer: recording the call reads the job, which may be a database read
-        return Mono.delay(Duration.ofMillis(latency), Schedulers.boundedElastic()).flatMap(tick -> Mono.fromCallable(() -> {
-            Instant at = clock.instant().minusMillis(latency);
-            try {
-                JsonNode out = worldFor(call).call(call.provider(), call.action(), call.input(), call.jobId(), call.seq(), true);
-                record(call, at, latency, true, null);
-                return out;
-            } catch (ProviderCallException e) {
-                record(call, at, latency, false, e.errorClass());
-                throw e;
-            }
-        }));
+        return Mono.deferContextual(ctx -> {
+            boolean recorded = !call.dryRun() && !ReviewCall.in(ctx);
+            long latency = ThreadLocalRandom.current().nextInt(MIN_LATENCY_MS, MAX_LATENCY_MS + 1);
+            // bounded-elastic, not the parallel timer: recording the call reads the job, which may be a database read
+            return Mono.delay(Duration.ofMillis(latency), Schedulers.boundedElastic()).flatMap(tick -> Mono.fromCallable(() -> {
+                Instant at = clock.instant().minusMillis(latency);
+                try {
+                    JsonNode out = worldFor(call).call(call.provider(), call.action(), call.input(), call.jobId(), call.seq(), true);
+                    record(call, recorded, at, latency, true, null);
+                    return out;
+                } catch (ProviderCallException e) {
+                    record(call, recorded, at, latency, false, e.errorClass());
+                    throw e;
+                }
+            }));
+        });
     }
 
-    private void record(ProviderCall call, Instant at, long latency, boolean ok, String errorClass) {
-        if (call.dryRun()) {
+    private void record(ProviderCall call, boolean recorded, Instant at, long latency, boolean ok, String errorClass) {
+        if (!recorded) {
             return;
         }
         Job job = call.jobId() == null ? null : projection.get(call.jobId()).orElse(null);

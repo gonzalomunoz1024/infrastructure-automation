@@ -130,7 +130,9 @@ public final class JobFactory {
                 .traceId(parent.traceId())
                 .definition(def)
                 .environment(input != null && input.hasNonNull("environment") ? environmentOf(input) : parent.environment())
-                .preApproved(parent.preApproved())
+                // a batch row is approved once for the whole batch, but the workflow its run step
+                // starts is another workflow, with approvers of its own: they are asked
+                .preApproved(false)
                 .build();
     }
 

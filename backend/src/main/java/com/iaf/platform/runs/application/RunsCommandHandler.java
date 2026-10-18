@@ -134,10 +134,10 @@ public class RunsCommandHandler implements RunsCommands {
             String channel = cmd.channel() == null ? "rest" : cmd.channel();
             return requireKnownResources(def, List.of(input), false)
                     .then(requireBuildable(def, List.of(input), false))
-                    .then(evaluatePolicy(who, def, rec.version(), input, channel, cmd.parentId()))
-                    .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, cmd.parentId() == null, who)
+                    .then(evaluatePolicy(who, def, rec.version(), input, channel))
+                    .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, true, who)
                             .flatMap(preview -> {
-                                Job job = JobFactory.newJob(def, rec.version(), input, who, channel, cmd.parentId(), cmd.traceId(),
+                                Job job = JobFactory.newJob(def, rec.version(), input, who, channel, null, cmd.traceId(),
                                         preview.orElse(null), decision, null, now());
                                 return openChange(job, def, cmd.changeId());
                             }))
@@ -242,9 +242,10 @@ public class RunsCommandHandler implements RunsCommands {
     }
 
     /**
-     * Who may steer a job (cancel it, or retry, skip and abort a step waiting for attention): its
-     * requester, a member of the workflow's owner team, anyone the workflow's {@code policy.rbac}
-     * or approver groups name, and admins. Anyone else is refused with the job's id.
+     * Who may steer a job (cancel it, retry a batch's failed rows, or retry, skip and abort a step
+     * waiting for attention): its requester, a member of the workflow's owner team, anyone the
+     * workflow's {@code policy.rbac} or approver groups name, and admins. Anyone else is refused
+     * with the job's id.
      */
     static boolean canControl(Identity who, Job job) {
         if (who.admin() || (who.id() != null && who.id().equals(job.requesterId()))) {
@@ -339,7 +340,7 @@ public class RunsCommandHandler implements RunsCommands {
             boolean sameInput = validated.equals(source.input());
             return requireKnownResources(def, List.of(validated), false)
                     .then(requireBuildable(def, List.of(validated), false))
-                    .then(evaluatePolicy(who, def, source.version(), validated, "rest", null))
+                    .then(evaluatePolicy(who, def, source.version(), validated, "rest"))
                     .flatMap(decision -> (sameInput ? Mono.just(Optional.ofNullable(source.preview())) : previewFor(null, def, List.of(validated), decision, true, who))
                             .flatMap(preview -> openChange(JobFactory.rerun(source, from, validated, preview.orElse(null), who, "rest", null, now())
                                     .withPolicy(decision), def, null)))
@@ -351,6 +352,7 @@ public class RunsCommandHandler implements RunsCommands {
     public Mono<CommandAccepted> retryFailedRows(String batchJobId) {
         return CurrentIdentity.current().flatMap(who -> {
             Job job = job(batchJobId);
+            requireControl(who, job);
             if (!job.isBatch() || job.batch() == null) {
                 throw new ConflictException("Job " + batchJobId + " is not a batch");
             }
@@ -466,7 +468,7 @@ public class RunsCommandHandler implements RunsCommands {
             JsonNode in = InputDefaults.apply(definition.inputSchema(), input);
             // judged like a run: an id the registry does not know is a 400, not a plan for nothing
             return requireKnownResources(definition, List.of(in), false)
-                    .then(evaluatePolicy(w, definition, definition.version(), in, "preview", null))
+                    .then(evaluatePolicy(w, definition, definition.version(), in, "preview"))
                     .flatMap(decision -> buildPreview(definition, List.of(in), decision, w));
         });
     }
@@ -494,7 +496,7 @@ public class RunsCommandHandler implements RunsCommands {
             List<TriggerStarted> started = java.util.Collections.synchronizedList(new ArrayList<>());
             List<TriggerSkipped> skipped = java.util.Collections.synchronizedList(new ArrayList<>());
             return Flux.fromIterable(matches)
-                    .concatMap(m -> startJob(new StartJob(m.workflow().name(), null, m.input(), who, "trigger", null, null, null, null))
+                    .concatMap(m -> startJob(new StartJob(m.workflow().name(), null, m.input(), who, "trigger", null, null, null))
                             .doOnNext(acc -> started.add(new TriggerStarted(m.workflow().name(), acc.id())))
                             .onErrorResume(e -> {
                                 if (e instanceof ForbiddenException || e instanceof IllegalArgumentException || e instanceof NotFoundException) {
@@ -625,7 +627,7 @@ public class RunsCommandHandler implements RunsCommands {
      */
     private Mono<PolicyDecision> evaluateBatchPolicy(Identity who, WorkflowDefinition def, String version, List<JsonNode> rows, String channel) {
         return Flux.range(0, rows.size())
-                .flatMapSequential(i -> judge(who, def, version, rows.get(i), channel, null).map(d -> Map.entry(i, d)), POLICY_CONCURRENCY)
+                .flatMapSequential(i -> judge(who, def, version, rows.get(i), channel).map(d -> Map.entry(i, d)), POLICY_CONCURRENCY)
                 .collectList()
                 .map(judged -> {
                     List<Integer> denied = new ArrayList<>();
@@ -652,8 +654,8 @@ public class RunsCommandHandler implements RunsCommands {
         return InvokePolicy.denials(decision);
     }
 
-    private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
-        return judge(who, def, version, input, channel, parentId).map(decision -> {
+    private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel) {
+        return judge(who, def, version, input, channel).map(decision -> {
             if (InvokePolicy.denied(decision)) {
                 throw new ForbiddenException(InvokePolicy.refusal(def.name(), decision));
             }
@@ -662,8 +664,8 @@ public class RunsCommandHandler implements RunsCommands {
     }
 
     /** The engine's answer for one input ({@link InvokePolicy}), an allow when it has none; a deny is the caller's to refuse. */
-    private Mono<PolicyDecision> judge(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
-        return policy.evaluate(InvokePolicy.input(who, def, version, input, channel, parentId))
+    private Mono<PolicyDecision> judge(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel) {
+        return policy.evaluate(InvokePolicy.input(who, def, version, input, channel, null))
                 .defaultIfEmpty(PolicyDecision.allow(policy.engine()));
     }
 
@@ -692,7 +694,7 @@ public class RunsCommandHandler implements RunsCommands {
             return Mono.just(job.withChange(new ChangeTicket(changeId, null, "linked")));
         }
         boolean required = def.policy() != null && def.policy().changeRequired();
-        if (!required || job.parentId() != null) {
+        if (!required) {
             return Mono.just(job);
         }
         String summary = job.title() + (job.isBatch() ? " on " + job.batch().total() + " rows" : "") + " requested by " + job.requesterId();

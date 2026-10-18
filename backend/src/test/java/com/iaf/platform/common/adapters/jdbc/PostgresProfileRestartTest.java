@@ -26,6 +26,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.PlatformApplication;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.telemetry.JdbcTelemetry;
@@ -33,6 +34,7 @@ import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.providers.adapters.outbound.JdbcProviderStore;
 import com.iaf.platform.providers.adapters.outbound.JdbcReviewEvidence;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries.Use;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
@@ -40,6 +42,8 @@ import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
 import com.iaf.platform.releases.adapters.outbound.JdbcReleaseStore;
 import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
+import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
+import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 /**
@@ -227,6 +231,14 @@ class PostgresProfileRestartTest {
                 assertThat(get(http, "/api/v1/providers/{name}", "thing").path("version").asText()).isEqualTo("1.0.0");
                 releases = ids(get(http, "/api/v1/releases?provider={p}", "thing"));
                 assertThat(releases).hasSize(2);
+
+                // the wizard's try was a review call, which counts towards no health; a job's call to the published version does
+                TelemetryPort telemetry = ctx.getBean(TelemetryPort.class);
+                assertThat(telemetry.samples("thing", null)).isEmpty();
+                ProviderDefinition published = ctx.getBean(ProviderQueries.class).provider("thing").block();
+                ctx.getBean(ProviderCallPort.class).call(new ProviderCall(null, 1, published, published.action("thing.get").orElseThrow(), "dev",
+                        JsonNodeFactory.instance.objectNode().put("id", "thing-1"), false)).block();
+                assertThat(telemetry.samples("thing", null)).hasSize(1);
                 assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
             }
 

@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -59,9 +58,11 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>The {@link EvidenceRecord} is a projection over the objects of one record, cached here. Reading
  * one record lists its objects and fetches the ones the cache has not seen; a listing discovers new
- * records and reuses the cached ones. The cache is bounded: open records (which take appends) stay,
- * sealed ones, which never change, are kept {@link #SEALED_CACHE} at most, least recently used out
- * first, and read back from their objects when asked for again. Share links are cached by the hash
+ * records and reuses the cached ones. The cache is bounded, least recently used out first, and a
+ * record that left it is read back from its objects when asked for again: open records (which take
+ * appends) are kept {@link #OPEN_CACHE} at most, so a record another instance appends to or a
+ * release record never closed does not stay for the life of the process, and sealed ones, which
+ * never change, {@link #SEALED_CACHE} at most. Share links are cached by the hash
  * of their token, {@link #TOKEN_CACHE} at most, and an expired one is dropped from the cache when it
  * is found. Records are locked through a fixed set of stripes, so the locks do not grow with the
  * records. Subclasses pick the objects and carry the profile.
@@ -77,6 +78,8 @@ public abstract class WormEvidenceStore implements EvidenceStore {
     static final String SEAL = "seal.json";
 
     private static final int CONFLICT_ATTEMPTS = 5;
+    /** Open records kept in memory; more are read back from their objects. */
+    static final int OPEN_CACHE = 1024;
     /** Sealed records kept in memory; more are read back from their objects. */
     static final int SEALED_CACHE = 256;
     /** Share links kept in memory, by the hash of their token. */
@@ -98,8 +101,8 @@ public abstract class WormEvidenceStore implements EvidenceStore {
     private final WormObjects objects;
     private final int retentionYears;
     private final Clock clock;
-    /** Records still taking entries. */
-    private final Map<String, EvidenceRecord> open = new ConcurrentHashMap<>();
+    /** Records still taking entries, least recently used first; guarded by itself. */
+    private final Map<String, EvidenceRecord> open;
     /** Sealed records, least recently used first; guarded by itself. */
     private final Map<String, EvidenceRecord> sealedRecords;
     /** Share links by the SHA-256 of their token, without the token; guarded by itself. */
@@ -116,12 +119,17 @@ public abstract class WormEvidenceStore implements EvidenceStore {
     }
 
     WormEvidenceStore(WormObjects objects, int retentionYears, Clock clock, int sealedCache) {
+        this(objects, retentionYears, clock, sealedCache, OPEN_CACHE);
+    }
+
+    WormEvidenceStore(WormObjects objects, int retentionYears, Clock clock, int sealedCache, int openCache) {
         if (retentionYears < 1) {
             throw new IllegalArgumentException("platform.audit.retention-years must be at least 1, not " + retentionYears);
         }
         this.objects = objects;
         this.retentionYears = retentionYears;
         this.clock = clock;
+        this.open = lru(openCache);
         this.sealedRecords = lru(sealedCache);
         this.tokens = lru(TOKEN_CACHE);
         for (int i = 0; i < stripes.length; i++) {
@@ -209,6 +217,29 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         }
         all.sort(NEWEST_FIRST);
         return all;
+    }
+
+    /** Each record is read (from the bounded cache or its objects) and let go: only its id and time are kept. */
+    @Override
+    public List<String> recordIds(EvidenceFilter filter) {
+        EvidenceFilter f = filter == null ? EvidenceFilter.ALL : filter;
+        List<Map.Entry<Instant, String>> found = new ArrayList<>();
+        for (String folder : objects.folders(EVIDENCE)) {
+            String id = decode(folder);
+            EvidenceRecord r = cached(id);
+            if (r == null) {
+                synchronized (lock(id)) {
+                    r = current(id);
+                }
+            }
+            if (r != null && f.matches(r)) {
+                found.add(Map.entry(r.at() == null ? Instant.EPOCH : r.at(), id));
+            }
+        }
+        return found.stream()
+                .sorted(Map.Entry.<Instant, String>comparingByKey().reversed().thenComparing(Map.Entry.comparingByValue()))
+                .map(Map.Entry::getValue)
+                .toList();
     }
 
     @Override
@@ -366,8 +397,10 @@ public abstract class WormEvidenceStore implements EvidenceStore {
 
     /** How many records and share links are in memory (for tests and diagnosis). */
     int cachedRecords() {
-        synchronized (sealedRecords) {
-            return open.size() + sealedRecords.size();
+        synchronized (open) {
+            synchronized (sealedRecords) {
+                return open.size() + sealedRecords.size();
+            }
         }
     }
 
@@ -392,7 +425,10 @@ public abstract class WormEvidenceStore implements EvidenceStore {
     }
 
     private EvidenceRecord cached(String id) {
-        EvidenceRecord r = open.get(id);
+        EvidenceRecord r;
+        synchronized (open) {
+            r = open.get(id);
+        }
         if (r != null) {
             return r;
         }
@@ -401,20 +437,24 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         }
     }
 
-    /** An open record stays; a sealed one moves to the bounded cache. */
+    /** An open record goes to the open cache; a sealed one moves to the sealed cache. */
     private void cache(String id, EvidenceRecord record) {
-        if (record.sealed() == null) {
-            open.put(id, record);
-            return;
+        synchronized (open) {
+            if (record.sealed() == null) {
+                open.put(id, record);
+                return;
+            }
+            open.remove(id);
         }
-        open.remove(id);
         synchronized (sealedRecords) {
             sealedRecords.put(id, record);
         }
     }
 
     private void uncache(String id) {
-        open.remove(id);
+        synchronized (open) {
+            open.remove(id);
+        }
         synchronized (sealedRecords) {
             sealedRecords.remove(id);
         }

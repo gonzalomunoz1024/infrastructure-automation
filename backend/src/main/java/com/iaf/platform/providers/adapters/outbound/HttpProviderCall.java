@@ -33,6 +33,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.adapters.http.OutboundAddresses;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.expressions.ExpressionContext;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.ports.CredentialsPort;
@@ -194,7 +195,7 @@ public class HttpProviderCall implements ProviderCallPort {
         }
         String key = s.sha256() != null && !s.sha256().isBlank() ? s.sha256().toLowerCase()
                 : s.fromGit() ? "git:" + s.git().repo() + "@" + (s.commit() == null ? s.git().ref() : s.commit()) + ":" + s.git().path()
-                : (s.url() != null ? s.url() : "content:" + WorkflowYaml.sha256(s.content()));
+                : (s.url() != null ? s.url() : "content:" + Hashes.sha256(s.content()));
         // a loaded spec is kept for a day; a failed load is not cached, so the next call retries
         return specs.computeIfAbsent(key, k -> load(p, s).cache(doc -> Duration.ofHours(24), e -> Duration.ZERO, () -> Duration.ZERO));
     }
@@ -211,7 +212,7 @@ public class HttpProviderCall implements ProviderCallPort {
             String at = s.commit() != null && !s.commit().isBlank() ? s.commit() : s.git().ref();
             return git.file(s.git().repo(), at, s.git().path(), s.git().credential())
                     .map(f -> {
-                        if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(WorkflowYaml.sha256(f.content()))) {
+                        if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(Hashes.sha256(f.content()))) {
                             log.warn("the spec of provider {} at {} differs from the pinned sha256", p.name(), f.commit());
                         }
                         return OpenApiImporter.read(f.content());
@@ -221,7 +222,7 @@ public class HttpProviderCall implements ProviderCallPort {
         }
         return Mono.defer(() -> client.get().uri(OutboundAddresses.requireAllowed(URI.create(s.url().trim()))).retrieve().bodyToMono(String.class).timeout(SPEC_TIMEOUT))
                 .map(raw -> {
-                    if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(WorkflowYaml.sha256(raw))) {
+                    if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(Hashes.sha256(raw))) {
                         log.warn("the spec of provider {} at {} differs from the pinned sha256; operations may have drifted", p.name(), s.url());
                     }
                     return OpenApiImporter.read(raw);

@@ -18,6 +18,7 @@ import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
 import com.iaf.platform.common.adapters.jdbc.TestDatabase;
+import com.iaf.platform.common.domain.Hashes;
 
 class JdbcEvidenceStoreTest {
 
@@ -43,7 +44,7 @@ class JdbcEvidenceStoreTest {
 
             List<String> row = db().jdbc().query("SELECT token_hash, job_id, doc FROM evidence_share_links",
                     (rs, i) -> List.of(rs.getString(1), rs.getString(2), rs.getString(3))).get(0);
-            assertThat(row.get(0)).isEqualTo(Jdbc.sha256(token.token()));
+            assertThat(row.get(0)).isEqualTo(Hashes.sha256(token.token()));
             assertThat(row).noneMatch(column -> column.contains(token.token()));
         }
 

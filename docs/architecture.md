@@ -334,7 +334,8 @@ runs on a non-blocking thread, and the wiring test expects none.
   member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
   them, the workflow's owner team) or an admin, and each link is published as `audit.shared`
   (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
-  is built (each record serialised straight into the zip, its sha256 taken on the way), streamed in
+  is built (the store lists the matching ids; each record is read, serialised straight into the
+  zip with its sha256 taken on the way, and let go, so one record is in memory at a time), streamed in
   64 KiB chunks and deleted once sent, failed or abandoned; a pack whose client left before its
   body was sent is swept from `java.io.tmpdir/iaf-evidence-packs` after an hour. Seals, checkpoints
   and packs are signed by `AuditSigner` with `platform.audit.signing-key`: a `vault:` reference

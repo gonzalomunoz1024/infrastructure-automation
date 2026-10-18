@@ -94,7 +94,7 @@ class RunsCommandHandlerTest {
     @Test
     void startJobRejectsAResourceTheRegistryDoesNotKnow() {
         StartJob unknown = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "missing-vm-9")), SampleContent.GONZALO,
-                "rest", null, null, null, null);
+                "rest", null, null, null);
         StepVerifier.create(handler.startJob(unknown))
                 .expectErrorSatisfies(e -> {
                     assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("missing-vm-9");
@@ -102,7 +102,7 @@ class RunsCommandHandlerTest {
                 })
                 .verify();
         StartJob wrongType = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "db-9")), SampleContent.GONZALO,
-                "rest", null, null, null, null);
+                "rest", null, null, null);
         StepVerifier.create(handler.startJob(wrongType))
                 .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.wrongResourceType"))
                 .verify();
@@ -127,7 +127,7 @@ class RunsCommandHandlerTest {
     @Test
     void startJobValidatesStoresSnapshotsOpensChangeAndStartsTheEngine() {
         StartJob cmd = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042", "reason", "stuck")), SampleContent.GONZALO,
-                "catalog", null, "trace-1", null, null);
+                "catalog", "trace-1", null, null);
 
         CommandAccepted acc = handler.startJob(cmd).block();
 
@@ -164,7 +164,7 @@ class RunsCommandHandlerTest {
     @Test
     void startJobRejectsInvalidInputWithEveryProblemAndStartsNothing() {
         StartJob cmd = new StartJob("vm-restart", null, SampleContent.json(Map.of("reason", "x", "environment", "staging")), SampleContent.GONZALO,
-                "rest", null, null, null, null);
+                "rest", null, null, null);
 
         StepVerifier.create(handler.startJob(cmd))
                 .expectErrorSatisfies(e -> {
@@ -178,11 +178,11 @@ class RunsCommandHandlerTest {
 
     @Test
     void startJobEnforcesRbacAndPolicy() {
-        StartJob cmd = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042")), NOBODY, "rest", null, null, null, null);
+        StartJob cmd = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042")), NOBODY, "rest", null, null, null);
         StepVerifier.create(handler.startJob(cmd)).expectError(ForbiddenException.class).verify();
 
         when(w.policy.evaluate(any())).thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("prod-freeze", "deny", "Change freeze until Monday")), "mock")));
-        StartJob ok = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042")), SampleContent.GONZALO, "rest", null, null, null, null);
+        StartJob ok = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042")), SampleContent.GONZALO, "rest", null, null, null);
         StepVerifier.create(handler.startJob(ok))
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("Change freeze"))
                 .verify();
@@ -196,12 +196,12 @@ class RunsCommandHandlerTest {
         when(w.releases.route(eq("vm-restart"), anyString())).thenReturn(Mono.just("1.1.0"));
 
         CommandAccepted acc = handler.startJob(new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", "vm-1042")),
-                SampleContent.GONZALO, "rest", null, null, null, null)).block();
+                SampleContent.GONZALO, "rest", null, null, null)).block();
 
         assertThat(w.projection.get(acc.id()).orElseThrow().version()).isEqualTo("1.1.0");
         verify(w.workflows).version("vm-restart", "1.1.0");
 
-        StepVerifier.create(handler.startJob(new StartJob("no-such-workflow", null, null, SampleContent.GONZALO, "rest", null, null, null, null)))
+        StepVerifier.create(handler.startJob(new StartJob("no-such-workflow", null, null, SampleContent.GONZALO, "rest", null, null, null)))
                 .expectError(NotFoundException.class)
                 .verify();
     }
@@ -210,7 +210,7 @@ class RunsCommandHandlerTest {
     void startJobWithAnExplicitVersionAndChangeIdSkipsRoutingAndTheChangeSystem() {
         String version = SampleContent.workflow("delete-vm").version();
         CommandAccepted acc = handler.startJob(new StartJob("delete-vm", version, SampleContent.json(Map.of("vmId", "vm-7", "reason", "decommissioned for good")),
-                SampleContent.GONZALO, "mcp", null, null, null, "CHG0099999")).block();
+                SampleContent.GONZALO, "mcp", null, null, "CHG0099999")).block();
 
         Job job = w.projection.get(acc.id()).orElseThrow();
         assertThat(job.change().id()).isEqualTo("CHG0099999");
@@ -222,20 +222,20 @@ class RunsCommandHandlerTest {
     @Test
     void startJobTakesARequestToBuildTheResourceFirstAndJudgesItAgainstTheProducer() {
         StartJob build = new StartJob("create-vm", null, SampleContent.json(Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9")))),
-                SampleContent.GONZALO, "rest", null, null, null, null);
+                SampleContent.GONZALO, "rest", null, null, null);
         CommandAccepted acc = handler.startJob(build).block();
         Job job = w.projection.get(acc.id()).orElseThrow();
         assertThat(job.input().path("image").path("create").path("os").asText()).as("the job keeps the request as asked").isEqualTo("rhel-9");
         verify(engine).start(any());
 
         StartJob wrong = new StartJob("create-vm", null, SampleContent.json(Map.of("name", "web-02", "image", Map.of("create", Map.of("os", "beos")))),
-                SampleContent.GONZALO, "rest", null, null, null, null);
+                SampleContent.GONZALO, "rest", null, null, null);
         StepVerifier.create(handler.startJob(wrong))
                 .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems())
                         .extracting(p -> p.code(), p -> p.field()).containsExactly(org.assertj.core.groups.Tuple.tuple("schema", "image.create.os")))
                 .verify();
         StartJob notAnId = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", Map.of("create", Map.of()))),
-                SampleContent.GONZALO, "rest", null, null, null, null);
+                SampleContent.GONZALO, "rest", null, null, null);
         StepVerifier.create(handler.startJob(notAnId))
                 .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.field()).contains("vmId"))
                 .verify();
@@ -378,7 +378,7 @@ class RunsCommandHandlerTest {
     }
 
     private String startedJob(String workflow, Map<String, Object> input) {
-        return handler.startJob(new StartJob(workflow, null, SampleContent.json(input), SampleContent.GONZALO, "rest", null, null, null, null)).block().id();
+        return handler.startJob(new StartJob(workflow, null, SampleContent.json(input), SampleContent.GONZALO, "rest", null, null, null)).block().id();
     }
 
     @Test
@@ -659,6 +659,33 @@ class RunsCommandHandlerTest {
     }
 
     @Test
+    void aBatchOpensOneChangeTicketAndItsRowsNone() {
+        RunsCommandHandler real = w.commands();
+        List<JsonNode> items = List.of(SampleContent.json(Map.of("vmId", "vm-1", "reason", "patch night")), SampleContent.json(Map.of("vmId", "vm-2", "reason", "patch night")),
+                SampleContent.json(Map.of("vmId", "vm-3", "reason", "patch night")));
+        String batchId = real.startBatch(new StartBatch("vm-restart", null, items, null, new RolloutPolicy(List.of(100), 3, 50),
+                SampleContent.GONZALO, "batch", null)).block().id();
+
+        Job batch = w.projection.get(batchId).orElseThrow();
+        assertThat(batch.change()).isNotNull();
+        RunsTestWiring.await(java.time.Duration.ofSeconds(15), () -> w.projection.get(batchId).orElseThrow().pendingApproval(null) != null
+                || w.projection.get(batchId).orElseThrow().status().terminal());
+        Approval approval = w.projection.get(batchId).orElseThrow().pendingApproval(null);
+        if (approval != null) {
+            ApprovalDecision yes = ApprovalDecision.approved("gonzalo", "once for the batch", Instant.now());
+            w.events.approvalDecided(approval, yes);
+            w.execution.signalApproval(batchId, approval.id(), yes).block();
+        }
+        RunsTestWiring.await(java.time.Duration.ofSeconds(15), () -> w.projection.get(batchId).orElseThrow().status().terminal());
+
+        List<Job> rows = w.projection.children(batchId);
+        assertThat(rows).hasSize(3).allSatisfy(row -> assertThat(row.change()).as("a row opens no change of its own").isNull());
+        assertThat(w.changes.tickets()).as("one change ticket for the whole batch").hasSize(1);
+        assertThat(eventTypes().stream().filter("job.change-opened"::equals)).hasSize(1);
+        assertThat(w.projection.get(batchId).orElseThrow().approvals()).as("one approval for the whole batch").hasSizeLessThanOrEqualTo(1);
+    }
+
+    @Test
     void retryFailedRowsAddsAWaveWithTheFailedRowsAndRestartsTheBatch() {
         List<JsonNode> items = List.of(SampleContent.json(Map.of("vmId", "a")), SampleContent.json(Map.of("vmId", "b")),
                 SampleContent.json(Map.of("vmId", "c")), SampleContent.json(Map.of("vmId", "d")));
@@ -674,6 +701,12 @@ class RunsCommandHandlerTest {
                 batch.batch().rows().get(3).withStatus("skipped"));
         w.projection.put(batch.toBuilder().batch(batch.batch().withRows(rows).withStoppedReason("stopped")).status(JobStatus.FAILED).endedAt(Instant.now()).build());
         published.clear();
+
+        StepVerifier.create(handler.retryFailedRows(batchId).contextWrite(c -> CurrentIdentity.with(c, OUTSIDER)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining(batchId))
+                .verify();
+        assertThat(w.projection.get(batchId).orElseThrow().status()).as("a stranger re-queues nothing").isEqualTo(JobStatus.FAILED);
+        assertThat(published).isEmpty();
 
         CommandAccepted acc = handler.retryFailedRows(batchId).contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
 

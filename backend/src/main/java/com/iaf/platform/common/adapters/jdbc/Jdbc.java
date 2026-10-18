@@ -1,13 +1,9 @@
 package com.iaf.platform.common.adapters.jdbc;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -177,15 +173,6 @@ public class Jdbc {
     /** An instant as epoch nanoseconds, for exact ordering and ranges. */
     public static Long nanos(Instant at) {
         return at == null ? null : Math.addExact(Math.multiplyExact(at.getEpochSecond(), 1_000_000_000L), at.getNano());
-    }
-
-    /** The SHA-256 of a text as lowercase hex. */
-    public static String sha256(String text) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 
     // ---------------------------------------------------------------- the guard

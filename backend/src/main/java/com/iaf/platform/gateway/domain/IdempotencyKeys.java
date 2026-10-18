@@ -1,16 +1,14 @@
 package com.iaf.platform.gateway.domain;
 
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
-import java.util.HexFormat;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.iaf.platform.common.domain.Hashes;
 
 /**
  * The rules of an idempotency key: what a valid key is and the fingerprint of the request it was
@@ -50,13 +48,13 @@ public final class IdempotencyKeys {
     /** The fingerprint of an HTTP request. */
     public static String fingerprint(String method, String path, String query, String version, byte[] body) {
         String text = body == null ? "" : new String(body, StandardCharsets.UTF_8);
-        return sha256((method == null ? "" : method.toUpperCase()) + "\n" + nullToEmpty(path) + "\n" + sortedQuery(query) + "\n"
+        return Hashes.sha256((method == null ? "" : method.toUpperCase()) + "\n" + nullToEmpty(path) + "\n" + sortedQuery(query) + "\n"
                 + nullToEmpty(version) + "\n" + canonicalBody(text));
     }
 
     /** The fingerprint of an MCP tool call: the tool, the pinned version and the arguments. */
     public static String fingerprint(String tool, String version, JsonNode arguments) {
-        return sha256("mcp\n" + nullToEmpty(tool) + "\n" + nullToEmpty(version) + "\n" + canonical(arguments));
+        return Hashes.sha256("mcp\n" + nullToEmpty(tool) + "\n" + nullToEmpty(version) + "\n" + canonical(arguments));
     }
 
     /** Sorted keys, no whitespace; null for no value. */
@@ -95,13 +93,5 @@ public final class IdempotencyKeys {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s.trim();
-    }
-
-    static String sha256(String text) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
-        }
     }
 }

@@ -183,9 +183,10 @@ public class AuditQueryHandler implements AuditQueries {
      * {@code records/<jobId>.json} per matching record, {@code platform.json} (the whole platform
      * stream) and {@code manifest.json}: every file with its sha256, and an HMAC-SHA256 signature
      * (under the sealing key) of the canonical JSON of that file list, so a pack can be checked for
-     * completeness and tampering. The zip is written to a temporary file as it is built (each
-     * record serialised straight into it, its sha256 taken on the way), so a pack of any size costs
-     * one record in memory, never the whole zip; the caller streams the file and discards it.
+     * completeness and tampering. The zip is written to a temporary file as it is built: the store
+     * lists the matching ids, and each record is read, serialised straight into it (its sha256
+     * taken on the way) and let go, so a pack of any size holds one record in memory at a time,
+     * never every record or the whole zip; the caller streams the file and discards it.
      */
     @Override
     public Mono<SpooledFile> exportPack(FilterSpec spec) {
@@ -195,8 +196,8 @@ public class AuditQueryHandler implements AuditQueries {
     private SpooledFile spool(FilterSpec spec) throws IOException {
         EvidenceFilter filter = spec == null ? EvidenceFilter.ALL
                 : EvidenceFilter.parse(spec.workflow(), spec.from(), spec.to(), spec.requester());
-        List<EvidenceRecord> records = new ArrayList<>(store.records(filter).stream().filter(r -> !r.platform()).toList());
-        store.record(EvidenceRecord.PLATFORM).ifPresent(records::add);
+        List<String> ids = new ArrayList<>(store.recordIds(filter).stream().filter(id -> !EvidenceRecord.PLATFORM.equals(id)).toList());
+        ids.add(EvidenceRecord.PLATFORM);
         Files.createDirectories(spool);
         sweep();
         Path path = Files.createTempFile(spool, "evidence-pack-", ".zip");
@@ -204,7 +205,11 @@ public class AuditQueryHandler implements AuditQueries {
         try {
             List<Map<String, Object>> files = new ArrayList<>();
             try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(Files.newOutputStream(path), 64 * 1024))) {
-                for (EvidenceRecord r : records) {
+                for (String id : ids) {
+                    EvidenceRecord r = store.record(id).orElse(null);
+                    if (r == null) {
+                        continue;
+                    }
                     String name = r.platform() ? PLATFORM_FILE : RECORDS_DIR + fileName(r.jobId()) + ".json";
                     zip.putNextEntry(new ZipEntry(name));
                     String sha256 = writeHashed(writer, r, zip);

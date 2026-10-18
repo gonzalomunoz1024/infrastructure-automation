@@ -317,6 +317,26 @@ class FileSystemEvidenceStoreTest {
         assertThat(store.records(EvidenceFilter.ALL)).hasSize(6);
     }
 
+    @Test
+    void openRecordsLeaveTheBoundedCacheAndTakeAppendsAfterReadingBack() {
+        WormEvidenceStore store = new WormEvidenceStore(new FileSystemWormObjects(dir), 7, Clock.fixed(AT, ZoneOffset.UTC), 2, 2) {
+        };
+        for (int i = 1; i <= 5; i++) {
+            store.append("release:r" + i, requested(AT.plusSeconds(i), "vm-restart"));
+        }
+
+        assertThat(store.cachedRecords()).as("the two most recently used open records").isEqualTo(2);
+        // the oldest left the cache: read back from its files, it takes the next entry in its chain
+        EvidenceEntry next = store.append("release:r1", step("late"));
+        assertThat(next.seq()).isEqualTo(2);
+        EvidenceRecord back = store.record("release:r1").orElseThrow();
+        assertThat(back.entries()).hasSize(2);
+        assertThat(HashChain.verify(back.entries())).as("an intact chain").isEqualTo(-1);
+        assertThat(store.cachedRecords()).isEqualTo(2);
+        assertThat(store.records(EvidenceFilter.ALL)).hasSize(5);
+        EvidenceStoreContract.sameIds(store, EvidenceFilter.ALL, new EvidenceFilter(null, AT.plusSeconds(3), null, null));
+    }
+
     /** The objects of a folder, counting what is read under one prefix. */
     static final class CountingObjects implements WormObjects {
         final FileSystemWormObjects files;

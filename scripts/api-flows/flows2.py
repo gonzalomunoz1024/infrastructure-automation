@@ -136,6 +136,31 @@ if isinstance(b, dict) and b.get('jobId'):
     time.sleep(3)
     s, bj = call('GET', A + f'/jobs/{b["jobId"]}', expect=200)
     print('batch ->', bj.get('status'), bj.get('progress'), [(w['index'], w['status']) for w in (bj.get('batch') or {}).get('waves', [])])
+# stop the batch, then retry its failed, cancelled and skipped rows: the same job runs them in one more wave
+if isinstance(b, dict) and b.get('jobId'):
+    bid = b['jobId']
+    s, _ = call('POST', A + f'/jobs/{bid}:cancel', expect=[202, 409], note='stop the batch')
+    bj = wait_status(bid, ['succeeded', 'failed', 'cancelled', 'needs-attention'], timeout=30)
+    rows = (bj.get('batch') or {}).get('rows', []) if isinstance(bj, dict) else []
+    waves = len((bj.get('batch') or {}).get('waves', [])) if isinstance(bj, dict) else 0
+    if any(r.get('status') in ('failed', 'cancelled', 'skipped') for r in rows):
+        s, rt = call('POST', A + f'/jobs/{bid}:retry-failed-rows', expect=202, note='retry failed rows')
+        check(isinstance(rt, dict) and rt.get('id') == bid, f'retry-failed-rows answered another job: {rt}')
+        s, rj = call('GET', A + f'/jobs/{bid}', expect=200)
+        check(len((rj.get('batch') or {}).get('waves', [])) == waves + 1, 'retry-failed-rows added no wave')
+        # the new wave starts its rows again, maxParallel at a time (a row that reboots waits for vm-restart's own approval)
+        t0 = time.time()
+        while time.time() - t0 < 30:
+            s, rj = call('GET', A + f'/jobs/{bid}')
+            last = ((rj.get('batch') or {}).get('waves') or [{}])[-1] if isinstance(rj, dict) else {}
+            if last.get('status') != 'pending' and any(r.get('jobId') for r in rj['batch']['rows'] if r.get('wave') == last.get('index')):
+                break
+            time.sleep(0.5)
+        else:
+            issue(f'the retried rows of {bid} did not start: {last}')
+        print('retried batch ->', rj.get('status'), rj.get('progress'), [(w['index'], w['status']) for w in rj['batch']['waves']])
+    else:
+        s, _ = call('POST', A + f'/jobs/{bid}:retry-failed-rows', expect=409, note='retry a batch with no failed rows')
 s, _ = call('POST', bpath, {'items': []}, expect=400, note='empty batch')
 s, _ = call('POST', bpath, {'items': [{'vmId': f'vm-{i}'} for i in range(5000)], 'defaults': {'cve': 'CVE-1'}}, expect=400, note='batch over max')
 

@@ -253,6 +253,16 @@ abstract class EvidenceStoreContract {
         EvidenceRecord a = store.records(new EvidenceFilter(null, null, T0.plusNanos(1), null)).get(0);
         assertThat(a.entries()).hasSize(2);
         assertThat(HashChain.verify(a.entries())).isEqualTo(-1);
+        sameIds(store, EvidenceFilter.ALL, null, new EvidenceFilter("vm-restart", null, null, null), new EvidenceFilter(null, null, null, "ana"),
+                new EvidenceFilter(null, T0.plusNanos(1), null, null), new EvidenceFilter(null, null, T0.plusNanos(1), null),
+                new EvidenceFilter("create-vm", T0, T0.plusSeconds(61), "ana"), new EvidenceFilter("nope", null, null, null));
+    }
+
+    /** {@code recordIds} answers the ids of {@code records}, in its order, for every filter. */
+    static void sameIds(EvidenceStore store, EvidenceFilter... filters) {
+        for (EvidenceFilter f : filters) {
+            assertThat(store.recordIds(f)).as("the ids of %s", f).isEqualTo(store.records(f).stream().map(EvidenceRecord::jobId).toList());
+        }
     }
 
     @Test
@@ -265,6 +275,8 @@ abstract class EvidenceStoreContract {
         assertThat(store.records(new EvidenceFilter(null, null, null, "platform"))).extracting(EvidenceRecord::jobId)
                 .as("the first entry's actor stays the requester").containsExactly("job_1");
         assertThat(store.record("job_1").orElseThrow().at()).as("still the first entry's time").isEqualTo(T0);
+        sameIds(store, EvidenceFilter.ALL, new EvidenceFilter("vm-restart", null, null, null), new EvidenceFilter(null, null, null, "platform"),
+                new EvidenceFilter(null, T0.plusNanos(1), null, null), new EvidenceFilter(null, null, T0.plusNanos(1), null));
     }
 
     @Test

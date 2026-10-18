@@ -152,7 +152,7 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
             @RequestHeader(name = TraceIds.TRACEPARENT, required = false) String traceparent) {
         return charged(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
                 traceId -> commands.startJob(new StartJob(body.workflow(), body.version(), body.input(), null,
-                        body.channel() == null ? "rest" : body.channel(), null, traceId, null, body.changeId())))));
+                        body.channel() == null ? "rest" : body.channel(), traceId, null, body.changeId())))));
     }
 
     @PostMapping("/jobs:batch")

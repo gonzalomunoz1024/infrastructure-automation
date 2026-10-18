@@ -53,6 +53,16 @@ class MockPolicyTest {
     }
 
     @Test
+    void needsApprovalWhenTheRunsSliceSaysTheWorkflowRequiresOne() throws Exception {
+        // The runs slice sends the workflow's policy block flat (InvokePolicy.input): approvalRequired.
+        PolicyDecision d = MockPolicy.decide(input(MATEO, Phase.INVOKE, "{\"channel\":\"rest\",\"environment\":\"prod\",\"changeRequired\":false,\"approvalRequired\":true}"));
+        assertThat(d.decision()).isEqualTo("needs-approval");
+        assertThat(d.rules().stream().filter(r -> r.id().equals("workflow.approval")).findFirst().orElseThrow().message())
+                .isEqualTo("The workflow's policy requires an approval");
+        assertThat(MockPolicy.decide(input(MATEO, Phase.INVOKE, "{\"approvalRequired\":false}")).decision()).isEqualTo("allow");
+    }
+
+    @Test
     void needsApprovalWhenThePreviewHasADestructiveStep() throws Exception {
         PolicyDecision d = MockPolicy.decide(input(MATEO, Phase.STEP,
                 "{\"preview\":{\"steps\":[{\"id\":\"get\",\"effect\":\"read\"},{\"id\":\"delete\",\"effect\":\"delete\"}]}}"));

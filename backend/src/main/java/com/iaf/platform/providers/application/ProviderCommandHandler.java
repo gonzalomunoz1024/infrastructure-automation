@@ -23,6 +23,7 @@ import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -48,6 +49,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
 import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.domain.ReviewEvidence;
 import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
 import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
 import com.iaf.platform.providers.domain.SpecImport;
@@ -289,7 +291,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private CommandAccepted refreshed(Identity who, StoredProvider current, LatestSpec latest, RefreshSpec c) {
         ProviderDefinition def = current.definition();
         SpecSource source = def.spec().specSource();
-        String sha = WorkflowYaml.sha256(latest.raw());
+        String sha = Hashes.sha256(latest.raw());
         if (sha.equalsIgnoreCase(source.sha256() == null ? "" : source.sha256())) {
             return CommandAccepted.of(def.name(), "unchanged", Map.of("provider", "/api/v1/providers/" + def.name()));
         }
@@ -422,19 +424,21 @@ public class ProviderCommandHandler implements ProviderCommands {
                 ContentFiles.requireSlug("The provider name", provider);
             }
             Auth auth = authOf(command.auth());
-            // probed at once, recorded in the order of the environments
-            Flux<ConnectionResult> probes = Flux.fromIterable(command.endpoints().entrySet())
+            // results kept as evidence for a provider's review: only its team may add to them, judged before anything is probed;
+            // the answer is the team the entries are recorded for
+            Mono<Optional<String>> reviewer = provider == null ? Mono.just(Optional.empty())
+                    : blocking(() -> Optional.ofNullable(requireReviewer(who, provider, null)));
+            // probed at once, recorded in the order of the environments; the credential goes to every endpoint named:
+            // only once the caller may use it
+            return reviewer.flatMapMany(team -> CredentialUse.require(credentials, who, auth.credential()).thenMany(Flux.fromIterable(command.endpoints().entrySet())
                     .flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth).map(r -> Map.entry(e.getValue() == null ? "" : e.getValue().trim(), r)))
                     .concatMap(t -> provider == null ? Mono.just(t.getValue()) : blocking(() -> {
                         ConnectionResult r = t.getValue();
                         evidence.recordConnection(provider, new ConnectionTest(r.environment(), t.getKey().isEmpty() ? null : t.getKey(),
-                                auth.credential(), r.ok(), r.durationMs(), Redactor.redact(r.message(), secrets::known, REDACTED), clock.instant(), who.id()));
+                                auth.credential(), r.ok(), r.durationMs(), Redactor.redact(r.message(), secrets::known, REDACTED), clock.instant(), who.id(),
+                                team.orElse(null)));
                         return r;
-                    }));
-            // results kept as evidence for a provider's review: only its team may add to them, judged before anything is probed
-            Mono<Boolean> reviewer = provider == null ? Mono.just(true) : blocking(() -> requireReviewer(who, provider, null));
-            // the credential goes to every endpoint named: only once the caller may use it
-            return reviewer.then(CredentialUse.require(credentials, who, auth.credential())).thenMany(probes).collectList()
+                    })))).collectList()
                     .flatMap(results -> blocking(() -> {
                         ObjectNode data = F.objectNode();
                         if (provider != null) {
@@ -484,7 +488,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             String credential = blank(def.spec().auth() == null ? null : def.spec().auth().credential()) ? null : def.spec().auth().credential().trim();
             // the try is evidence for the provider's review: only its team may add to it, and the call resolves the
             // draft's credentials: only once the caller may use them
-            return blocking(() -> requireReviewer(who, def.name(), def.owner())).then(CredentialUse.guarded(credentials, who, () -> {
+            return blocking(() -> Optional.ofNullable(requireReviewer(who, def.name(), def.owner()))).flatMap(team -> CredentialUse.guarded(credentials, who, () -> {
                 long started = System.nanoTime();
                 // a review call: it reaches the system, but records no sample under a published provider's name
                 return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false)).contextWrite(ReviewCall::with)
@@ -504,7 +508,7 @@ public class ProviderCommandHandler implements ProviderCommands {
                             String errorClass = result.ok() ? null : result.response().path("error").path("class").asText(null);
                             evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
                                     errorClass, result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id(),
-                                    endpoint, credential));
+                                    endpoint, credential, team.orElse(null)));
                             ObjectNode data = F.objectNode();
                             data.put("provider", def.name());
                             data.put("action", action.id());
@@ -1047,20 +1051,35 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     /**
      * Throws unless {@code who} may add review evidence (a connection test or a try) for the provider
-     * {@code name}: the published provider's owner team when it is stored (an admin always), else the
-     * draft's owner team when it names one, else any member of a team. A store read: call where
+     * {@code name}, and answers the team the entry is recorded for. A published provider: its owner
+     * team (an admin always). One not published yet is held by the team that recorded its first
+     * evidence ({@link ReviewEvidence#claim()}): only that team adds to it (an admin always), so no
+     * other team pushes its entries out of the window; before that, the draft's owner team when it
+     * names one, else any member of a team, whose first team then holds it. A store read: call where
      * blocking is allowed.
      */
-    private boolean requireReviewer(Identity who, String name, String draftOwner) {
+    private String requireReviewer(Identity who, String name, String draftOwner) {
         Optional<StoredProvider> stored = store.get(name);
         if (stored.isPresent()) {
-            AccessRules.requireEdit(who, stored.get().definition().owner(), "provider " + name);
-        } else if (!blank(draftOwner)) {
+            String owner = stored.get().definition().owner();
+            AccessRules.requireEdit(who, owner, "provider " + name);
+            return owner;
+        }
+        if (!blank(draftOwner)) {
             AccessRules.requireEdit(who, draftOwner, "provider " + name);
         } else if (!who.admin() && who.teams().isEmpty()) {
             throw new ForbiddenException(who.name() + " may not test or try provider " + name + ": only members of a team may");
         }
-        return true;
+        Optional<String> claim = evidence.evidence(name).claim();
+        if (claim.isPresent()) {
+            boolean sameDraft = blank(draftOwner) || claim.get().equals(draftOwner.trim());
+            if (!who.admin() && (!sameDraft || !who.teams().contains(claim.get()))) {
+                throw new ForbiddenException("Provider " + name + " is being drafted by " + claim.get()
+                        + ": only that team adds to its review evidence until it is published");
+            }
+            return claim.get();
+        }
+        return !blank(draftOwner) ? draftOwner.trim() : who.teams().isEmpty() ? null : who.teams().get(0);
     }
 
     /** Work that may block (stores, change requests, the GitHub API) runs on the bounded elastic scheduler. */
