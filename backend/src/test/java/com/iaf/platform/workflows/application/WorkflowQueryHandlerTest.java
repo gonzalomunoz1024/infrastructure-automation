@@ -119,6 +119,23 @@ class WorkflowQueryHandlerTest {
     }
 
     @Test
+    void theCheckContextJudgesARunStepAgainstTheVersionItsRangeStarts() {
+        WorkflowRecord v2 = store.published("create-vm").orElseThrow();
+        // 1.9.0, retired, sized VMs by cores; 2.1.0 is only a draft and never starts
+        String cores = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml").replace("version: 2.0.1", "version: 1.9.0")
+                .replace("enum: [small, medium, large]", "enum: [2, 4, 8]");
+        assertThat(cores).contains("version: 1.9.0", "enum: [2, 4, 8]");
+        store.save(WorkflowRecord.of(WorkflowYaml.parse(cores), WorkflowStatus.RETIRED, v2.path(), NOW, "t"));
+        store.save(WorkflowRecord.of(v2.definition().withVersion("2.1.0"), WorkflowStatus.DRAFT, v2.path(), NOW, "t"));
+
+        var ctx = queries.checkContext().block();
+        assertThat(ctx.workflowInput("create-vm", "^1").orElseThrow().path("properties").path("size").path("enum").toString()).isEqualTo("[2,4,8]");
+        assertThat(ctx.workflowInput("create-vm", "^2")).isEqualTo(ctx.workflowInput("create-vm"));
+        assertThat(ctx.workflowInput("create-vm", "~2.1")).as("drafts never start").isEmpty();
+        assertThat(ctx.workflowNames()).contains("create-vm");
+    }
+
+    @Test
     void theRegistryDescribesEveryStepType() {
         List<StepTypeInfo> types = queries.stepTypes().collectList().block();
         assertThat(types).hasSize(StepType.values().length);

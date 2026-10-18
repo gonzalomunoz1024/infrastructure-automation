@@ -920,7 +920,8 @@ public final class WorkflowChecks {
          * workflow does not take is reported, and a literal must have the declared type.
          */
         void contract(Step s, String wf) {
-            Optional<JsonNode> schema = ctx.workflowInput(wf);
+            // the input of the version the step's range starts, not necessarily the current one
+            Optional<JsonNode> schema = ctx.workflowInput(wf, s.withText("version"));
             JsonNode input = s.withNode("input");
             if (schema.isEmpty() || schema.get() == null || !schema.get().isObject() || (input != null && !input.isNull() && !input.isObject())) {
                 return;
@@ -1189,7 +1190,7 @@ public final class WorkflowChecks {
                 }
                 case RUN -> {
                     String wf = s.withText("workflow");
-                    Optional<List<String>> outs = wf == null ? Optional.empty() : ctx.workflowOutputs(wf);
+                    Optional<List<String>> outs = wf == null ? Optional.empty() : ctx.workflowOutputs(wf, s.withText("version"));
                     if (outs.isEmpty()) {
                         yield null;
                     }

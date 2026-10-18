@@ -274,6 +274,16 @@ public final class DependencyRules {
         return List.copyOf(out);
     }
 
+    /**
+     * The version a run step with this range starts, among the versions it can resolve (published
+     * and retired): the highest inside the range, as the runs pick it. Empty when none is.
+     */
+    public static Optional<WorkflowDefinition> resolve(Collection<WorkflowDefinition> versions, String range) {
+        List<WorkflowDefinition> known = versions == null ? List.of() : versions.stream().filter(d -> d != null && d.version() != null).toList();
+        return Semver.highest(known.stream().map(WorkflowDefinition::version).toList(), range)
+                .flatMap(v -> known.stream().filter(d -> v.equals(d.version())).findFirst());
+    }
+
     /** The producer's version range a run step gets when it names none: the producer's current major. */
     public static String defaultRange(String producerVersion) {
         if (producerVersion == null || !VersionRules.isSemver(producerVersion)) {

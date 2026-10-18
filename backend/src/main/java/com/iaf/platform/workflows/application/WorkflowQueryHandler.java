@@ -84,9 +84,7 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     @Override
     public Mono<WorkflowRecord> resolve(String name, String range) {
         return optional(() -> {
-            List<WorkflowRecord> runnable = store.versions(name).stream()
-                    .filter(r -> r.status() == WorkflowStatus.PUBLISHED || r.status() == WorkflowStatus.RETIRED)
-                    .toList();
+            List<WorkflowRecord> runnable = store.versions(name).stream().filter(WorkflowRecord::isRunnable).toList();
             return Semver.highest(runnable.stream().map(WorkflowRecord::version).toList(), range)
                     .flatMap(v -> runnable.stream().filter(r -> r.version().equals(v)).findFirst());
         });
@@ -102,8 +100,11 @@ public class WorkflowQueryHandler implements WorkflowQueries {
         Mono<Map<String, ProviderDefinition>> providerMap = providers.all().collectMap(ProviderDefinition::name, p -> p);
         // every type with its attribute schema (null when the file has none), for the fields use and register steps return
         Mono<Map<String, JsonNode>> types = resources.types().<Map<String, JsonNode>>collect(HashMap::new, (m, t) -> m.put(t.name(), t.schema()));
-        Mono<List<WorkflowDefinition>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::definition).toList());
-        return Mono.zip(providerMap, types, published, credentialOwners()).map(t -> CheckContext.of(t.getT1(), t.getT3(), t.getT2(), t.getT4().orElse(null)));
+        // every version a run step can start, so a step pinned to an older major is judged against that major
+        Mono<List<WorkflowRecord>> runnable = blocking(() -> store.all().stream().filter(WorkflowRecord::isRunnable).toList());
+        return Mono.zip(providerMap, types, runnable, credentialOwners()).map(t -> CheckContext.of(t.getT1(),
+                t.getT3().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::definition).toList(),
+                t.getT3().stream().map(WorkflowRecord::definition).toList(), t.getT2(), t.getT4().orElse(null)));
     }
 
     /** The owner team of every owned credential in the vault, by name; empty when the vault cannot list them (owners are then not judged). */

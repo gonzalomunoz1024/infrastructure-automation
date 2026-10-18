@@ -121,6 +121,24 @@ class DependencyRulesTest {
     }
 
     @Test
+    void aRunStepStartsTheHighestVersionInsideItsRange() {
+        String note = "- note: { notify: { channel: '#x', message: hi } }";
+        WorkflowDefinition older = workflow("maker", "1.2.3", "x: { type: string }", note);
+        WorkflowDefinition one = workflow("maker", "1.4.0", "x: { type: string }", note);
+        WorkflowDefinition two = workflow("maker", "2.0.1", "x: { type: string }", note);
+        List<WorkflowDefinition> versions = List.of(older, two, one);
+
+        assertThat(DependencyRules.resolve(versions, "^1")).containsSame(one);
+        assertThat(DependencyRules.resolve(versions, "~1.2")).containsSame(older);
+        assertThat(DependencyRules.resolve(versions, "1.2.3")).containsSame(older);
+        assertThat(DependencyRules.resolve(versions, "^2")).containsSame(two);
+        assertThat(DependencyRules.resolve(versions, "*")).containsSame(two);
+        assertThat(DependencyRules.resolve(versions, "^3")).isEmpty();
+        assertThat(DependencyRules.resolve(List.of(), "^1")).isEmpty();
+        assertThat(DependencyRules.resolve(null, "^1")).isEmpty();
+    }
+
+    @Test
     void theDefaultRangeIsTheProducersCurrentMajor() {
         assertThat(DependencyRules.defaultRange("2.3.1")).isEqualTo("^2");
         assertThat(DependencyRules.defaultRange("0.9.0")).isEqualTo("^0");

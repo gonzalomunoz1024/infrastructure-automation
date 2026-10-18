@@ -17,6 +17,7 @@ import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestruct
 import { describeRemoteRef, dotted, isClosed, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
 import { validateWorkflowDocument } from './workflow-schema.ts';
 import { parseYamlText, YamlSyntaxError } from './yaml-text.ts';
+import { satisfies } from './semver.ts';
 import { STEP_TYPES } from './step-types.ts';
 import { closest } from './suggest.ts';
 import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
@@ -103,6 +104,7 @@ export function buildContext(
 export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceTypes: Iterable<ResourceTypeDocument>): Required<ContextSchemas> {
   const workflowInputs: Record<string, JsonSchema> = {};
   const workflowOutputs: Record<string, string[]> = {};
+  const workflowVersions: Record<string, string> = {};
   const resourceTypeSchemas: Record<string, JsonSchema> = {};
   const mcpTools: Record<string, string[]> = {};
   for (const w of workflows) {
@@ -111,6 +113,9 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
       workflowInputs[w.metadata.name] = input as JsonSchema;
     }
     workflowOutputs[w.metadata.name] = w.workflow.outputs === null ? [] : Object.keys(w.workflow.outputs);
+    if (w.metadata.version !== null) {
+      workflowVersions[w.metadata.name] = w.metadata.version;
+    }
     for (const tool of mcpToolNames(w)) {
       mcpTools[tool] = [...(mcpTools[tool] ?? []), w.metadata.name].sort();
     }
@@ -121,7 +126,7 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
       resourceTypeSchemas[asText(get(get(t, 'metadata'), 'name'))] = schema as JsonSchema;
     }
   }
-  return { workflowInputs, workflowOutputs, resourceTypeSchemas, mcpTools };
+  return { workflowInputs, workflowOutputs, workflowVersions, resourceTypeSchemas, mcpTools };
 }
 
 /**
@@ -1023,7 +1028,7 @@ class Checker {
    */
   contract(s: ParsedStep, wf: string): void {
     const schemas = this.ctx.workflowInputs;
-    const schema = schemas !== undefined && Object.hasOwn(schemas, wf) ? schemas[wf] : undefined;
+    const schema = schemas !== undefined && Object.hasOwn(schemas, wf) && this.startsKnownVersion(s, wf) ? schemas[wf] : undefined;
     const input = withNode(s, 'input');
     if (!isObject(schema) || (input !== undefined && input !== null && !isObject(input))) {
       return;
@@ -1316,7 +1321,7 @@ class Checker {
       case 'run': {
         const wf = withText(s, 'workflow');
         const outs = this.ctx.workflowOutputs;
-        if (wf === null || outs === undefined || !Object.hasOwn(outs, wf)) {
+        if (wf === null || outs === undefined || !Object.hasOwn(outs, wf) || !this.startsKnownVersion(s, wf)) {
           return null;
         }
         const outProps: JsonObject = {};
@@ -1425,6 +1430,20 @@ class Checker {
   }
 
   // ------------------------------------------------------------ helpers
+
+  /**
+   * Whether a run step starts the version of `wf` the context describes: its range (`version`)
+   * takes that version, or it names none, or the context knows no version. CheckContext.java
+   * resolves the highest version in range among all it knows; this context knows one.
+   */
+  startsKnownVersion(s: ParsedStep, wf: string): boolean {
+    const range = withText(s, 'version');
+    const versions = this.ctx.workflowVersions;
+    if (range === null || versions === undefined || !Object.hasOwn(versions, wf)) {
+      return true;
+    }
+    return satisfies(versions[wf] ?? '', range);
+  }
 
   suggest(wrong: string, candidates: Iterable<string>): Fix | null {
     const c = closest(wrong, candidates);

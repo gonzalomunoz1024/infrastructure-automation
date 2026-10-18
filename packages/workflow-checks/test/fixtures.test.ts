@@ -67,6 +67,35 @@ describe('fixes', () => {
     expect(problems.find((p) => p.field === 'input.size')?.message).toBe('\'huge\' is not one of ["small","medium","large"] in workflow create-vm');
   });
 
+  it('a run step whose range starts another version than the published one is not judged against it', () => {
+    // maker 2.0.1 takes a word for size and returns fresh; a step pinned to ^1 starts a 1.x this context does not describe
+    const maker = buildContext([], ['maker'], [], {
+      workflowInputs: { maker: { type: 'object', properties: { size: { type: 'string', enum: ['small', 'large'] } } } },
+      workflowOutputs: { maker: ['fresh'] },
+      workflowVersions: { maker: '2.0.1' },
+    });
+    const consumer = (range: string | null) => `apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: user, title: User, noun: thing, verb: use, owner: team-a, version: 1.0.0 }
+policy: { rbac: [ops] }
+workflow:
+  do:
+    - make:
+        name: Make
+        run: { workflow: maker, ${range === null ? '' : `version: "${range}", `}input: { size: 4 } }
+    - tell:
+        notify: { channel: "#x", message: "{{ $('Make').json.outputs.old }}" }
+`;
+    const judged = (yaml: string) => checkYaml(yaml, maker).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`);
+    const against2 = ["contract.type @make.input.size: 'size' is string in workflow maker, not integer", "expr.unknownField @tell.message: The output of 'Make' has no field 'outputs.old'"];
+    expect(judged(consumer('^2'))).toEqual(against2);
+    expect(judged(consumer(null))).toEqual(against2);
+    expect(judged(consumer('^1'))).toEqual([]);
+    expect(judged(consumer('^3'))).toEqual([]);
+    // without the versions every range is judged against the published input
+    expect(checkYaml(consumer('^1'), { ...maker, workflowVersions: {} }).map((p) => p.code)).toEqual(['contract.type', 'expr.unknownField']);
+  });
+
   it('steps a switch always jumps past never run', () => {
     const yaml = fixture('unreachable-step.yaml');
     const problems = checkYaml(yaml, ctx);

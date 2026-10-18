@@ -46,6 +46,21 @@ public interface CheckContext {
         return Optional.empty();
     }
 
+    /**
+     * The input schema of the version a run step with this {@code version} range starts: the
+     * highest published or retired version inside it ({@link DependencyRules#resolve}), the
+     * current published one for a step without a range. Empty when no version is in range or the
+     * workflow is unknown. A context that knows one version per workflow answers that one.
+     */
+    default Optional<JsonNode> workflowInput(String name, String range) {
+        return workflowInput(name);
+    }
+
+    /** The output names of the version a run step with this range starts, as {@link #workflowInput(String, String)} picks it. */
+    default Optional<List<String>> workflowOutputs(String name, String range) {
+        return workflowOutputs(name);
+    }
+
     /** A resource type's attribute schema; empty when the type or its schema is unknown. */
     default Optional<JsonNode> resourceTypeSchema(String type) {
         return Optional.empty();
@@ -140,9 +155,24 @@ public interface CheckContext {
      */
     static CheckContext of(Map<String, ProviderDefinition> providers, Collection<WorkflowDefinition> published, Map<String, JsonNode> resourceTypes,
             Map<String, String> credentialOwners) {
+        return of(providers, published, published, resourceTypes, credentialOwners);
+    }
+
+    /**
+     * As {@link #of(Map, Collection, Map, Map)}, with every version a run step can start
+     * ({@code runnable}: the published and retired versions, rolled-back ones left out), so a step
+     * pinned to an older major is judged against that major's input and outputs.
+     */
+    static CheckContext of(Map<String, ProviderDefinition> providers, Collection<WorkflowDefinition> published, Collection<WorkflowDefinition> runnable,
+            Map<String, JsonNode> resourceTypes, Map<String, String> credentialOwners) {
         Map<String, String> owners = credentialOwners == null ? null : Map.copyOf(credentialOwners);
         Map<String, WorkflowDefinition> byName = new LinkedHashMap<>();
         published.forEach(d -> byName.put(d.name(), d));
+        Map<String, Map<String, WorkflowDefinition>> versions = new HashMap<>();
+        for (WorkflowDefinition d : runnable) {
+            versions.computeIfAbsent(d.name(), k -> new LinkedHashMap<>()).putIfAbsent(d.version(), d);
+        }
+        byName.values().forEach(d -> versions.computeIfAbsent(d.name(), k -> new LinkedHashMap<>()).putIfAbsent(d.version(), d));
         Map<String, JsonNode> types = new HashMap<>(resourceTypes);
         Set<String> names = Set.copyOf(byName.keySet());
         Set<String> typeNames = Set.copyOf(types.keySet());
@@ -176,8 +206,25 @@ public interface CheckContext {
 
             @Override
             public Optional<List<String>> workflowOutputs(String name) {
-                return Optional.ofNullable(byName.get(name)).map(d -> d.workflow() == null || d.workflow().outputs() == null
-                        ? List.<String>of() : List.copyOf(new ArrayList<>(d.workflow().outputs().keySet())));
+                return Optional.ofNullable(byName.get(name)).map(CheckContext::outputNames);
+            }
+
+            @Override
+            public Optional<JsonNode> workflowInput(String name, String range) {
+                return inRange(name, range).map(WorkflowDefinition::inputSchema);
+            }
+
+            @Override
+            public Optional<List<String>> workflowOutputs(String name, String range) {
+                return inRange(name, range).map(CheckContext::outputNames);
+            }
+
+            private Optional<WorkflowDefinition> inRange(String name, String range) {
+                if (range == null || range.isBlank()) {
+                    return Optional.ofNullable(byName.get(name));
+                }
+                Map<String, WorkflowDefinition> known = versions.get(name);
+                return known == null ? Optional.empty() : DependencyRules.resolve(known.values(), range);
             }
 
             @Override
@@ -204,5 +251,10 @@ public interface CheckContext {
                 return Optional.ofNullable(owners.get(r.startsWith("vault:") ? r.substring("vault:".length()) : r));
             }
         };
+    }
+
+    /** The keys of a definition's {@code workflow.outputs}, in order. */
+    private static List<String> outputNames(WorkflowDefinition d) {
+        return d.workflow() == null || d.workflow().outputs() == null ? List.of() : List.copyOf(new ArrayList<>(d.workflow().outputs().keySet()));
     }
 }

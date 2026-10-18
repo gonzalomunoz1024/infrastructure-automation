@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DynamicTest;
@@ -99,6 +100,64 @@ class WorkflowChecksTest {
         assertThat(WorkflowChecks.check(yaml, CheckContext.EMPTY)).isEmpty();
         assertThat(ctx.mcpToolHolders("vm_restart")).containsExactly("vm-restart");
         assertThat(ctx.mcpToolHolders("vm_restart_batch")).containsExactly("vm-restart");
+    }
+
+    static WorkflowDefinition maker(String version, String sizeSchema, String output) {
+        return WorkflowYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: maker, title: Maker, noun: thing, verb: make, owner: team-a, version: %s }
+                api:
+                  input:
+                    type: object
+                    properties:
+                      size: %s
+                workflow:
+                  do:
+                    - note: { notify: { channel: "#x", message: hi } }
+                  outputs:
+                    %s: "{{ $input.size }}"
+                """.formatted(version, sizeSchema, output));
+    }
+
+    static String consumer(String range) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: user, title: User, noun: thing, verb: use, owner: team-a, version: 1.0.0 }
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - make:
+                        name: Make
+                        run: { workflow: maker, %sinput: { size: 4 } }
+                    - tell:
+                        notify: { channel: "#x", message: "{{ $('Make').json.outputs.old }}" }
+                """.formatted(range == null ? "" : "version: \"" + range + "\", ");
+    }
+
+    @Test
+    void aRunStepIsJudgedAgainstTheVersionItsRangeStartsNotTheCurrentOne() {
+        // maker 2.0.1 is published and 1.4.0 retired: 1.x took an integer size and returned old, 2.x takes a word and returns fresh
+        WorkflowDefinition one = maker("1.4.0", "{ type: integer }", "old");
+        WorkflowDefinition two = maker("2.0.1", "{ type: string, enum: [small, large] }", "fresh");
+        CheckContext ctx = CheckContext.of(Map.of(), List.of(two), List.of(one, two), Map.of(), null);
+        Function<String, List<String>> judged = yaml -> WorkflowChecks.check(yaml, ctx).stream()
+                .map(p -> p.code() + " @" + p.step() + "." + p.field() + ": " + p.message()).toList();
+
+        assertThat(judged.apply(consumer("^1"))).as("1.x takes the integer and returns old").isEmpty();
+        assertThat(judged.apply(consumer("^2"))).containsExactly(
+                "contract.type @make.input.size: 'size' is string in workflow maker, not integer",
+                "expr.unknownField @tell.message: The output of 'Make' has no field 'outputs.old'");
+        // a step without a range is judged against the current version; a range no version satisfies, not at all (the run says so)
+        assertThat(judged.apply(consumer(null))).extracting(s -> s.substring(0, s.indexOf(' '))).containsExactly("contract.type", "expr.unknownField");
+        assertThat(judged.apply(consumer("^3"))).isEmpty();
+        // the context that knows one version per workflow answers it for the ranges it satisfies
+        CheckContext current = CheckContext.of(Map.of(), List.of(two), Map.of());
+        assertThat(current.workflowInput("maker", "^2")).isEqualTo(current.workflowInput("maker"));
+        assertThat(current.workflowInput("maker", "^1")).isEmpty();
+        assertThat(ctx.workflowOutputs("maker", "^1")).contains(List.of("old"));
+        assertThat(ctx.workflowOutputs("maker", null)).contains(List.of("fresh"));
     }
 
     @Test

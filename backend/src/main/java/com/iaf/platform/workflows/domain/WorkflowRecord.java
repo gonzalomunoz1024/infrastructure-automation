@@ -46,4 +46,9 @@ public record WorkflowRecord(
     public boolean isPublished() {
         return status == WorkflowStatus.PUBLISHED;
     }
+
+    /** A version a run step or a start can resolve to: published or retired. */
+    public boolean isRunnable() {
+        return status == WorkflowStatus.PUBLISHED || status == WorkflowStatus.RETIRED;
+    }
 }
