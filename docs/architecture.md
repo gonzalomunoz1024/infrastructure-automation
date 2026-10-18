@@ -134,6 +134,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 | `IdempotencyStore` (gateway)     | `JdbcIdempotencyStore` | `idempotency_keys` (claim = insert or take over a stale row; replay from the stored status, headers and body; a release deletes an unanswered row; expired rows swept every ten minutes) |
 | `QuotaStore` (gateway)           | `JdbcQuotaStore`      | `quota_buckets` (one row per team bucket, `SELECT ... FOR UPDATE` on every take, so every replica draws from the same bucket) |
+| `InboxStore` (notifications)     | `JdbcInboxStore`      | `inbox_notifications`, `inbox_audience`, `inbox_reads` (the newest `platform.notifications.keep`, with who read each one) |
 
 Under that profile the in-memory twins of these stores are not created at all
 (`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only

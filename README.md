@@ -101,10 +101,10 @@ ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `v
 the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
 `MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
 spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics.
-With the `postgres` profile the idempotency keys and the per-team job quotas live in the database
-too (`idempotency_keys`, `quota_buckets`), so every API replica sees the same keys and draws from
-the same buckets; without it they are in memory, per instance, so run one API replica or route
-each caller to the same replica.
+With the `postgres` profile the idempotency keys, the per-team job quotas and the in-app inbox
+live in the database too (`idempotency_keys`, `quota_buckets`, `inbox_*`), so every API replica
+sees the same keys and draws from the same buckets; without it they are in memory, per instance,
+so run one API replica or route each caller to the same replica.
 
 ## Checks
 
