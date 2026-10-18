@@ -15,6 +15,7 @@ under `workflows/`. Nothing in `backend/` or `frontend/` knows what a VM is.
 # Java 21, Maven 3.9, Node 22
 scripts/dev.sh                 # backend on :8080 (demo profile), frontend on :3000
 scripts/dev.sh --temporal      # the same, with the interpreter running on a local Temporal dev server
+scripts/dev.sh --postgres      # the same, with the platform's state in PostgreSQL (docker compose's, or SPRING_DATASOURCE_URL)
 ```
 
 Open <http://localhost:3000>. The demo profile keeps everything in memory, answers provider calls
@@ -24,6 +25,10 @@ one promoted by hand, one canary still running), the change requests that publis
 resources the jobs worked on. Provider health, canary gates and audit evidence are computed from
 that history, not written into it. Switch users in Settings (`gonzalo` is an admin and approver,
 `junior` can only run).
+
+With `--postgres` the stores live in PostgreSQL instead of memory: published workflows, change
+requests, jobs with their steps and events, audit evidence and the rest survive a restart, and
+the demo history is written once per database.
 
 The generated surface:
 
@@ -68,12 +73,17 @@ The demo adapters are plain Spring components. Each production adapter sits behi
 replaces its demo twin when the profile is on: `temporal` (the interpreter as a Temporal
 workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
-provider calls). `docker-compose.yml` starts a Temporal dev server and the stack on it.
+provider calls), `postgres` (the stores in PostgreSQL, migrated by Flyway on start; the
+connection is `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and
+`SPRING_DATASOURCE_PASSWORD`). `docker-compose.yml` starts a Temporal dev server, PostgreSQL and
+the stack on them.
 
 ## Checks
 
 ```bash
-cd backend && mvn -B -q test        # backend unit, handler and adapter tests
+cd backend && mvn -B -q test        # backend unit, handler and adapter tests (JDBC adapters on H2)
+cd backend && PLATFORM_TEST_POSTGRES_URL='jdbc:postgresql://localhost:5432/platform?user=platform' mvn -B -q test
+                                    # the same, with the JDBC adapters also on PostgreSQL (CI does this)
 npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 npm run build
