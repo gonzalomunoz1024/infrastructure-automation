@@ -63,6 +63,7 @@ import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort.ProbeResult;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
@@ -473,6 +474,24 @@ class ProviderCommandHandlerTest {
                     assertThat(r.mismatches()).isEmpty();
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    void aTryAndItsVerifyAreReviewCallsThatRecordNoSample() {
+        List<String> marked = new ArrayList<>();
+        when(calls.call(any())).thenAnswer(invocation -> {
+            ProviderCall c = invocation.getArgument(0);
+            return Mono.deferContextual(ctx -> {
+                marked.add(c.action().id() + "=" + ReviewCall.in(ctx));
+                return c.action().id().equals("vm.get")
+                        ? Mono.<JsonNode>error(new ProviderCallException("not_found", "gone", false, 404))
+                        : Mono.<JsonNode>just(json("{\"deleted\":true}"));
+            });
+        });
+        StepVerifier.create(handler.tryAction(new TryAction(YAML, "vm.delete", "dev", json("{\"id\":\"vm-1\"}"))))
+                .assertNext(r -> assertThat(r.verified()).isTrue())
+                .verifyComplete();
+        assertThat(marked).containsExactly("vm.delete=true", "vm.get=true");
     }
 
     @Test

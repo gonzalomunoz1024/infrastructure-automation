@@ -35,6 +35,7 @@ import com.iaf.platform.providers.adapters.outbound.HttpProviderCall.Operation;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.GitSourcePort;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.testing.LocalHttp;
@@ -399,6 +400,21 @@ class HttpProviderCallTest {
         ObjectNode query = (ObjectNode) json("{\"target\":\"../etc\",\"state\":\"a/b\"}");
         assertThat(HttpProviderCall.url("http://h", new Operation("GET", "/jobs?target={target}&state={state}", Set.of()), query))
                 .isEqualTo("http://h/jobs?target=..%2Fetc&state=a%2Fb");
+    }
+
+    @Test
+    void aReviewCallReachesTheSystemButRecordsNoSample() {
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)).contextWrite(ReviewCall::with))
+                .assertNext(r -> assertThat(r.path("name").asText()).isEqualTo("web"))
+                .verifyComplete();
+        StepVerifier.create(call.call(callOf("vm.missing", "{}", false)).contextWrite(ReviewCall::with))
+                .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("not_found"))
+                .verify();
+        assertThat(hits).containsExactly("GET /api/vms/vm-1", "GET /api/missing");
+        verify(telemetry, never()).record(any());
+        // the same call outside a review is a run's call and lands in the telemetry
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false))).expectNextCount(1).verifyComplete();
+        verify(telemetry).record(any());
     }
 
     @Test

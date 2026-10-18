@@ -57,6 +57,7 @@ import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
@@ -479,7 +480,8 @@ public class ProviderCommandHandler implements ProviderCommands {
             // the call resolves the draft's credentials: only once the caller may use them
             return CredentialUse.guarded(credentials, who, () -> {
                 long started = System.nanoTime();
-                return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false))
+                // a review call: it reaches the system, but records no sample under a published provider's name
+                return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false)).contextWrite(ReviewCall::with)
                         .flatMap(response -> {
                             long ms = elapsedMs(started);
                             List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
@@ -580,7 +582,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             return Mono.just(Optional.of(false));
         }
         String expect = action.verify().expect() == null ? "notFound" : action.verify().expect();
-        return providerCalls.call(new ProviderCall(null, 2, def, verifyAction.get(), environment, input, false))
+        return providerCalls.call(new ProviderCall(null, 2, def, verifyAction.get(), environment, input, false)).contextWrite(ReviewCall::with)
                 .map(response -> Optional.of(judge(expect, response)))
                 .onErrorResume(ProviderCallException.class, e -> Mono.just(Optional.of("notFound".equals(expect) && "not_found".equals(e.errorClass()))));
     }
