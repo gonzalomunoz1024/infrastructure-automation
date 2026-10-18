@@ -252,6 +252,8 @@ class WorkflowCommandHandlerTest {
         assertThat(opened.aggregateId()).isEqualTo(cr.id());
         assertThat(opened.data().path("kind").asText()).isEqualTo("workflow");
         assertThat(opened.data().path("version").asText()).isEqualTo("1.2.1");
+        assertThat(opened.data().path("by").asText()).isEqualTo("platform");
+        assertThat(opened.data().path("owner").asText()).as("the owner team of the version under review").isEqualTo("team-compute");
         // a second publish while the change request is open is refused
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart).replace("(edited)", "(again)"))).block();
         StepVerifier.create(handler.publish("vm-restart", null)).expectError(ConflictException.class).verify();

@@ -117,6 +117,13 @@ or closes the pull request; when GitHub refuses the merge (a required review or 
 never sent back to GitHub. Reviews of pull requests merged on GitHub are GitHub's to require (branch
 protection, code owners); the platform's checks still decide whether the version is published.
 
+Change requests publish platform events (aggregate `change-request`, id the change request):
+`change-request.opened` when a workflow version is put up for review, `{ id; kind; name; version;
+by; owner }`, `owner` being that version's owner team (`metadata.owner`), so a listener can tell its
+reviewers without reading the store; `change-request.merged` `{ id; kind; name; version; yaml; by }`
+and `change-request.closed` `{ id; kind; name; version; by }`, for workflow and provider change
+requests alike.
+
 Registry (read-only, used by the designer and the Devin playbook):
 
 | GET `/registry/step-types` | `{ type; title; category; schema; description }[]` |

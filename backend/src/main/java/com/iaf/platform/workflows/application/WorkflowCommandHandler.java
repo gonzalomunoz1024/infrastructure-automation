@@ -381,7 +381,8 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 draft.yaml(), diff, now, null, null, null);
         changeRequests.save(cr);
         store.save(draft.withStatus(WorkflowStatus.CANDIDATE).withNotes(notes));
-        events.publish(CR_OPENED, "change-request", cr.id(), c.who().id(), crData(cr).put("by", c.who().id()));
+        // the owner team of the version under review, so a listener can tell its reviewers without reading the store
+        events.publish(CR_OPENED, "change-request", cr.id(), c.who().id(), crData(cr).put("by", c.who().id()).put("owner", def.metadata().owner()));
         return CommandAccepted.of(cr.id(), "open", Map.of("changeRequest", "/api/v1/change-requests/" + cr.id(), "workflow", "/api/v1/workflows/" + draft.name()));
     }
 
