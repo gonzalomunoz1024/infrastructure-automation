@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.gateway.domain.IdempotencyKeys;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -111,10 +112,12 @@ public final class OpenApiDocument {
         } else {
             op.set("requestBody", requestBody(body, true));
         }
+        callHeaders(params, !read);
         ObjectNode responses = op.putObject("responses");
         responses.set("202", response("Job accepted", ref("JobAccepted")));
         responses.set("400", response("Input problems", ref("ProblemResponse")));
         responses.set("403", response("Not allowed: RBAC or policy", ref("ErrorResponse")));
+        startAnswers(responses);
         pathItem(paths, route.template()).set(d.method().toLowerCase(), op);
 
         ObjectNode batch = operation(operationId + "_batch", d.title() + " (batch)",
@@ -123,11 +126,13 @@ public final class OpenApiDocument {
         RouteTemplate batchRoute = RouteTemplate.compile("POST", d.batchPath());
         ArrayNode batchParams = batch.putArray("parameters");
         pathParameters(batchParams, batchRoute, input);
+        callHeaders(batchParams, true);
         batch.set("requestBody", requestBody(McpTools.batchSchema(bodySchema(input, batchRoute.params()), d.batchPolicy()), true));
         ObjectNode batchResponses = batch.putObject("responses");
         batchResponses.set("202", response("Batch accepted", ref("BatchAccepted")));
         batchResponses.set("400", response("Invalid rows", ref("BatchProblemResponse")));
         batchResponses.set("403", response("Not allowed: RBAC or policy", ref("ErrorResponse")));
+        startAnswers(batchResponses);
         pathItem(paths, batchRoute.template()).set("post", batch);
 
         if (d.previewEnabled()) {
@@ -136,6 +141,7 @@ public final class OpenApiDocument {
             extensions(preview, w, d);
             ArrayNode previewParams = preview.putArray("parameters");
             pathParameters(previewParams, route, input);
+            callHeaders(previewParams, false);
             preview.set("requestBody", requestBody(body, true));
             ObjectNode previewResponses = preview.putObject("responses");
             previewResponses.set("200", response("Preview", ref("Preview")));
@@ -159,6 +165,30 @@ public final class OpenApiDocument {
             op.put("x-approval", d.policy().approval().group() == null ? "required" : d.policy().approval().group());
         }
         deprecated(op, d);
+    }
+
+    /** The headers an operation reads besides its input: the version pin, and on an operation that starts jobs the idempotency key. */
+    private static void callHeaders(ArrayNode params, boolean starts) {
+        ObjectNode pin = params.addObject();
+        pin.put("name", VersionPin.HEADER);
+        pin.put("in", "header");
+        pin.put("required", false);
+        pin.put("description", "Run this published (or retired) version, like 1.2.0, instead of the one the release router picks; no canary split. ?version= pins too.");
+        pin.putObject("schema").put("type", "string");
+        if (starts) {
+            ObjectNode key = params.addObject();
+            key.put("name", IdempotencyKeys.HEADER);
+            key.put("in", "header");
+            key.put("required", false);
+            key.put("description", "The same key with the same request gives back the first answer for 24 hours (Idempotent-Replay: true); with another request it is 409.");
+            key.putObject("schema").put("type", "string").put("maxLength", IdempotencyKeys.MAX_LENGTH);
+        }
+    }
+
+    /** What any job start may also answer: a conflict (a reused idempotency key, a pinned version that cannot run) and the team quota. */
+    private static void startAnswers(ObjectNode responses) {
+        responses.set("409", response("Idempotency-Key reused with another request, or a pinned version that is not published", ref("ErrorResponse")));
+        responses.set("429", response("Over the team's job-start quota; Retry-After says when to try again", ref("ErrorResponse")));
     }
 
     /** {@code api.deprecated}: the operation is marked deprecated, says when it goes away and what replaces it. */

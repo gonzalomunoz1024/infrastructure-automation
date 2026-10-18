@@ -1,7 +1,9 @@
 package com.iaf.platform.catalog.domain;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -132,9 +134,18 @@ public final class McpTools {
     /** Repeating a call with the same key gives back its first answer instead of starting another job. */
     public static final String IDEMPOTENCY_KEY = "idempotencyKey";
 
-    /** The call arguments of the workflow tools, by name, with what they mean. */
-    static final Map<String, String> CALL_ARGUMENTS = Map.of(
-            IDEMPOTENCY_KEY, "Optional. Repeat the call with the same key (up to 255 characters) to get its first answer back for 24 hours instead of starting another job");
+    /** Runs one version of the workflow instead of the one the release router picks. */
+    public static final String VERSION = "version";
+
+    /** The call arguments of the workflow tools, by name, with what they mean, in the order tools/list shows them. */
+    static final Map<String, String> CALL_ARGUMENTS = callArguments();
+
+    private static Map<String, String> callArguments() {
+        Map<String, String> args = new LinkedHashMap<>();
+        args.put(IDEMPOTENCY_KEY, "Optional. Repeat the call with the same key (up to 255 characters) to get its first answer back for 24 hours instead of starting another job");
+        args.put(VERSION, "Optional. Run this published (or retired) version of the workflow, like 1.2.0, instead of the one the release router picks; no canary split");
+        return Collections.unmodifiableMap(args);
+    }
 
     /**
      * Whether {@code argument} is read by the platform rather than passed to the workflow: always

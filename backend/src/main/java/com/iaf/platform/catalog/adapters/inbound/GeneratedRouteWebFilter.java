@@ -36,6 +36,7 @@ import com.iaf.platform.catalog.domain.PolicyDeniedException;
 import com.iaf.platform.catalog.domain.ReservedNouns;
 import com.iaf.platform.catalog.domain.RouteTable;
 import com.iaf.platform.catalog.domain.RouteTable.RouteMatch;
+import com.iaf.platform.catalog.domain.VersionPin;
 import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
@@ -58,7 +59,8 @@ import reactor.core.publisher.Mono;
  * method and path against the live route table: the published workflows' operations (invoke,
  * {@code :batch}, {@code :preview}) and the resource reads of every type. Platform routes win:
  * a path whose first segment is a reserved noun is never matched, and everything that matches
- * nothing continues down the chain to the controllers (404).
+ * nothing continues down the chain to the controllers (404). {@code X-Workflow-Version} (or
+ * {@code ?version=}) pins a workflow operation to one version.
  */
 @Slf4j
 @Component
@@ -103,13 +105,13 @@ public class GeneratedRouteWebFilter implements WebFilter {
         deprecationHeaders(exchange, route, params);
         return switch (route.kind()) {
             case INVOKE -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
-                    .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange)))
+                    .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange), pinnedVersion(exchange, route)))
                     .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
             case BATCH -> identity(exchange).flatMap(who -> body(exchange)
-                    .flatMap(b -> invoker.batch(route.workflow(), b, params, who, CHANNEL))
+                    .flatMap(b -> invoker.batch(route.workflow(), b, params, who, CHANNEL, pinnedVersion(exchange, route)))
                     .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
             case PREVIEW -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
-                    .flatMap(in -> invoker.preview(route.workflow(), in, who))
+                    .flatMap(in -> invoker.preview(route.workflow(), in, who, pinnedVersion(exchange, route)))
                     .flatMap(preview -> write(exchange, HttpStatus.OK, preview)));
             case LIST_RESOURCES -> {
                 var query = exchange.getRequest().getQueryParams();
@@ -148,12 +150,26 @@ public class GeneratedRouteWebFilter implements WebFilter {
         return who != null ? Mono.just(who) : CurrentIdentity.current();
     }
 
+    /**
+     * The version this call pins ({@code X-Workflow-Version}, or {@code ?version=} where that is
+     * not the workflow's own input); null when it pins none. 400 when the two disagree.
+     */
+    static String pinnedVersion(ServerWebExchange exchange, RouteTable.Route route) {
+        String header = exchange.getRequest().getHeaders().getFirst(VersionPin.HEADER);
+        String query = VersionPin.queryPins(exchange.getRequest().getMethod().name(), route.workflow().definition().inputSchema())
+                ? exchange.getRequest().getQueryParams().getFirst(VersionPin.PARAM) : null;
+        return VersionPin.of(header, query);
+    }
+
     /** A read takes its input from the query string, anything else from the JSON body; the path parameters go on top. */
     private Mono<ObjectNode> input(ServerWebExchange exchange, WorkflowDefinition d, Map<String, String> params) {
         JsonNode schema = d.inputSchema();
         if ("GET".equals(exchange.getRequest().getMethod().name())) {
             Map<String, String> query = new LinkedHashMap<>();
             exchange.getRequest().getQueryParams().forEach((k, v) -> query.put(k, v.isEmpty() ? null : v.get(0)));
+            if (VersionPin.queryPins("GET", schema)) {
+                query.remove(VersionPin.PARAM);   // the pin, not input
+            }
             return Mono.fromSupplier(() -> Inputs.of(Inputs.ofQuery(query, schema), params, schema));
         }
         return body(exchange).map(b -> Inputs.of(b, params, schema));

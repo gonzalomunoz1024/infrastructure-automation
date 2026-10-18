@@ -63,7 +63,8 @@ class OpenApiDocumentTest {
     void createKeepsItsRequiredFieldsInTheBody() {
         JsonNode op = DOC.path("paths").path("/api/v1/vms").path("post");
         assertThat(op.path("operationId").asText()).isEqualTo("vm_create");
-        assertThat(op.path("parameters")).isEmpty();
+        assertThat(op.path("parameters")).extracting(p -> p.path("name").asText() + ":" + p.path("in").asText())
+                .containsExactly("X-Workflow-Version:header", "Idempotency-Key:header");
         JsonNode body = op.path("requestBody").path("content").path("application/json").path("schema");
         List<String> required = new ArrayList<>();
         body.path("required").forEach(r -> required.add(r.asText()));
@@ -75,7 +76,7 @@ class OpenApiDocumentTest {
         JsonNode batch = DOC.path("paths").path("/api/v1/vms:patch:batch").path("post");
         assertThat(batch.path("operationId").asText()).isEqualTo("vm_patch_batch");
         // on the collection: no path parameter, and every row names its VM
-        assertThat(batch.path("parameters")).isEmpty();
+        assertThat(batch.path("parameters")).extracting(p -> p.path("in").asText()).containsOnly("header");
         JsonNode schema = batch.path("requestBody").path("content").path("application/json").path("schema");
         assertThat(schema.path("properties").path("items").path("items").path("properties").has("vmId")).isTrue();
         assertThat(schema.path("required").get(0).asText()).isEqualTo("items");
@@ -138,6 +139,6 @@ class OpenApiDocumentTest {
         assertThat(op.path("operationId").asText()).isEqualTo("cluster_read");
         assertThat(op.has("requestBody")).isFalse();
         assertThat(op.path("parameters")).extracting(p -> p.path("name").asText() + ":" + p.path("in").asText())
-                .containsExactly("clusterId:path", "verbose:query");
+                .containsExactly("clusterId:path", "verbose:query", "X-Workflow-Version:header");
     }
 }

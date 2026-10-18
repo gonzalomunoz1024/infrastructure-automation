@@ -21,6 +21,7 @@ import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.catalog.domain.McpTools.Tool;
 import com.iaf.platform.catalog.domain.PlatformInfo;
 import com.iaf.platform.catalog.domain.PolicyDeniedException;
+import com.iaf.platform.catalog.domain.VersionPin;
 import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
@@ -177,12 +178,15 @@ public class McpServer {
                 case INVOKE -> {
                     ObjectNode input = args.deepCopy();
                     String key = McpTools.takeCallArgument(tool, input, McpTools.IDEMPOTENCY_KEY);
-                    yield keyed(who, tool, key, input, () -> invoker.invoke(tool.workflow(), input, who, CHANNEL, Ids.next("trace")).map(this::ok));
+                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, input, McpTools.VERSION), McpTools.VERSION);
+                    yield keyed(who, tool, key, version, input,
+                            () -> invoker.invoke(tool.workflow(), input, who, CHANNEL, Ids.next("trace"), version).map(this::ok));
                 }
                 case BATCH -> {
                     ObjectNode body = args.deepCopy();
                     String key = McpTools.takeCallArgument(tool, body, McpTools.IDEMPOTENCY_KEY);
-                    yield keyed(who, tool, key, body, () -> invoker.batch(tool.workflow(), body, Map.of(), who, CHANNEL).map(this::ok));
+                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, body, McpTools.VERSION), McpTools.VERSION);
+                    yield keyed(who, tool, key, version, body, () -> invoker.batch(tool.workflow(), body, Map.of(), who, CHANNEL, version).map(this::ok));
                 }
                 case LIST_RESOURCES -> {
                     check(tool, args);
@@ -222,13 +226,14 @@ public class McpServer {
     /**
      * A workflow tool call with an {@code idempotencyKey}: the first call runs, the same call again
      * within the key's lifetime gets the first result back marked {@code _meta.idempotentReplay},
-     * the same key with other arguments is a conflict. Keys are scoped to the caller.
+     * the same key with other arguments (or another pinned version) is a conflict. Keys are
+     * scoped to the caller.
      */
-    private Mono<JsonNode> keyed(Identity who, Tool tool, String key, JsonNode args, Supplier<Mono<JsonNode>> call) {
+    private Mono<JsonNode> keyed(Identity who, Tool tool, String key, String version, JsonNode args, Supplier<Mono<JsonNode>> call) {
         if (key == null || idempotency == null) {
             return call.get();
         }
-        String fingerprint = IdempotencyKeys.fingerprint(tool.name(), null, args);
+        String fingerprint = IdempotencyKeys.fingerprint(tool.name(), version, args);
         return idempotency.once(who.id(), key, fingerprint, call).map(outcome -> {
             if (!outcome.replayed() || !outcome.value().isObject()) {
                 return outcome.value();

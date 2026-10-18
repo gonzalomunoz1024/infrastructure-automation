@@ -18,7 +18,9 @@ import com.iaf.platform.catalog.domain.InputProblemsException;
 import com.iaf.platform.catalog.domain.Inputs;
 import com.iaf.platform.catalog.domain.PolicyDeniedException;
 import com.iaf.platform.common.domain.CommandAccepted;
+import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
@@ -33,6 +35,8 @@ import com.iaf.platform.runs.ports.inbound.RunsCommands.StartJob;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
+import com.iaf.platform.workflows.domain.WorkflowStatus;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
 import reactor.core.publisher.Mono;
 
@@ -41,7 +45,8 @@ import reactor.core.publisher.Mono;
  * gateway and the MCP server: take a token from the caller's team quota (a batch takes one),
  * validate the input against {@code api.input}, judge RBAC
  * ({@code policy.rbac}), ask the policy engine, compute the preview when the workflow publishes
- * one, then start the job (or the batch) through the runs slice.
+ * one, then start the job (or the batch) through the runs slice. A call pinned to a version is
+ * judged against that version's definition and runs it without the canary split.
  */
 @Service
 public class WorkflowInvoker {
@@ -52,17 +57,24 @@ public class WorkflowInvoker {
     private final RunsCommands runs;
     private final PolicyPort policy;
     private final JobQuotas quotas;
+    private final WorkflowQueries workflows;
 
     public WorkflowInvoker(RunsCommands runs, PolicyPort policy) {
         this(runs, policy, JobQuotas.unlimited());
     }
 
     /** {@code quotas}: every invoke or batch takes a token from the caller's team first (429 when there is none). */
-    @Autowired
     public WorkflowInvoker(RunsCommands runs, PolicyPort policy, JobQuotas quotas) {
+        this(runs, policy, quotas, null);
+    }
+
+    /** {@code workflows}: where a pinned call finds its version; without it the record given is judged and the runs slice resolves the pin. */
+    @Autowired
+    public WorkflowInvoker(RunsCommands runs, PolicyPort policy, JobQuotas quotas, WorkflowQueries workflows) {
         this.runs = runs;
         this.policy = policy;
         this.quotas = quotas;
+        this.workflows = workflows;
     }
 
     /** What the caller gets back: {@code { jobId, status, links: { job } }}. */
@@ -92,27 +104,61 @@ public class WorkflowInvoker {
     // ---------------------------------------------------------------- one job
 
     public Mono<Started> invoke(WorkflowRecord workflow, JsonNode input, Identity who, String channel, String traceId) {
-        return quotas.take(who).then(Mono.defer(() -> {
-            WorkflowDefinition d = workflow.definition();
+        return invoke(workflow, input, who, channel, traceId, null);
+    }
+
+    /** {@code version}: run exactly that version (published or retired), bypassing the canary split; null lets the release router pick. */
+    public Mono<Started> invoke(WorkflowRecord workflow, JsonNode input, Identity who, String channel, String traceId, String version) {
+        return quotas.take(who).then(Mono.defer(() -> pinned(workflow, version))).flatMap(rec -> {
+            WorkflowDefinition d = rec.definition();
             ObjectNode in = Inputs.merge(input, null);
             validate(d, in);
             AccessRules.requireInvoke(who, rbac(d), d.name());
-            return decide(d, workflow.version(), who, in, context(channel, traceId, 0))
+            return decide(d, rec.version(), who, in, pinContext(context(channel, traceId, 0), version))
                     .then(preview(d, in, who))
-                    .flatMap(p -> runs.startJob(new StartJob(d.name(), null, in, who, channel, null, traceId, p.orElse(null), null)))
+                    .flatMap(p -> runs.startJob(new StartJob(d.name(), version, in, who, channel, null, traceId, p.orElse(null), null)))
                     .map(Started::of);
-        }));
+        });
     }
 
     /** {@code :preview}: the blast radius without starting anything. The input is validated and RBAC judged as for a run. */
     public Mono<Preview> preview(WorkflowRecord workflow, JsonNode input, Identity who) {
-        return Mono.defer(() -> {
-            WorkflowDefinition d = workflow.definition();
+        return preview(workflow, input, who, null);
+    }
+
+    /** The preview of the pinned version, when {@code version} is given. */
+    public Mono<Preview> preview(WorkflowRecord workflow, JsonNode input, Identity who, String version) {
+        return Mono.defer(() -> pinned(workflow, version)).flatMap(rec -> {
+            WorkflowDefinition d = rec.definition();
             ObjectNode in = Inputs.merge(input, null);
             validate(d, in);
             AccessRules.requireInvoke(who, rbac(d), d.name());
             return runs.preview(d, in, who);
         });
+    }
+
+    /**
+     * The record a call runs: the published one, or the pinned version. A pin names a version
+     * that was published (it may be retired since); a draft or a candidate is 409, an unknown
+     * version 404.
+     */
+    Mono<WorkflowRecord> pinned(WorkflowRecord workflow, String version) {
+        if (version == null || version.equals(workflow.version()) || workflows == null) {
+            return Mono.just(workflow);
+        }
+        return workflows.version(workflow.name(), version)
+                .switchIfEmpty(Mono.error(() -> new NotFoundException("workflow version", workflow.name() + "@" + version)))
+                .flatMap(rec -> rec.status() == WorkflowStatus.PUBLISHED || rec.status() == WorkflowStatus.RETIRED
+                        ? Mono.just(rec)
+                        : Mono.error(new ConflictException(workflow.name() + "@" + version + " is " + rec.status().json()
+                                + "; only published or retired versions can be pinned")));
+    }
+
+    private static ObjectNode pinContext(ObjectNode ctx, String pin) {
+        if (pin != null) {
+            ctx.put("pinnedVersion", pin);
+        }
+        return ctx;
     }
 
     // ---------------------------------------------------------------- a batch
@@ -123,19 +169,24 @@ public class WorkflowInvoker {
      * are judged once, one preview is computed for the batch (from its first row).
      */
     public Mono<BatchStarted> batch(WorkflowRecord workflow, JsonNode body, Map<String, String> params, Identity who, String channel) {
-        return quotas.take(who).then(Mono.defer(() -> {
-            WorkflowDefinition d = workflow.definition();
+        return batch(workflow, body, params, who, channel, null);
+    }
+
+    /** {@code version}: every row runs that version, bypassing the canary split; null lets the release router pick. */
+    public Mono<BatchStarted> batch(WorkflowRecord workflow, JsonNode body, Map<String, String> params, Identity who, String channel, String version) {
+        return quotas.take(who).then(Mono.defer(() -> pinned(workflow, version))).flatMap(rec -> {
+            WorkflowDefinition d = rec.definition();
             BatchPlan plan = plan(d, body, params);
             AccessRules.requireInvoke(who, rbac(d), d.name());
             ObjectNode policyInput = F.objectNode();
             policyInput.set("defaults", plan.defaults());
             ArrayNode rows = policyInput.putArray("items");
             plan.rows().forEach(rows::add);
-            return decide(d, workflow.version(), who, policyInput, context(channel, null, plan.rows().size()))
+            return decide(d, rec.version(), who, policyInput, pinContext(context(channel, null, plan.rows().size()), version))
                     .then(preview(d, plan.rows().get(0), who))
-                    .flatMap(p -> runs.startBatch(new StartBatch(d.name(), null, plan.rows(), plan.defaults(), plan.rollout(), who, channel, p.orElse(null))))
+                    .flatMap(p -> runs.startBatch(new StartBatch(d.name(), version, plan.rows(), plan.defaults(), plan.rollout(), who, channel, p.orElse(null))))
                     .map(a -> BatchStarted.of(a, plan.rows().size()));
-        }));
+        });
     }
 
     /** Merge defaults under every row, apply the path parameters, validate every row. */
