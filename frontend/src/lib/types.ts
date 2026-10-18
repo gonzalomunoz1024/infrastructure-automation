@@ -352,6 +352,8 @@ export type JobDetail = JobSummary & {
   batch?: Batch
   attention?: Attention
   traceId: string
+  /** where the engine's own tools show the job: its execution in the Temporal UI on the temporal engine with a UI URL */
+  links?: { temporal?: string }
 }
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'

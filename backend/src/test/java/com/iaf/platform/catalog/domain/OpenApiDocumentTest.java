@@ -108,6 +108,8 @@ class OpenApiDocumentTest {
                 "Preview", "PolicyDecision", "Resource", "JobSummary", "JobDetail", "JobEvent", "ErrorResponse", "vm_restart_input")) {
             assertThat(schemas.has(name)).as(name).isTrue();
         }
+        assertThat(schemas.path("JobDetail").path("allOf").get(1).path("properties").path("links").path("properties").has("temporal"))
+                .as("a job links to its execution in the Temporal UI").isTrue();
         assertThat(DOC.path("tags")).extracting(t -> t.path("name").asText()).contains("Compute", "Data", "Platform", "Resources", "Jobs");
     }
 

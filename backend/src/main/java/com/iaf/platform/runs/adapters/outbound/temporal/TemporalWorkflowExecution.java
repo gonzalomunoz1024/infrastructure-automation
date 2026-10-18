@@ -1,10 +1,14 @@
 package com.iaf.platform.runs.adapters.outbound.temporal;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriUtils;
 
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -107,6 +111,29 @@ public class TemporalWorkflowExecution implements WorkflowExecutionPort {
                 throw e;
             }
         }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * {@code temporal}: the job's execution in the Temporal web UI ({@code platform.temporal.ui-url}),
+     * whose workflow id is the job id; the UI opens its latest run. No link without a UI URL.
+     */
+    @Override
+    public Map<String, String> links(String jobId) {
+        return temporalLink(temporal, jobId).map(url -> Map.of(TEMPORAL_LINK, url)).orElse(Map.of());
+    }
+
+    static final String TEMPORAL_LINK = "temporal";
+
+    static Optional<String> temporalLink(PlatformProperties.Temporal temporal, String jobId) {
+        String ui = temporal.getUiUrl() == null ? "" : temporal.getUiUrl().trim();
+        if (ui.isEmpty() || jobId == null || jobId.isBlank()) {
+            return Optional.empty();
+        }
+        while (ui.endsWith("/")) {
+            ui = ui.substring(0, ui.length() - 1);
+        }
+        return Optional.of(ui + "/namespaces/" + UriUtils.encodePathSegment(temporal.getNamespace(), StandardCharsets.UTF_8)
+                + "/workflows/" + UriUtils.encodePathSegment(jobId, StandardCharsets.UTF_8));
     }
 
     /**

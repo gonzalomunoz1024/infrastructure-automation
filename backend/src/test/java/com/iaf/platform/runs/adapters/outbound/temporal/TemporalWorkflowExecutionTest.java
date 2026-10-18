@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
@@ -161,5 +162,34 @@ class TemporalWorkflowExecutionTest {
         assertThat(t.execution.isRunning(job.id()).block()).isFalse();
         assertThatThrownBy(() -> t.execution.cancel(job.id(), "gonzalo").block()).isInstanceOf(NotFoundException.class);
         assertThatThrownBy(() -> t.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block()).isInstanceOf(NotFoundException.class);
+    }
+
+    @Test
+    void aJobLinksToItsExecutionInTheTemporalUiOnceAUiUrlIsSet() {
+        assertThat(t.execution.links("job_1")).as("no ui-url, no link").isEmpty();
+
+        PlatformProperties.Temporal temporal = new PlatformProperties.Temporal();
+        temporal.setUiUrl("http://localhost:8233/");
+        assertThat(TemporalWorkflowExecution.temporalLink(temporal, "job_1")).contains("http://localhost:8233/namespaces/default/workflows/job_1");
+
+        temporal.setUiUrl(" https://temporal.example.internal/ui ");
+        temporal.setNamespace("team a");
+        assertThat(TemporalWorkflowExecution.temporalLink(temporal, "job 2/x"))
+                .contains("https://temporal.example.internal/ui/namespaces/team%20a/workflows/job%202%2Fx");
+
+        temporal.setUiUrl("  ");
+        assertThat(TemporalWorkflowExecution.temporalLink(temporal, "job_1")).isEmpty();
+        temporal.setUiUrl(null);
+        assertThat(TemporalWorkflowExecution.temporalLink(temporal, "job_1")).isEmpty();
+    }
+
+    @Test
+    void theEngineGivesTheLinkUnderTheTemporalName() {
+        try (TemporalTestEngine linked = new TemporalTestEngine(calls -> calls, c -> c.setUiUrl("http://localhost:8233"), env -> { })) {
+            Job job = linked.start(WAIT, Map.of());
+            assertThat(linked.execution.links(job.id()))
+                    .containsExactly(Map.entry("temporal", "http://localhost:8233/namespaces/default/workflows/" + job.id()));
+            linked.execution.cancel(job.id(), "gonzalo").block();
+        }
     }
 }

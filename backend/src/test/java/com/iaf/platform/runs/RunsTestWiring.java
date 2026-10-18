@@ -100,7 +100,7 @@ public final class RunsTestWiring {
         runners = new AutomationRunners(List.of(runner));
         executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
         execution = new InMemoryWorkflowExecution(executors, projection, events, changes, clock);
-        queries = new RunsQueryHandler(projection);
+        queries = new RunsQueryHandler(projection, execution);
     }
 
     /** The command handler over the real in-memory engine. */

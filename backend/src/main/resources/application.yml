@@ -34,6 +34,7 @@ platform:
     task-queue: platform-interpreter
     heartbeat-timeout: 60s  # a step's call (provider, automation, script) without a heartbeat this long fails as worker-lost; 0 = never
     heartbeat-interval: 15s # how often those calls heartbeat
+    ui-url: ""              # the Temporal web UI (e.g. http://localhost:8233): each job's view links to its execution there; blank = no link
   policy:
     mode: mock            # mock | opa
     opa-url: http://localhost:8181/v1/data/platform

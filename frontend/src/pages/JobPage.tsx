@@ -9,6 +9,7 @@ import type { JobEvent, JobReplay, JobStepStatus, JobSummary, StepDiff } from '.
 import { ApprovalCard } from '../components/ApprovalCard'
 import { AttentionPanel } from '../components/AttentionPanel'
 import { BatchPanel } from '../components/BatchPanel'
+import { EngineLinks } from '../components/EngineLinks'
 import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { PreviewCard } from '../components/PreviewCard'
 import { StepTimeline } from '../components/StepTimeline'
@@ -147,6 +148,7 @@ export default function JobPage({ route }: PageProps) {
               <Button icon="workflow" onClick={() => navigate(pathFor('workflow', { name: data.workflow }, { job: id }))}>
                 Open designer executions
               </Button>
+              <EngineLinks links={data.links} />
               {active && (
                 <Button variant="warning-outline" icon="stop" onClick={() => setConfirmCancel(true)}>
                   Cancel

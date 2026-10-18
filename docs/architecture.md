@@ -134,7 +134,10 @@ are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` poll
 steps and batch rows are child workflows whose ids are the child job ids. A cancel from the
 Temporal UI or CLI ends the job as cancelled by `temporal`. The job list is still each instance's
 in-memory projection, so jobs started before a backend restart are not listed again, although their
-executions carry on.
+executions carry on. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
+`docker-compose.yml`), each job's view carries `links.temporal`, its execution there
+(`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
+"Open in Temporal".
 
 The platform's own step calls heartbeat while they run: a provider call, an automation run or a
 script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`

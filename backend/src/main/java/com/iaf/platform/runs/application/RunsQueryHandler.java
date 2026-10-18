@@ -3,6 +3,7 @@ package com.iaf.platform.runs.application;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.context.annotation.Primary;
@@ -18,11 +19,15 @@ import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JsonDiff;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
+import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** The read side of the runs slice, served from the {@link JobProjection}. */
+/**
+ * The read side of the runs slice, served from the {@link JobProjection}; a job's view also links
+ * to it in the engine's own tools ({@link WorkflowExecutionPort#links}).
+ */
 @Service
 @Primary
 public class RunsQueryHandler implements RunsQueries {
@@ -31,9 +36,11 @@ public class RunsQueryHandler implements RunsQueries {
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final JobProjection projection;
+    private final WorkflowExecutionPort engine;
 
-    public RunsQueryHandler(JobProjection projection) {
+    public RunsQueryHandler(JobProjection projection, WorkflowExecutionPort engine) {
         this.projection = projection;
+        this.engine = engine;
     }
 
     @Override
@@ -51,7 +58,15 @@ public class RunsQueryHandler implements RunsQueries {
     @Override
     public Mono<JsonNode> job(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> JobViews.detail(j, projection.children(j.id())));
+                .map(j -> {
+                    ObjectNode detail = JobViews.detail(j, projection.children(j.id()));
+                    Map<String, String> links = engine.links(j.id());
+                    if (links != null && !links.isEmpty()) {
+                        ObjectNode l = detail.putObject("links");
+                        links.forEach(l::put);
+                    }
+                    return detail;
+                });
     }
 
     @Override
