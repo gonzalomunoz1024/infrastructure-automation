@@ -133,7 +133,7 @@ class RunsCommandHandlerTest {
         assertThat(job.change()).isNotNull();
         assertThat(job.change().id()).startsWith("CHG00");
         assertThat(job.change().url()).contains(job.change().id());
-        assertThat(job.change().evidenceUrl()).isEqualTo("http://localhost:3000/audit/" + acc.id());
+        assertThat(job.change().evidenceUrl()).isEqualTo("http://localhost:3000/#/audit/" + acc.id());
         assertThat(job.policy().decision()).isEqualTo("allow");
         assertThat(eventTypes()).containsExactly("job.started", "job.change-opened");
         assertThat(published.get(0).data().path("workflow").asText()).isEqualTo("vm-restart");

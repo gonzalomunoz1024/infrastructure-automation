@@ -19,7 +19,7 @@ import lombok.Data;
 public class ChangeProperties {
 
     /** The job's evidence page, {@code {jobId}} replaced: the link each change carries. */
-    private String evidenceUrl = "http://localhost:3000/audit/{jobId}";
+    private String evidenceUrl = "http://localhost:3000/#/audit/{jobId}";
 
     private ServiceNow servicenow = new ServiceNow();
 

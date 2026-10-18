@@ -142,6 +142,9 @@ public class ProviderAlertEvaluator {
         if (channel != null) {
             data.put("channel", channel);
         }
+        if (def.owner() != null) {
+            data.put("owner", def.owner());
+        }
         events.publish(ALERT_EVENT, "provider", provider, Identity.SYSTEM.id(), data);
         log.info("provider alert [{}] {}: {}", severity, provider, message);
         return alert;
