@@ -130,7 +130,12 @@ class MongoProfileRestartTest {
                 "--platform.content.dir=..",
                 "--platform.demo.seed-history=" + demoHistory,
                 "--platform.audit.signing-key=test-signing-key"));
-        args.addAll(List.of(more));
+        // an argument given twice reads as both values joined by a comma, so one given here replaces the default
+        for (String arg : more) {
+            String key = arg.substring(0, arg.indexOf('=') + 1);
+            args.removeIf(a -> a.startsWith(key));
+            args.add(arg);
+        }
         return new SpringApplicationBuilder(PlatformApplication.class)
                 .profiles("demo", "mongo")
                 .bannerMode(Banner.Mode.OFF)
