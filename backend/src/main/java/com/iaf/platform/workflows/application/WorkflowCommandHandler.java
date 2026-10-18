@@ -99,6 +99,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     private static final String POLICY_UNREACHABLE = "opa.unreachable";
     static final String POLICY_UNAVAILABLE = "policy engine unavailable, try again";
     static final String ARTIFACTS_UNAVAILABLE = "artifact store unavailable, try again";
+    static final String CREDENTIALS_UNAVAILABLE = "credential store unavailable, try again";
 
     private final WorkflowStorePort store;
     private final ChangeRequestPort changeRequests;
@@ -321,6 +322,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext(), missingUploads(c.record().definition())).flatMap(judged -> {
             CheckContext ctx = judged.getT1();
             WorkflowDefinition def = c.record().definition();
+            // whose each credential is decides credential.owner; a vault that cannot say is no verdict
+            if (!ctx.knowsCredentials() && !WorkflowChecks.credentialReferences(def).isEmpty()) {
+                return Mono.error(new ServiceUnavailableException(CREDENTIALS_UNAVAILABLE, null));
+            }
             List<Problem> problems = new ArrayList<>(WorkflowChecks.check(def, ctx));
             problems.addAll(judged.getT2());
             if (WorkflowChecks.hasErrors(problems)) {

@@ -434,6 +434,33 @@ class WorkflowCommandHandlerTest {
     }
 
     @Test
+    void aCredentialAnotherTeamOwnsIsReportedAtSaveAndRefusedAtPublish() {
+        // ana's team-data workflow names the ssh key team-compute owns
+        when(credentials.list()).thenReturn(Mono.just(List.of(
+                new CredentialsPort.CredentialInfo("ssh/ops-automation", "ssh-key", "vault:ssh/ops-automation", "team-compute", NOW))));
+        String borrowed = vmRestart.replace("name: vm-restart", "name: vm-restart-data").replace("owner: team-compute", "owner: team-data")
+                .replace("verb: restart", "verb: reboot");
+        String owner = "Credential vault:ssh/ops-automation belongs to team-compute; a workflow of team-data may use its own team's credentials and unowned ones";
+
+        StepVerifier.create(handler.saveDraft("vm-restart-data", WorkflowSource.ofYaml(borrowed)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .assertNext(saved -> assertThat(saved.problems()).extracting(Problem::code, Problem::step, Problem::message)
+                        .contains(tuple("credential.owner", "restart", owner)))
+                .verifyComplete();
+        StepVerifier.create(handler.publish("vm-restart-data", new PublishWorkflow("all", null)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::message).contains(tuple("credential.owner", owner)))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("vm-restart-data")).as("the draft stays a draft").isPresent();
+
+        // a vault that cannot list its credentials gives no verdict on whose they are: try again
+        when(credentials.list()).thenReturn(Mono.error(new IllegalStateException("vault sealed")));
+        StepVerifier.create(handler.publish("vm-restart-data", new PublishWorkflow("all", null)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("credential store unavailable, try again"))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+    }
+
+    @Test
     void aPolicyEngineThatCannotBeReachedAnswersTryAgainAndOpensNothing() {
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
         // the engine errors, or the OPA adapter denies with its unreachable rule (fail closed for jobs)

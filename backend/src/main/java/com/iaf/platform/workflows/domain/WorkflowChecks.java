@@ -128,6 +128,47 @@ public final class WorkflowChecks {
         return out;
     }
 
+    /** A {@code vault:} reference one of the steps names, and where ({@code credential}, {@code playbook.git.credential}, {@code headers.Authorization}). */
+    public record CredentialReference(String step, String field, String reference) {
+    }
+
+    /**
+     * Every credential the steps name, as the runners read them: a value that is a {@code vault:}
+     * reference, or a scheme and one ({@code Bearer vault:api/token}, as an http header). A
+     * templated value is resolved when the step runs and is not listed.
+     */
+    public static List<CredentialReference> credentialReferences(WorkflowDefinition def) {
+        List<CredentialReference> out = new ArrayList<>();
+        for (Step s : def.allSteps()) {
+            credentialReferences(s.with(), s.id(), "", out);
+        }
+        return out;
+    }
+
+    private static void credentialReferences(JsonNode node, String step, String path, List<CredentialReference> out) {
+        if (node == null) {
+            return;
+        }
+        if (node.isTextual()) {
+            String v = node.asText().trim();
+            if (ExpressionEngine.isTemplate(v)) {
+                return;
+            }
+            String[] parts = v.split(" ", 2);
+            String ref = v.startsWith("vault:") ? v : parts.length == 2 && parts[0].matches("[A-Za-z][A-Za-z0-9_-]*") ? parts[1].trim() : null;
+            if (ref != null && ref.startsWith("vault:") && ref.length() > "vault:".length()) {
+                out.add(new CredentialReference(step, path, ref));
+            }
+        } else if (node.isObject()) {
+            node.properties().forEach(e -> credentialReferences(e.getValue(), step, path.isEmpty() ? e.getKey() : path + "." + e.getKey(), out));
+        } else if (node.isArray()) {
+            int i = 0;
+            for (JsonNode v : node) {
+                credentialReferences(v, step, path + "[" + i++ + "]", out);
+            }
+        }
+    }
+
     /** A {@code $ref} out of a schema the file carries ({@code field}): {@code schema.remoteRef} at the reference. */
     static Optional<Problem> remoteRefProblem(JsonNode schema, String field) {
         return Schemas.remoteRef(schema).map(r -> Problem.error("schema.remoteRef", null, field + Schemas.dotted(r.pointer()), r.describe(field)));
@@ -189,6 +230,23 @@ public final class WorkflowChecks {
             rollout();
             steps();
             triggers();
+            credentialOwners();
+        }
+
+        /**
+         * credential.owner: a step that names a credential another team owns would hand that
+         * team's secret to this workflow's runs, which resolve any reference they are given. Judged
+         * only when the context read the vault; the TypeScript twin never does.
+         */
+        void credentialOwners() {
+            String owner = def.metadata().owner();
+            if (owner == null || owner.isBlank() || !ctx.knowsCredentials()) {
+                return;
+            }
+            for (CredentialReference r : credentialReferences(def)) {
+                ctx.credentialOwner(r.reference()).filter(o -> !o.equals(owner)).ifPresent(o -> error("credential.owner", r.step(), r.field(),
+                        "Credential " + r.reference() + " belongs to " + o + "; a workflow of " + owner + " may use its own team's credentials and unowned ones"));
+            }
         }
 
         // ------------------------------------------------------------ definition level

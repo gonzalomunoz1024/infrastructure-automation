@@ -49,6 +49,20 @@ public interface CheckContext {
         return Optional.empty();
     }
 
+    /** Whether the vault's credentials were read; when false, whose a credential is is not judged. */
+    default boolean knowsCredentials() {
+        return false;
+    }
+
+    /**
+     * The owner team of the credential a {@code vault:} reference names, when the vault keeps the
+     * credential and it has an owner; empty for an unowned credential (any team's) and for one
+     * the vault does not keep (the run finds that out).
+     */
+    default Optional<String> credentialOwner(String reference) {
+        return Optional.empty();
+    }
+
     CheckContext EMPTY = new CheckContext() {
         @Override
         public Optional<ProviderDefinition> provider(String name) {
@@ -105,6 +119,17 @@ public interface CheckContext {
      * outputs) and every resource type with its attribute schema (null when the file has none).
      */
     static CheckContext of(Map<String, ProviderDefinition> providers, Collection<WorkflowDefinition> published, Map<String, JsonNode> resourceTypes) {
+        return of(providers, published, resourceTypes, null);
+    }
+
+    /**
+     * The full catalog and the owner team of each credential the vault keeps, by name
+     * ({@code vsphere/token} for {@code vault:vsphere/token}; unowned ones left out). A null map:
+     * the credentials could not be read, and their owners are not judged.
+     */
+    static CheckContext of(Map<String, ProviderDefinition> providers, Collection<WorkflowDefinition> published, Map<String, JsonNode> resourceTypes,
+            Map<String, String> credentialOwners) {
+        Map<String, String> owners = credentialOwners == null ? null : Map.copyOf(credentialOwners);
         Map<String, WorkflowDefinition> byName = new LinkedHashMap<>();
         published.forEach(d -> byName.put(d.name(), d));
         Map<String, JsonNode> types = new HashMap<>(resourceTypes);
@@ -145,6 +170,20 @@ public interface CheckContext {
             @Override
             public Optional<JsonNode> resourceTypeSchema(String type) {
                 return Optional.ofNullable(type == null ? null : types.get(type));
+            }
+
+            @Override
+            public boolean knowsCredentials() {
+                return owners != null;
+            }
+
+            @Override
+            public Optional<String> credentialOwner(String reference) {
+                if (owners == null || reference == null) {
+                    return Optional.empty();
+                }
+                String r = reference.trim();
+                return Optional.ofNullable(owners.get(r.startsWith("vault:") ? r.substring("vault:".length()) : r));
             }
         };
     }

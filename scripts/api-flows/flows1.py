@@ -111,6 +111,29 @@ s, _ = call('GET', A + '/workflows/scratch-e2e', expect=404)
 # rbac: ana (team-data) edits a team-compute workflow
 s, _ = call('PUT', A + '/workflows/vm-restart/draft', {'yaml': wf['yaml']}, user='ana', expect=403, note='ana edits compute wf')
 s, _ = call('POST', A + '/workflows/vm-restart:publish', {}, user='junior', expect=[403, 409, 400], note='junior publishes')
+# credential.owner: ana's team-data workflow names a credential team-compute owns; saved with the problem, refused at publish
+s, _ = call('POST', A + '/credentials', {'name': 'e2e/compute-only', 'type': 'token', 'value': 'not-a-real-secret-e2e', 'owner': 'team-compute'},
+            user='junior', expect=202, note='team-compute credential')
+yaml_borrow = """apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: data-ping-e2e, title: Data ping, noun: database, verb: ping, owner: team-data, version: 1.0.0 }
+policy:
+  rbac: [ops]
+workflow:
+  do:
+    - ping:
+        name: Ping
+        call: http
+        with: { method: GET, url: "https://example.com/ping", credential: "vault:e2e/compute-only" }
+"""
+s, saved = call('PUT', A + '/workflows/data-ping-e2e/draft', {'yaml': yaml_borrow}, user='ana', expect=200, note='borrowed credential draft')
+check(any(p.get('code') == 'credential.owner' for p in (saved or {}).get('problems', [])) if isinstance(saved, dict) else False,
+      f'credential.owner missing at save: {str(saved)[:300]}')
+s, refused = call('POST', A + '/workflows/data-ping-e2e:publish', {'strategy': 'all'}, user='ana', expect=409, note='borrowed credential publish')
+check(isinstance(refused, dict) and any(p.get('code') == 'credential.owner' for p in (refused.get('detail') or [])),
+      f'credential.owner missing at publish: {str(refused)[:300]}')
+check('not-a-real-secret-e2e' not in json.dumps([saved, refused]), 'a credential value came back')
+s, _ = call('DELETE', A + '/workflows/data-ping-e2e', user='ana', expect=204, note='delete borrowed draft')
 # path traversal in names
 s, _ = call('PUT', A + '/workflows/..%2F..%2Fetc/draft', {'yaml': yaml_new}, expect=[400, 404], note='traversal name')
 s, _ = call('PUT', A + '/workflows/Bad_Name/draft', {'yaml': yaml_new.replace('vm-reboot-e2e', 'Bad_Name')}, expect=400, note='bad name')

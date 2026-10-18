@@ -63,6 +63,27 @@ class WorkflowChecksTest {
     }
 
     @Test
+    void aStepThatNamesACredentialAnotherTeamOwnsIsRefusedNamingTheCredentialAndItsTeam() throws IOException {
+        String vmRestart = Files.readString(SampleContentTest.ROOT.resolve("workflows/team-compute/vm-restart.yaml"));
+        String withHeader = vmRestart.replace("          credential: vault:ssh/ops-automation\n",
+                "          credential: vault:ssh/ops-automation\n          playbook2: { headers: { Authorization: \"Bearer vault:api/data-token\" } }\n");
+        assertThat(withHeader).contains("Bearer vault:api/data-token");
+        CheckContext ctx = SampleContentTest.context(Map.of("ssh/ops-automation", "team-data", "api/data-token", "team-data", "vsphere/token", "team-compute"));
+
+        assertThat(WorkflowChecks.check(withHeader, ctx)).filteredOn(p -> p.code().equals("credential.owner"))
+                .extracting(Problem::level, Problem::step, Problem::field, Problem::message)
+                .containsExactly(
+                        tuple(Problem.Level.ERROR, "restart", "credential", "Credential vault:ssh/ops-automation belongs to team-data; a workflow of team-compute may use its own team's credentials and unowned ones"),
+                        tuple(Problem.Level.ERROR, "restart", "playbook2.headers.Authorization", "Credential vault:api/data-token belongs to team-data; a workflow of team-compute may use its own team's credentials and unowned ones"));
+        // its own team's credential, an unowned one, a templated one and a vault that was not read are all fine
+        assertThat(WorkflowChecks.check(vmRestart, SampleContentTest.context(Map.of("ssh/ops-automation", "team-compute")))).isEmpty();
+        assertThat(WorkflowChecks.check(vmRestart, SampleContentTest.context(Map.of()))).isEmpty();
+        assertThat(WorkflowChecks.check(vmRestart.replace("vault:ssh/ops-automation", "\"vault:ssh/{{ $input.reason }}\""), ctx))
+                .extracting(Problem::code).doesNotContain("credential.owner");
+        assertThat(WorkflowChecks.check(vmRestart, SampleContentTest.context())).isEmpty();
+    }
+
+    @Test
     void didYouMeanFixesCarryTheReplacement() {
         String yaml = """
                 apiVersion: iaf.platform/v1

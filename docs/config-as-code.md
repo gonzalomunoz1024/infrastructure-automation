@@ -307,6 +307,7 @@ Among the codes:
 | `trigger.schedule`        | error   | a `schedule` trigger: the platform runs no schedules; use an alert, an event or the API |
 | `playbook.digest`         | error   | an uploaded playbook's `sha256` is not a digest: 64 lowercase hex digits, as `POST /api/v1/playbooks:upload` answered it |
 | `playbook.missing`        | error   | only at publish, from the platform: the artifact store holds no upload with the digest the step pins; upload the file again. The TypeScript twin cannot see the store and leaves this to the backend |
+| `credential.owner`        | error   | from the platform only (save, `:validate`, publish): a step names a `vault:` credential another team owns (a field such as `credential` or `playbook.git.credential`, or a header `Bearer vault:...`); the message names the credential and its owner team, never a value. A workflow may use its owner team's credentials and unowned ones; a templated reference is resolved when the step runs. The TypeScript twin sees no vault and has no rule for it; a publish while the vault cannot list its credentials answers 503 `credential store unavailable, try again` |
 | `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
 
 ### Versions and contracts

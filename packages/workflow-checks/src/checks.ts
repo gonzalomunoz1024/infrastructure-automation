@@ -4,6 +4,11 @@
  * Pure: the only lookups go through the {@link CheckContext}. Every rule mirrors
  * WorkflowChecks.java, with the same codes, levels, fixes and messages; the shared fixtures under
  * ./fixtures prove both sides agree.
+ *
+ * What only the backend can know stays the backend's: whose a `vault:` credential is
+ * (`credential.owner`: the editor and CI see no vault, so this twin has no rule for it and the
+ * designer learns it from `:validate`) and whether the artifact store still holds an upload
+ * (`playbook.missing`).
  */
 import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
 import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';

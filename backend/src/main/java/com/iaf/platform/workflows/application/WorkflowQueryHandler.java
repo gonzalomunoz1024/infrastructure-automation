@@ -103,7 +103,19 @@ public class WorkflowQueryHandler implements WorkflowQueries {
         // every type with its attribute schema (null when the file has none), for the fields use and register steps return
         Mono<Map<String, JsonNode>> types = resources.types().<Map<String, JsonNode>>collect(HashMap::new, (m, t) -> m.put(t.name(), t.schema()));
         Mono<List<WorkflowDefinition>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::definition).toList());
-        return Mono.zip(providerMap, types, published).map(t -> CheckContext.of(t.getT1(), t.getT3(), t.getT2()));
+        return Mono.zip(providerMap, types, published, credentialOwners()).map(t -> CheckContext.of(t.getT1(), t.getT3(), t.getT2(), t.getT4().orElse(null)));
+    }
+
+    /** The owner team of every owned credential in the vault, by name; empty when the vault cannot list them (owners are then not judged). */
+    private Mono<Optional<Map<String, String>>> credentialOwners() {
+        return credentials.list()
+                .map(all -> {
+                    Map<String, String> owners = new HashMap<>();
+                    all.stream().filter(c -> c.owner() != null && !c.owner().isBlank()).forEach(c -> owners.put(c.name(), c.owner()));
+                    return Optional.<Map<String, String>>of(owners);
+                })
+                .defaultIfEmpty(Optional.of(Map.of()))
+                .onErrorResume(e -> Mono.just(Optional.empty()));
     }
 
     @Override
