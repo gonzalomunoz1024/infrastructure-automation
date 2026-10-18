@@ -413,7 +413,7 @@ wiring test expects none.
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set; neither is `@Primary`, every configured SIEM gets every batch) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
-| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `JdbcIdempotencyStore` and `JdbcQuotaStore` under `postgres`, shared by every replica |
+| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `MongoIdempotencyStore` and `MongoQuotaStore` under `mongo`, shared by every replica |
 
 - `AuditListener` folds job events into one hash chain per job, release decisions into
   `release:<id>` and every other recorded command into the platform stream. Each entry is
@@ -427,7 +427,9 @@ wiring test expects none.
   seals closed records and checkpoints open ones; it reads only the records still taking
   signatures (`EvidenceStore.unsealed()`: their head, entry count, whether they are closed and
   their last checkpoint, never their entries), so a run costs the open records, not the history.
-  The JDBC store answers it from the headers (`sealed_at IS NULL`), the WORM stores skip every
+  The MongoDB store answers it from the headers without a `seal` (a scan of the headers, which no
+  index serves, never of the entries) and first brings a header that lags behind its entries up to
+  date; the WORM stores skip every
   record named in their `sealed/` index (one write-once object per sealed record, written with the
   seal; a record sealed before the index existed is indexed the first time a run finds it). On
   demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
@@ -552,8 +554,8 @@ The registry judges its own writes (`resources.domain.ResourceRules`): a resourc
 team's, so only that team, the job that created it or an admin may update it through a `register`
 step, and only the team or an admin may retire it. Retiring and lineage walk
 `ResourceStorePort.builtFrom` (`ResourceGraph`: depth-first in both directions, each resource once,
-at most 32 hops and 1000 resources) instead of reading the whole registry; the JDBC store finds a
-resource's dependents with a LIKE on the document text and judges the candidates' `builtFrom`.
+at most 32 hops and 1000 resources) instead of reading the whole registry; the MongoDB store finds a
+resource's dependents with one indexed query on the `builtFrom` array each resource document keeps.
 
 A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
 the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
@@ -919,7 +921,7 @@ indexes a version on its change branch as the candidate while an open change req
 and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
 delete (which also asks the change requests before it deletes anything). A rolled-back workflow
 release republishes the version it replaced and marks its own version rolled back, which nothing
-resolves to: the JDBC store keeps the mark in the version's `doc`, the Git store as a commit on
+resolves to: the MongoDB store keeps the mark in the version's `doc`, the Git store as a commit on
 main that changes no file (`Rolled-back: <name> <version>`) and that it reads back at startup. A provider
 version rolls out the same way: the providers slice keeps the candidate beside the current version
 (`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
