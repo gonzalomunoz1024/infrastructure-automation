@@ -65,17 +65,28 @@ export function readableDetail(detail: string | undefined): { text: string | nul
     lists.push({ label: 'Staying on the old major', items: staying, tone: 'neutral' })
     text = text.replace(/\s*Staying on the old major:\s*[^.;]+[.;]?/i, '')
   }
+  // the playbooks check: its failures are joined by "; ", the linter's findings last (each its own item)
+  const lint = /;?\s*the linter found problems:\s*(.+)$/i.exec(text)
+  if (lint) {
+    lists.push({ label: 'The linter found', items: lint[1].split(/;\s*/).map((s) => s.trim()).filter(Boolean), tone: 'critical' })
+    text = text.slice(0, lint.index)
+  }
   const pinned = namesAfter(text, /pinned at publish:\s*(.+)$/i)
   if (pinned) {
     lists.push({ label: 'Pinned at publish', items: pinned, tone: 'healthy' })
     text = text.replace(/;?\s*pinned at publish:\s*.+$/i, '')
   }
-  const unpinned = namesAfter(text, /not pinned to a commit:\s*(.+)$/i)
+  const unpinned = namesAfter(text, /not pinned to a commit:\s*([^;]+)/i)
   if (unpinned) {
     lists.push({ label: 'Not pinned to a commit', items: unpinned, tone: 'critical' })
-    text = text.replace(/\s*not pinned to a commit:\s*.+$/i, '')
+    text = text.replace(/;?\s*not pinned to a commit:\s*[^;]+/i, '')
   }
-  text = text.trim().replace(/[;,]$/, '')
+  const digests = namesAfter(text, /upload digest is not 64 hex digits \(playbook\.digest\):\s*([^;]+)/i)
+  if (digests) {
+    lists.push({ label: 'Upload digest is not 64 hex digits', items: digests, tone: 'critical' })
+    text = text.replace(/;?\s*upload digest is not 64 hex digits \(playbook\.digest\):\s*[^;]+/i, '')
+  }
+  text = text.trim().replace(/^[;,]\s*/, '').replace(/[;,]$/, '')
   return { text: text || null, lists }
 }
 

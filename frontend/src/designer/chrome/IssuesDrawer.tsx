@@ -21,7 +21,7 @@ export interface Group {
 
 export const PUBLISH_GROUP = 'Before publishing'
 
-/** `publish.ansibleLint`, `publish.routes`, `publish.contracts`: what publishing would refuse. */
+/** `publish.playbooks`, `publish.routes`, `publish.contracts`: what publishing would refuse. */
 export function isPublishProblem(p: Problem): boolean {
   return p.code.startsWith('publish.')
 }

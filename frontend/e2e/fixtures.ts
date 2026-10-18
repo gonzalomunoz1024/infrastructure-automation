@@ -751,7 +751,7 @@ export const WORKFLOW_CR: ChangeRequestDetail = {
   createdAt: ago(30),
   checks: [
     { id: 'checks', label: 'Workflow checks', status: 'passed' },
-    { id: 'ansible-lint', label: 'ansible-lint', status: 'passed', detail: '1 playbook pinned to a commit; pinned at publish: restart to 9fceb02d0ae5' },
+    { id: 'playbooks', label: 'Playbooks', status: 'passed', detail: '1 playbook(s) pinned to a commit, 1 linted; pinned at publish: restart to 9fceb02d0ae5' },
     { id: 'contracts', label: 'Contracts', status: 'failed', detail: '2.0.0 breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment, create-vm' },
     { id: 'replay', label: 'Replay of recent jobs', status: 'passed', detail: '{"replayed":42,"divergences":[]}' },
   ],

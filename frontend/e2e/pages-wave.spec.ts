@@ -260,7 +260,7 @@ test.describe('job: a stopped batch', () => {
 })
 
 test.describe('change request: the publish checks', () => {
-  test('a failed contracts check lists every consumer it reaches, and the ansible-lint check its pin', async ({ page }) => {
+  test('a failed contracts check lists every consumer it reaches, and the playbooks check its pin', async ({ page }) => {
     await mockApi(page, { 'GET /change-requests/{id}': WORKFLOW_CR, 'GET /workflows': WORKFLOWS })
     await page.goto('/#/change-requests/cr-202')
     const checks = page.getByRole('table', { name: 'Checks' })
@@ -269,9 +269,9 @@ test.describe('change request: the publish checks', () => {
     await expect(contracts).toContainText('2.0.0 breaks the contract of 1.2.0 without a new major version: input.reason became required.')
     await expect(contracts).not.toContainText('Affected consumers:')
     await expect(contracts.getByRole('list', { name: 'A breaking change reaches' }).getByRole('listitem')).toHaveText(['web-environment', 'create-vm'])
-    const lint = checks.getByRole('row', { name: /ansible-lint/ })
-    await expect(lint).toContainText('1 playbook pinned to a commit')
-    await expect(lint.getByRole('list', { name: 'Pinned at publish' }).getByRole('listitem')).toHaveText(['restart to 9fceb02d0ae5'])
+    const playbooks = checks.getByRole('row', { name: /Playbooks/ })
+    await expect(playbooks).toContainText('1 playbook(s) pinned to a commit, 1 linted')
+    await expect(playbooks.getByRole('list', { name: 'Pinned at publish' }).getByRole('listitem')).toHaveText(['restart to 9fceb02d0ae5'])
     const replay = checks.getByRole('row', { name: /Replay of recent jobs/ })
     await expect(replay).toContainText('replayed: 42')
     await expect(replay).not.toContainText('{"replayed"')

@@ -439,7 +439,7 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
       return json(route, {
         valid: false,
         problems: [
-          { level: 'error', code: 'publish.ansibleLint', step: 'restart', field: 'playbook', message: 'The playbook is not pinned to a commit: every run would use whatever main points at' },
+          { level: 'error', code: 'publish.playbooks', step: 'restart', field: 'playbook', message: 'The playbooks check of the change request fails: pin the playbook to a commit' },
           { level: 'error', code: 'publish.routes', field: 'api.path', message: 'POST /api/v1/vms/{vmId}:restart is already answered by vm-reboot 1.0.0' },
           { level: 'error', code: 'publish.contracts', field: 'metadata.version', message: `${v} breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment`, fix: { label: 'Publish as 2.0.0', kind: 'replace', value: '2.0.0' } },
         ],
