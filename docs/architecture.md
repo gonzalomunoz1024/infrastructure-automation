@@ -791,6 +791,27 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+Providers are authored from the designer as well. The node creator's Providers view lists each
+published provider with its health band (`GET /providers`, the list the providers page reads) and
+the workflow's provider drafts tagged draft, whose actions insert like a published provider's, and
+ends with "Connect a new system": an API from an OpenAPI spec, an HTTP request (cURL), an Ansible
+repository, a Terraform module, an IDP tile, an SDK worker and Describe it (Ask Devin), each of which
+opens the Provider sheet on the point the creator was opened for. A provider step's provider field
+lists the drafts beside the published providers and ends with "New provider…", as a credential
+field ends with "New credential…"; its pencil, Edit provider, opens the sheet on the workflow's
+draft of the provider, or on a published one's next patch, and the sheet closing on the action the
+step already calls keeps the step's input. An http step's Import cURL fills its method, URL,
+headers and body from a pasted cURL command (`frontend/src/designer/ndv/curl.ts`): what signed in
+(an Authorization header, `-u`, a cookie, a key or token in a header, the query or the body) is
+dropped before anything reaches the step, so it is in neither the workflow, the undo history nor
+the browser's storage, and the credential field is highlighted with a note that names what was
+dropped, never its value. Its "Save as provider action" (`frontend/src/designer/ndv/httpProvider.ts`)
+makes the request an action of an http provider draft: the URL's origin is the draft's dev
+endpoint, the action is `{ method, path }` with each `{{ }}` of the path a `{parameter}` and a
+POST, PUT or PATCH body's fields the rest of its input, the step's credential is the provider's
+auth and the step's last test output the action's example; the step then calls that action and
+the Provider sheet opens on the draft.
+
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
 imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint
