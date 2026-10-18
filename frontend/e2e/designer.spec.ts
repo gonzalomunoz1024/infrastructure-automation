@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { EXPLANATION, mockDesignerApi, pasteInto, vmRestartYaml, yamlEditor, type MockApi } from './designer-fixtures'
+import { SNAPSHOT_DRAFT, EXPLANATION, mockDesignerApi, mockProviderPublish, pasteInto, VM_RESTART_DRAFTS_KEY, vmRestartYaml, yamlEditor, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against a mocked backend (the backend does not run here): the real
@@ -296,6 +296,84 @@ test.describe('workflow designer', () => {
     const merged = page.getByTestId('publish-merged')
     await expect(merged).toContainText('Published 1.3.0, canary at 10%')
     await expect(merged.getByRole('link', { name: /Follow the release/ })).toHaveAttribute('href', /releases\/rel_9/)
+  })
+
+  test('a workflow calling a draft provider is tested, validated and published, the provider first', async ({ page }) => {
+    // vm-restart has a provider draft in this browser, as the Provider sheet leaves one
+    await page.addInitScript(`localStorage.setItem(${JSON.stringify(VM_RESTART_DRAFTS_KEY)}, ${JSON.stringify(JSON.stringify([SNAPSHOT_DRAFT]))})`)
+    const api = await mockDesignerApi(page)
+    const drafts = await mockProviderPublish(page, api)
+    await page.goto('/#/workflows/vm-restart')
+    await expect(node(page, 'step:checkVmExists')).toBeVisible()
+
+    // the node creator offers the draft's action like a published one, tagged draft
+    await node(page, 'step:validate').click()
+    await page.keyboard.press('Tab')
+    const creator = page.getByTestId('node-creator')
+    await expect(creator.getByRole('combobox', { name: 'Search steps' })).toBeFocused()
+    await page.keyboard.type('Create snapshot')
+    const option = creator.getByRole('option').first()
+    await expect(option).toContainText('Create snapshot')
+    await expect(option).toContainText('draft')
+    await page.keyboard.press('Enter')
+    const ndv = page.getByTestId('ndv')
+    await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('Create snapshot')
+    await expect(ndv.getByRole('button', { name: 'Provider', exact: true })).toHaveText('Snapshot API (draft)')
+    await page.keyboard.press('Escape')
+    await expect(node(page, 'step:createSnapshot')).toContainText('draft · snapshots · snapshot.create')
+    // the live checks know the draft
+    await expect(page.getByTestId('issues-button')).toHaveAccessibleName('Issues: 0')
+
+    // Test workflow and Validate send its file along
+    await page.getByTestId('test-workflow').click()
+    const test = page.getByRole('dialog', { name: 'Test workflow' })
+    await test.getByRole('button', { name: /Test workflow/ }).click()
+    await expect.poll(() => api.dryRuns.length).toBe(1)
+    const sent = api.dryRuns[0].providers as string[]
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('name: snapshots')
+    expect(sent[0]).toContain('credential: vault:snapshots/token')
+    await expect(page.getByText(/Test passed/)).toBeVisible()
+    await page.getByTestId('validate-button').click()
+    await expect.poll(() => drafts.validations.length).toBe(1)
+    expect(drafts.validations[0].providers).toEqual(sent)
+    await expect(page.getByText('Nothing to fix')).toBeVisible()
+
+    // Publish lists the draft with its review, then opens its change request before the workflow's
+    await page.getByRole('button', { name: 'Publish', exact: true }).click()
+    const sheet = page.getByRole('dialog', { name: 'Publish' })
+    const row = sheet.getByTestId('publish-providers').locator('[data-provider="snapshots"]')
+    await expect(row).toContainText('Snapshot API')
+    await expect(row).toContainText('Ready')
+    // the review judges the very file the dry run and Validate sent (StrictMode may ask twice in development)
+    expect([...new Set(drafts.reviews)]).toEqual(sent)
+    await expect(sheet.getByTestId('publish-confirm')).toHaveText('Open change requests')
+    await sheet.getByTestId('publish-confirm').click()
+    await expect.poll(() => api.publishes.length).toBe(1)
+    expect(drafts.publishes).toEqual([{ yaml: sent[0], strategy: 'canary' }])
+    expect(api.publishes[0]).toMatchObject({ strategy: 'canary', requires: ['cr_8'] })
+    // the published draft is cleared from this browser; the canvas keeps the provider, in review
+    expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(VM_RESTART_DRAFTS_KEY)})`)).toBeNull()
+    await expect(node(page, 'step:createSnapshot')).toContainText('in review · snapshots · snapshot.create')
+
+    // the drawer follows the workflow's change request, which waits for the provider's
+    const linked = page.getByTestId('cr-linked')
+    await expect(linked).toContainText('The provider change requests merge first')
+    await expect(linked).toContainText('snapshots 1.0.0')
+    await expect(page.getByTestId('cr-merge')).toHaveText('Merge the providers first')
+    await expect(page.getByTestId('cr-merge')).toBeDisabled()
+    await linked.getByRole('button', { name: 'Follow snapshots 1.0.0' }).click()
+    await expect(page.getByText('Publish snapshots 1.0.0')).toBeVisible()
+    await page.getByTestId('cr-merge').click()
+    await expect(page.getByTestId('publish-merged')).toContainText('Published 1.0.0')
+    await page.getByRole('button', { name: "Back to the workflow's change request" }).click()
+    await expect(linked).toContainText('it can merge')
+    await page.getByTestId('cr-merge').click()
+    await expect(page.getByTestId('publish-merged')).toContainText('Published 1.3.0, canary at 10%')
+    // merged, the provider is published: the canvas reads it from the registry, untagged
+    await expect(node(page, 'step:createSnapshot')).toContainText('snapshots · snapshot.create')
+    await expect(node(page, 'step:createSnapshot')).not.toContainText('in review')
+    await expect(node(page, 'step:createSnapshot')).not.toContainText('draft')
   })
 
   test('the assistant drafts a change and applies it to the canvas', async ({ page }) => {
