@@ -3,14 +3,14 @@ package com.iaf.platform.workflows.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -22,18 +22,22 @@ class SampleContentTest {
 
     static final Path ROOT = Path.of("..").toAbsolutePath().normalize();
 
+    /** The repo's content as the catalog: providers, every workflow as published, resource types with their schemas. */
     static CheckContext context() {
         Map<String, ProviderDefinition> providers = new HashMap<>();
-        Set<String> workflows = new HashSet<>();
-        Set<String> types = new HashSet<>();
+        List<WorkflowDefinition> workflows = new ArrayList<>();
+        Map<String, JsonNode> types = new HashMap<>();
         for (var f : ContentFiles.scan(ROOT)) {
             switch (f.kind()) {
                 case "Provider" -> {
                     ProviderDefinition p = ProviderYaml.parse(f.yaml());
                     providers.put(p.name(), p);
                 }
-                case "Workflow" -> workflows.add(WorkflowYaml.parse(f.yaml()).name());
-                case "ResourceType" -> types.add(ResourceTypeDefinition.parse(f.yaml()).name());
+                case "Workflow" -> workflows.add(WorkflowYaml.parse(f.yaml()));
+                case "ResourceType" -> {
+                    ResourceTypeDefinition t = ResourceTypeDefinition.parse(f.yaml());
+                    types.put(t.name(), t.schema());
+                }
                 default -> {
                 }
             }

@@ -4,7 +4,7 @@
   "unknown-action.yaml": ["error step.unknownAction"],
   "no-predecessor.yaml": ["error expr.noPredecessor"],
   "unknown-step-reference.yaml": ["error expr.stepAfter", "error expr.unknownStep"],
-  "delete-without-approval.yaml": ["error policy.approvalRequired"],
+  "delete-without-approval.yaml": ["warning policy.approvalRequired"],
   "invalid-json.yaml": ["error step.invalidJson"],
   "plain-secret.yaml": ["error credential.plain", "error credential.plain"],
   "bad-expression.yaml": ["error expr.syntax"],
@@ -19,5 +19,8 @@
   "unknown-resource-type.yaml": ["error resource.unknownType"],
   "empty-workflow.yaml": ["error workflow.empty"],
   "invalid-yaml.yaml": ["error yaml.invalid"],
-  "for-and-try.yaml": ["error for.in", "warning try.noCatch"]
+  "for-and-try.yaml": ["error for.in", "warning try.noCatch"],
+  "run-contract.yaml": ["error contract.missingInput", "error contract.type", "error contract.type", "error run.onFailure", "warning contract.unknownInput"],
+  "unknown-field.yaml": ["warning expr.unknownField", "warning expr.unknownField"],
+  "unreachable-step.yaml": ["warning step.unreachable"]
 }

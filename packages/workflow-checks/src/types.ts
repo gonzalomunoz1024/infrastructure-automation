@@ -139,7 +139,7 @@ export interface StepBody {
   name?: string;
   with?: JsonObject;
   call?: CallKind | 'approval';
-  run?: { workflow?: string; version?: string; input?: JsonObject };
+  run?: { workflow?: string; version?: string; input?: JsonObject; onFailure?: 'fail' | 'continue' | string };
   approval?: { group?: string; message?: string; timeout?: string; escalation?: JsonObject };
   switch?: SwitchCaseDocument[];
   fork?: { branches?: StepDocument[][] };
@@ -230,11 +230,25 @@ export interface ResourceTypeDocument {
 /**
  * What the checks may look up: the providers, published workflows and resource types a
  * definition can refer to. With `knowsCatalog` false (an editor without the catalog loaded),
- * unknown names are not reported.
+ * unknown names are not reported. The schemas are optional: without them the contract of run
+ * steps and the fields a step returns are not judged.
  */
 export interface CheckContext {
   providers: Record<string, ProviderDocument>;
   workflows: string[];
   resourceTypes: string[];
   knowsCatalog: boolean;
+  /** Published workflows' input schemas (`api.input`) by name, for the contract of run steps. */
+  workflowInputs?: Record<string, JsonSchema>;
+  /** Published workflows' output names (the keys of `workflow.outputs`) by name. */
+  workflowOutputs?: Record<string, string[]>;
+  /** Resource types' attribute schemas by type. */
+  resourceTypeSchemas?: Record<string, JsonSchema>;
+}
+
+/** The optional schemas of a {@link CheckContext}, as `buildContext` takes them. */
+export interface ContextSchemas {
+  workflowInputs?: Record<string, JsonSchema>;
+  workflowOutputs?: Record<string, string[]>;
+  resourceTypeSchemas?: Record<string, JsonSchema>;
 }

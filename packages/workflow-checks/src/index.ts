@@ -9,6 +9,7 @@ export type {
   BatchPolicyDocument,
   CallKind,
   CheckContext,
+  ContextSchemas,
   Fix,
   FixKind,
   FlowDocument,
@@ -34,7 +35,9 @@ export type {
   WorkflowMetadata,
 } from './types.ts';
 
-export { buildContext, check, checkParsed, checkYaml, connectFix, EMPTY_CONTEXT, hasErrors, insertApprovalFix, replaceFix, RESERVED_NOUNS, ROOTS } from './checks.ts';
+export { buildContext, check, checkParsed, checkYaml, connectFix, contextSchemas, EMPTY_CONTEXT, hasErrors, insertApprovalFix, replaceFix, RESERVED_NOUNS, ROOTS } from './checks.ts';
+
+export { isClosed, mergeSchema, sameJson, schemaPaths } from './schemas.ts';
 
 export {
   allSteps,

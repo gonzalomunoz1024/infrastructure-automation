@@ -1,0 +1,21 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-note, title: VM note, noun: vm, verb: note, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    properties:
+      vmId: { type: string }
+      image: { type: string }
+workflow:
+  do:
+    - getVm:
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }
+        output: { as: vm }
+    - pickImage:
+        use: { type: image, id: "{{ $input.image }}" }
+    - tell:
+        notify:
+          channel: "#ops"
+          message: "{{ $vm.nmae }} runs {{ $json.attributesTemplateId }} ({{ $vm.powerState }}, {{ $json.attributes.os }})"

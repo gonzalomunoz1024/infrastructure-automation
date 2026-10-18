@@ -6,12 +6,13 @@
  * ./fixtures prove both sides agree.
  */
 import { parse as parseYaml } from 'yaml';
-import { isTemplate, references, syntaxError } from './expressions.ts';
-import { asText, asTextOr, elements, fieldNames, get, has, isBlank, isObject, isTextual, size, toJson } from './json.ts';
-import { allSteps, mcpExposed, parseDocument, withNode, withText, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
+import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
+import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';
+import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
 import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
+import { isClosed, mergeSchema, sameJson, schemaPaths } from './schemas.ts';
 import { closest } from './suggest.ts';
-import type { CheckContext, Fix, Problem, ProblemLevel, ProviderDocument } from './types.ts';
+import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
 
 const NAME = /^[a-z][a-z0-9-]*$/;
 const STEP_ID = /^[a-z][A-Za-z0-9]*$/;
@@ -23,6 +24,7 @@ const SECRET_KEY = /(password|passwd|secret|token|apikey|api_key|credential|priv
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const BACKOFFS = new Set(['none', 'fixed', 'exponential']);
 const TERRAFORM_ACTIONS = new Set(['plan', 'apply', 'destroy']);
+const ON_FAILURE: readonly string[] = ['fail', 'continue'];
 
 /** The roots an expression can always start from; an alias may not shadow them. */
 export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
@@ -53,13 +55,47 @@ export const RESERVED_NOUNS: readonly string[] = [
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */
 export const EMPTY_CONTEXT: CheckContext = { providers: {}, workflows: [], resourceTypes: [], knowsCatalog: false };
 
-/** A context over parsed provider documents, published workflow names and resource type names. */
-export function buildContext(providers: Iterable<ProviderDocument>, workflowNames: Iterable<string>, resourceTypes: Iterable<string>): CheckContext {
+/**
+ * A context over parsed provider documents, published workflow names and resource type names.
+ * With `schemas` (the published workflows' inputs and outputs, the resource types' attribute
+ * schemas) the contract of run steps and the fields a step returns are judged too.
+ */
+export function buildContext(
+  providers: Iterable<ProviderDocument>,
+  workflowNames: Iterable<string>,
+  resourceTypes: Iterable<string>,
+  schemas: ContextSchemas = {},
+): CheckContext {
   const byName: Record<string, ProviderDocument> = {};
   for (const p of providers) {
     byName[providerName(p)] = p;
   }
-  return { providers: byName, workflows: [...workflowNames], resourceTypes: [...resourceTypes], knowsCatalog: true };
+  return { providers: byName, workflows: [...workflowNames], resourceTypes: [...resourceTypes], knowsCatalog: true, ...schemas };
+}
+
+/**
+ * The schemas {@link buildContext} takes, read from published workflows and resource types the
+ * way CheckContext.of reads them in Java: each workflow's `api.input` and output names, each
+ * type's attribute schema.
+ */
+export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceTypes: Iterable<ResourceTypeDocument>): Required<ContextSchemas> {
+  const workflowInputs: Record<string, JsonSchema> = {};
+  const workflowOutputs: Record<string, string[]> = {};
+  const resourceTypeSchemas: Record<string, JsonSchema> = {};
+  for (const w of workflows) {
+    const input = w.api === null ? undefined : w.api.input;
+    if (isObject(input)) {
+      workflowInputs[w.metadata.name] = input as JsonSchema;
+    }
+    workflowOutputs[w.metadata.name] = w.workflow.outputs === null ? [] : Object.keys(w.workflow.outputs);
+  }
+  for (const t of resourceTypes) {
+    const schema = get(t, 'schema');
+    if (isObject(schema)) {
+      resourceTypeSchemas[asText(get(get(t, 'metadata'), 'name'))] = schema as JsonSchema;
+    }
+  }
+  return { workflowInputs, workflowOutputs, resourceTypeSchemas };
 }
 
 /** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
@@ -143,6 +179,8 @@ class Scope {
   inCatch = false;
   /** an approval step ran before */
   approved = false;
+  /** the schema of $json, null when unknown */
+  previous: JsonObject | null = null;
 
   copy(): Scope {
     const s = new Scope();
@@ -152,6 +190,7 @@ class Scope {
     s.hasPredecessor = this.hasPredecessor;
     s.inCatch = this.inCatch;
     s.approved = this.approved;
+    s.previous = this.previous;
     return s;
   }
 
@@ -170,6 +209,10 @@ class Checker {
   readonly byId = new Map<string, ParsedStep>();
   readonly allNames = new Set<string>();
   readonly inputFields = new Set<string>();
+  /** step id and name -> output schema (null: unknown) */
+  readonly stepOutputs = new Map<string, JsonObject | null>();
+  /** output.as -> output schema (null: unknown) */
+  readonly aliasOutputs = new Map<string, JsonObject | null>();
   readonly policyApproval: boolean;
 
   constructor(def: ParsedWorkflow, ctx: CheckContext) {
@@ -376,12 +419,14 @@ class Checker {
         this.allNames.add(s.name);
       }
     }
+    this.outputs(all);
     const scope = this.walk(this.def.workflow.steps, new Scope());
     const flow = this.def.workflow;
     if (flow.catchFlow !== null) {
       const c = scope.copy();
       c.inCatch = true;
       c.hasPredecessor = true;
+      c.previous = null;
       this.walk(flow.catchFlow.steps, c);
     }
     if (flow.outputs !== null) {
@@ -395,8 +440,13 @@ class Checker {
   walk(steps: ParsedStep[], start: Scope): Scope {
     const scope = start.copy();
     const siblings = steps.map((s) => s.id);
+    this.unreachable(steps);
+    const targets = jumpTargets(steps);
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i] as ParsedStep;
+      if (targets.has(s.id)) {
+        scope.previous = null; // reached from a switch too: $json is not one step's output
+      }
       this.step(s, scope, siblings.slice(i + 1));
       // after the step
       scope.stepNames.add(s.id);
@@ -420,6 +470,9 @@ class Checker {
       }
       if (!isContainerStep(s)) {
         scope.hasPredecessor = true;
+        scope.previous = this.stepOutputs.get(s.id) ?? null;
+      } else {
+        scope.previous = null;
       }
     }
     return scope;
@@ -522,6 +575,7 @@ class Checker {
       } else {
         const after = scope.copy();
         after.hasPredecessor = true; // $json in assert is this step's own output
+        after.previous = this.stepOutputs.get(s.id) ?? null;
         this.template(s.assert, s.id, 'assert', after);
       }
     }
@@ -530,6 +584,7 @@ class Checker {
       // and may delete what the step created without a fresh approval
       const c = scope.copy();
       c.hasPredecessor = true;
+      c.previous = this.stepOutputs.get(s.id) ?? null;
       c.approved = true;
       c.stepNames.add(s.id);
       if (s.name !== null) {
@@ -645,7 +700,7 @@ class Checker {
     }
     const destructive = isDestructive(actionEffect(a));
     if ((destructive || actionApprovalRequired(a)) && !this.policyApproval && !scope.approved) {
-      this.error(
+      this.warning(
         'policy.approvalRequired',
         s.id,
         null,
@@ -666,7 +721,7 @@ class Checker {
       this.error('http.url', s.id, 'url', 'url starts with https://');
     }
     if (method !== null && method.toUpperCase() === 'DELETE' && !this.policyApproval && !scope.approved) {
-      this.error('policy.approvalRequired', s.id, null, 'An HTTP DELETE is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
+      this.warning('policy.approvalRequired', s.id, null, 'An HTTP DELETE is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
     }
   }
 
@@ -727,7 +782,7 @@ class Checker {
       this.error('terraform.action', s.id, 'action', 'action is plan, apply or destroy');
     }
     if (action === 'destroy' && !this.policyApproval && !scope.approved) {
-      this.error('policy.approvalRequired', s.id, null, 'terraform destroy is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
+      this.warning('policy.approvalRequired', s.id, null, 'terraform destroy is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
     }
   }
 
@@ -749,6 +804,55 @@ class Checker {
     const input = withNode(s, 'input');
     if (input !== undefined && !isObject(input)) {
       this.error('step.invalidJson', s.id, 'input', 'input is a JSON object');
+    }
+    const onFailure = withText(s, 'onFailure');
+    if (onFailure !== null && !ON_FAILURE.includes(onFailure)) {
+      this.error('run.onFailure', s.id, 'onFailure', 'onFailure is fail (the default) or continue', this.suggest(onFailure, ON_FAILURE));
+    }
+    this.contract(s, wf);
+  }
+
+  /**
+   * The contract of a run step: its input against the published input schema of the workflow it
+   * runs. A required field without a default must be given, a field the workflow does not take
+   * is reported, and a literal must have the declared type.
+   */
+  contract(s: ParsedStep, wf: string): void {
+    const schemas = this.ctx.workflowInputs;
+    const schema = schemas !== undefined && Object.hasOwn(schemas, wf) ? schemas[wf] : undefined;
+    const input = withNode(s, 'input');
+    if (!isObject(schema) || (input !== undefined && input !== null && !isObject(input))) {
+      return;
+    }
+    const props = get(schema, 'properties');
+    for (const r of elements(get(schema, 'required'))) {
+      const f = asText(r);
+      if (!has(input, f) && !has(get(props, f), 'default')) {
+        this.error('contract.missingInput', s.id, `input.${f}`, `Workflow ${wf} needs '${f}'`);
+      }
+    }
+    if (!isObject(input) || !isObject(props) || size(props) === 0) {
+      return;
+    }
+    const known = fieldNames(props);
+    for (const key of fieldNames(input)) {
+      const value = input[key] as JsonValue;
+      const p = get(props, key);
+      if (p === undefined) {
+        this.warning('contract.unknownInput', s.id, `input.${key}`, `Workflow ${wf} does not take '${key}'`, this.suggest(key, known));
+        continue;
+      }
+      const actual = literalType(value);
+      if (actual === null || (orCreateWith(p) && isObject(value) && has(value, 'create'))) {
+        continue;
+      }
+      const type = get(p, 'type');
+      const values = get(p, 'enum');
+      if (type !== undefined && !accepts(type, actual)) {
+        this.error('contract.type', s.id, `input.${key}`, `'${key}' is ${typeText(type)} in workflow ${wf}, not ${actual}`);
+      } else if (isArray(values) && !isObject(value) && !isArray(value) && !isTemplate(asText(value)) && !values.some((v) => sameJson(v, value))) {
+        this.error('contract.type', s.id, `input.${key}`, `'${asText(value)}' is not one of ${toJson(values)} in workflow ${wf}`);
+      }
     }
   }
 
@@ -844,6 +948,7 @@ class Checker {
       const c = after.copy();
       c.inCatch = true;
       c.hasPredecessor = true;
+      c.previous = scope.previous; // the catch starts from what the try started from
       if (s.catchBlock.as !== null) {
         c.aliases.add(s.catchBlock.as);
       }
@@ -887,6 +992,8 @@ class Checker {
         case 'json':
           if (!scope.hasPredecessor) {
             this.error('expr.noPredecessor', step, field, '$json is the previous step\'s output, and this is the first step; use $input or connect a step before it', connectFix('Connect a step before this one'));
+          } else {
+            this.returned(r, scope.previous, "The previous step's output", step, field);
           }
           break;
         case 'step': {
@@ -897,6 +1004,8 @@ class Checker {
             } else {
               this.error('expr.unknownStep', step, field, `No step named '${name}'`, this.suggest(name, scope.stepNames));
             }
+          } else {
+            this.returned(r, this.stepOutputs.get(name) ?? null, `The output of '${name}'`, step, field);
           }
           break;
         }
@@ -912,6 +1021,8 @@ class Checker {
               `Unknown reference $${name}; save a step's output with output: { as: ${name} } or use $json, $input, $vars`,
               fix === null ? null : replaceFix(fix.label, `$${fix.value ?? ''}`),
             );
+          } else {
+            this.returned(r, this.aliasOutputs.get(name) ?? null, `$${name}`, step, field);
           }
           break;
         }
@@ -940,6 +1051,173 @@ class Checker {
     }
   }
 
+  // ------------------------------------------------------------ what steps return
+
+  /** The output schema of every step and alias, known before the walk; null where unknown. */
+  outputs(all: ParsedStep[]): void {
+    for (const s of all) {
+      const schema = this.outputSchema(s);
+      this.stepOutputs.set(s.id, schema);
+      if (s.name !== null && !this.stepOutputs.has(s.name)) {
+        this.stepOutputs.set(s.name, schema);
+      }
+      const as = s.output === null ? null : s.output.as;
+      if (as !== null) {
+        // two steps saving under one alias with different shapes: unknown
+        const before = this.aliasOutputs.get(as);
+        this.aliasOutputs.set(as, this.aliasOutputs.has(as) && !sameJson(before ?? null, schema) ? null : schema);
+      }
+    }
+  }
+
+  /** What a step returns, when its declaration says: a provider action's output, a resource, a child job. */
+  outputSchema(s: ParsedStep): JsonObject | null {
+    switch (s.type) {
+      case 'provider': {
+        const provider = withText(s, 'provider');
+        const action = withText(s, 'action');
+        if (provider === null || action === null || !Object.hasOwn(this.ctx.providers, provider)) {
+          return null;
+        }
+        const p = this.ctx.providers[provider] as ProviderDocument;
+        const a = findAction(p, action);
+        const output = get(a, 'output');
+        if (a === undefined || !isObject(output)) {
+          return null;
+        }
+        // the effective output: the action's schema with the provider's override block on top
+        const override = get(get(get(p, 'spec'), 'overrides'), action);
+        return isObject(override) && has(override, 'response') ? mergeSchema(output, get(override, 'response')) : output;
+      }
+      case 'use':
+      case 'register': {
+        const type = withText(s, 'type');
+        const schemas = this.ctx.resourceTypeSchemas;
+        const schema = type !== null && schemas !== undefined && Object.hasOwn(schemas, type) ? schemas[type] : undefined;
+        if (schema === undefined || schema === null) {
+          return null;
+        }
+        const attributes: JsonObject = isClosed(schema) ? (structuredClone(schema) as JsonObject) : {};
+        const written = s.type === 'register' ? withNode(s, 'attributes') : undefined;
+        const props = get(attributes, 'properties');
+        if (isObject(written) && isObject(props)) {
+          for (const k of fieldNames(written)) {
+            if (!has(props, k)) {
+              props[k] = {};
+            }
+          }
+        }
+        return resourceShape(attributes);
+      }
+      case 'run': {
+        const wf = withText(s, 'workflow');
+        const outs = this.ctx.workflowOutputs;
+        if (wf === null || outs === undefined || !Object.hasOwn(outs, wf)) {
+          return null;
+        }
+        const outProps: JsonObject = {};
+        for (const k of outs[wf] ?? []) {
+          outProps[k] = {};
+        }
+        const errorProps: JsonObject = {};
+        for (const k of ['step', 'message', 'class']) {
+          errorProps[k] = { type: 'string' };
+        }
+        return {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string' },
+            status: { type: 'string' },
+            outputs: { type: 'object', properties: outProps },
+            error: { type: 'object', properties: errorProps },
+          },
+        };
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * An expression reads a field the producing step does not return: the first segment of the
+   * path its declared output lacks, with the closest declared path as the fix (`vmId` reads as
+   * `vm.id`).
+   */
+  returned(r: Reference, schema: JsonObject | null, what: string, step: string | null, field: string | null): void {
+    if (schema === null || r.path.length === 0) {
+      return;
+    }
+    const segments = r.path.split('.');
+    let node: Maybe = schema;
+    for (let i = 0; i < segments.length; i++) {
+      if (!isClosed(node)) {
+        return;
+      }
+      const segment = segments[i] as string;
+      const next = get(get(node, 'properties'), segment);
+      if (next === undefined) {
+        const known = segments.slice(0, i).join('.');
+        const wrong = known.length === 0 ? segment : `${known}.${segment}`;
+        const rest = segments.slice(i + 1).join('.');
+        const path = closestPath(wrong, schema);
+        const fixed = path === undefined ? undefined : rest.length === 0 ? path : `${path}.${rest}`;
+        this.warning('expr.unknownField', step, field, `${what} has no field '${wrong}'`, fixed === undefined ? null : replaceFix(`Did you mean ${fixed}?`, fixed));
+        return;
+      }
+      node = next;
+    }
+  }
+
+  // ------------------------------------------------------------ steps that never run
+
+  /** Steps a switch in the same list always jumps past (every case has then and there is a default). */
+  unreachable(steps: ParsedStep[]): void {
+    const reachable = steps.map(() => false);
+    if (steps.length > 0) {
+      reachable[0] = true;
+    }
+    let blocker: string | null = null;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i] as ParsedStep;
+      if (!reachable[i]) {
+        if (blocker !== null) {
+          this.warning('step.unreachable', s.id, null, `'${displayName(s)}' never runs: every case of ${blocker} jumps past it`);
+        }
+        continue;
+      }
+      let next = true;
+      if (s.type === 'switch' && s.cases !== null && s.cases.length > 0) {
+        let hasDefault = false;
+        let falls = false;
+        for (const c of s.cases) {
+          hasDefault = hasDefault || c.isDefault;
+          if (c.steps !== null || c.then === null) {
+            falls = true;
+          } else if (c.then !== 'end') {
+            let target = -1;
+            for (let k = i + 1; k < steps.length && target < 0; k++) {
+              if ((steps[k] as ParsedStep).id === c.then) {
+                target = k;
+              }
+            }
+            if (target < 0) {
+              falls = true; // a target that is not a later step is reported by the switch itself
+            } else {
+              reachable[target] = true;
+            }
+          }
+        }
+        next = falls || !hasDefault;
+        if (!next) {
+          blocker = s.id;
+        }
+      }
+      if (next && i + 1 < steps.length) {
+        reachable[i + 1] = true;
+      }
+    }
+  }
+
   // ------------------------------------------------------------ helpers
 
   suggest(wrong: string, candidates: Iterable<string>): Fix | null {
@@ -954,4 +1232,87 @@ class Checker {
   warning(code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): void {
     this.problems.push(problem('warning', code, step, field, message, fix));
   }
+}
+
+/** A registry resource as use and register steps return it, with the type's attributes. */
+function resourceShape(attributes: JsonObject): JsonObject {
+  const props: JsonObject = {};
+  for (const k of ['id', 'type', 'name', 'status']) {
+    props[k] = { type: 'string' };
+  }
+  props['attributes'] = attributes;
+  for (const k of ['owner', 'visibility']) {
+    props[k] = { type: 'string' };
+  }
+  props['createdBy'] = { type: 'object', properties: { jobId: { type: 'string' }, workflow: { type: 'string' }, version: { type: 'string' } } };
+  props['builtFrom'] = { type: 'array', items: { type: 'string' } };
+  for (const k of ['createdAt', 'updatedAt']) {
+    props[k] = { type: 'string' };
+  }
+  return { type: 'object', properties: props };
+}
+
+/** The declared path that spells the same once case and dots are ignored, else the closest one. */
+function closestPath(wrong: string, schema: JsonObject): string | undefined {
+  const paths = schemaPaths(schema).filter((p) => !p.includes('[]'));
+  const target = flat(wrong);
+  const same = paths.find((p) => flat(p) === target);
+  return same ?? closest(wrong, paths);
+}
+
+function flat(path: string): string {
+  return path.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** The steps of a list a switch in it jumps to. */
+function jumpTargets(steps: ParsedStep[]): Set<string> {
+  const out = new Set<string>();
+  for (const s of steps) {
+    if (s.type === 'switch' && s.cases !== null) {
+      for (const c of s.cases) {
+        if (c.steps === null && c.then !== null) {
+          out.add(c.then);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** The JSON type a literal has, or null for an expression whose type shows only at run time. */
+function literalType(v: JsonValue | undefined): string | null {
+  if (v === undefined || v === null) {
+    return 'null';
+  }
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (!isTemplate(t)) {
+      return 'string';
+    }
+    // one expression alone yields its own type; text around expressions makes a string
+    return t.startsWith('{{') && t.endsWith('}}') && t.indexOf('{{', 2) < 0 ? null : 'string';
+  }
+  if (typeof v === 'number') {
+    return Number.isInteger(v) ? 'integer' : 'number';
+  }
+  if (typeof v === 'boolean') {
+    return 'boolean';
+  }
+  return isArray(v) ? 'array' : 'object';
+}
+
+function accepts(type: JsonValue, actual: string): boolean {
+  if (isArray(type)) {
+    return type.some((t) => accepts(t, actual));
+  }
+  const expected = asText(type);
+  return expected === actual || (expected === 'number' && actual === 'integer');
+}
+
+function typeText(type: JsonValue): string {
+  return isArray(type) ? type.map((t) => asText(t)).join(' or ') : asText(type);
+}
+
+function orCreateWith(property: unknown): boolean {
+  return isTextual(get(get(property, 'x-resource'), 'orCreateWith'));
 }
