@@ -1,7 +1,6 @@
 package com.iaf.platform.observability.application;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -28,15 +27,14 @@ import jakarta.annotation.PostConstruct;
  * {@value #STEP_SPAN} span from {@code running} to its end, under the step that contains it (a
  * fork's branches run on threads of their own and hang under the fork); {@code waiting} is an
  * event on it and a failure records its error class. Provider calls hang under the step running
- * on the calling thread ({@link #parentOf}). Events older than {@link #FRESH} (history the demo
- * seeds into the past) make no spans.
+ * on the calling thread ({@link #parentOf}). Only a {@link LiveEvents live} {@code job.started}
+ * opens a job's span: the history the demo seeds into the past makes none.
  */
 @Component
 public class JobTracing {
 
     public static final String JOB_SPAN = "iaf.job";
     public static final String STEP_SPAN = "iaf.step";
-    static final Duration FRESH = Duration.ofMinutes(2);
     static final int MAX_OPEN_JOBS = 10_000;
 
     private final EventBus events;
@@ -116,7 +114,7 @@ public class JobTracing {
     // ---------------------------------------------------------------- jobs
 
     private void started(String jobId, JsonNode d, Instant at) {
-        if (at != null && at.isBefore(clock.instant().minus(FRESH))) {
+        if (!LiveEvents.live(at, clock)) {
             return;
         }
         String workflow = text(d, "workflow", "unknown");

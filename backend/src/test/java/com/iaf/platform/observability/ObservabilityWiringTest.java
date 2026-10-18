@@ -15,12 +15,16 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.observability.adapters.outbound.TracedProviderCalls;
+import com.iaf.platform.observability.application.JobMetrics;
 import com.iaf.platform.observability.application.JobTracing;
 import com.iaf.platform.runs.adapters.outbound.RecordedProviderCall;
 import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 
-/** The observability slice wires as beans, and the provider call bean it proxies stays injectable by its port and its class. */
+/**
+ * The observability slice wires as beans (tracing and metrics), and the provider call bean it
+ * proxies stays injectable by its port and by its own class.
+ */
 class ObservabilityWiringTest {
 
     @Configuration
@@ -40,6 +44,7 @@ class ObservabilityWiringTest {
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     assertThat(ctx).hasSingleBean(JobTracing.class);
+                    assertThat(ctx).hasSingleBean(JobMetrics.class);
                     assertThat(ctx).hasSingleBean(Traces.class);
                     ProviderCallPort port = ctx.getBean(ProviderCallPort.class);
                     assertThat(AopUtils.isAopProxy(port)).isTrue();
