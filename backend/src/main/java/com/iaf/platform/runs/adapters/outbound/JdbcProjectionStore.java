@@ -17,6 +17,8 @@ import com.iaf.platform.runs.domain.JobEvent;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * The runs index of the {@code postgres} profile. A job is a row of {@code runs_jobs} whose doc is
  * the job without its definition snapshot: the snapshot is stored once per distinct definition in
@@ -24,7 +26,10 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition;
  * many jobs run the same version. Approvals are rows of {@code runs_approvals}, the event history
  * rows of {@code runs_events}. Lists are filtered and limited in SQL, newest first to the
  * nanosecond; the short lists (children, approvals) are sorted as the in-memory store sorts them.
+ * A job whose snapshot row is missing reads without its definition (with a warning) rather than
+ * failing every listing it is in.
  */
+@Slf4j
 @Component
 @Primary
 @Profile("postgres")
@@ -151,10 +156,18 @@ public class JdbcProjectionStore implements ProjectionStore {
 
     private Job read(String hash, String doc) {
         Job job = jdbc.read(doc, Job.class);
-        return hash == null ? job : job.withDefinition(definition(hash));
+        if (hash == null) {
+            return job;
+        }
+        WorkflowDefinition d = definition(hash);
+        if (d == null) {
+            log.warn("job {} ran definition {}, which the runs index does not have: it is read without its snapshot", job.id(), hash);
+            return job;
+        }
+        return job.withDefinition(d);
     }
 
-    /** The snapshot with this hash, from the cache or its row. */
+    /** The snapshot with this hash, from the cache or its row; null when no row has it. */
     private WorkflowDefinition definition(String hash) {
         synchronized (definitions) {
             WorkflowDefinition cached = definitions.get(hash);
@@ -163,9 +176,11 @@ public class JdbcProjectionStore implements ProjectionStore {
             }
         }
         WorkflowDefinition d = jdbc.first("SELECT doc FROM runs_definitions WHERE hash = ?", (rs, i) -> jdbc.read(rs.getString(1), WorkflowDefinition.class), hash)
-                .orElseThrow(() -> new IllegalStateException("the runs index has no definition " + hash));
-        synchronized (definitions) {
-            definitions.put(hash, d);
+                .orElse(null);
+        if (d != null) {
+            synchronized (definitions) {
+                definitions.put(hash, d);
+            }
         }
         return d;
     }
