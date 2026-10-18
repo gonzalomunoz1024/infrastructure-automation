@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Card, ConfirmDialog, EmptyState, Field, Icon, JsonView, PageHeader, Select, SkeletonRows, StateTag, StatusDot, Table, Tabs, Tag, cx, duration, useToast, type DotKind, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage, isApiError, jobEvents } from '../lib/api'
+import { api, errorMessage, isApiError, jobEvents, newIdempotencyKey } from '../lib/api'
 import { apiExtra } from '../lib/api-extra'
 import { invalidate, useQuery } from '../lib/queries'
 import type { JobEvent, JobReplay, JobStepStatus, JobSummary, StepDiff } from '../lib/types'
@@ -12,6 +12,7 @@ import { BatchPanel } from '../components/BatchPanel'
 import { EngineLinks } from '../components/EngineLinks'
 import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { PreviewCard } from '../components/PreviewCard'
+import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
 import { StepTimeline } from '../components/StepTimeline'
 import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
 import { isActiveJob } from './JobsPage'
@@ -45,6 +46,7 @@ function eventLine(ev: JobEvent): string {
 export default function JobPage({ route }: PageProps) {
   const id = route.params.id
   const toast = useToast()
+  const quota = useRetryAfter()
   const [chosenTab, setTab] = useState<Tab | null>(null)
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [polling, setPolling] = useState(true)
@@ -91,9 +93,13 @@ export default function JobPage({ route }: PageProps) {
   const act = async (fn: () => Promise<unknown>, title: string, failTitle: string, message?: string) => {
     try {
       await fn()
+      quota.clear()
       after(title, message)
     } catch (e) {
-      toast.error(failTitle, errorMessage(e))
+      if (isApiError(e) && e.tooManyRequests) {
+        quota.block(e)
+        toast.error(failTitle, quotaMessage(e))
+      } else toast.error(failTitle, errorMessage(e))
       throw e
     }
   }
@@ -129,6 +135,11 @@ export default function JobPage({ route }: PageProps) {
                 {data.workflow}
               </TextLink>
               <Mono>{data.version}</Mono>
+              {data.pinned && (
+                <Tag size="sm" tone="accent" title="Started on exactly this version, bypassing the canary split">
+                  pinned to {data.version}
+                </Tag>
+              )}
               <span className="text-tertiary">·</span>
               <span>{data.requester}</span>
               <Tag size="sm" outline>
@@ -172,8 +183,10 @@ export default function JobPage({ route }: PageProps) {
               <AttentionPanel
                 attention={data.attention}
                 step={attentionStep}
-                onRetry={() => act(() => api.retryJob(id, { step: data.attention?.step }), 'Retrying', 'Could not retry', `${data.attention?.step} runs again.`)}
-                onRetryWithInput={(input) => act(() => api.retryJob(id, { step: data.attention?.step, input }), 'Retrying with the new input', 'Could not retry')}
+                onRetry={() => act(() => api.retryJob(id, { step: data.attention?.step }, { idempotencyKey: newIdempotencyKey() }), 'Retrying', 'Could not retry', `${data.attention?.step} runs again.`)}
+                onRetryWithInput={(input) => act(() => api.retryJob(id, { step: data.attention?.step, input }, { idempotencyKey: newIdempotencyKey() }), 'Retrying with the new input', 'Could not retry')}
+                disabled={quota.blocked}
+                notice={<QuotaNotice quota={quota} className="mt-3" />}
                 onSkip={() => act(() => api.skipJob(id, data.attention!.step), 'Step skipped', 'Could not skip', 'The job continues with the next step.')}
                 onAbort={() => act(() => api.abortJob(id), 'Job aborted', 'Could not abort')}
               />

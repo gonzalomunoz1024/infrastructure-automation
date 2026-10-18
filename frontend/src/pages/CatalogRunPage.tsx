@@ -2,11 +2,13 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { Button, Card, CardRow, CodeBlock, Field, Icon, IconButton, Input, PageHeader, Segmented, SkeletonRows, Table, Tag, Textarea, cx, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { API_BASE, api, errorMessage, isApiError } from '../lib/api'
+import { API_BASE, api, errorMessage, isApiError, newIdempotencyKey } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { BatchRowProblem, CatalogEntry, Preview, Problem, Rollout } from '../lib/types'
 import { PreviewCard } from '../components/PreviewCard'
 import { ProblemList } from '../components/ProblemList'
+import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
+import { ROUTED, RunAdvanced } from '../components/RunAdvanced'
 import { SchemaForm, coerceBySchema, coerceScalar, defaultsFor, fieldNames, splitProblems, validateAgainst, type SchemaValue } from '../components/SchemaForm'
 import { csvToRows, emitCsv } from '../components/csv'
 import { downloadText } from '../components/download'
@@ -131,15 +133,35 @@ function About({ entry, catalog }: { entry: CatalogEntry; catalog?: CatalogEntry
    One: the generated form, a preview, then the run
    ------------------------------------------------------------------------- */
 
-/** The same call as a shell command, against this origin; the body is the form's input. */
-export function curlFor(entry: Pick<CatalogEntry, 'method' | 'path'>, input: SchemaValue, origin = typeof window === 'undefined' ? '' : window.location.origin): string {
+/** The same call as a shell command, against this origin; the body is the form's input, and a pinned version goes in its header. */
+export function curlFor(entry: Pick<CatalogEntry, 'method' | 'path'>, input: SchemaValue, origin = typeof window === 'undefined' ? '' : window.location.origin, version?: string): string {
   const filled = entry.path.replace(/\{([^}]+)\}/g, (_, k: string) => (input[k] === undefined ? `{${k}}` : encodeURIComponent(String(input[k]))))
   const path = /^https?:\/\//.test(filled) || filled.startsWith('/api/') ? filled : `${API_BASE}${filled}`
   const url = /^https?:\/\//.test(path) ? path : `${origin}${path}`
   const method = entry.method.toUpperCase()
   const quote = (t: string) => `'${t.replace(/'/g, `'\\''`)}'`
-  if (method === 'GET' || method === 'HEAD') return `curl ${quote(url)}`
-  return `curl -X ${method} ${quote(url)} \\\n  -H 'Content-Type: application/json' \\\n  -d ${quote(JSON.stringify(input))}`
+  const pin = version ? ` \\\n  -H ${quote(`X-Workflow-Version: ${version}`)}` : ''
+  if (method === 'GET' || method === 'HEAD') return `curl ${quote(url)}${pin}`
+  return `curl -X ${method} ${quote(url)}${pin} \\\n  -H 'Content-Type: application/json' \\\n  -d ${quote(JSON.stringify(input))}`
+}
+
+/**
+ * One Idempotency-Key per form submission: minted on the first submit, kept while the form is
+ * unchanged (a resend after a 429 or a lost answer gets the same job back, not a second one), and
+ * dropped once the form changes or the run starts.
+ */
+function useSubmissionKey(): { current: () => string; reset: () => void } {
+  // one stable box per form; the key inside it is not rendered, so it needs no state
+  const [box] = useState(() => {
+    let key: string | null = null
+    return {
+      current: () => (key ??= newIdempotencyKey()),
+      reset: () => {
+        key = null
+      },
+    }
+  })
+  return box
 }
 
 function OneRun({ entry }: { entry: CatalogEntry }) {
@@ -148,8 +170,12 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
   const [problems, setProblems] = useState<Problem[]>([])
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState<'preview' | 'run' | null>(null)
+  const [version, setVersion] = useState(ROUTED)
+  const quota = useRetryAfter()
+  const key = useSubmissionKey()
   const { fielded, general } = splitProblems(problems, entry.input)
   const names = fieldNames(entry.input)
+  const pinned = version || undefined
 
   const check = (): boolean => {
     const local = validateAgainst(entry.input, value)
@@ -161,7 +187,7 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
     if (!check()) return
     setBusy('preview')
     try {
-      setPreview(await api.preview(entry, value))
+      setPreview(await api.preview(entry, value, { version: pinned }))
     } catch (e) {
       if (isApiError(e) && e.problems) setProblems(e.problems)
       toast.error('Preview failed', errorMessage(e))
@@ -174,12 +200,20 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
     if (!check()) return
     setBusy('run')
     try {
-      const accepted = await api.run(entry, value)
+      const accepted = await api.run(entry, value, { version: pinned, idempotencyKey: key.current() })
+      key.reset()
+      quota.clear()
       toast.success('Run started', `Job ${accepted.jobId} is queued.`)
       navigate(pathFor('job', { id: accepted.jobId }))
     } catch (e) {
-      if (isApiError(e) && e.problems) setProblems(e.problems)
-      toast.error(isApiError(e) && e.status === 403 ? 'You may not run this workflow' : 'Could not start the run', errorMessage(e))
+      if (isApiError(e) && e.tooManyRequests) {
+        quota.block(e)
+        toast.error('Over the quota', quotaMessage(e))
+      } else {
+        quota.clear()
+        if (isApiError(e) && e.problems) setProblems(e.problems)
+        toast.error(isApiError(e) && e.status === 403 ? 'You may not run this workflow' : 'Could not start the run', errorMessage(e))
+      }
       setBusy(null)
     }
   }
@@ -195,15 +229,16 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
           className="space-y-5"
         >
           {general.length > 0 && <ProblemList problems={general} compact />}
-          <SchemaForm schema={entry.input} value={value} onChange={(v) => { setValue(v); setPreview(null) }} problems={fielded} idPrefix={`run-${entry.workflow}`} columns={2} />
+          <SchemaForm schema={entry.input} value={value} onChange={(v) => { setValue(v); setPreview(null); key.reset() }} problems={fielded} idPrefix={`run-${entry.workflow}`} columns={2} />
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-stroke-light pt-4">
-            <Button variant="ghost" onClick={() => { setValue(defaultsFor(entry.input)); setProblems([]); setPreview(null) }}>
+            <QuotaNotice quota={quota} className="mr-auto" />
+            <Button variant="ghost" onClick={() => { setValue(defaultsFor(entry.input)); setProblems([]); setPreview(null); key.reset() }}>
               Reset
             </Button>
             <Button icon="eye" loading={busy === 'preview'} disabled={busy === 'run'} onClick={() => void doPreview()}>
               Preview
             </Button>
-            <Button type="submit" variant="primary" icon="play" loading={busy === 'run'} disabled={busy === 'preview'}>
+            <Button type="submit" variant="primary" icon="play" loading={busy === 'run'} disabled={busy === 'preview' || quota.blocked}>
               Run
             </Button>
           </div>
@@ -212,6 +247,8 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
 
       {preview && <PreviewCard preview={preview} className="animate-fade-in" />}
 
+      <RunAdvanced workflow={entry.workflow} current={entry.version} version={version} onVersion={(v) => { setVersion(v); setPreview(null); key.reset() }} />
+
       <details className="group rounded-lg border border-stroke-light bg-surface">
         <summary className="flex cursor-pointer items-center gap-2 px-5 py-3 text-sm text-secondary transition-colors hover:text-primary">
           <Icon name="terminal" size={15} className="text-tertiary" />
@@ -219,8 +256,8 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
           <Icon name="chevron-down" size={13} className="ml-auto text-tertiary transition-transform group-open:rotate-180" />
         </summary>
         <div className="px-5 pb-5">
-          <CodeBlock code={curlFor(entry, value)} language="bash" />
-          <p className="mt-2 text-caption text-tertiary">Answers 202 with the job id. The same input works as the MCP tool{entry.mcpTool ? ` ${entry.mcpTool}` : ''}.</p>
+          <CodeBlock code={curlFor(entry, value, undefined, pinned)} language="bash" />
+          <p className="mt-2 text-caption text-tertiary">Answers 202 with the job id. The same input works as the MCP tool{entry.mcpTool ? ` ${entry.mcpTool}` : ''}. An Idempotency-Key header makes a resend answer with the same job.</p>
         </div>
       </details>
     </div>
@@ -248,8 +285,17 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
   const [validated, setValidated] = useState(false)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState<'preview' | 'batch' | null>(null)
+  const [version, setVersion] = useState(ROUTED)
+  const quota = useRetryAfter()
+  const key = useSubmissionKey()
   const seq = useRef(0)
   const fileRef = useRef<HTMLInputElement>(null)
+  const pinned = version || undefined
+  // the batch is one submission while its rows, defaults, rollout and version stay the same
+  const edit = <T,>(set: (v: T) => void) => (v: T) => {
+    set(v)
+    key.reset()
+  }
 
   const load = (source: string) => {
     const trimmed = source.trim()
@@ -273,6 +319,7 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
     setRowProblems(new Map())
     setValidated(false)
     setPreview(null)
+    key.reset()
   }
 
   const onFile = (file: File | undefined) => {
@@ -287,8 +334,9 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
     (id: number, name: string, raw: string) => {
       setRows((rs) => rs.map((r) => (r.id === id ? { id, value: { ...r.value, ...(raw === '' ? { [name]: undefined } : { [name]: coerceScalar(entry.input.properties?.[name], raw) }) } } : r)))
       setValidated(false)
+      key.reset()
     },
-    [entry.input],
+    [entry.input, key],
   )
 
   const merged = (r: RowState): SchemaValue => ({ ...defaults, ...Object.fromEntries(Object.entries(r.value).filter(([, v]) => v !== undefined)) })
@@ -322,7 +370,7 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
     if (rows.length === 0 || !validate()) return
     setBusy('preview')
     try {
-      setPreview(await api.preview(entry, merged(rows[0])))
+      setPreview(await api.preview(entry, merged(rows[0]), { version: pinned }))
     } catch (e) {
       toast.error('Preview failed', errorMessage(e))
     } finally {
@@ -336,17 +384,26 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
     if (!r) return
     setBusy('batch')
     try {
-      const accepted = await api.runBatch(entry, { items: rows.map((x) => x.value), defaults, rollout: r })
+      const accepted = await api.runBatch(entry, { items: rows.map((x) => x.value), defaults, rollout: r }, { version: pinned, idempotencyKey: key.current() })
+      key.reset()
+      quota.clear()
       toast.success('Batch started', `${plural(rows.length, 'row')} in ${r.waves.length} waves; job ${accepted.jobId}.`)
       navigate(pathFor('job', { id: accepted.jobId }))
     } catch (e) {
-      if (isApiError(e) && e.rows) {
+      if (isApiError(e) && e.tooManyRequests) {
+        quota.block(e)
+        toast.error('Over the quota', quotaMessage(e))
+      } else if (isApiError(e) && e.rows) {
+        quota.clear()
         const map = new Map<number, Problem[]>()
         for (const rp of e.rows as BatchRowProblem[]) map.set(rp.index, rp.problems)
         setRowProblems(map)
         setValidated(true)
         toast.error('Some rows are invalid', `${map.size} of ${rows.length} rows need a fix.`)
-      } else toast.error('Could not start the batch', errorMessage(e))
+      } else {
+        quota.clear()
+        toast.error('Could not start the batch', errorMessage(e))
+      }
       setBusy(null)
     }
   }
@@ -456,33 +513,36 @@ function ManyRun({ entry }: { entry: CatalogEntry }) {
       </Card>
 
       <Card title="Defaults" subtitle="Applied to every row that leaves the field empty.">
-        <SchemaForm schema={entry.input} value={defaults} onChange={setDefaults} idPrefix={`defaults-${entry.workflow}`} columns={2} optional pickers={false} />
+        <SchemaForm schema={entry.input} value={defaults} onChange={edit(setDefaults)} idPrefix={`defaults-${entry.workflow}`} columns={2} optional pickers={false} />
       </Card>
 
       <Card title="Rollout" subtitle={`The workflow's own defaults: waves ${entry.batch.rollout.waves.join(' / ')}%, ${entry.batch.rollout.maxParallel} in parallel, stop at ${entry.batch.rollout.stopIfFailedPercent}% failed.`}>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <Field label="Waves (%)" htmlFor="rollout-waves" hint="Each wave runs that share of the rows, then the gates decide">
-            <Input id="rollout-waves" mono value={wavesText} onChange={(e) => setWavesText(e.target.value)} onBlur={applyRollout} />
+            <Input id="rollout-waves" mono value={wavesText} onChange={(e) => edit(setWavesText)(e.target.value)} onBlur={applyRollout} />
           </Field>
           <Field label="Max in parallel" htmlFor="rollout-parallel">
-            <Input id="rollout-parallel" type="number" min={1} value={rollout.maxParallel} onChange={(e) => setRollout({ ...rollout, maxParallel: Math.max(1, Number(e.target.value) || 1) })} />
+            <Input id="rollout-parallel" type="number" min={1} value={rollout.maxParallel} onChange={(e) => edit(setRollout)({ ...rollout, maxParallel: Math.max(1, Number(e.target.value) || 1) })} />
           </Field>
           <Field label="Stop if failed (%)" htmlFor="rollout-stop">
-            <Input id="rollout-stop" type="number" min={0} max={100} value={rollout.stopIfFailedPercent} onChange={(e) => setRollout({ ...rollout, stopIfFailedPercent: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })} />
+            <Input id="rollout-stop" type="number" min={0} max={100} value={rollout.stopIfFailedPercent} onChange={(e) => edit(setRollout)({ ...rollout, stopIfFailedPercent: Math.min(100, Math.max(0, Number(e.target.value) || 0)) })} />
           </Field>
         </div>
       </Card>
 
+      <RunAdvanced workflow={entry.workflow} current={entry.version} version={version} onVersion={(v) => { edit(setVersion)(v); setPreview(null) }} />
+
       {preview && <PreviewCard preview={preview} title="Preview of the first row" className="animate-fade-in" />}
 
       <div className="flex flex-wrap items-center justify-end gap-2">
+        <QuotaNotice quota={quota} className="mr-auto" />
         <Button icon="check" disabled={rows.length === 0} onClick={validate}>
           Validate rows
         </Button>
         <Button icon="eye" disabled={rows.length === 0 || busy === 'batch'} loading={busy === 'preview'} onClick={() => void doPreview()}>
           Preview
         </Button>
-        <Button variant="primary" icon="play" disabled={rows.length === 0 || busy === 'preview'} loading={busy === 'batch'} onClick={() => void start()}>
+        <Button variant="primary" icon="play" disabled={rows.length === 0 || busy === 'preview' || quota.blocked} loading={busy === 'batch'} onClick={() => void start()}>
           Start batch of {rows.length}
         </Button>
       </div>

@@ -47,6 +47,7 @@ export interface Reply {
   json?: unknown
   body?: string
   contentType?: string
+  headers?: Record<string, string>
 }
 
 export interface MockRequest {
@@ -55,6 +56,8 @@ export interface MockRequest {
   query: URLSearchParams
   params: Record<string, string>
   body: unknown
+  /** the request headers, lower-cased names */
+  headers: Record<string, string>
 }
 
 export type Handler = (req: MockRequest) => unknown
@@ -66,6 +69,8 @@ export interface Call {
   path: string
   query: string
   body: unknown
+  /** the request headers, lower-cased names */
+  headers: Record<string, string>
 }
 
 export interface ApiMock {
@@ -74,8 +79,8 @@ export interface ApiMock {
   callsTo: (method: string, path: string) => Call[]
 }
 
-/** A reply with a status other than 200, or no body. */
-export const reply = (status: number, json?: unknown): Reply => ({ [REPLY]: true, status, json })
+/** A reply with a status other than 200, or no body; `headers` for what the client reads (Retry-After). */
+export const reply = (status: number, json?: unknown, headers?: Record<string, string>): Reply => ({ [REPLY]: true, status, json, headers })
 
 /** A server-sent event stream that tells the browser not to reconnect for ten minutes. */
 export const sse = (events: { event: string; data: unknown; id?: number }[]): Reply => ({
@@ -119,16 +124,17 @@ export async function mockApi(page: Page, routes: Routes = {}): Promise<ApiMock>
     } catch {
       body = request.postData()
     }
-    calls.push({ method, path, query: url.search, body })
+    const headers = request.headers()
+    calls.push({ method, path, query: url.search, body, headers })
     for (const entry of table) {
       if (entry.method !== method) continue
       const m = entry.regex.exec(path)
       if (!m) continue
       const params = Object.fromEntries(entry.names.map((n, i) => [n, decodeURIComponent(m[i + 1])]))
-      const value = typeof entry.value === 'function' ? await (entry.value as Handler)({ method, path, query: url.searchParams, params, body }) : entry.value
+      const value = typeof entry.value === 'function' ? await (entry.value as Handler)({ method, path, query: url.searchParams, params, body, headers }) : entry.value
       if (isReply(value)) {
-        if (value.body !== undefined) return route.fulfill({ status: value.status, contentType: value.contentType ?? 'application/json', body: value.body })
-        return value.json === undefined ? route.fulfill({ status: value.status, body: '' }) : route.fulfill({ status: value.status, json: value.json })
+        if (value.body !== undefined) return route.fulfill({ status: value.status, contentType: value.contentType ?? 'application/json', body: value.body, headers: value.headers })
+        return value.json === undefined ? route.fulfill({ status: value.status, body: '', headers: value.headers }) : route.fulfill({ status: value.status, json: value.json, headers: value.headers })
       }
       return route.fulfill({ status: 200, json: value })
     }
