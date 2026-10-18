@@ -4,7 +4,7 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 `/api/v1/<noun>s…` and resource read endpoints under `/api/v1/<plural>`. The nouns `workflows`,
 `jobs`, `approvals`, `providers`, `releases`, `audit`, `resources`, `resource-types`,
 `credentials`, `registry`, `catalog`, `assistant`, `triggers`, `change-requests`, `templates`,
-`service-accounts`, `me`, `mcp`, `openapi.json` are reserved for the platform.
+`service-accounts`, `me`, `mcp`, `openapi.json`, `playbooks` are reserved for the platform.
 
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
@@ -229,6 +229,31 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 
 | GET `/credentials` | `{ name; type; path; updatedAt }[]` (never values) |
 | POST `/credentials` | `{ name; type; value }` → `CommandAccepted` (stored through `CredentialsPort`). Admins may store any credential; anyone else must be in a team, and a credential that a provider or a published workflow already uses can only be changed by a team that owns one of them (403 otherwise) |
+
+## Playbooks
+
+```ts
+type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+type ResolvedRef = { repo: string; ref: string; commit: string }
+```
+
+| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload` |
+| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now |
+
+Both need a team (or admin), 403 otherwise. An upload is checked before it is kept: every
+archive entry is a relative path without `..`, backslashes or control characters; links,
+devices and duplicate names are refused; the entry count and the bytes it unpacks to are
+capped while reading (`platform.playbooks.max-entries`, `max-unpacked-size`); `path` must be a
+`.yml`/`.yaml` file in the archive; a single playbook, and the one `path` names, must parse as a
+YAML list of plays. A file over `platform.playbooks.max-upload-size` is a 413. The bytes are
+kept once in the artifact store under their SHA-256, which a workflow pins as
+`playbook: { upload: { file, sha256, path? } }`; each upload is a `playbook.uploaded` event.
+
+`repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
+URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding
+`<user>:<token>` or a bare token; it is sent only to the repository's own host, and redirects
+to another host are not followed. An unknown repository or ref is 404, a remote that cannot be
+read 502.
 
 ## Assistant (natural-language builder)
 

@@ -49,7 +49,7 @@ public final class DraftBuilder {
 
     private static final Set<String> RESERVED_NOUNS = Set.of("workflow", "job", "approval", "provider", "release", "audit", "resource",
             "resource-type", "credential", "registry", "catalog", "assistant", "trigger", "change-request", "template", "service-account",
-            "me", "mcp", "batch", "evidence");
+            "me", "mcp", "batch", "evidence", "playbook");
     private static final Set<String> NEGATIONS = Set.of("no", "not", "none", "without", "zero", "never", "nothing", "isn't", "aren't");
     private static final Set<String> APPROVAL_WORDS = Set.of("approval", "approve", "approved", "approver", "approvers", "signoff", "sign-off",
             "confirm", "confirmation", "ask");

@@ -48,6 +48,7 @@ export const RESERVED_NOUNS: readonly string[] = [
   'registry',
   'triggers',
   'openapi',
+  'playbooks',
 ];
 
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */

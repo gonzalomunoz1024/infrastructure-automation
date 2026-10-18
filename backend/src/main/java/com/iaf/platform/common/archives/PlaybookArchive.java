@@ -1,7 +1,6 @@
 package com.iaf.platform.common.archives;
 
 import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,6 +34,8 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 public final class PlaybookArchive {
 
     static final int MAX_NAME = 1024;
+    /** The largest entry {@link #inspect} hands back; a bigger one is checked but not captured. */
+    public static final int MAX_CAPTURE = 1024 * 1024;
     private static final int FILE_MODE_EXEC = 0100;
 
     public enum Kind {
@@ -62,7 +63,8 @@ public final class PlaybookArchive {
 
     /**
      * What an archive holds: its file entries in archive order and the bytes they unpack to;
-     * {@code captured} is the content of the entry asked for, or null when there is none.
+     * {@code captured} is the content of the entry asked for, or null when there is none or it is
+     * larger than {@link #MAX_CAPTURE}.
      */
     public record Listing(Kind kind, List<String> files, long unpackedBytes, byte[] captured) {
     }
@@ -285,9 +287,9 @@ public final class PlaybookArchive {
                     // not a POSIX file system: keep the defaults
                 }
             } else if (wanted) {
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                limited.transferTo(buf);
-                captured = buf.toByteArray();
+                byte[] head = limited.readNBytes(MAX_CAPTURE + 1);
+                captured = head.length <= MAX_CAPTURE ? head : null;
+                limited.transferTo(OutputStream.nullOutputStream());
             } else {
                 limited.transferTo(OutputStream.nullOutputStream());
             }
