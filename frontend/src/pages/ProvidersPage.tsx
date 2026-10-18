@@ -128,9 +128,17 @@ export default function ProvidersPage(_: PageProps) {
         title="Providers"
         subtitle="The systems workflows can call: where each one lives, how healthy it is and what it offers."
         actions={
-          <Button variant="primary" icon="plus" onClick={() => navigate(pathFor('provider-new'))}>
-            Add provider
-          </Button>
+          <>
+            <Button icon="terminal" onClick={() => navigate(pathFor('provider-new', {}, { import: 'ansible' }))} title="The platform reads the playbooks of a repository and drafts the provider">
+              Import an Ansible repository
+            </Button>
+            <Button icon="layers" onClick={() => navigate(pathFor('provider-new', {}, { import: 'terraform' }))} title="The platform reads a module from Git or the registry and drafts the provider">
+              Import a Terraform module
+            </Button>
+            <Button variant="primary" icon="plus" onClick={() => navigate(pathFor('provider-new'))}>
+              Add provider
+            </Button>
+          </>
         }
       >
         <div className="flex flex-wrap items-center gap-2">

@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import type {
+  AnsibleImport,
   Approval,
   AuditVerification,
   CatalogEntry,
@@ -23,6 +24,7 @@ import type {
   Resource,
   ResourceType,
   SpecImport,
+  TerraformImport,
   TestConnectionResult,
   TryResult,
   WorkflowSummary,
@@ -719,5 +721,100 @@ export const PROVIDER_RELEASE: Release = {
   history: [
     { at: ago(60 * 6), event: 'canary started at 10%', by: 'ana' },
     { at: ago(60 * 2), event: 'advanced to 50%' },
+  ],
+}
+
+/** The Backup service spec read from Git: the same spec, pinned to the commit it came from. */
+export const SPEC_FROM_GIT: SpecImport = { ...SPEC, commit: '4f9e2a7c1d0b5e8a9c3f6b2d7e1a4c8f0b9d2e5a' }
+
+export const ANSIBLE_IMPORT: AnsibleImport = {
+  repo: 'https://github.com/acme/ops-playbooks',
+  ref: 'v3.1.0',
+  commit: 'a7c3e9f1b2d4068c5e7a9b1d3f5c7e9a1b3d5f7c',
+  playbooks: [
+    {
+      path: 'vm/restart.yml',
+      action: 'vm.restart',
+      title: 'Restart a VM',
+      effect: 'change',
+      roles: ['vmware.restart'],
+      vars: { type: 'object', required: ['vm_name'], properties: { vm_name: { type: 'string' }, graceful: { type: 'boolean', default: true } } },
+      sources: { vm_name: 'vars_prompt', graceful: 'vars' },
+      secrets: [],
+      notes: [],
+    },
+    {
+      path: 'vm/snapshot.yml',
+      action: 'vm.snapshot',
+      title: 'Snapshot a VM',
+      effect: 'create',
+      roles: ['vmware.snapshot'],
+      vars: { type: 'object', required: ['vm_name', 'label'], properties: { vm_name: { type: 'string' }, label: { type: 'string' } } },
+      sources: { vm_name: 'vars_prompt', label: 'vars_prompt' },
+      secrets: ['vcenter_password'],
+      notes: ['vcenter_password is given from Vault, not asked as input'],
+    },
+  ],
+  chosen: ['vm/restart.yml', 'vm/snapshot.yml'],
+  requirements: ['community.vmware>=4.0.0'],
+  skipped: ['site.yml: imports every play, not a single action'],
+  notes: ['2 playbooks become actions; 1 skipped.', 'The inventory is the runner’s: the file names no hosts.'],
+  yaml: [
+    'apiVersion: platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: ops-playbooks',
+    '  title: ops-playbooks',
+    '  owner: team-platform',
+    '  version: 0.1.0',
+    'spec:',
+    '  type: ansible',
+    '  repo: https://github.com/acme/ops-playbooks',
+    '  ref: v3.1.0',
+    '  commit: a7c3e9f1b2d4068c5e7a9b1d3f5c7e9a1b3d5f7c',
+    '  credential: vault:ops/ssh',
+    '  actions:',
+    '    - id: vm.restart',
+    '      playbook: vm/restart.yml',
+    '      effect: change',
+    '    - id: vm.snapshot',
+    '      playbook: vm/snapshot.yml',
+    '      effect: create',
+    '',
+  ].join('\n'),
+}
+
+export const TERRAFORM_IMPORT: TerraformImport = {
+  source: 'acme/lb/aws',
+  version: '2.3.0',
+  notes: ['3 variables; db_password is sensitive and comes from Vault.', 'plan and apply share the inputs; apply needs an approval.'],
+  yaml: [
+    'apiVersion: platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: lb',
+    '  title: lb',
+    '  owner: team-platform',
+    '  version: 0.1.0',
+    'spec:',
+    '  type: terraform',
+    '  source: acme/lb/aws',
+    '  version: 2.3.0',
+    '  credential: vault:aws/runner',
+    '  actions:',
+    '    - id: plan',
+    '      effect: read',
+    '    - id: apply',
+    '      effect: change',
+    '',
+  ].join('\n'),
+  variables: [
+    { name: 'name', type: 'string', required: true, sensitive: false, secret: false, description: 'The load balancer name', file: 'variables.tf' },
+    { name: 'listeners', type: 'list(object)', required: false, sensitive: false, secret: false, description: 'Ports to listen on', default: [{ port: 443 }], file: 'variables.tf' },
+    { name: 'db_password', type: 'string', required: true, sensitive: true, secret: true, description: 'Given from Vault', file: 'variables.tf' },
+  ],
+  outputs: [
+    { name: 'dns_name', description: 'The public name', sensitive: false, file: 'outputs.tf' },
+    { name: 'arn', sensitive: false, file: 'outputs.tf' },
   ],
 }

@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage, useCurrentUser } from '../lib/api'
 import { useQuery } from '../lib/queries'
-import type { Effect, ProviderAuth, ProviderDraft, ProviderType, ProviderValidation, RetryPolicy, Schema, SpecImport, Strategy, TestConnectionResult, TryResult } from '../lib/types'
+import type { Effect, ProviderAuth, ProviderDraft, ProviderImport, ProviderType, ProviderValidation, RetryPolicy, Schema, SpecImport, SpecImportRequest, Strategy, TestConnectionResult, TryResult } from '../lib/types'
 import { CredentialPicker } from '../components/CredentialPicker'
+import { ImportStep, ImportSummary, type ImportKind } from './ProviderImport'
 import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { ProblemList } from '../components/ProblemList'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
@@ -58,9 +59,14 @@ export interface WizardState {
   ownerTouched: boolean
   version: string
   description: string
-  specMode: 'url' | 'paste'
+  specMode: 'url' | 'paste' | 'upload' | 'git'
   specUrl: string
   specContent: string
+  /** the uploaded file's name, for the record */
+  specFile: string
+  /** a spec in a Git repository: read at the ref, pinned to the commit it came from */
+  specGit: { repo: string; ref: string; path: string; credential: string }
+  specCommit: string
   specSha256: string
   specTitle: string
   environments: Env[]
@@ -77,8 +83,10 @@ export interface WizardState {
   overrides: Record<string, Schema>
   slo: { successRate: string; p95Ms: string; channel: string }
   strategy: Strategy
-  /** Devin's draft, when the user chose it over the wizard's document */
+  /** Devin's draft, a tried draft or an import's, when the user chose it over the wizard's document */
   draftYaml: string | null
+  /** an Ansible repository or a Terraform module the backend drafted; its yaml is the draft */
+  imported: ProviderImport | null
 }
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/
@@ -143,6 +151,9 @@ export function initialState(): WizardState {
     specMode: 'url',
     specUrl: '',
     specContent: '',
+    specFile: '',
+    specGit: { repo: '', ref: 'main', path: '', credential: '' },
+    specCommit: '',
     specSha256: '',
     specTitle: '',
     environments: [{ key: nextKey(), name: 'dev', url: '' }],
@@ -159,7 +170,27 @@ export function initialState(): WizardState {
     slo: { successRate: '99.0', p95Ms: '1000', channel: '' },
     strategy: 'canary',
     draftYaml: null,
+    imported: null,
   }
+}
+
+/** The `spec` block of an openapi provider: where the spec is read from (its URL, or Git at a ref, pinned to a commit) and the hash that pins it. */
+export function specBlock(s: WizardState): Record<string, unknown> {
+  if (s.specMode === 'git') {
+    const g = s.specGit
+    return { git: { repo: g.repo.trim(), ref: g.ref.trim() || undefined, path: g.path.trim() || undefined, credential: g.credential || undefined }, commit: s.specCommit || undefined, sha256: s.specSha256 || undefined }
+  }
+  return { url: s.specMode === 'url' ? s.specUrl.trim() || undefined : undefined, sha256: s.specSha256 || undefined }
+}
+
+/** What Import spec sends for the chosen source: the URL, the pasted or uploaded text, or the Git coordinates. */
+export function specImportRequest(s: WizardState): SpecImportRequest {
+  if (s.specMode === 'url') return { type: 'openapi', url: s.specUrl.trim() }
+  if (s.specMode === 'git') {
+    const g = s.specGit
+    return { type: 'openapi', git: { repo: g.repo.trim(), ref: g.ref.trim() || undefined, path: g.path.trim() || undefined, credential: g.credential || undefined } }
+  }
+  return { type: 'openapi', content: s.specContent }
 }
 
 /** A JSON schema for a value, from its shape: what "Fix schema from response" records. */
@@ -220,7 +251,7 @@ function actionDocument(type: ProviderType, a: ActionRow, s: WizardState): Recor
 /** The provider document as a plain object; `emitYaml` writes it. */
 export function buildProviderDocument(s: WizardState): Record<string, unknown> {
   const spec: Record<string, unknown> = { type: s.type }
-  if (s.type === 'openapi') spec.spec = { url: s.specUrl.trim() || undefined, sha256: s.specSha256 || undefined }
+  if (s.type === 'openapi') spec.spec = specBlock(s)
   if (s.type === 'openapi' || s.type === 'http') spec.endpoints = endpointsOf(s)
   if (s.type === 'ansible') {
     spec.source = { git: { repo: s.ansible.repo.trim(), ref: s.ansible.ref.trim() || undefined, path: s.ansible.path.trim() || undefined }, commit: s.ansible.commit.trim() || undefined }
@@ -257,7 +288,13 @@ export function stepIssues(s: WizardState, step: number): string[] {
     if (!VERSION_RE.test(s.version.trim())) out.push('The version looks like 1.0.0.')
   }
   if (step === 1) {
-    if (s.type === 'openapi' && !s.specUrl.trim() && !s.specContent.trim()) out.push('Point at the spec: its URL, or paste it.')
+    if (s.type === 'openapi') {
+      if (s.specMode === 'url' && !s.specUrl.trim()) out.push('Point at the spec: its URL.')
+      if (s.specMode === 'paste' && !s.specContent.trim()) out.push('Paste the spec.')
+      if (s.specMode === 'upload' && !s.specContent.trim()) out.push('Upload the spec file.')
+      if (s.specMode === 'git' && !HTTPS_RE.test(s.specGit.repo.trim())) out.push('Name the https repository the spec lives in.')
+      if (s.specMode === 'git' && s.specGit.credential && !s.specGit.credential.startsWith('vault:')) out.push('The read token is a vault: reference.')
+    }
     if ((s.type === 'openapi' || s.type === 'http') && !s.environments.some((e) => e.name.trim() && HTTPS_RE.test(e.url.trim()))) out.push('Add at least one environment with an https URL.')
     const plain = s.environments.find((e) => e.url.trim() && !HTTPS_RE.test(e.url.trim()))
     if ((s.type === 'openapi' || s.type === 'http') && plain) out.push(`${plain.name || 'An environment'}: endpoints are https URLs.`)
@@ -333,7 +370,7 @@ function describe(s: WizardState): string {
    The page
    ------------------------------------------------------------------------- */
 
-export default function ProviderWizardPage(_: PageProps) {
+export default function ProviderWizardPage({ route }: PageProps) {
   // the same cache entry as the shell's, so the owner defaults to the signed-in user's team
   const user = useCurrentUser()
   const me = useQuery(['me', user ?? 'default'], () => api.me())
@@ -341,6 +378,9 @@ export default function ProviderWizardPage(_: PageProps) {
   const [step, setStep] = useState(0)
   const [furthest, setFurthest] = useState(0)
   const update = (patch: Partial<WizardState>) => setState((s) => ({ ...s, ...patch }))
+  // ?import=ansible or ?import=terraform: the backend drafts the provider from a repository or a module, and the wizard opens on the review
+  const importKind: ImportKind | null = route.query.import === 'ansible' || route.query.import === 'terraform' ? route.query.import : null
+  const importing = importKind !== null && state.imported === null
 
   // the owner defaults to the signed-in user's first team until they pick one
   const firstTeam = me.data?.teams?.[0]
@@ -356,17 +396,35 @@ export default function ProviderWizardPage(_: PageProps) {
     setFurthest((f) => Math.max(f, n))
   }
 
+  const title = importKind === 'ansible' ? 'Import an Ansible repository' : importKind === 'terraform' ? 'Import a Terraform module' : 'Add a provider'
+  const subtitle = importKind ? 'The platform reads it and drafts the provider; review the draft, then open a change request.' : 'Five steps from a spec, a repository or a module to a change request.'
+
   return (
     <>
-      <PageHeader eyebrow="Providers" title="Add a provider" subtitle="Five steps from a spec, a repository or a module to a change request." back={{ href: `#${pathFor('providers')}`, label: 'Providers' }} />
+      <PageHeader eyebrow="Providers" title={title} subtitle={subtitle} back={{ href: `#${pathFor('providers')}`, label: 'Providers' }} />
       <Stepper steps={STEPS} current={step} onStepClick={(i) => i <= furthest && setStep(i)} className="mb-6" />
 
-      {step === 0 && <TypeStep state={state} update={update} />}
-      {step === 1 && <ConnectStep state={state} update={update} />}
-      {step === 2 && <ActionsStep state={state} update={update} />}
-      {step === 3 && <TryStep state={state} update={update} yaml={yaml} />}
-      {step === 4 && <ReviewStep state={state} update={update} yaml={yaml} />}
+      {importing && importKind ? (
+        <ImportStep
+          kind={importKind}
+          defaultOwner={state.owner}
+          onImported={(patch) => {
+            update(patch)
+            setStep(4)
+            setFurthest(4)
+          }}
+        />
+      ) : (
+        <>
+          {step === 0 && <TypeStep state={state} update={update} />}
+          {step === 1 && <ConnectStep state={state} update={update} />}
+          {step === 2 && <ActionsStep state={state} update={update} />}
+          {step === 3 && <TryStep state={state} update={update} yaml={yaml} />}
+          {step === 4 && <ReviewStep state={state} update={update} yaml={yaml} />}
+        </>
+      )}
 
+      {!importing && (
       <div className="mt-6 flex flex-wrap items-start justify-between gap-3 border-t border-stroke-light pt-4">
         <Button variant="ghost" icon="arrow-left" disabled={step === 0} onClick={() => setStep(step - 1)}>
           Back
@@ -389,6 +447,7 @@ export default function ProviderWizardPage(_: PageProps) {
           <span />
         )}
       </div>
+      )}
     </>
   )
 }
@@ -462,6 +521,7 @@ function TypeStep({ state, update }: StepProps) {
 function ConnectStep({ state, update }: StepProps) {
   const toast = useToast()
   const [busy, setBusy] = useState<'import' | 'test' | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   const hasEndpoints = state.type === 'openapi' || state.type === 'http'
 
   const applySpec = (spec: SpecImport) => {
@@ -495,13 +555,21 @@ function ConnectStep({ state, update }: StepProps) {
   const importSpec = async () => {
     setBusy('import')
     try {
-      applySpec(await api.importSpec(state.specMode === 'url' ? { type: 'openapi', url: state.specUrl.trim() } : { type: 'openapi', content: state.specContent }))
+      const spec = await api.importSpec(specImportRequest(state))
+      applySpec(spec)
+      update({ specCommit: spec.commit ?? '' })
     } catch (e) {
       toast.error('Could not import the spec', errorMessage(e))
     } finally {
       setBusy(null)
     }
   }
+
+  const uploadSpec = (file: File | undefined) => {
+    if (!file) return
+    void file.text().then((content) => update({ specContent: content, specFile: file.name, specSha256: '', specCommit: '' }))
+  }
+  const canImport = state.specMode === 'url' ? !!state.specUrl.trim() : state.specMode === 'git' ? HTTPS_RE.test(state.specGit.repo.trim()) : !!state.specContent.trim()
 
   const test = async () => {
     setBusy('test')
@@ -526,7 +594,7 @@ function ConnectStep({ state, update }: StepProps) {
       {state.type === 'openapi' && (
         <Card
           title="Spec"
-          subtitle="The platform reads the spec, pins its hash at publish and never edits it."
+          subtitle="The platform reads the spec, pins its hash at publish and never edits it. From Git it also pins the commit it read."
           actions={
             <Segmented
               ariaLabel="Spec source"
@@ -536,30 +604,71 @@ function ConnectStep({ state, update }: StepProps) {
               options={[
                 { value: 'url', label: 'URL' },
                 { value: 'paste', label: 'Paste' },
+                { value: 'upload', label: 'Upload' },
+                { value: 'git', label: 'Git' },
               ]}
             />
           }
         >
           <div className="space-y-3">
-            {state.specMode === 'url' ? (
+            {state.specMode === 'url' && (
               <Field label="Spec URL" htmlFor="spec-url" required>
                 <Input id="spec-url" mono value={state.specUrl} onChange={(e) => update({ specUrl: e.target.value })} placeholder="https://vcenter.example.com/rest/openapi.json" />
               </Field>
-            ) : (
+            )}
+            {state.specMode === 'paste' && (
               <Field label="Spec (JSON or YAML)" htmlFor="spec-content" required>
                 <Textarea id="spec-content" mono rows={8} value={state.specContent} onChange={(e) => update({ specContent: e.target.value })} placeholder="openapi: 3.0.0 …" />
               </Field>
+            )}
+            {state.specMode === 'upload' && (
+              <Field label="Spec file" hint="A JSON or YAML file from your machine; the platform keeps the text, not the file">
+                <div className="flex flex-wrap items-center gap-3">
+                  <input ref={fileRef} type="file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml" className="hidden" aria-label="Spec file" onChange={(e) => uploadSpec(e.target.files?.[0])} />
+                  <Button icon="upload" onClick={() => fileRef.current?.click()}>
+                    Choose a file
+                  </Button>
+                  {state.specFile ? (
+                    <span className="text-caption text-secondary">
+                      <Mono className="text-primary">{state.specFile}</Mono> · {state.specContent.length.toLocaleString()} characters
+                    </span>
+                  ) : (
+                    <span className="text-caption text-tertiary">Nothing chosen yet.</span>
+                  )}
+                </div>
+              </Field>
+            )}
+            {state.specMode === 'git' && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="Repository" htmlFor="spec-git-repo" required hint="https only; the token, if any, is a credential, never part of the URL">
+                  <Input id="spec-git-repo" mono value={state.specGit.repo} onChange={(e) => update({ specGit: { ...state.specGit, repo: e.target.value } })} placeholder="https://github.com/acme/vcenter-api" invalid={!!state.specGit.repo && !HTTPS_RE.test(state.specGit.repo.trim())} />
+                </Field>
+                <Field label="Ref" htmlFor="spec-git-ref" hint="A tag, branch or commit; main when empty">
+                  <Input id="spec-git-ref" mono value={state.specGit.ref} onChange={(e) => update({ specGit: { ...state.specGit, ref: e.target.value } })} placeholder="v8.0.2" />
+                </Field>
+                <Field label="Path" htmlFor="spec-git-path" hint="The spec file inside the repository">
+                  <Input id="spec-git-path" mono value={state.specGit.path} onChange={(e) => update({ specGit: { ...state.specGit, path: e.target.value } })} placeholder="openapi/vcenter.yaml" />
+                </Field>
+                <Field label="Read credential" hint="For a private repository: the vault: reference of a read token">
+                  <CredentialPicker id="spec-git-credential" ariaLabel="Read credential" value={state.specGit.credential} onChange={(ref) => update({ specGit: { ...state.specGit, credential: ref } })} />
+                </Field>
+              </div>
             )}
             <div className="flex flex-wrap items-center justify-between gap-3">
               {state.specSha256 ? (
                 <span className="inline-flex flex-wrap items-center gap-2 text-caption text-secondary">
                   <StatusDot kind="healthy" />
                   {state.specTitle} · {state.actions.length} operations · <Mono title={state.specSha256}>sha256 {state.specSha256.slice(0, 12)}…</Mono>
+                  {state.specCommit && (
+                    <Mono title={state.specCommit}>
+                      commit {state.specCommit.slice(0, 12)}…
+                    </Mono>
+                  )}
                 </span>
               ) : (
                 <span className="text-caption text-tertiary">Import to list the operations and the servers.</span>
               )}
-              <Button icon="download" loading={busy === 'import'} disabled={state.specMode === 'url' ? !state.specUrl.trim() : !state.specContent.trim()} onClick={() => void importSpec()}>
+              <Button icon="download" loading={busy === 'import'} disabled={!canImport} onClick={() => void importSpec()}>
                 Import spec
               </Button>
             </div>
@@ -1060,11 +1169,12 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
       <div className="min-w-0 space-y-3">
+        {state.imported && <ImportSummary imported={state.imported} />}
         {state.draftYaml && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-tint px-4 py-2 text-sm">
             <span className="inline-flex items-center gap-2 text-primary">
               <Icon name="sparkles" size={14} className="text-accent" />
-              Devin's draft replaces the wizard's document.
+              {state.imported ? "The import's draft replaces the wizard's document." : "This draft replaces the wizard's document."}
             </span>
             <Button size="sm" variant="ghost" onClick={() => update({ draftYaml: null })}>
               Back to the wizard's YAML

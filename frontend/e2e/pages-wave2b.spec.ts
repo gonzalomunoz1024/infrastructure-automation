@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { CATALOG, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, TRY_RESULT, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, CATALOG, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -386,5 +386,136 @@ test.describe('provider: every edit is a change request', () => {
     // the toast's button opens the change request
     await refreshToast.getByRole('button', { name: 'Open change request' }).click()
     await expect(page).toHaveURL(/#\/change-requests\/cr-92$/)
+  })
+})
+
+test.describe('provider imports', () => {
+  test('an Ansible repository becomes a draft the review step shows and publishes as it came', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /providers': PROVIDERS,
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:import-ansible': ANSIBLE_IMPORT,
+      'POST /providers:validate': VALIDATION,
+      'POST /providers:publish': { id: 'cr-101', status: 'open' },
+      'GET /change-requests/{id}': PROVIDER_CR,
+    })
+    await page.goto('/#/providers')
+    await page.getByRole('button', { name: 'Import an Ansible repository' }).click()
+    await expect(page).toHaveURL(/#\/providers\/new\?import=ansible$/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Import an Ansible repository' })).toBeVisible()
+
+    const importButton = page.getByRole('button', { name: 'Import playbooks' })
+    await expect(importButton).toBeDisabled()
+    await page.getByRole('textbox', { name: 'Repository' }).fill('https://github.com/acme/ops-playbooks')
+    await page.getByRole('textbox', { name: 'Ref' }).fill('v3.1.0')
+    await page.getByRole('textbox', { name: 'Path' }).fill('playbooks/')
+    await page.getByRole('textbox', { name: 'Playbooks' }).fill('vm/restart.yml, vm/snapshot.yml')
+    // the owner is the signed-in user's team until typed over
+    await expect(page.getByRole('textbox', { name: 'Owner' })).toHaveValue('team-platform')
+    await page.getByRole('button', { name: 'Machine credential' }).click()
+    await page.getByRole('option', { name: /vsphere\/token/ }).click()
+    await page.getByRole('textbox', { name: 'Execution environment' }).fill('ee-platform:2.17')
+    await importButton.click()
+
+    // the wizard opens on the review, with the import's draft as the document
+    const current = page.getByRole('list', { name: 'Steps' }).locator('[aria-current="step"]')
+    await expect(current).toContainText('Review')
+    expect(api.callsTo('POST', '/providers:import-ansible')[0].body).toEqual({
+      git: { repo: 'https://github.com/acme/ops-playbooks', ref: 'v3.1.0', path: 'playbooks/' },
+      playbooks: ['vm/restart.yml', 'vm/snapshot.yml'],
+      owner: 'team-platform',
+      credential: 'vault:vsphere/token',
+      executionEnvironment: 'ee-platform:2.17',
+    })
+    const summary = page.getByTestId('import-summary')
+    await expect(summary).toContainText('https://github.com/acme/ops-playbooks at v3.1.0, pinned to a7c3e9f1b2d4')
+    await expect(summary.getByRole('list', { name: 'Import notes' })).toContainText('2 playbooks become actions; 1 skipped.')
+    await expect(summary).toContainText('Skipped: site.yml: imports every play, not a single action')
+    const playbooks = summary.getByRole('table', { name: 'Imported playbooks' })
+    await expect(playbooks.getByRole('row')).toHaveCount(3)
+    await expect(playbooks.getByRole('row', { name: /vm\.snapshot/ })).toContainText('vcenter_password')
+    await expect(page.getByText("The import's draft replaces the wizard's document.")).toBeVisible()
+    const pre = page.locator('pre').first()
+    for (const line of ['type: ansible', 'commit: a7c3e9f1b2d4068c5e7a9b1d3f5c7e9a1b3d5f7c', 'playbook: vm/snapshot.yml']) await expect(pre).toContainText(line)
+
+    await page.getByRole('button', { name: 'Run checks' }).click()
+    await expect(page.getByText('Ready to publish.')).toBeVisible()
+    await page.getByRole('button', { name: 'Publish as change request' }).click()
+    await expect(page).toHaveURL(/#\/change-requests\/cr-101$/)
+    const published = api.callsTo('POST', '/providers:publish')[0].body as { yaml: string; strategy: string }
+    expect(published.yaml).toBe(ANSIBLE_IMPORT.yaml)
+    expect(published.strategy).toBe('canary')
+  })
+
+  test('a Terraform module from the registry becomes a draft, its variables and outputs listed', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:import-terraform': TERRAFORM_IMPORT,
+    })
+    await page.goto('/#/providers/new?import=terraform')
+    await expect(page.getByRole('heading', { level: 1, name: 'Import a Terraform module' })).toBeVisible()
+    await page.getByRole('radio', { name: 'Registry' }).click()
+    await page.getByRole('textbox', { name: 'Module', exact: true }).fill('acme/lb/aws')
+    await page.getByRole('textbox', { name: 'Version' }).fill('2.3.0')
+    await page.getByRole('textbox', { name: 'Name', exact: true }).fill('lb')
+    await page.getByRole('button', { name: 'Runner credential' }).click()
+    await page.getByRole('option', { name: /backup\/api-key/ }).click()
+    await page.getByRole('button', { name: 'Import module' }).click()
+
+    const summary = page.getByTestId('import-summary')
+    await expect(summary).toContainText('acme/lb/aws 2.3.0')
+    expect(api.callsTo('POST', '/providers:import-terraform')[0].body).toEqual({ registry: { module: 'acme/lb/aws', version: '2.3.0' }, name: 'lb', owner: 'team-platform', credential: 'vault:backup/api-key' })
+    const variables = summary.getByRole('table', { name: 'Module variables' })
+    await expect(variables.getByRole('row', { name: /db_password/ })).toContainText('Vault')
+    await expect(variables.getByRole('row', { name: /listeners/ })).toContainText('the input')
+    await expect(summary.getByRole('table', { name: 'Module outputs' })).toContainText('dns_name')
+    await expect(page.locator('pre').first()).toContainText('source: acme/lb/aws')
+  })
+
+  test('the spec comes from Git at a ref and the file pins the commit it read', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:import-spec': SPEC_FROM_GIT,
+    })
+    await page.goto('/#/providers/new')
+    await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Backup service')
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.getByRole('radio', { name: 'Git' }).click()
+    const importButton = page.getByRole('button', { name: 'Import spec' })
+    await expect(importButton).toBeDisabled()
+    await page.getByRole('textbox', { name: 'Repository' }).fill('https://github.com/acme/backup-api')
+    await page.getByRole('textbox', { name: 'Ref' }).fill('v1.0.0')
+    await page.getByRole('textbox', { name: 'Path' }).fill('openapi.yaml')
+    await page.getByRole('button', { name: 'Read credential' }).click()
+    await page.getByRole('option', { name: /backup\/api-key/ }).click()
+    await importButton.click()
+    await expect(page.getByText('2 operations from Backup service 1.0.0.')).toBeVisible()
+    await expect(page.getByText('commit 4f9e2a7c1d0b…')).toBeVisible()
+    expect(api.callsTo('POST', '/providers:import-spec')[0].body).toEqual({ type: 'openapi', git: { repo: 'https://github.com/acme/backup-api', ref: 'v1.0.0', path: 'openapi.yaml', credential: 'vault:backup/api-key' } })
+
+    await page.getByRole('button', { name: 'Credential', exact: true }).click()
+    await page.getByRole('option', { name: /backup\/api-key/ }).click()
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.getByRole('button', { name: 'Skip to review' }).click()
+    const pre = page.locator('pre').first()
+    for (const line of ['repo: https://github.com/acme/backup-api', 'ref: v1.0.0', 'path: openapi.yaml', 'credential: vault:backup/api-key', 'commit: 4f9e2a7c1d0b5e8a9c3f6b2d7e1a4c8f0b9d2e5a']) await expect(pre).toContainText(line)
+    await expect(pre).not.toContainText('url:')
+  })
+
+  test('an uploaded spec file is sent as text', async ({ page }) => {
+    const api = await mockApi(page, { 'GET /credentials': CREDENTIALS, 'POST /providers:import-spec': SPEC })
+    await page.goto('/#/providers/new')
+    await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Backup service')
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.getByRole('radio', { name: 'Upload' }).click()
+    const importButton = page.getByRole('button', { name: 'Import spec' })
+    await expect(importButton).toBeDisabled()
+    const content = 'openapi: 3.0.0\ninfo:\n  title: Backup service\n'
+    await page.locator('input[type=file]').setInputFiles({ name: 'openapi.yaml', mimeType: 'application/yaml', buffer: Buffer.from(content) })
+    await expect(page.getByText('openapi.yaml', { exact: true })).toBeVisible()
+    await importButton.click()
+    await expect(page.getByText('2 operations from Backup service 1.0.0.')).toBeVisible()
+    expect(api.callsTo('POST', '/providers:import-spec')[0].body).toEqual({ type: 'openapi', content })
   })
 })
