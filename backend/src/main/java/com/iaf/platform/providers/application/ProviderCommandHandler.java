@@ -237,8 +237,8 @@ public class ProviderCommandHandler implements ProviderCommands {
     @Override
     public Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command) {
         RefreshSpec c = command == null ? new RefreshSpec(null, null) : command;
-        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = latest(name);
+        return CurrentIdentity.current().flatMap(who -> candidate(name).flatMap(candidate -> blocking(() -> {
+            StoredProvider current = latest(name, candidate);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             SpecSource source = def.spec().specSource();
@@ -260,7 +260,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             }
             requireNoOpenChange(name);
             return current;
-        }).flatMap(current -> latestSpec(who, current.definition().spec().specSource(), c)
+        })).flatMap(current -> latestSpec(who, current.definition().spec().specSource(), c)
                 .flatMap(latest -> blocking(() -> refreshed(who, current, latest, c)))));
     }
 
@@ -615,67 +615,81 @@ public class ProviderCommandHandler implements ProviderCommands {
         return ProviderReview.review(def, evidence.evidence(def.name()));
     }
 
+    /** A file posted for publishing that passed its own checks. */
+    private record Publishable(ProviderDefinition def, String strategy, ProviderChecks.Result checks) {
+    }
+
     @Override
     public Mono<CommandAccepted> publish(Publish command) {
-        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            if (command == null || command.yaml() == null || command.yaml().isBlank()) {
-                throw new IllegalArgumentException("yaml is required");
-            }
-            String strategy = command.strategy() == null || command.strategy().isBlank() ? DEFAULT_STRATEGY : command.strategy().trim();
-            if (!STRATEGIES.contains(strategy)) {
-                throw new IllegalArgumentException("strategy is canary or all");
-            }
-            ProviderChecks.Result checks = ProviderChecks.check(command.yaml());
-            if (checks.hasErrors()) {
-                int n = checks.errors().size();
-                throw new ConflictException("The provider has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published", checks.problems());
-            }
-            ProviderDefinition def = ProviderYaml.parse(command.yaml());
-            ContentFiles.requireSlug("The provider name", def.name());
-            ContentFiles.requireSlug("The owner team", def.owner());
-            Optional<StoredProvider> stored = store.get(def.name());
-            // the published provider's owner decides, not the owner the posted file names: handing a
-            // provider to another team is itself an edit its owner makes, and nobody claims one by re-posting it
-            if (stored.isPresent()) {
-                AccessRules.requireEdit(who, stored.get().definition().owner(), "provider " + def.name());
-            }
-            AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
-            String version = def.metadata().version();
-            if (stored.filter(c -> version.equals(c.definition().metadata().version())).isPresent() || store.version(def.name(), version).isPresent()) {
-                throw new ConflictException("Version " + version + " of provider " + def.name() + " is already published; bump metadata.version");
-            }
-            Optional<StoredProvider> current = stored.map(c -> latest(def.name()));
-            boolean open = changeRequests.all().stream().anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN
-                    && def.name().equals(cr.name()) && version.equals(cr.version()));
-            if (open) {
-                throw new ConflictException("A change request for provider " + def.name() + " " + version + " is already open");
-            }
-            requireNoOpenChange(def.name());
-            // the review step: what the wizard proved, judged by the platform (credentials work, every action tried...)
-            ProviderReview.Result review = ProviderReview.review(def, evidence.evidence(def.name()));
-            if (!review.ready()) {
-                int n = review.errors().size();
-                throw new ConflictException("The provider's review has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published",
-                        review.errors());
-            }
-            List<Check> all = new ArrayList<>(checks.checks());
-            all.addAll(review.checks());
-            String path = pathOf(def);
-            String diff = TextDiff.unified(current.map(StoredProvider::yaml).orElse(null), command.yaml(), path);
-            String id = Ids.next("cr");
-            ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
-                    "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, command.yaml(), diff,
-                    clock.instant(), null, null, null);
-            changeRequests.save(cr);
-            ObjectNode data = F.objectNode();
-            data.put("name", def.name());
-            data.put("version", version);
-            data.put("changeRequestId", id);
-            data.put("by", who.id());
-            data.put("owner", def.metadata().owner()); // the team a reviewer is found in
-            events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
-            return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id));
-        }));
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> publishable(command))
+                .flatMap(p -> candidate(p.def().name()).flatMap(candidate -> blocking(() -> publish(who, command, p, candidate)))));
+    }
+
+    private static Publishable publishable(Publish command) {
+        if (command == null || command.yaml() == null || command.yaml().isBlank()) {
+            throw new IllegalArgumentException("yaml is required");
+        }
+        String strategy = command.strategy() == null || command.strategy().isBlank() ? DEFAULT_STRATEGY : command.strategy().trim();
+        if (!STRATEGIES.contains(strategy)) {
+            throw new IllegalArgumentException("strategy is canary or all");
+        }
+        ProviderChecks.Result checks = ProviderChecks.check(command.yaml());
+        if (checks.hasErrors()) {
+            int n = checks.errors().size();
+            throw new ConflictException("The provider has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published", checks.problems());
+        }
+        ProviderDefinition def = ProviderYaml.parse(command.yaml());
+        ContentFiles.requireSlug("The provider name", def.name());
+        ContentFiles.requireSlug("The owner team", def.owner());
+        return new Publishable(def, strategy, checks);
+    }
+
+    private CommandAccepted publish(Identity who, Publish command, Publishable p, Optional<String> candidate) {
+        ProviderDefinition def = p.def();
+        String strategy = p.strategy();
+        ProviderChecks.Result checks = p.checks();
+        Optional<StoredProvider> stored = store.get(def.name());
+        // the published provider's owner decides, not the owner the posted file names: handing a
+        // provider to another team is itself an edit its owner makes, and nobody claims one by re-posting it
+        if (stored.isPresent()) {
+            AccessRules.requireEdit(who, stored.get().definition().owner(), "provider " + def.name());
+        }
+        AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
+        String version = def.metadata().version();
+        if (stored.filter(c -> version.equals(c.definition().metadata().version())).isPresent() || store.version(def.name(), version).isPresent()) {
+            throw new ConflictException("Version " + version + " of provider " + def.name() + " is already published; bump metadata.version");
+        }
+        Optional<StoredProvider> current = stored.map(c -> latest(def.name(), candidate));
+        boolean open = changeRequests.all().stream().anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN
+                && def.name().equals(cr.name()) && version.equals(cr.version()));
+        if (open) {
+            throw new ConflictException("A change request for provider " + def.name() + " " + version + " is already open");
+        }
+        requireNoOpenChange(def.name());
+        // the review step: what the wizard proved, judged by the platform (credentials work, every action tried...)
+        ProviderReview.Result review = ProviderReview.review(def, evidence.evidence(def.name()));
+        if (!review.ready()) {
+            int n = review.errors().size();
+            throw new ConflictException("The provider's review has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published",
+                    review.errors());
+        }
+        List<Check> all = new ArrayList<>(checks.checks());
+        all.addAll(review.checks());
+        String path = pathOf(def);
+        String diff = TextDiff.unified(current.map(StoredProvider::yaml).orElse(null), command.yaml(), path);
+        String id = Ids.next("cr");
+        ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
+                "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, command.yaml(), diff,
+                clock.instant(), null, null, null);
+        changeRequests.save(cr);
+        ObjectNode data = F.objectNode();
+        data.put("name", def.name());
+        data.put("version", version);
+        data.put("changeRequestId", id);
+        data.put("by", who.id());
+        data.put("owner", def.metadata().owner()); // the team a reviewer is found in
+        events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
+        return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id));
     }
 
     @Override
@@ -696,8 +710,8 @@ public class ProviderCommandHandler implements ProviderCommands {
      */
     @Override
     public Mono<CommandAccepted> overrides(String name, SetOverride command) {
-        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = latest(name);
+        return CurrentIdentity.current().flatMap(who -> candidate(name).flatMap(candidate -> blocking(() -> {
+            StoredProvider current = latest(name, candidate);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || command.action() == null || command.action().isBlank()) {
@@ -717,14 +731,14 @@ public class ProviderCommandHandler implements ProviderCommands {
             String version = nextPatch(tree, def);
             String yaml = ProviderYaml.toYaml(tree);
             return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": " + action.id() + " uses the real response", "overrides",
-                    editStrategy(name), reviewChecks(yaml, ProviderReview.RESPONSES));
-        }));
+                    editStrategy(candidate), reviewChecks(yaml, ProviderReview.RESPONSES));
+        })));
     }
 
     @Override
     public Mono<CommandAccepted> slo(String name, SetSlo command) {
-        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = latest(name);
+        return CurrentIdentity.current().flatMap(who -> candidate(name).flatMap(candidate -> blocking(() -> {
+            StoredProvider current = latest(name, candidate);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || (command.successRate() == null && command.p95Ms() == null && command.channel() == null)) {
@@ -765,8 +779,8 @@ public class ProviderCommandHandler implements ProviderCommands {
             String version = nextPatch(tree, def);
             String yaml = ProviderYaml.toYaml(tree);
             return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": SLO and alerts", "slo",
-                    editStrategy(name), reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
-        }));
+                    editStrategy(candidate), reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
+        })));
     }
 
     /** The same SLO and alert channel once the defaults the edit wrote in are counted as what the file meant. */
@@ -798,19 +812,22 @@ public class ProviderCommandHandler implements ProviderCommands {
      * The version an edit builds on: the candidate of a provider release still rolling out (so the
      * edit keeps what the canary carries), else the current version.
      */
-    private StoredProvider latest(String name) {
+    private StoredProvider latest(String name, Optional<String> candidate) {
         StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
-        return rollingOut(name).flatMap(v -> store.version(name, v)).orElse(current);
+        return candidate.flatMap(v -> store.version(name, v)).orElse(current);
     }
 
-    /** The candidate version of the provider's running release, if one is running. */
-    private Optional<String> rollingOut(String name) {
-        return releases.providerCandidate(name).blockOptional();
+    /**
+     * The candidate version of the provider's running release, if one is running: composed into the
+     * command rather than waited for, and asked off the request thread since a release store may block.
+     */
+    private Mono<Optional<String>> candidate(String name) {
+        return releases.providerCandidate(name).subscribeOn(Schedulers.boundedElastic()).map(Optional::of).defaultIfEmpty(Optional.empty());
     }
 
     /** Overrides and SLO edits change no call: they reach every call at once, unless they build on a candidate still rolling out. */
-    private String editStrategy(String name) {
-        return rollingOut(name).isPresent() ? DEFAULT_STRATEGY : ALL;
+    private static String editStrategy(Optional<String> candidate) {
+        return candidate.isPresent() ? DEFAULT_STRATEGY : ALL;
     }
 
     /** One change at a time per provider: two open change requests would publish over each other. */

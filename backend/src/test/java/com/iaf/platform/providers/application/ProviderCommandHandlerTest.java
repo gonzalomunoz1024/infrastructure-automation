@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -72,6 +73,7 @@ import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.test.publisher.PublisherProbe;
 
 class ProviderCommandHandlerTest {
 
@@ -1044,6 +1046,29 @@ class ProviderCommandHandlerTest {
         assertThat(cr.version()).as("the next patch of the candidate, not of the current version").isEqualTo("1.1.1");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.diff()).contains("-metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0 }");
+    }
+
+    @Test
+    void theRunningCandidateIsComposedIntoTheEditNotWaitedFor() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        // a release store that answers later, on another thread
+        PublisherProbe<String> candidate = PublisherProbe.of(Mono.just("1.1.0").delayElement(Duration.ofMillis(30)));
+        when(releases.providerCandidate("fleet")).thenReturn(candidate.mono());
+        StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{\"id\":\"vm-1\",\"cpu\":4}"))), OWNER))
+                .expectNextCount(1).verifyComplete();
+        candidate.assertWasSubscribed();
+        ChangeRequest cr = opened();
+        assertThat(cr.version()).isEqualTo("1.1.1");
+        assertThat(cr.strategy()).isEqualTo("canary");
+
+        // no release running: the current version, for every call
+        org.mockito.Mockito.reset(changeRequests);
+        when(changeRequests.all()).thenReturn(List.of());
+        when(releases.providerCandidate("fleet")).thenReturn(Mono.<String>empty().delaySubscription(Duration.ofMillis(10)));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, null, null)), OWNER)).expectNextCount(1).verifyComplete();
+        assertThat(opened().version()).isEqualTo("1.0.1");
+        assertThat(opened().strategy()).isEqualTo("all");
     }
 
     @Test
