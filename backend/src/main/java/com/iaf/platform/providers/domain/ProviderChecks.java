@@ -10,9 +10,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Problem.Fix;
@@ -93,6 +95,27 @@ public final class ProviderChecks {
 
     public static boolean hasErrors(List<Problem> problems) {
         return problems.stream().anyMatch(Problem::isError);
+    }
+
+    /** A provider file publishing takes: its definition and its checks, which may still hold warnings. */
+    public record Publishable(ProviderDefinition definition, Result checks) {
+    }
+
+    /**
+     * Reads a provider file as publishing does: its own checks first, and a file with an error
+     * among them is refused with what {@code refused} makes of them (a publish answers 409, a
+     * draft a workflow's dry run carries 400); then its definition, whose name and owner team
+     * become its path in the content repo and so must be slugs (an IllegalArgumentException).
+     */
+    public static Publishable publishable(String yaml, Function<Result, ? extends RuntimeException> refused) {
+        Result checks = check(yaml);
+        if (checks.hasErrors()) {
+            throw refused.apply(checks);
+        }
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        ContentFiles.requireSlug("The provider name", def.name());
+        ContentFiles.requireSlug("The owner team", def.owner());
+        return new Publishable(def, checks);
     }
 
     /** A field name that holds a secret (password, token, api key...): its value never goes in a provider file. */
