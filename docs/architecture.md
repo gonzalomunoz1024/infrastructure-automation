@@ -79,7 +79,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
-| `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
+| `TelemetryPort`         | `JdbcTelemetry` (profile `postgres`, the samples in `telemetry_samples`) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
 | `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
@@ -89,8 +89,11 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
-Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
-profile guard so that the production adapter replaces it when its profile is active.
+Every adapter is a `@Component`. A production adapter carries its profile and `@Primary`
+(`@Profile("opa") @Primary` on `OpaPolicy`), so it wins over its demo twin, a plain component,
+when the profile is on; a twin that must not exist beside it carries the opposite guard (the
+in-memory stores are `@Profile("!postgres")`). The Git workflow store is switched by the property
+`platform.content.git`, not by a profile. No adapter uses `@ConditionalOnMissingBean`.
 
 A credential belongs to a team: `CredentialInfo.owner`, chosen when it is stored (one of the
 caller's teams, any team for an admin) and kept by both adapters; one seeded from content has
@@ -107,8 +110,12 @@ and the change requests that published them, `DemoRunsSeeder` routes each seeded
 version a story says was live and adds the canary traffic, `DemoResources` derives the registry
 from the resource types and workflows, and `DemoReleaseSeed` records the releases last and judges
 their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode agrees with the
-others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
-platform code.
+others, the way the Atlas topology fixture does. These demo classes are the only platform code that
+names the sample content (`DemoReleases` tells the stories of mongodb-upgrade, create-vm and
+vm-restart, `DemoRunsSeeder` puts its live states on mongodb-upgrade, vm-restart and patch-cve,
+`DemoTelemetrySeeder` gives the sample providers their traffic), and they are demo-only: each seeds
+only with `platform.demo.seed-history`, which the backend turns on by default for the demo and the
+Helm chart turns off (`demo.seedHistory`).
 
 ### Persistence
 
@@ -236,6 +243,59 @@ runs on a non-blocking thread, and the wiring test expects none.
   `TracedProviderCalls` proxies every `ProviderCallPort` bean so each call is an
   `iaf.provider.call` span under its step. `JobMetrics` counts and times jobs per workflow. Step
   spans come from the in-memory engine's events.
+
+### Policy engine contract
+
+`PolicyPort` is asked at three points. The demo's `MockPolicy` answers in process; under the `opa`
+profile `OpaPolicy` asks the firm's OPA engine through its data API, one document per phase:
+`POST {platform.policy.opa-url}/<phase>` with the body `{ "input": ... }`. With the default URL,
+`http://localhost:8181/v1/data/platform`, the documents are `data.platform.invoke`,
+`data.platform.publish` and `data.platform["resource-access"]`.
+
+```json
+{
+  "input": {
+    "phase": "invoke",
+    "who": { "id": "mateo", "name": "Mateo", "email": "mateo@example.com", "teams": ["team-compute"],
+             "roles": ["ops"], "admin": false, "kind": "user" },
+    "workflow": "vm-restart",
+    "version": "1.2.0",
+    "input": { "vmId": "vm-0042", "reason": "stuck after a kernel update", "environment": "prod" },
+    "context": { "channel": "api", "environment": "prod" }
+  }
+}
+```
+
+`who.kind` is `user`, `service` (a service account) or `system`. Per phase:
+
+| Phase | Asked | `workflow`, `version` | `input` | `context` | A denial |
+|-------|-------|-----------------------|---------|-----------|----------|
+| `invoke` | before a job starts, by the runs slice for every start (the UI, `POST /jobs`, triggers, child jobs, a re-run) and every preview, and before that by the catalog for a generated route or MCP tool | the workflow and the version that will run | the job's input with the schema's defaults; a batch: `{ defaults, items }` from the catalog, its first row from the runs slice | runs slice: `channel` (`preview` for a preview, `rest` for a re-run), `environment` (the input's), `parentId` (a child job), `changeRequired` and `approvalRequired` (the workflow's `policy` block); catalog: `channel`, `traceId`, `rows` (a batch), `pinnedVersion` (a run pinned to a version) | 403 with the rules' messages; the generated routes also answer `rules` and `engine`, MCP its policy-denied error |
+| `publish` | when a change request is opened for a version | the workflow and the proposed version | the definition, as JSON | `strategy` (`canary` or `all`), `owner` (the owner team), `previous` (the version it replaces; null for a first) | the change request's `policy` check fails |
+| `resource-access` | when a `use` step resolves a registry resource and checks access | null | the resource: `id`, `type`, `status`, `owner`, `visibility`, `attributes` | `{ "phase": "resource-access" }` | the step fails, naming the resource and the reasons |
+
+One start can ask `invoke` more than once (the catalog, the preview, the start), so an answer
+must depend on the input alone. `PolicyPort.Phase` also names `step`, which nothing asks today.
+
+The answer is the data API's, the rules of the phase's document:
+
+```json
+{ "result": { "allow": true, "needsApproval": true,
+              "rules": [ { "id": "prod.change-window", "result": "needs-approval", "message": "Production outside the change window" } ] } }
+```
+
+- `allow: true` allows; with `needsApproval` (or `needs_approval`) `true` the decision is
+  `needs-approval`; `allow` false or missing denies.
+- `rules[]` (`id`, `result`, `message`) are kept with the decision: `id` defaults to `rule`,
+  `result` to `pass` when allowed and to `deny` otherwise.
+- No `result` (no document for the phase) denies with the rule `opa.undefined`. An error, a
+  non-2xx answer or no answer within 5 seconds denies with `opa.unreachable`: the platform fails
+  closed.
+
+`deny` refuses. `allow` and `needs-approval` let the request through, and the decision
+(`decision`, `rules`, `engine`) is kept on the job and its preview as `policy`, and so in the
+`job.started` evidence. A `needs-approval` answer adds no approval of its own: a job waits for the
+approvals its workflow has (`approval` steps, `policy.approval`).
 
 ## The interpreter
 

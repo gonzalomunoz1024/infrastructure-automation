@@ -225,6 +225,17 @@ frontend:
   tolerations: []
   affinity: {}
 
+# SSO: the web app acquires no token itself. An auth proxy in front of the web app and the API signs
+# people in and forwards their ID token as Authorization: Bearer <token>, which the API verifies
+# under the oidc profile (backend.profiles, and platform.identity.oidc-* in backend.config; the
+# audience is the proxy's client id). With ingress-nginx and oauth2-proxy
+# (--set-authorization-header=true, served on the same host under /oauth2 by an Ingress of its own):
+#   annotations:
+#     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+#     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+#     nginx.ingress.kubernetes.io/auth-response-headers: Authorization
+# Service accounts and MCP clients (Authorization: Bearer iaf_...) have no browser session: give
+# them a host of their own that routes to the API without the proxy.
 ingress:
   enabled: false
   className: ""
