@@ -6,18 +6,22 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import java.util.zip.CRC32;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.domain.ReleaseStatus;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 
-import lombok.RequiredArgsConstructor;
+import jakarta.annotation.PostConstruct;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -28,7 +32,10 @@ import reactor.core.publisher.Mono;
  * routed, and job {@code n} runs the candidate when {@code (n * stagePercent) mod 100 < stagePercent}.
  * That spreads exactly {@code stagePercent}% of any 100 consecutive jobs over the candidate, evenly
  * (every 10th job at 10%, every other job at 50%), and the first job after a canary starts is a
- * candidate job. Jobs already running keep the version they started with.
+ * candidate job. Jobs already running keep the version they started with. The counter lives in
+ * this instance, one per workflow, and goes when the release ends: at once on its
+ * {@code release.promoted} or {@code release.rolled-back} event, and otherwise (a release ended on
+ * another instance) the next time the workflow is routed, when no release or another one runs it.
  *
  * <p>Provider releases route calls, not jobs: sandbox use (dev, dry runs) gets the candidate at
  * once, and a job is in the stage's share by a stable hash of its id ({@link #candidateJob}), so all
@@ -36,7 +43,6 @@ import reactor.core.publisher.Mono;
  */
 @Primary
 @Service
-@RequiredArgsConstructor
 public class ReleaseQueryHandler implements ReleaseQueries {
 
     /** The environment where a provider's candidate is used at once: sandbox workflows run there. */
@@ -44,24 +50,64 @@ public class ReleaseQueryHandler implements ReleaseQueries {
     static final String KIND_WORKFLOW = "workflow";
     static final String KIND_PROVIDER = "provider";
     static final Set<String> KINDS = Set.of(KIND_WORKFLOW, KIND_PROVIDER, "all");
+    /** The events of a release that ended, either way. */
+    static final Set<String> ENDED = Set.of("release.promoted", "release.rolled-back");
 
     private final ReleaseStore store;
-    private final Map<String, AtomicLong> routed = new ConcurrentHashMap<>();
+    private final EventBus events;
+    /** The jobs routed by the release running each workflow, by workflow. */
+    private final Map<String, Routed> routed = new ConcurrentHashMap<>();
+
+    private record Routed(String releaseId, AtomicLong jobs) {
+    }
+
+    /** Without the event bus: an ended release's counter goes when its workflow is next routed. */
+    public ReleaseQueryHandler(ReleaseStore store) {
+        this(store, null);
+    }
+
+    @Autowired
+    public ReleaseQueryHandler(ReleaseStore store, EventBus events) {
+        this.store = store;
+        this.events = events;
+    }
+
+    @PostConstruct
+    public void subscribe() {
+        if (events != null) {
+            events.register(this::on);
+        }
+    }
+
+    /** A release that ended routes no more jobs: its counter goes. */
+    void on(DomainEvent event) {
+        if (ENDED.contains(event.type()) && event.aggregateId() != null) {
+            routed.values().removeIf(r -> r.releaseId().equals(event.aggregateId()));
+        }
+    }
 
     @Override
     public Mono<String> route(String workflow, String publishedVersion) {
         return Mono.fromSupplier(() -> {
             Optional<Release> active = store.active(workflow);
             if (active.isEmpty() || active.get().from() == null) {
+                routed.remove(workflow);
                 return publishedVersion;
             }
             Release release = active.get();
             if (release.status() == ReleaseStatus.PAUSED) {
                 return release.from();
             }
-            long n = routed.computeIfAbsent(release.id(), k -> new AtomicLong()).getAndIncrement();
+            Routed counter = routed.compute(workflow,
+                    (k, old) -> old != null && old.releaseId().equals(release.id()) ? old : new Routed(release.id(), new AtomicLong()));
+            long n = counter.jobs().getAndIncrement();
             return candidate(n, release.stagePercent()) ? release.to() : release.from();
         });
+    }
+
+    /** The releases this instance keeps a job counter for. */
+    Set<String> counting() {
+        return routed.values().stream().map(Routed::releaseId).collect(Collectors.toSet());
     }
 
     @Override

@@ -2,13 +2,17 @@ package com.iaf.platform.releases.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.releases.adapters.outbound.InMemoryReleaseStore;
 import com.iaf.platform.releases.domain.Release;
 
@@ -71,6 +75,49 @@ class ReleaseQueryHandlerTest {
             }
             assertThat(candidates).as("candidates in 100 jobs at " + percent + "%").isEqualTo(percent);
         }
+    }
+
+    @Test
+    void aReleaseThatEndsDropsItsJobCounterAtOnce() {
+        EventBus events = new EventBus(Clock.fixed(NOW, ZoneOffset.UTC));
+        ReleaseQueryHandler routing = new ReleaseQueryHandler(store, events);
+        routing.subscribe();
+        Release canary = store.save(Release.canary("rel_1", "vm-restart", "1.1.0", "1.2.0", STAGES, NOW, "ana"));
+        Release other = store.save(Release.canary("rel_2", "create-vm", "1.9.0", "2.0.1", STAGES, NOW, "ana"));
+        routing.route("vm-restart", "1.1.0").block();
+        routing.route("create-vm", "1.9.0").block();
+        assertThat(routing.counting()).containsExactlyInAnyOrder("rel_1", "rel_2");
+
+        store.save(canary.promoted(NOW, "promoted", "ana"));
+        events.publish("release.promoted", "release", "rel_1", "ana", JsonNodeFactory.instance.objectNode().put("releaseId", "rel_1"));
+        assertThat(routing.counting()).containsExactly("rel_2");
+
+        store.save(other.rolledBack(NOW, "rolled back by Ana", "ana"));
+        events.publish("release.rolled-back", "release", "rel_2", "ana", JsonNodeFactory.instance.objectNode().put("releaseId", "rel_2"));
+        assertThat(routing.counting()).isEmpty();
+    }
+
+    @Test
+    void withoutTheEventAnEndedReleasesCounterGoesWhenItsWorkflowIsNextRouted() {
+        Release first = store.save(Release.canary("rel_1", "vm-restart", "1.1.0", "1.2.0", STAGES, NOW, "ana"));
+        routeMany("vm-restart", "1.1.0", 3);
+        assertThat(handler.counting()).containsExactly("rel_1");
+
+        // ended on another instance: this one never saw the event
+        store.save(first.rolledBack(NOW, "rolled back by Ana", "ana"));
+        assertThat(handler.route("vm-restart", "1.1.0").block()).isEqualTo("1.1.0");
+        assertThat(handler.counting()).isEmpty();
+
+        // the next release counts its own jobs, and its first one runs the candidate
+        store.save(Release.canary("rel_2", "vm-restart", "1.1.0", "1.3.0", STAGES, NOW, "ana"));
+        assertThat(handler.route("vm-restart", "1.1.0").block()).isEqualTo("1.3.0");
+        assertThat(handler.counting()).containsExactly("rel_2");
+
+        // superseded elsewhere by a release this instance has not routed yet: the counter is replaced, not added
+        store.save(store.find("rel_2").orElseThrow().promoted(NOW, "superseded", "ana"));
+        store.save(Release.canary("rel_3", "vm-restart", "1.3.0", "1.4.0", STAGES, NOW, "ana"));
+        assertThat(handler.route("vm-restart", "1.3.0").block()).isEqualTo("1.4.0");
+        assertThat(handler.counting()).containsExactly("rel_3");
     }
 
     @Test
