@@ -158,6 +158,26 @@ public final class OpenApiDocument {
         if (d.policy() != null && d.policy().approval() != null && d.policy().approval().required()) {
             op.put("x-approval", d.policy().approval().group() == null ? "required" : d.policy().approval().group());
         }
+        deprecated(op, d);
+    }
+
+    /** {@code api.deprecated}: the operation is marked deprecated, says when it goes away and what replaces it. */
+    private static void deprecated(ObjectNode op, WorkflowDefinition d) {
+        WorkflowDefinition.Deprecation dep = d.deprecation();
+        if (dep == null) {
+            return;
+        }
+        op.put("deprecated", true);
+        if (dep.since() != null) {
+            op.put("x-deprecated-since", dep.since());
+        }
+        if (dep.sunset() != null) {
+            op.put("x-sunset", dep.sunset());
+        }
+        if (dep.replacement() != null) {
+            op.put("x-replacement", dep.replacement());
+        }
+        op.put("description", ApiDeprecations.describe(op.path("description").asText(null), dep));
     }
 
     private static void pathParameters(ArrayNode params, RouteTemplate route, JsonNode input) {

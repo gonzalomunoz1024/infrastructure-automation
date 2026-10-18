@@ -28,6 +28,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.catalog.application.WorkflowInvoker;
+import com.iaf.platform.catalog.domain.ApiDeprecations;
 import com.iaf.platform.catalog.domain.BatchProblemsException;
 import com.iaf.platform.catalog.domain.InputProblemsException;
 import com.iaf.platform.catalog.domain.Inputs;
@@ -99,6 +100,7 @@ public class GeneratedRouteWebFilter implements WebFilter {
     private Mono<Void> handle(ServerWebExchange exchange, RouteMatch match) {
         RouteTable.Route route = match.route();
         Map<String, String> params = match.params();
+        deprecationHeaders(exchange, route, params);
         return switch (route.kind()) {
             case INVOKE -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
                     .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange)))
@@ -123,6 +125,13 @@ public class GeneratedRouteWebFilter implements WebFilter {
                         .flatMap(r -> write(exchange, HttpStatus.OK, r));
             }
         };
+    }
+
+    /** A deprecated workflow's operations answer with {@code Deprecation}, {@code Sunset} and {@code Link} on every response. */
+    private static void deprecationHeaders(ServerWebExchange exchange, RouteTable.Route route, Map<String, String> params) {
+        if (route.isWorkflow() && route.workflow().definition() != null) {
+            ApiDeprecations.headers(route.workflow().definition().deprecation(), params).forEach(exchange.getResponse().getHeaders()::set);
+        }
     }
 
     // ---------------------------------------------------------------- request pieces

@@ -23,6 +23,8 @@ const SECRET_KEY = /(password|passwd|secret|token|apikey|api_key|credential|priv
 const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const BACKOFFS = new Set(['none', 'fixed', 'exponential']);
 const TERRAFORM_ACTIONS = new Set(['plan', 'apply', 'destroy']);
+const API_PREFIX = /^\/api\/v[1-9][0-9]*\//;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
 
 /** The roots an expression can always start from; an alias may not shadow them. */
 export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
@@ -48,6 +50,7 @@ export const RESERVED_NOUNS: readonly string[] = [
   'registry',
   'triggers',
   'openapi',
+  'notifications',
 ];
 
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */
@@ -127,6 +130,29 @@ export function connectFix(label: string): Fix {
   return { label, kind: 'connect' };
 }
 
+/** A `YYYY-MM-DD` date (midnight UTC) or an ISO date-time with its offset, in epoch seconds; null when it is neither. */
+function epochSecond(s: string | null): number | null {
+  if (s === null) {
+    return null;
+  }
+  const t = s.trim();
+  const m = DATE.exec(t);
+  if (m === null) {
+    return null;
+  }
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const day = new Date(0);
+  day.setUTCFullYear(y, mo - 1, d);
+  if (day.getUTCFullYear() !== y || day.getUTCMonth() !== mo - 1 || day.getUTCDate() !== d) {
+    return null;
+  }
+  if (m[4] === undefined) {
+    return day.getTime() / 1000;
+  }
+  const ms = Date.parse(t);
+  return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+}
+
 function isContainerStep(s: ParsedStep): boolean {
   return s.type === 'switch' || s.type === 'fork' || s.type === 'for' || s.type === 'try';
 }
@@ -181,6 +207,7 @@ class Checker {
   run(): void {
     this.metadata();
     this.api();
+    this.deprecation();
     this.policy();
     this.rollout();
     this.steps();
@@ -224,12 +251,13 @@ class Checker {
       this.error('api.method', null, 'api.method', 'method must be one of GET, POST, PUT, PATCH, DELETE');
     }
     if (a.path !== null) {
-      if (!a.path.startsWith('/api/v1/')) {
-        this.error('api.path', null, 'api.path', 'Generated paths live under /api/v1/');
+      const prefix = API_PREFIX.exec(a.path);
+      if (prefix === null) {
+        this.error('api.path', null, 'api.path', 'Generated paths live under /api/v<n>/, like /api/v1/ or /api/v2/');
       } else {
-        const first = a.path.substring('/api/v1/'.length).split(/[/:?]/)[0] as string;
+        const first = a.path.substring(prefix[0].length).split(/[/:?]/)[0] as string;
         if (RESERVED_NOUNS.includes(first)) {
-          this.error('api.reservedPath', null, 'api.path', `/api/v1/${first} belongs to the platform; pick another noun`);
+          this.error('api.reservedPath', null, 'api.path', `${prefix[0]}${first} belongs to the platform; pick another noun`);
         }
       }
     }
@@ -273,6 +301,37 @@ class Checker {
       const stop = a.batch.rollout.stopIfFailedPercent;
       if (stop < 0 || stop > 100) {
         this.error('batch.stop', null, 'api.batch.rollout.stopIfFailedPercent', 'stopIfFailedPercent is a percentage');
+      }
+    }
+  }
+
+  /**
+   * `api.deprecated: { since, sunset, replacement?, message? }`: both dates required (`YYYY-MM-DD`
+   * or an ISO date-time), the sunset after the deprecation, and the replacement a path under
+   * `/api/v<n>/` or an http(s) URL other than this operation.
+   */
+  deprecation(): void {
+    const d = this.def.api?.deprecated;
+    if (d === undefined) {
+      return;
+    }
+    const since = epochSecond(d.since);
+    const sunset = epochSecond(d.sunset);
+    if (since === null) {
+      this.error('deprecated.since', null, 'api.deprecated.since', 'since is the date the operation was deprecated, like 2026-11-01');
+    }
+    if (sunset === null) {
+      this.error('deprecated.sunset', null, 'api.deprecated.sunset', 'sunset is the date the operation goes away, like 2027-05-01');
+    } else if (since !== null && sunset <= since) {
+      this.error('deprecated.sunset', null, 'api.deprecated.sunset', 'sunset must come after since');
+    }
+    const r = d.replacement;
+    if (r !== null) {
+      const url = r.startsWith('https://') || r.startsWith('http://');
+      if (!url && !API_PREFIX.test(r)) {
+        this.error('deprecated.replacement', null, 'api.deprecated.replacement', "replacement is the successor's path, like /api/v2/vms/{vmId}:restart, or a URL");
+      } else if (this.def.api !== null && r === this.def.api.path) {
+        this.error('deprecated.replacement', null, 'api.deprecated.replacement', 'replacement names this operation itself');
       }
     }
   }

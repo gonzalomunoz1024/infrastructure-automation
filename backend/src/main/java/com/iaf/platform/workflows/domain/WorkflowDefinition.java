@@ -32,7 +32,18 @@ public record WorkflowDefinition(
             String folder, List<String> tags, String version, String description) {
     }
 
-    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch) {
+    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated) {
+        public Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch) {
+            this(method, path, input, responseStatus, preview, batch, null);
+        }
+    }
+
+    /**
+     * {@code api.deprecated}: the operation still answers, with {@code Deprecation}, {@code Sunset}
+     * and (with a replacement) {@code Link: <...>; rel="successor-version"} headers. Dates are
+     * {@code YYYY-MM-DD} or ISO date-times, as written; the checks judge them.
+     */
+    public record Deprecation(String since, String sunset, String replacement, String message) {
     }
 
     public record BatchPolicy(int max, RolloutPolicy rollout) {
@@ -150,6 +161,11 @@ public record WorkflowDefinition(
 
     public boolean previewEnabled() {
         return api != null && api.preview();
+    }
+
+    /** {@code api.deprecated}, or null when the operation is not deprecated. */
+    public Deprecation deprecation() {
+        return api == null ? null : api.deprecated();
     }
 
     public List<Step> steps() {

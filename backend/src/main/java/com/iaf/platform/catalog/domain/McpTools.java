@@ -76,11 +76,12 @@ public final class McpTools {
             }
             String description = CatalogEntry.description(d);
             ObjectNode annotations = annotations(d.method().equals("GET"), d.method().equals("DELETE") || "delete".equals(d.verb()) || "destroy".equals(d.verb()));
-            out.add(new Tool(name, d.title(), description, withCallArguments(inputSchema(d.inputSchema())), annotations, Kind.INVOKE, w, null));
+            out.add(new Tool(name, d.title(), ApiDeprecations.describe(description, d.deprecation()), withCallArguments(inputSchema(d.inputSchema())),
+                    annotations, Kind.INVOKE, w, null));
             String batchName = name + BATCH_SUFFIX;
             if (names.add(batchName)) {
                 out.add(new Tool(batchName, d.title() + " (batch)",
-                        "Run " + name + " for many items in waves. " + (description == null ? "" : description),
+                        ApiDeprecations.describe("Run " + name + " for many items in waves. " + (description == null ? "" : description), d.deprecation()),
                         withCallArguments(batchSchema(d.inputSchema(), d.batchPolicy())), annotations, Kind.BATCH, w, null));
             }
         }

@@ -1,5 +1,9 @@
 package com.iaf.platform.workflows.domain;
 
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -8,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -38,7 +43,10 @@ public final class WorkflowChecks {
     private static final Pattern DURATION = Pattern.compile("^(P(?!$)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?|\\d+(ms|s|m|h|d))$");
     private static final Pattern SECRET_KEY = Pattern.compile("(?i)(password|passwd|secret|token|apikey|api_key|credential|privateKey)");
     private static final Set<String> RESERVED_NOUNS = Set.of("workflows", "jobs", "providers", "catalog", "releases", "audit", "resources",
-            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi");
+            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi",
+            "notifications");
+    private static final Pattern API_PREFIX = Pattern.compile("^/api/v[1-9][0-9]*/");
+    private static final Pattern DATE = Pattern.compile("^(\\d{4})-(\\d{2})-(\\d{2})(T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2}))?$");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> ROOTS = Set.of("json", "input", "vars", "job", "env", "error");
 
@@ -112,6 +120,7 @@ public final class WorkflowChecks {
         void run() {
             metadata();
             api();
+            deprecation();
             policy();
             rollout();
             steps();
@@ -155,12 +164,13 @@ public final class WorkflowChecks {
                 error("api.method", null, "api.method", "method must be one of GET, POST, PUT, PATCH, DELETE");
             }
             if (a.path() != null) {
-                if (!a.path().startsWith("/api/v1/")) {
-                    error("api.path", null, "api.path", "Generated paths live under /api/v1/");
+                Matcher prefix = API_PREFIX.matcher(a.path());
+                if (!prefix.find()) {
+                    error("api.path", null, "api.path", "Generated paths live under /api/v<n>/, like /api/v1/ or /api/v2/");
                 } else {
-                    String first = a.path().substring("/api/v1/".length()).split("[/:?]")[0];
+                    String first = a.path().substring(prefix.end()).split("[/:?]")[0];
                     if (RESERVED_NOUNS.contains(first)) {
-                        error("api.reservedPath", null, "api.path", "/api/v1/" + first + " belongs to the platform; pick another noun");
+                        error("api.reservedPath", null, "api.path", prefix.group() + first + " belongs to the platform; pick another noun");
                     }
                 }
             }
@@ -204,6 +214,55 @@ public final class WorkflowChecks {
                 if (stop < 0 || stop > 100) {
                     error("batch.stop", null, "api.batch.rollout.stopIfFailedPercent", "stopIfFailedPercent is a percentage");
                 }
+            }
+        }
+
+        /**
+         * {@code api.deprecated: { since, sunset, replacement?, message? }}: both dates required
+         * ({@code YYYY-MM-DD} or an ISO date-time), the sunset after the deprecation, and the
+         * replacement a path under {@code /api/v<n>/} or an http(s) URL other than this operation.
+         */
+        void deprecation() {
+            var d = def.deprecation();
+            if (d == null) {
+                return;
+            }
+            Long since = epochSecond(d.since());
+            Long sunset = epochSecond(d.sunset());
+            if (since == null) {
+                error("deprecated.since", null, "api.deprecated.since", "since is the date the operation was deprecated, like 2026-11-01");
+            }
+            if (sunset == null) {
+                error("deprecated.sunset", null, "api.deprecated.sunset", "sunset is the date the operation goes away, like 2027-05-01");
+            } else if (since != null && sunset <= since) {
+                error("deprecated.sunset", null, "api.deprecated.sunset", "sunset must come after since");
+            }
+            String r = d.replacement();
+            if (r != null) {
+                boolean url = r.startsWith("https://") || r.startsWith("http://");
+                if (!url && !API_PREFIX.matcher(r).find()) {
+                    error("deprecated.replacement", null, "api.deprecated.replacement", "replacement is the successor's path, like /api/v2/vms/{vmId}:restart, or a URL");
+                } else if (r.equals(def.api().path())) {
+                    error("deprecated.replacement", null, "api.deprecated.replacement", "replacement names this operation itself");
+                }
+            }
+        }
+
+        /** A {@code YYYY-MM-DD} date (midnight UTC) or an ISO date-time with its offset, in epoch seconds; null when it is neither. */
+        static Long epochSecond(String s) {
+            if (s == null) {
+                return null;
+            }
+            String t = s.trim();
+            Matcher m = DATE.matcher(t);
+            if (!m.matches()) {
+                return null;
+            }
+            try {
+                LocalDate day = LocalDate.of(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)));
+                return m.group(4) == null ? day.atStartOfDay(ZoneOffset.UTC).toEpochSecond() : OffsetDateTime.parse(t).toEpochSecond();
+            } catch (DateTimeException e) {
+                return null;
             }
         }
 

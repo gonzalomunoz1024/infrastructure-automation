@@ -3,9 +3,13 @@ package com.iaf.platform.catalog.domain;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.BatchPolicy;
+import com.iaf.platform.workflows.domain.WorkflowDefinition.Deprecation;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 
-/** One published workflow as the catalog shows it (docs/api.md, {@code CatalogEntry}). */
+/**
+ * One published workflow as the catalog shows it (docs/api.md, {@code CatalogEntry}). A deprecated
+ * operation carries its {@code deprecated} block and a description that starts with "Deprecated:".
+ */
 public record CatalogEntry(
         String workflow,
         String title,
@@ -21,7 +25,8 @@ public record CatalogEntry(
         String owner,
         String version,
         String description,
-        BatchPolicy batch) {
+        BatchPolicy batch,
+        Deprecation deprecated) {
 
     public static CatalogEntry of(WorkflowRecord record) {
         WorkflowDefinition d = record.definition();
@@ -40,8 +45,9 @@ public record CatalogEntry(
                 d.mcpExposed() ? d.mcpTool() : null,
                 d.metadata().owner(),
                 record.version() == null ? d.version() : record.version(),
-                description(d),
-                d.batchPolicy());
+                ApiDeprecations.describe(description(d), d.deprecation()),
+                d.batchPolicy(),
+                d.deprecation());
     }
 
     /** The MCP description when there is one, else the file's description. */

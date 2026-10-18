@@ -77,6 +77,8 @@ export interface ApiDocument {
   response?: { status?: number };
   preview?: boolean;
   batch?: BatchPolicyDocument;
+  /** The operation still answers, with Deprecation, Sunset and Link headers; dates are YYYY-MM-DD or ISO date-times. */
+  deprecated?: { since: string; sunset: string; replacement?: string; message?: string };
 }
 
 export interface McpDocument {

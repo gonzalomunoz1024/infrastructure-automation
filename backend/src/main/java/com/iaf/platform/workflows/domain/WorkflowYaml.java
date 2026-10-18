@@ -26,6 +26,7 @@ import com.iaf.platform.workflows.domain.Step.SwitchCase;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.Api;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.ApprovalPolicy;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.BatchPolicy;
+import com.iaf.platform.workflows.domain.WorkflowDefinition.Deprecation;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.Flow;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.Mcp;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.Metadata;
@@ -103,7 +104,7 @@ public final class WorkflowYaml {
                 batch = new BatchPolicy(b.path("max").asInt(BatchPolicy.DEFAULT.max()), rp);
             }
             api = new Api(text(a, "method"), text(a, "path"), a.get("input"), a.path("response").path("status").asInt(202),
-                    a.path("preview").asBoolean(false), batch);
+                    a.path("preview").asBoolean(false), batch, deprecation(a.get("deprecated")));
         }
 
         JsonNode m = root.path("mcp");
@@ -138,6 +139,17 @@ public final class WorkflowYaml {
         JsonNode w = root.path("workflow");
         Flow flow = parseFlow(w.isObject() ? w : F.objectNode());
         return new WorkflowDefinition(root.path("apiVersion").asText(WorkflowDefinition.API_VERSION), metadata, api, mcp, policy, triggers, rollout, flow);
+    }
+
+    /** {@code api.deprecated}: absent or {@code false} is null; anything but a mapping is an empty block the checks report. */
+    static Deprecation deprecation(JsonNode d) {
+        if (d == null || d.isNull() || d.isMissingNode() || (d.isBoolean() && !d.asBoolean())) {
+            return null;
+        }
+        if (!d.isObject()) {
+            return new Deprecation(null, null, null, null);
+        }
+        return new Deprecation(text(d, "since"), text(d, "sunset"), text(d, "replacement"), text(d, "message"));
     }
 
     private static Flow parseFlow(JsonNode w) {
@@ -340,6 +352,13 @@ public final class WorkflowYaml {
                 d.api().batch().rollout().waves().forEach(waves::add);
                 r.put("maxParallel", d.api().batch().rollout().maxParallel());
                 r.put("stopIfFailedPercent", d.api().batch().rollout().stopIfFailedPercent());
+            }
+            if (d.api().deprecated() != null) {
+                ObjectNode dep = a.putObject("deprecated");
+                put(dep, "since", d.api().deprecated().since());
+                put(dep, "sunset", d.api().deprecated().sunset());
+                put(dep, "replacement", d.api().deprecated().replacement());
+                put(dep, "message", d.api().deprecated().message());
             }
         }
         if (d.mcp() != null) {

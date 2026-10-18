@@ -1,0 +1,16 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+api:
+  path: /api/v2/vms/{vmId}:info
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId: { type: string }
+  deprecated: { since: 2026-11-01, sunset: 2026-10-01, replacement: vm-info-v3 }
+workflow:
+  do:
+    - getVm:
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }
