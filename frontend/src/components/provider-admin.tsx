@@ -4,7 +4,7 @@
  * answered with "Use the real response". The provider page and the designer share them; every edit
  * among them is a change request the toast names and links.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button, Card, Field, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, ProgressBar, StateTag, StatusDot, Table, Tag, duration, percent, useOverlayClose, useToast } from '@iaf/ui'
 import { pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
@@ -213,8 +213,12 @@ export function realResponseOverride(result: TryResult | null, action: string): 
   return r !== null && typeof r === 'object' && !Array.isArray(r) ? { action, response: r as Record<string, unknown> } : null
 }
 
-/** What a tried call answered: its status, the answer, the fields that differ from the declared output, and the way to adopt the answer. */
-export function TryOutcome({ result, action, fixing, onUseRealResponse }: { result: TryResult; action: string; fixing: boolean; onUseRealResponse: (override: OverrideRequest) => void }) {
+/**
+ * What a tried call answered: its status, the answer, the fields that differ from the declared
+ * output, and the way to adopt the answer: "Use the real response" for a published provider (left
+ * out without `onUseRealResponse`), and whatever else the caller offers (`children`).
+ */
+export function TryOutcome({ result, action, fixing, onUseRealResponse, children }: { result: TryResult; action: string; fixing: boolean; onUseRealResponse?: (override: OverrideRequest) => void; children?: ReactNode }) {
   const override = realResponseOverride(result, action)
   return (
     <section className="animate-fade-in space-y-3 rounded-lg border border-stroke-light p-4" data-testid="try-outcome">
@@ -253,7 +257,7 @@ export function TryOutcome({ result, action, fixing, onUseRealResponse }: { resu
           caption="Mismatches"
         />
       )}
-      {result.mismatches.length > 0 && (
+      {onUseRealResponse && result.mismatches.length > 0 && (
         <div className="flex flex-wrap items-center justify-end gap-3">
           {override ? (
             <>
@@ -267,6 +271,7 @@ export function TryOutcome({ result, action, fixing, onUseRealResponse }: { resu
           )}
         </div>
       )}
+      {children}
     </section>
   )
 }
