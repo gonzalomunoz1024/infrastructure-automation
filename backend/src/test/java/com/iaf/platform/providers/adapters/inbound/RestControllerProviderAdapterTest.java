@@ -6,7 +6,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -16,14 +18,21 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.web.server.WebFilter;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Effect;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.config.GlobalExceptionHandler;
+import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.application.ProviderAlertEvaluator;
 import com.iaf.platform.providers.application.ProviderCommandHandler;
 import com.iaf.platform.providers.application.ProviderQueryHandler;
 import com.iaf.platform.providers.domain.ActionInfo;
@@ -43,8 +52,13 @@ import com.iaf.platform.providers.ports.inbound.ProviderCommands.ImportSpec;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.RefreshSpec;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.SetSlo;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.ValidationResult;
+import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
+import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.releases.adapters.outbound.InMemoryReleaseStore;
+import com.iaf.platform.releases.application.ReleaseQueryHandler;
 import com.iaf.platform.testing.TestWeb;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -122,6 +136,39 @@ class RestControllerProviderAdapterTest {
         client.get().uri("/api/v1/providers/nope").exchange()
                 .expectStatus().isNotFound()
                 .expectBody().jsonPath("$.error").isEqualTo("Provider nope not found");
+    }
+
+    @Test
+    void theListAndTheDetailShowACallerOnlyWhatTheyMaySee() {
+        ProviderStorePort store = mock(ProviderStorePort.class);
+        TelemetryPort telemetry = mock(TelemetryPort.class);
+        ChangeRequestPort changeRequests = mock(ChangeRequestPort.class);
+        Clock clock = Clock.fixed(Instant.parse("2026-10-17T10:00:00Z"), ZoneOffset.UTC);
+        StoredProvider stored = new StoredProvider(fleet, YAML, "providers/team-compute/fleet.yaml", clock.instant(), "content");
+        when(store.all()).thenReturn(List.of(stored));
+        when(store.get("fleet")).thenReturn(java.util.Optional.of(stored));
+        when(telemetry.samples(any(), any())).thenReturn(List.of());
+        when(changeRequests.all()).thenReturn(List.of());
+        ProviderQueryHandler real = new ProviderQueryHandler(store, telemetry, changeRequests,
+                new ProviderAlertEvaluator(store, telemetry, new EventBus(clock), clock), clock, new ReleaseQueryHandler(new InMemoryReleaseStore()));
+        RestControllerProviderAdapter adapter = new RestControllerProviderAdapter(commands, real);
+        Identity ana = new Identity("ana", "Ana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+        Identity mateo = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+
+        as(ana, adapter).get().uri("/api/v1/providers").exchange().expectStatus().isOk().expectBody().json("[]");
+        as(ana, adapter).get().uri("/api/v1/providers/fleet").exchange()
+                .expectStatus().isNotFound()
+                .expectBody().jsonPath("$.error").isEqualTo("Provider fleet not found");
+        as(ana, adapter).get().uri("/api/v1/providers/fleet/alerts").exchange().expectStatus().isNotFound();
+        as(mateo, adapter).get().uri("/api/v1/providers").exchange().expectStatus().isOk().expectBody().jsonPath("$[0].name").isEqualTo("fleet");
+        as(mateo, adapter).get().uri("/api/v1/providers/fleet").exchange().expectStatus().isOk().expectBody().jsonPath("$.owner").isEqualTo("team-compute");
+        as(mateo, adapter).get().uri("/api/v1/providers/fleet/alerts").exchange().expectStatus().isOk().expectBody().json("[]");
+    }
+
+    /** The adapter behind what the identity filter does for one caller. */
+    static WebTestClient as(Identity who, Object adapter) {
+        WebFilter identity = (exchange, chain) -> chain.filter(exchange).contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+        return WebTestClient.bindToController(adapter).controllerAdvice(new GlobalExceptionHandler()).webFilter(identity).build();
     }
 
     @Test

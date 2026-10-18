@@ -14,6 +14,13 @@ for k in ('yaml', 'actions', 'daily', 'perAction', 'health', 'changeRequests'):
 check(len(pd.get('daily', [])) == 14, f'daily points: {len(pd.get("daily", []))}')
 s, _ = call('GET', A + '/providers/nope', expect=404)
 s, al = call('GET', A + '/providers/backup/alerts', expect=200)
+# the admin view is scoped: ana (team-data) sees her team's providers, not team-compute's, and a hidden one is a 404
+s, ps_ana = call('GET', A + '/providers', user='ana', expect=200)
+names_ana = {p['name'] for p in ps_ana}
+check('mongodb' in names_ana and 'vsphere' not in names_ana, f'ana sees {sorted(names_ana)}')
+s, _ = call('GET', A + '/providers/vsphere', user='ana', expect=404, note='ana opens a team-compute provider')
+s, _ = call('GET', A + '/providers/vsphere/alerts', user='ana', expect=404, note='ana reads its alerts')
+s, _ = call('GET', A + '/providers/mongodb', user='ana', expect=200, note='ana opens her own')
 spec = {
   'openapi': '3.0.3', 'info': {'title': 'Fleet API', 'version': '2.1.0'},
   'servers': [{'url': 'https://fleet.example.com'}],

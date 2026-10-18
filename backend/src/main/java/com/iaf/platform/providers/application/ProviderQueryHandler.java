@@ -13,9 +13,12 @@ import java.util.TreeMap;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderAlert;
@@ -44,6 +47,12 @@ import reactor.core.publisher.Mono;
  * {@link ProviderHealthRule} over the last 24 hours of {@link TelemetryPort} samples. A lookup
  * made for a job ({@link Use} in the context) gets the version an active provider release routes
  * the job to; every other read sees the current version.
+ *
+ * <p>The admin view shows the caller what {@link AccessRules#canSeeProvider} allows: an admin
+ * every provider, anyone else the providers of their teams and the unowned ones; a provider the
+ * caller may not see answers as if it did not exist (404). The definitions for the checks, the
+ * interpreter and the registry ({@link #provider(String)}, {@link #all()}) are not scoped: the
+ * step library needs every provider's actions.
  */
 @Primary
 @Service
@@ -81,23 +90,25 @@ public class ProviderQueryHandler implements ProviderQueries {
     }
 
     public Flux<ProviderSummary> list() {
-        return Flux.defer(() -> {
+        return CurrentIdentity.current().flatMapMany(who -> Flux.defer(() -> {
             Instant now = clock.instant();
             Map<String, List<CallSample>> byProvider = new HashMap<>();
             for (CallSample s : telemetry.samples(null, now.minus(ProviderHealthRule.WINDOW))) {
                 byProvider.computeIfAbsent(s.provider(), k -> new ArrayList<>()).add(s);
             }
-            return Flux.fromIterable(store.all()).map(p -> {
-                ProviderDefinition def = p.definition();
-                Health health = ProviderHealthRule.judge(byProvider.getOrDefault(def.name(), List.of()), def.slo(), now);
-                return ProviderSummary.of(def, health);
-            });
-        });
+            return Flux.fromIterable(store.all())
+                    .filter(p -> AccessRules.canSeeProvider(who, p.definition().owner()))
+                    .map(p -> {
+                        ProviderDefinition def = p.definition();
+                        Health health = ProviderHealthRule.judge(byProvider.getOrDefault(def.name(), List.of()), def.slo(), now);
+                        return ProviderSummary.of(def, health);
+                    });
+        }));
     }
 
     public Mono<ProviderDetail> detail(String name) {
-        return Mono.fromCallable(() -> {
-            StoredProvider p = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+        return CurrentIdentity.current().flatMap(who -> Mono.fromCallable(() -> {
+            StoredProvider p = visible(who, name);
             ProviderDefinition def = p.definition();
             Instant now = clock.instant();
             List<CallSample> twoWeeks = telemetry.samples(name, now.minus(Duration.ofDays(DAILY_DAYS)));
@@ -110,16 +121,21 @@ public class ProviderQueryHandler implements ProviderQueries {
                     .sorted(Comparator.comparing(ChangeRequest::createdAt, Comparator.nullsLast(Comparator.reverseOrder())))
                     .toList();
             return ProviderDetail.of(ProviderSummary.of(def, health), def, p.yaml(), actions, daily(twoWeeks, now), perAction(twoWeeks), crs);
-        });
+        }));
     }
 
     public Flux<ProviderAlert> alerts(String name) {
-        return Flux.defer(() -> {
-            if (store.get(name).isEmpty()) {
-                throw new NotFoundException("Provider", name);
-            }
+        return CurrentIdentity.current().flatMapMany(who -> Flux.defer(() -> {
+            visible(who, name);
             return Flux.fromIterable(alerts.alerts(name));
-        });
+        }));
+    }
+
+    /** The stored provider, when there is one and the caller may see it; a hidden one is as unknown as a missing one. */
+    private StoredProvider visible(Identity who, String name) {
+        return store.get(name)
+                .filter(p -> AccessRules.canSeeProvider(who, p.definition().owner()))
+                .orElseThrow(() -> new NotFoundException("Provider", name));
     }
 
     /**

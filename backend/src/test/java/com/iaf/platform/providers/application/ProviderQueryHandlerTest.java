@@ -18,13 +18,16 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderDetail.PerAction;
+import com.iaf.platform.providers.domain.ProviderSummary;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries.Use;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
@@ -35,6 +38,8 @@ import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 class ProviderQueryHandlerTest {
@@ -221,5 +226,44 @@ class ProviderQueryHandlerTest {
         StepVerifier.create(handler.detail("nope")).expectError(NotFoundException.class).verify();
         StepVerifier.create(handler.alerts("nope")).expectError(NotFoundException.class).verify();
         StepVerifier.create(handler.alerts("fleet")).verifyComplete();
+    }
+
+    static final Identity ANA = new Identity("ana", "Ana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity MATEO = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity ADMIN = new Identity("gonzalo", "Gonzalo", null, List.of("team-platform"), List.of("admin"), true, Identity.Kind.USER);
+
+    static <T> Mono<T> as(Mono<T> mono, Identity who) {
+        return mono.contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+    }
+
+    static <T> Flux<T> as(Flux<T> flux, Identity who) {
+        return flux.contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+    }
+
+    @Test
+    void theAdminViewShowsTheCallerTheirTeamsProvidersAndTheUnownedOnesAndHidesTheRestAsUnknown() {
+        String unowned = YAML.replace("name: fleet, title: Fleet API, owner: team-compute,", "name: shared, title: Shared API,");
+        StoredProvider shared = new StoredProvider(ProviderYaml.parse(unowned), unowned, "providers/shared.yaml", NOW, "content");
+        when(store.all()).thenReturn(List.of(fleet, shared));
+        when(store.get("shared")).thenReturn(Optional.of(shared));
+        when(telemetry.samples(any(), any())).thenReturn(List.of());
+
+        StepVerifier.create(as(handler.list(), ANA).map(ProviderSummary::name)).expectNext("shared").verifyComplete();
+        StepVerifier.create(as(handler.list(), MATEO).map(ProviderSummary::name)).expectNext("fleet", "shared").verifyComplete();
+        StepVerifier.create(as(handler.list(), ADMIN).map(ProviderSummary::name)).expectNext("fleet", "shared").verifyComplete();
+        StepVerifier.create(handler.list().map(ProviderSummary::name)).as("the platform itself is an admin").expectNext("fleet", "shared").verifyComplete();
+
+        StepVerifier.create(as(handler.detail("fleet"), ANA))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(NotFoundException.class).hasMessage("Provider fleet not found"))
+                .verify();
+        StepVerifier.create(as(handler.alerts("fleet"), ANA)).expectError(NotFoundException.class).verify();
+        StepVerifier.create(as(handler.detail("shared"), ANA)).assertNext(d -> assertThat(d.owner()).isNull()).verifyComplete();
+        StepVerifier.create(as(handler.detail("fleet"), MATEO)).assertNext(d -> assertThat(d.name()).isEqualTo("fleet")).verifyComplete();
+        StepVerifier.create(as(handler.alerts("fleet"), MATEO)).verifyComplete();
+        StepVerifier.create(as(handler.detail("fleet"), ADMIN)).expectNextCount(1).verifyComplete();
+
+        // the definitions for the checks, the interpreter and the registry are not scoped
+        StepVerifier.create(as(handler.provider("fleet"), ANA)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.all(), ANA)).expectNextCount(2).verifyComplete();
     }
 }
