@@ -100,4 +100,5 @@ npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks p
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 npm run build
 (cd sdk/java && mvn -B -q test); (cd sdk/go && go test ./...); (cd sdk/python && pytest)   # the provider SDKs
+python3 scripts/api-flows/flows1.py   # ... flows4.py: the API end to end on a running demo stack (scripts/api-flows/README.md)
 ```
