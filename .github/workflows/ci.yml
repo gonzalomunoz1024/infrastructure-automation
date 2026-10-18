@@ -186,6 +186,11 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           recursive: true
+      - name: Check the Grafana dashboard
+        # the JSON model parses, and the copy the chart ships as a ConfigMap is the same file
+        run: |
+          python3 -m json.tool deploy/grafana/platform-dashboard.json > /dev/null
+          cmp deploy/grafana/platform-dashboard.json deploy/helm/platform/dashboards/platform-dashboard.json
       - uses: azure/setup-helm@v4
       - uses: actions/setup-go@v5
         with:

@@ -182,3 +182,12 @@ metrics:
     enabled: false
     interval: 30s
     labels: {}
+  # Grafana: the job dashboard (deploy/grafana/platform-dashboard.json) as a ConfigMap labelled
+  # grafana_dashboard: "1", which Grafana's dashboard sidecar (kube-prometheus-stack) loads
+  grafanaDashboard:
+    enabled: false
+    # the namespace the sidecar watches; the release's when empty
+    namespace: ""
+    labels: {}
+    # for example grafana_folder: Platform
+    annotations: {}

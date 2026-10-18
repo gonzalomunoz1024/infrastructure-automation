@@ -60,6 +60,11 @@ metrics:
   serviceMonitor:
     enabled: true
     labels: { release: prometheus }
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+    labels: { release: prometheus }
+    annotations: { grafana_folder: Platform }
 
 providerWorkers:
   - name: ip-pool
