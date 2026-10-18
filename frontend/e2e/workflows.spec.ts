@@ -57,6 +57,9 @@ test.describe('workflows: blank', () => {
     const dialog = page.getByRole('dialog', { name: 'New workflow' })
     await dialog.getByRole('button', { name: /^Blank/ }).click()
     await dialog.getByLabel('Title').fill('Restart a service')
+    await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('restart-a-service')
+    // a name typed over the one the title suggests wins
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('service-restart')
     await dialog.getByLabel('Owner').fill('team-platform')
     await dialog.getByRole('button', { name: 'Create and open' }).click()
     await expect.poll(() => api.callsTo('POST', '/workflows').length).toBe(1)
