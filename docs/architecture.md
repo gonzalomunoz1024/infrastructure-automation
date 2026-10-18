@@ -366,6 +366,37 @@ it. Since the worker that runs a job's steps is the instance that records them, 
 that progress only through a shared job store (the Postgres adapters); with the in-memory
 projection every instance keeps both roles.
 
+### Changing the interpreter workflow
+
+A worker replays an execution's history through the code it runs now whenever it picks the
+execution up again (after a restart, an eviction from its cache, a signal), and the replay fails
+as non-deterministic if that code issues other commands than the history recorded. The walker
+(`WorkflowInterpreter`) runs inside `InterpreterWorkflowImpl`, so the rule covers both and what they
+call: every change to the walker's command sequence (which activities, timers and child workflows
+it starts, in which order, with which activity type or task queue) is gated with
+`Workflow.getVersion` under a change id of its own, and lands with a history recorded before the
+change and a test that replays it. A new execution takes the new branch; one recorded before the
+change, whose history has no marker for that id, replays the old one. The change ids are the
+constants on `InterpreterWorkflowImpl` (`team-workers` was the first). A change that leaves the
+commands as they were (a log line, a query's answer) needs no gate, and a gate's old branch goes
+only once no execution recorded before it can still be open (the id stays:
+`Workflow.getVersion(id, 1, 1)`).
+
+The history fixtures come from the test server. The test-only `HistoryRecorder`
+(runs/adapters/outbound/temporal, next to the replay tests) runs one scenario per test with the
+workflow code as it is and writes each execution's history as JSON into the absolute directory its
+property names; without the property nothing runs, so the suite never rewrites a fixture:
+
+```bash
+cd backend && mvn -B -o test -Dtest=HistoryRecorder -Diaf.record.histories=/abs/dir -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Before the change, add a scenario that drives the code it alters if none does, record, and keep
+the files under `backend/src/test/resources/temporal/before-<change id>/`. Then make the change
+behind its gate and replay them in a test beside the change's own (`TemporalTestEngine.replay`, as
+`TeamWorkerStepsTest` replays `team-steps-before-team-workers.json`): the old histories still
+replay, and the new scenario takes the new branch.
+
 ### Custom-code providers
 
 A provider of type `sdk` is code a team owns, served by the team's own worker on its own task
