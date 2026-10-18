@@ -1,9 +1,11 @@
 package com.iaf.platform.common.adapters.jdbc;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,15 +30,26 @@ import com.iaf.platform.PlatformApplication;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.telemetry.JdbcTelemetry;
 import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.providers.adapters.outbound.JdbcProviderStore;
+import com.iaf.platform.providers.adapters.outbound.JdbcReviewEvidence;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries.Use;
+import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
+import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
+import com.iaf.platform.releases.adapters.outbound.JdbcReleaseStore;
+import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 /**
  * The whole application with the {@code postgres} profile, started twice on the same database: a
  * workflow published through a change request, the job that ran it and the job's sealed evidence
- * are still there after the restart, the demo history is written on the first start only, and
- * none of it needed a statement on a non-blocking thread. On an H2 file database in PostgreSQL
- * mode always, and on PostgreSQL too when {@value TestDatabase#POSTGRES_URL} names one.
+ * are still there after the restart, so are a provider's canary candidate, its releases, the
+ * wizard's review evidence and the calls' provider versions, the demo history is written on the
+ * first start only, and none of it needed a statement on a non-blocking thread. On an H2 file
+ * database in PostgreSQL mode always, and on PostgreSQL too when {@value TestDatabase#POSTGRES_URL}
+ * names one.
  */
 class PostgresProfileRestartTest {
 
@@ -49,6 +62,31 @@ class PostgresProfileRestartTest {
                 - say:
                     notify: { channel: "#x", message: "hi {{ $job.requester }}" }
             """;
+
+    /** An http provider the wizard can prove in the demo profile (hosts under example.com answer the probe). */
+    static final String PROVIDER = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: thing, title: Thing API, owner: team-compute, version: 1.0.0 }
+            spec:
+              type: http
+              endpoints: { dev: https://thing-dev.example.com/api, test: https://thing-test.example.com/api, prod: https://thing.example.com/api }
+              auth: { type: none }
+              actions:
+                - id: thing.get
+                  title: Get a thing
+                  operation: { method: GET, path: "/things/{id}" }
+                  effect: read
+                  retry: safe
+                  input: { type: object, required: [id], properties: { id: { type: string } } }
+                  output: { type: object, properties: { id: { type: string }, state: { type: string } } }
+                  example: { id: thing-1, state: ready }
+                  sample: { id: thing-1, state: ready }
+              errors:
+                - { match: { status: 404 }, class: not_found, retry: false }
+              slo: { successRate: 99.0, p95Ms: 800 }
+            """;
+    static final String PROVIDER_V2 = PROVIDER.replace("version: 1.0.0", "version: 1.1.0").replace("p95Ms: 800", "p95Ms: 900");
 
     abstract static class OnDatabase {
 
@@ -164,6 +202,59 @@ class PostgresProfileRestartTest {
                 assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
             }
         }
+
+        @Test
+        void aProviderCanaryItsEvidenceAndItsCallsSurviveARestart() {
+            Set<String> releases;
+            try (ConfigurableApplicationContext ctx = start(false)) {
+                assertThat(ctx.getBean(ProviderStorePort.class)).isInstanceOf(JdbcProviderStore.class);
+                assertThat(ctx.getBean(ReleaseStore.class)).isInstanceOf(JdbcReleaseStore.class);
+                assertThat(ctx.getBean(ReviewEvidencePort.class)).isInstanceOf(JdbcReviewEvidence.class);
+                WebTestClient http = http(ctx);
+
+                // the wizard proves the connection and the one action; the review judges the publish by that
+                JsonNode probed = post(http, Map.of("endpoints", Map.of("dev", "https://thing-dev.example.com/api", "test", "https://thing-test.example.com/api"),
+                        "auth", Map.of("type", "none"), "provider", "thing"), "/api/v1/providers:test-connection");
+                assertThat(probed.path("results")).hasSize(2).allSatisfy(r -> assertThat(r.path("ok").asBoolean()).isTrue());
+                JsonNode tried = post(http, Map.of("yaml", PROVIDER, "action", "thing.get", "environment", "dev", "input", Map.of("id", "thing-1")),
+                        "/api/v1/providers:try");
+                assertThat(tried.path("ok").asBoolean()).as(tried.toString()).isTrue();
+
+                // 1.0.0 to every call at once, then 1.1.0 kept beside it as a canary
+                merge(http, post(http, Map.of("yaml", PROVIDER, "strategy", "all"), "/api/v1/providers:publish"));
+                merge(http, post(http, Map.of("yaml", PROVIDER_V2, "strategy", "canary"), "/api/v1/providers:publish"));
+                assertThat(get(http, "/api/v1/providers/{name}", "thing").path("version").asText()).isEqualTo("1.0.0");
+                releases = ids(get(http, "/api/v1/releases?provider={p}", "thing"));
+                assertThat(releases).hasSize(2);
+                assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
+            }
+
+            try (ConfigurableApplicationContext ctx = start(false)) {
+                WebTestClient http = http(ctx);
+
+                assertThat(get(http, "/api/v1/providers/{name}", "thing").path("version").asText()).isEqualTo("1.0.0");
+                JsonNode listed = get(http, "/api/v1/releases?kind={k}", "provider");
+                assertThat(ids(listed)).isEqualTo(releases);
+                List<String> statuses = new ArrayList<>();
+                listed.forEach(r -> statuses.add(r.path("status").asText()));
+                assertThat(statuses).containsExactlyInAnyOrder("promoted", "canary");
+
+                ProviderQueries providers = ctx.getBean(ProviderQueries.class);
+                assertThat(providers.provider("thing").map(d -> d.metadata().version()).block()).isEqualTo("1.0.0");
+                assertThat(providers.provider("thing").contextWrite(c -> Use.with(c, new Use("job_1", "dev", false))).map(d -> d.metadata().version()).block())
+                        .as("a sandbox job's call is routed to the kept candidate").isEqualTo("1.1.0");
+
+                List<CallSample> calls = ctx.getBean(TelemetryPort.class).samples("thing", null);
+                assertThat(calls).extracting(CallSample::action, CallSample::environment, CallSample::ok, CallSample::providerVersion)
+                        .contains(tuple("thing.get", "dev", true, "1.0.0"));
+
+                JsonNode validation = post(http, Map.of("yaml", PROVIDER_V2), "/api/v1/providers:validate");
+                assertThat(validation.path("review").path("ready").asBoolean()).as(validation.toString()).isTrue();
+                assertThat(check(validation, "connection")).isEqualTo("passed");
+                assertThat(check(validation, "tried")).isEqualTo("passed");
+                assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
+            }
+        }
     }
 
     @Nested
@@ -189,13 +280,13 @@ class PostgresProfileRestartTest {
         }
     }
 
-    /** Rows in the tables the demo history fills, once the telemetry queue is written. */
+    /** Rows in the tables the demo history and the content seed fill, once the telemetry queue is written. */
     static Map<String, Long> rows(ConfigurableApplicationContext ctx) {
         ctx.getBean(JdbcTelemetry.class).flush();
         Jdbc jdbc = ctx.getBean(Jdbc.class);
         Map<String, Long> rows = new TreeMap<>();
-        for (String table : List.of("workflow_versions", "change_requests", "releases", "resources", "runs_jobs", "runs_events",
-                "evidence_records", "evidence_entries", "telemetry_samples")) {
+        for (String table : List.of("workflow_versions", "change_requests", "providers", "provider_versions", "releases", "resources", "runs_jobs",
+                "runs_events", "evidence_records", "evidence_entries", "telemetry_samples")) {
             rows.put(table, jdbc.first("SELECT COUNT(*) FROM " + table, (rs, i) -> rs.getLong(1)).orElse(0L));
         }
         return rows;
@@ -205,6 +296,21 @@ class PostgresProfileRestartTest {
         Set<String> ids = new TreeSet<>();
         list.forEach(item -> ids.add(item.path("id").asText()));
         return ids;
+    }
+
+    /** Merges the change request a publish opened. */
+    static void merge(WebTestClient http, JsonNode accepted) {
+        post(http, Map.of(), "/api/v1/change-requests/{id}:merge", accepted.path("id").asText());
+    }
+
+    /** The status of one review check of a validation. */
+    static String check(JsonNode validation, String id) {
+        for (JsonNode c : validation.path("review").path("checks")) {
+            if (id.equals(c.path("id").asText())) {
+                return c.path("status").asText();
+            }
+        }
+        return null;
     }
 
     static WebTestClient http(ConfigurableApplicationContext ctx) {
