@@ -95,6 +95,26 @@ jobs:
         run: mvn -B -q test -Dtest=SampleWorkflowsDryRunTest -Dsurefire.failIfNoSpecifiedTests=false
         working-directory: backend
 
+  playbook-scan:
+    name: Playbook upload scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build the upload scan rule
+        run: mvn -B -q compile
+        working-directory: backend
+      - name: Scan the repository's playbooks
+        # the rule POST /playbooks:upload applies (playbooks.domain.SecretScan), over every file under a
+        # playbooks/ directory at the root, in workflows/ or in providers/ (the content keeps none today:
+        # it pins its playbooks in git, which the content job lints and scans, or uploads them); first
+        # over scripts/scan-playbooks/fixture, which must be flagged on exactly its marked lines
+        run: java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java .
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

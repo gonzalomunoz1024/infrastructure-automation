@@ -18,7 +18,8 @@ packages/
 backend/    Spring Boot 3.5 · Java 21 · WebFlux · Maven · Lombok · Temporal Java SDK · JGit
 workflows/  sample content: Workflow, Provider and ResourceType files (kind: ...)
 devin/      the Devin playbooks (workflow draft, provider draft) and their structured-output schemas
-scripts/    dev.sh (backend + frontend), check-workflows.mjs (CI checks over workflows/)
+scripts/    dev.sh (backend + frontend), check-workflows.mjs (CI checks over workflows/),
+            scan-playbooks/ (CI: the upload scan rule over the playbooks the repo keeps)
 ```
 
 ## Backend: vertical-slice hexagonal with CQRS

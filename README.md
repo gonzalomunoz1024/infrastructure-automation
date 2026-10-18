@@ -133,6 +133,8 @@ cd backend && PLATFORM_TEST_POSTGRES_URL='jdbc:postgresql://localhost:5432/platf
                                     # the same, with the JDBC adapters also on PostgreSQL (CI does this)
 npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
+java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java
+                                    # after a backend compile: the upload scan rule over the repo's playbooks (CI)
 npm run build
 (cd sdk/java && mvn -B -q test); (cd sdk/go && go test ./...); (cd sdk/python && pytest)   # the provider SDKs
 python3 scripts/api-flows/flows1.py   # ... flows4.py: the API end to end on a running demo stack (scripts/api-flows/README.md)

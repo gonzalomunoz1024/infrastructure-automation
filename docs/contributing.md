@@ -21,6 +21,9 @@ npm run check:workflows                                 # packages/workflow-chec
 npm run lint:playbooks                                  # ansible-lint on every pinned git playbook, at its commit (pip install ansible-lint);
                                                         # GITLEAKS=<gitleaks> also scans each pinned source for secrets
 cd backend && mvn -B -q test -Dtest=SampleWorkflowsDryRunTest   # every sample workflow dry-runs against its recorded samples
+(cd backend && mvn -B -q compile) && java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java
+                                                        # the upload scan rule over the playbooks the repository keeps
+                                                        # (playbooks/ directories), after a fixture it must flag as marked
 ```
 
 CI also scans the files and the new commits for secrets with gitleaks. A finding reviewed as a
