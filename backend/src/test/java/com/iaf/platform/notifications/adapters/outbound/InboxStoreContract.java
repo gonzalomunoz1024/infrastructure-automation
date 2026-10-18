@@ -13,8 +13,8 @@ import com.iaf.platform.notifications.domain.Notification;
 import com.iaf.platform.notifications.ports.outbound.InboxStore;
 
 /**
- * What every {@link InboxStore} does, run against the in-memory store and the JDBC one (H2, and
- * PostgreSQL when {@code PLATFORM_TEST_POSTGRES_URL} is set).
+ * What every {@link InboxStore} does, run against the in-memory store and the MongoDB one (when
+ * {@code PLATFORM_TEST_MONGO_URI} names a server).
  */
 abstract class InboxStoreContract {
 
