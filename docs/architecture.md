@@ -745,7 +745,11 @@ offers its Decision timeout (`attentionTimeout`) beside Pause on failure while t
 how long it waits for someone before it aborts, seven days when left empty. A new workflow, from
 the Blank tile, the designer's New workflow dialog or a template that names no role, lets its
 owner team run it (`policy.rbac`): a workflow that names no role or team is `policy.missing`, an
-error, which the Settings tab's required field shows and offers to fix with the owner team. The assistant panel shows a
+error, which the Settings tab's required field shows and offers to fix with the owner team. The
+canvas never writes an empty key: the TypeScript checks judge the Workflow schema first and read
+an empty YAML value as null, which the schema refuses wherever it names a type, so every edit
+leaves out a null under such a key (`frontend/src/designer/model/nulls.ts`); under the keys the
+schema leaves loose, a call step's `with` or a `set`, a null is a value and stays. The assistant panel shows a
 draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
 after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
 is, like an explanation, is a message with nothing to apply. The Executions tab's replay walks a

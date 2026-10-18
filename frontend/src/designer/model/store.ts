@@ -40,6 +40,7 @@ import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findSte
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, type Registry } from './registry'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
+import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
 
 export type DesignerTab = 'editor' | 'executions' | 'settings'
@@ -337,7 +338,9 @@ export class DesignerStore {
    * Replaces the document (and the overlay) as one undoable step. With `coalesce`, repeated
    * commits with the same key within a second fold into one undo entry (typing in a field).
    */
-  commit(doc: WorkflowDocument, opts: { coalesce?: string; overlay?: Map<string, Position>; resetTest?: boolean } = {}): void {
+  commit(next: WorkflowDocument, opts: { coalesce?: string; overlay?: Map<string, Position>; resetTest?: boolean } = {}): void {
+    // never an empty key: a null under a key the Workflow schema types is left out (model/nulls.ts)
+    const doc = withoutEmptyKeys(next)
     const now = Date.now()
     const fold = opts.coalesce !== undefined && this.lastCoalesce !== null && this.lastCoalesce.key === opts.coalesce && now - this.lastCoalesce.at < COALESCE_MS
     if (!fold) {
