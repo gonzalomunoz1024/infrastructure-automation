@@ -3,8 +3,8 @@
  * Settings views, the side panels and sheets, and the keys that work everywhere (⌘S saves,
  * ⌘↵ tests). The page decides what to open; this module is the lazily loaded chunk.
  */
-import { useCallback, useEffect, useState } from 'react'
-import { ConfirmDialog, useHotkey, useToast } from '@iaf/ui'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { ConfirmDialog, Skeleton, SkeletonRows, useHotkey, useToast } from '@iaf/ui'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { errorMessage } from '../lib/api'
 import { invalidate } from '../lib/queries'
@@ -16,11 +16,30 @@ import { TopBar } from './chrome/TopBar'
 import { IssuesDrawer } from './chrome/IssuesDrawer'
 import { YamlDrawer } from './chrome/YamlDrawer'
 import { TestRunSheet } from './chrome/TestRun'
-import { ChangeRequestDrawer, PublishSheet } from './chrome/Publish'
-import { AssistantPanel } from './chrome/AssistantPanel'
 import { EditorView } from './views/EditorView'
-import { ExecutionsView } from './views/ExecutionsView'
-import { SettingsView } from './views/SettingsView'
+
+// the editor opens first; the other views and panels load when they are first shown
+const ExecutionsView = lazy(() => import('./views/ExecutionsView').then((m) => ({ default: m.ExecutionsView })))
+const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ default: m.SettingsView })))
+const AssistantPanel = lazy(() => import('./chrome/AssistantPanel').then((m) => ({ default: m.AssistantPanel })))
+const PublishSheet = lazy(() => import('./chrome/Publish').then((m) => ({ default: m.PublishSheet })))
+const ChangeRequestDrawer = lazy(() => import('./chrome/Publish').then((m) => ({ default: m.ChangeRequestDrawer })))
+
+function ViewSkeleton() {
+  return (
+    <div className="flex h-full items-center justify-center bg-dot-grid" role="status" aria-label="Loading">
+      <Skeleton className="h-24 w-96" />
+    </div>
+  )
+}
+
+function PanelSkeleton() {
+  return (
+    <aside className="w-[380px] max-w-full shrink-0 border-l border-stroke-light bg-surface p-4" role="status" aria-label="Loading the assistant">
+      <SkeletonRows n={4} rowClassName="h-10" className="space-y-3" />
+    </aside>
+  )
+}
 
 export interface DesignerProps {
   /** null until a new workflow is first saved */
@@ -106,16 +125,31 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
       <div className="relative flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
           {tab === 'editor' && <EditorView onTest={() => setPanel('test')} />}
-          {tab === 'executions' && <ExecutionsView />}
-          {tab === 'settings' && <SettingsView />}
+          <Suspense fallback={<ViewSkeleton />}>
+            {tab === 'executions' && <ExecutionsView />}
+            {tab === 'settings' && <SettingsView />}
+          </Suspense>
         </div>
-        {assistant && <AssistantPanel onClose={() => setAssistant(false)} />}
+        {assistant && (
+          <Suspense fallback={<PanelSkeleton />}>
+            <AssistantPanel onClose={() => setAssistant(false)} />
+          </Suspense>
+        )}
       </div>
       {panel === 'issues' && <IssuesDrawer onClose={() => setPanel(null)} />}
       {panel === 'yaml' && <YamlDrawer onClose={() => setPanel(null)} />}
       {panel === 'test' && <TestRunSheet onClose={() => setPanel(null)} />}
-      {panel === 'publish' && <PublishSheet onClose={() => setPanel(null)} onOpened={(id) => setChangeRequest(id)} />}
-      {changeRequest && name && <ChangeRequestDrawer id={changeRequest} workflow={name} onClose={() => setChangeRequest(null)} />}
+      {/* one boundary each: the drawer loading must not blank the sheet while it closes */}
+      {panel === 'publish' && (
+        <Suspense fallback={null}>
+          <PublishSheet onClose={() => setPanel(null)} onOpened={(id) => setChangeRequest(id)} />
+        </Suspense>
+      )}
+      {changeRequest && name && (
+        <Suspense fallback={null}>
+          <ChangeRequestDrawer id={changeRequest} workflow={name} onClose={() => setChangeRequest(null)} />
+        </Suspense>
+      )}
       {leaving && (
         <ConfirmDialog
           title="Leave without saving?"
