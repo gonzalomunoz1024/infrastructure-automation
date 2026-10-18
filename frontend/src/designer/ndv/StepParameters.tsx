@@ -8,7 +8,7 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from 're
 import { Button, cx, Icon, Segmented, Tag, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
-import type { Schema } from '../../lib/types'
+import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
 import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
@@ -109,12 +109,17 @@ function SchemaFields({ schema, prefix, emptyText }: { schema: Schema | null | u
   )
 }
 
-function CredentialParam({ field = 'credential', kinds }: { field?: string; kinds?: string[] }) {
+const VAULT_NOTE = 'A Vault reference: the secret itself never goes in the workflow file'
+
+/** The credentials as `vault:` references, the kinds asked for first, then by name. */
+export function credentialOptions(credentials: readonly RegistryCredential[], kinds?: readonly string[]): SelectOption[] {
+  const rank = (type: string) => (kinds && !kinds.includes(type) ? 1 : 0)
+  return [...credentials].sort((a, b) => rank(a.type) - rank(b.type) || a.name.localeCompare(b.name)).map((c) => ({ value: `vault:${c.name}`, label: c.name, hint: c.type }))
+}
+
+function CredentialParam({ field = 'credential', kinds, label = 'Credential', description = VAULT_NOTE }: { field?: string; kinds?: string[]; label?: string; description?: string }) {
   const { registry } = useStepEdit()
-  const creds = registry?.credentials ?? []
-  const sorted = [...creds].sort((a, b) => Number(kinds ? !kinds.includes(b.type) : 0) - Number(kinds ? !kinds.includes(a.type) : 0) || a.name.localeCompare(b.name))
-  const options: SelectOption[] = sorted.map((c) => ({ value: `vault:${c.name}`, label: c.name, hint: c.type }))
-  return <P field={field} label="Credential" options={options} expression={false} mono description="A Vault reference: the secret itself never goes in the workflow file" />
+  return <P field={field} label={label} options={credentialOptions(registry?.credentials ?? [], kinds)} expression={false} mono description={description} />
 }
 
 const METHODS: SelectOption[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))
@@ -176,6 +181,25 @@ export function shortSha(commit: string | null | undefined): string | null {
   return c ? c.slice(0, 7) : null
 }
 
+/**
+ * What `GET /playbooks:resolve` gets for a git playbook: the repository, the ref and the read token
+ * of the repository (`playbook.git.credential`). The step's own `credential` is the machine
+ * credential the playbook reaches the hosts with and never goes to the git server. Null until the
+ * repository and the ref are filled in.
+ */
+export function gitResolveQuery(playbook: JsonValue | undefined): { repo: string; ref: string; credential?: string } | null {
+  const git = asObject(asObject(playbook).git)
+  const repo = asString(git.repo).trim()
+  const ref = asString(git.ref).trim()
+  if (!repo || !ref) return null
+  const credential = asString(git.credential).trim()
+  return credential ? { repo, ref, credential } : { repo, ref }
+}
+
+/** The credential kinds that read a git repository, and the ones that reach a host over SSH. */
+const GIT_KINDS = ['token', 'basic']
+const MACHINE_KINDS = ['ssh-key', 'ssh']
+
 function AnsibleParams() {
   const { get, set, registry, readOnly } = useStepEdit()
   const { problems } = useNdv()
@@ -184,7 +208,6 @@ function AnsibleParams() {
   const source: PlaybookSource = typeof pb === 'string' ? 'library' : obj ? (obj.git !== undefined ? 'git' : obj.upload !== undefined ? 'upload' : obj.library !== undefined ? 'library' : 'git') : 'git'
   const playbooks = registry?.playbooks ?? []
   const libraryField = typeof pb === 'string' || !obj ? 'playbook' : 'playbook.library'
-  const git = obj && obj.git && typeof obj.git === 'object' && !Array.isArray(obj.git) ? obj.git : null
   const upload = obj && obj.upload && typeof obj.upload === 'object' && !Array.isArray(obj.upload) ? obj.upload : null
   const pinned = shortSha(asString(get('playbook.commit')))
   const [pinning, setPinning] = useState(false)
@@ -199,18 +222,16 @@ function AnsibleParams() {
   }
   // GET /playbooks:resolve: the commit the ref names right now, written into playbook.commit
   const pin = async () => {
-    const repo = asString(git?.repo)
-    const ref = asString(git?.ref)
-    if (!repo || !ref) {
+    const query = gitResolveQuery(pb)
+    if (!query) {
       setNote({ tone: 'error', text: 'Fill in the repository and the ref first.' })
       return
     }
     setPinning(true)
     setNote(null)
     try {
-      // the step's credential as it stands: the backend wants the vault:<path> reference itself
-      const credential = asString(get('credential'))
-      const resolved = await api.resolvePlaybook({ repo, ref, credential: credential || undefined })
+      // the git credential as it stands: the backend wants the vault:<path> reference itself
+      const resolved = await api.resolvePlaybook(query)
       set('playbook.commit', resolved.commit)
       setNote({ tone: 'ok', text: `Pinned to ${shortSha(resolved.commit) ?? resolved.commit} (${resolved.ref} of ${resolved.repo} right now).` })
     } catch (e) {
@@ -284,6 +305,12 @@ function AnsibleParams() {
               <P field="playbook.git.ref" label="Ref" required mono placeholder="v1.0.0" expression={false} />
               <P field="playbook.git.path" label="Path" required mono placeholder="vm/restart.yml" expression={false} />
             </div>
+            <CredentialParam
+              field="playbook.git.credential"
+              kinds={GIT_KINDS}
+              label="Git credential"
+              description="The read token of a private repository, as a Vault reference: runs clone with it and the pin looks the ref up with it. Leave it empty for a public repository"
+            />
             <P field="playbook.commit" label="Commit" mono placeholder="the commit every run uses" expression={false} description="Pin the playbook to a commit so every run uses the same code" />
             {!readOnly && (
               <div className="flex flex-wrap items-center gap-2">
@@ -320,7 +347,7 @@ function AnsibleParams() {
         <P field="limit" label="Limit" placeholder="{{ $vm.name }}" />
       </div>
       <KeyValueParam field="extraVars" label="Extra vars" addLabel="Add variable" keyPlaceholder="variable" />
-      <CredentialParam kinds={['ssh']} />
+      <CredentialParam kinds={MACHINE_KINDS} label="Machine credential" description={`The SSH key the playbook reaches the hosts with. ${VAULT_NOTE}`} />
       <P field="executionEnvironment" label="Execution environment" mono placeholder="ee-platform:2.17" expression={false} />
       <P field="checkModeOnTest" label="Check mode on the test environment" type="boolean" expression={false} />
     </>

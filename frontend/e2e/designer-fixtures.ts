@@ -287,8 +287,9 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
     if (method === 'GET' && path === '/registry/playbooks') return json(route, registryPlaybooks())
     if (method === 'GET' && path === '/registry/credentials')
       return json(route, [
-        { name: 'ssh/ops-automation', type: 'ssh' },
+        { name: 'ssh/ops-automation', type: 'ssh-key' },
         { name: 'vsphere/token', type: 'token' },
+        { name: 'github/read-token', type: 'token' },
       ])
     if (method === 'GET' && path === '/templates') return json(route, [])
     if (method === 'GET' && path === '/jobs') return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries : [])

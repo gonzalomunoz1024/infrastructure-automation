@@ -160,7 +160,9 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
 
 - `git: { repo, ref, path, credential? }` with `commit`: an https repository (`host/path`
   implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
-  private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
+  private repository (the designer's "Git credential"; the step's own `credential` is the machine
+  credential the playbook reaches the hosts with). When `commit` is left out, publishing resolves
+  `ref` (an annotated tag is
   peeled to its commit) and writes the commit into the version before the change request's
   checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.

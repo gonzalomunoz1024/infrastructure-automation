@@ -383,6 +383,10 @@ The designer works from the registry. Its node creator inserts a terraform provi
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
 `GET /registry/providers` carries no spec, so the designer's registry reads the module from the
 plan step `POST /workflows:import` drafts for the provider, parsed by `POST /workflows:parse`.
+An ansible step with a git playbook has two credential pickers fed by `GET /registry/credentials`:
+the Git credential (`playbook.git.credential`, the read token of a private repository) and the
+machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
+credential to `GET /playbooks:resolve`, never the machine credential.
 
 ## Where things are in Git
 

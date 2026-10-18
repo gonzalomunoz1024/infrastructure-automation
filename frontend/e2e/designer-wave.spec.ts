@@ -125,15 +125,27 @@ test.describe('the playbook of an ansible step', () => {
     await expect(ndv.getByRole('radio', { name: 'Git repository' })).toHaveAttribute('aria-checked', 'true')
     await expect(ndv.getByTestId('playbook-pinned')).toHaveText('pinned 4e1d9a2')
 
+    // a public repository: the pin sends no credential, and never the machine credential of the hosts
+    await expect(ndv.getByRole('button', { name: 'Machine credential', exact: true })).toContainText('ssh/ops-automation')
+    await expect(ndv.getByRole('button', { name: 'Git credential', exact: true })).not.toContainText('/')
     await ndv.getByTestId('pin-playbook').click()
     await expect.poll(() => api.resolves.length).toBe(1)
     const sent = new URLSearchParams(api.resolves[0])
     expect(sent.get('repo')).toBe('github.com/acme/ops-playbooks')
     expect(sent.get('ref')).toBe('v3.1.0')
-    expect(sent.get('credential')).toBe('vault:ssh/ops-automation')
+    expect(sent.get('credential')).toBeNull()
     await expect(ndv.getByRole('textbox', { name: /^Commit/ })).toHaveValue('9fceb02d0ae598e95dc970b74767f19372d61af8')
     await expect(ndv.getByTestId('playbook-pinned')).toHaveText('pinned 9fceb02')
     await expect(ndv.getByTestId('playbook-note')).toContainText('Pinned to 9fceb02')
+
+    // a private repository: the git credential picked for it is what the pin sends
+    await ndv.getByRole('button', { name: 'Git credential', exact: true }).click()
+    await page.getByRole('option', { name: /github\/read-token/ }).click()
+    await expect(ndv.getByRole('button', { name: 'Git credential', exact: true })).toContainText('github/read-token')
+    await ndv.getByTestId('pin-playbook').click()
+    await expect.poll(() => api.resolves.length).toBe(2)
+    expect(new URLSearchParams(api.resolves[1]).get('credential')).toBe('vault:github/read-token')
+    await expect(ndv.getByRole('button', { name: 'Machine credential', exact: true })).toContainText('ssh/ops-automation')
 
     // a ref the repository does not have: the backend's 400 message, as it is
     await ndv.getByRole('textbox', { name: /^Ref/ }).fill('gone')
