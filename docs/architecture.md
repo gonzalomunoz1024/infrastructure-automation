@@ -69,7 +69,10 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 |-------------------------|----------------------------------------|---------------------------------|
 | `WorkflowStorePort`     | `GitWorkflowStore` (JGit, branch per change request) | `InMemoryWorkflowStore` seeded from `workflows/` |
 | `WorkflowExecutionPort` | `TemporalWorkflowExecution` (profile `temporal`) | `InMemoryWorkflowExecution` (same interpreter, in-process) |
-| `ProviderCallPort`      | `HttpProviderCall` (WebClient), `AnsibleRunner`, `TerraformRunner` | `RecordedProviderCall` (samples recorded in Try it) |
+| `ProviderCallPort`      | `HttpProviderCall` (WebClient)         | `RecordedProviderCall` (samples recorded in Try it) |
+| `AutomationRunnerPort`  | `AnsibleRunnerAutomation`, `TerraformCliAutomation`, `ProcessScriptRunner`, `HttpStepRunner` (profile `live`, on the host or in docker/podman) | `DemoAutomationRunner` (recorded samples) |
+| `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256) |
+| `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP)   | `InMemoryCredentials`           |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |

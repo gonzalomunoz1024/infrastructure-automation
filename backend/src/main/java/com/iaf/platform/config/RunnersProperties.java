@@ -81,7 +81,7 @@ public class RunnersProperties {
         /** Container limits. */
         private String memory = "256m";
         private String cpus = "0.5";
-        /** The Go build cache shared by script runs on the host; blank is {@code <work-dir>/script/go-cache}. */
+        /** The Go build cache shared by script runs on the host; blank is {@code <work-dir>/script-go-cache}. */
         private String goCache = "";
         /** The most a script may print on stdout. */
         private DataSize maxOutput = DataSize.ofMegabytes(1);

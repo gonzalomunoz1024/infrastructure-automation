@@ -42,6 +42,24 @@ platform:
     mode: in-memory       # in-memory | vault
     vault-url: http://localhost:8200
     vault-mount: secret
+  artifacts:              # uploads and saved plans, kept by SHA-256
+    dir: ${java.io.tmpdir}/iaf-platform/artifacts
+    s3:                   # profile s3: any S3-compatible store
+      bucket: ""
+      endpoint: ""        # blank for AWS
+      credential: ""      # vault:<path> holding <access key id>:<secret access key>; blank uses the AWS default chain
+  playbooks:
+    max-upload-size: 20MB
+    git:
+      cache-dir: ${java.io.tmpdir}/iaf-platform/git
+  runners:                # profile live: ansible, terraform, script and http steps run for real
+    work-dir: ${java.io.tmpdir}/iaf-platform/runners
+    container-runtime: "" # docker | podman runs every step in a container; blank runs on the host
+    ansible:
+      default-image: ""   # the execution environment of steps and providers that name none
+      dynamic-inventory: ""   # what inventory: dynamic means (inventory plugin configs)
+    terraform:
+      backend: ""         # blank keeps state under work-dir; or s3, gcs, pg, ... with backend-config pairs
   assistant:
     mode: mock            # mock | devin (the devin profile switches the adapter)
     devin-url: https://api.devin.ai/v3
