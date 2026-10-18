@@ -19,7 +19,8 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * The platform's own notifications, from its events: a provider alert goes to the provider's alert
  * channel and its owner team; an approval request to the approver group; an escalation to the
- * escalation group, which may now decide. Events older than {@code fresh-for} (history being
+ * escalation group, which may now decide; a change request opened for a workflow or a provider to
+ * the team that owns it, as a review request. Events older than {@code fresh-for} (history being
  * seeded or replayed) notify nobody. Sending is asynchronous and never fails the publisher.
  */
 @Slf4j
@@ -29,6 +30,8 @@ public class NotificationListener {
     static final String PROVIDER_ALERT = "provider.alert";
     static final String APPROVAL_REQUESTED = "job.approval-requested";
     static final String APPROVAL_ESCALATED = "job.approval-escalated";
+    static final String CHANGE_REQUEST_OPENED = "change-request.opened";
+    static final String PROVIDER_CHANGE_REQUESTED = "provider.change-requested";
 
     private final EventBus events;
     private final NotificationCommands notifications;
@@ -74,6 +77,10 @@ public class NotificationListener {
             case PROVIDER_ALERT -> Optional.of(alert(event, d));
             case APPROVAL_REQUESTED -> Optional.ofNullable(text(d, "group")).map(group -> approvalRequested(event, d, group));
             case APPROVAL_ESCALATED -> Optional.ofNullable(text(d, "to")).map(to -> approvalEscalated(event, d, to));
+            case CHANGE_REQUEST_OPENED -> Optional.ofNullable(text(d, "owner")).map(owner -> reviewRequested(event,
+                    text(d, "id") == null ? event.aggregateId() : text(d, "id"), "provider".equals(text(d, "kind")) ? "provider" : "workflow", owner));
+            case PROVIDER_CHANGE_REQUESTED -> Optional.ofNullable(text(d, "owner"))
+                    .map(owner -> reviewRequested(event, text(d, "changeRequestId"), "provider", owner));
             default -> Optional.empty();
         };
     }
@@ -128,6 +135,27 @@ public class NotificationListener {
                 .channel(teamChannel(to))
                 .teams(List.of(to))
                 .jobId(jobId)
+                .build();
+    }
+
+    /** A change request waits for the owner team's review (its author is in that team and sees it too). */
+    private Notification reviewRequested(DomainEvent e, String changeRequestId, String kind, String owner) {
+        JsonNode d = e.data();
+        String name = text(d, "name") == null ? e.aggregateId() : text(d, "name");
+        String version = text(d, "version");
+        String by = text(d, "by") == null ? e.actor() : text(d, "by");
+        String what = version == null ? name : name + " " + version;
+        return Notification.builder()
+                .at(e.at())
+                .kind(Notification.REVIEW_REQUESTED)
+                .severity("info")
+                .title("Review requested: " + what)
+                .message(by + " opened a change request for " + kind + " " + what)
+                .link(changeRequestId == null ? null : "/change-requests/" + changeRequestId)
+                .teams(List.of(owner))
+                .users(List.of())
+                .workflow("workflow".equals(kind) ? name : null)
+                .provider("provider".equals(kind) ? name : null)
                 .build();
     }
 

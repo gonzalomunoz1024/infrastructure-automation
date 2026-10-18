@@ -114,7 +114,7 @@ public class IdempotencyHandler {
                     .flatMap(value -> complete(p.caller(), p.key(), new StoredAnswer(200, Map.of("Content-Type", "application/json"), text(value)))
                             .thenReturn(new Outcome<>(value, false)))
                     .onErrorResume(e -> release(p.caller(), p.key()).then(Mono.error(e)))
-                    .doOnCancel(() -> store.release(p.caller(), p.key()));
+                    .doOnCancel(() -> release(p.caller(), p.key()).subscribe());   // off the cancelling thread: the store may block
         });
     }
 

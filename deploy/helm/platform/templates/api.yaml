@@ -11,8 +11,12 @@ spec:
     matchLabels:
       {{- include "platform.selector" (dict "ctx" . "component" "api") | nindent 6 }}
   strategy:
+    {{- if include "platform.gitStore" . }}
+    type: Recreate  # the one pod that holds the clone the workflows live in: never two at once
+    {{- else }}
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+    {{- end }}
   template:
     {{- include "platform.backendPod" (dict "ctx" . "component" "api" "roles" (ternary "api" "api,worker" .Values.worker.enabled) "settings" .Values.api) | nindent 4 }}
 ---

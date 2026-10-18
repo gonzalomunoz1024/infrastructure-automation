@@ -19,7 +19,7 @@ class MigrationsTest {
     private static final List<String> TABLES = List.of("store_revisions", "store_seeds", "workflow_versions", "change_requests", "providers",
             "provider_versions", "review_evidence", "releases", "resource_types", "resources", "evidence_records", "evidence_entries",
             "evidence_share_links", "service_accounts", "assistant_sessions", "telemetry_samples", "runs_definitions", "runs_jobs", "runs_approvals",
-            "runs_events");
+            "runs_events", "idempotency_keys", "quota_buckets", "inbox_notifications", "inbox_audience", "inbox_reads");
 
     abstract static class Contract {
 

@@ -4,6 +4,8 @@
 #   docker compose up temporal temporal-ui        just Temporal, then scripts/dev.sh --temporal
 #   docker compose up postgres                    just PostgreSQL, then scripts/dev.sh --postgres
 #   docker compose up                              everything: app on :3000, api on :8080, Temporal UI on :8233
+#   docker compose -f docker-compose.yml -f docker-compose.temporal-postgres.yml up
+#                                                  the same with Temporal self-hosted on PostgreSQL (auto-setup)
 services:
   temporal:
     image: temporalio/temporal:1.4.1

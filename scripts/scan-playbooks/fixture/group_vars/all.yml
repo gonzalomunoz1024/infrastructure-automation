@@ -1,0 +1,7 @@
+# Values a reviewer would refuse. Each line the upload scan rule must flag carries the marker
+# that ScanPlaybooks.java looks for, and no other line may be flagged. The values are short
+# placeholders, not secrets.
+ntp_servers: [0.pool.ntp.org, 1.pool.ntp.org]
+admin_user: ops
+admin_password: not-real   # scan: flagged
+monitoring: { url: "https://metrics.example.test", api_key: example }   # scan: flagged

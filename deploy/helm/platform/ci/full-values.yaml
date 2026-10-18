@@ -4,12 +4,15 @@ image:
 imagePullSecrets: [registry-credentials]
 
 backend:
-  profiles: [temporal, git, vault, oidc, live]
+  profiles: [temporal, vault, oidc, live]
   config:
     platform:
       identity:
         mode: oidc
+        # all three are required under the oidc profile; the audience is the auth proxy's client id
         oidc-issuer: https://login.example.com/realms/platform
+        oidc-audience: platform
+        oidc-jwks-uri: https://login.example.com/realms/platform/protocol/openid-connect/certs
       credentials:
         mode: vault
         vault-url: https://vault.example.com
@@ -24,6 +27,11 @@ temporal:
   address: temporal-frontend.temporal.svc.cluster.local:7233
   namespace: platform
   uiUrl: https://temporal.example.com
+  tls:
+    secretName: temporal-client-tls
+  apiKey: vault:temporal/cloud-api-key
+  apiKeySecret: { name: temporal-cloud, key: api-key }
+  payloadKey: vault:temporal/payload-key
 
 postgres:
   enabled: true
@@ -35,6 +43,23 @@ content:
   repository: https://git.example.com/platform/content.git
   ref: main
   credentialsSecret: { name: content-repo-credentials }
+  # several API and worker pods, so the workflows live in the database, seeded from the repository
+  # (git-store-values.yaml shows the Git workflow store)
+  gitStore: { enabled: false }
+
+audit:
+  signingKeySecret: { name: platform-audit, key: signing-key }
+  retentionYears: 10
+  siem:
+    enabled: true
+    hec:
+      url: https://splunk.example.com:8088/services/collector/event
+      token: vault:splunk/hec-token
+      index: platform-audit
+    syslog: { host: syslog.example.internal, port: 6514, protocol: tcp }
+  worm:
+    mode: s3
+    s3: { bucket: platform-evidence, prefix: prod, region: eu-west-1 }
 
 secrets:
   envFrom: [platform-assistant]
@@ -60,6 +85,11 @@ metrics:
   serviceMonitor:
     enabled: true
     labels: { release: prometheus }
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+    labels: { release: prometheus }
+    annotations: { grafana_folder: Platform }
 
 providerWorkers:
   - name: ip-pool

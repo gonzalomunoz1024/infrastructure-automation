@@ -49,13 +49,17 @@ dns = Provider(
 dns.error("record_conflict", retryable=False, description="The name already has a different record")
 dns.error("dns_busy", retryable=True, description="The zone is taking another change")
 
-@dns.action("record.create", title="Create a record", effect=Effect.CREATE)  # READ, CREATE, UPDATE or DELETE
+@dns.action("record.create", title="Create a record", effect=Effect.CREATE)  # READ, CREATE, CHANGE or DELETE
 async def create(call: Call, new: NewRecord) -> Record:
     # call.idempotency_key, call.job, call.step, call.environment, call.attempt
     if taken:
         raise fatal("record_conflict", f"{new.name} already points elsewhere")
     ...
 ```
+
+An action that changes something in place says `Effect.CHANGE`, written `change` in the provider
+file as the platform spells it; `update`, the spelling of earlier SDK versions, still reads as
+`change` (`effect="update"`, the deprecated `Effect.UPDATE`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you pass
 `task_queue=`) and stops gracefully on SIGINT or SIGTERM, letting calls in flight finish:
@@ -86,7 +90,7 @@ the worker's event loop.
 | | |
 |---|---|
 | `call.idempotency_key` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `call.job`, `call.step`, `call.environment`, `call.attempt` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `call.job`, `call.step`, `call.environment`, `call.attempt`, `call.traceparent` | the job (id, workflow, version, trace id), the step id, the environment, the step's attempt and the platform's W3C `traceparent` |
 | `call.heartbeat(*details)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work. The worker learns through heartbeats that the step was cancelled; it then cancels a coroutine (`asyncio.CancelledError`) or raises `temporalio.exceptions.CancelledError` in a thread: let both propagate. |
 | `raise retryable("dns_busy", "...")` | a failure the step's retry policy may retry |
 | `raise fatal("record_conflict", "...")` | a failure no retry fixes: the step fails at once |
@@ -100,17 +104,31 @@ An action can name another one as its preview with `plan="record.preview"`, and 
 the platform's demo mode returns for it with `sample=` (text in it may use expressions like
 `{{ $input.name }}`). `input=` and `output=` replace a derived schema.
 
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`call.traceparent`). With the
+OpenTelemetry API installed (`pip install 'iaf-provider-sdk[otel]'`, an optional dependency) the
+handler runs in a span `run <provider>.<action>`, child of the platform's step span and current, so
+the clients it calls carry the trace on; the span is recorded once your program configures the
+OpenTelemetry SDK and an exporter. Without the API the worker writes the traceparent to the
+`iaf_provider` logger at debug level.
+
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
-| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend |
-| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in |
-| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish |
-| `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `submit` |
+| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend (on Temporal Cloud, the namespace's gRPC endpoint) |
+| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in (on Temporal Cloud, `<namespace>.<account>`) |
+| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish; a value that is not a whole number of seconds is logged and falls back to 30 |
+| `IAF_TEMPORAL_TLS_CA` | | a PEM file of the CA that signed the frontend's certificate; without it TLS trusts the system's CAs |
+| `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` | | PEM files of the worker's client certificate and its key, for mutual TLS |
+| `IAF_TEMPORAL_API_KEY` | | a Temporal Cloud API key, sent as a bearer token over TLS; never logged |
+| `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `submit`; a redirect fails the submit, so the token never goes to another address |
 | `IAF_PLATFORM_TOKEN` | | a service-account token (`iaf_...`), for `submit`; sent, never printed |
 
-To connect with TLS or an API key, connect your own `temporalio.client.Client` and use
+Any `IAF_TEMPORAL_*` variable turns TLS on (`WorkerOptions(tls_ca=..., tls_cert=..., tls_key=...,
+api_key=...)` in code); a file that cannot be read stops `run_worker`, naming its variable. For
+anything else (interceptors, a data converter), connect your own `temporalio.client.Client` and use
 `new_worker(client, provider, activity_executor=...)`.
 
 ## Testing

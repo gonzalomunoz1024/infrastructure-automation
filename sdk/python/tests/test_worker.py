@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -22,6 +23,9 @@ from iaf_provider import (
     new_worker,
     retryable,
 )
+
+from iaf_provider._worker import _connect_options, _connection
+from temporalio.service import TLSConfig
 
 from inventory import Inventory
 
@@ -210,6 +214,72 @@ def test_options_come_from_the_environment():
     assert WorkerOptions.from_env(
         {"TEMPORAL_ADDRESS": "temporal-frontend.temporal:7233", "TEMPORAL_NAMESPACE": "platform", "WORKER_DRAIN_SECONDS": "90"}
     ) == WorkerOptions(address="temporal-frontend.temporal:7233", namespace="platform", drain_timeout=timedelta(seconds=90))
+
+
+def test_a_drain_time_that_is_not_a_whole_number_of_seconds_falls_back_to_thirty_seconds(caplog):
+    with caplog.at_level(logging.WARNING, logger="iaf_provider"):
+        for drain in ("30s", "1.5", "-5", "soon"):
+            assert WorkerOptions.from_env({"WORKER_DRAIN_SECONDS": drain}).drain_timeout == timedelta(seconds=30), drain
+        assert WorkerOptions.from_env({"WORKER_DRAIN_SECONDS": " 0 "}).drain_timeout == timedelta(0)
+
+    assert len(caplog.records) == 4
+    assert caplog.records[3].getMessage() == "WORKER_DRAIN_SECONDS is a whole number of seconds, not 'soon'; the worker drains for 30s"
+
+
+def test_the_environment_names_the_tls_files_and_the_api_key():
+    options = WorkerOptions.from_env(
+        {
+            "TEMPORAL_ADDRESS": "platform.a1b2c.tmprl.cloud:7233",
+            "TEMPORAL_NAMESPACE": "platform.a1b2c",
+            "IAF_TEMPORAL_TLS_CA": "/etc/temporal-tls/ca.crt",
+            "IAF_TEMPORAL_TLS_CERT": "/etc/temporal-tls/tls.crt",
+            "IAF_TEMPORAL_TLS_KEY": " /etc/temporal-tls/tls.key ",
+            "IAF_TEMPORAL_API_KEY": " test-api-key ",
+        }
+    )
+
+    assert options == WorkerOptions(
+        address="platform.a1b2c.tmprl.cloud:7233",
+        namespace="platform.a1b2c",
+        tls_ca="/etc/temporal-tls/ca.crt",
+        tls_cert="/etc/temporal-tls/tls.crt",
+        tls_key="/etc/temporal-tls/tls.key",
+        api_key="test-api-key",
+    )
+    assert "test-api-key" not in repr(options)
+
+
+def test_a_plain_connection_has_no_tls_and_no_key():
+    assert _connect_options(WorkerOptions()) == {"namespace": "default", "tls": False, "api_key": None}
+    assert _connection(WorkerOptions()) == "plaintext"
+
+
+def test_an_api_key_alone_talks_tls_with_the_systems_cas():
+    options = WorkerOptions(namespace="platform.a1b2c", api_key="test-api-key")
+
+    assert _connect_options(options) == {"namespace": "platform.a1b2c", "tls": True, "api_key": "test-api-key"}
+    assert _connection(options) == "TLS with an API key"
+
+
+def test_the_tls_files_are_read_into_the_connection(tmp_path):
+    for name in ("ca.crt", "tls.crt", "tls.key"):
+        (tmp_path / name).write_bytes(f"test {name}".encode())
+    options = WorkerOptions(tls_ca=str(tmp_path / "ca.crt"), tls_cert=str(tmp_path / "tls.crt"), tls_key=str(tmp_path / "tls.key"))
+
+    connect = _connect_options(options)
+
+    tls = connect["tls"]
+    assert isinstance(tls, TLSConfig)
+    assert (tls.server_root_ca_cert, tls.client_cert, tls.client_private_key) == (b"test ca.crt", b"test tls.crt", b"test tls.key")
+    assert connect["api_key"] is None
+    assert _connection(options) == "mutual TLS"
+
+
+def test_tls_settings_that_cannot_work_name_their_variable(tmp_path):
+    with pytest.raises(ValueError, match="IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together"):
+        _connect_options(WorkerOptions(tls_cert=str(tmp_path / "tls.crt")))
+    with pytest.raises(ValueError, match=r"missing\.crt \(IAF_TEMPORAL_TLS_CA\)"):
+        _connect_options(WorkerOptions(tls_ca=str(tmp_path / "missing.crt")))
 
 
 def test_sync_handlers_need_a_thread_pool_to_run_on():

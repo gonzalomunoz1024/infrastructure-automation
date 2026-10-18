@@ -45,9 +45,13 @@ Provider provider = Provider.named("cmdb")                 // the provider's nam
         .error("not_found", false, "No item has that id")  // error classes, retryable or not
         .action(Action.of("item.get", Lookup.class, Item.class, (ctx, in) -> store.get(ctx, in))
                 .title("Get an item")
-                .effect(Effect.READ))                      // read, create, update or delete
+                .effect(Effect.READ))                      // READ, CREATE, CHANGE or DELETE
         .build();                                          // checks it like the platform's provider checks
 ```
+
+An action that changes something in place says `Effect.CHANGE`, written `change` in the provider
+file as the platform spells it; `update`, the spelling of earlier SDK versions, still reads as
+`change` (`Effect.of("update")`, the deprecated `Effect.UPDATE`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you name one
 with `.taskQueue(...)`) and stops gracefully on SIGTERM, letting calls in flight finish:
@@ -73,7 +77,7 @@ A handler gets the validated input and an `ActionContext`:
 | | |
 |---|---|
 | `ctx.idempotencyKey()` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `ctx.job()`, `ctx.step()`, `ctx.environment()`, `ctx.attempt()` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `ctx.job()`, `ctx.step()`, `ctx.environment()`, `ctx.attempt()` | the job (id, workflow, version, trace id, `traceparent`), the step id, the environment and the step's attempt |
 | `ctx.heartbeat(details)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work. It throws when the step was cancelled: let that propagate. |
 | `throw ctx.retryable("store_busy", "...")` | a failure the step's retry policy may retry |
 | `throw ctx.fatal("not_found", "...")` | a failure no retry fixes: the step fails at once |
@@ -87,18 +91,32 @@ An action can name another one as its preview with `.plan("item.preview")`, and 
 the platform's demo mode returns for it with `.sample(...)`. `Action.json(id, handler)` works on
 plain `JsonNode` with schemas you give with `.input(...)` and `.output(...)`.
 
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`ctx.job().traceparent()`).
+While the handler runs, the traceparent and the trace id are in the logging MDC (`%X{traceparent}`,
+`%X{traceId}` in a logback pattern). With the OpenTelemetry API on the worker's classpath
+(`io.opentelemetry:opentelemetry-api`, an optional dependency of the SDK) the handler also runs in a
+span `run <provider>.<action>`, child of the platform's step span and current, so the clients it
+calls carry the trace on; the OpenTelemetry Java agent or an SDK you register exports it.
+
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
-| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend |
-| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in |
-| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish |
+| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend (on Temporal Cloud, the namespace's gRPC endpoint) |
+| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in (on Temporal Cloud, `<namespace>.<account>`) |
+| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish; a value that is not a whole number of seconds is logged and falls back to 30 |
+| `IAF_TEMPORAL_TLS_CA` | | a PEM file of the CA that signed the frontend's certificate; without it TLS trusts the system's CAs |
+| `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` | | PEM files of the worker's client certificate and its key, for mutual TLS (the key in PKCS #8, `BEGIN PRIVATE KEY`; `openssl pkcs8 -topk8 -nocrypt` converts another) |
+| `IAF_TEMPORAL_API_KEY` | | a Temporal Cloud API key, sent as a bearer token over TLS; never logged |
 | `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `Publisher.submit` |
 | `IAF_PLATFORM_TOKEN` | | a service-account token (`iaf_...`), for `Publisher.submit`; sent, never printed |
 
-To connect with TLS or an API key, build your own `WorkflowClient` and `WorkerFactory` and serve
-the provider with `ProviderWorker.attach(factory.newWorker(provider.taskQueue()), provider)`.
+Any `IAF_TEMPORAL_*` variable turns TLS on (`WorkerSettings.withTls(...)` and `.withApiKey(...)` in code); a
+file that cannot be read stops the worker at start, naming its variable. For anything else
+(interceptors, a data converter), build your own `WorkflowClient` and `WorkerFactory` and serve the
+provider with `ProviderWorker.attach(factory.newWorker(provider.taskQueue()), provider)`.
 
 ## Testing
 

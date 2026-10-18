@@ -18,7 +18,8 @@ packages/
 backend/    Spring Boot 3.5 · Java 21 · WebFlux · Maven · Lombok · Temporal Java SDK · JGit
 workflows/  sample content: Workflow, Provider and ResourceType files (kind: ...)
 devin/      the Devin playbooks (workflow draft, provider draft) and their structured-output schemas
-scripts/    dev.sh (backend + frontend), check-workflows.mjs (CI checks over workflows/)
+scripts/    dev.sh (backend + frontend), check-workflows.mjs (CI checks over workflows/),
+            scan-playbooks/ (CI: the upload scan rule over the playbooks the repo keeps)
 ```
 
 ## Backend: vertical-slice hexagonal with CQRS
@@ -45,6 +46,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `catalog`   | the generated surface: REST routes, `:batch`, `:preview`, OpenAPI, Swagger UI, MCP tools, resource read endpoints, version pins, deprecation headers |
 | `gateway`   | guards on the requests that start jobs: idempotency keys, per-team quotas |
 | `notifications` | the in-app inbox and the delivery adapters (chat webhooks, email) behind one port |
+| `archive`   | ended jobs' log lines and previews in the artifact store (`jobs/<id>/logs.ndjson`, `jobs/<id>/plan.json`), archived when a job ends and at start for any missing; `GET /jobs/{id}/logs` and `/plan`; reads jobs through the runs slice's `RunsQueries` |
 | `observability` | job and step spans, traced provider calls, per-workflow metrics          |
 | `resources` | resource types, registry, lineage, retire                             |
 | `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
@@ -74,13 +76,13 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `WorkflowExecutionPort` | `TemporalWorkflowExecution` (profile `temporal`) | `InMemoryWorkflowExecution` (same interpreter, in-process) |
 | `ProviderCallPort`      | `HttpProviderCall` (WebClient)         | `RecordedProviderCall` (samples recorded in Try it) |
 | `AutomationRunnerPort`  | `AnsibleRunnerAutomation`, `TerraformCliAutomation`, `ProcessScriptRunner`, `HttpStepRunner` (profile `live`, on the host or in docker/podman) | `DemoAutomationRunner` (recorded samples) |
-| `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256) |
+| `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256); both also keep named objects, replaced whole when written again, for the job archives |
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine; its resource-access rule: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always) |
-| `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
+| `TelemetryPort`         | `JdbcTelemetry` (profile `postgres`, the samples in `telemetry_samples`) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
-| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres`, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
+| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
@@ -89,8 +91,11 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
-Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
-profile guard so that the production adapter replaces it when its profile is active.
+Every adapter is a `@Component`. A production adapter carries its profile and `@Primary`
+(`@Profile("opa") @Primary` on `OpaPolicy`), so it wins over its demo twin, a plain component,
+when the profile is on; a twin that must not exist beside it carries the opposite guard (the
+in-memory stores are `@Profile("!postgres")`). The Git workflow store is switched by the property
+`platform.content.git`, not by a profile. No adapter uses `@ConditionalOnMissingBean`.
 
 A credential belongs to a team: `CredentialInfo.owner`, chosen when it is stored (one of the
 caller's teams, any team for an admin) and kept by both adapters; one seeded from content has
@@ -110,13 +115,17 @@ and the change requests that published them, `DemoRunsSeeder` routes each seeded
 version a story says was live and adds the canary traffic, `DemoResources` derives the registry
 from the resource types and workflows, and `DemoReleaseSeed` records the releases last and judges
 their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode agrees with the
-others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
-platform code. The demo seeders read the sample content rather than naming it:
-`DemoTelemetrySeeder` gives every provider the registry has two weeks of background calls,
-drawn from its declared SLO and a deterministic hash of its name, and hands the failing hour,
-the slow p95 and the success rate under the SLO to whichever providers can show them whatever
-the draw; every sample carries the provider's version, so a provider release's gates have a
-baseline. A provider added to the content gets its traffic without a code change.
+others, the way the Atlas topology fixture does. The release stories are the only platform code
+that names the sample content (`DemoReleases` tells the stories of mongodb-upgrade, create-vm and
+vm-restart, `DemoRunsSeeder` puts its live states on mongodb-upgrade, vm-restart and patch-cve);
+the other demo seeders read the sample content rather than naming it: `DemoTelemetrySeeder` gives
+every provider the registry has two weeks of background calls, drawn from its declared SLO and a
+deterministic hash of its name, and hands the failing hour, the slow p95 and the success rate under
+the SLO to whichever providers can show them whatever the draw; every sample carries the provider's
+version, so a provider release's gates have a baseline. A provider added to the content gets its
+traffic without a code change. All of them are demo-only: each seeds only with
+`platform.demo.seed-history`, which the backend turns on by default for the demo and the Helm chart
+turns off (`demo.seedHistory`).
 
 ### Identity
 
@@ -136,6 +145,23 @@ since a key the cache lacks is fetched over HTTP. Two kinds of request come in w
 credential, each as an identity that holds nothing: a signed webhook (its controller checks the
 signature) and the read of a shared evidence link, `GET /api/v1/audit/shared/{token}`, whose
 token is the secret (the audit slice keeps only its SHA-256 and refuses an expired one).
+
+### Data
+
+PostgreSQL (the `postgres` profile, below) holds the registry (workflow versions while the Git
+store is off, change requests, providers and their versions, releases, resource types and
+resources), the audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index
+(jobs, approvals and their events), the gateway's quotas and idempotency keys, the inbox, and the
+other stores the table below lists. Git is the source of truth for workflows and providers: every
+start seeds them from the content repository in `platform.content.dir`, and with
+`platform.content.git` on that repository is the workflow store itself (`GitWorkflowStore`, below,
+which commits every draft and publish) and a provider saved through the platform is written back
+to its file there, uncommitted. Object storage, through `ArtifactStorePort` (a bucket under the
+`s3` profile, else files under `platform.artifacts.dir`), holds playbook uploads and Terraform's
+saved plans by SHA-256, and each ended job's archive: its log lines (`jobs/<id>/logs.ndjson`) and
+the plan it was started with (`jobs/<id>/plan.json`). WORM evidence goes to object storage under
+its own profile, `worm-s3`: S3 Object Lock objects in `platform.audit.worm.s3.bucket` (or, under
+`worm`, read-only files in `platform.audit.worm.dir`).
 
 ### Persistence
 
@@ -161,11 +187,14 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` (rows not updated within `platform.assistant.session-retention` are deleted every hour by `SessionRetention`) |
 | `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
+| `IdempotencyStore` (gateway)     | `JdbcIdempotencyStore` | `idempotency_keys` (claim = insert or take over a stale row; replay from the stored status, headers and body; a release deletes an unanswered row; expired rows swept every ten minutes) |
+| `QuotaStore` (gateway)           | `JdbcQuotaStore`      | `quota_buckets` (one row per team bucket, `SELECT ... FOR UPDATE` on every take, so every replica draws from the same bucket) |
+| `InboxStore` (notifications)     | `JdbcInboxStore`      | `inbox_notifications`, `inbox_audience`, `inbox_reads` (the newest `platform.notifications.keep`, with who read each one) |
 
 Under that profile the in-memory twins of these stores are not created at all
 (`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only
-implementations in the context (the evidence store keeps its in-memory default, which the `worm`
-profiles replace). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
+implementations in the context (the evidence store follows its own rule: `worm` or `worm-s3`
+wins when active, else `postgres` keeps it in the database, else it stays in memory). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
 (workflow, status, requester, times). Times are also kept as epoch nanoseconds, so the order is
 exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, which the tests use.
 
@@ -216,6 +245,36 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
 Run one backend per database: the runs index is folded from the events this instance sees. Jobs
 the in-memory engine was running when the backend stopped keep the status they had.
 
+### The Git workflow store
+
+With `platform.content.git` on, `GitWorkflowStore` is the workflow store under every profile (it is
+`@Primary`, and neither `JdbcWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
+in `platform.content.dir`, through JGit. A draft or a candidate is its file on the branch
+`change/<name>-<version>`. Publishing commits the file on the checked-out branch (main), as a merge
+of that branch when it exists, and deletes the branch; a retired version is read back from main's
+history (the last 500 commits). A write is an in-core commit whose branch update fails if the
+branch moved meanwhile. Reads never touch Git: they come from an index built from the branches
+when the store starts and updated by each write it makes. The same switch has the provider stores
+write a provider saved through the platform back to its file in that working tree
+(`providers/<owner>/<name>.yaml`), uncommitted.
+
+The store pushes nothing and fetches nothing. Its commits stay in that clone, and what reaches the
+remote another way (a change request merged on GitHub under the `github` profile, a push) is read
+only by a clone made after it. So it cannot be shared between replicas: each backend instance has
+its own clone and index, a version published through one is unknown to the others (the other API
+pods, and the workers, which resolve the workflow of every `run` step), and an instance whose clone
+is not kept loses its commits when it is replaced. A deployment with the Git store needs a single
+writer that is also the only reader: one backend instance whose clone outlives it. The Helm chart
+switches the store on with a content repository (`content.repository`, with
+`content.gitStore.enabled` true by default) and then runs exactly that, refusing other values: one
+backend pod (`api.replicas: 1` and `worker.enabled: false`, so the API pod runs the interpreter's
+worker too), its clone on a volume (`content.gitStore.existingClaim`; cloned once with its history,
+then kept), replaced with `Recreate` so that two pods never hold it at once. More replicas need
+`content.gitStore.enabled: false`: the workflows then live in the database (`workflow_versions`),
+seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
+the repository (`github`). Sharing the Git store between replicas would take a push after each
+commit, and a fetch and a reindex whenever the remote moves.
+
 ### Reactive boundaries
 
 Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners) are wrapped in
@@ -223,9 +282,11 @@ Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners
 stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` from the
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
 The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
-that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`.
-The evidence stores of the `worm` and `worm-s3` profiles block on files and the S3 client under
-any profile, so the audit handlers read and write them on `boundedElastic` themselves.
+that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`,
+first in the filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and
+generated-route filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
+and the S3 client under any profile, so the audit handlers read and write them on `boundedElastic`
+themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
 there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
 runs on a non-blocking thread, and the wiring test expects none.
@@ -251,7 +312,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set; neither is `@Primary`, every configured SIEM gets every batch) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
-| `IdempotencyStore` (gateway)       | `InMemoryIdempotencyStore` (per instance); the per-team quotas (`JobQuotas`) are per instance too, so several API replicas need sticky routing until a shared store backs both |
+| `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `JdbcIdempotencyStore` and `JdbcQuotaStore` under `postgres`, shared by every replica |
 
 - `AuditListener` folds job events into one hash chain per job, release decisions into
   `release:<id>` and every other recorded command into the platform stream. Each entry is
@@ -296,6 +357,59 @@ runs on a non-blocking thread, and the wiring test expects none.
   spans come from the job events on either engine (on Temporal the activities publish them, and a
   provider call hangs under the job's span); `JobTracing` also answers a step's `traceparent`
   (`StepTraces`) for its calls on a team's worker.
+
+### Policy engine contract
+
+`PolicyPort` is asked at three points. The demo's `MockPolicy` answers in process; under the `opa`
+profile `OpaPolicy` asks the firm's OPA engine through its data API, one document per phase:
+`POST {platform.policy.opa-url}/<phase>` with the body `{ "input": ... }`. With the default URL,
+`http://localhost:8181/v1/data/platform`, the documents are `data.platform.invoke`,
+`data.platform.publish` and `data.platform["resource-access"]`.
+
+```json
+{
+  "input": {
+    "phase": "invoke",
+    "who": { "id": "mateo", "name": "Mateo", "email": "mateo@example.com", "teams": ["team-compute"],
+             "roles": ["ops"], "admin": false, "kind": "user" },
+    "workflow": "vm-restart",
+    "version": "1.2.0",
+    "input": { "vmId": "vm-0042", "reason": "stuck after a kernel update", "environment": "prod" },
+    "context": { "channel": "api", "environment": "prod" }
+  }
+}
+```
+
+`who.kind` is `user`, `service` (a service account) or `system`. Per phase:
+
+| Phase | Asked | `workflow`, `version` | `input` | `context` | A denial |
+|-------|-------|-----------------------|---------|-----------|----------|
+| `invoke` | before a job starts, by the runs slice for every start (the UI, `POST /jobs`, triggers, child jobs, a re-run) and every preview, and before that by the catalog for a generated route or MCP tool | the workflow and the version that will run | the job's input with the schema's defaults; a batch: `{ defaults, items }` from the catalog, its first row from the runs slice | runs slice: `channel` (`preview` for a preview, `rest` for a re-run), `environment` (the input's), `parentId` (a child job), `changeRequired` and `approvalRequired` (the workflow's `policy` block); catalog: `channel`, `traceId`, `rows` (a batch), `pinnedVersion` (a run pinned to a version) | 403 with the rules' messages; the generated routes also answer `rules` and `engine`, MCP its policy-denied error |
+| `publish` | when a change request is opened for a version | the workflow and the proposed version | the definition, as JSON | `strategy` (`canary` or `all`), `owner` (the owner team), `previous` (the version it replaces; null for a first) | the change request's `policy` check fails |
+| `resource-access` | when a `use` step resolves a registry resource and checks access | null | the resource: `id`, `type`, `status`, `owner`, `visibility`, `attributes` | `{ "phase": "resource-access" }` | the step fails, naming the resource and the reasons |
+
+One start can ask `invoke` more than once (the catalog, the preview, the start), so an answer
+must depend on the input alone. `PolicyPort.Phase` also names `step`, which nothing asks today.
+
+The answer is the data API's, the rules of the phase's document:
+
+```json
+{ "result": { "allow": true, "needsApproval": true,
+              "rules": [ { "id": "prod.change-window", "result": "needs-approval", "message": "Production outside the change window" } ] } }
+```
+
+- `allow: true` allows; with `needsApproval` (or `needs_approval`) `true` the decision is
+  `needs-approval`; `allow` false or missing denies.
+- `rules[]` (`id`, `result`, `message`) are kept with the decision: `id` defaults to `rule`,
+  `result` to `pass` when allowed and to `deny` otherwise.
+- No `result` (no document for the phase) denies with the rule `opa.undefined`. An error, a
+  non-2xx answer or no answer within 5 seconds denies with `opa.unreachable`: the platform fails
+  closed.
+
+`deny` refuses. `allow` and `needs-approval` let the request through, and the decision
+(`decision`, `rules`, `engine`) is kept on the job and its preview as `policy`, and so in the
+`job.started` evidence. A `needs-approval` answer adds no approval of its own: a job waits for the
+approvals its workflow has (`approval` steps, `policy.approval`).
 
 ## The interpreter
 
@@ -437,6 +551,37 @@ it. Since the worker that runs a job's steps is the instance that records them, 
 that progress only through a shared job store (the Postgres adapters); with the in-memory
 projection every instance keeps both roles.
 
+### Changing the interpreter workflow
+
+A worker replays an execution's history through the code it runs now whenever it picks the
+execution up again (after a restart, an eviction from its cache, a signal), and the replay fails
+as non-deterministic if that code issues other commands than the history recorded. The walker
+(`WorkflowInterpreter`) runs inside `InterpreterWorkflowImpl`, so the rule covers both and what they
+call: every change to the walker's command sequence (which activities, timers and child workflows
+it starts, in which order, with which activity type or task queue) is gated with
+`Workflow.getVersion` under a change id of its own, and lands with a history recorded before the
+change and a test that replays it. A new execution takes the new branch; one recorded before the
+change, whose history has no marker for that id, replays the old one. The change ids are the
+constants on `InterpreterWorkflowImpl` (`team-workers` was the first). A change that leaves the
+commands as they were (a log line, a query's answer) needs no gate, and a gate's old branch goes
+only once no execution recorded before it can still be open (the id stays:
+`Workflow.getVersion(id, 1, 1)`).
+
+The history fixtures come from the test server. The test-only `HistoryRecorder`
+(runs/adapters/outbound/temporal, next to the replay tests) runs one scenario per test with the
+workflow code as it is and writes each execution's history as JSON into the absolute directory its
+property names; without the property nothing runs, so the suite never rewrites a fixture:
+
+```bash
+cd backend && mvn -B -o test -Dtest=HistoryRecorder -Diaf.record.histories=/abs/dir -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+Before the change, add a scenario that drives the code it alters if none does, record, and keep
+the files under `backend/src/test/resources/temporal/before-<change id>/`. Then make the change
+behind its gate and replay them in a test beside the change's own (`TemporalTestEngine.replay`, as
+`TeamWorkerStepsTest` replays `team-steps-before-team-workers.json`): the old histories still
+replay, and the new scenario takes the new branch.
+
 ### Custom-code providers
 
 A provider of type `sdk` is code a team owns, served by the team's own worker on its own task
@@ -477,7 +622,15 @@ The in-memory demo answers an `sdk` action from its `sample`, as it does for eve
 `live` profile without Temporal fails it with a message saying it needs the `temporal` profile.
 Each worker is a deployment of its own, which the team that owns it scales and releases (the
 Helm chart's `providerWorkers`, the example workers in `docker-compose.yml`); a stopping worker
-stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default).
+stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default). A
+worker reaches Temporal Cloud or a TLS frontend with `IAF_TEMPORAL_TLS_CA` (the frontend's CA),
+`IAF_TEMPORAL_TLS_CERT` and `IAF_TEMPORAL_TLS_KEY` (its client certificate, for mutual TLS) and
+`IAF_TEMPORAL_API_KEY` (a bearer token over TLS), the same in the three SDKs; the chart sets them
+from `temporal.tls` and `temporal.apiKeySecret`. The SDKs hand the call's W3C `traceparent` (in
+`job`, next to `traceId`, or at the top of the payload) to the handler and continue the platform's
+trace from it: a span `run <provider>.<action>`, child of the step span, in Java and Python when
+the OpenTelemetry API is on the worker's classpath (an optional dependency), in Go through the
+`SpanStarter` the program passes to `WithTracing`.
 
 ### Verified against a real Temporal server
 

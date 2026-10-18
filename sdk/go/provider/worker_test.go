@@ -1,9 +1,22 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -257,10 +270,238 @@ func TestRunServesActivitiesOnlyAndDrainsForTheDrainTimeout(t *testing.T) {
 	assert.Equal(t, 45*time.Second, o.WorkerStopTimeout)
 }
 
+func TestADrainTimeThatIsNotAWholeNumberOfSecondsFallsBackToThirtySeconds(t *testing.T) {
+	var logged bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+
+	for _, drain := range []string{"30s", "1.5", "-5", "soon"} {
+		assert.Equal(t, 30*time.Second, optionsFrom(func(k string) string {
+			if k == "WORKER_DRAIN_SECONDS" {
+				return drain
+			}
+			return ""
+		}).DrainTimeout, drain)
+	}
+
+	assert.Equal(t, 4, strings.Count(logged.String(), "level=WARN"))
+	assert.Contains(t, logged.String(), "WORKER_DRAIN_SECONDS is a whole number of seconds, not 'soon'; the worker drains for 30s")
+}
+
 func TestOptionsComeFromTheEnvironment(t *testing.T) {
 	assert.Equal(t, Options{Address: "127.0.0.1:7233", Namespace: "default", DrainTimeout: 30 * time.Second},
 		optionsFrom(func(string) string { return "" }))
 	env := map[string]string{"TEMPORAL_ADDRESS": "temporal-frontend.temporal:7233", "TEMPORAL_NAMESPACE": "platform", "WORKER_DRAIN_SECONDS": "90"}
 	assert.Equal(t, Options{Address: "temporal-frontend.temporal:7233", Namespace: "platform", DrainTimeout: 90 * time.Second},
 		optionsFrom(func(k string) string { return env[k] }))
+}
+
+// writeCerts writes a test CA, a client certificate it signed and the client's key, as PEM files.
+func writeCerts(t *testing.T) (ca, cert, key string) {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, typ string, der []byte) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600))
+		return p
+	}
+	now := time.Now()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+	caCert, err := x509.ParseCertificate(caDER)
+	require.NoError(t, err)
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	clientTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "provider-worker"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	clientDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientKey.PublicKey, caKey)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(clientKey)
+	require.NoError(t, err)
+	return write("ca.crt", "CERTIFICATE", caDER), write("tls.crt", "CERTIFICATE", clientDER), write("tls.key", "PRIVATE KEY", keyDER)
+}
+
+func TestAPlainConnectionHasNoTLSAndNoCredentials(t *testing.T) {
+	co, err := clientOptions(optionsFrom(func(string) string { return "" }))
+
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:7233", co.HostPort)
+	assert.Equal(t, "default", co.Namespace)
+	assert.Nil(t, co.ConnectionOptions.TLS)
+	assert.Nil(t, co.Credentials)
+	assert.Equal(t, "plaintext", connection(Options{}))
+}
+
+func TestTheEnvironmentNamesTheTLSFilesAndTheAPIKey(t *testing.T) {
+	ca, cert, key := writeCerts(t)
+	env := map[string]string{"TEMPORAL_ADDRESS": "platform.a1b2c.tmprl.cloud:7233", "TEMPORAL_NAMESPACE": "platform.a1b2c",
+		"IAF_TEMPORAL_TLS_CA": ca, "IAF_TEMPORAL_TLS_CERT": cert, "IAF_TEMPORAL_TLS_KEY": " " + key + " ", "IAF_TEMPORAL_API_KEY": " test-api-key "}
+
+	o := optionsFrom(func(k string) string { return env[k] })
+	co, err := clientOptions(o)
+
+	assert.Equal(t, Options{Address: "platform.a1b2c.tmprl.cloud:7233", Namespace: "platform.a1b2c", DrainTimeout: 30 * time.Second,
+		TLSCA: ca, TLSCert: cert, TLSKey: key, APIKey: "test-api-key"}, o)
+	require.NoError(t, err)
+	require.NotNil(t, co.ConnectionOptions.TLS)
+	caPEM, err := os.ReadFile(ca)
+	require.NoError(t, err)
+	want := x509.NewCertPool()
+	require.True(t, want.AppendCertsFromPEM(caPEM))
+	assert.True(t, want.Equal(co.ConnectionOptions.TLS.RootCAs), "the CA verifies the frontend")
+	require.Len(t, co.ConnectionOptions.TLS.Certificates, 1)
+	assert.Equal(t, "provider-worker", co.ConnectionOptions.TLS.Certificates[0].Leaf.Subject.CommonName)
+	assert.NotNil(t, co.Credentials, "the API key")
+	assert.Equal(t, "mutual TLS with an API key", connection(o))
+	assert.NotContains(t, fmt.Sprint(o), "test-api-key")
+	assert.Contains(t, fmt.Sprint(o), "APIKey:(set)")
+}
+
+func TestAnAPIKeyAloneTalksTLSWithTheSystemsCAs(t *testing.T) {
+	o := Options{Address: "platform.a1b2c.tmprl.cloud:7233", Namespace: "platform.a1b2c", APIKey: "test-api-key"}
+
+	co, err := clientOptions(o)
+
+	require.NoError(t, err)
+	require.NotNil(t, co.ConnectionOptions.TLS)
+	assert.Nil(t, co.ConnectionOptions.TLS.RootCAs)
+	assert.Empty(t, co.ConnectionOptions.TLS.Certificates)
+	assert.NotNil(t, co.Credentials)
+	assert.Equal(t, "TLS with an API key", connection(o))
+}
+
+func TestTLSSettingsThatCannotWorkNameTheirVariable(t *testing.T) {
+	ca, cert, _ := writeCerts(t)
+	notPEM := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(notPEM, []byte("not a certificate\n"), 0o600))
+
+	for _, c := range []struct {
+		o    Options
+		want string
+	}{
+		{Options{TLSCert: cert}, "IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together"},
+		{Options{TLSCA: filepath.Join(t.TempDir(), "missing.crt")}, "(IAF_TEMPORAL_TLS_CA)"},
+		{Options{TLSCA: notPEM}, notPEM + " (IAF_TEMPORAL_TLS_CA) holds no PEM certificate"},
+		{Options{TLSCert: cert, TLSKey: ca}, "(IAF_TEMPORAL_TLS_CERT, IAF_TEMPORAL_TLS_KEY)"},
+	} {
+		_, err := clientOptions(c.o)
+
+		require.Error(t, err, c.want)
+		assert.Contains(t, err.Error(), c.want)
+	}
+}
+
+const (
+	testTraceID     = "0af7651916cd43dd8448eb211c80319c"
+	testStepSpan    = "b7ad6b7169203331"
+	testTraceParent = "00-" + testTraceID + "-" + testStepSpan + "-01"
+)
+
+type spanKey struct{}
+
+// spans is a SpanStarter that records what it was asked to start and how each span ended.
+type spans struct {
+	started []string
+	calls   []*Call
+	ended   []error
+}
+
+func (s *spans) start(ctx context.Context, name string, call *Call) (context.Context, func(error)) {
+	s.started = append(s.started, name)
+	s.calls = append(s.calls, call)
+	return context.WithValue(ctx, spanKey{}, name), func(err error) { s.ended = append(s.ended, err) }
+}
+
+func tracedProbe(t *testing.T, fail bool, seen *[]any) *Provider {
+	t.Helper()
+	return New("probe").Owner("team-platform").Version("1.4.0").
+		Error("quota_exceeded", false, "No room left").
+		Action(NewAction("probe.run", func(ctx context.Context, call *Call, in map[string]any) (map[string]any, error) {
+			*seen = append(*seen, call.TraceParent, ctx.Value(spanKey{}))
+			if fail {
+				return nil, Fatal("quota_exceeded", "No room left for team-x")
+			}
+			return in, nil
+		}).Effect(Read)).
+		MustBuild()
+}
+
+func TestACallWithATraceparentRunsInTheSpanTheStarterStarts(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, false, &seen).WithTracing(rec.start)
+	payload := `{"input":{"a":"b"},"idempotencyKey":"job-7:run:1","job":{"id":"job-7","workflow":"w","version":"1.0.0","traceId":"` +
+		testTraceID + `","traceparent":"` + testTraceParent + `"},"step":"run","environment":"dev","attempt":2}`
+
+	out, err := p.dispatch(context.Background(), p.byID["probe.run"], json.RawMessage(payload), nil)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":"b"}`, string(out))
+	assert.Equal(t, []string{"run probe.probe.run"}, rec.started)
+	assert.Equal(t, testTraceParent, rec.calls[0].TraceParent)
+	assert.Equal(t, "job-7", rec.calls[0].Job.ID)
+	assert.Equal(t, 2, rec.calls[0].Attempt)
+	assert.Equal(t, []any{testTraceParent, "run probe.probe.run"}, seen, "the handler sees the traceparent and runs with the span's context")
+	assert.Equal(t, []error{nil}, rec.ended)
+}
+
+func TestAFailedCallEndsItsSpanWithTheError(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, true, &seen).WithTracing(rec.start)
+	env := TestEnvelope(map[string]any{"a": "b"})
+	env.TraceParent = testTraceParent
+	payload, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	_, err = p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+	require.Error(t, err)
+	require.Len(t, rec.ended, 1)
+	var pe *Error
+	require.ErrorAs(t, rec.ended[0], &pe)
+	assert.Equal(t, "quota_exceeded", pe.Class)
+}
+
+func TestWithoutAValidTraceparentNoSpanStarts(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, false, &seen).WithTracing(rec.start)
+
+	for _, tp := range []string{"", "not-a-traceparent", "00-" + strings.Repeat("0", 32) + "-" + testStepSpan + "-01",
+		"ff-" + testTraceID + "-" + testStepSpan + "-01", "00-" + strings.ToUpper(testTraceID) + "-" + testStepSpan + "-01"} {
+		env := TestEnvelope(map[string]any{})
+		env.TraceParent = tp
+		payload, err := json.Marshal(env)
+		require.NoError(t, err)
+
+		_, err = p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+		require.NoError(t, err, tp)
+	}
+	assert.Empty(t, rec.started)
+	assert.Equal(t, "", seen[0], "no traceparent")
+	assert.Equal(t, "not-a-traceparent", seen[2], "what the platform sent reaches the handler")
+	assert.Nil(t, seen[3], "no span context")
+}
+
+func TestWithoutAStarterTheCallRunsAsBefore(t *testing.T) {
+	var seen []any
+	p := tracedProbe(t, false, &seen)
+	env := TestEnvelope(map[string]any{"a": "b"})
+	env.TraceParent = testTraceParent
+	payload, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	out, err := p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":"b"}`, string(out))
+	assert.Equal(t, []any{testTraceParent, nil}, seen)
+	assert.Nil(t, p.tracing, "WithTracing returns a copy")
 }

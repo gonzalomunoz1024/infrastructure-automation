@@ -9,7 +9,8 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
 404 (unknown id), 409 (state conflict), 429 (over the team's job-start quota, with `Retry-After`
-and `retryAfter` in seconds), 500. Input that fails a workflow's schema or names a
+and `retryAfter` in seconds), 500 (`error` is always `unexpected error`; `correlationId` is the
+request's trace id, which finds the cause in the API's log). Input that fails a workflow's schema or names a
 resource the registry does not know adds `problems: Problem[]` (one job) or
 `rows: { index; problems }[]` (a batch). Commands return 202 with `CommandAccepted` unless noted.
 
@@ -178,6 +179,18 @@ MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `ap
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
 `get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).
 
+A refused `tools/call` is a JSON-RPC error whose `message` says why; besides the standard codes
+(-32700 parse error, -32600 invalid request, -32601 method not found, -32602 invalid params with
+`data.problems` or `data.rows`, -32603 internal error) the platform answers with its own:
+
+| Code     | When                                   | `data` |
+|----------|----------------------------------------|--------|
+| `-32001` | forbidden (RBAC, scopes)               | `{ forbidden: true }` |
+| `-32002` | denied by the policy engine            | `{ forbidden: true, rules, engine }` |
+| `-32003` | unknown workflow, resource or job      | |
+| `-32004` | state conflict, idempotency key reused | `{ conflict: true }` |
+| `-32005` | over the team's job-start quota        | `{ tooManyRequests: true, retryAfter }` |
+
 In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
 `$response.body#/jobId`), and its input schema is `<noun>_<verb>_input`. A workflow that declares
 `api.response.body` also gets `<noun>_<verb>_output` (the body as written: what the job's `output`
@@ -200,8 +213,10 @@ or a bucket of their own when they have none): `platform.gateway.quotas` sets 60
 burst of 60, and per-team overrides. A batch takes one token whatever its size. An empty bucket is
 429 with `Retry-After` and `{ error, retryAfter }` naming the team, the limit and when to retry
 (MCP: a JSON-RPC error with `data.tooManyRequests` and `data.retryAfter`). Jobs the platform
-starts itself (triggers, `run` steps, reruns) are not charged. Idempotency keys and buckets live in
-each instance's memory.
+starts itself (triggers, `run` steps, reruns) are not charged, and neither is a request that is
+rejected (400, 403, 404): the token is taken once the request is validated and allowed, or given
+back when the handler refuses it. With the `postgres` profile the keys and the buckets are in the
+database and shared by every API replica; without it they live in each instance's memory.
 
 Generated paths may live under any API version (`/api/v1/`, `/api/v2/`, …); the platform's
 nouns, and `notifications`, are reserved under every one. A workflow with `api.deprecated` still
@@ -237,6 +252,8 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
 | GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
+| GET    | `/jobs/{id}/logs`                      | the job's log lines, one log `JobEvent` per line (`application/x-ndjson` only): its archive once the job has ended (below), else the lines of its events; for a job still running the response starts at once with the lines so far and then follows each new one until the job ends |
+| GET    | `/jobs/{id}/plan`                      | `Preview`: the blast-radius plan the job was started with (its archive once the job has ended); 404 when it had none |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count); every row is validated and judged by the policy engine as the generated `:batch` routes do |
 | POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
@@ -266,6 +283,17 @@ one (`job.finished` or `job.cancelled`): the SSE response completes and the serv
 socket. A job that has already ended replays its history and ends. Frames a client sends on the
 socket are ignored; a client that closes it ends the stream. For a job that does not exist the
 SSE request is a 404 and the socket is closed without a frame.
+
+When a job ends (succeeded, failed, cancelled, rolled back) its log lines are archived as
+`jobs/<id>/logs.ndjson` and its preview, if it had one, as `jobs/<id>/plan.json` in the artifact
+store (the bucket of the `s3` profile, else files under `platform.artifacts.dir`), with secrets
+redacted as the API serves them; a batch or a parent job is archived after its ended children, and
+a job that ends again (a batch after `:retry-failed-rows`) is archived again over its earlier
+archive. An archive that could not be written is written at the next start, which archives every
+ended job among the latest 1,000 of each status (with its children) that has none; archiving never
+fails a job. `logs` and `plan` need `jobs:read` and look the job up as
+`GET /jobs/{id}` does, so whoever may read the job may read them, and a job it does not know is a
+404.
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
@@ -485,7 +513,7 @@ on a bucket without Object Lock). With profile `siem`, every entry also goes to 
 ## Notifications
 
 ```ts
-type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated';
+type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated' | 'review.requested';
   severity: 'info' | 'warning' | 'critical'; title; message; link?; channel?; jobId?; workflow?; provider?;
   users: string[]; teams: string[]; read: boolean }   // read is the caller's own
 ```
@@ -499,6 +527,9 @@ incoming webhook per channel (profile `slack`, the URL a `vault:` reference) and
 `mail`). `platform.notifications.channels` and `teams` say who a channel or an approver group
 reaches; events older than `fresh-for` (seeded or replayed history) notify nobody. `notifications`
 is a reserved noun.
+
+A change request opened for a workflow or a provider notifies the team that owns it
+(`review.requested`, with a link to the change request); one without an owner notifies nobody.
 
 ## Resources
 
@@ -638,7 +669,11 @@ Per workflow, for the jobs this instance runs (history seeded into the past coun
 
 Every span is also a timer: `iaf_gateway_seconds`, `iaf_mcp_seconds`, `iaf_job_seconds`,
 `iaf_step_seconds`, `iaf_provider_call_seconds`, with an `error_class` tag (`none` when it
-succeeded) and an `…_active_seconds` long-task timer for what is still running. Tracing samples
+succeeded) and an `…_active_seconds` long-task timer for what is still running. The provider call
+timer is also tagged `provider`, `action`, `environment` and `dry_run`, and has histogram buckets
+from 10 ms to an hour (`iaf_provider_call_seconds_bucket`, under `management.metrics.distribution`
+in `application.yml`), so its p95 can be computed across replicas.
+`deploy/grafana/platform-dashboard.json` reads the meters of this section and nothing else. Tracing samples
 every request and job (`management.tracing.sampling.probability: 1.0`); spans leave the process
 only when `management.otlp.tracing.endpoint` (`MANAGEMENT_OTLP_TRACING_ENDPOINT`) names an OTLP
 collector, which the demo leaves unset.

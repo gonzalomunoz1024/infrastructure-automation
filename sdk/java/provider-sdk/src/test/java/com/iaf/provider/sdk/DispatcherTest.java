@@ -128,7 +128,7 @@ class DispatcherTest {
                 .action(Action.of("item.rename", Inventory.Lookup.class, Inventory.Item.class, (ctx, in) -> {
                     calls.add(in);
                     return null;
-                }).effect(Effect.UPDATE))
+                }).effect(Effect.CHANGE))
                 .build();
 
         ProviderException e = failure(() -> new Dispatcher(p).dispatch("item.rename", envelope(input("name", "x")), d -> {

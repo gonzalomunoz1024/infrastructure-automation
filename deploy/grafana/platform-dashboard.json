@@ -1,0 +1,291 @@
+{
+  "title": "Infrastructure automation platform",
+  "uid": "iaf-platform-jobs",
+  "description": "Jobs per workflow from the platform's /actuator/prometheus: starts, finishes by status, duration percentiles and failed steps; and the calls the steps make to providers: outcome, success rate and p95.",
+  "tags": ["platform", "workflows", "providers"],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "annotations": { "list": [] },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "name": "workflow",
+        "label": "Workflow",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(workflow_jobs_started_total, workflow)",
+        "query": { "query": "label_values(workflow_jobs_started_total, workflow)", "refId": "workflows" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "hide": 0,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(iaf_provider_call_seconds_count, provider)",
+        "query": { "query": "label_values(iaf_provider_call_seconds_count, provider)", "refId": "providers" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "hide": 0,
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Jobs started",
+      "description": "Jobs started in the selected range.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value", "justifyMode": "auto", "orientation": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(increase(workflow_jobs_started_total{workflow=~\"$workflow\"}[$__range]))", "legendFormat": "started", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Jobs succeeded",
+      "description": "Jobs that finished as succeeded in the selected range.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value", "justifyMode": "auto", "orientation": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"succeeded\"}[$__range]))", "legendFormat": "succeeded", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Jobs failed",
+      "description": "Jobs that finished as failed in the selected range.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value", "justifyMode": "auto", "orientation": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"failed\"}[$__range]))", "legendFormat": "failed", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Success rate",
+      "description": "Succeeded jobs over every finished job (succeeded, failed, cancelled) in the selected range.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0.9 }, { "color": "green", "value": 0.98 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value", "justifyMode": "auto", "orientation": "auto" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"succeeded\"}[$__range])) / sum(increase(workflow_jobs_finished_total{workflow=~\"$workflow\"}[$__range]))", "legendFormat": "success rate", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Job starts per minute, by workflow",
+      "description": "rate(workflow_jobs_started_total[5m]) per workflow, as jobs per minute.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (workflow) (rate(workflow_jobs_started_total{workflow=~\"$workflow\"}[5m])) * 60", "legendFormat": "{{workflow}}", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Jobs finished per minute, by status",
+      "description": "rate(workflow_jobs_finished_total[5m]) per status (succeeded, failed, cancelled), as jobs per minute.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": false } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "succeeded" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] },
+          { "matcher": { "id": "byName", "options": "failed" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
+          { "matcher": { "id": "byName", "options": "cancelled" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] }
+        ]
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (status) (rate(workflow_jobs_finished_total{workflow=~\"$workflow\"}[5m])) * 60", "legendFormat": "{{status}}", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Job duration p50 and p95, by workflow",
+      "description": "Percentiles of workflow_jobs_duration_seconds (single runs; a batch's rows each count, the batch around them does not).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 1, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.5, sum by (le, workflow) (rate(workflow_jobs_duration_seconds_bucket{workflow=~\"$workflow\"}[5m])))", "legendFormat": "{{workflow}} p50", "range": true, "instant": false },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by (le, workflow) (rate(workflow_jobs_duration_seconds_bucket{workflow=~\"$workflow\"}[5m])))", "legendFormat": "{{workflow}} p95", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Failed step attempts per minute, by error class",
+      "description": "rate(workflow_steps_failed_total[5m]) per error class (timeout, worker-lost, the providers' own classes), as attempts per minute.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2, "min": 0, "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never", "spanNulls": false, "stacking": { "mode": "normal", "group": "A" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (class) (rate(workflow_steps_failed_total{workflow=~\"$workflow\"}[5m])) * 60", "legendFormat": "{{class}}", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Jobs started by channel and kind",
+      "description": "Where the jobs of the selected range came from (api, mcp, trigger, ui...) and whether they were single runs, batches or batch rows.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "jobs", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "jobs" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (channel, kind) (increase(workflow_jobs_started_total{workflow=~\"$workflow\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Failed jobs by workflow and version",
+      "description": "Jobs that finished as failed in the selected range, per workflow version.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "failed", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (workflow, version) (increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"failed\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Failed step attempts by workflow and error class",
+      "description": "Step attempts that failed in the selected range, per workflow and error class; a retried step counts each failed attempt.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "failed attempts", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed attempts" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (workflow, class) (increase(workflow_steps_failed_total{workflow=~\"$workflow\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Failed jobs by channel",
+      "description": "Jobs that finished as failed in the selected range, per channel they were started from (api, mcp, trigger, ui...).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "failed", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (channel) (increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"failed\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Provider calls per minute, by provider and outcome",
+      "description": "rate(iaf_provider_call_seconds_count[5m]) per provider and error class (none for a call that succeeded, cancelled, or the provider's own class), as calls per minute; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (provider, error_class) (rate(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\"}[5m])) * 60", "legendFormat": "{{provider}} {{error_class}}", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Provider call p95, by provider and action",
+      "description": "95th percentile of iaf_provider_call_seconds, from the histogram buckets management.metrics.distribution.percentiles-histogram turns on for it; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by (le, provider, action) (rate(iaf_provider_call_seconds_bucket{provider=~\"$provider\", dry_run=\"false\"}[5m])))", "legendFormat": "{{provider}}.{{action}} p95", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Provider call success rate, by provider and action",
+      "description": "Calls that succeeded over every call in the selected range (a failed or cancelled call is not a success), per provider action; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0.9 }, { "color": "green", "value": 0.98 } ] },
+          "custom": { "align": "auto", "cellOptions": { "type": "color-text" } }
+        },
+        "overrides": []
+      },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "success rate", "desc": false } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "success rate" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (provider, action) (increase(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\", error_class=\"none\"}[$__range])) / sum by (provider, action) (increase(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    }
+  ]
+}

@@ -23,6 +23,14 @@ management:
   tracing:
     sampling:
       probability: 1.0    # every request and job is traced (spans for the gateway, MCP calls, jobs, steps and provider calls)
+  metrics:
+    distribution:         # each provider call (span iaf.provider.call) is also a timer: buckets, so its p95 can be computed across replicas
+      percentiles-histogram:
+        iaf.provider.call: true
+      minimum-expected-value:
+        iaf.provider.call: 10ms
+      maximum-expected-value:
+        iaf.provider.call: 1h
   # otlp:
   #   tracing:
   #     endpoint: http://localhost:4318/v1/traces   # set it (or MANAGEMENT_OTLP_TRACING_ENDPOINT) to export spans; unset, nothing leaves the process

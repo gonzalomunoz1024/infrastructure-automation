@@ -124,6 +124,24 @@ func TestEveryProblemIsListedAtOnce(t *testing.T) {
 	}
 }
 
+func TestAnActionThatChangesSomethingWritesChange(t *testing.T) {
+	echo := func(_ context.Context, _ *Call, in map[string]any) (map[string]any, error) { return in, nil }
+
+	// Change, and the old spelling update (the deprecated constant or the string) all write change.
+	for _, e := range []Effect{Change, Update, Effect("update")} {
+		doc := decode(t, New("probe").Owner("team-platform").Version("1.0.0").
+			Action(NewAction("item.rename", echo).Effect(e)).
+			MustBuild().Document())
+
+		assert.Equal(t, "change", path(doc, "spec", "actions", 0, "effect"), "effect %q", e)
+	}
+	_, err := New("probe").Owner("team-platform").Version("1.0.0").
+		Action(NewAction("item.rename", echo).Effect(Effect("modify"))).
+		Build()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one of read, create, change, delete")
+}
+
 func TestAProviderOffersAtLeastOneAction(t *testing.T) {
 	_, err := New("empty").Owner("team-platform").Version("1.0.0").Build()
 

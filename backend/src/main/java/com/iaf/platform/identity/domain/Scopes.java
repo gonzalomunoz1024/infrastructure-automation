@@ -81,7 +81,7 @@ public final class Scopes {
             rule("POST", "/jobs:batch", JOBS_START),
             rule("POST", "/jobs/" + ID + ":(cancel|retry|skip|abort|rerun|retry-failed-rows)", JOBS_START),
             rule("POST", "/triggers/(alerts|events)", JOBS_START),
-            rule("GET", "/jobs(/" + ID + "(/(events|replay|evidence))?)?", JOBS_READ),
+            rule("GET", "/jobs(/" + ID + "(/(events|replay|evidence|logs|plan))?)?", JOBS_READ),
             rule("GET", "/approvals(/" + ID + ")?", JOBS_READ),
             rule("GET", "/audit", JOBS_READ),
             rule("GET", "/audit/platform", JOBS_READ),

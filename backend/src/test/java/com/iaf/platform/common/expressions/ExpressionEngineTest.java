@@ -131,4 +131,34 @@ class ExpressionEngineTest {
         assertThat(out.get("nested").get("n").asInt()).isEqualTo(4);
         assertThat(out.get("list").get(0).asText()).isEqualTo("vm-30c7");
     }
+
+
+    @Test
+    void aMethodCalledWithTooFewArgumentsNamesItself() {
+        for (String method : List.of("includes", "contains", "startsWith", "endsWith", "split", "indexOf", "padStart")) {
+            assertThatThrownBy(() -> ExpressionEngine.evaluate("{{ $json.vm.name." + method + "() }}", ctx)).as(method)
+                    .isInstanceOf(ExpressionException.class).hasMessage(method + "() needs 1 argument, got 0");
+        }
+        for (String method : List.of("includes", "indexOf")) {
+            assertThatThrownBy(() -> ExpressionEngine.evaluate("{{ $input.tags." + method + "() }}", ctx)).as(method + " on an array")
+                    .isInstanceOf(ExpressionException.class).hasMessage(method + "() needs 1 argument, got 0");
+        }
+        assertThatThrownBy(() -> ExpressionEngine.evaluate("{{ $json.vm.name.replace() }}", ctx))
+                .isInstanceOf(ExpressionException.class).hasMessage("replace() needs 2 arguments, got 0");
+        assertThatThrownBy(() -> ExpressionEngine.evaluate("{{ $json.vm.name.replace('web') }}", ctx))
+                .isInstanceOf(ExpressionException.class).hasMessage("replace() needs 2 arguments, got 1");
+        // with their arguments they work as before
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.name.replace('web', 'db') }}", ctx).asText()).isEqualTo("db-01");
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.name.padStart(8, '*') }}", ctx).asText()).isEqualTo("**web-01");
+        assertThat(ExpressionEngine.evaluate("{{ $input.tags.includes('prod') }}", ctx).asBoolean()).isTrue();
+        assertThat(ExpressionEngine.evaluate("{{ $input.tags.indexOf('prod') }}", ctx).asInt()).isEqualTo(1);
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.name.split('-') }}", ctx).size()).isEqualTo(2);
+    }
+
+    @Test
+    void subtractionReadsTheSameWithOrWithoutSpaces() {
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.cpus - 1 }}", ctx).asInt()).isEqualTo(3);
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.cpus -1 }}", ctx).asInt()).isEqualTo(3);
+        assertThat(ExpressionEngine.evaluate("{{ $json.vm.cpus-1 }}", ctx).asInt()).isEqualTo(3);
+    }
 }

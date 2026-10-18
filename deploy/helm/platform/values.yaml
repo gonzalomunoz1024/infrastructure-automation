@@ -33,11 +33,13 @@ backend:
   image:
     repository: platform-backend
     tag: ""                      # the chart's appVersion when empty
-  # SPRING_PROFILES_ACTIVE; temporal runs the jobs on Temporal. Add git, opa, vault, oidc, live as
-  # the install uses them; postgres is added when postgres.enabled is true.
+  # SPRING_PROFILES_ACTIVE; temporal runs the jobs on Temporal. Add opa, vault, oidc, live, github
+  # as the install uses them; postgres, siem, worm and worm-s3 are added from postgres.enabled,
+  # audit.siem.enabled and audit.worm.mode. There is no git profile: the Git workflow store is the
+  # property platform.content.git, which content.gitStore sets (below).
   profiles: [temporal]
   # application.yml overrides for the API and the worker, merged over what the chart sets
-  # (platform.temporal.*, platform.content.dir, the health probes). Never put a secret here.
+  # (platform.temporal.*, platform.content.*, the health probes). Never put a secret here.
   config: {}
   # plain environment variables of the API and the worker
   env: []
@@ -82,6 +84,36 @@ temporal:
   taskQueue: platform-interpreter
   # the Temporal web UI, for each job's "Open in Temporal" link; no link when empty
   uiUrl: ""
+  # TLS to the frontend, and mTLS with a client certificate (Temporal Cloud with certificates, or
+  # a server that asks for them): an existing Secret holding the CA, the client certificate and its
+  # key in PEM, mounted at /etc/temporal-tls. The backend pods get the files' paths as
+  # PLATFORM_TEMPORAL_TLS_CA, _CERT and _KEY (platform.temporal.tls.ca, .cert and .key), the
+  # provider workers as IAF_TEMPORAL_TLS_CA, _CERT and _KEY (a worker's own env entries override
+  # them). Set caKey to "" when the server's certificate is publicly trusted, certKey and keyKey to
+  # "" for TLS without a client certificate. The key is PKCS #8 (cert-manager:
+  # privateKey.encoding: PKCS8), which the backend and a Java worker require.
+  tls:
+    secretName: ""
+    caKey: ca.crt
+    certKey: tls.crt
+    keyKey: tls.key
+  # a Temporal Cloud API key for the backend, as a vault: reference its credentials store resolves
+  # at startup, like vault:temporal/api-key (PLATFORM_TEMPORAL_APIKEY, platform.temporal.api-key);
+  # it turns TLS on by itself. The backend refuses anything but a vault: reference, and so does the
+  # chart.
+  apiKey: ""
+  # the same key for the provider workers, which read the key itself and resolve no vault:
+  # reference: an existing Secret (IAF_TEMPORAL_API_KEY)
+  apiKeySecret:
+    name: ""
+    key: api-key
+  # a vault: reference to the AES-256 key (32 bytes, base64: openssl rand -base64 32) that encrypts
+  # every payload the backend writes into Temporal's histories, like vault:temporal/payload-key
+  # (PLATFORM_TEMPORAL_PAYLOADKEY, platform.temporal.payload-key). The backend refuses anything but
+  # a vault: reference, and so does the chart. Blank: the histories hold the jobs' inputs and the
+  # steps' results in clear, and the backend warns at startup. Keep the key for as long as the
+  # executions it encrypted may be replayed or read.
+  payloadKey: ""
 
 postgres:
   # turns on the backend's postgres profile; with false every pod keeps its state in memory
@@ -92,6 +124,12 @@ postgres:
   passwordSecret:
     name: ""
     key: password
+
+# The demo's generated history: jobs, provider-call samples, releases and their evidence over the
+# sample content (platform.demo.seed-history, which the backend turns on by default). An install
+# leaves it off, so nothing made up lands in its database; turn it on for a demo cluster only.
+demo:
+  seedHistory: false
 
 # The content repository (workflows/, providers/, resource-types/), cloned into each backend pod
 # when it starts. With no repository the platform starts without content.
@@ -106,10 +144,70 @@ content:
   gitImage:
     repository: alpine/git
     tag: "2.52.0"
+  # With a repository the workflows live in it (platform.content.git): the Git workflow store keeps
+  # a draft on a change/ branch of the clone and publishes a version as a commit on its main
+  # branch. It commits to that clone only (it pushes and fetches nothing) and reads it at start,
+  # so it runs on one backend pod (api.replicas 1 and worker.enabled false; the chart refuses
+  # more) whose clone lives on a volume (existingClaim, ReadWriteOnce is enough), cloned once with
+  # its history and kept across restarts. With enabled false the workflows live in the database
+  # (postgres.enabled; in memory without it), seeded from a fresh clone at every start, on any
+  # number of pods.
+  gitStore:
+    enabled: true
+    existingClaim: ""
+
+# ------------------------------------------------------------------ audit evidence
+
+audit:
+  # the key that signs evidence seals and export packs. Preferably a vault: reference in
+  # backend.config (platform.audit.signing-key: vault:platform/audit-signing-key), resolved when a
+  # key is needed, so a rotation needs no restart; or the key itself from an existing Secret
+  # (PLATFORM_AUDIT_SIGNINGKEY, which wins over backend.config), which still works with a warning at
+  # startup. Without either every pod signs with a random key per run, so a seal made before a
+  # restart can no longer be verified.
+  signingKeySecret:
+    name: ""
+    key: signing-key
+  # years every evidence object is kept (platform.audit.retention-years); the backend's 7 when empty
+  retentionYears: ""
+  # every evidence entry also goes to the SIEM (adds the siem profile): Splunk HEC when hec.url is
+  # set, syslog (RFC 5424) when syslog.host is set
+  siem:
+    enabled: false
+    hec:
+      url: ""            # e.g. https://splunk.example.com:8088/services/collector/event
+      token: ""          # a vault: reference to the HEC token (the vault profile resolves it), never the token
+      index: ""
+    syslog:
+      host: ""
+      port: 514
+      protocol: udp      # udp | tcp
+  # write-once evidence: "files" (adds the worm profile: read-only files with retention sidecars on
+  # a volume) or "s3" (adds worm-s3: S3 Object Lock in COMPLIANCE mode, AWS credentials from the
+  # SDK's default chain, such as IRSA through serviceAccount.annotations). Empty keeps the evidence
+  # in the database (postgres.enabled) or in memory.
+  worm:
+    mode: ""
+    files:
+      # an existing PersistentVolumeClaim mounted at dir on the API and the worker pods; their
+      # pods run as uid 10001 with fsGroup 10001, which makes the volume writable on storage that
+      # honours fsGroup (on other storage make it writable by uid 10001 yourself)
+      # (ReadWriteMany when there are several)
+      existingClaim: ""
+      dir: /var/lib/platform/evidence
+    s3:
+      bucket: ""         # created with Object Lock enabled, or the backend refuses to start
+      prefix: ""
+      region: ""         # AWS_REGION or instance metadata when empty
+      endpoint: ""       # for an S3-compatible store with Object Lock
+      pathStyle: false
 
 secrets:
   # names of existing Secrets whose keys become environment variables of the API and the worker,
-  # like PLATFORM_CREDENTIALS_VAULTTOKEN or PLATFORM_ASSISTANT_DEVINAPIKEY
+  # like PLATFORM_CREDENTIALS_VAULTTOKEN. The Devin API key belongs in the credentials store, named
+  # by its reference in backend.config (platform.assistant.devin-api-key: vault:devin/api-key) and
+  # resolved at each call; the key itself in a Secret (PLATFORM_ASSISTANT_DEVINAPIKEY) still works,
+  # with a warning at startup.
   envFrom: []
   # single variables from keys of existing Secrets:
   #   - { name: PLATFORM_CREDENTIALS_VAULTTOKEN, secretName: platform-vault, key: token }
@@ -151,6 +249,18 @@ frontend:
   tolerations: []
   affinity: {}
 
+# SSO: the web app acquires no token itself. An auth proxy in front of the web app and the API signs
+# people in and forwards their ID token as Authorization: Bearer <token>, which the API verifies
+# under the oidc profile (backend.profiles, and in backend.config platform.identity.oidc-issuer,
+# oidc-audience and oidc-jwks-uri, which are all required: the start fails naming a blank one; the
+# audience is the proxy's client id). With ingress-nginx and oauth2-proxy
+# (--set-authorization-header=true, served on the same host under /oauth2 by an Ingress of its own):
+#   annotations:
+#     nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+#     nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+#     nginx.ingress.kubernetes.io/auth-response-headers: Authorization
+# Service accounts and MCP clients (Authorization: Bearer iaf_...) have no browser session: give
+# them a host of their own that routes to the API without the proxy.
 ingress:
   enabled: false
   className: ""
@@ -182,3 +292,12 @@ metrics:
     enabled: false
     interval: 30s
     labels: {}
+  # Grafana: the job dashboard (deploy/grafana/platform-dashboard.json) as a ConfigMap labelled
+  # grafana_dashboard: "1", which Grafana's dashboard sidecar (kube-prometheus-stack) loads
+  grafanaDashboard:
+    enabled: false
+    # the namespace the sidecar watches; the release's when empty
+    namespace: ""
+    labels: {}
+    # for example grafana_folder: Platform
+    annotations: {}

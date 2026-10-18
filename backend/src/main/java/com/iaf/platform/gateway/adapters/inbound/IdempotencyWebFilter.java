@@ -48,7 +48,8 @@ import reactor.core.publisher.Mono;
  * (keys are scoped to the caller) and before the gateway. The first request with a key runs and
  * its answer is kept when it succeeds; the same key and request again gets that answer with
  * {@code Idempotent-Replay: true}; the same key with another request, or while the first is still
- * running, is a 409. Requests without the header pass straight through.
+ * running, is a 409. Requests without the header, and requests without an identity to scope the
+ * key to, pass straight through.
  */
 @Slf4j
 @Component
@@ -74,7 +75,13 @@ public class IdempotencyWebFilter implements WebFilter {
         if (key == null || !HttpMethod.POST.equals(request.getMethod()) || !applies(path)) {
             return chain.filter(exchange);
         }
-        String caller = caller(exchange);
+        Identity who = exchange.getAttribute(IdentityWebFilter.ATTRIBUTE);
+        if (who == null) {
+            // keys are scoped to a caller; without one there is nobody to scope it to, so the request runs without it
+            log.debug("{} on {} without an identity: the key is ignored", IdempotencyKeys.HEADER, path);
+            return chain.filter(exchange);
+        }
+        String caller = who.id();
         return DataBufferUtils.join(request.getBody())
                 .map(IdempotencyWebFilter::bytes)
                 .defaultIfEmpty(new byte[0])
@@ -177,11 +184,6 @@ public class IdempotencyWebFilter implements WebFilter {
         }
         response.getHeaders().setContentLength(bytes.length);
         return response.writeWith(Mono.just(response.bufferFactory().wrap(bytes)));
-    }
-
-    private static String caller(ServerWebExchange exchange) {
-        Identity who = exchange.getAttribute(IdentityWebFilter.ATTRIBUTE);
-        return who == null ? "anonymous" : who.id();
     }
 
     private static byte[] bytes(DataBuffer buffer) {

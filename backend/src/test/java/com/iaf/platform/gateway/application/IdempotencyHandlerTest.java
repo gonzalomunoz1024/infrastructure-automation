@@ -2,102 +2,70 @@ package com.iaf.platform.gateway.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.gateway.adapters.outbound.InMemoryIdempotencyStore;
 import com.iaf.platform.gateway.application.IdempotencyHandler.Proceed;
-import com.iaf.platform.gateway.application.IdempotencyHandler.Replay;
+import com.iaf.platform.gateway.domain.KeyedRequest;
 import com.iaf.platform.gateway.domain.StoredAnswer;
+import com.iaf.platform.gateway.ports.outbound.IdempotencyStore;
 
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-class IdempotencyHandlerTest {
+class IdempotencyHandlerTest extends IdempotencyHandlerContract {
 
-    static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-17T10:00:00Z"), ZoneOffset.UTC);
+    @Override
+    IdempotencyStore newStore() {
+        return new InMemoryIdempotencyStore(100);
+    }
 
-    IdempotencyHandler handler = new IdempotencyHandler(new InMemoryIdempotencyStore(100), Duration.ofHours(24), CLOCK);
-    AtomicInteger runs = new AtomicInteger();
+    /** A store that says on which thread it was released. */
+    static final class ReleaseWatchingStore implements IdempotencyStore {
+        final IdempotencyStore inner = new InMemoryIdempotencyStore(100);
+        final CountDownLatch claimed = new CountDownLatch(1);
+        final CountDownLatch released = new CountDownLatch(1);
+        final AtomicReference<String> releasedOn = new AtomicReference<>();
 
-    Mono<JsonNode> start() {
-        return Mono.fromSupplier(() -> JsonNodeFactory.instance.objectNode().put("jobId", "job_" + runs.incrementAndGet()));
+        @Override
+        public Optional<KeyedRequest> claim(KeyedRequest inFlight, Instant now) {
+            Optional<KeyedRequest> held = inner.claim(inFlight, now);
+            claimed.countDown();
+            return held;
+        }
+
+        @Override
+        public void complete(String caller, String key, StoredAnswer answer) {
+            inner.complete(caller, key, answer);
+        }
+
+        @Override
+        public void release(String caller, String key) {
+            releasedOn.set(Thread.currentThread().getName());
+            inner.release(caller, key);
+            released.countDown();
+        }
     }
 
     @Test
-    void aNewKeyProceedsAndASucceededOneIsReplayed() {
-        StepVerifier.create(handler.claim("ana", "k1", "fp")).assertNext(c -> assertThat(c).isInstanceOf(Proceed.class)).verifyComplete();
-        StepVerifier.create(handler.complete("ana", "k1", new StoredAnswer(202, Map.of(), "{\"jobId\":\"job_1\"}"))).verifyComplete();
-        StepVerifier.create(handler.claim("ana", "k1", "fp"))
-                .assertNext(c -> assertThat(((Replay) c).answer().body()).isEqualTo("{\"jobId\":\"job_1\"}"))
-                .verifyComplete();
-    }
+    void aCancelledCallFreesItsKeyOffTheCancellingThread() throws InterruptedException {
+        ReleaseWatchingStore store = new ReleaseWatchingStore();
+        IdempotencyHandler cancellable = new IdempotencyHandler(store, Duration.ofHours(24), CLOCK);
 
-    @Test
-    void theSameKeyWithAnotherRequestIsAConflict() {
-        handler.claim("ana", "k1", "fp").block();
-        handler.complete("ana", "k1", new StoredAnswer(202, Map.of(), "{}")).block();
-        StepVerifier.create(handler.claim("ana", "k1", "other"))
-                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("different request"))
-                .verify();
-    }
+        Disposable call = cancellable.once("ana", "k1", "fp", Mono::never).subscribe();
+        assertThat(store.claimed.await(5, TimeUnit.SECONDS)).isTrue();
+        call.dispose();
 
-    @Test
-    void aSecondRequestWhileTheFirstRunsIsAConflict() {
-        handler.claim("ana", "k1", "fp").block();
-        StepVerifier.create(handler.claim("ana", "k1", "fp"))
-                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("still running"))
-                .verify();
-    }
-
-    @Test
-    void aFailedAnswerFreesTheKey() {
-        handler.claim("ana", "k1", "fp").block();
-        handler.complete("ana", "k1", new StoredAnswer(400, Map.of(), "{\"error\":\"bad\"}")).block();
-        StepVerifier.create(handler.claim("ana", "k1", "other")).assertNext(c -> assertThat(c).isInstanceOf(Proceed.class)).verifyComplete();
-    }
-
-    @Test
-    void anInvalidKeyIsABadRequest() {
-        StepVerifier.create(handler.claim("ana", "two words", "fp")).expectError(IllegalArgumentException.class).verify();
-    }
-
-    @Test
-    void onceRunsTheCallOncePerKeyAndMarksTheReplay() {
-        StepVerifier.create(handler.once("ana", "k1", "fp", this::start))
-                .assertNext(o -> {
-                    assertThat(o.replayed()).isFalse();
-                    assertThat(o.value().path("jobId").asText()).isEqualTo("job_1");
-                })
-                .verifyComplete();
-        StepVerifier.create(handler.once("ana", "k1", "fp", this::start))
-                .assertNext(o -> {
-                    assertThat(o.replayed()).isTrue();
-                    assertThat(o.value().path("jobId").asText()).isEqualTo("job_1");
-                })
-                .verifyComplete();
-        StepVerifier.create(handler.once("bob", "k1", "fp", this::start))
-                .assertNext(o -> assertThat(o.value().path("jobId").asText()).isEqualTo("job_2"))
-                .verifyComplete();
-        assertThat(runs.get()).isEqualTo(2);
-    }
-
-    @Test
-    void aFailedCallFreesItsKeyForARetry() {
-        StepVerifier.create(handler.once("ana", "k1", "fp", () -> Mono.error(new IllegalArgumentException("bad input"))))
-                .expectError(IllegalArgumentException.class)
-                .verify();
-        StepVerifier.create(handler.once("ana", "k1", "fp", this::start))
-                .assertNext(o -> assertThat(o.replayed()).isFalse())
-                .verifyComplete();
+        assertThat(store.released.await(5, TimeUnit.SECONDS)).as("the key is freed").isTrue();
+        assertThat(store.releasedOn.get()).as("on a thread that may block, not the cancelling one").startsWith("boundedElastic");
+        StepVerifier.create(cancellable.claim("ana", "k1", "fp")).assertNext(c -> assertThat(c).isInstanceOf(Proceed.class)).verifyComplete();
     }
 }

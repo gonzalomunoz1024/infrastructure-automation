@@ -17,6 +17,14 @@
 //
 // The platform and the SDKs share one contract (the payload, the error classes, the heartbeat);
 // see "Custom-code providers" in docs/architecture.md.
+//
+// # Tracing
+//
+// Each call carries the platform's W3C traceparent (Call.TraceParent). The SDK depends on no
+// tracing library: give the provider a SpanStarter with WithTracing (a few lines with the
+// OpenTelemetry API, see the README) and each call runs in a span "run <provider>.<action>",
+// child of the platform's step span, that the handler's ctx carries; without one the worker
+// writes the traceparent to the activity's debug log.
 package provider
 
 import (
@@ -66,6 +74,15 @@ type Provider struct {
 	actions          []*Action
 	byID             map[string]*Action
 	errors           []ErrorClass
+	tracing          SpanStarter
+}
+
+// WithTracing is the provider served with a SpanStarter: each call that carries the platform's
+// traceparent runs in the span it starts. The provider file does not change.
+func (p *Provider) WithTracing(start SpanStarter) *Provider {
+	c := *p
+	c.tracing = start
+	return &c
 }
 
 // Name is the provider's name, the id workflows call it by.
@@ -180,9 +197,9 @@ func (b *Builder) Build() (*Provider, error) {
 			problems = append(problems, fmt.Sprintf("Action ids read as <noun>.<verb>, like address.reserve; was %q", a.id))
 		}
 		if a.effect == "" {
-			problems = append(problems, fmt.Sprintf("Action %s says what it does: Effect(Read), Create, Update or Delete", a.id))
+			problems = append(problems, fmt.Sprintf("Action %s says what it does: Effect(Read), Create, Change or Delete", a.id))
 		} else if !validEffect(a.effect) {
-			problems = append(problems, fmt.Sprintf("Action %s has effect %q; one of read, create, update, delete", a.id, a.effect))
+			problems = append(problems, fmt.Sprintf("Action %s has effect %q; one of read, create, change, delete", a.id, a.effect))
 		}
 		for _, s := range []struct {
 			which  string
@@ -237,7 +254,7 @@ func (b *Builder) MustBuild() *Provider {
 
 func validEffect(e Effect) bool {
 	switch e {
-	case Read, Create, Update, Delete:
+	case Read, Create, Change, Delete:
 		return true
 	}
 	return false

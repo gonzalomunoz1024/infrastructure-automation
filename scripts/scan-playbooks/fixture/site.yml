@@ -1,0 +1,12 @@
+# The fixture of scan-playbooks: a playbook kept the way the platform wants it, every secret a
+# vault reference or an expression. The upload scan rule must flag nothing in this file.
+- name: Configure the database hosts
+  hosts: db
+  become: true
+  vars:
+    db_password: "{{ lookup('env', 'DB_PASSWORD') }}"
+    api_token: vault:ops-api-token
+    vault_password_file: /etc/ansible/vault-pass
+    retries: 3
+  roles:
+    - db

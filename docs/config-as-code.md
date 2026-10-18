@@ -42,7 +42,7 @@ mcp:
   description: Restart a virtual machine after safety checks
 policy:
   approval: { required: true, group: compute-approvers, timeout: 4h }
-  rbac: [ops, sre]            # roles that may invoke
+  rbac: [ops, sre]            # roles or teams that may invoke (admins always may; empty: anyone)
   change: { required: true }  # a ServiceNow change is opened for every job
 triggers:                     # optional extra ways in besides the API and MCP
   - alert: { match: { source: grafana, labels: { severity: critical } } }

@@ -1,0 +1,20 @@
+# Tasks with secrets taken from the vault and the inventory, and one written into a file.
+- name: Create the application user
+  community.postgresql.postgresql_user:
+    name: app
+    password: "{{ app_db_password }}"
+    login_user: postgres
+- name: Read the hosts from the inventory API
+  ansible.builtin.uri:
+    url: https://cmdb.example.test/api/hosts
+    headers:
+      Authorization: "Bearer {{ cmdb_token }}"
+    validate_certs: true
+- name: Write the service's settings
+  ansible.builtin.copy:
+    dest: /etc/app/settings.ini
+    mode: "0600"
+    content: |
+      [db]
+      host = db.example.test
+      password = not-real   # scan: flagged

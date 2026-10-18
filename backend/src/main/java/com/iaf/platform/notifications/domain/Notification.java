@@ -17,8 +17,8 @@ import lombok.With;
  * means for it (the inbox shows it to the users and the members of the teams, a chat webhook posts
  * it to the channel, email writes to the addresses configured for them).
  *
- * <p>{@code kind} is {@code notify}, {@code provider.alert}, {@code approval.requested} or
- * {@code approval.escalated}; {@code severity} is info, warning or critical; {@code link} is a path
+ * <p>{@code kind} is {@code notify}, {@code provider.alert}, {@code approval.requested},
+ * {@code approval.escalated} or {@code review.requested}; {@code severity} is info, warning or critical; {@code link} is a path
  * in the UI, like {@code /jobs/job_123}.
  */
 @Builder(toBuilder = true)
@@ -42,6 +42,7 @@ public record Notification(
     public static final String PROVIDER_ALERT = "provider.alert";
     public static final String APPROVAL_REQUESTED = "approval.requested";
     public static final String APPROVAL_ESCALATED = "approval.escalated";
+    public static final String REVIEW_REQUESTED = "review.requested";
 
     public Notification {
         users = distinct(users);

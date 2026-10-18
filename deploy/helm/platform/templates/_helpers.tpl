@@ -40,19 +40,109 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s:%s" $repo (toString (default .ctx.Chart.AppVersion .image.tag)) -}}
 {{- end -}}
 
-{{/* SPRING_PROFILES_ACTIVE */}}
+{{/* SPRING_PROFILES_ACTIVE: backend.profiles, plus the profiles the postgres and audit values turn on */}}
 {{- define "platform.profiles" -}}
 {{- $profiles := .Values.backend.profiles | default list -}}
-{{- if and .Values.postgres.enabled (not (has "postgres" $profiles)) -}}
-{{- $profiles = append $profiles "postgres" -}}
+{{- $implied := list -}}
+{{- if .Values.postgres.enabled -}}
+{{- $implied = append $implied "postgres" -}}
+{{- end -}}
+{{- if .Values.audit.siem.enabled -}}
+{{- $implied = append $implied "siem" -}}
+{{- end -}}
+{{- if eq (toString .Values.audit.worm.mode) "files" -}}
+{{- $implied = append $implied "worm" -}}
+{{- else if eq (toString .Values.audit.worm.mode) "s3" -}}
+{{- $implied = append $implied "worm-s3" -}}
+{{- else if .Values.audit.worm.mode -}}
+{{- fail "audit.worm.mode is files, s3 or empty" -}}
+{{- end -}}
+{{- range $implied -}}
+{{- if not (has . $profiles) -}}
+{{- $profiles = append $profiles . -}}
+{{- end -}}
 {{- end -}}
 {{- join "," $profiles -}}
+{{- end -}}
+
+{{/* An env var from a key of an existing Secret, nothing when no Secret is named: (dict "env" "NAME" "secret" .Values.x.ySecret) */}}
+{{- define "platform.secretEnv" -}}
+{{- if .secret.name -}}
+- name: {{ .env }}
+  valueFrom:
+    secretKeyRef: { name: {{ .secret.name | quote }}, key: {{ .secret.key | quote }} }
+{{- end -}}
+{{- end -}}
+
+{{/* The volume of the Temporal client TLS Secret (temporal.tls), mounted at /etc/temporal-tls; nothing without one */}}
+{{- define "platform.temporalTlsVolume" -}}
+{{- with .Values.temporal.tls -}}
+{{- if .secretName -}}
+- name: temporal-tls
+  secret:
+    secretName: {{ .secretName | quote }}
+    defaultMode: 292  # 0444 on a read-only mount: a provider worker's pod has no fsGroup, and its image any non-root uid
+    items:
+      {{- if .caKey }}
+      - { key: {{ .caKey | quote }}, path: ca.crt }
+      {{- end }}
+      {{- if .certKey }}
+      - { key: {{ .certKey | quote }}, path: tls.crt }
+      {{- end }}
+      {{- if .keyKey }}
+      - { key: {{ .keyKey | quote }}, path: tls.key }
+      {{- end }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The backend's Temporal connection settings as env: the paths of the mounted TLS files (temporal.tls) and the vault: references of temporal.apiKey and temporal.payloadKey, which the backend resolves at startup; anything but a reference fails the render, as it would fail the backend */}}
+{{- define "platform.temporalEnv" -}}
+{{- $t := .Values.temporal -}}
+{{- with $t.tls -}}
+{{- if .secretName -}}
+{{- if .caKey }}
+- { name: PLATFORM_TEMPORAL_TLS_CA, value: /etc/temporal-tls/ca.crt }
+{{- end -}}
+{{- if .certKey }}
+- { name: PLATFORM_TEMPORAL_TLS_CERT, value: /etc/temporal-tls/tls.crt }
+{{- end -}}
+{{- if .keyKey }}
+- { name: PLATFORM_TEMPORAL_TLS_KEY, value: /etc/temporal-tls/tls.key }
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $setting, $env := dict "apiKey" "PLATFORM_TEMPORAL_APIKEY" "payloadKey" "PLATFORM_TEMPORAL_PAYLOADKEY" -}}
+{{- with get $t $setting -}}
+{{- if not (hasPrefix "vault:" (toString .)) -}}
+{{- fail (printf "temporal.%s is a vault: reference to the key, like vault:temporal/%s, never the key itself: the backend refuses anything else at startup" $setting (kebabcase $setting)) -}}
+{{- end }}
+- name: {{ $env }}
+  value: {{ toString . | quote }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when the workflows live in the clone of the content repository (content.repository with content.gitStore.enabled); refuses what the Git workflow store cannot run on */}}
+{{- define "platform.gitStore" -}}
+{{- $c := .Values.content -}}
+{{- if and $c.repository $c.gitStore.enabled -}}
+{{- if gt (int .Values.api.replicas) 1 -}}
+{{- fail "content.gitStore keeps the workflows in one pod's clone of content.repository and pushes nothing, so another API pod would not see them: set api.replicas to 1, or content.gitStore.enabled to false to keep them in the database" -}}
+{{- end -}}
+{{- if .Values.worker.enabled -}}
+{{- fail "content.gitStore keeps the workflows in one pod's clone of content.repository, which the interpreter's worker reads too: set worker.enabled to false (the API pod then runs the worker), or content.gitStore.enabled to false to keep them in the database" -}}
+{{- end -}}
+{{- $_ := required "content.gitStore.existingClaim names the volume that keeps the clone the workflows live in (content.gitStore with content.repository), or set content.gitStore.enabled to false" $c.gitStore.existingClaim -}}
+true
+{{- end -}}
 {{- end -}}
 
 {{/* The pod spec of a backend instance: (dict "ctx" $ "roles" "api" "component" "api" "settings" .Values.api) */}}
 {{- define "platform.backendPod" -}}
 {{- $ctx := .ctx -}}
 {{- $v := $ctx.Values -}}
+{{- $gitStore := include "platform.gitStore" $ctx -}}
 metadata:
   labels:
     {{- include "platform.labels" $ctx | nindent 4 }}
@@ -108,7 +198,17 @@ spec:
           if [ -n "${GIT_PASSWORD:-}" ]; then
             git config --global credential.helper '!f() { echo "username=${GIT_USERNAME}"; echo "password=${GIT_PASSWORD}"; }; f'
           fi
+          {{- if $gitStore }}
+          # the Git workflow store's clone: made once, with the history its retired versions are
+          # read from, then kept on the volume with the store's commits
+          if [ -d /content/repo/.git ]; then
+            echo "keeping the clone in /content/repo"
+          else
+            git clone --quiet --branch "$CONTENT_REF" "$CONTENT_REPOSITORY" /content/repo
+          fi
+          {{- else }}
           git clone --quiet --depth 1 --branch "$CONTENT_REF" "$CONTENT_REPOSITORY" /content/repo
+          {{- end }}
       volumeMounts:
         - { name: content, mountPath: /content }
         - { name: tmp, mountPath: /tmp }
@@ -145,6 +245,12 @@ spec:
             secretKeyRef: { name: {{ $v.postgres.passwordSecret.name | quote }}, key: {{ $v.postgres.passwordSecret.key | quote }} }
         {{- end }}
         {{- end }}
+        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_AUDIT_SIGNINGKEY" "secret" $v.audit.signingKeySecret) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with include "platform.temporalEnv" $ctx | trim }}
+        {{- . | nindent 8 }}
+        {{- end }}
         {{- range $v.secrets.env }}
         - name: {{ .name }}
           valueFrom:
@@ -177,14 +283,33 @@ spec:
         - { name: config, mountPath: /etc/platform, readOnly: true }
         - { name: content, mountPath: /content }
         - { name: tmp, mountPath: /tmp }
+        {{- if $v.temporal.tls.secretName }}
+        - { name: temporal-tls, mountPath: /etc/temporal-tls, readOnly: true }
+        {{- end }}
+        {{- if eq (toString $v.audit.worm.mode) "files" }}
+        - { name: evidence, mountPath: {{ $v.audit.worm.files.dir | quote }} }
+        {{- end }}
   volumes:
     - name: config
       configMap:
         name: {{ include "platform.fullname" $ctx }}-backend
     - name: content
+      {{- if $gitStore }}
+      persistentVolumeClaim:
+        claimName: {{ $v.content.gitStore.existingClaim | quote }}
+      {{- else }}
       emptyDir: {}
+      {{- end }}
     - name: tmp
       emptyDir: {}
+    {{- with include "platform.temporalTlsVolume" $ctx }}
+    {{- . | nindent 4 }}
+    {{- end }}
+    {{- if eq (toString $v.audit.worm.mode) "files" }}
+    - name: evidence
+      persistentVolumeClaim:
+        claimName: {{ required "audit.worm.files.existingClaim names the volume of the write-once evidence (audit.worm.mode files)" $v.audit.worm.files.existingClaim | quote }}
+    {{- end }}
   {{- with .settings.nodeSelector }}
   nodeSelector:
     {{- toYaml . | nindent 4 }}

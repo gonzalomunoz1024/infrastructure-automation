@@ -1,0 +1,25 @@
+{{- if .Values.metrics.grafanaDashboard.enabled }}
+# The job dashboard (deploy/grafana/platform-dashboard.json, copied into the chart as
+# dashboards/platform-dashboard.json) for Grafana's dashboard sidecar, which loads every ConfigMap
+# labelled grafana_dashboard.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.fullname" . }}-grafana-dashboard
+  {{- with .Values.metrics.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  platform-dashboard.json: |-
+    {{- .Files.Get "dashboards/platform-dashboard.json" | nindent 4 }}
+{{- end }}
