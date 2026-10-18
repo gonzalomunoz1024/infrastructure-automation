@@ -182,7 +182,7 @@ class ReleaseCommandHandlerTest {
         store.save(last);
         when(runs.outcomes("vm-restart", "1.2.0", THREE_HOURS_AGO)).thenReturn(Mono.just(many(25, () -> ok("1.2.0", 1000))));
         when(runs.outcomes("vm-restart", "1.1.0", THREE_HOURS_AGO)).thenReturn(Mono.just(List.of()));
-        when(runs.outcomes("vm-restart", "1.1.0", last.startedAt().minus(ReleaseCommandHandler.BASELINE_LOOKBACK)))
+        when(runs.outcomes("vm-restart", "1.1.0", last.startedAt().minus(com.iaf.platform.releases.domain.ReleaseGates.BASELINE_LOOKBACK)))
                 .thenReturn(Mono.just(many(30, () -> ok("1.1.0", 1000))));
 
         StepVerifier.create(handler.judge(last, "platform"))

@@ -21,11 +21,12 @@ api:
       vmId:
         type: string
         title: VM id
-        description: The vSphere VM id, for example vm-1042
+        description: The VM to restart, picked from the resource registry
         x-resource: { type: vm }
       reason:
         type: string
         title: Reason
+        examples: ["stuck after a kernel update", "high load, unresponsive", "memory leak in the monitoring agent", "requested by the on-call", "disk full, services restarting"]
       environment:
         type: string
         title: Environment

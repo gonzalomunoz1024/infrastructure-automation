@@ -31,6 +31,8 @@ public final class ReleaseGates {
 
     public static final int MIN_JOBS = 20;
     public static final Duration MIN_TIME = Duration.ofHours(2);
+    /** When the current version has no job since the stage started (a 100% stage), its baseline comes from this much history before the release. */
+    public static final Duration BASELINE_LOOKBACK = Duration.ofDays(7);
     /** Percentage points the candidate's success rate may trail the current version's. */
     public static final double SUCCESS_RATE_TOLERANCE = 1.0;
     /** How much slower the candidate's p95 may be (0.2 = 20%). */

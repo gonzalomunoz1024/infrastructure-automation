@@ -3,110 +3,125 @@ package com.iaf.platform.releases.adapters.outbound;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import com.iaf.platform.common.demo.DemoReleases;
+import com.iaf.platform.common.demo.DemoReleases.Outcome;
+import com.iaf.platform.common.demo.DemoReleases.Stage;
+import com.iaf.platform.common.demo.DemoReleases.Story;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.releases.domain.Release;
-import com.iaf.platform.releases.domain.Release.Gate;
 import com.iaf.platform.releases.domain.Release.HistoryEntry;
-import com.iaf.platform.releases.domain.Release.Jobs;
+import com.iaf.platform.releases.domain.ReleaseGates;
+import com.iaf.platform.releases.domain.ReleaseGates.Evaluation;
 import com.iaf.platform.releases.domain.ReleaseStatus;
 import com.iaf.platform.releases.ports.outbound.ReleaseStore;
+import com.iaf.platform.runs.ports.inbound.RunsQueries;
+import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
+import com.iaf.platform.workflows.domain.WorkflowRecord;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Demo history ({@code platform.demo.seed-history}): a canary half way through, a release
- * promoted yesterday and one rolled back last week by the error-types gate. Fixed numbers; it
- * does not depend on jobs existing. The names are sample content, not platform knowledge.
+ * Demo releases ({@code platform.demo.seed-history}), following {@link DemoReleases}. They are
+ * recorded once the demo jobs exist, and every gate is judged by {@link ReleaseGates} on the jobs
+ * that ran in the release's last stage, so a release, its gates and the jobs list agree. The
+ * running canary is judged again by the release handler from then on, like any other.
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class DemoReleaseSeed {
 
-    static final String CANARY_ID = "rel_demo_vm_restart";
-    static final String PROMOTED_ID = "rel_demo_create_vm";
-    static final String ROLLED_BACK_ID = "rel_demo_mongo_rollback";
-    static final String REPUBLISHED_ID = "rel_demo_mongo_republish";
-
-    private static final String PLATFORM = "platform";
-    private static final List<Integer> STAGES = List.of(10, 50, 100);
-
     private final ReleaseStore store;
+    private final WorkflowQueries workflows;
+    private final RunsQueries runs;
     private final PlatformProperties props;
     private final Clock clock;
 
-    @PostConstruct
-    public void seed() {
-        if (!props.getDemo().isSeedHistory()) {
+    /** After the demo jobs ({@code DemoRunsSeeder} runs just before). */
+    @EventListener(ApplicationReadyEvent.class)
+    @Order(Ordered.LOWEST_PRECEDENCE)
+    public void onReady() {
+        if (props.getDemo() == null || !props.getDemo().isSeedHistory()) {
             return;
         }
+        int seeded = seed();
+        log.info("seeded {} demo release(s)", seeded);
+    }
+
+    public int seed() {
         Instant now = clock.instant();
-        store.save(canaryInProgress(now));
-        store.save(promotedYesterday(now));
-        store.save(rolledBackLastWeek(now));
-        store.save(republished(now));
-        log.info("seeded {} demo releases", 4);
+        int count = 0;
+        for (Story s : DemoReleases.STORIES) {
+            WorkflowRecord to = workflows.version(s.workflow(), s.to()).blockOptional(Duration.ofSeconds(10)).orElse(null);
+            if (to == null || to.definition() == null || store.find(s.id()).isPresent()) {
+                continue;
+            }
+            store.save(release(s, to.definition(), now));
+            count++;
+        }
+        return count;
     }
 
-    /** vm-restart 1.1.0 -> 1.2.0: stage 1 of 3 (50%), started three hours ago, three gates judged, the sample still building up. */
-    static Release canaryInProgress(Instant now) {
-        Instant started = now.minus(Duration.ofHours(3));
-        Instant stage = now.minus(Duration.ofMinutes(50));
-        List<Gate> gates = List.of(
-                new Gate("success-rate", "Success rate", true, 100.0, 92.3, "100.0% on the candidate vs 93.3% on the current version (may trail by 1 point)"),
-                new Gate("p95", "p95 duration", true, 38400.0, 43320.0, "38.4s on the candidate vs 36.1s on the current version (may be 20% slower)"),
-                new Gate("error-types", "Error types", true, 0.0, 0.0, "no failures on the candidate"),
-                new Gate("sample", "Sample size", null, 14.0, 20.0, "14 of 20 jobs; 50m of the 2h minimum"));
-        return new Release(CANARY_ID, "vm-restart", "1.1.0", "1.2.0", Release.STRATEGY_CANARY, ReleaseStatus.CANARY, 1, STAGES, 50,
-                started, stage, null, gates, new Jobs(15, 14), List.of(
-                        new HistoryEntry(started, "canary started at 10%", "mateo"),
-                        new HistoryEntry(stage, "advanced to 50%", PLATFORM)));
+    Release release(Story s, WorkflowDefinition def, Instant now) {
+        Instant started = s.startedAt(now);
+        if (!s.canary()) {
+            return Release.promotedAtOnce(s.id(), s.workflow(), s.from(), s.to(), s.strategy(), started, "published to everyone", s.startedBy());
+        }
+        List<Integer> plan = def.rolloutOrDefault().stages() == null || def.rolloutOrDefault().stages().isEmpty()
+                ? WorkflowDefinition.Rollout.CANARY.stages() : def.rolloutOrDefault().stages();
+        Stage last = s.lastStage();
+        Instant stageStarted = now.minus(last.ago());
+        Instant end = s.active() ? now : s.endedAt(now);
+        Evaluation judged = judge(s, stageStarted, end, now);
+        int index = Math.max(0, plan.indexOf(last.percent()));
+        List<HistoryEntry> history = new ArrayList<>();
+        history.add(new HistoryEntry(started, "canary started at " + s.stages().get(0).percent() + "%", s.startedBy()));
+        for (Stage stage : s.stages().subList(1, s.stages().size())) {
+            history.add(new HistoryEntry(now.minus(stage.ago()), "advanced to " + stage.percent() + "%", Identity.SYSTEM.id()));
+        }
+        Release r = new Release(s.id(), s.workflow(), s.from(), s.to(), s.strategy(), ReleaseStatus.CANARY, index, plan, last.percent(),
+                started, stageStarted, null, judged.gates(), judged.jobs(), List.copyOf(history));
+        if (s.outcome() == Outcome.PROMOTED) {
+            boolean byHand = s.endedBy() != null;
+            return r.promoted(end, byHand ? "promoted" : "promoted: every gate passed at " + last.percent() + "%",
+                    byHand ? s.endedBy() : Identity.SYSTEM.id());
+        }
+        if (s.outcome() == Outcome.ROLLED_BACK) {
+            String reason = judged.failing().map(g -> g.id() + " gate failed (" + g.detail() + ")")
+                    .orElse(s.failure() == null ? "rolled back" : "error-types gate failed (new on the candidate: " + s.failure().errorClass() + ")");
+            return r.rolledBack(end, "rolled back: " + reason, s.endedBy() == null ? Identity.SYSTEM.id() : s.endedBy());
+        }
+        return r;
     }
 
-    /** create-vm 1.9.0 -> 2.0.1: every gate passed at every stage; promoted yesterday. */
-    static Release promotedYesterday(Instant now) {
-        Instant ended = now.minus(Duration.ofDays(1));
-        Instant started = ended.minus(Duration.ofHours(7));
-        Instant stage = ended.minus(Duration.ofHours(2)).minus(Duration.ofMinutes(18));
-        List<Gate> gates = List.of(
-                new Gate("success-rate", "Success rate", true, 98.1, 97.0, "98.1% on the candidate vs 98.0% on the current version (may trail by 1 point)"),
-                new Gate("p95", "p95 duration", true, 71300.0, 86400.0, "71.3s on the candidate vs 72.0s on the current version (may be 20% slower)"),
-                new Gate("error-types", "Error types", true, 0.0, 0.0, "every error class on the candidate (QuotaExceeded) also occurs on the current version"),
-                new Gate("sample", "Sample size", true, 41.0, 20.0, "41 jobs over 2h 18m in the stage"));
-        return new Release(PROMOTED_ID, "create-vm", "1.9.0", "2.0.1", Release.STRATEGY_CANARY, ReleaseStatus.PROMOTED, 2, STAGES, 100,
-                started, stage, ended, gates, new Jobs(58, 41), List.of(
-                        new HistoryEntry(started, "canary started at 10%", "gonzalo"),
-                        new HistoryEntry(started.plus(Duration.ofHours(2)).plus(Duration.ofMinutes(25)), "advanced to 50%", PLATFORM),
-                        new HistoryEntry(stage, "advanced to 100%", PLATFORM),
-                        new HistoryEntry(ended, "promoted: every gate passed at 100%", PLATFORM)));
+    /** The gates over the jobs that started in the stage and finished by {@code end}, the way the release handler judges them. */
+    private Evaluation judge(Story s, Instant stageStarted, Instant end, Instant now) {
+        List<JobOutcome> candidate = within(runs.outcomes(s.workflow(), s.to(), stageStarted).block(Duration.ofSeconds(10)), end);
+        List<JobOutcome> current = within(runs.outcomes(s.workflow(), s.from(), stageStarted).block(Duration.ofSeconds(10)), end);
+        if (current.isEmpty()) {
+            Instant lookback = s.startedAt(now).minus(ReleaseGates.BASELINE_LOOKBACK);
+            current = within(runs.outcomes(s.workflow(), s.from(), lookback).block(Duration.ofSeconds(10)), end);
+        }
+        return ReleaseGates.evaluate(candidate, current, stageStarted, end);
     }
 
-    /** mongodb-upgrade 3.0.2 -> 3.1.0: an error class the current version never had; rolled back at 10% last week. */
-    static Release rolledBackLastWeek(Instant now) {
-        Instant started = now.minus(Duration.ofDays(8));
-        Instant ended = started.plus(Duration.ofHours(1)).plus(Duration.ofMinutes(42));
-        String reason = "error-types gate failed (new on the candidate: ReplicaSetNotReady)";
-        List<Gate> gates = List.of(
-                new Gate("success-rate", "Success rate", true, 97.2, 96.8, "97.2% on the candidate vs 97.8% on the current version (may trail by 1 point)"),
-                new Gate("p95", "p95 duration", true, 412000.0, 506400.0, "412.0s on the candidate vs 422.0s on the current version (may be 20% slower)"),
-                new Gate("error-types", "Error types", false, 1.0, 0.0, "new on the candidate: ReplicaSetNotReady"),
-                new Gate("sample", "Sample size", null, 36.0, 20.0, "36 jobs; 1h 42m of the 2h minimum"));
-        return new Release(ROLLED_BACK_ID, "mongodb-upgrade", "3.0.2", "3.1.0", Release.STRATEGY_CANARY, ReleaseStatus.ROLLED_BACK, 0, STAGES, 0,
-                started, started, ended, gates, new Jobs(44, 36), List.of(
-                        new HistoryEntry(started, "canary started at 10%", "ana"),
-                        new HistoryEntry(ended, "rolled back: " + reason, PLATFORM)));
-    }
-
-    /** The same version published again to everyone once the fix was in. */
-    static Release republished(Instant now) {
-        Instant at = now.minus(Duration.ofDays(6));
-        return new Release(REPUBLISHED_ID, "mongodb-upgrade", "3.0.2", "3.1.0", Release.STRATEGY_ALL, ReleaseStatus.PROMOTED, 0, List.of(100), 100,
-                at, at, at, List.of(), Jobs.NONE, List.of(new HistoryEntry(at, "published to everyone", "ana")));
+    private static List<JobOutcome> within(List<JobOutcome> outcomes, Instant end) {
+        if (outcomes == null) {
+            return List.of();
+        }
+        return outcomes.stream().filter(o -> o.startedAt() == null || o.startedAt().isBefore(end)).toList();
     }
 }

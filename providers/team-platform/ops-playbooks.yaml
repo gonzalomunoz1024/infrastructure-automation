@@ -53,7 +53,7 @@ spec:
         failed: 0
         rebootRequired: true
         packages:
-          - { name: openssl, version: 3.0.14-1, cves: ["CVE-2026-1234"] }
-          - { name: libssl3, version: 3.0.14-1, cves: ["CVE-2026-1234"] }
+          - { name: openssl, version: 3.0.14-1, cves: ["{{ $input.cve }}"] }
+          - { name: libssl3, version: 3.0.14-1, cves: ["{{ $input.cve }}"] }
   slo: { successRate: 97.0, p95Ms: 240000 }
   alerts: { channel: "#platform-alerts" }

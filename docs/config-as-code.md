@@ -25,8 +25,8 @@ api:
     type: object
     required: [vmId]
     properties:
-      vmId: { type: string, title: VM id }
-      reason: { type: string }
+      vmId: { type: string, title: VM id, x-resource: { type: vm } }   # picked from the registry
+      reason: { type: string, examples: [kernel patch, memory leak] }  # examples feed the form, Try it and the demo history
       image: { type: string, x-resource: { type: image, orCreateWith: build-vm-image } }
   response: { status: 202 }   # always 202 with { jobId }
   preview: true               # publish a :preview operation (blast radius before a run)

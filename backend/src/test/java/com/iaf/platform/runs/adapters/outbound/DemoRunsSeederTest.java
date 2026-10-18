@@ -13,13 +13,17 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import com.iaf.platform.common.demo.DemoReleases;
+import com.iaf.platform.common.demo.DemoReleases.Story;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
+import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 
 /** The demo history: a fortnight of believable jobs, telemetry for every call, and three live states the engine picks up. */
@@ -35,7 +39,8 @@ class DemoRunsSeederTest {
 
         DemoRunsSeeder.Report report = seeder.seed();
 
-        assertThat(report.jobs()).isEqualTo(DemoRunsSeeder.HISTORY_JOBS);
+        int canaryJobs = DemoReleases.STORIES.stream().filter(Story::canary).mapToInt(Story::jobs).sum();
+        assertThat(report.jobs()).isEqualTo(DemoRunsSeeder.HISTORY_JOBS + canaryJobs);
         List<Job> all = w.projection.all();
         List<Job> history = all.stream().filter(j -> j.parentId() == null && j.status() != null && j.status().terminal()).toList();
         assertThat(history).hasSizeGreaterThanOrEqualTo(55);
@@ -49,8 +54,12 @@ class DemoRunsSeederTest {
         assertThat(failed).hasSizeBetween(2, 10);
         assertThat(failed).allMatch(j -> j.errorClass() != null && j.failedStep() != null);
         assertThat(failed.stream().map(Job::errorClass).collect(java.util.stream.Collectors.toSet()))
-                .isSubsetOf(Set.of("rate_limited", "not_found", "timeout", "unreachable", "apply_failed", "verify_failed", "assertion_failed", "expression", "error"));
+                .isSubsetOf(Set.of("rate_limited", "not_found", "timeout", "unreachable", "apply_failed", "verify_failed", "assertion_failed", "expression", "error",
+                        "replica_set_not_ready"));
         assertThat(history.stream().filter(j -> j.status() == JobStatus.CANCELLED).count()).isBetween(1L, 8L);
+        // the failure the mongodb-upgrade canary was rolled back on, at the step the story names
+        assertThat(failed).anyMatch(j -> j.workflow().equals("mongodb-upgrade") && "3.1.0".equals(j.version())
+                && "replica_set_not_ready".equals(j.errorClass()) && "verify".equals(j.failedStep()));
         assertThat(history).anyMatch(j -> j.change() != null && j.change().id().startsWith("CHG00") && "closed".equals(j.change().state()));
         assertThat(history).anyMatch(j -> j.approvals().stream().anyMatch(a -> a.status() == Approval.Status.APPROVED && a.decidedBy() != null));
         assertThat(history).anyMatch(j -> j.preview() != null);
@@ -86,16 +95,20 @@ class DemoRunsSeederTest {
         assertThat(batch.workflow()).isEqualTo("patch-cve");
         assertThat(batch.kind()).isEqualTo(Job.Kind.BATCH);
         assertThat(batch.status()).isEqualTo(JobStatus.RUNNING);
-        assertThat(batch.batch().rows()).hasSize(12);
+        // one row per ready VM of the registry; waves of 5%, 25% and 100% of six rows hold 1, 1 and 4
+        List<String> vms = RunsTestWiring.READY.stream().filter(r -> r.type().equals("vm")).map(Resource::id).toList();
+        assertThat(batch.batch().rows()).hasSize(vms.size());
+        assertThat(batch.batch().rows()).extracting(r -> r.input().path("vmId").asText()).containsExactlyElementsOf(vms);
+        assertThat(batch.batch().waves()).extracting(Wave::size).containsExactly(1, 1, 4);
         assertThat(batch.batch().waves().get(0).status()).isEqualTo("done");
         assertThat(batch.batch().waves().get(1).status()).isEqualTo("running");
         assertThat(batch.batch().waves().get(2).status()).isEqualTo("pending");
-        assertThat(batch.batch().count("succeeded")).isEqualTo(2);
+        assertThat(batch.batch().count("succeeded")).isEqualTo(1);
         assertThat(batch.batch().count("running")).isEqualTo(1);
-        assertThat(batch.batch().count("pending")).isEqualTo(9);
-        assertThat(batch.progress()).isEqualTo(new Job.Progress(2, 12, 0));
+        assertThat(batch.batch().count("pending")).isEqualTo(4);
+        assertThat(batch.progress()).isEqualTo(new Job.Progress(1, 6, 0));
         List<Job> rows = w.projection.children(batch.id());
-        assertThat(rows).hasSize(3);
+        assertThat(rows).hasSize(2);
         assertThat(rows.stream().filter(r -> r.status() == JobStatus.RUNNING)).singleElement()
                 .satisfies(r -> assertThat(r.step("patch").status()).isEqualTo(StepStatus.RUNNING));
 

@@ -67,7 +67,7 @@ function UseTemplateModal({ template, onClose }: { template: Template; onClose: 
   const [name, setName] = useState('')
   const [title, setTitle] = useState('')
   const valid = KEBAB.test(name)
-  const create = useMutation(async (n: string, t?: string) => api.createWorkflow(await renamedWorkflowYaml(template.yaml, n, t)), {
+  const create = useMutation(async (n: string, t?: string) => api.createWorkflow({ yaml: await renamedWorkflowYaml(template.yaml, n, t) }), {
     invalidates: ['workflows'],
     onSuccess: (accepted) => {
       toast.success('Draft created', `${title.trim() || name} is on the canvas.`)

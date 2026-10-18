@@ -1,7 +1,6 @@
 package com.iaf.platform.releases.application;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -51,9 +50,6 @@ import reactor.core.publisher.Mono;
 @Service
 @RequiredArgsConstructor
 public class ReleaseCommandHandler implements ReleaseCommands {
-
-    /** When the current version has no job since the stage started (a 100% stage), its baseline comes from recent history. */
-    static final Duration BASELINE_LOOKBACK = Duration.ofDays(7);
 
     private static final String AGGREGATE = "release";
 
@@ -220,7 +216,7 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         }
         return runs.outcomes(r.workflow(), r.from(), r.stageStartedAt()).defaultIfEmpty(List.of())
                 .flatMap(since -> since.isEmpty()
-                        ? runs.outcomes(r.workflow(), r.from(), r.startedAt().minus(BASELINE_LOOKBACK)).defaultIfEmpty(List.of())
+                        ? runs.outcomes(r.workflow(), r.from(), r.startedAt().minus(ReleaseGates.BASELINE_LOOKBACK)).defaultIfEmpty(List.of())
                         : Mono.just(since));
     }
 

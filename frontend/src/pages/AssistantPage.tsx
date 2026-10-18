@@ -168,11 +168,11 @@ export default function AssistantPage({ route }: PageProps) {
     try {
       let name = workflowName
       if (workflowName) {
-        const saved = await api.saveDraft(workflowName, yaml)
+        const saved = await api.saveDraft(workflowName, { yaml })
         const errors = saved.problems.filter((p) => p.level === 'error').length
         toast.success('Draft saved', errors ? `${saved.version} saved with ${errors} problem${errors === 1 ? '' : 's'} to fix.` : `${saved.version} saved.`)
       } else {
-        const accepted = await api.createWorkflow(yaml)
+        const accepted = await api.createWorkflow({ yaml })
         name = accepted.id
         toast.success('Draft created', how === 'open' ? 'Opening it on the canvas.' : `${name} is in your workflows.`)
       }

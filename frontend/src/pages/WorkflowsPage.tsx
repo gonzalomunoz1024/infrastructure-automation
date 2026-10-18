@@ -294,7 +294,7 @@ function BlankForm({ onBack }: { onBack: () => void }) {
   const [folder, setFolder] = useState('')
   const effectiveName = touched ? name : kebab(title)
   const valid = KEBAB.test(effectiveName) && title.trim().length > 0 && owner.trim().length > 0
-  const create = useMutation((yaml: string) => api.createWorkflow(yaml), {
+  const create = useMutation((yaml: string) => api.createWorkflow({ yaml }), {
     invalidates: ['workflows'],
     onSuccess: (accepted) => {
       toast.success('Draft created', `${title.trim()} is ready on the canvas.`)
@@ -395,7 +395,7 @@ function ImportForm({ onBack }: { onBack: () => void }) {
   const importIt = useMutation((args: { source: ImportSource; ref: string }) => api.importWorkflow(args.source, args.ref), {
     onError: (e) => toast.error('Import failed', errorMessage(e)),
   })
-  const create = useMutation((yaml: string) => api.createWorkflow(yaml), {
+  const create = useMutation((yaml: string) => api.createWorkflow({ yaml }), {
     invalidates: ['workflows'],
     onSuccess: (accepted) => {
       toast.success('Draft created', 'The imported workflow is on the canvas.')

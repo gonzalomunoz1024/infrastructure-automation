@@ -25,6 +25,7 @@ api:
       reason:
         type: string
         title: Reason
+        examples: ["decommissioned after the migration", "replaced by a larger VM", "test environment torn down"]
         minLength: 10
       keepSnapshotDays:
         type: integer

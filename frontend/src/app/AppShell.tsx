@@ -52,6 +52,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   home: WorkflowsPage,
   workflows: WorkflowsPage,
   workflow: WorkflowDesignerPage,
+  'workflow-new': WorkflowDesignerPage,
   'workflow-versions': WorkflowVersionsPage,
   catalog: CatalogPage,
   'catalog-run': CatalogRunPage,
