@@ -26,6 +26,7 @@ api:
         type: string
         title: CVE
         pattern: "^CVE-[0-9]{4}-[0-9]{4,}$"
+        examples: ["CVE-2026-1234"]
       severity:
         type: string
         title: Severity
