@@ -236,6 +236,61 @@ class ProviderChecksTest {
         assertThat(codes(ProviderChecks.check(terraform.replace("//lb }", "//lb, version: 2.0.0 }")))).isEmpty();
     }
 
+    static final String SDK = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: ip-pool, title: IP address pool, owner: team-platform, version: 1.0.0 }
+            spec:
+              type: sdk
+              worker: { taskQueue: provider-ip-pool, heartbeatTimeout: 30s }
+              actions:
+                - { id: pool.get, title: Get a pool, effect: read, retry: safe }
+              alerts: { channel: "#platform-alerts" }
+            """;
+
+    @Test
+    void anSdkProviderNamesItsWorkerOrTakesTheDefaultQueue() {
+        assertThat(codes(ProviderChecks.check(SDK))).isEmpty();
+        assertThat(status(ProviderChecks.check(SDK), "spec-pinned")).isEqualTo("skipped");
+        // no worker block: the worker listens on provider-<name>
+        String bare = SDK.replace("  worker: { taskQueue: provider-ip-pool, heartbeatTimeout: 30s }\n", "");
+        assertThat(codes(ProviderChecks.check(bare))).isEmpty();
+        assertThat(ProviderYaml.parse(bare).taskQueue()).isEqualTo("provider-ip-pool");
+        assertThat(codes(ProviderChecks.check(SDK.replace("taskQueue: provider-ip-pool, ", "")))).isEmpty();
+    }
+
+    @Test
+    void anSdkWorkersQueueAndHeartbeatTimeoutAreChecked() {
+        assertThat(codes(ProviderChecks.check(SDK.replace("taskQueue: provider-ip-pool", "taskQueue: \"ip pool\"")))).containsExactly("error sdk.taskQueue");
+        assertThat(codes(ProviderChecks.check(SDK.replace("heartbeatTimeout: 30s", "heartbeatTimeout: soon")))).containsExactly("error sdk.heartbeatTimeout");
+        assertThat(codes(ProviderChecks.check(SDK.replace("heartbeatTimeout: 30s", "heartbeatTimeout: PT30S")))).isEmpty();
+        assertThat(codes(ProviderChecks.check(SDK.replace("worker: { taskQueue: provider-ip-pool, heartbeatTimeout: 30s }", "worker: provider-ip-pool"))))
+                .containsExactly("error sdk.worker");
+        assertThat(codes(ProviderChecks.check(SDK.replace("heartbeatTimeout: 30s", "heartbeat: 30s")))).containsExactly("warning sdk.workerField");
+        Result r = ProviderChecks.check(SDK.replace("taskQueue: provider-ip-pool", "taskQueue: \"ip pool\""));
+        assertThat(problem(r, "sdk.taskQueue").orElseThrow().field()).isEqualTo("spec.worker.taskQueue");
+        assertThat(status(r, "schema")).isEqualTo("failed");
+    }
+
+    @Test
+    void theOlderTopLevelTaskQueueStillWorksWithAWarning() {
+        String older = SDK.replace("worker: { taskQueue: provider-ip-pool, heartbeatTimeout: 30s }", "taskQueue: ip-workers");
+        assertThat(codes(ProviderChecks.check(older))).containsExactly("warning sdk.taskQueueMoved");
+        assertThat(ProviderYaml.parse(older).taskQueue()).isEqualTo("ip-workers");
+        assertThat(ProviderYaml.toJson(ProviderYaml.parse(older)).path("spec").path("worker").path("taskQueue").asText()).isEqualTo("ip-workers");
+    }
+
+    @Test
+    void theWorkerBlockRoundTripsThroughTheCanonicalWriter() {
+        ProviderDefinition p = ProviderYaml.parse(SDK);
+        assertThat(p.spec().worker()).isEqualTo(new ProviderDefinition.Worker("provider-ip-pool", "30s"));
+        String written = ProviderYaml.toYaml(p);
+        assertThat(written).contains("worker:").contains("taskQueue: provider-ip-pool").contains("heartbeatTimeout: 30s").doesNotContain("\n  taskQueue:");
+        assertThat(ProviderYaml.parse(written).spec().worker()).isEqualTo(p.spec().worker());
+        assertThat(codes(ProviderChecks.check(written))).isEmpty();
+        assertThat(ProviderYaml.toJson(ProviderYaml.parse(VALID)).path("spec").has("worker")).isFalse();
+    }
+
     @Test
     void invalidYamlIsOneProblemAndSkipsTheOtherChecks() {
         Result r = ProviderChecks.check("kind: [");

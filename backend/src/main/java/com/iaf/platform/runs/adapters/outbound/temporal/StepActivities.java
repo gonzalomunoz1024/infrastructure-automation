@@ -49,6 +49,13 @@ public interface StepActivities {
     /** {@code register}. */
     JsonNode registerResource(StepCall call, RegisterRequest request);
 
+    /**
+     * Where a provider's action runs (a local activity): the team worker's route when the
+     * provider is an sdk provider, null when the platform calls it ({@link #callProvider}, which
+     * also classifies an unknown provider). An sdk provider without the action fails the step.
+     */
+    WorkerRoute providerRoute(String stepId, String provider, String action);
+
     // ---------------------------------------------------------------- records and ids
 
     /**

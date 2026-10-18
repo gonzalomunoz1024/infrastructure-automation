@@ -7,6 +7,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import com.iaf.platform.common.events.DomainEvent;
@@ -24,6 +25,7 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
+import io.temporal.common.WorkflowExecutionHistory;
 import io.temporal.testing.TestEnvironmentOptions;
 import io.temporal.testing.TestWorkflowEnvironment;
 import io.temporal.worker.Worker;
@@ -43,7 +45,8 @@ import reactor.core.publisher.Mono;
 final class TemporalTestEngine implements AutoCloseable {
 
     static final String QUEUE = "interpreter-test";
-    static final Duration WAIT = Duration.ofSeconds(30);
+    // generous: the test server shares the machine with whole builds
+    static final Duration WAIT = Duration.ofSeconds(60);
 
     final RunsTestWiring w = new RunsTestWiring();
     final TestWorkflowEnvironment env;
@@ -58,21 +61,48 @@ final class TemporalTestEngine implements AutoCloseable {
 
     /** @param calls wraps the recorded provider port, to make some calls fail */
     TemporalTestEngine(UnaryOperator<ProviderCallPort> calls) {
+        this(calls, temporal -> {
+        }, env -> {
+        });
+    }
+
+    /**
+     * @param calls   wraps the recorded provider port, to make some calls fail or slow
+     * @param config  adjusts {@code platform.temporal.*} (the heartbeats) before the worker starts
+     * @param workers registers the teams' workers on their own task queues before the test server starts
+     */
+    TemporalTestEngine(UnaryOperator<ProviderCallPort> calls, Consumer<PlatformProperties.Temporal> config, Consumer<TestWorkflowEnvironment> workers) {
         w.bus.register(published::add);
         StepExecutors executors = new StepExecutors(w.providers, calls.apply(w.calls), w.runners, w.workflows, w.resources, w.resourceCommands, w.events,
                 w.clock);
+        PlatformProperties props = new PlatformProperties();
+        props.getTemporal().setTaskQueue(QUEUE);
+        props.getExecution().setMode("temporal");
+        config.accept(props.getTemporal());
         env = TestWorkflowEnvironment.newInstance(TestEnvironmentOptions.newBuilder()
                 .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json())).build())
                 .build());
         worker = env.newWorker(QUEUE);
-        worker.registerWorkflowImplementationTypes(InterpreterWorkflowImpl.class);
-        worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock));
+        worker.registerWorkflowImplementationTypes(TemporalConfig.workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
+        worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock, props));
+        workers.accept(env);
         env.start();
         client = env.getWorkflowClient();
-        PlatformProperties props = new PlatformProperties();
-        props.getTemporal().setTaskQueue(QUEUE);
-        props.getExecution().setMode("temporal");
         execution = new TemporalWorkflowExecution(client, props);
+    }
+
+    /** A provider port whose calls of one action take {@code delay} longer, like a slow system. */
+    static ProviderCallPort slow(ProviderCallPort delegate, String action, Duration delay) {
+        return call -> call.action() != null && action.equals(call.action().id()) ? delegate.call(call).delayElement(delay) : delegate.call(call);
+    }
+
+    /** Replay a history recorded elsewhere (a resource file) against the workflow code. */
+    void replay(WorkflowExecutionHistory history) {
+        try {
+            worker.replayWorkflowExecution(history);
+        } catch (Exception e) {
+            throw new AssertionError("the recorded history does not replay: " + e, e);
+        }
     }
 
     /** A provider port that fails the first {@code times} calls of one action as unavailable, then answers like {@code delegate}. */

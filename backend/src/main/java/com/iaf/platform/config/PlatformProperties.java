@@ -49,6 +49,12 @@ public class PlatformProperties {
         private String target = "127.0.0.1:7233";
         private String namespace = "default";
         private String taskQueue = "platform-interpreter";
+        /** How long a step's call (provider, automation, script) may go without a heartbeat before it fails as worker-lost; 0 = never. */
+        private Duration heartbeatTimeout = Duration.ofSeconds(60);
+        /** How often those calls heartbeat while they run; well below the timeout. */
+        private Duration heartbeatInterval = Duration.ofSeconds(15);
+        /** The Temporal web UI, for the "Open in Temporal" link of a job; blank = no link. */
+        private String uiUrl = "";
     }
 
     @Data

@@ -1,5 +1,10 @@
 package com.iaf.platform.runs.adapters.outbound.temporal;
 
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -13,6 +18,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.iaf.platform.config.PlatformProperties;
 
+import io.temporal.activity.ActivityOptions;
 import io.temporal.client.WorkflowClient;
 import io.temporal.client.WorkflowClientOptions;
 import io.temporal.common.converter.DataConverter;
@@ -22,6 +28,7 @@ import io.temporal.serviceclient.WorkflowServiceStubs;
 import io.temporal.serviceclient.WorkflowServiceStubsOptions;
 import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
+import io.temporal.worker.WorkflowImplementationOptions;
 
 /**
  * The Temporal wiring of the {@code temporal} profile: the service stubs for
@@ -89,9 +96,29 @@ public class TemporalConfig {
     @Bean
     public Worker interpreterWorker(WorkerFactory factory, StepActivities activities, PlatformProperties props) {
         Worker worker = factory.newWorker(props.getTemporal().getTaskQueue());
-        worker.registerWorkflowImplementationTypes(InterpreterWorkflowImpl.class);
+        worker.registerWorkflowImplementationTypes(workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
         worker.registerActivitiesImplementations(activities);
         return worker;
+    }
+
+    /** The activities that heartbeat while a step's call runs ({@link StepActivitiesImpl}), by activity type. */
+    static final List<String> HEARTBEATING = List.of("CallProvider", "RunAutomation", "Script");
+
+    /**
+     * The interpreter's options from the configuration: {@code platform.temporal.heartbeat-timeout}
+     * on the activities that run a step's call, so a worker that dies mid-call fails the step as
+     * {@code worker-lost} within that time instead of at the step's timeout. The workflow code
+     * cannot read the configuration itself; Temporal merges these onto its activity stubs.
+     */
+    public static WorkflowImplementationOptions workflowOptions(PlatformProperties.Temporal temporal) {
+        Duration timeout = temporal.getHeartbeatTimeout();
+        if (timeout == null || !timeout.isPositive()) {
+            return WorkflowImplementationOptions.getDefaultInstance();
+        }
+        ActivityOptions heartbeat = ActivityOptions.newBuilder().setHeartbeatTimeout(timeout).build();
+        Map<String, ActivityOptions> byType = new LinkedHashMap<>();
+        HEARTBEATING.forEach(type -> byType.put(type, heartbeat));
+        return WorkflowImplementationOptions.newBuilder().setActivityOptions(byType).build();
     }
 
     @Bean

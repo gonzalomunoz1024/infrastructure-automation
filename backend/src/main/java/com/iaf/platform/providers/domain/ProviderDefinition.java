@@ -34,8 +34,16 @@ public record ProviderDefinition(
             JsonNode source,       // ansible: { git | upload | library, commit }
             JsonNode module,       // terraform: { source, version }
             JsonNode tile,         // idp: { id }
-            String taskQueue,      // sdk
+            Worker worker,         // sdk: the team's own worker
             String executionEnvironment) {
+    }
+
+    /**
+     * The worker an sdk provider's team runs: the Temporal task queue it listens on (blank =
+     * {@code provider-<name>}) and how long it may go without a heartbeat before the platform
+     * counts it lost (a duration such as {@code 30s}; blank = no heartbeat timeout).
+     */
+    public record Worker(String taskQueue, String heartbeatTimeout) {
     }
 
     public record SpecSource(String url, String sha256, String content) {
@@ -95,6 +103,16 @@ public record ProviderDefinition(
 
     public ProviderType type() {
         return spec.type();
+    }
+
+    /** The task queue an sdk provider's worker listens on: its own, or {@code provider-<name>}. */
+    public String taskQueue() {
+        Worker w = spec.worker();
+        return w == null || w.taskQueue() == null || w.taskQueue().isBlank() ? defaultTaskQueue(name()) : w.taskQueue().trim();
+    }
+
+    public static String defaultTaskQueue(String name) {
+        return "provider-" + name;
     }
 
     public List<Action> actions() {

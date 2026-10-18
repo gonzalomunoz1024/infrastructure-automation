@@ -33,6 +33,7 @@ import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
 import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
+import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
 import com.iaf.platform.runs.domain.StepEvent;
 import com.iaf.platform.runs.domain.StepExecutor;
@@ -40,12 +41,15 @@ import com.iaf.platform.runs.domain.StepFailure;
 import com.iaf.platform.runs.domain.WaveScheduler;
 import com.iaf.platform.runs.domain.WorkflowInterpreter;
 import com.iaf.platform.workflows.domain.Step;
+import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.ApprovalPolicy;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 
 import io.temporal.activity.ActivityOptions;
+import io.temporal.activity.LocalActivityOptions;
 import io.temporal.api.enums.v1.ParentClosePolicy;
+import io.temporal.api.enums.v1.TimeoutType;
 import io.temporal.api.enums.v1.WorkflowIdReusePolicy;
 import io.temporal.common.RetryOptions;
 import io.temporal.failure.ActivityFailure;
@@ -53,11 +57,13 @@ import io.temporal.failure.ApplicationFailure;
 import io.temporal.failure.CanceledFailure;
 import io.temporal.failure.ChildWorkflowFailure;
 import io.temporal.failure.TimeoutFailure;
+import io.temporal.workflow.ActivityStub;
 import io.temporal.workflow.Async;
 import io.temporal.workflow.CancellationScope;
 import io.temporal.workflow.ChildWorkflowOptions;
 import io.temporal.workflow.Promise;
 import io.temporal.workflow.Workflow;
+import io.temporal.workflow.WorkflowThreadLocal;
 
 /**
  * The production engine: the {@link WorkflowInterpreter} walking inside a Temporal workflow, with
@@ -79,6 +85,12 @@ import io.temporal.workflow.Workflow;
  * closes as cancelled instead of completing with the outcome, as the SDK closes every workflow
  * whose cancel was requested, so the events, not the result, are what the platform reads.</p>
  *
+ * <p>Team workers: the action of an sdk provider and a {@code call: activity} do not run on the
+ * platform's activities but on the team's own worker, as one activity on its task queue
+ * ({@link WorkerCalls} is the contract); a local activity looks up whether a provider is one. A
+ * cancel of the job cancels such an activity at once. Executions recorded before this change
+ * ({@value #TEAM_WORKERS}) replay on the platform's activities as they ran.</p>
+ *
  * <p>Deterministic by construction: no clock but {@code Workflow.currentTimeMillis()}, no
  * threads, no Spring beans; the interpreter and the expression engine are pure.</p>
  */
@@ -90,6 +102,8 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     static final Duration RECORD_TIMEOUT = Duration.ofMinutes(1);
     /** Who cancelled a job that Temporal itself cancelled. */
     static final String TEMPORAL = "temporal";
+    /** The change id of sending team steps to the team's worker (version 1); executions without its marker ran them on the platform's activities. */
+    static final String TEAM_WORKERS = "team-workers";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     private static final RetryOptions PUBLISH = RetryOptions.newBuilder()
             .setMaximumAttempts(5)
@@ -102,6 +116,12 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     private final StepActivities events = Workflow.newActivityStub(StepActivities.class,
             ActivityOptions.newBuilder().setStartToCloseTimeout(RECORD_TIMEOUT).setRetryOptions(PUBLISH).build());
     private final StepActivities records = stub(RECORD_TIMEOUT);
+    private final StepActivities lookups = Workflow.newLocalActivityStub(StepActivities.class, LocalActivityOptions.newBuilder()
+            .setStartToCloseTimeout(PortStepExecutor.LOOKUP_TIMEOUT)
+            .setRetryOptions(RetryOptions.newBuilder().setMaximumAttempts(3).build())
+            .build());
+    /** Per workflow thread (each fork branch is one): the attempt of the step it runs, from the step's running event. */
+    private final WorkflowThreadLocal<Attempts> attempts = WorkflowThreadLocal.withCachedInitial(Attempts::new);
 
     private Job job;
     private JobRef ref;
@@ -218,6 +238,12 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     public JsonNode callProvider(JobContext ctx, Step step, String provider, String action, JsonNode input, Duration timeout) {
         StepCall call = call(step, timeout, true);
         JsonNode in = node(input);
+        if (teamWorkers()) {
+            WorkerRoute route = invoke(step, () -> lookups.providerRoute(step.id(), provider, action));
+            if (route != null) {
+                return onWorker(step, call, action, route, in);
+            }
+        }
         return invoke(step, () -> calls(timeout).callProvider(call, provider, action, in));
     }
 
@@ -225,7 +251,66 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     public JsonNode runAutomation(JobContext ctx, Step step, JsonNode with, Duration timeout) {
         StepCall call = call(step, timeout, true);
         JsonNode w = node(with);
+        if (step.type() == StepType.ACTIVITY && teamWorkers()) {
+            String queue = w == null ? "" : w.path("taskQueue").asText("");
+            String activity = w == null ? "" : w.path("activity").asText("");
+            if (queue.isBlank() || activity.isBlank()) {
+                throw new StepFailure(step.id(), "invalid_input", "call: activity needs with.taskQueue and with.activity", false, true);
+            }
+            return onWorker(step, call, activity, new WorkerRoute(queue, null), w.get("input"));
+        }
         return invoke(step, () -> calls(timeout).runAutomation(call, w));
+    }
+
+    /** Whether this execution sends team steps to the team's worker: every new one does, one recorded before replays as it ran. */
+    private static boolean teamWorkers() {
+        return Workflow.getVersion(TEAM_WORKERS, Workflow.DEFAULT_VERSION, 1) >= 1;
+    }
+
+    /**
+     * Run a step's call on a team's worker: one activity of {@code activityType} on the route's
+     * queue with the {@link WorkerCalls} payload. The idempotency key is minted by the step's
+     * first attempt and kept by its retries. A cancel of the job cancels the activity (the worker
+     * sees it on its next heartbeat) and ends the step at once instead of after the call.
+     */
+    private JsonNode onWorker(Step step, StepCall call, String activityType, WorkerRoute route, JsonNode input) {
+        Attempts a = attempts.get();
+        int attempt = step.id().equals(a.step) ? Math.max(1, a.attempt) : 1;
+        if (attempt == 1 || !a.firstSeq.containsKey(step.id())) {
+            a.firstSeq.put(step.id(), call.seq());
+        }
+        String key = WorkerCalls.idempotencyKey(ref.id(), step.id(), a.firstSeq.get(step.id()));
+        ObjectNode payload = WorkerCalls.payload(ref, step.id(), key, attempt, input);
+        ActivityStub stub = Workflow.newUntypedActivityStub(WorkerCalls.options(route, call.timeout()));
+        List<Promise<JsonNode>> result = new ArrayList<>(1);
+        CancellationScope scope = Workflow.newCancellationScope(() -> {
+            result.add(stub.executeAsync(activityType, JsonNode.class, payload));
+        });
+        scope.run();
+        Promise<JsonNode> done = result.get(0);
+        await(null, () -> done.isCompleted() || cancelled);
+        if (!done.isCompleted()) {
+            scope.cancel("job " + ref.id() + " was cancelled");
+            throw new JobCancelled(ref.id());
+        }
+        try {
+            JsonNode out = done.get();
+            return out == null || out.isNull() ? F.objectNode() : out;
+        } catch (ActivityFailure f) {
+            if (f.getCause() instanceof CanceledFailure) {
+                throw temporalCancel();
+            }
+            throw WorkerCalls.failure(step.id(), route, call.timeout(), f);
+        } catch (CanceledFailure e) {
+            throw temporalCancel();
+        }
+    }
+
+    /** What a workflow thread knows about the step it runs: the current attempt, and the seq each step's first attempt minted. */
+    private static final class Attempts {
+        String step;
+        int attempt;
+        final Map<String, Integer> firstSeq = new HashMap<>();
     }
 
     @Override
@@ -456,6 +541,12 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
 
     @Override
     public void onStepEvent(JobContext ctx, StepEvent event) {
+        if (event.status() == StepStatus.RUNNING) {
+            // the interpreter calls the executor right after, on this thread: a team worker's call reads the attempt here
+            Attempts a = attempts.get();
+            a.step = event.id();
+            a.attempt = event.attempt();
+        }
         if (event.replayed() && suppressReplayed) {
             return;
         }
@@ -712,6 +803,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
                 return af.getDetails().get(0, StepFailureData.class).toFailure(step.id());
             }
             return new StepFailure(step.id(), "error", af.getOriginalMessage(), true);
+        }
+        if (cause instanceof TimeoutFailure t && t.getTimeoutType() == TimeoutType.TIMEOUT_TYPE_HEARTBEAT) {
+            return new StepFailure(step.id(), WorkerCalls.WORKER_LOST, "Step " + step.id() + ": the platform worker running it stopped heartbeating and is considered lost",
+                    true);
         }
         if (cause instanceof TimeoutFailure) {
             return new StepFailure(step.id(), "timeout", "Step " + step.id() + " timed out", true);

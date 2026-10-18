@@ -48,6 +48,9 @@ public final class ProviderChecks {
     private static final Set<String> AUTH_TYPES = Set.of("bearer", "basic", "header", "none");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> VERIFY_EXPECTS = Set.of("notFound", "ok", "exists");
+    private static final Pattern TASK_QUEUE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$");
+    private static final Pattern DURATION = Pattern.compile("^(P(?!$)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?|\\d+(ms|s|m|h|d))$");
+    private static final Set<String> WORKER_FIELDS = Set.of("taskQueue", "heartbeatTimeout");
     /** Types whose action ids are fixed by the tool (plan/apply/destroy) or by the portal (tile ids). */
     private static final Set<ProviderType> FREE_ACTION_IDS = Set.of(ProviderType.TERRAFORM, ProviderType.IDP);
     /** Types that run through a tool or a worker and have no HTTP endpoints. */
@@ -227,14 +230,40 @@ public final class ProviderChecks {
                         error(SCHEMA, "idp.tile", null, "spec.tile", "An IDP provider names its tile: tile: { id }");
                     }
                 }
-                case SDK -> {
-                    if (spec.path("taskQueue").asText("").isBlank()) {
-                        error(SCHEMA, "sdk.taskQueue", null, "spec.taskQueue", "An SDK provider names the task queue its worker listens on");
-                    }
-                }
+                case SDK -> worker(spec);
                 default -> {
                 }
             }
+        }
+
+        /** {@code worker: { taskQueue, heartbeatTimeout }}, both optional: the queue defaults to {@code provider-<name>}. */
+        void worker(JsonNode spec) {
+            JsonNode worker = spec.get("worker");
+            if (spec.has("taskQueue")) {
+                warning(SCHEMA, "sdk.taskQueueMoved", null, "spec.taskQueue", "taskQueue belongs under worker: write worker: { taskQueue: "
+                        + spec.path("taskQueue").asText(ProviderDefinition.defaultTaskQueue(name)) + " }");
+            }
+            if (worker == null || worker.isNull()) {
+                return;
+            }
+            if (!worker.isObject()) {
+                error(SCHEMA, "sdk.worker", null, "spec.worker", "worker is a mapping: { taskQueue, heartbeatTimeout }");
+                return;
+            }
+            JsonNode queue = worker.get("taskQueue");
+            if (queue != null && !queue.isNull() && (!queue.isTextual() || !TASK_QUEUE.matcher(queue.asText()).matches())) {
+                error(SCHEMA, "sdk.taskQueue", null, "spec.worker.taskQueue", "The task queue is letters, digits, dots, dashes and underscores, like "
+                        + ProviderDefinition.defaultTaskQueue(name) + "; leave it out to use that one");
+            }
+            JsonNode heartbeat = worker.get("heartbeatTimeout");
+            if (heartbeat != null && !heartbeat.isNull() && (!heartbeat.isTextual() || !DURATION.matcher(heartbeat.asText().trim()).matches())) {
+                error(SCHEMA, "sdk.heartbeatTimeout", null, "spec.worker.heartbeatTimeout", "heartbeatTimeout is a duration like 30s, 2m or PT30S");
+            }
+            worker.fieldNames().forEachRemaining(f -> {
+                if (!WORKER_FIELDS.contains(f)) {
+                    warning(SCHEMA, "sdk.workerField", null, "spec.worker." + f, "worker has taskQueue and heartbeatTimeout; '" + f + "' is ignored");
+                }
+            });
         }
 
         // ------------------------------------------------------------ spec-pinned

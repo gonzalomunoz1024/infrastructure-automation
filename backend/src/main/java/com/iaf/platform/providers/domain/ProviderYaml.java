@@ -23,6 +23,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 import com.iaf.platform.providers.domain.ProviderDefinition.Spec;
 import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
 import com.iaf.platform.providers.domain.ProviderDefinition.Verify;
+import com.iaf.platform.providers.domain.ProviderDefinition.Worker;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 /** Reads and writes {@code kind: Provider} files, canonically. */
@@ -96,8 +97,12 @@ public final class ProviderYaml {
         Slo slo = sl != null && sl.isObject() ? new Slo(sl.path("successRate").asDouble(Slo.DEFAULT.successRate()), sl.path("p95Ms").asInt(Slo.DEFAULT.p95Ms())) : null;
         JsonNode al = s.get("alerts");
         Alerts alerts = al != null && al.isObject() ? new Alerts(text(al, "channel")) : null;
+        JsonNode wk = s.get("worker");
+        // spec.taskQueue is the older spelling of spec.worker.taskQueue
+        Worker worker = wk != null && wk.isObject() ? new Worker(text(wk, "taskQueue"), text(wk, "heartbeatTimeout"))
+                : s.hasNonNull("taskQueue") ? new Worker(text(s, "taskQueue"), null) : null;
         Spec spec = new Spec(type, specSource, endpoints, auth, actions, overrides, errors, slo, alerts,
-                s.get("source"), s.get("module"), s.get("tile"), text(s, "taskQueue"), text(s, "executionEnvironment"));
+                s.get("source"), s.get("module"), s.get("tile"), worker, text(s, "executionEnvironment"));
         return new ProviderDefinition(root.path("apiVersion").asText("iaf.platform/v1"), metadata, spec);
     }
 
@@ -142,7 +147,11 @@ public final class ProviderYaml {
         if (sp.tile() != null) {
             s.set("tile", sp.tile());
         }
-        put(s, "taskQueue", sp.taskQueue());
+        if (sp.worker() != null && (notBlank(sp.worker().taskQueue()) || notBlank(sp.worker().heartbeatTimeout()))) {
+            ObjectNode w = s.putObject("worker");
+            put(w, "taskQueue", sp.worker().taskQueue());
+            put(w, "heartbeatTimeout", sp.worker().heartbeatTimeout());
+        }
         put(s, "executionEnvironment", sp.executionEnvironment());
         if (sp.endpoints() != null && !sp.endpoints().isEmpty()) {
             ObjectNode e = s.putObject("endpoints");
@@ -227,8 +236,12 @@ public final class ProviderYaml {
     }
 
     private static void put(ObjectNode o, String k, String v) {
-        if (v != null && !v.isBlank()) {
+        if (notBlank(v)) {
             o.put(k, v);
         }
+    }
+
+    private static boolean notBlank(String v) {
+        return v != null && !v.isBlank();
     }
 }
