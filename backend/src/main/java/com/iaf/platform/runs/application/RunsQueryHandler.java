@@ -81,6 +81,9 @@ public class RunsQueryHandler implements RunsQueries {
     public Mono<JsonNode> replay(String id, String compareTo) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id))).subscribeOn(Schedulers.boundedElastic()).map(job -> {
             Optional<Job> compared = compareTo != null && !compareTo.isBlank() ? projection.get(compareTo) : previousOf(job);
+            if (compareTo != null && !compareTo.isBlank() && compared.isEmpty()) {
+                throw new NotFoundException("job", compareTo);
+            }
             ObjectNode out = F.objectNode();
             out.put("jobId", job.id());
             out.put("workflow", job.workflow());

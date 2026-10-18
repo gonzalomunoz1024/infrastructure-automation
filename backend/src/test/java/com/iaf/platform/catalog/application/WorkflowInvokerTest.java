@@ -219,6 +219,32 @@ class WorkflowInvokerTest {
     }
 
     @Test
+    void aDefaultedFieldMayBeLeftOutEvenWhenTheSchemaRequiresIt() {
+        allow();
+        // create-vm requires size, which defaults to small: the caller may leave it out, and the job and the policy see the default
+        StepVerifier.create(invoker.invoke(create, json("{\"name\":\"web-09\",\"image\":\"img-1\"}"), SampleCatalog.OPS, "rest", null))
+                .assertNext(started -> assertThat(started.jobId()).isEqualTo("job_1")).verifyComplete();
+        ArgumentCaptor<StartJob> captor = ArgumentCaptor.forClass(StartJob.class);
+        verify(runs).startJob(captor.capture());
+        assertThat(captor.getValue().input().path("size").asText()).isEqualTo("small");
+        assertThat(captor.getValue().input().path("environment").asText()).isEqualTo("dev");
+        ArgumentCaptor<PolicyPort.PolicyInput> policyInput = ArgumentCaptor.forClass(PolicyPort.PolicyInput.class);
+        verify(policy).evaluate(policyInput.capture());
+        assertThat(policyInput.getValue().input().path("size").asText()).isEqualTo("small");
+        // a preview fills them in the same way
+        ArgumentCaptor<JsonNode> previewed = ArgumentCaptor.forClass(JsonNode.class);
+        StepVerifier.create(invoker.preview(create, json("{\"name\":\"web-09\",\"image\":\"img-1\"}"), SampleCatalog.OPS)).expectNextCount(1).verifyComplete();
+        verify(runs, org.mockito.Mockito.atLeastOnce()).preview(any(), previewed.capture(), any());
+        assertThat(previewed.getValue().path("size").asText()).isEqualTo("small");
+        // and a batch row too, under the body's own defaults
+        WorkflowInvoker.BatchPlan plan = invoker.plan(create.definition(), json("{\"items\":[{\"name\":\"web-10\",\"image\":\"img-1\"},{\"name\":\"web-11\",\"image\":\"img-1\",\"size\":\"large\"}]}"), Map.of());
+        assertThat(plan.rows().get(0).path("size").asText()).isEqualTo("small");
+        assertThat(plan.rows().get(1).path("size").asText()).isEqualTo("large");
+        // a field without a default is still required
+        StepVerifier.create(invoker.invoke(create, json("{\"image\":\"img-1\"}"), SampleCatalog.OPS, "rest", null)).expectError(InputProblemsException.class).verify();
+    }
+
+    @Test
     void previewValidatesAndJudgesRbacButNeverStarts() {
         allow();
         StepVerifier.create(invoker.preview(restart, json("{\"vmId\":\"vm-1\"}"), SampleCatalog.OPS))

@@ -23,6 +23,7 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.domain.AccessRules;
+import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Preview;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartBatch;
@@ -80,7 +81,7 @@ public class WorkflowInvoker {
     public Mono<Started> invoke(WorkflowRecord workflow, JsonNode input, Identity who, String channel, String traceId) {
         return Mono.defer(() -> {
             WorkflowDefinition d = workflow.definition();
-            ObjectNode in = Inputs.merge(input, null);
+            ObjectNode in = withDefaults(d, Inputs.merge(input, null));
             validate(d, in);
             AccessRules.requireInvoke(who, rbac(d), d.name());
             return decide(d, workflow.version(), who, in, context(channel, traceId, 0))
@@ -94,7 +95,7 @@ public class WorkflowInvoker {
     public Mono<Preview> preview(WorkflowRecord workflow, JsonNode input, Identity who) {
         return Mono.defer(() -> {
             WorkflowDefinition d = workflow.definition();
-            ObjectNode in = Inputs.merge(input, null);
+            ObjectNode in = withDefaults(d, Inputs.merge(input, null));
             validate(d, in);
             AccessRules.requireInvoke(who, rbac(d), d.name());
             return runs.preview(d, in, who);
@@ -151,7 +152,7 @@ public class WorkflowInvoker {
                 invalid.add(new RowProblems(i, List.of(Problem.error("schema", null, null, "each item is an object"))));
                 rows.add(F.objectNode());
             } else {
-                ObjectNode row = Inputs.of(Inputs.merge(dflt, item), params, schema);
+                ObjectNode row = withDefaults(d, Inputs.of(Inputs.merge(dflt, item), params, schema));
                 List<Problem> problems = CreateRequests.inputProblems(d, row);
                 if (!problems.isEmpty()) {
                     invalid.add(new RowProblems(i, problems));
@@ -197,6 +198,11 @@ public class WorkflowInvoker {
     }
 
     // ---------------------------------------------------------------- the gates
+
+    /** The schema's top-level defaults filled in, so a caller may leave a defaulted field out even when the schema requires it. */
+    static ObjectNode withDefaults(WorkflowDefinition d, ObjectNode input) {
+        return (ObjectNode) InputDefaults.apply(d.inputSchema(), input);
+    }
 
     /** The input schema; a request to build a resource first is judged against its producer when the job starts. */
     public static void validate(WorkflowDefinition d, JsonNode input) {

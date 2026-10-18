@@ -176,6 +176,16 @@ class RunsQueryHandlerTest {
     }
 
     @Test
+    void replayAgainstAJobThatDoesNotExistIsNotFound() {
+        Instant t = Instant.parse("2026-10-17T10:00:00Z");
+        started("job_only", t, Map.of("vmId", "vm-1"));
+        finished("job_only", t.plusSeconds(3), JobStatus.SUCCEEDED, null, null);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> queries.replay("job_only", "job_nope").block())
+                .isInstanceOf(com.iaf.platform.common.domain.NotFoundException.class).hasMessageContaining("job_nope");
+        assertThat(queries.replay("job_only", " ").block().has("comparedTo")).as("a blank compareTo means the previous run").isFalse();
+    }
+
+    @Test
     void replayComparesWithTheLastSuccessfulRunNotTheLastFinishedOne() {
         Instant t = Instant.parse("2026-10-17T10:00:00Z");
         started("job_good", t, Map.of("vmId", "vm-1"));
