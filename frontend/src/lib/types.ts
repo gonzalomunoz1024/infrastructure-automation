@@ -332,6 +332,8 @@ export type Approval = {
   decidedAt?: string
   comment?: string
   preview?: Preview
+  /** the escalation group the approval went to when it waited too long, which may decide it too */
+  escalatedTo?: string
 }
 
 export type JobDetail = JobSummary & {
@@ -347,8 +349,6 @@ export type JobDetail = JobSummary & {
   traceId: string
   /** where the engine's own tools show the job: its execution in the Temporal UI on the temporal engine with a UI URL */
   links?: { temporal?: string }
-  /** true when the call pinned `version` (`X-Workflow-Version`, `?version=` or the body's `version`), skipping the canary split; absent when the backend does not say */
-  pinned?: boolean
 }
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'

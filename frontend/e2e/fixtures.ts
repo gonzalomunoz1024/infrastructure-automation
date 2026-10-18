@@ -334,6 +334,8 @@ export const APPROVALS: Approval[] = [
     timeout: 'PT4H',
     status: 'pending',
     preview: PREVIEW,
+    // waited past the policy's escalation: compute-leads may decide it too
+    escalatedTo: 'compute-leads',
   },
 ]
 

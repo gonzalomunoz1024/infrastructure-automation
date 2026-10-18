@@ -36,6 +36,15 @@ const PENDING: Approval = {
 const text = (html: string) => html.replace(/<!--.*?-->/g, '')
 const decide = async () => {}
 
+describe('an escalated approval', () => {
+  it('names the escalation group beside the approver group, which may decide it too', () => {
+    const html = text(renderToString(<ApprovalCard approval={{ ...PENDING, escalatedTo: 'compute-leads' }} onApprove={decide} onReject={decide} />))
+    expect(html).toContain('compute-approvers')
+    expect(html).toContain('escalated to compute-leads')
+    expect(text(renderToString(<ApprovalCard approval={PENDING} onApprove={decide} onReject={decide} />))).not.toContain('escalated to')
+  })
+})
+
 describe('ApprovalCard', () => {
   it('shows the preview the approver decides on when asked to, above the decision', () => {
     const html = text(renderToString(<ApprovalCard approval={PENDING} showPreview onApprove={decide} onReject={decide} />))

@@ -224,20 +224,19 @@ test.describe('catalog: a run pinned to a version', () => {
   })
 })
 
-test.describe('job: a pinned run and the engine link', () => {
-  test('says the run was pinned to its version and opens it in Temporal', async ({ page }) => {
+test.describe('job: the engine link', () => {
+  test('opens the job in Temporal', async ({ page }) => {
     await mockApi(page, {
-      'GET /jobs/{id}': { ...JOB, pinned: true, links: { temporal: 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91' } },
+      'GET /jobs/{id}': { ...JOB, links: { temporal: 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91' } },
       'GET /jobs/{id}/events': sse([]),
     })
     await page.goto(`/#/jobs/${JOB.id}`)
-    await expect(page.getByText(`pinned to ${JOB.version}`)).toBeVisible()
     const link = page.getByRole('link', { name: 'Open in Temporal' })
     await expect(link).toHaveAttribute('href', 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91')
     await expect(link).toHaveAttribute('target', '_blank')
   })
 
-  test('a job the router placed carries no pin, and a retry over the quota waits for Retry-After', async ({ page }) => {
+  test('a job off Temporal has no engine link, and a retry over the quota waits for Retry-After', async ({ page }) => {
     const api = await mockApi(page, {
       'GET /jobs/{id}': JOB,
       'GET /jobs/{id}/events': sse([]),
@@ -245,7 +244,6 @@ test.describe('job: a pinned run and the engine link', () => {
     })
     await page.goto(`/#/jobs/${JOB.id}`)
     await expect(page.getByRole('heading', { level: 1 })).toContainText(JOB.title)
-    await expect(page.getByText(/pinned to/)).toHaveCount(0)
     await expect(page.getByRole('link', { name: /Open in/ })).toHaveCount(0)
 
     const panel = page.getByRole('region', { name: 'Needs attention' })

@@ -180,6 +180,22 @@ test.describe('jobs', () => {
     await page.getByRole('dialog', { name: 'Cancel this job?' }).getByRole('button', { name: 'Cancel job' }).click()
     await expect.poll(() => api.callsTo('POST', '/jobs/job-7f3a2c91:cancel').length).toBe(1)
   })
+
+  test("someone who may not steer the job is told so in the backend's words", async ({ page }) => {
+    const refusal = 'Ana may not control job job-7f3a2c91 (vm-restart started by gonzalo)'
+    const api = await mockApi(page, {
+      'GET /jobs/{id}': JOB,
+      'GET /jobs/{id}/events': sse([]),
+      'GET /workflows': WORKFLOWS,
+      'POST /jobs/{id}:cancel': reply(403, { error: refusal }),
+      'POST /jobs/{id}:abort': reply(403, { error: refusal }),
+    })
+    await page.goto('/#/jobs/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Cancel this job?' }).getByRole('button', { name: 'Cancel job' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Could not cancel' })).toContainText(refusal)
+    expect(api.callsTo('POST', '/jobs/job-7f3a2c91:cancel')).toHaveLength(1)
+  })
 })
 
 test.describe('approvals', () => {
@@ -201,6 +217,8 @@ test.describe('approvals', () => {
     await expect(preview).toContainText('Restart the VM')
     await expect(preview.getByRole('link', { name: /web-1042/ })).toHaveAttribute('href', '#/resources/vm-1042')
     await expect(preview).toContainText('Production changes need compute-approvers')
+    // escalated: the escalation group may decide it too
+    await expect(page.getByText('escalated to compute-leads')).toBeVisible()
     await page.getByRole('textbox', { name: 'Comment' }).fill('Window agreed')
     await page.getByRole('button', { name: 'Approve', exact: true }).click()
     await expect(page.getByText('Nothing waiting for you')).toBeVisible()

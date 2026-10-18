@@ -717,7 +717,10 @@ branch, or to `VITE_DOCS_URL` when the build sets it.
 
 The job page's cancel says what both engines do: the job stops (a wait at once, a runner process
 or a worker's activity stopped) and nothing is compensated; only Abort, on a run a failed step
-paused, rolls the finished steps back, and a paused run's cancel dialog points there. Its
+paused, rolls the finished steps back, and a paused run's cancel dialog points there. Someone
+who may not steer the job (cancel, retry, skip, abort) gets the backend's 403 message as it is,
+which names the job and who started it. An approval escalated after waiting too long shows its
+escalation group (`escalatedTo`) beside the approver group, on its card and in the history. Its
 "Re-run from a step" sends `POST /jobs/{id}:rerun` with the step and only the fields typed, which
 the backend merges onto the job's input (a list or a scalar is refused before it is sent); a job
 still running or a batch, both refused by the backend, gets a sentence instead of the form. A

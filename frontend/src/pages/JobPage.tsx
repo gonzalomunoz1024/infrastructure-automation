@@ -153,11 +153,6 @@ export default function JobPage({ route }: PageProps) {
                 {data.workflow}
               </TextLink>
               <Mono>{data.version}</Mono>
-              {data.pinned && (
-                <Tag size="sm" tone="accent" title="Started on exactly this version, bypassing the canary split">
-                  pinned to {data.version}
-                </Tag>
-              )}
               <span className="text-tertiary">·</span>
               <span>{data.requester}</span>
               <Tag size="sm" outline>
