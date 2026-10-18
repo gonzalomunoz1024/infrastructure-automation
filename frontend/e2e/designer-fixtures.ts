@@ -298,7 +298,10 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
         { name: 'github/read-token', type: 'token' },
       ])
     if (method === 'GET' && path === '/templates') return json(route, [])
-    if (method === 'GET' && path === '/jobs') return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries : [])
+    if (method === 'GET' && path === '/jobs') {
+      const status = url.searchParams.get('status')
+      return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries.filter((j) => !status || j.status === status) : [])
+    }
     const jobMatch = /^\/jobs\/([^/]+)$/.exec(path)
     if (method === 'GET' && jobMatch) return jobs.details[jobMatch[1]] ? json(route, jobs.details[jobMatch[1]]) : json(route, { error: 'no such job' }, 404)
     if (method === 'GET' && /^\/jobs\/[^/]+\/events$/.test(path)) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })

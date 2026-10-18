@@ -5,7 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { api, errorMessage, isApiError, jobEvents, newIdempotencyKey } from '../lib/api'
 import { apiExtra } from '../lib/api-extra'
 import { invalidate, useQuery } from '../lib/queries'
-import type { JobEvent, JobReplay, JobStepStatus, JobSummary, StepDiff } from '../lib/types'
+import type { JobEvent, JobReplay, JobStepStatus, JobSummary } from '../lib/types'
 import { ApprovalCard } from '../components/ApprovalCard'
 import { AttentionPanel } from '../components/AttentionPanel'
 import { BatchPanel } from '../components/BatchPanel'
@@ -13,6 +13,7 @@ import { EngineLinks } from '../components/EngineLinks'
 import { PreviewCard } from '../components/PreviewCard'
 import { RerunCard, rerunBlocker } from '../components/RerunCard'
 import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
+import { StepDiffTable } from '../components/StepDiffTable'
 import { StepTimeline } from '../components/StepTimeline'
 import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
 import { isActiveJob } from './JobsPage'
@@ -362,19 +363,12 @@ export function ReplayComparison({ replay }: { replay: JobReplay }) {
       {inputDiff.length > 0 && (
         <div>
           <div className="mb-1 text-caption font-medium text-secondary">Input</div>
-          <Table columns={DIFF_COLUMNS} rows={inputDiff} rowKey={(d) => d.field} dense caption="Differences in the input" />
+          <StepDiffTable diff={inputDiff} caption="Differences in the input" />
         </div>
       )}
     </div>
   )
 }
-
-/** A diff row: the compared run's value, then this run's. */
-const DIFF_COLUMNS: TableColumn<StepDiff>[] = [
-  { key: 'field', header: 'Field', render: (d) => <Mono className="text-primary">{d.field}</Mono> },
-  { key: 'before', header: 'Compared run', render: (d) => <Mono className="text-secondary">{summarize(d.before, 80)}</Mono> },
-  { key: 'after', header: 'This run', render: (d) => <Mono className="text-primary">{summarize(d.after, 80)}</Mono> },
-]
 
 function TimeTravel({ jobId, workflow, steps, input, rerunBlocked }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown>; rerunBlocked: string | null }) {
   const toast = useToast()
@@ -443,7 +437,7 @@ function TimeTravel({ jobId, workflow, steps, input, rerunBlocked }: { jobId: st
                   </div>
                   {s.diff && s.diff.length > 0 && (
                     <div className="mt-2">
-                      <Table columns={DIFF_COLUMNS} rows={s.diff} rowKey={(d) => d.field} dense caption={`Differences at ${s.id}`} />
+                      <StepDiffTable diff={s.diff} caption={`Differences at ${s.id}`} />
                     </div>
                   )}
                 </li>

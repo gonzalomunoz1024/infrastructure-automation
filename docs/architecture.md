@@ -404,7 +404,12 @@ machine credential (`credential`, the SSH key of the hosts). "Pin to latest comm
 credential to `GET /playbooks:resolve`, never the machine credential. The assistant panel shows a
 draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
 after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
-is, like an explanation, is a message with nothing to apply.
+is, like an explanation, is a message with nothing to apply. The Executions tab's replay walks a
+job's steps beside a panel that compares each one with the last successful run of the workflow
+before it (`GET /jobs?workflow=&status=succeeded`, then `GET /jobs/{id}`): steps pair by id, then
+by name, a step on one side only shows as added or removed, and each pair shows its status and the
+fields of its output that differ, the field diff the time travel computes on the server. The step
+view shows the same for its step; a run with no successful run before it says so.
 
 ## Where things are in Git
 

@@ -208,3 +208,59 @@ test.describe('a job opened from its page', () => {
     await expect(drawer.getByRole('link', { name: /Open in the job page/ })).toHaveAttribute('href', /#\/jobs\/job_1042\?step=restart$/)
   })
 })
+
+test.describe('the replay against the last successful run', () => {
+  test('a failed run replays beside each step diffed with the last successful run; that run has none before it', async ({ page }) => {
+    await mockDesignerApi(page)
+    const lookup = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/v1/jobs' && new URL(r.url()).searchParams.get('status') === 'succeeded')
+    await page.goto('/#/workflows/vm-restart?job=job_1042')
+    const view = page.getByTestId('executions')
+    await expect(view.getByRole('button', { name: /job_1042/ })).toHaveAttribute('aria-current', 'true')
+    await expect(page.getByTestId('replay-panel')).toHaveCount(0)
+
+    await view.getByRole('button', { name: 'Replay', exact: true }).click()
+    expect(new URL((await lookup).url()).searchParams.get('workflow')).toBe('vm-restart')
+    const panel = page.getByTestId('replay-panel')
+    // the step being replayed is marked while the replay runs
+    await expect(panel.locator('li[aria-current="step"]')).toHaveCount(1)
+    const compared = panel.getByTestId('replay-compared')
+    await expect(compared).toContainText('Compared with the last successful run, job_1041')
+    await expect(compared.getByRole('link', { name: 'job_1041' })).toHaveAttribute('href', '#/jobs/job_1041')
+    await expect(compared).toContainText('3 steps differ, 1 added, 2 removed')
+
+    // once it has walked every step, every diff is on show
+    await expect(view.getByRole('button', { name: 'Replay', exact: true })).toBeVisible({ timeout: 10_000 })
+    await expect(panel.locator('li[aria-current="step"]')).toHaveCount(0)
+    const check = panel.getByRole('table', { name: 'Differences at checkVmExists' })
+    await expect(check).toContainText('output.id')
+    await expect(check).toContainText('vm-0007')
+    await expect(check).toContainText('vm-1042')
+    const restart = panel.getByRole('table', { name: 'Differences at restart' })
+    await expect(restart.getByRole('row').nth(1)).toContainText('status')
+    await expect(restart.getByRole('row').nth(1)).toContainText('succeeded')
+    await expect(restart.getByRole('row').nth(1)).toContainText('failed')
+    await expect(panel.locator('li[data-change="same"]')).toContainText('No backup running')
+    await expect(panel.locator('li[data-change="added"]')).toContainText('Tell the on-call')
+    await expect(panel.locator('li[data-change="removed"]')).toHaveText([/Wait for power on/, /Tell the channel/])
+
+    // the step view, opened from the panel, says the same for its step
+    await panel.getByRole('button', { name: 'Approve restart' }).click()
+    const drawer = page.getByRole('dialog', { name: 'Step Approve restart' })
+    const section = drawer.getByTestId('step-compared')
+    await expect(section).toContainText('Compared with the last successful run, job_1041')
+    const approval = section.getByRole('table', { name: 'Differences at approval' })
+    await expect(approval).toContainText('bob')
+    await expect(approval).toContainText('alice')
+    await page.keyboard.press('Escape')
+    await expect(drawer).toBeHidden()
+
+    // the last successful run itself has no successful run before it
+    await view.getByRole('button', { name: /job_1041/ }).click()
+    await expect(view.getByRole('button', { name: /job_1041/ })).toHaveAttribute('aria-current', 'true')
+    await view.getByRole('button', { name: 'Replay', exact: true }).click()
+    await expect(page.getByTestId('replay-compared')).toHaveText('No earlier successful run')
+    await expect(page.getByTestId('replay-panel').locator('li[data-change]')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Close the replay' }).click()
+    await expect(page.getByTestId('replay-panel')).toHaveCount(0)
+  })
+})
