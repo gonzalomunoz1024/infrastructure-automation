@@ -29,6 +29,7 @@ import { useMutation, useQuery } from '../lib/queries'
 import type { ImportSource, WorkflowSummary } from '../lib/types'
 import { ErrorState, Mono, When } from '../components/common'
 import { emitYaml } from '../components/yaml-emit'
+import { IMPORT_SOURCES, importChoices, importField, importRequest } from '../components/workflow-import'
 
 type StatusFilter = 'all' | 'published' | 'draft'
 
@@ -383,13 +384,6 @@ function BlankForm({ onBack }: { onBack: () => void }) {
   )
 }
 
-const SOURCES: { value: ImportSource; label: string }[] = [
-  { value: 'idp', label: 'IDP tile' },
-  { value: 'ansible', label: 'Ansible playbook' },
-  { value: 'terraform', label: 'Terraform module' },
-  { value: 'openapi', label: 'OpenAPI provider' },
-]
-
 function ImportForm({ onBack }: { onBack: () => void }) {
   const toast = useToast()
   const close = useOverlayClose()
@@ -410,10 +404,8 @@ function ImportForm({ onBack }: { onBack: () => void }) {
     onError: (e) => toast.error('Could not create the workflow', errorMessage(e)),
   })
 
-  const options = useMemo(() => {
-    if (source === 'ansible') return (playbooks.data ?? []).map((p) => ({ value: p.name, label: p.name, hint: `${p.path} · ${p.version}` }))
-    return (providers.data ?? []).filter((p) => p.type === source).map((p) => ({ value: p.name, label: p.title, hint: `${p.name} · ${p.actions.length} actions` }))
-  }, [source, playbooks.data, providers.data])
+  // each option's value is the `ref` the backend resolves: a tile id, <provider>/<playbook> or a provider name
+  const options = useMemo(() => importChoices(source, playbooks.data ?? [], providers.data ?? []), [source, playbooks.data, providers.data])
   const loading = source === 'ansible' ? playbooks.loading : providers.loading
   const result = importIt.data
 
@@ -429,11 +421,11 @@ function ImportForm({ onBack }: { onBack: () => void }) {
               setRef('')
               importIt.reset()
             }}
-            options={SOURCES}
+            options={IMPORT_SOURCES.map(({ value, label }) => ({ value, label }))}
             full
           />
         </Field>
-        <Field label={source === 'ansible' ? 'Playbook' : 'Provider'} required hint={options.length === 0 && !loading ? `Nothing of that kind is registered yet.` : 'From the registry'}>
+        <Field label={importField(source)} required hint={options.length === 0 && !loading ? `Nothing of that kind is registered yet.` : source === 'idp' ? 'A tile of the developer portal, from the registry' : 'From the registry'}>
           <Select ariaLabel="Reference" value={ref} onChange={setRef} options={options} placeholder={loading ? 'Loading…' : 'Choose…'} disabled={loading || options.length === 0} />
         </Field>
         {result && (
@@ -457,7 +449,7 @@ function ImportForm({ onBack }: { onBack: () => void }) {
           Back
         </Button>
         <div className="flex items-center gap-2">
-          <Button variant={result ? 'secondary' : 'primary'} icon="upload" disabled={!ref} loading={importIt.loading} onClick={() => void importIt.mutate({ source, ref })}>
+          <Button variant={result ? 'secondary' : 'primary'} icon="upload" disabled={!ref} loading={importIt.loading} onClick={() => void importIt.mutate(importRequest(source, ref))}>
             {result ? 'Import again' : 'Import'}
           </Button>
           {result && (

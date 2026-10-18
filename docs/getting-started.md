@@ -46,8 +46,9 @@ exact path and the Swagger link), and one MCP tool, `vm_restart`, for an agent.
 ## 3. Design a workflow
 
 1. **Workflows → New workflow**. Choose *From template* for a guided start, *Blank* for an empty
-   canvas, *Import* to turn an OpenAPI operation, an Ansible playbook, a Terraform module or an
-   IDP tile into a draft, or *Describe it* to let the assistant draft one from a sentence.
+   canvas, *Import* to turn an OpenAPI provider's create operation, a library Ansible playbook, a
+   Terraform provider's module or an IDP tile (picked from the tiles the IDP providers offer) into
+   a draft, or *Describe it* to let the assistant draft one from a sentence.
 2. The designer is the n8n-style canvas: add a step with the plus on the edge, pick a provider
    action, an approval, a wait, a switch, a loop, a fork, or a *run* step that calls another
    published workflow. The panel on the right is the step's parameters; expressions use the
