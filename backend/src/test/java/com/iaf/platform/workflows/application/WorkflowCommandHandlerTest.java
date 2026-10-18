@@ -1220,6 +1220,133 @@ class WorkflowCommandHandlerTest {
         assertThat(seen).hasSize(1);
     }
 
+    // ------------------------------------------------------------------ linked change requests
+
+    static ChangeRequest ticketingChange(ChangeRequest.Status status) {
+        return new ChangeRequest("cr_tick", ChangeRequest.Kind.PROVIDER, "ticketing", "0.1.0", "change/provider-ticketing-0.1.0", "Publish ticketing 0.1.0", "mateo",
+                status, List.of(new Check("schema", "Schema", "passed", null)), "all", SampleFixtures.TICKETING, "", NOW, null, null, null);
+    }
+
+    Check requiresCheck(String crId) {
+        return queries.changeRequest(crId).block().changeRequest().checks().stream().filter(c -> c.id().equals("requires")).findFirst().orElseThrow();
+    }
+
+    @Test
+    void aWorkflowThatNeedsANewProviderPublishesWithItsChangeRequestAndMergesAfterIt() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        // alone it calls a provider nobody published
+        StepVerifier.create(handler.publish("ticket-check", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).contains("step.unknownProvider"))
+                .verify();
+
+        String crId = handler.publish("ticket-check", new PublishWorkflow("all", null, List.of("cr_tick"))).block().id();
+
+        ChangeRequest cr = changeRequests.get(crId).orElseThrow();
+        assertThat(cr.requires()).containsExactly("cr_tick");
+        assertThat(cr.checks()).extracting(Check::id)
+                .containsExactly("schema", "checks", "playbooks", "policy", "replay", "contracts", "diff", "routes", "yaml", "requires");
+        assertThat(cr.checks()).filteredOn(c -> !c.id().equals("requires")).extracting(Check::status).doesNotContain("failed");
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("requires")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("pending");
+            assertThat(c.detail()).isEqualTo("waiting for cr_tick (provider ticketing 0.1.0) to merge");
+        });
+        assertThat(cr.checksPassed()).as("pending is no failure").isTrue();
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ConflictException.class)
+                            .hasMessage("change request " + crId + " requires change requests that are not merged yet: cr_tick (provider ticketing 0.1.0) is open");
+                    assertThat(((ConflictException) e).detail()).isEqualTo(java.util.Map.of("requires", List.of("cr_tick")));
+                })
+                .verify();
+        assertThat(changeRequests.get(crId).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(store.published("ticket-check")).isEmpty();
+
+        // the provider's change request merges on its own, and then the workflow's may
+        StepVerifier.create(handler.mergeChangeRequest("cr_tick").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "merged: cr_tick (provider ticketing 0.1.0)");
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(store.published("ticket-check").orElseThrow().version()).isEqualTo("0.1.0");
+    }
+
+    @Test
+    void theRequiresCheckIsPendingPassedOrFailedAsTheChangeRequestsItRequiresAre() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        String crId = handler.publish("ticket-check", new PublishWorkflow(null, null, List.of("cr_tick"))).block().id();
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail)
+                .containsExactly("pending", "waiting for cr_tick (provider ticketing 0.1.0) to merge");
+
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN).withStatus(ChangeRequest.Status.MERGED, NOW, "junior"));
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "merged: cr_tick (provider ticketing 0.1.0)");
+
+        changeRequests.save(ticketingChange(ChangeRequest.Status.CLOSED));
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("failed",
+                "cr_tick (provider ticketing 0.1.0) was closed without merging; close this change request and publish again");
+        // the lists and the workflow's page judge it the same way, and a merge is refused
+        assertThat(queries.changeRequests("open").collectList().block()).filteredOn(c -> c.id().equals(crId)).singleElement()
+                .satisfies(c -> assertThat(c.checksPassed()).isFalse());
+        assertThat(queries.detail("ticket-check").block().changeRequests()).singleElement()
+                .satisfies(c -> assertThat(c.checks()).filteredOn(k -> k.id().equals("requires")).extracting(Check::status).containsExactly("failed"));
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorMessage("change request " + crId + " requires change requests that are not merged yet: cr_tick (provider ticketing 0.1.0) is closed")
+                .verify();
+    }
+
+    @Test
+    void requiresNamesOpenOrMergedProviderChangeRequestsOnly() {
+        String vsphere = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        changeRequests.save(providerChange("cr_vs", "vsphere", "mateo", vsphere));
+        changeRequests.save(providerChange("cr_vs2", "vsphere", "mateo", vsphere.replace("version: 1.3.0", "version: 1.4.1")));
+        changeRequests.save(ticketingChange(ChangeRequest.Status.CLOSED));
+        changeRequests.save(new ChangeRequest("cr_wf", ChangeRequest.Kind.WORKFLOW, "create-vm", "1.0.1", "change/create-vm-1.0.1", "Update Create VM 1.0.1", "mateo",
+                ChangeRequest.Status.OPEN, List.of(), "all", "", "", NOW, null, null, null));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        java.util.Map<List<String>, String> refused = java.util.Map.of(
+                List.of("cr_nope"), "requires names cr_nope, which is no change request",
+                List.of("cr_wf"), "requires names cr_wf, a workflow change request; a workflow requires provider change requests only",
+                List.of("cr_tick"), "requires names cr_tick, which was closed; name open or merged provider change requests",
+                List.of("cr_vs", "cr_vs2"), "requires names two change requests of provider vsphere; name the one the workflow needs",
+                List.of(" "), "requires holds an empty change request id");
+        refused.forEach((requires, message) -> StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow(null, null, requires)))
+                .expectErrorSatisfies(e -> assertThat(e).isExactlyInstanceOf(IllegalArgumentException.class).hasMessage(message))
+                .verify());
+        assertThat(changeRequests.all()).filteredOn(c -> c.name().equals("vm-restart")).isEmpty();
+        assertThat(store.draft("vm-restart")).as("the draft stays a draft").isPresent();
+
+        // an id named twice counts once
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_vs", "cr_vs"))).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().requires()).containsExactly("cr_vs");
+    }
+
+    @Test
+    void theReplayOfAChangeThatRequiresAProviderChangeSeesItsFile() {
+        changeRequests.save(providerChange("cr_vs", "vsphere", "mateo",
+                SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("version: 1.3.0", "version: 1.4.0")));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        List<String> seen = new ArrayList<>();
+        when(runs.dryRun(any(), any(), any(), any())).thenAnswer(inv -> {
+            List<ProviderDefinition> drafts = inv.getArgument(3);
+            drafts.forEach(d -> seen.add(d.name() + " " + d.metadata().version()));
+            return Mono.just(SampleFixtures.DRY_RUN_PASSED);
+        });
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_vs"))).block().id();
+
+        assertThat(seen).containsExactly("vsphere 1.4.0");
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("replay")).singleElement()
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 job(s) of 1.2.0 replayed"));
+        // the replay check of the version under review sees it too
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1")).assertNext(r -> assertThat(r.replayed()).isEqualTo(1)).verifyComplete();
+        assertThat(seen).containsExactly("vsphere 1.4.0", "vsphere 1.4.0");
+    }
+
     // ------------------------------------------------------------------ import
 
     @Test

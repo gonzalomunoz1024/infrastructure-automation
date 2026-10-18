@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -21,17 +22,22 @@ import com.iaf.platform.workflows.domain.ContractRules.Consumer;
 
 /**
  * The pure CI checks of a change request: schema, checks (lint), playbooks, policy, replay,
- * contracts, diff, routes, yaml. The command handler gathers what the policy, replay and
- * playbooks checks need (the engine's verdict, the jobs, the pins and the linter's findings)
- * and hands it here; everything else is judged from the definition alone.
+ * contracts, diff, routes, yaml, and requires for one opened with the change requests it
+ * requires. The command handler gathers what the policy, replay and playbooks checks need (the
+ * engine's verdict, the jobs, the pins and the linter's findings) and hands it here; everything
+ * else is judged from the definition alone.
  */
 public final class PublishChecks {
 
     public static final String PASSED = "passed";
     public static final String FAILED = "failed";
     public static final String SKIPPED = "skipped";
+    /** The requires check while a change request it requires is still open: not a failure, but the change request does not merge yet. */
+    public static final String PENDING = "pending";
     /** The id of the playbooks check (pins resolved, digests present, the linter's findings). */
     public static final String PLAYBOOKS = "playbooks";
+    /** The id of the requires check of a change request opened with change requests it requires. */
+    public static final String REQUIRES = "requires";
     /** The longest a linter's output gets in the check's detail; the rest is cut. */
     static final int LINT_OUTPUT = 2000;
 
@@ -356,6 +362,41 @@ public final class PublishChecks {
 
     private static String shape(String path) {
         return path.replaceAll("\\{[^/{}]+}", "{}");
+    }
+
+    /**
+     * The requires check of a change request opened with the change requests it requires
+     * ({@code ids}, each looked up now): passed once every one is merged, pending while one is
+     * still open, failed once one was closed without merging, since it never will be. One the
+     * lookup no longer finds counts as closed.
+     */
+    public static Check requires(List<String> ids, Function<String, Optional<ChangeRequest>> lookup) {
+        List<String> merged = new ArrayList<>();
+        List<String> open = new ArrayList<>();
+        List<String> closed = new ArrayList<>();
+        for (String id : ids) {
+            Optional<ChangeRequest> cr = lookup.apply(id);
+            String named = cr.map(PublishChecks::named).orElse(id);
+            switch (cr.map(ChangeRequest::status).orElse(ChangeRequest.Status.CLOSED)) {
+                case MERGED -> merged.add(named);
+                case OPEN -> open.add(named);
+                case CLOSED -> closed.add(named);
+            }
+        }
+        if (!closed.isEmpty()) {
+            return new Check(REQUIRES, "Requires", FAILED, String.join(", ", closed) + (closed.size() == 1 ? " was" : " were")
+                    + " closed without merging; close this change request and publish again");
+        }
+        if (!open.isEmpty()) {
+            return new Check(REQUIRES, "Requires", PENDING, "waiting for " + String.join(", ", open) + " to merge"
+                    + (merged.isEmpty() ? "" : "; merged: " + String.join(", ", merged)));
+        }
+        return new Check(REQUIRES, "Requires", PASSED, "merged: " + String.join(", ", merged));
+    }
+
+    /** {@code cr_123 (provider vsphere 1.4.0)}: a change request as a check's detail names it. */
+    public static String named(ChangeRequest cr) {
+        return cr.id() + " (" + cr.kind().json() + " " + cr.name() + " " + cr.version() + ")";
     }
 
     /** The canonical YAML round-trips to the same content hash. */

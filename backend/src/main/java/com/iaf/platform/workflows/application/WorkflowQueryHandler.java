@@ -31,6 +31,7 @@ import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.DependencyRules;
+import com.iaf.platform.workflows.domain.PublishChecks;
 import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.StepTypeSchemas;
@@ -152,7 +153,7 @@ public class WorkflowQueryHandler implements WorkflowQueries {
                     List<Problem> problems = WorkflowChecks.check(current.definition(), ctx);
                     List<ChangeRequest> crs = changeRequests.all().stream()
                             .filter(cr -> cr.kind() == ChangeRequest.Kind.WORKFLOW && name.equals(cr.name()))
-                            .map(WorkflowQueryHandler::withoutContent)
+                            .map(cr -> withoutContent(judged(cr, changeRequests)))
                             .toList();
                     return new WorkflowDetail(s.name(), s.title(), s.noun(), s.verb(), s.persona(), s.folder(), s.owner(), s.tags(), s.status(),
                             s.latestVersion(), s.publishedVersion(), s.stepCount(), s.updatedAt(), s.mcp(),
@@ -180,15 +181,23 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     public Flux<ChangeRequest> changeRequests(String status) {
         return blocking(() -> changeRequests.all().stream()
                 .filter(cr -> status == null || status.isBlank() || cr.status().json().equalsIgnoreCase(status))
-                .map(WorkflowQueryHandler::withoutContent)
+                .map(cr -> withoutContent(judged(cr, changeRequests)))
                 .toList()).flatMapMany(Flux::fromIterable);
     }
 
     @Override
     public Mono<ChangeRequestDetail> changeRequest(String id) {
-        return optional(() -> changeRequests.get(id))
+        return optional(() -> changeRequests.get(id).map(cr -> judged(cr, changeRequests)))
                 .switchIfEmpty(Mono.error(() -> new NotFoundException("change request", id)))
                 .map(cr -> new ChangeRequestDetail(cr, WorkflowMermaid.preview(cr).map(Preview::new).orElse(null)));
+    }
+
+    /**
+     * The change request with its requires check judged now: the change requests it requires may
+     * have been merged or closed since it was opened (a store read per change request it requires).
+     */
+    static ChangeRequest judged(ChangeRequest cr, ChangeRequestPort store) {
+        return cr.required().isEmpty() ? cr : cr.withCheck(PublishChecks.requires(cr.required(), store::get));
     }
 
     @Override
@@ -337,7 +346,7 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     /** A list row: the change request without its yaml and diff. */
     static ChangeRequest withoutContent(ChangeRequest cr) {
         return new ChangeRequest(cr.id(), cr.kind(), cr.name(), cr.version(), cr.branch(), cr.title(), cr.author(), cr.status(), cr.checks(),
-                cr.strategy(), null, null, cr.createdAt(), cr.mergedAt(), cr.mergedBy(), cr.url());
+                cr.strategy(), null, null, cr.createdAt(), cr.mergedAt(), cr.mergedBy(), cr.url(), cr.requires());
     }
 
     static RegistryAction actionOf(Action a) {

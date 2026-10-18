@@ -34,6 +34,7 @@ import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.application.WorkflowCommandHandler;
 import com.iaf.platform.workflows.application.WorkflowQueryHandler;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 
 import reactor.core.publisher.Mono;
 
@@ -254,6 +255,38 @@ class RestControllerWorkflowAdapterTest {
                 .exchange().expectStatus().isOk().expectBody().jsonPath("$.passed").isEqualTo(true);
         client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", List.of(plain)))
                 .exchange().expectStatus().isBadRequest().expectBody().jsonPath("$.problems").isArray();
+    }
+
+    @Test
+    void aPublishTakesTheProviderChangeRequestsItRequiresAndMergesAfterThem() throws Exception {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        changeRequests.save(new ChangeRequest("cr_tick", ChangeRequest.Kind.PROVIDER, "ticketing", "0.1.0", "change/provider-ticketing-0.1.0", "Publish ticketing 0.1.0",
+                "mateo", ChangeRequest.Status.OPEN, List.of(new ChangeRequest.Check("schema", "Schema", "passed", null)), "all", SampleFixtures.TICKETING, "", NOW,
+                null, null, null));
+        client.post().uri("/api/v1/workflows").bodyValue(Map.of("yaml", ticketCheck)).exchange().expectStatus().isAccepted();
+        client.post().uri("/api/v1/workflows/ticket-check:publish").bodyValue(Map.of("requires", List.of("cr_nope"))).exchange()
+                .expectStatus().isBadRequest().expectBody().jsonPath("$.error").isEqualTo("requires names cr_nope, which is no change request");
+        byte[] accepted = client.post().uri("/api/v1/workflows/ticket-check:publish").bodyValue(Map.of("strategy", "all", "requires", List.of("cr_tick")))
+                .exchange().expectStatus().isAccepted().expectBody().jsonPath("$.status").isEqualTo("open").returnResult().getResponseBody();
+        String crId = JSON.readTree(accepted).path("id").asText();
+
+        client.get().uri("/api/v1/change-requests/" + crId).exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.requires").isEqualTo(List.of("cr_tick"))
+                .jsonPath("$.checks.length()").isEqualTo(10)
+                .jsonPath("$.checks[?(@.id == 'requires')].status").isEqualTo(List.of("pending"))
+                .jsonPath("$.checks[?(@.id == 'requires')].detail").isEqualTo(List.of("waiting for cr_tick (provider ticketing 0.1.0) to merge"));
+        client.post().uri("/api/v1/change-requests/" + crId + ":merge").exchange().expectStatus().isEqualTo(409)
+                .expectBody()
+                .jsonPath("$.error").isEqualTo("change request " + crId + " requires change requests that are not merged yet: cr_tick (provider ticketing 0.1.0) is open")
+                .jsonPath("$.detail.requires").isEqualTo(List.of("cr_tick"));
+
+        client.post().uri("/api/v1/change-requests/cr_tick:merge").header("X-User", "junior").exchange().expectStatus().isAccepted();
+        client.get().uri("/api/v1/change-requests?status=open").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$[?(@.id == '" + crId + "')].checks[?(@.id == 'requires')].status").isEqualTo(List.of("passed"));
+        client.post().uri("/api/v1/change-requests/" + crId + ":merge").exchange().expectStatus().isAccepted()
+                .expectBody().jsonPath("$.status").isEqualTo("merged");
+        client.get().uri("/api/v1/workflows/ticket-check").exchange().expectStatus().isOk().expectBody().jsonPath("$.publishedVersion").isEqualTo("0.1.0");
     }
 
     @Test

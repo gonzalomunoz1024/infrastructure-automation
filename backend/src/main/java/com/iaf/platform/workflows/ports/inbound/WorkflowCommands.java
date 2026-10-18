@@ -70,8 +70,15 @@ public interface WorkflowCommands {
         }
     }
 
-    /** Body of {@code POST /workflows/{name}:publish}. {@code strategy} is canary or all; null means the file's rollout strategy. */
-    record PublishWorkflow(String strategy, String notes) {
+    /**
+     * Body of {@code POST /workflows/{name}:publish}. {@code strategy} is canary or all; null means
+     * the file's rollout strategy. {@code requires} (optional): ids of provider change requests,
+     * open or merged, that the workflow's change request needs merged first.
+     */
+    record PublishWorkflow(String strategy, String notes, List<String> requires) {
+        public PublishWorkflow(String strategy, String notes) {
+            this(strategy, notes, null);
+        }
     }
 
     /** Body of {@code POST /workflows:import}: {@code source} is idp, ansible, terraform or openapi. */
@@ -114,9 +121,14 @@ public interface WorkflowCommands {
     /** Walks the document against the samples, with the drafts of providers it carries; an invalid draft is a 400 with its problems. */
     Mono<DryRunResult> dryRun(DryRunRequest request);
 
-    /** Opens a change request for the draft; the accepted id is the change request id. */
+    /**
+     * Opens a change request for the draft; the accepted id is the change request id. With
+     * {@code requires} its checks and replay also see the provider files of those change
+     * requests, and it merges only once every one of them is merged.
+     */
     Mono<CommandAccepted> publish(String name, PublishWorkflow command);
 
+    /** Merges an open change request whose checks passed; a workflow one waits for every change request it requires to be merged (409). */
     Mono<CommandAccepted> mergeChangeRequest(String id);
 
     Mono<CommandAccepted> closeChangeRequest(String id);
