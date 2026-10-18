@@ -63,6 +63,8 @@ docs/               architecture, config as code, API, design language, contribu
 - [Getting started](docs/getting-started.md): a first run, a first workflow, a first provider.
 - [Onboard a VM provider, end to end](docs/onboard-a-vm-provider.md): the whole journey in
   pictures, from a VM API's OpenAPI spec to a VM in the registry.
+- [Create a VM in the designer, end to end](docs/create-a-vm-in-the-designer.md): the same VM
+  API called from HTTP steps, built, published and run without leaving the designer.
 - [Architecture](docs/architecture.md): slices, CQRS rules, ports and adapters, the interpreter.
 - [Config as code](docs/config-as-code.md): the `Workflow`, `Provider` and `ResourceType` files,
   step kinds and expressions.
