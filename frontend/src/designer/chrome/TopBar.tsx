@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Badge, Button, cx, Icon, IconButton, Kbd, modKeyLabel, StateTag, Tabs, Tag, Tooltip } from '@iaf/ui'
 import type { WorkflowMetadata } from '@iaf/workflow-checks'
+import { DeprecatedTag } from '../../components/Deprecation'
 import { useDesigner, useDesignerStore, type DesignerTab } from '../model/store'
 
 function EditableTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -76,6 +77,7 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
   const owner = typeof meta.owner === 'string' ? meta.owner : (s.detail?.owner ?? '')
   const status = s.isNew ? 'draft' : (s.detail?.status ?? 'draft')
   const version = s.detail?.publishedVersion ?? s.detail?.latestVersion ?? (typeof meta.version === 'string' ? meta.version : null)
+  const deprecated = s.doc.api?.deprecated
   const errors = s.problems.filter((p) => p.level === 'error').length
   const warnings = s.problems.length - errors
   const m = modKeyLabel()
@@ -104,6 +106,11 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
             {status === 'published' && version ? `published ${version}` : status}
           </StateTag>
         </span>
+        {deprecated && (
+          <span className="hidden shrink-0 @4xl:inline-flex" data-testid="deprecated-tag">
+            <DeprecatedTag deprecated={deprecated} />
+          </span>
+        )}
         {owner && (
           <span className="hidden shrink-0 @6xl:inline-flex">
             <Tag size="sm" icon="users" outline>

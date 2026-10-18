@@ -11,6 +11,7 @@ import { SchemaForm, coerceBySchema, coerceScalar, defaultsFor, fieldNames, spli
 import { csvToRows, emitCsv } from '../components/csv'
 import { downloadText } from '../components/download'
 import { parseJsonText } from '../components/JsonEditor'
+import { DeprecatedTag, DeprecationNotice } from '../components/Deprecation'
 import { ErrorState, Mono, TextLink } from '../components/common'
 
 type Mode = 'one' | 'many'
@@ -50,7 +51,12 @@ export default function CatalogRunPage({ route }: PageProps) {
       <PageHeader
         eyebrow="Run"
         title={entry.title}
-        subtitle={entry.description ?? `${entry.verb} a ${entry.noun}`}
+        subtitle={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            {entry.deprecated && <DeprecatedTag deprecated={entry.deprecated} />}
+            <span>{entry.description ?? `${entry.verb} a ${entry.noun}`}</span>
+          </span>
+        }
         back={{ href: `#${pathFor('catalog')}`, label: 'Catalog' }}
         actions={
           <Segmented
@@ -66,15 +72,16 @@ export default function CatalogRunPage({ route }: PageProps) {
       />
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="min-w-0">{mode === 'one' ? <OneRun entry={entry} /> : <ManyRun entry={entry} />}</div>
-        <About entry={entry} />
+        <About entry={entry} catalog={catalog.data} />
       </div>
     </>
   )
 }
 
-function About({ entry }: { entry: CatalogEntry }) {
+function About({ entry, catalog }: { entry: CatalogEntry; catalog?: CatalogEntry[] }) {
   return (
     <div className="space-y-4">
+      {entry.deprecated && <DeprecationNotice deprecated={entry.deprecated} catalog={catalog} />}
       <Card title="About">
         <CardRow label="Endpoint" stacked>
           <span className="inline-flex min-w-0 items-center gap-1.5">

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { NOTIFICATIONS, PLATFORM_STREAM, WORKFLOWS, inboxRoutes, mockApi } from './fixtures'
+import { DEPRECATED_CATALOG, NOTIFICATIONS, PLATFORM_STREAM, RESOURCE_TYPES, VMS, WORKFLOWS, inboxRoutes, mockApi } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -114,5 +114,39 @@ test.describe('audit: the platform stream', () => {
     await page.goto('/#/audit?tab=platform')
     await expect(page.getByRole('tab', { name: 'Platform events' })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByText('Chain broken at entry 4')).toBeVisible()
+  })
+})
+
+test.describe('catalog: a deprecated operation', () => {
+  const routes = {
+    'GET /catalog': DEPRECATED_CATALOG,
+    'GET /resource-types': RESOURCE_TYPES,
+    'GET /vms': VMS,
+  }
+
+  test('the catalog marks the operation and the run page says since when, until when and what to use instead', async ({ page }) => {
+    await mockApi(page, routes)
+    await page.goto('/#/catalog')
+    const marked = page.getByRole('table', { name: 'Catalog' }).getByRole('row').filter({ hasText: 'deprecated' })
+    await expect(marked).toHaveCount(1)
+    await expect(marked).toContainText('VM restart')
+    await expect(marked.getByTitle(/^Deprecated since 2026-10-01; sunset 2027-01-31/)).toBeVisible()
+    // the cards carry the same capsule
+    await page.getByRole('radio', { name: 'Cards' }).click()
+    await expect(page.getByRole('link', { name: /^VM restart 1\.2\.0/ }).getByText('deprecated', { exact: true })).toBeVisible()
+
+    await page.goto('/#/catalog/vm-restart')
+    await expect(page.getByRole('heading', { level: 1, name: 'VM restart' })).toBeVisible()
+    const notice = page.getByRole('note', { name: 'Deprecated operation' })
+    await expect(notice).toContainText('Deprecated')
+    await expect(notice).toContainText('2026-10-01')
+    await expect(notice).toContainText('2027-01-31')
+    await expect(notice).toContainText('Use v2, which restarts through the maintenance window.')
+    // the replacement path is answered by a published workflow: the link goes to its run page
+    const successor = notice.getByRole('link', { name: /VM restart \(v2\)/ })
+    await expect(successor).toHaveAttribute('href', '#/catalog/vm-restart-v2')
+    await successor.click()
+    await expect(page.getByRole('heading', { level: 1, name: 'VM restart (v2)' })).toBeVisible()
+    await expect(page.getByRole('note', { name: 'Deprecated operation' })).toHaveCount(0)
   })
 })

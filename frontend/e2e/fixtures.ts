@@ -680,6 +680,7 @@ export const PLATFORM_STREAM: PlatformStream = {
 /** vm-restart with a successor: the deprecation the catalog reports. */
 export const DEPRECATED_CATALOG: CatalogEntry[] = [
   { ...CATALOG[0], deprecated: { since: '2026-10-01', sunset: '2027-01-31', replacement: '/api/v2/vms/{vmId}:restart', message: 'Use v2, which restarts through the maintenance window.' } },
+  { ...CATALOG[0], workflow: 'vm-restart-v2', title: 'VM restart (v2)', path: '/api/v2/vms/{vmId}:restart', batchPath: '/api/v2/vms:restart:batch', previewPath: '/api/v2/vms/{vmId}:restart:preview', mcpTool: 'restart_vm_v2', version: '2.0.0', description: 'Restart a virtual machine through its maintenance window.' },
   CATALOG[1],
 ]
 

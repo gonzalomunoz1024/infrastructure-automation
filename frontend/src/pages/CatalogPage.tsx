@@ -5,6 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { api } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { CatalogEntry } from '../lib/types'
+import { DeprecatedTag } from '../components/Deprecation'
 import { ErrorState, Mono } from '../components/common'
 
 type View = 'table' | 'cards'
@@ -60,7 +61,10 @@ export default function CatalogPage(_: PageProps) {
       accessor: (e) => e.title,
       render: (e) => (
         <div className="min-w-0 max-w-md">
-          <div className="font-medium text-primary">{e.title}</div>
+          <div className="flex flex-wrap items-center gap-2 font-medium text-primary">
+            {e.title}
+            {e.deprecated && <DeprecatedTag deprecated={e.deprecated} />}
+          </div>
           {e.description && <div className="truncate text-caption text-secondary">{e.description}</div>}
         </div>
       ),
@@ -138,7 +142,10 @@ export default function CatalogPage(_: PageProps) {
                     {e.persona && ` · for ${e.persona}`}
                   </p>
                 </div>
-                <Ways entry={e} />
+                <span className="inline-flex flex-wrap justify-end gap-1">
+                  {e.deprecated && <DeprecatedTag deprecated={e.deprecated} />}
+                  <Ways entry={e} />
+                </span>
               </div>
               {e.description && <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-secondary">{e.description}</p>}
               <div className="mt-4 flex items-center justify-between gap-3 border-t border-stroke-light pt-3">
