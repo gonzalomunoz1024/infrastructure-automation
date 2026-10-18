@@ -29,8 +29,12 @@ import com.iaf.platform.assistant.domain.Events;
 import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.assistant.domain.WorkflowDraft;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort;
+import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.config.GlobalExceptionHandler;
+import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
 import reactor.core.publisher.Flux;
@@ -59,6 +63,16 @@ class RestControllerAssistantAdapterTest {
         public String mode() {
             return "scripted";
         }
+
+        @Override
+        public boolean needsPlatformChecks() {
+            return false;
+        }
+
+        @Override
+        public Mono<List<PlaybookSync>> syncPlaybooks() {
+            return Mono.just(List.of(new PlaybookSync("nl-builder-playbook.md", "!workflow-draft", "playbook-1", "updated")));
+        }
     };
 
     WebTestClient client;
@@ -68,7 +82,8 @@ class RestControllerAssistantAdapterTest {
         InMemorySessionStore store = new InMemorySessionStore();
         WorkflowQueries workflows = mock(WorkflowQueries.class);
         when(workflows.check(anyString())).thenReturn(Mono.just(List.of()));
-        AssistantCommandHandler commands = new AssistantCommandHandler(AGENT, store, workflows, CLOCK, new MockEnvironment().withProperty("server.port", "8080"));
+        AssistantCommandHandler commands = new AssistantCommandHandler(AGENT, store, workflows, mock(RunsCommands.class), new EventBus(CLOCK), new PlatformProperties(),
+                CLOCK, new MockEnvironment().withProperty("server.port", "8080"));
         AssistantQueryHandler queries = new AssistantQueryHandler(store);
         client = WebTestClient.bindToController(new RestControllerAssistantAdapter(commands, queries))
                 .controllerAdvice(new GlobalExceptionHandler())
@@ -203,5 +218,17 @@ class RestControllerAssistantAdapterTest {
                 .expectBody()
                 .jsonPath("$.status").isEqualTo("ready")
                 .jsonPath("$.summary").isEqualTo("Drafted restart a vm");
+    }
+
+    @Test
+    void anAdminSyncsThePlaybooks() {
+        client.post().uri("/api/v1/assistant/playbooks:sync")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.playbooks.length()").isEqualTo(1)
+                .jsonPath("$.playbooks[0].macro").isEqualTo("!workflow-draft")
+                .jsonPath("$.playbooks[0].playbookId").isEqualTo("playbook-1")
+                .jsonPath("$.playbooks[0].action").isEqualTo("updated");
     }
 }

@@ -69,12 +69,28 @@ public class PlatformProperties {
     public static class Assistant {
         private String mode = "mock";
         private String devinUrl = "https://api.devin.ai/v3";
+        /** The Devin organization ({@code org-...}): every call goes to {@code <devin-url>/organizations/<devin-org>}. */
         private String devinOrg = "";
         private String devinApiKey = "";
         private String devinPlaybookId = "";
         /** The playbook behind "Ask Devin" in the Add provider wizard ({@code !provider-draft}). */
         private String devinProviderPlaybookId = "";
         private String platformTokenSecretId = "";
+        /** Repositories attached to every session as read-only context (the workflows repo), as Devin names them. */
+        private java.util.List<String> devinRepos = new java.util.ArrayList<>();
+        /** ACU ceiling per session; 0 sends none. */
+        private int devinMaxAcuLimit = 10;
+        /** How often a session is polled; kept within 10 to 30 seconds. */
+        private Duration devinPollEvery = Duration.ofSeconds(15);
+        private Duration devinTimeout = Duration.ofMinutes(30);
+        /** The playbooks and their structured-output schemas; blank means {@code <content.dir>/devin}. */
+        private String devinDir = "";
+        /** Create or update the Devin playbooks from devin/*.md when the platform starts. */
+        private boolean syncPlaybooksOnStartup = false;
+        /** The platform API the agent calls back (registry, :validate, :dry-run); blank means http://localhost:<server.port>. */
+        private String platformApiUrl = "";
+        /** How many times the platform sends its own check results back to the agent before it settles a draft. */
+        private int maxRounds = 3;
     }
 
     @Data

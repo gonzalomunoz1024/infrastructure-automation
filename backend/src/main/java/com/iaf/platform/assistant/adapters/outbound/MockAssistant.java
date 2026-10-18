@@ -78,6 +78,12 @@ public class MockAssistant implements AssistantPort {
         return "mock";
     }
 
+    /** Its drafts already went through the platform's checks, repairs and dry run. */
+    @Override
+    public boolean needsPlatformChecks() {
+        return false;
+    }
+
     @Override
     public Flux<AssistantEvent> run(AssistantRequest request) {
         Flux<AssistantEvent> events = Flux.concat(

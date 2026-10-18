@@ -1,117 +1,162 @@
 package com.iaf.platform.assistant.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.mock.http.client.reactive.MockClientHttpRequest;
-import org.springframework.web.reactive.function.client.ClientRequest;
-import org.springframework.web.reactive.function.client.ClientResponse;
-import org.springframework.web.reactive.function.client.ExchangeFunction;
-import org.springframework.web.reactive.function.client.ExchangeStrategies;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.assistant.adapters.outbound.PlaybookFiles.PlaybookFile;
 import com.iaf.platform.assistant.domain.AssistantEvent;
 import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.domain.Events;
 import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.AssistantRequest;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.Context;
+import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
+import com.iaf.platform.assistant.ports.outbound.AssistantPort.ProviderRequest;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.testing.LocalHttp;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 
-import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-/** The Devin adapter against a handcrafted exchange function: request shapes, polling, follow-ups, failures. */
+/** The Devin adapter against a local stand-in for the Devin API v3: request shapes, polling, follow-ups, endings, playbook sync. */
 class DevinAssistantTest {
 
     static final Instant NOW = Instant.parse("2026-10-17T10:00:00Z");
     static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     static final Identity WHO = new Identity("u-ada", "Ada", "ada@example.com", List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+    static final Path REPO_PLAYBOOKS = Path.of("..", "devin");
+    static final String ORG = "/v3/organizations/org-test";
 
-    /** Answers like the Devin API: one create response, then the GET bodies in order (the last one repeats). */
-    static final class FakeDevin implements ExchangeFunction {
-        final List<ClientRequest> requests = new ArrayList<>();
-        final List<String> bodies = new ArrayList<>();
-        final Deque<String> polls = new ArrayDeque<>();
-        HttpStatus createStatus = HttpStatus.OK;
-        String createBody = "{\"session_id\":\"devin-1\",\"status_enum\":\"working\"}";
-
-        FakeDevin polls(String... bodies) {
-            polls.addAll(List.of(bodies));
-            return this;
-        }
-
-        @Override
-        public Mono<ClientResponse> exchange(ClientRequest request) {
-            requests.add(request);
-            bodies.add(request.method() == HttpMethod.GET ? "" : bodyOf(request));
-            String path = request.url().getPath();
-            if (request.method() == HttpMethod.POST && path.endsWith("/sessions")) {
-                return Mono.just(json(createStatus, createBody));
-            }
-            if (request.method() == HttpMethod.POST && path.endsWith("/message")) {
-                return Mono.just(json(HttpStatus.OK, "{\"ok\":true}"));
-            }
-            if (request.method() == HttpMethod.GET && path.contains("/sessions/")) {
-                String body = polls.size() > 1 ? polls.poll() : polls.peek();
-                return Mono.just(json(HttpStatus.OK, body == null ? "{}" : body));
-            }
-            return Mono.just(ClientResponse.create(HttpStatus.NOT_FOUND).build());
-        }
-
-        static String bodyOf(ClientRequest request) {
-            MockClientHttpRequest out = new MockClientHttpRequest(request.method(), request.url());
-            request.writeTo(out, ExchangeStrategies.withDefaults()).block(Duration.ofSeconds(5));
-            return out.getBodyAsString().block(Duration.ofSeconds(5));
-        }
-
-        static ClientResponse json(HttpStatus status, String body) {
-            return ClientResponse.create(status).header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).body(body).build();
-        }
-
-        JsonNode body(int i) {
+    record Hit(String method, String path, String query, String auth, String body) {
+        JsonNode json() {
             try {
-                return Events.mapper().readTree(bodies.get(i));
-            } catch (java.io.IOException e) {
+                return Events.mapper().readTree(body);
+            } catch (IOException e) {
                 throw new IllegalStateException(e);
             }
         }
     }
 
-    static PlatformProperties.Assistant props() {
+    /** Devin's API on a local port: one create answer, then session and message bodies in order (the last one repeats). */
+    static final class FakeDevin {
+        final List<Hit> hits = new CopyOnWriteArrayList<>();
+        final Deque<String> sessions = new ArrayDeque<>();
+        final Deque<String> messages = new ArrayDeque<>();
+        int createStatus = 200;
+        String createBody = "{\"session_id\":\"devin-1\",\"status\":\"new\"}";
+        String playbooks = "{\"items\":[],\"has_next_page\":false}";
+
+        FakeDevin sessions(String... bodies) {
+            sessions.addAll(List.of(bodies));
+            return this;
+        }
+
+        FakeDevin messages(String... bodies) {
+            messages.addAll(List.of(bodies));
+            return this;
+        }
+
+        synchronized String next(Deque<String> q, String empty) {
+            String body = q.size() > 1 ? q.poll() : q.peek();
+            return body == null ? empty : body;
+        }
+
+        void handle(HttpExchange ex) throws IOException {
+            String method = ex.getRequestMethod();
+            String path = ex.getRequestURI().getPath();
+            hits.add(new Hit(method, path, ex.getRequestURI().getRawQuery(), ex.getRequestHeaders().getFirst("Authorization"), LocalHttp.body(ex)));
+            if (method.equals("POST") && path.endsWith("/sessions")) {
+                LocalHttp.respond(ex, createStatus, createBody);
+            } else if (method.equals("POST") && path.endsWith("/messages")) {
+                LocalHttp.respond(ex, 200, "{\"session_id\":\"devin-1\",\"status\":\"resuming\"}");
+            } else if (method.equals("GET") && path.endsWith("/messages")) {
+                LocalHttp.respond(ex, 200, next(messages, "{\"items\":[],\"has_next_page\":false}"));
+            } else if (method.equals("GET") && path.contains("/sessions/")) {
+                LocalHttp.respond(ex, 200, next(sessions, "{\"status\":\"running\",\"status_detail\":\"working\"}"));
+            } else if (method.equals("GET") && path.endsWith("/playbooks")) {
+                LocalHttp.respond(ex, 200, playbooks);
+            } else if (method.equals("POST") && path.endsWith("/playbooks")) {
+                LocalHttp.respond(ex, 200, "{\"playbook_id\":\"playbook-new\"}");
+            } else if (method.equals("PUT") && path.contains("/playbooks/")) {
+                LocalHttp.respond(ex, 200, "{\"playbook_id\":\"" + path.substring(path.lastIndexOf('/') + 1) + "\"}");
+            } else {
+                LocalHttp.respond(ex, 404, "{\"title\":\"Not Found\",\"status\":404}");
+            }
+        }
+
+        List<Hit> hits(String method, String pathSuffix) {
+            return hits.stream().filter(h -> h.method().equals(method) && h.path().endsWith(pathSuffix)).toList();
+        }
+    }
+
+    FakeDevin fake;
+    HttpServer server;
+
+    @BeforeEach
+    void start() throws IOException {
+        fake = new FakeDevin();
+        server = LocalHttp.start(fake::handle);
+    }
+
+    @AfterEach
+    void stop() {
+        server.stop(0);
+    }
+
+    static String messages(String... items) {
+        return "{\"items\":[" + String.join(",", items) + "],\"has_next_page\":false,\"end_cursor\":null}";
+    }
+
+    static String msg(String id, String source, String text) {
+        return "{\"event_id\":\"" + id + "\",\"source\":\"" + source + "\",\"message\":\"" + text + "\",\"created_at\":1760695200}";
+    }
+
+    PlatformProperties.Assistant props() {
         PlatformProperties.Assistant p = new PlatformProperties.Assistant();
-        p.setDevinUrl("https://devin.test/v3");
+        p.setDevinUrl(LocalHttp.url(server) + "/v3/");
+        p.setDevinOrg("org-test");
         p.setDevinApiKey("key-1");
         p.setDevinPlaybookId("pb-workflow");
         p.setDevinProviderPlaybookId("pb-provider");
         p.setPlatformTokenSecretId("sec-platform");
+        p.setDevinRepos(List.of("acme/platform-content"));
         return p;
     }
 
-    static DevinAssistant agent(FakeDevin fake, Duration timeout) {
-        WebClient client = WebClient.builder().baseUrl("https://devin.test/v3").exchangeFunction(fake).build();
-        return new DevinAssistant(props(), client, CLOCK, Duration.ofMillis(1), timeout);
+    DevinAssistant agent(PlatformProperties.Assistant props, Path playbooks, Duration timeout) {
+        WebClient client = WebClient.builder().baseUrl(DevinAssistant.baseUrl(props)).build();
+        return new DevinAssistant(props, playbooks, client, CLOCK, Duration.ofMillis(5), timeout);
+    }
+
+    DevinAssistant agent(Duration timeout) {
+        return agent(props(), REPO_PLAYBOOKS, timeout);
     }
 
     static AssistantRequest request(String text, String externalId, String currentDraft) {
         AssistantSession session = new AssistantSession("asst-1", currentDraft == null ? AssistantSession.CREATE : AssistantSession.EDIT, null, WHO.id(),
                 AssistantSession.WORKING, null, List.of(), externalId, NOW, NOW);
-        return new AssistantRequest(session, text, currentDraft, WHO, new Context("team-compute", "Compute", "team-compute", "http://localhost:8080", List.of()));
+        return new AssistantRequest(session, text, currentDraft, WHO, new Context("team-compute", "Compute", "team-compute", "https://platform.example.com", List.of()));
     }
 
     static List<AssistantEvent> run(DevinAssistant agent, AssistantRequest request) {
@@ -121,86 +166,145 @@ class DevinAssistantTest {
     }
 
     @Test
-    void createsASessionWithTheWorkflowDraftPlaybookAndStreamsUntilDevinBlocks() {
-        FakeDevin fake = new FakeDevin().polls(
-                "{\"status_enum\":\"working\",\"messages\":[{\"type\":\"user_message\",\"message\":\"!workflow-draft\"}]}",
-                "{\"status_enum\":\"working\",\"messages\":[{\"type\":\"user_message\",\"message\":\"!workflow-draft\"},{\"type\":\"devin_message\",\"message\":\"Reading the registry\"}],"
-                        + "\"structured_output\":{\"status\":\"working\",\"summary\":\"drafting\"}}",
-                "{\"status_enum\":\"blocked\",\"messages\":[{\"type\":\"user_message\",\"message\":\"!workflow-draft\"},{\"type\":\"devin_message\",\"message\":\"Reading the registry\"},{\"type\":\"devin_message\",\"message\":\"Here is the draft\"}],"
-                        + "\"structured_output\":{\"status\":\"ready\",\"summary\":\"done\",\"workflowYaml\":\"kind: Workflow\\n\",\"validation\":{\"valid\":true,\"errors\":[]}}}");
-        List<AssistantEvent> events = run(agent(fake, Duration.ofSeconds(5)), request("restart a vm with an approval", null, null));
+    void createsAnOrganizationSessionWithThePlaybookSchemaReposTagsAndAcuLimitThenStreamsUntilDevinWaits() {
+        fake.sessions(
+                "{\"status\":\"running\",\"status_detail\":\"working\"}",
+                "{\"status\":\"running\",\"status_detail\":\"working\",\"structured_output\":{\"status\":\"working\",\"summary\":\"drafting\"}}",
+                "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"summary\":\"done\",\"workflowYaml\":\"kind: Workflow\\n\","
+                        + "\"validation\":{\"valid\":true,\"errors\":[]}}}")
+                .messages(
+                        messages(msg("e1", "user", "!workflow-draft")),
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "Reading the registry")),
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "Reading the registry"), msg("e3", "devin", "Here is the draft")));
+        List<AssistantEvent> events = run(agent(Duration.ofSeconds(5)), request("restart a vm with an approval", null, null));
 
-        ClientRequest create = fake.requests.get(0);
-        assertThat(create.method()).isEqualTo(HttpMethod.POST);
-        assertThat(create.url().toString()).isEqualTo("https://devin.test/v3/sessions");
-        assertThat(create.headers().getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer key-1");
-        JsonNode body = fake.body(0);
+        Hit create = fake.hits.get(0);
+        assertThat(create.method()).isEqualTo("POST");
+        assertThat(create.path()).isEqualTo(ORG + "/sessions");
+        assertThat(create.auth()).isEqualTo("Bearer key-1");
+        JsonNode body = create.json();
         assertThat(body.path("prompt").asText()).startsWith("!workflow-draft\n\nDESCRIPTION:\nrestart a vm with an approval\n\nMODE: create\n\nCURRENT_DRAFT:\nnone\n\nCONTEXT:\n");
         assertThat(body.path("prompt").asText()).contains("owner: team-compute\n").contains("folder: Compute\n").contains("requester_team: team-compute\n")
-                .contains("requester: u-ada\n").contains("PLATFORM_API: http://localhost:8080\n");
+                .contains("requester: u-ada\n").contains("PLATFORM_API: https://platform.example.com\n");
         assertThat(body.path("playbook_id").asText()).isEqualTo("pb-workflow");
-        assertThat(body.path("secret_ids")).hasSize(1);
-        assertThat(body.path("secret_ids").get(0).asText()).isEqualTo("sec-platform");
-        assertThat(body.path("tags").get(0).asText()).isEqualTo("workflow-draft");
+        assertThat(body.path("structured_output_schema").path("title").asText()).isEqualTo("WorkflowDraft");
+        assertThat(body.path("structured_output_required").asBoolean()).isTrue();
+        assertThat(body.path("secret_ids")).extracting(JsonNode::asText).containsExactly("sec-platform");
+        assertThat(body.path("repos")).extracting(JsonNode::asText).containsExactly("acme/platform-content");
+        assertThat(body.path("tags")).extracting(JsonNode::asText).containsExactly("kind:workflow-draft", "draft:asst-1", "user:u-ada");
         assertThat(body.path("title").asText()).startsWith("Workflow draft: restart a vm");
-        assertThat(fake.requests.get(1).method()).isEqualTo(HttpMethod.GET);
-        assertThat(fake.requests.get(1).url().toString()).isEqualTo("https://devin.test/v3/sessions/devin-1");
-        assertThat(fake.requests.get(1).headers().getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer key-1");
+        assertThat(body.path("max_acu_limit").asInt()).isEqualTo(10);
+        assertThat(fake.hits("GET", "/sessions/devin-1")).isNotEmpty().allSatisfy(h -> assertThat(h.auth()).isEqualTo("Bearer key-1"));
+        assertThat(fake.hits("GET", "/sessions/devin-1/messages")).isNotEmpty()
+                .allSatisfy(h -> assertThat(h.path()).isEqualTo(ORG + "/sessions/devin-1/messages"))
+                .allSatisfy(h -> assertThat(h.query()).isEqualTo("first=200"));
 
-        assertThat(events.get(0).type()).isEqualTo(AssistantEvent.STATUS);
-        assertThat(events.get(0).data().path("externalId").asText()).isEqualTo("devin-1");
         assertThat(events).extracting(AssistantEvent::type).containsExactly(
                 AssistantEvent.STATUS,          // session started
                 AssistantEvent.STATUS,          // Devin is working
                 AssistantEvent.MESSAGE,         // Reading the registry
                 AssistantEvent.DRAFT,           // working output
-                AssistantEvent.STATUS,          // Devin is blocked
+                AssistantEvent.STATUS,          // Devin is waiting for you
                 AssistantEvent.MESSAGE,         // Here is the draft
                 AssistantEvent.DRAFT,           // ready output
-                AssistantEvent.VALIDATION,
                 AssistantEvent.DONE);
+        assertThat(events.get(0).data().path("externalId").asText()).isEqualTo("devin-1");
         assertThat(events.get(1).data().path("status").asText()).isEqualTo("Devin is working");
         assertThat(Events.textOf(events.get(2))).isEqualTo("Reading the registry");
+        assertThat(events.get(4).data().path("status").asText()).isEqualTo("Devin is waiting for you");
         assertThat(events.get(6).data().path("workflowYaml").asText()).isEqualTo("kind: Workflow\n");
-        assertThat(events.get(7).data().path("valid").asBoolean()).isTrue();
-        assertThat(Events.isFailed(events.get(8))).isFalse();
+        assertThat(Events.isFailed(events.get(7))).isFalse();
     }
 
     @Test
-    void followsUpOnTheExistingSessionAndIgnoresTheStaleBlockedStatus() {
-        FakeDevin fake = new FakeDevin().polls(
-                "{\"status_enum\":\"blocked\",\"messages\":[],\"structured_output\":{\"status\":\"ready\",\"summary\":\"old\"}}",
-                "{\"status_enum\":\"working\",\"messages\":[],\"structured_output\":{\"status\":\"ready\",\"summary\":\"old\"}}",
-                "{\"status_enum\":\"blocked\",\"messages\":[{\"type\":\"devin_message\",\"message\":\"Added the approval\"}],"
-                        + "\"structured_output\":{\"status\":\"ready\",\"summary\":\"new\",\"changes\":[\"approval\"]}}");
-        List<AssistantEvent> events = run(agent(fake, Duration.ofSeconds(5)), request("add an approval before the restart", "devin-1", "kind: Workflow\nmetadata:\n  name: x\n"));
+    void followUpsGoToTheSessionsMessagesAndWaitUntilDevinHasMoved() {
+        String old = "\"structured_output\":{\"status\":\"ready\",\"summary\":\"old\"}";
+        fake.sessions(
+                "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\"," + old + "}",   // before the message
+                "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\"," + old + "}",   // stale: not an end
+                "{\"status\":\"running\",\"status_detail\":\"working\"," + old + "}",
+                "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"summary\":\"new\",\"changes\":[\"approval\"]}}")
+                .messages(
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "old words")),
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "old words")),
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "old words"), msg("e3", "user", "add an approval")),
+                        messages(msg("e1", "user", "!workflow-draft"), msg("e2", "devin", "old words"), msg("e3", "user", "add an approval"),
+                                msg("e4", "devin", "Added the approval")));
+        List<AssistantEvent> events = run(agent(Duration.ofSeconds(5)), request("add an approval before the restart", "devin-1", "kind: Workflow\nmetadata:\n  name: x\n"));
 
-        ClientRequest follow = fake.requests.get(0);
-        assertThat(follow.method()).isEqualTo(HttpMethod.POST);
-        assertThat(follow.url().toString()).isEqualTo("https://devin.test/v3/sessions/devin-1/message");
-        assertThat(follow.headers().getFirst(HttpHeaders.AUTHORIZATION)).isEqualTo("Bearer key-1");
-        String message = fake.body(0).path("message").asText();
+        assertThat(fake.hits("POST", "/sessions")).isEmpty();
+        List<Hit> sent = fake.hits("POST", "/sessions/devin-1/messages");
+        assertThat(sent).hasSize(1);
+        assertThat(sent.get(0).path()).isEqualTo(ORG + "/sessions/devin-1/messages");
+        assertThat(sent.get(0).auth()).isEqualTo("Bearer key-1");
+        String message = sent.get(0).json().path("message").asText();
         assertThat(message).doesNotContain("!workflow-draft");
         assertThat(message).startsWith("DESCRIPTION:\nadd an approval before the restart\n\nMODE: edit\n\nCURRENT_DRAFT:\n```yaml\nkind: Workflow\nmetadata:\n  name: x\n```\n");
 
         assertThat(events).extracting(AssistantEvent::type).containsExactly(
                 AssistantEvent.STATUS,          // sent to session
-                AssistantEvent.STATUS,          // Devin is blocked (stale, not an end)
-                AssistantEvent.DRAFT,           // the old output, as it stands
                 AssistantEvent.STATUS,          // Devin is working
-                AssistantEvent.STATUS,          // Devin is blocked
-                AssistantEvent.MESSAGE,
-                AssistantEvent.DRAFT,
+                AssistantEvent.STATUS,          // Devin is waiting for you
+                AssistantEvent.MESSAGE,         // only the new words
+                AssistantEvent.DRAFT,           // only the new output
                 AssistantEvent.DONE);
         assertThat(events.get(0).data().path("externalId").asText()).isEqualTo("devin-1");
-        assertThat(events.get(6).data().path("summary").asText()).isEqualTo("new");
-        assertThat(fake.requests.stream().filter(r -> r.method() == HttpMethod.GET).count()).isEqualTo(3);
+        assertThat(Events.textOf(events.get(3))).isEqualTo("Added the approval");
+        assertThat(events.get(4).data().path("summary").asText()).isEqualTo("new");
+    }
+
+    @Test
+    void thePlatformsChecksGoToTheSessionWordForWord() {
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"summary\":\"old\"}}",
+                "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"summary\":\"fixed\"}}");
+        AssistantRequest r = request("x", "devin-1", "kind: Workflow\n");
+        AssistantRequest checks = new AssistantRequest(r.session(), "PLATFORM_CHECKS (round 1 of 3):\n- provider.unknown at step restart: no provider\n",
+                r.currentDraft(), WHO, r.context(), true);
+        List<AssistantEvent> events = run(agent(Duration.ofSeconds(5)), checks);
+
+        assertThat(fake.hits("POST", "/sessions/devin-1/messages").get(0).json().path("message").asText())
+                .isEqualTo("PLATFORM_CHECKS (round 1 of 3):\n- provider.unknown at step restart: no provider\n");
+        assertThat(events.get(0).data().path("status").asText()).isEqualTo("Sent the platform's checks to Devin session devin-1");
+        assertThat(events).extracting(AssistantEvent::type).endsWith(AssistantEvent.DRAFT, AssistantEvent.DONE);
+    }
+
+    @Test
+    void messagesArePagedWithTheEndCursor() {
+        HttpServer paged = null;
+        try {
+            List<String> queries = new CopyOnWriteArrayList<>();
+            paged = LocalHttp.start(ex -> {
+                String path = ex.getRequestURI().getPath();
+                if (path.endsWith("/messages")) {
+                    String q = ex.getRequestURI().getRawQuery();
+                    queries.add(q);
+                    LocalHttp.respond(ex, 200, q.contains("after=")
+                            ? messages(msg("e2", "devin", "second page"))
+                            : "{\"items\":[" + msg("e1", "devin", "first page") + "],\"has_next_page\":true,\"end_cursor\":\"c+1=\"}");
+                } else if (path.endsWith("/sessions")) {
+                    LocalHttp.respond(ex, 200, "{\"session_id\":\"devin-1\"}");
+                } else {
+                    LocalHttp.respond(ex, 200, "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\"}");
+                }
+            });
+            PlatformProperties.Assistant p = props();
+            p.setDevinUrl(LocalHttp.url(paged) + "/v3");
+            List<AssistantEvent> events = run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("x", null, null));
+            assertThat(events).filteredOn(e -> AssistantEvent.MESSAGE.equals(e.type())).extracting(Events::textOf).containsExactly("first page", "second page");
+            assertThat(queries).contains("first=200", "first=200&after=c%2B1%3D");
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } finally {
+            if (paged != null) {
+                paged.stop(0);
+            }
+        }
     }
 
     @Test
     void aSessionThatNeverEndsTimesOutWithAFailedDone() {
-        FakeDevin fake = new FakeDevin().polls("{\"status_enum\":\"working\",\"messages\":[]}");
-        StepVerifier.create(agent(fake, Duration.ofMillis(60)).run(request("restart a vm", null, null)))
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"working\"}");
+        StepVerifier.create(agent(Duration.ofSeconds(2)).run(request("restart a vm", null, null)))
                 .expectNextMatches(e -> AssistantEvent.STATUS.equals(e.type()))
                 .expectNextMatches(e -> AssistantEvent.STATUS.equals(e.type()) && "Devin is working".equals(e.data().path("status").asText()))
                 .expectNextMatches(e -> AssistantEvent.MESSAGE.equals(e.type()) && Events.textOf(e).contains("did not finish"))
@@ -210,10 +314,9 @@ class DevinAssistantTest {
 
     @Test
     void anApiErrorEndsWithAMessageAndAFailedDone() {
-        FakeDevin fake = new FakeDevin();
-        fake.createStatus = HttpStatus.INTERNAL_SERVER_ERROR;
-        fake.createBody = "{\"detail\":\"boom\"}";
-        List<AssistantEvent> events = run(agent(fake, Duration.ofSeconds(5)), request("restart a vm", null, null));
+        fake.createStatus = 500;
+        fake.createBody = "{\"title\":\"boom\",\"status\":500}";
+        List<AssistantEvent> events = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
         assertThat(events).extracting(AssistantEvent::type).containsExactly(AssistantEvent.MESSAGE, AssistantEvent.DONE);
         assertThat(Events.textOf(events.get(0))).contains("Devin could not be reached");
         assertThat(Events.isFailed(events.get(1))).isTrue();
@@ -221,51 +324,160 @@ class DevinAssistantTest {
     }
 
     @Test
-    void anExpiredSessionFails() {
-        FakeDevin fake = new FakeDevin().polls("{\"status_enum\":\"expired\",\"messages\":[]}");
-        List<AssistantEvent> events = run(agent(fake, Duration.ofSeconds(5)), request("restart a vm", null, null));
-        assertThat(events).extracting(AssistantEvent::type).containsExactly(AssistantEvent.STATUS, AssistantEvent.STATUS, AssistantEvent.MESSAGE, AssistantEvent.DONE);
-        assertThat(Events.textOf(events.get(2))).contains("expired");
-        assertThat(Events.isFailed(events.get(3))).isTrue();
+    void anErroredOrOutOfCreditsSessionFailsAndAnExitedOrIdleOneEnds() {
+        fake.sessions("{\"status\":\"error\",\"status_detail\":\"error\"}");
+        List<AssistantEvent> errored = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(errored).extracting(AssistantEvent::type).containsExactly(AssistantEvent.STATUS, AssistantEvent.STATUS, AssistantEvent.MESSAGE, AssistantEvent.DONE);
+        assertThat(errored.get(1).data().path("status").asText()).isEqualTo("Devin stopped with an error");
+        assertThat(Events.isFailed(errored.get(3))).isTrue();
+
+        fake.sessions.clear();
+        fake.sessions("{\"status\":\"suspended\",\"status_detail\":\"out_of_credits\"}");
+        List<AssistantEvent> broke = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(Events.textOf(broke.get(2))).contains("out of credits");
+        assertThat(Events.isFailed(broke.get(3))).isTrue();
+
+        fake.sessions.clear();
+        fake.sessions("{\"status\":\"exit\"}");
+        List<AssistantEvent> exited = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(exited).extracting(AssistantEvent::type).containsExactly(AssistantEvent.STATUS, AssistantEvent.STATUS, AssistantEvent.DONE);
+        assertThat(Events.isFailed(exited.get(2))).isFalse();
+
+        fake.sessions.clear();
+        fake.sessions("{\"status\":\"suspended\",\"status_detail\":\"inactivity\"}");
+        List<AssistantEvent> idle = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(idle.get(1).data().path("status").asText()).isEqualTo("Devin is suspended (inactivity)");
+        assertThat(Events.isFailed(idle.get(2))).isFalse();
     }
 
     @Test
     void aSessionWithoutAnIdFails() {
-        FakeDevin fake = new FakeDevin();
-        fake.createBody = "{\"status_enum\":\"working\"}";
-        List<AssistantEvent> events = run(agent(fake, Duration.ofSeconds(5)), request("restart a vm", null, null));
+        fake.createBody = "{\"status\":\"new\"}";
+        List<AssistantEvent> events = run(agent(Duration.ofSeconds(5)), request("restart a vm", null, null));
         assertThat(events).extracting(AssistantEvent::type).containsExactly(AssistantEvent.MESSAGE, AssistantEvent.DONE);
         assertThat(Events.isFailed(events.get(1))).isTrue();
         assertThat(events.get(1).data().path("error").asText()).contains("no session id");
     }
 
     @Test
-    void draftsAProviderThroughTheProviderPlaybook() {
-        FakeDevin fake = new FakeDevin().polls(
-                "{\"status_enum\":\"working\",\"messages\":[]}",
-                "{\"status_enum\":\"finished\",\"messages\":[],\"structured_output\":{\"status\":\"ready\",\"summary\":\"The backup service\",\"providerYaml\":\"kind: Provider\\n\","
-                        + "\"assumptions\":[\"bearer auth\"],\"questions\":[{\"question\":\"Which credential?\"},\"Is prod reachable?\"]}}");
-        ProviderDraft draft = agent(fake, Duration.ofSeconds(5)).draftProvider("the backup service at https://backup.example.com", WHO).block(Duration.ofSeconds(10));
+    void aMissingOrganizationFailsWithAClearMessage() {
+        PlatformProperties.Assistant p = props();
+        p.setDevinOrg("");
+        List<AssistantEvent> events = run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(events.get(1).data().path("error").asText()).contains("devin-org is not set");
+        assertThat(fake.hits).isEmpty();
+    }
 
-        JsonNode body = fake.body(0);
-        assertThat(body.path("prompt").asText()).startsWith("!provider-draft\n\nDESCRIPTION:\nthe backup service at https://backup.example.com\n\nCONTEXT:\nowner: team-compute\n");
+    @Test
+    void draftsAProviderThroughTheProviderPlaybookAndSchemaWithoutReadingMessages() {
+        fake.sessions(
+                "{\"status\":\"running\",\"status_detail\":\"working\"}",
+                "{\"status\":\"running\",\"status_detail\":\"finished\",\"structured_output\":{\"status\":\"ready\",\"summary\":\"The backup service\",\"providerYaml\":\"kind: Provider\\n\","
+                        + "\"assumptions\":[\"bearer auth\"],\"questions\":[\"Which credential?\"]}}");
+        ProviderRequest request = new ProviderRequest("pdraft-1", "the backup service at https://backup.example.com", WHO,
+                new Context("team-compute", null, "team-compute", "https://platform.example.com", List.of()));
+        ProviderDraft draft = agent(Duration.ofSeconds(5)).draftProvider(request).block(Duration.ofSeconds(10));
+
+        JsonNode body = fake.hits("POST", "/sessions").get(0).json();
+        assertThat(body.path("prompt").asText()).startsWith("!provider-draft\n\nDESCRIPTION:\nthe backup service at https://backup.example.com\n\nCONTEXT:\nowner: team-compute\n")
+                .contains("PLATFORM_API: https://platform.example.com\n");
         assertThat(body.path("playbook_id").asText()).isEqualTo("pb-provider");
-        assertThat(body.path("tags").get(0).asText()).isEqualTo("provider-draft");
+        assertThat(body.path("structured_output_schema").path("title").asText()).isEqualTo("ProviderDraft");
+        assertThat(body.path("tags")).extracting(JsonNode::asText).containsExactly("kind:provider-draft", "draft:pdraft-1", "user:u-ada");
         assertThat(body.path("secret_ids").get(0).asText()).isEqualTo("sec-platform");
+        assertThat(fake.hits("GET", "/messages")).isEmpty();
 
         assertThat(draft).isNotNull();
         assertThat(draft.yaml()).isEqualTo("kind: Provider\n");
         assertThat(draft.summary()).isEqualTo("The backup service");
         assertThat(draft.assumptions()).containsExactly("bearer auth");
-        assertThat(draft.questions()).containsExactly("Which credential?", "Is prod reachable?");
+        assertThat(draft.questions()).containsExactly("Which credential?");
     }
 
     @Test
     void aProviderDraftWithoutStructuredOutputIsAnError() {
-        FakeDevin fake = new FakeDevin().polls("{\"status_enum\":\"finished\",\"messages\":[]}");
-        StepVerifier.create(agent(fake, Duration.ofSeconds(5)).draftProvider("x", WHO))
+        fake.sessions("{\"status\":\"exit\"}");
+        StepVerifier.create(agent(Duration.ofSeconds(5)).draftProvider("x", WHO))
                 .expectErrorMatches(e -> e instanceof IllegalStateException && e.getMessage().contains("no provider draft"))
                 .verify(Duration.ofSeconds(10));
+    }
+
+    @Test
+    void syncCreatesMissingPlaybooksUpdatesChangedOnesAndLeavesTheRest(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("a.md"), "---\ntitle: Draft a workflow\nmacro: \"!workflow-draft\"\nstructured_output_schema: a.schema.json\n---\n\n## Overview\n\nSame.\n");
+        Files.writeString(dir.resolve("a.schema.json"), "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"}}}");
+        Files.writeString(dir.resolve("b.md"), "---\ntitle: Draft a provider\nmacro: \"!provider-draft\"\n---\n\n## Overview\n\nNew words.\n");
+        Files.writeString(dir.resolve("c.md"), "---\ntitle: Something new\nmacro: \"!something-new\"\n---\nBody.\n");
+        Files.writeString(dir.resolve("README.md"), "# Not a playbook\n");
+        fake.playbooks = "{\"items\":["
+                + "{\"playbook_id\":\"playbook-a\",\"title\":\"Draft a workflow\",\"body\":\"## Overview\\n\\nSame.\\n\",\"macro\":\"!workflow-draft\",\"access_type\":\"org\","
+                + "\"structured_output_schema\":{\"properties\":{\"status\":{\"type\":\"string\"}},\"type\":\"object\"}},"
+                + "{\"playbook_id\":\"playbook-b\",\"title\":\"Draft a provider\",\"body\":\"Old words.\",\"macro\":\"!provider-draft\",\"access_type\":\"org\"},"
+                + "{\"playbook_id\":\"playbook-ent\",\"title\":\"Theirs\",\"body\":\"x\",\"macro\":\"!something-new\",\"access_type\":\"enterprise\"}"
+                + "],\"has_next_page\":false}";
+        PlatformProperties.Assistant p = props();
+        p.setDevinPlaybookId("");
+        DevinAssistant agent = agent(p, dir, Duration.ofSeconds(5));
+
+        List<PlaybookSync> result = agent.syncPlaybooks().block(Duration.ofSeconds(10));
+
+        assertThat(result).containsExactly(
+                new PlaybookSync("a.md", "!workflow-draft", "playbook-a", "unchanged"),
+                new PlaybookSync("b.md", "!provider-draft", "playbook-b", "updated"),
+                new PlaybookSync("c.md", "!something-new", "playbook-new", "created"));
+        assertThat(fake.hits("GET", "/playbooks").get(0).query()).isEqualTo("first=200");
+        JsonNode put = fake.hits("PUT", "/playbooks/playbook-b").get(0).json();
+        assertThat(put.path("title").asText()).isEqualTo("Draft a provider");
+        assertThat(put.path("body").asText()).isEqualTo("## Overview\n\nNew words.\n");
+        assertThat(put.path("macro").asText()).isEqualTo("!provider-draft");
+        JsonNode post = fake.hits("POST", "/playbooks").get(0).json();
+        assertThat(post.path("macro").asText()).isEqualTo("!something-new");
+        assertThat(fake.hits("PUT", "/playbooks/playbook-a")).isEmpty();
+
+        // with no playbook id configured, sessions use the one the sync found
+        fake.sessions("{\"status\":\"exit\"}");
+        run(agent, request("x", null, null));
+        assertThat(fake.hits("POST", "/sessions").get(0).json().path("playbook_id").asText()).isEqualTo("playbook-a");
+    }
+
+    @Test
+    void thePlaybookFilesInTheRepoParseWithinDevinsLimits() throws IOException {
+        List<PlaybookFile> files = PlaybookFiles.read(REPO_PLAYBOOKS);
+        assertThat(files).extracting(PlaybookFile::macro).containsExactly("!workflow-draft", "!provider-draft");
+        assertThat(files).allSatisfy(f -> {
+            assertThat(f.title()).isNotBlank();
+            assertThat(f.body()).startsWith("## Overview").doesNotContain("structured_output_schema: ");
+            assertThat(f.schema()).isNotNull();
+        });
+        assertThat(files.get(0).schema().path("title").asText()).isEqualTo("WorkflowDraft");
+        assertThat(files.get(1).schema().path("title").asText()).isEqualTo("ProviderDraft");
+    }
+
+    @Test
+    void playbookFilesOutsideDevinsLimitsAreRefused() {
+        assertThatThrownBy(() -> PlaybookFiles.parse("x.md", "---\ntitle: X\nmacro: \"no-bang\"\n---\nbody\n", n -> null))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("macro");
+        assertThatThrownBy(() -> PlaybookFiles.parse("x.md", "---\ntitle: X\nmacro: \"!x\"\nstructured_output_schema: s.json\n---\nbody\n",
+                n -> "{\"properties\":{\"a\":{\"$ref\":\"https://example.com/other.json\"}}}"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("external $ref");
+        assertThatThrownBy(() -> PlaybookFiles.schema("big.json", "{\"description\":\"" + "x".repeat(70_000) + "\"}"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("64 KB");
+        assertThat(PlaybookFiles.parse("note.md", "# just notes\n", n -> null)).isNull();
+        assertThat(PlaybookFiles.parse("x.md", "---\ntitle: X\nmacro: \"!x\"\nstructured_output_schema: s.json\n---\nbody\n",
+                n -> "{\"definitions\":{\"a\":{}},\"properties\":{\"b\":{\"$ref\":\"#/definitions/a\"}}}").schema()).isNotNull();
+    }
+
+    @Test
+    void pollingIsKeptBetweenTenAndThirtySeconds() {
+        assertThat(DevinAssistant.pollEvery(null)).isEqualTo(Duration.ofSeconds(15));
+        assertThat(DevinAssistant.pollEvery(Duration.ofSeconds(3))).isEqualTo(Duration.ofSeconds(10));
+        assertThat(DevinAssistant.pollEvery(Duration.ofSeconds(45))).isEqualTo(Duration.ofSeconds(30));
+        assertThat(DevinAssistant.pollEvery(Duration.ofSeconds(20))).isEqualTo(Duration.ofSeconds(20));
+        PlatformProperties.Assistant p = new PlatformProperties.Assistant();
+        p.setDevinOrg("org-abc");
+        assertThat(DevinAssistant.baseUrl(p)).isEqualTo("https://api.devin.ai/v3/organizations/org-abc");
+        assertThat(p.getDevinPollEvery()).isEqualTo(Duration.ofSeconds(15));
+        assertThat(p.getMaxRounds()).isEqualTo(3);
     }
 
     @Test
@@ -277,7 +489,9 @@ class DevinAssistantTest {
     }
 
     @Test
-    void modeIsDevin() {
-        assertThat(agent(new FakeDevin(), Duration.ofSeconds(1)).mode()).isEqualTo("devin");
+    void modeIsDevinAndItWantsThePlatformsChecks() {
+        DevinAssistant agent = agent(Duration.ofSeconds(1));
+        assertThat(agent.mode()).isEqualTo("devin");
+        assertThat(agent.needsPlatformChecks()).isTrue();
     }
 }
