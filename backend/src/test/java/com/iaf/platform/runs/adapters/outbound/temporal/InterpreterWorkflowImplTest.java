@@ -29,6 +29,7 @@ import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.runs.FlakyProjectionStore;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.adapters.outbound.ChangeProperties;
@@ -675,6 +676,27 @@ class InterpreterWorkflowImplTest {
         Job done = t.job(job.id());
         assertThat(done.step("pause").status()).isEqualTo(StepStatus.SUCCEEDED);
         assertThat(done.step("after").output().path("message").asText()).isEqualTo("after the wait");
+        t.replay(job.id());
+    }
+
+    @Test
+    void aFinalEventTheStoreRefusesIsRetriedUntilTheStoreKeepsItInsteadOfLeavingTheJobRunning() {
+        // more refusals than the five attempts an event used to get
+        FlakyProjectionStore store = FlakyProjectionStore.refusingTerminalSaves(7);
+        t = new TemporalTestEngine(new TemporalTestEngine.Options().wiring(new RunsTestWiring(store)));
+        Job job = t.start(yaml(WAIT), Map.of());
+
+        Outcome outcome = t.result(job.id());
+
+        assertThat(outcome.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(store.refused()).isEqualTo(7);
+        assertThat(t.job(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(t.types(job.id())).as("a refused event is not published; the one kept is, once").containsOnlyOnce("job.finished");
+        assertThat(t.w.projection.history(job.id()).stream().filter(e -> e.terminal()).count()).isOne();
+        List<HistoryEvent> attempts = t.client.fetchHistory(job.id()).getEvents().stream()
+                .filter(HistoryEvent::hasActivityTaskStartedEventAttributes)
+                .filter(e -> e.getActivityTaskStartedEventAttributes().getAttempt() == 8).toList();
+        assertThat(attempts).as("the finished activity's eighth attempt kept the event").hasSize(1);
         t.replay(job.id());
     }
 

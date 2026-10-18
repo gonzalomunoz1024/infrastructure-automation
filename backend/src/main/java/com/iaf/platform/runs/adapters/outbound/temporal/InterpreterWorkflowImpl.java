@@ -81,8 +81,9 @@ import io.temporal.workflow.WorkflowThreadLocal;
  *
  * <p>Activities: the calls of a step run once with the step's timeout plus a grace (the
  * interpreter does its own retries and classifies the failure); records (an approval, a child
- * job) are created at most once; events are published with a few retries, since a lost event
- * would leave the projection behind. A cancel requested through Temporal itself (the UI, the
+ * job) are created at most once; events, the final one included, are retried until the
+ * projection keeps them (a store that is down holds the job at that point rather than losing
+ * its {@code job.finished} and leaving it running for good). A cancel requested through Temporal itself (the UI, the
  * CLI) ends the job like the {@code cancel} signal does, by {@code temporal}; the execution then
  * closes as cancelled instead of completing with the outcome, as the SDK closes every workflow
  * whose cancel was requested, so the events, not the result, are what the platform reads.</p>
@@ -113,10 +114,12 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      */
     static final String CHILD_RECORDS = "child-records-itself";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
-    private static final RetryOptions PUBLISH = RetryOptions.newBuilder()
-            .setMaximumAttempts(5)
+    /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
+    static final RetryOptions PUBLISH = RetryOptions.newBuilder()
+            .setMaximumAttempts(0)
             .setInitialInterval(Duration.ofSeconds(1))
-            .setMaximumInterval(Duration.ofSeconds(30))
+            .setBackoffCoefficient(2)
+            .setMaximumInterval(Duration.ofMinutes(1))
             .build();
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
@@ -226,7 +229,11 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return new WorkflowInterpreter.Resume(job.resume().fromStep(), job.resume().seed(), pending == null ? null : pending.id(), job.attention());
     }
 
-    /** The final event, published even when Temporal cancelled the workflow: a cancelled scope refuses new activities, a detached one does not. */
+    /**
+     * The final event, published even when Temporal cancelled the workflow: a cancelled scope
+     * refuses new activities, a detached one does not. Its activity retries until the projection
+     * keeps the event, so the workflow ends only once the job reads as ended.
+     */
     private void finish(Outcome outcome) {
         Instant at = now();
         String by = cancelledBy == null ? Identity.SYSTEM.id() : cancelledBy;
@@ -568,7 +575,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         });
     }
 
-    /** A {@code job.log} line; one that cannot be published is not worth failing a step for. */
+    /** A {@code job.log} line, retried like every event; a cancel through Temporal while it waits is not worth failing a step for. */
     @Override
     public void log(JobContext ctx, String message) {
         try {

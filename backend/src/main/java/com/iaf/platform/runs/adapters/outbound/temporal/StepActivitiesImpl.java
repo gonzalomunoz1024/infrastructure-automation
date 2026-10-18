@@ -204,13 +204,16 @@ public class StepActivitiesImpl implements StepActivities {
         return JobFactory.row(batch.toJob(), row, clock.instant()).withDefinition(null);
     }
 
+    /** Idempotent: a retry after the store refused the event, or a child its parent recorded before, publishes the start once. */
     @Override
     public void started(Job job) {
-        if (projection.has(job.id())) {
+        if (projection.history(job.id()).stream().anyMatch(e -> "job.started".equals(e.data().path("event").asText()))) {
             log.info("job {} is already recorded; its start is not published again", job.id());
             return;
         }
-        projection.put(job);
+        if (!projection.has(job.id())) {
+            projection.put(job);
+        }
         events.started(job);
     }
 

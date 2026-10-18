@@ -168,8 +168,8 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   job ends, never made for an id the store does not have, and dropped after 30 minutes without an
   event or a subscriber (numbering then resumes from the stored history). `JobEvents` folds each
   event into the projection before it publishes it, so a store failure reaches the publisher
-  instead of losing the event: nothing is kept or published, a Temporal activity retries, a
-  command fails, and the in-memory engine fails the step (its final event
+  instead of losing the event: nothing is kept or published, a Temporal activity retries (see
+  Running on Temporal), a command fails, and the in-memory engine fails the step (its final event
   is logged as lost). An event that cannot be applied at all, a bug no retry mends, is logged and
   kept in the history without changing the job.
 - Provider-call samples are queued, and a background thread writes them in batches, so recording
@@ -295,7 +295,13 @@ projection of the instance it runs on. A child that did not succeed reaches the 
 a `ChildFailure` on both engines, so `onFailure: continue` means the same there. Executions
 recorded before children recorded themselves (fixture `before-child-records-itself`) still
 replay: the change is gated with `Workflow.getVersion` (`child-records-itself`), as the
-team-worker change was. A cancel from the Temporal UI or CLI ends the job as cancelled by
+team-worker change was. Every event an execution publishes (its start as a child, the step
+records, decisions, waves, log lines, `job.finished` and `job.cancelled`) is an activity retried
+without a maximum, backing off from 1 s to one attempt a minute: a store that is down holds the
+job where it is until the projection keeps the event, rather than losing a `job.finished` and
+leaving the job running for good; the Temporal UI shows the activity retrying with the store's
+error. Records that mint an id (an approval, a child) still run once and fail the step instead,
+so a retry never creates a second one. A cancel from the Temporal UI or CLI ends the job as cancelled by
 `temporal`. Without the `postgres` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
