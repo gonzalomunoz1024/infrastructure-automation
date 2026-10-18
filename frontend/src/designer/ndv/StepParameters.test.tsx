@@ -1,12 +1,15 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
+import { blankAction } from '../../components/provider-editor/state'
+import { providersWithDrafts } from '../creator/catalog'
 import { bodyFor } from '../model/edits'
 import { documentToGraph, findStepNode, graphToDocument } from '../model/graph'
+import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
-import { credentialFieldOptions, credentialOptions, gitResolveQuery, NEW_CREDENTIAL, StepParameters } from './StepParameters'
+import { credentialFieldOptions, credentialOptions, editProviderOptions, gitResolveQuery, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, StepParameters } from './StepParameters'
 import { hostsValue, withGroupKey } from './inventory'
 
 /*
@@ -254,5 +257,94 @@ describe('the check access of a use step', () => {
     const doc = useVm({ type: 'vm', id: '{{ $input.vmId }}', checkAccess: false })
     expect(graphToDocument(documentToGraph(doc), doc)).toEqual(doc)
     expect(JSON.stringify(bodyFor('use', { resourceType: 'vm' }))).not.toContain('checkAccess')
+  })
+})
+
+/*
+ * The provider field, as n8n has a credential field: its options end with "New provider…" and a
+ * pencil beside it edits the provider, both through the Provider sheet for this step. The
+ * workflow's drafts are listed with the published providers, marked draft.
+ */
+const PROVIDERS_REGISTRY: Registry = {
+  ...REGISTRY,
+  providers: [
+    { name: 'vsphere', title: 'VMware vSphere', type: 'openapi', owner: 'team-compute', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }] },
+    { name: 'tf', title: 'Terraform modules', type: 'terraform', actions: [{ id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' }] },
+  ],
+}
+
+const providerStep = (provider: string, action: string): WorkflowDocument =>
+  ({
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: { name: 'vm-check', noun: 'vm', verb: 'check', owner: 'team-compute', version: '1.0.0' },
+    workflow: { do: [{ check: { name: 'Check the VM', call: 'provider', with: { provider, action, input: {} } } }] },
+  }) as WorkflowDocument
+
+const backupDraft = (): ProviderDraft => newProviderDraft('http', { title: 'Backup API', name: 'backup', actions: [blankAction({ id: 'jobs.list', title: 'List jobs', path: '/jobs' })] })
+
+describe('the provider field of a provider step', () => {
+  it('lists the providers a step calls, the drafts marked, then "New provider…" unless read-only', () => {
+    const listed = providersWithDrafts(PROVIDERS_REGISTRY, [backupDraft()])
+    expect(providerFieldOptions(listed, true)).toEqual([
+      { value: 'vsphere', label: 'VMware vSphere', hint: 'vsphere' },
+      { value: 'backup', label: 'Backup API', hint: 'backup · draft' },
+      { value: NEW_PROVIDER, label: 'New provider…' },
+    ])
+    expect(providerFieldOptions(listed, false).map((o) => o.value)).toEqual(['vsphere', 'backup'])
+    expect(providerFieldOptions([], true)).toEqual([{ value: NEW_PROVIDER, label: 'New provider…' }])
+  })
+
+  it('opens the Provider sheet on a new provider for this step, and the action it ends on fills the step', () => {
+    const store = new DesignerStore({ name: 'vm-check', doc: providerStep('', ''), registry: PROVIDERS_REGISTRY })
+    store.openProviderSheet(newProviderOptions('check'))
+    expect(store.getState().providerSheet).toEqual({ entry: 'step', draft: null, provider: null, target: { kind: 'step', step: 'check' } })
+    expect(store.closeProviderSheet({ type: 'provider', params: { provider: 'backup', action: 'jobs.list' } })).toBe('check')
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ check: { name: 'Check the VM', call: 'provider', with: { provider: 'backup', action: 'jobs.list', input: {} } } })
+  })
+
+  it('edits a published provider through a draft of its next patch, and a draft as it is', () => {
+    const store = new DesignerStore({ name: 'vm-check', doc: providerStep('vsphere', 'vm.get'), registry: PROVIDERS_REGISTRY })
+    // published, no draft yet: the sheet starts the next patch's draft from the provider
+    expect(editProviderOptions({}, 'check', 'vsphere')).toEqual({ entry: 'step', provider: 'vsphere', target: { kind: 'step', step: 'check' } })
+    store.updateStep('check', (b) => writeField(b, 'input.id', '{{ $input.vmId }}'))
+    store.openProviderSheet(editProviderOptions({}, 'check', 'vsphere'))
+    expect(store.getState().providerSheet).toEqual({ entry: 'step', draft: null, provider: 'vsphere', target: { kind: 'step', step: 'check' } })
+    // closing on the action the step already calls keeps what the step passes it
+    expect(store.closeProviderSheet({ type: 'provider', params: { provider: 'vsphere', action: 'vm.get' } })).toBe('check')
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ check: { name: 'Check the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '{{ $input.vmId }}' } } } })
+    // the workflow's draft of it: opened on that draft
+    const next: ProviderDraft = { ...newProviderDraft('openapi', { name: 'vsphere', title: 'VMware vSphere' }), origin: 'edit', publishedVersion: '1.3.0' }
+    store.upsertProviderDraft(next)
+    expect(editProviderOptions(store.getState().providerDrafts, 'check', 'vsphere')).toEqual({ entry: 'step', provider: 'vsphere', draft: next.id, target: { kind: 'step', step: 'check' } })
+    // a provider that is only a draft: no published provider to fetch
+    const backup = backupDraft()
+    expect(editProviderOptions({ [backup.id]: backup }, 'check', 'backup')).toEqual({ entry: 'step', draft: backup.id, provider: null, target: { kind: 'step', step: 'check' } })
+  })
+
+  it('shows the pencil beside a chosen provider, and the draft tag on a draft', () => {
+    const store = new DesignerStore({ name: 'vm-check', doc: providerStep('vsphere', 'vm.get'), registry: PROVIDERS_REGISTRY })
+    const published = renderStep(store, 'check')
+    expect(published).toContain('aria-label="Edit provider"')
+    expect(published).toContain('>VMware vSphere<')
+    expect(published).not.toMatch(/>draft</)
+    store.upsertProviderDraft(backupDraft())
+    store.updateStep('check', (b) => {
+      b.with = { provider: 'backup', action: 'jobs.list', input: {} }
+    })
+    const draft = renderStep(store, 'check')
+    expect(draft).toContain('>Backup API<')
+    expect(draft).toMatch(/>draft</)
+    expect(draft).toContain('>List jobs<')
+    // nothing to edit before a provider is chosen, nor on a read-only step
+    expect(renderStep(new DesignerStore({ name: 'vm-check', doc: providerStep('', ''), registry: PROVIDERS_REGISTRY }), 'check')).not.toContain('Edit provider')
+    const node = findStepNode(store.getState().graph, 'check')
+    if (!node) throw new Error('no check step')
+    const readOnly = renderToString(
+      <DesignerContext.Provider value={store}>
+        <StepParameters stepId="check" body={node.data.body} step={node.data.step} registry={store.getState().registry} doc={store.getState().doc} readOnly />
+      </DesignerContext.Provider>,
+    )
+    expect(readOnly).not.toContain('Edit provider')
   })
 })

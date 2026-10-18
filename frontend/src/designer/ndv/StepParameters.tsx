@@ -3,6 +3,9 @@
  * registry knows the shape (a provider action's input, a child workflow's input, a resource
  * type's attributes) and written by hand for the flow steps (switch cases, fork branches, the
  * loop, wait, set). Every field writes straight into the step body through the store.
+ *
+ * As n8n has it beside a credential, a provider step's provider field ends with "New provider…"
+ * and has an "Edit provider" pencil, both opening the Provider sheet for this step.
  */
 import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react'
 import { Button, cx, Icon, Input, Segmented, Tag, type SelectOption } from '@iaf/ui'
@@ -11,10 +14,11 @@ import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
+import { findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
-import { useDesignerStore } from '../model/store'
-import { effectTags } from '../creator/catalog'
+import { useDesignerSelector, useDesignerStore, type ProviderSheetOptions } from '../model/store'
+import { DRAFT_TAG, effectTags, providersWithDrafts, type ListedProvider } from '../creator/catalog'
 import { useNdv } from './context'
 import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
@@ -165,13 +169,42 @@ function CredentialParam({ field = 'credential', kinds, label = 'Credential', de
 const METHODS: SelectOption[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))
 const CALL_TYPES = ['openapi', 'http', 'sdk']
 
+/** The value of the entry that ends the provider field's options, as "New credential…" ends a credential field's. */
+export const NEW_PROVIDER = '__new-provider__'
+
+/** The provider field's options: the providers a step can call, the workflow's drafts marked, then "New provider…" unless the step is read-only. */
+export function providerFieldOptions(providers: readonly ListedProvider[], canCreate: boolean): SelectOption[] {
+  const options: SelectOption[] = providers.filter((p) => CALL_TYPES.includes(p.type)).map((p) => ({ value: p.name, label: p.title, hint: p.draft ? `${p.name} · draft` : p.name }))
+  if (canCreate) options.push({ value: NEW_PROVIDER, label: 'New provider…' })
+  return options
+}
+
+/** "New provider…": the Provider sheet on a new provider, whose chosen action then fills this step. */
+export function newProviderOptions(stepId: string): ProviderSheetOptions {
+  return { entry: 'step', target: { kind: 'step', step: stepId } }
+}
+
+/**
+ * "Edit provider": the Provider sheet on the step's provider, for this step. A draft of the
+ * workflow's is opened as it is; a published provider opens on a draft of its next patch (the
+ * workflow's, or the one the sheet starts from it).
+ */
+export function editProviderOptions(drafts: Readonly<Record<string, ProviderDraft>>, stepId: string, provider: string): ProviderSheetOptions {
+  const target = { kind: 'step', step: stepId } as const
+  const draft = findProviderDraft(drafts, provider)
+  if (draft?.origin === 'new') return { entry: 'step', draft: draft.id, provider: null, target }
+  return { entry: 'step', provider, ...(draft ? { draft: draft.id } : {}), target }
+}
+
 function ProviderParams() {
-  const { get, update, registry } = useStepEdit()
+  const store = useDesignerStore()
+  const { stepId, get, update, registry, readOnly } = useStepEdit()
+  const drafts = useDesignerSelector((s) => s.providerDrafts)
+  const listed = useMemo(() => providersWithDrafts(registry, drafts), [registry, drafts])
   const providerName = asString(get('provider'))
   const actionId = asString(get('action'))
-  const providers = (registry?.providers ?? []).filter((p) => CALL_TYPES.includes(p.type))
-  const provider = findProvider(registry, providerName)
-  const action = findAction(registry, providerName, actionId)
+  const provider = listed.find((p) => p.name === providerName)
+  const action = provider?.actions.find((a) => a.id === actionId)
   const setProvider = (v: JsonValue | undefined) =>
     update((b) => {
       writeField(b, 'provider', v ?? '')
@@ -179,18 +212,42 @@ function ProviderParams() {
     })
   return (
     <>
-      <P field="provider" label="Provider" required options={providers.map((p) => ({ value: p.name, label: p.title, hint: p.name }))} expression={false} onChange={setProvider} />
+      <div className="flex items-start gap-1.5">
+        <div className="min-w-0 flex-1">
+          <P field="provider" label="Provider" required options={providerFieldOptions(listed, !readOnly)} expression={false} onChange={(v) => (v === NEW_PROVIDER ? store.openProviderSheet(newProviderOptions(stepId)) : setProvider(v))} />
+        </div>
+        {providerName && !readOnly && (
+          <button
+            type="button"
+            onClick={() => store.openProviderSheet(editProviderOptions(store.getState().providerDrafts, stepId, providerName))}
+            aria-label="Edit provider"
+            title={provider?.draft ? `Edit the draft of ${provider.title}` : `Edit ${provider?.title ?? providerName}: its next version, reviewed and published as a change request`}
+            data-testid="edit-provider"
+            className="mt-7 flex h-[38px] w-9 shrink-0 items-center justify-center rounded-md border border-stroke-light bg-surface text-secondary hover:bg-surface-secondary hover:text-primary"
+          >
+            <Icon name="edit" size={14} />
+          </button>
+        )}
+      </div>
       <P field="action" label="Action" required options={(provider?.actions ?? []).map((a) => ({ value: a.id, label: a.title || a.id, hint: `${a.id} · ${a.effect}` }))} expression={false} />
-      {action && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {effectTags(action).map((t) => (
-            <Tag key={t.label} size="sm" tone={t.tone}>
-              {t.label}
+      {(action || provider?.draft) && (
+        <div className="flex flex-wrap items-center gap-1.5" data-testid="provider-tags">
+          {provider?.draft && (
+            <Tag size="sm" tone={DRAFT_TAG.tone} title="Not published yet: Publish opens its change request with the workflow's">
+              {DRAFT_TAG.label}
             </Tag>
-          ))}
-          <Tag size="sm" outline>
-            retry {action.retry}
-          </Tag>
+          )}
+          {action &&
+            effectTags(action).map((t) => (
+              <Tag key={t.label} size="sm" tone={t.tone}>
+                {t.label}
+              </Tag>
+            ))}
+          {action && (
+            <Tag size="sm" outline>
+              retry {action.retry}
+            </Tag>
+          )}
         </div>
       )}
       <ParamSection title="Input">

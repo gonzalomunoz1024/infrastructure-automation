@@ -860,6 +860,9 @@ export class DesignerStore {
     if (target.kind === 'insert') return this.addStep(step.type, step.params, target.point)
     if (!this.nodeOf(target.step)) return null
     const body = bodyFor(step.type, step.params)
+    // the action the step already calls (an Edit provider, a Save as provider action) keeps the step's input
+    const current = findStepNode(this.state.graph, target.step)?.data.body
+    if (current?.call === 'provider' && body.call === 'provider' && current.with?.provider === body.with?.provider && current.with?.action === body.with?.action) return target.step
     this.updateStep(target.step, (b) => {
       b.call = body.call
       b.with = body.with
