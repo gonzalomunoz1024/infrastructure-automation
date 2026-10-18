@@ -254,6 +254,8 @@ export interface MockApi {
   assistant: string[]
   /** YAML bodies of POST /workflows:parse */
   parses: string[]
+  /** bodies of POST /credentials (the only place a value goes) */
+  credentials: Obj[]
 }
 
 /** Two jobs of vm-restart: one failed at the playbook, one that went through. */
@@ -333,7 +335,7 @@ function bodyOf(req: Request): Obj {
 
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
-  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [], parses: [] }
+  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [], parses: [], credentials: [] }
   // the canvas the assistant session started from, which an explanation hands back unchanged
   let sessionYaml = ''
   const jobs = vmRestartJobs()
@@ -385,6 +387,12 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
         { name: 'vsphere/token', type: 'token' },
         { name: 'github/read-token', type: 'token' },
       ])
+    // as CredentialsHandler answers: stored at once, its reference as the id
+    if (method === 'POST' && path === '/credentials') {
+      const body = bodyOf(req)
+      calls.credentials.push(body)
+      return json(route, { id: `vault:${String(body.name ?? '')}`, status: 'stored' }, 202)
+    }
     if (method === 'GET' && path === '/templates') return json(route, [])
     if (method === 'GET' && path === '/jobs') {
       const status = url.searchParams.get('status')
