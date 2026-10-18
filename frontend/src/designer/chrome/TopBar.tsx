@@ -10,11 +10,9 @@ import { useDesigner, useDesignerStore, type DesignerTab } from '../model/store'
 
 function EditableTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [editing, setEditing] = useState(false)
+  // the draft exists only while editing; it starts from the title when editing begins
   const [text, setText] = useState(value)
   const ref = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    if (!editing) setText(value)
-  }, [value, editing])
   useEffect(() => {
     if (editing) ref.current?.select()
   }, [editing])
@@ -45,7 +43,10 @@ function EditableTitle({ value, onChange }: { value: string; onChange: (v: strin
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={() => {
+        setText(value)
+        setEditing(true)
+      }}
       title="Rename workflow"
       className="min-w-0 max-w-[320px] truncate rounded-sm px-1.5 py-0.5 text-left text-subheadline font-semibold text-primary transition-colors hover:bg-surface-secondary"
     >

@@ -3,7 +3,7 @@
  * alias, the assertion on its output, retry, timeout, what happens on failure, notes, and the
  * compensation steps that undo it when a later step fails.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Button, cx, Icon, Input, Switch, Textarea } from '@iaf/ui'
 import { STEP_TYPES, type ExpressionContext, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { bodyFor, newStepId, stepIdProblem } from '../model/edits'
@@ -18,7 +18,6 @@ const COMPENSATION_TYPES: StepType[] = ['provider', 'http', 'notify', 'script', 
 function StepIdField({ stepId, doc, readOnly }: { stepId: string; doc: WorkflowDocument; readOnly: boolean }) {
   const store = useDesignerStore()
   const [draft, setDraft] = useState(stepId)
-  useEffect(() => setDraft(stepId), [stepId])
   const problem = draft === stepId ? null : stepIdProblem(doc, draft, stepId)
   const apply = () => {
     if (draft === stepId) return
@@ -141,7 +140,8 @@ export function StepSettings({ stepId, body, step, doc, ownCtx, allProblems, rea
   return (
     <div className="space-y-6">
       <ParamSection title="Step">
-        <StepIdField stepId={stepId} doc={doc} readOnly={readOnly} />
+        {/* keyed on the id: a rename starts a fresh draft */}
+        <StepIdField key={stepId} stepId={stepId} doc={doc} readOnly={readOnly} />
         <div>
           <FieldLabel htmlFor="ndv-step-name" label="Name" description="What the canvas, the job page and $('Name') expressions show" />
           <Input id="ndv-step-name" value={body.name ?? ''} placeholder={stepId} readOnly={readOnly} onChange={(e) => store.setStepName(stepId, e.target.value)} className="mt-1" />

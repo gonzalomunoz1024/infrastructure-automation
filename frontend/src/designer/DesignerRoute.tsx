@@ -79,12 +79,13 @@ function ExistingWorkflow({ name, template }: { name: string; template: string |
   const [waiting, setWaiting] = useState(handoff !== null)
   const q = useQuery(['workflow', name], () => api.workflow(name), { refetchInterval: waiting ? 3000 : undefined })
   const [opened, setOpened] = useState<{ doc: WorkflowDocument; detail: WorkflowDetail | null } | null>(handoff ? { doc: handoff, detail: null } : null)
+  // the state follows the answer during render (React's derived-state pattern): the first answer
+  // opens the designer and ends the polling for a workflow the backend had not caught up with
   if (!opened && q.data) setOpened({ doc: q.data.definition, detail: q.data })
+  if (waiting && q.data) setWaiting(false)
 
   useEffect(() => {
-    if (!q.data) return
-    setWaiting(false)
-    forgetDocument(name)
+    if (q.data) forgetDocument(name)
   }, [q.data, name])
 
   if (opened) return <Designer name={name} doc={opened.doc} detail={q.data ?? opened.detail} isNew={false} />

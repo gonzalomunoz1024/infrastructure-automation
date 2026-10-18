@@ -5,7 +5,7 @@
  * how a new version rolls out, and the workflow outputs. Every change goes through the store, so
  * it is undoable and checked live like the canvas.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { Button, Checkbox, Icon, Input, Segmented, Select, StateTag, type SelectOption } from '@iaf/ui'
 import type { JsonObject, JsonSchema, JsonValue, WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
@@ -52,11 +52,10 @@ function ListField({ field, label, numbers, placeholder, description }: { field:
   const { get, set } = useDocField()
   const value = get(field)
   const asText = (v: JsonValue | undefined) => (Array.isArray(v) ? v.join(', ') : typeof v === 'string' ? v : '')
-  const [text, setText] = useState(() => asText(value))
+  // the draft exists only while the field is focused; otherwise the document's value shows
+  const [draft, setDraft] = useState('')
   const [focused, setFocused] = useState(false)
-  useEffect(() => {
-    if (!focused) setText(asText(value))
-  }, [value, focused])
+  const text = focused ? draft : asText(value)
   const ndvProblems = useDesignerSelector((s) => s.problems)
   const problems = problemsAt(
     ndvProblems.filter((p) => !p.step),
@@ -74,7 +73,15 @@ function ListField({ field, label, numbers, placeholder, description }: { field:
   return (
     <div>
       <FieldLabel htmlFor={`list-${field}`} label={label} description={description} />
-      <Input id={`list-${field}`} mono={numbers} value={text} placeholder={placeholder} onFocus={() => setFocused(true)} onChange={(e) => setText(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} invalid={problems.some((p) => p.level === 'error')} className="mt-1" />
+      <Input id={`list-${field}`} mono={numbers} value={text} placeholder={placeholder} onFocus={() => {
+          setDraft(asText(value))
+          setFocused(true)
+        }}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          setFocused(true)
+        }}
+        onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} invalid={problems.some((p) => p.level === 'error')} className="mt-1" />
       <ProblemList problems={problems} className="mt-1" />
     </div>
   )

@@ -7,9 +7,18 @@
 import { allSteps, displayName, evaluate, isTemplate, parseDocument, resolve, syntaxError, type ExpressionContext, type JsonObject, type JsonValue, type ParsedStep, type WorkflowDocument } from '@iaf/workflow-checks'
 import type { Schema } from '../../lib/types'
 import { exampleOf } from './schema'
-import { findAction, findProvider, type Registry } from './registry'
+import { findAction, type Registry } from './registry'
 
 export type StepOutputs = Record<string, JsonValue>
+
+/** The function's value, or the fallback when it throws. */
+function attempt<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn()
+  } catch {
+    return fallback
+  }
+}
 
 export const SAMPLE_JOB: JsonObject = { id: 'job_test', seq: 1042, requester: 'you', startedAt: '2026-01-01T09:00:00Z', environment: 'test' }
 export const SAMPLE_ENV: JsonObject = { name: 'test' }
@@ -37,12 +46,7 @@ export function expectedOutput(step: ParsedStep, registry: Registry | null, ctx:
       const provider = typeof w.provider === 'string' ? w.provider : null
       const action = findAction(registry, provider, typeof w.action === 'string' ? w.action : null)
       if (!action) return null
-      let input: JsonValue = null
-      try {
-        input = resolve(w.input ?? null, ctx)
-      } catch {
-        input = w.input ?? null
-      }
+      const input = attempt(() => resolve(w.input ?? null, ctx), w.input ?? null)
       if (action.sample !== undefined && action.sample !== null) {
         try {
           return resolve(action.sample as JsonValue, { ...ctx, input, json: input })
@@ -145,12 +149,8 @@ export function contextAt(doc: WorkflowDocument, stepId: string | null, known: S
     if (s.type === 'for' && target && isInside(s, target)) {
       const w = asObject(s.with)
       const each = typeof w?.each === 'string' ? w.each : 'item'
-      let list: JsonValue = null
-      try {
-        list = typeof w?.in === 'string' ? evaluate(w.in, { ...ctx, json: previous ? outputs[previous.id] ?? null : null }) : null
-      } catch {
-        list = null
-      }
+      const source = typeof w?.in === 'string' ? w.in : null
+      const list = source === null ? null : attempt(() => evaluate(source, { ...ctx, json: previous ? outputs[previous.id] ?? null : null }), null)
       aliases[each] = Array.isArray(list) && list.length > 0 ? list[0] : { index: 0 }
       ctx.aliases = aliases
       continue

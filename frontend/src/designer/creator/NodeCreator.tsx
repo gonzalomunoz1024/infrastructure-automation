@@ -55,18 +55,22 @@ export function NodeCreator() {
   useEffect(() => {
     inputRef.current?.focus({ preventScroll: true })
   }, [stack])
-  useEffect(() => setActive(0), [query, stack])
   useEffect(() => {
     const list = listRef.current
     const row = list?.querySelector<HTMLElement>(`[data-index="${active}"]`)
     if (list && row) revealIn(list, row)
   }, [active])
 
+  // the active row starts at the top of every new list: a view opened or left, a query typed
   const open = (id: string) => {
     setStack((s) => [...s, id])
     setQuery('')
+    setActive(0)
   }
-  const back = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s))
+  const back = () => {
+    setStack((s) => (s.length > 1 ? s.slice(0, -1) : s))
+    setActive(0)
+  }
 
   const choose = (item: CreatorItem | undefined) => {
     if (!item || item.disabled) return
@@ -133,7 +137,10 @@ export function NodeCreator() {
             aria-label="Search steps"
             placeholder="Search steps…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setActive(0)
+            }}
             onKeyDown={onKeyDown}
             className="no-focus-ring w-full rounded-md border border-stroke-light bg-surface-secondary py-2 pl-9 pr-3 text-sm text-primary placeholder:text-tertiary focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25"
           />

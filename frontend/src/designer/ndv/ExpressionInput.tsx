@@ -48,7 +48,7 @@ export function ExpressionInput({ id, value, onChange, ctx: ctxProp, placeholder
     if (!autoFocus || !t) return
     t.focus({ preventScroll: true })
     t.setSelectionRange(t.value.length, t.value.length)
-  }, [])
+  }, [autoFocus])
 
   const segments = useMemo(
     () =>

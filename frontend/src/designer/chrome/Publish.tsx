@@ -4,7 +4,7 @@
  * (refreshed every 2 s), the diff, Merge once the checks pass, Close. A merged request shows
  * the version it published and the release that is rolling it out.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Button, cx, DiffView, Drawer, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Skeleton, SkeletonRows, Spinner, StateTag, Textarea, useOverlayClose, useToast } from '@iaf/ui'
 import { api, errorMessage } from '../../lib/api'
 import { invalidate, useQuery } from '../../lib/queries'
@@ -155,9 +155,8 @@ function Merged({ cr, workflow }: { cr: ChangeRequestDetail; workflow: string })
   const [found, setFound] = useState(false)
   const releases = useQuery(['releases', workflow], () => api.releases(workflow), { refetchInterval: found ? undefined : 3000 })
   const release: Release | undefined = releases.data?.find((r) => r.to === cr.version)
-  useEffect(() => {
-    if (release) setFound(true)
-  }, [release])
+  // the poll stops once the release is there (adjusted during render, React's derived-state pattern)
+  if (release && !found) setFound(true)
   return (
     <div className="rounded-lg border border-healthy/30 bg-healthy-tint p-4" data-testid="publish-merged">
       <p className="flex items-center gap-2 text-subheadline font-semibold text-primary">
@@ -184,9 +183,8 @@ function DrawerBody({ id, workflow }: { id: string; workflow: string }) {
   const [live, setLive] = useState(true)
   const q = useQuery(['change-request', id], () => api.changeRequest(id), { refetchInterval: live ? 2000 : undefined })
   const cr = q.data
-  useEffect(() => {
-    if (cr && cr.status !== 'open') setLive(false)
-  }, [cr])
+  // the poll stops once the request is merged or closed
+  if (live && cr && cr.status !== 'open') setLive(false)
   const checks = cr?.checks ?? []
   const failed = checks.filter((c) => c.status === 'failed').length
   const passed = checks.length > 0 && failed === 0

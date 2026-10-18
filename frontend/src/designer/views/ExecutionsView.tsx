@@ -184,7 +184,7 @@ export function ExecutionsView() {
   const name = useDesignerSelector((s) => s.name)
   const execution = useDesignerSelector((s) => s.execution)
   const jobs = useQuery(['jobs', 'workflow', name], () => api.jobs({ workflow: name ?? '', limit: 50 }), { enabled: !!name, refetchInterval: 5000 })
-  const list = jobs.data ?? []
+  const list = useMemo(() => jobs.data ?? [], [jobs.data])
 
   // like n8n, open the latest execution when nothing is selected
   useEffect(() => {
