@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { check, EMPTY_CONTEXT } from '@iaf/workflow-checks'
 import type { Registry } from '../model/registry'
-import { buildCatalog, leavesOf, ROOT_VIEW, searchCatalog } from './catalog'
+import { blankAction } from '../../components/provider-editor/state'
+import { buildCatalog, CONNECT_ENTRIES, draftAsProvider, leavesOf, providersWithDrafts, ROOT_VIEW, searchCatalog } from './catalog'
 import { placementOf } from './NodeCreator'
 import { documentToGraph } from '../model/graph'
 import { bodyFor } from '../model/edits'
+import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 
 const registry: Registry = {
   stepTypes: [],
@@ -97,5 +99,99 @@ describe('node creator catalog', () => {
     expect(placementOf({ kind: 'after', step: 'a', handle: 'main' }, graph)).toBe('Adds a step after Alpha')
     expect(placementOf({ kind: 'before', step: 'a' }, graph)).toBe('Adds a step before Alpha')
     expect(placementOf({ kind: 'start', flow: 'catch' }, graph)).toBe('Adds the first step of the error flow')
+  })
+})
+
+/*
+ * The node creator as "Add provider": the Providers view connects a new system through the
+ * Provider sheet, lists the workflow's drafts tagged "draft" beside the published providers, and
+ * shows each published provider's health band.
+ */
+describe('connecting a new system from the node creator', () => {
+  const backup: ProviderDraft = newProviderDraft('http', {
+    title: 'Backup API',
+    name: 'backup',
+    owner: 'team-storage',
+    actions: [
+      blankAction({ id: 'jobs.list', title: 'List backup jobs', method: 'GET', path: '/jobs', exampleText: '{"items":[{"id":"b-1"}]}' }),
+      blankAction({ id: 'jobs.cancel', title: 'Cancel a job', method: 'DELETE', path: '/jobs/{id}', effect: 'delete', retry: 'unsafe', approval: true }),
+      blankAction({ id: 'unselected', selected: false }),
+      blankAction({ id: '' }),
+    ],
+  })
+  // the next patch of a published provider: its actions stand in for the published ones
+  const vsphereNext: ProviderDraft = {
+    ...newProviderDraft('openapi', { title: 'VMware vSphere', name: 'vsphere', owner: 'team-compute', actions: [blankAction({ id: 'vm.get', title: 'Get VM', operation: 'getVm' }), blankAction({ id: 'vm.power', title: 'Power a VM', operation: 'powerVm', effect: 'change', retry: 'unsafe' })] }),
+    origin: 'edit',
+    publishedVersion: '1.3.0',
+  }
+  const unnamed = newProviderDraft('openapi', { title: 'Not named yet' })
+  const tfDraft = newProviderDraft('terraform', { title: 'DNS zones', name: 'dns', terraform: { source: 'git::https://github.com/acme/tf//dns', version: '1.0.0' } })
+  const playbooks = newProviderDraft('ansible', { title: 'Ops playbooks', name: 'ops-next', version: '0.1.0', actions: [blankAction({ id: 'disk.grow', playbook: 'disk/grow.yml' })] })
+  const drafts = { [backup.id]: backup, [vsphereNext.id]: vsphereNext, [unnamed.id]: unnamed, [tfDraft.id]: tfDraft, [playbooks.id]: playbooks }
+  const catalog = buildCatalog(registry, { metadata: { name: 'vm-restart' } }, { drafts, health: { vsphere: 'degraded', portal: 'healthy' } })
+
+  it('has the seven ways to connect a new system in the Providers view, each opening the Provider sheet', () => {
+    const providers = catalog.get('providers')
+    expect(providers?.sections.map((s) => s.title)).toEqual([undefined, 'Connect a new system', 'Run workflow'])
+    const connect = providers?.sections[1].items ?? []
+    expect(connect.map((i) => i.title)).toEqual(['API from an OpenAPI spec', 'HTTP request (cURL)', 'Ansible repository', 'Terraform module', 'IDP tile', 'SDK worker', 'Describe it (Ask Devin)'])
+    expect(connect.map((i) => i.action)).toEqual(['openapi', 'curl', 'ansible', 'terraform', 'idp', 'sdk', 'describe'].map((entry) => ({ kind: 'provider-sheet', entry })))
+    expect(CONNECT_ENTRIES).toHaveLength(7)
+    // also with no provider registered at all
+    const empty = buildCatalog(null, { metadata: { name: 'x' } })
+    expect(empty.get('providers')?.sections[1].items).toHaveLength(7)
+    expect(empty.get('providers')?.sections[0].items[0].description).toContain('connect a new system below')
+  })
+
+  it('finds the entries by search, so "curl" or "swagger" gets there from anywhere', () => {
+    expect(searchCatalog(catalog, 'curl')[0].items[0]).toMatchObject({ title: 'HTTP request (cURL)', action: { kind: 'provider-sheet', entry: 'curl' } })
+    expect(searchCatalog(catalog, 'swagger').flatMap((s) => s.items.map((i) => i.id))).toContain('connect:openapi')
+    expect(searchCatalog(catalog, 'devin').flatMap((s) => s.items.map((i) => i.id))).toContain('connect:describe')
+    expect(new Set(leavesOf(catalog).map((l) => l.item.id)).size).toBe(leavesOf(catalog).length)
+  })
+
+  it('lists the drafts with the published providers, tagged draft, and their actions as steps', () => {
+    const rows = catalog.get('providers')?.sections[0].items ?? []
+    expect(rows.map((r) => r.title)).toEqual(['Backup API', 'VMware vSphere'])
+    expect(rows.map((r) => r.tags?.map((t) => t.label))).toEqual([['draft'], ['draft']])
+    const view = catalog.get('provider:backup')
+    expect(view?.subtitle).toBe('backup · draft, not published yet')
+    const actions = view?.sections[0].items ?? []
+    expect(actions.map((a) => a.title)).toEqual(['List backup jobs', 'Cancel a job'])
+    expect(actions[1].tags?.map((t) => t.label)).toEqual(['delete', 'approval', 'draft'])
+    expect(actions[0].action).toEqual({ kind: 'step', type: 'provider', params: { provider: 'backup', action: 'jobs.list', name: 'List backup jobs' } })
+    // the next patch of vsphere stands in its place, with the actions it will have
+    expect(catalog.get('provider:vsphere')?.sections[0].items.map((a) => a.title)).toEqual(['Get VM', 'Power a VM'])
+  })
+
+  it('puts terraform and ansible drafts where their kind of step is added', () => {
+    const dns = catalog.get('terraform')?.sections.find((s) => s.title === 'DNS zones')
+    expect(dns?.items[0].action).toMatchObject({ type: 'terraform', params: { module: { source: 'git::https://github.com/acme/tf//dns', version: '1.0.0' }, terraformAction: 'plan' } })
+    expect(dns?.items[0].tags?.map((t) => t.label)).toContain('draft')
+    const lib = catalog.get('ansible')?.sections.find((s) => s.title === 'Library')?.items ?? []
+    expect(lib.map((i) => i.title)).toEqual(['ops-playbooks/vm.restart', 'ops-next/disk.grow'])
+    expect(lib[1]).toMatchObject({ tags: [{ label: 'draft' }], action: { type: 'ansible', params: { playbook: 'ops-next/disk.grow' } } })
+  })
+
+  it("shows each published provider's health band, and none on a provider without one", () => {
+    const rows = catalog.get('providers')?.sections[0].items ?? []
+    expect(rows.find((r) => r.id === 'provider:vsphere')?.health).toBe('degraded')
+    expect(rows.find((r) => r.id === 'provider:backup')?.health).toBeUndefined()
+    expect(buildCatalog(registry, { metadata: {} }).get('providers')?.sections[0].items[0].health).toBeUndefined()
+  })
+
+  it('makes a draft a registry provider: its selected, named actions, schemas from the example, never listed twice', () => {
+    expect(draftAsProvider(unnamed)).toBeNull()
+    const p = draftAsProvider(backup)
+    expect(p).toMatchObject({ name: 'backup', title: 'Backup API', type: 'http', owner: 'team-storage', draft: true })
+    expect(p?.actions.map((a) => a.id)).toEqual(['jobs.list', 'jobs.cancel'])
+    expect(p?.actions[0]).toMatchObject({ approval: 'none', input: null, output: { type: 'object', properties: { items: { type: 'array' } } }, sample: { items: [{ id: 'b-1' }] } })
+    expect(p?.actions[1]).toMatchObject({ effect: 'delete', approval: 'required', output: null })
+    // a registry that already lists the draft (as the canvas's own merge may) still lists it once
+    const merged = providersWithDrafts({ ...registry, providers: [...registry.providers, { name: 'backup', title: 'Backup API', type: 'http', actions: [] }] }, [backup])
+    expect(merged.filter((x) => x.name === 'backup')).toHaveLength(1)
+    expect(merged.find((x) => x.name === 'backup')?.actions).toHaveLength(2)
+    expect(providersWithDrafts(null)).toEqual([])
   })
 })
