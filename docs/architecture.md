@@ -673,7 +673,10 @@ real response", a spec refresh, the wizard's publish) is a change request the pa
 links. A workflow's change request opens on its candidate drawn on the designer's read-only
 canvas (its own chunk, loaded with the tab): the backend parses the YAML (`POST /workflows:parse`),
 the designer's model lays it out as the author saw it, and a double-click shows a step as written;
-the Diff and YAML tabs sit beside it, and a provider's change request has only those. Its checks
+the Diff and YAML tabs sit beside it, and a provider's change request has only those. Under the
+canvas a closed "Diagram source" disclosure holds the Mermaid flowchart the backend writes
+(`preview.mermaid`, the one GitHub draws in the pull request) as text with a copy button; the
+page draws no Mermaid itself. Its checks
 table lists what a check's detail names: the consumers a breaking change reaches, and for the
 playbooks check (`playbooks`, status `iaf/playbooks`) the steps pinned at publish, the ones not
 pinned, an upload digest that is not one and each finding of the linter. The

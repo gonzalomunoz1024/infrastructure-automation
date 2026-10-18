@@ -757,14 +757,19 @@ export const WORKFLOW_CR: ChangeRequestDetail = {
   ],
   diff: '--- a/workflows/team-compute/vm-restart.yaml\n+++ b/workflows/team-compute/vm-restart.yaml\n@@ -12 +12 @@\n-  version: 1.2.0\n+  version: 2.0.0\n',
   yaml: 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart\n  version: 2.0.0\n',
+  url: 'https://github.com/acme/infrastructure/pull/202',
+  // WorkflowMermaid's flowchart of WORKFLOW_CR_DEFINITION
+  preview: {
+    mermaid: 'flowchart LR\n  t0(["POST /api/v1/vms/{vmId}:restart"])\n  subgraph main ["do"]\n    s1["Look up the VM<br/>provider: vsphere vm.get"]\n    s2["Restart the VM<br/>provider: vsphere vm.restart"]\n  end\n  t0 --> s1\n  s1 --> s2\n',
+  },
 }
 
 /* ----------------------------------------------------------------------------
    Every change request (GET /change-requests?status=): both kinds, open, merged and closed
    ------------------------------------------------------------------------- */
 
-/** A change request as the list carries it: without its diff and YAML. */
-const listed = ({ diff: _diff, yaml: _yaml, ...cr }: ChangeRequestDetail): ChangeRequest => cr
+/** A change request as the list carries it: without its diff, YAML and preview. */
+const listed = ({ diff: _diff, yaml: _yaml, preview: _preview, ...cr }: ChangeRequestDetail): ChangeRequest => cr
 
 export const CHANGE_REQUESTS: ChangeRequest[] = [
   listed(WORKFLOW_CR),

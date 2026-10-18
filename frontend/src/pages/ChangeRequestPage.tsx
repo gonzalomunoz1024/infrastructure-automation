@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react'
-import { Button, Card, CodeBlock, ConfirmDialog, DiffView, PageHeader, Skeleton, SkeletonRows, StateTag, StatusDot, Table, Tabs, Tag, useToast, type IconName, type TableColumn } from '@iaf/ui'
+import { Button, Card, CodeBlock, ConfirmDialog, DiffView, Icon, PageHeader, Skeleton, SkeletonRows, StateTag, StatusDot, Table, Tabs, Tag, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
@@ -141,6 +141,33 @@ function CandidateCanvas({ cr }: { cr: ChangeRequestDetail }) {
   )
 }
 
+/** The Mermaid source of a workflow change request's flowchart (`preview.mermaid`); null for a provider's, or when the backend sent none. */
+export function diagramSourceOf(cr: Pick<ChangeRequestDetail, 'kind' | 'preview'>): string | null {
+  const mermaid = cr.kind === 'workflow' ? cr.preview?.mermaid : undefined
+  return typeof mermaid === 'string' && mermaid.trim() ? mermaid : null
+}
+
+/**
+ * The flowchart the backend writes for the change request, as text behind a disclosure: GitHub
+ * draws the same block in the pull request's description, and the canvas stays the view here.
+ */
+export function DiagramSource({ mermaid, url }: { mermaid: string; url?: string }) {
+  return (
+    <details className="group mt-3 rounded-lg border border-stroke-light bg-surface" data-testid="diagram-source">
+      <summary className="flex cursor-pointer items-center gap-2 px-4 py-2.5 text-sm text-secondary transition-colors hover:text-primary">
+        <Icon name="document" size={15} className="text-tertiary" />
+        Diagram source
+        <span className="text-caption text-tertiary">Mermaid</span>
+        <Icon name="chevron-down" size={13} className="ml-auto text-tertiary transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="space-y-2 px-4 pb-4">
+        <p className="text-caption text-tertiary">GitHub draws this flowchart in the description of {url ? <ExternalLink href={url}>the pull request</ExternalLink> : 'the pull request'}.</p>
+        <CodeBlock code={mermaid} language="mermaid" title="flowchart" maxHeight="max-h-80" />
+      </div>
+    </details>
+  )
+}
+
 export default function ChangeRequestPage({ route }: PageProps) {
   const id = route.params.id
   const toast = useToast()
@@ -193,6 +220,7 @@ export default function ChangeRequestPage({ route }: PageProps) {
   const checksPassed = !!data && data.checks.length > 0 && data.checks.every((c) => c.status !== 'failed')
   const tabs = data ? contentTabs(data.kind) : []
   const tab: ContentTab = chosen && tabs.includes(chosen) ? chosen : (tabs[0] ?? 'diff')
+  const diagram = data ? diagramSourceOf(data) : null
   const canMerge = !!data && data.status === 'open' && checksPassed
   const targetHref = data ? (data.kind === 'provider' ? pathFor('provider', { name: data.name }) : pathFor('workflow', { name: data.name })) : '#'
   const releaseHref = releaseId ? (releaseId.startsWith('/') ? releaseId : pathFor('release', { id: releaseId })) : null
@@ -263,7 +291,10 @@ export default function ChangeRequestPage({ route }: PageProps) {
           <div>
             <Tabs<ContentTab> ariaLabel="Content" value={tab} onChange={setChosen} tabs={tabs.map((t) => CONTENT_TABS[t])} className="mb-3" />
             {tab === 'canvas' ? (
-              <CandidateCanvas cr={data} />
+              <>
+                <CandidateCanvas cr={data} />
+                {diagram && <DiagramSource mermaid={diagram} url={data.url} />}
+              </>
             ) : tab === 'diff' ? (
               data.diff ? (
                 <DiffView diff={data.diff} wrap maxHeight="max-h-[70vh]" />

@@ -300,6 +300,15 @@ test.describe('change request: the candidate on the canvas', () => {
     // read only: nothing to tidy, nothing to drag
     await expect(canvas.getByRole('button', { name: /Tidy up/ })).toHaveCount(0)
 
+    // the flowchart GitHub draws in the pull request, as its source behind a disclosure
+    const source = page.getByTestId('diagram-source')
+    await expect(source.locator('pre')).toBeHidden()
+    await source.getByText('Diagram source').click()
+    await expect(source.locator('pre')).toContainText('flowchart LR')
+    await expect(source.locator('pre')).toContainText('s2["Restart the VM<br/>provider: vsphere vm.restart"]')
+    await expect(source.getByRole('button', { name: 'Copy' })).toBeVisible()
+    await expect(source.getByRole('link', { name: 'the pull request' })).toHaveAttribute('href', WORKFLOW_CR.url!)
+
     // a step opens as written
     await canvas.locator('.react-flow__node[data-id="step:restart"]').dblclick()
     const step = page.getByRole('dialog', { name: 'Step restart' })
@@ -329,6 +338,8 @@ test.describe('change request: the candidate on the canvas', () => {
     const tabs = page.getByRole('tablist', { name: 'Content' })
     await expect(tabs.getByRole('tab')).toHaveText(['Diff', 'YAML'])
     await expect(tabs.getByRole('tab', { name: 'Diff' })).toHaveAttribute('aria-selected', 'true')
+    // a provider's change request has no flowchart
+    await expect(page.getByTestId('diagram-source')).toHaveCount(0)
   })
 })
 

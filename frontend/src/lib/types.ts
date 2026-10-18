@@ -125,7 +125,12 @@ export type ChangeRequest = {
   mergedAt?: string
   url?: string
 }
-export type ChangeRequestDetail = ChangeRequest & { diff: string; yaml: string }
+export type ChangeRequestDetail = ChangeRequest & {
+  diff: string
+  yaml: string
+  /** the workflow the change request writes as a Mermaid `flowchart LR`, the one GitHub draws in the pull request; a provider's has none */
+  preview?: { mermaid: string }
+}
 
 export type WorkflowDetail = WorkflowSummary & {
   yaml: string
