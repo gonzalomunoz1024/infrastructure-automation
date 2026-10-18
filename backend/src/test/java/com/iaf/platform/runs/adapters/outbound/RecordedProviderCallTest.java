@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
@@ -43,6 +44,15 @@ class RecordedProviderCallTest {
     void aRealChangeIsSeenByLaterDryRuns() {
         call("job_1", upgrade, Map.of("id", "db-1", "version", "8.0"), false);
         assertThat(call("dry_9", get, Map.of("id", "db-1"), true).path("version").asText()).isEqualTo("8.0");
+        verify(w.telemetry, times(1)).record(any());
+    }
+
+    @Test
+    void aReviewCallReachesTheWorldButRecordsNoSample() {
+        ProviderCall tryIt = new ProviderCall(null, 1, mongodb, upgrade, "test", SampleContent.json(Map.of("id", "db-2", "version", "8.0")), false);
+        w.calls.call(tryIt).contextWrite(ReviewCall::with).block();
+        verify(w.telemetry, never()).record(any());
+        assertThat(call("job_1", get, Map.of("id", "db-2"), false).path("version").asText()).as("the try changed the world").isEqualTo("8.0");
         verify(w.telemetry, times(1)).record(any());
     }
 
