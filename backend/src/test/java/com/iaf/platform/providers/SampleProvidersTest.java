@@ -99,6 +99,7 @@ class SampleProvidersTest {
                             "platform/vault-token", "terraform/platform", "ssh/ops-automation", "ssh/dba-automation");
                     assertThat(list).extracting(CredentialInfo::name).noneMatch(n -> n.startsWith("databases/"));
                     assertThat(list).extracting(CredentialInfo::path).allMatch(p -> p.startsWith("vault:"));
+                    assertThat(list).extracting(CredentialInfo::owner).as("seeded credentials belong to no team: anyone may use them").containsOnlyNulls();
                     assertThat(type(list, "vsphere/token")).isEqualTo("token");
                     assertThat(type(list, "mongodb/ops-manager")).isEqualTo("basic");
                     assertThat(type(list, "backup/api-key")).isEqualTo("api-key");

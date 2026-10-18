@@ -509,8 +509,10 @@ export type ResourceFilter = { type?: string; owner?: string; status?: string }
    Credentials
    ------------------------------------------------------------------------- */
 
-export type Credential = { name: string; type: string; path: string; updatedAt: string }
-export type CreateCredential = { name: string; type: string; value: string }
+/** `owner` is the team that may use it in the wizard and the imports; none means any team (seeded from content). */
+export type Credential = { name: string; type: string; path: string; owner?: string; updatedAt: string }
+/** `owner` is one of the caller's teams (an admin may name any); the caller's first team when omitted. */
+export type CreateCredential = { name: string; type: string; value: string; owner?: string }
 
 /* ----------------------------------------------------------------------------
    Assistant (natural-language builder)

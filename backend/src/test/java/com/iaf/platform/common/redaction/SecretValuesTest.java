@@ -81,15 +81,17 @@ class SecretValuesTest {
             }
 
             @Override
-            public Mono<CredentialInfo> store(String name, String type, String value, String by) {
-                return Mono.just(new CredentialInfo(name, type, CredentialsPort.referenceOf(name), null));
+            public Mono<CredentialInfo> store(String name, String type, String value, String by, String owner) {
+                return Mono.just(new CredentialInfo(name, type, CredentialsPort.referenceOf(name), owner, null));
             }
         };
         RecordingCredentials recording = new RecordingCredentials(vault, secrets);
 
         StepVerifier.create(recording.resolve("vault:vsphere/token")).expectNext("resolved-token-1").verifyComplete();
         StepVerifier.create(recording.resolve("vault:missing")).verifyComplete();
-        StepVerifier.create(recording.store("app/key", "api-key", "stored-key-2", "ana")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(recording.store("app/key", "api-key", "stored-key-2", "ana", "team-data"))
+                .assertNext(info -> assertThat(info.owner()).isEqualTo("team-data")).verifyComplete();
+        StepVerifier.create(recording.info("vault:anything")).verifyComplete();
 
         assertThat(secrets.known("resolved-token-1")).isTrue();
         assertThat(secrets.known("stored-key-2")).isTrue();

@@ -41,16 +41,17 @@ class InMemoryCredentialsTest {
     void storesUpsertsAndListsWithoutValues() {
         InMemoryCredentials vault = empty();
         StepVerifier.create(vault.list()).assertNext(l -> assertThat(l).isEmpty()).verifyComplete();
-        StepVerifier.create(vault.store("vault:fleet/token", "token", "one", "mateo"))
+        StepVerifier.create(vault.store("vault:fleet/token", "token", "one", "mateo", "team-compute"))
                 .assertNext(info -> {
                     assertThat(info.name()).isEqualTo("fleet/token");
                     assertThat(info.path()).isEqualTo("vault:fleet/token");
                     assertThat(info.type()).isEqualTo("token");
+                    assertThat(info.owner()).isEqualTo("team-compute");
                     assertThat(info.updatedAt()).isEqualTo(NOW);
                 })
                 .verifyComplete();
-        StepVerifier.create(vault.store("fleet/token", null, "two", "mateo")).assertNext(i -> assertThat(i.type()).isEqualTo("token")).verifyComplete();
-        StepVerifier.create(vault.store("a/basic", "basic", "u:p", "mateo")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(vault.store("fleet/token", null, "two", "mateo", "team-compute")).assertNext(i -> assertThat(i.type()).isEqualTo("token")).verifyComplete();
+        StepVerifier.create(vault.store("a/basic", "basic", "u:p", "mateo", null)).expectNextCount(1).verifyComplete();
         StepVerifier.create(vault.resolve("vault:fleet/token")).expectNext("two").verifyComplete();
         StepVerifier.create(vault.resolve("fleet/token")).expectNext("two").verifyComplete();
         StepVerifier.create(vault.resolve("")).verifyComplete();
@@ -60,7 +61,32 @@ class InMemoryCredentialsTest {
                     assertThat(l.toString()).doesNotContain("two").doesNotContain("u:p");
                 })
                 .verifyComplete();
-        StepVerifier.create(vault.store("", "token", "x", "mateo")).expectError(IllegalArgumentException.class).verify();
-        StepVerifier.create(vault.store("x", "token", "", "mateo")).expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(vault.store("", "token", "x", "mateo", null)).expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(vault.store("x", "token", "", "mateo", null)).expectError(IllegalArgumentException.class).verify();
+    }
+
+    @Test
+    void keepsTheOwnerAndDescribesOneCredentialByReferenceWithoutItsValue() {
+        InMemoryCredentials vault = empty();
+        StepVerifier.create(vault.store("fleet/token", "token", "one", "mateo", " team-compute ")).assertNext(i -> assertThat(i.owner()).isEqualTo("team-compute")).verifyComplete();
+        StepVerifier.create(vault.store("shared/token", "token", "two", "gonzalo", " ")).assertNext(i -> assertThat(i.owner()).isNull()).verifyComplete();
+        StepVerifier.create(vault.info("vault:fleet/token"))
+                .assertNext(info -> {
+                    assertThat(info.name()).isEqualTo("fleet/token");
+                    assertThat(info.owner()).isEqualTo("team-compute");
+                    assertThat(info.toString()).doesNotContain("one");
+                })
+                .verifyComplete();
+        StepVerifier.create(vault.info("shared/token")).assertNext(info -> assertThat(info.owner()).isNull()).verifyComplete();
+        StepVerifier.create(vault.info("vault:nope")).verifyComplete();
+        StepVerifier.create(vault.info(" ")).verifyComplete();
+        StepVerifier.create(vault.info(null)).verifyComplete();
+        StepVerifier.create(vault.list())
+                .assertNext(l -> assertThat(l).extracting(CredentialInfo::owner).containsExactly("team-compute", null))
+                .verifyComplete();
+        // a new value may hand the credential to another team, or free it
+        StepVerifier.create(vault.store("fleet/token", "token", "three", "ana", "team-data")).assertNext(i -> assertThat(i.owner()).isEqualTo("team-data")).verifyComplete();
+        StepVerifier.create(vault.info("fleet/token")).assertNext(info -> assertThat(info.owner()).isEqualTo("team-data")).verifyComplete();
+        StepVerifier.create(vault.store("fleet/token", "token", "four", "gonzalo", null)).assertNext(i -> assertThat(i.owner()).isNull()).verifyComplete();
     }
 }

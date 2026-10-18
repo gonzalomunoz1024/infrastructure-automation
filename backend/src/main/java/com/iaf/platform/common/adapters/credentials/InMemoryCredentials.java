@@ -29,8 +29,9 @@ import reactor.core.publisher.Mono;
 
 /**
  * The demo vault: every {@code vault:<path>} reference found in the sample providers and
- * workflows exists, with a type guessed from the provider's auth and the path, and a generated
- * value that never leaves the process. {@code store} upserts; {@code list} never returns values.
+ * workflows exists, with a type guessed from the provider's auth and the path, a generated
+ * value that never leaves the process and no owner (anyone may use it). {@code store} upserts,
+ * owner included; {@code list} never returns values.
  */
 @Slf4j
 @Component
@@ -40,9 +41,9 @@ public class InMemoryCredentials implements CredentialsPort {
     private static final Pattern REFERENCE = Pattern.compile("vault:([A-Za-z0-9_./-]+)");
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    private record Entry(String name, String type, String value, Instant updatedAt, String by) {
+    private record Entry(String name, String type, String value, Instant updatedAt, String by, String owner) {
         CredentialInfo info() {
-            return new CredentialInfo(name, type, CredentialsPort.referenceOf(name), updatedAt);
+            return new CredentialInfo(name, type, CredentialsPort.referenceOf(name), owner, updatedAt);
         }
     }
 
@@ -89,7 +90,7 @@ public class InMemoryCredentials implements CredentialsPort {
             }
         }
         Instant now = clock.instant();
-        found.forEach((name, type) -> entries.putIfAbsent(name, new Entry(name, type, generate(type, name), now, SEED_AUTHOR)));
+        found.forEach((name, type) -> entries.putIfAbsent(name, new Entry(name, type, generate(type, name), now, SEED_AUTHOR, null)));
         log.info("seeded {} credentials from the content under {}", found.size(), root);
     }
 
@@ -153,7 +154,16 @@ public class InMemoryCredentials implements CredentialsPort {
     }
 
     @Override
-    public Mono<CredentialInfo> store(String name, String type, String value, String by) {
+    public Mono<CredentialInfo> info(String reference) {
+        String name = CredentialsPort.nameOf(reference);
+        if (name == null || name.isBlank()) {
+            return Mono.empty();
+        }
+        return Mono.fromSupplier(() -> entries.get(name)).map(Entry::info);
+    }
+
+    @Override
+    public Mono<CredentialInfo> store(String name, String type, String value, String by, String owner) {
         return Mono.fromSupplier(() -> {
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("name is required");
@@ -162,7 +172,8 @@ public class InMemoryCredentials implements CredentialsPort {
                 throw new IllegalArgumentException("value is required");
             }
             String key = name.startsWith("vault:") ? name.substring("vault:".length()) : name;
-            Entry e = new Entry(key, type == null || type.isBlank() ? typeOf(key, null) : type, value, clock.instant(), by);
+            String team = owner == null || owner.isBlank() ? null : owner.trim();
+            Entry e = new Entry(key, type == null || type.isBlank() ? typeOf(key, null) : type, value, clock.instant(), by, team);
             entries.put(key, e);
             return e.info();
         });

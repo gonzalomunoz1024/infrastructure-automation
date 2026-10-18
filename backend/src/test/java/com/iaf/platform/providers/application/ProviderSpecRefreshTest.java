@@ -30,6 +30,8 @@ import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.OpenApiImporter;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -74,6 +76,7 @@ class ProviderSpecRefreshTest {
     GitSourcePort git;
     InMemoryReviewEvidence evidence;
     List<DomainEvent> published;
+    CredentialsPort credentials;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -86,8 +89,10 @@ class ProviderSpecRefreshTest {
         EventBus events = new EventBus(CLOCK);
         published = new ArrayList<>();
         events.register(published::add);
+        credentials = mock(CredentialsPort.class);
+        when(credentials.info(any())).thenReturn(Mono.empty());
         handler = new ProviderCommandHandler(store, changeRequests, mock(ProviderCallPort.class), mock(AssistantCommands.class), http, events, CLOCK,
-                evidence, git, new ReleaseQueryHandler(new InMemoryReleaseStore()));
+                evidence, git, new ReleaseQueryHandler(new InMemoryReleaseStore()), credentials);
     }
 
     static String toJson(JsonNode node) {
@@ -294,6 +299,20 @@ class ProviderSpecRefreshTest {
                         .hasMessage("Change request cr-7 for provider machines 2.0.1 is still open; merge or close it first"))
                 .verify();
         verify(git, never()).file(any(), any(), any(), any());
+    }
+
+    @Test
+    void theReadTokenGoesToTheRepositoryOnlyWhenTheCallerMayUseIt() {
+        stored(machines(SPEC_V1, COMMIT_1, ""));
+        gitAnswers("main", SPEC_V2, COMMIT_2);
+        when(credentials.info(TOKEN)).thenReturn(Mono.just(new CredentialInfo("github/read-token", "token", TOKEN, "team-data", NOW)));
+        StepVerifier.create(as(handler.refreshSpec("machines", null), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining(TOKEN).hasMessageContaining("team-data"))
+                .verify();
+        verify(git, never()).file(any(), any(), any(), any());
+        verify(changeRequests, never()).save(any());
+        when(credentials.info(TOKEN)).thenReturn(Mono.just(new CredentialInfo("github/read-token", "token", TOKEN, "team-compute", NOW)));
+        StepVerifier.create(as(handler.refreshSpec("machines", null), OWNER)).assertNext(a -> assertThat(a.status()).isEqualTo("open")).verifyComplete();
     }
 
     @Test

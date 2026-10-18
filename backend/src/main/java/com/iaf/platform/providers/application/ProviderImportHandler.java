@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.domain.AnsibleImport;
 import com.iaf.platform.providers.domain.AnsiblePlaybooks;
@@ -45,6 +46,8 @@ import reactor.core.scheduler.Schedulers;
  * action whose vars are its extra vars; a Terraform module, from Git or from the module registry
  * at an exact version, becomes a Plan and an Apply action whose vars are its variables. The
  * answer is a draft provider file, pinned to the commit or version read, and nothing is saved.
+ * A {@code vault:} reference (a read token, a registry token, the credential the draft names)
+ * is only sent outward, or written into the draft, once the caller may use it ({@link CredentialUse}).
  */
 @Slf4j
 @Primary
@@ -61,6 +64,7 @@ public class ProviderImportHandler implements ProviderImports {
     private final GitSourcePort git;
     private final ModuleRegistryPort registry;
     private final ProviderStorePort store;
+    private final CredentialsPort credentials;
 
     // ---------------------------------------------------------------- ansible
 
@@ -76,7 +80,7 @@ public class ProviderImportHandler implements ProviderImports {
             String name = name(command.name());
             String owner = owner(command.owner());
             String environment = blank(command.executionEnvironment()) ? null : command.executionEnvironment().trim();
-            return CurrentIdentity.current().flatMap(who -> read(g, "", AnsiblePlaybooksFilter.INSTANCE)
+            return CurrentIdentity.current().flatMap(who -> CredentialUse.guarded(credentials, who, () -> read(g, "", AnsiblePlaybooksFilter.INSTANCE), g.credential(), credential)
                     .flatMap(snapshot -> Mono.fromCallable(() -> ansible(command, g, folder, name, owner, credential, environment, snapshot, who))
                             .subscribeOn(Schedulers.boundedElastic())));
         });
@@ -190,7 +194,7 @@ public class ProviderImportHandler implements ProviderImports {
     private Mono<TerraformImport> fromGit(GitRef ref, String name, String owner, String credential, Identity who) {
         GitRef g = requireRepo(ref, "the repository of the module, like https://github.com/acme/tf-modules");
         String folder = folder(g.path());
-        return read(g, folder, TerraformModule::configFile).map(snapshot -> {
+        return CredentialUse.guarded(credentials, who, () -> read(g, folder, TerraformModule::configFile), g.credential(), credential).map(snapshot -> {
             Map<String, String> files = direct(snapshot.files(), folder);
             if (files.isEmpty()) {
                 throw new IllegalArgumentException(noModule(snapshot, folder));
@@ -211,8 +215,9 @@ public class ProviderImportHandler implements ProviderImports {
         String token = vaultRef(r.credential(), "registry.credential", "a registry token, like vault:terraform/registry-token");
         String wanted = blank(r.version()) ? null : exactVersion(r.version());
         Mono<String> version = wanted != null ? Mono.just(wanted)
-                : registry.versions(module, token).map(vs -> vs.stream().filter(v -> !v.contains("-")).findFirst().orElse(vs.get(0)));
-        return version.flatMap(v -> registry.locate(module, v, token).flatMap(location -> {
+                : Mono.defer(() -> registry.versions(module, token)).map(vs -> vs.stream().filter(v -> !v.contains("-")).findFirst().orElse(vs.get(0)));
+        // the token goes to the registry, and only there, once the caller may use it
+        return CredentialUse.require(credentials, who, token, credential).then(version.flatMap(v -> registry.locate(module, v, token).flatMap(location -> {
             String address = PUBLIC_REGISTRY.equalsIgnoreCase(registry.host()) ? module : registry.host() + "/" + module;
             String fallback = module.split("/")[1];
             TerraformModule.GitLocation code = TerraformModule.gitSource(location.download());
@@ -241,7 +246,7 @@ public class ProviderImportHandler implements ProviderImports {
                     })
                     .switchIfEmpty(Mono.error(() -> new IllegalArgumentException("The registry serves " + module + " " + v
                             + " as an archive and does not describe its variables; import the module from its Git repository instead")));
-        }));
+        })));
     }
 
     /**

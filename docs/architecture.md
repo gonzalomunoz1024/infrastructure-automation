@@ -48,7 +48,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `observability` | job and step spans, traced provider calls, per-workflow metrics          |
 | `resources` | resource types, registry, lineage, retire                             |
 | `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
-| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks |
+| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always) |
 | `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock, redaction, trace ids |
 | `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
 
@@ -64,7 +64,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
   projection is updated by an event listener, never computed inside a command handler.
 - Domain rules are pure static classes with plain JUnit tests: `ReleaseGates`,
   `ProviderHealthRule`, `WaveScheduler`, `DependencyRules`, `WorkflowChecks`, `HashChain`,
-  `ExpressionEngine`, `WorkflowInterpreter`.
+  `ExpressionEngine`, `WorkflowInterpreter`, `AccessRules`.
 
 ### Outbound ports
 
@@ -76,7 +76,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `AutomationRunnerPort`  | `AnsibleRunnerAutomation`, `TerraformCliAutomation`, `ProcessScriptRunner`, `HttpStepRunner` (profile `live`, on the host or in docker/podman) | `DemoAutomationRunner` (recorded samples) |
 | `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256) |
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
-| `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP)   | `InMemoryCredentials`           |
+| `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
@@ -90,6 +90,15 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 
 Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
 profile guard so that the production adapter replaces it when its profile is active.
+
+A credential belongs to a team: `CredentialInfo.owner`, chosen when it is stored (one of the
+caller's teams, any team for an admin) and kept by both adapters; one seeded from content has
+none. The provider wizard and the imports send a `vault:` reference outward (to an endpoint, a
+repository, the module registry) only after `AccessRules.requireUseCredential` has judged the
+caller against the owner the store reports, through `CredentialUse` in the providers slice: admins
+pass, so does anyone for a credential without an owner. The check runs before the secret is
+resolved, and a name the store does not know is left to fail where it is resolved, so a refusal
+never reveals a credential another team owns.
 
 The demo data follows one fixture, `common.demo.DemoReleases`: the release stories (versions,
 stages, outcomes, who decided). `DemoWorkflowHistory` keeps the versions those releases replaced

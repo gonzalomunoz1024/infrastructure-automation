@@ -23,8 +23,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.JGitSource;
 import com.iaf.platform.providers.domain.AnsibleImport;
@@ -86,6 +88,10 @@ class ProviderImportHandlerTest {
     String tfCommit;
     ProviderStorePort store;
     ModuleRegistryPort registry;
+    /** What the repository reads resolve read tokens through. */
+    CredentialsPort tokens;
+    /** What the handler asks who owns a credential. */
+    CredentialsPort credentials;
     ProviderImportHandler handler;
 
     @BeforeEach
@@ -120,7 +126,18 @@ class ProviderImportHandlerTest {
         store = mock(ProviderStorePort.class);
         registry = mock(ModuleRegistryPort.class);
         when(registry.host()).thenReturn("registry.terraform.io");
-        handler = new ProviderImportHandler(new JGitSource(mock(CredentialsPort.class), true, Duration.ofSeconds(30)), registry, store);
+        tokens = mock(CredentialsPort.class);
+        credentials = mock(CredentialsPort.class);
+        when(credentials.info(any())).thenReturn(Mono.empty());
+        handler = new ProviderImportHandler(new JGitSource(tokens, true, Duration.ofSeconds(30)), registry, store, credentials);
+    }
+
+    static CredentialInfo owned(String reference, String team) {
+        return new CredentialInfo(reference.substring("vault:".length()), "token", reference, team, Instant.parse("2026-10-17T10:00:00Z"));
+    }
+
+    static <T> Mono<T> as(Mono<T> mono, Identity who) {
+        return mono.contextWrite(c -> CurrentIdentity.with(c, who));
     }
 
     static void write(Path root, String path, String text) throws Exception {
@@ -171,9 +188,7 @@ class ProviderImportHandlerTest {
     void withoutARefTheMainBranchIsReadAndTheCredentialAndImageGoInTheFile() {
         ImportAnsible command = new ImportAnsible(new GitRef(playbooks, null, null, "vault:github/read-token"), null, "vm-ops", "team-compute",
                 "vault:ssh/automation", "ee-platform:2.17");
-        CredentialsPort credentials = mock(CredentialsPort.class);
-        when(credentials.resolve("vault:github/read-token")).thenReturn(Mono.just("ghp-not-needed-on-disk"));
-        handler = new ProviderImportHandler(new JGitSource(credentials, true, Duration.ofSeconds(30)), registry, store);
+        when(tokens.resolve("vault:github/read-token")).thenReturn(Mono.just("ghp-not-needed-on-disk"));
         AnsibleImport result = handler.importAnsible(command).block();
         assertThat(result.ref()).isEqualTo("main");
         assertThat(result.chosen()).containsExactly("vm.decommission", "mongo.setFcv", "vm.restart");
@@ -243,6 +258,54 @@ class ProviderImportHandlerTest {
         assertThat(ProviderYaml.parse(result.yaml()).metadata().version()).isEqualTo("3.2.0");
         assertThat(result.notes()).contains("Provider ops-playbooks already exists (version 3.1.0, owned by team-platform): this draft is version 3.2.0 "
                 + "and replaces its actions when its change request is merged; only team-platform may publish it.");
+    }
+
+    @Test
+    void aCredentialAnotherTeamOwnsIsRefusedBeforeAnythingIsReadOrResolved() {
+        Identity mateo = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+        when(credentials.info("vault:github/read-token")).thenReturn(Mono.just(owned("vault:github/read-token", "team-data")));
+        when(credentials.info("vault:ssh/automation")).thenReturn(Mono.just(owned("vault:ssh/automation", "team-data")));
+        when(credentials.info("vault:terraform/registry")).thenReturn(Mono.just(owned("vault:terraform/registry", "team-data")));
+        when(credentials.info("vault:terraform/platform")).thenReturn(Mono.just(owned("vault:terraform/platform", "team-data")));
+        // the read token of the playbooks' repository, and the machine credential the draft would name
+        StepVerifier.create(as(handler.importAnsible(new ImportAnsible(new GitRef(playbooks, "v1.0.0", null, "vault:github/read-token"), null, null, null, null, null)), mateo))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Mateo may not use credential vault:github/read-token (owned by team-data)"))
+                .verify();
+        StepVerifier.create(as(handler.importAnsible(new ImportAnsible(new GitRef(playbooks, "v1.0.0", null, null), null, null, null, "vault:ssh/automation", null)), mateo))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("vault:ssh/automation"))
+                .verify();
+        // the read token of a module's repository, the runner's credential, and the registry token
+        StepVerifier.create(as(handler.importTerraform(new ImportTerraform(new GitRef(modules, "v2.3.0", "modules/lb", "vault:github/read-token"), null, null, null, null)), mateo))
+                .expectError(ForbiddenException.class).verify();
+        StepVerifier.create(as(handler.importTerraform(new ImportTerraform(new GitRef(modules, "v2.3.0", "modules/lb", null), null, null, null, "vault:terraform/platform")), mateo))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("vault:terraform/platform"))
+                .verify();
+        StepVerifier.create(as(handler.importTerraform(new ImportTerraform(null, new Registry("acme/lb/aws", null, "vault:terraform/registry"), null, null, null)), mateo))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("vault:terraform/registry"))
+                .verify();
+        verify(registry, never()).versions(anyString(), any());
+        verify(registry, never()).locate(anyString(), anyString(), any());
+        verify(tokens, never()).resolve(any());
+        verify(credentials, never()).resolve(any());
+    }
+
+    @Test
+    void theOwnerTeamAnAdminAndAnyoneWithAnUnownedCredentialMayImport() {
+        Identity ana = new Identity("ana", "Ana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+        Identity root = new Identity("root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
+        Identity mateo = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+        when(credentials.info("vault:ssh/automation")).thenReturn(Mono.just(owned("vault:ssh/automation", "team-data")));
+        ImportAnsible command = new ImportAnsible(new GitRef(playbooks, "v1.0.0", null, null), null, null, null, "vault:ssh/automation", null);
+        assertThat(ProviderYaml.parse(as(handler.importAnsible(command), ana).block().yaml()).spec().auth().credential()).isEqualTo("vault:ssh/automation");
+        assertThat(as(handler.importAnsible(command), root).block().chosen()).isNotEmpty();
+        when(credentials.info("vault:ssh/automation")).thenReturn(Mono.just(owned("vault:ssh/automation", null)));
+        assertThat(as(handler.importAnsible(command), mateo).block().chosen()).isNotEmpty();
+        when(credentials.info("vault:terraform/registry")).thenReturn(Mono.just(owned("vault:terraform/registry", "team-data")));
+        when(registry.locate("acme/lb/aws", "2.3.0", "vault:terraform/registry"))
+                .thenReturn(Mono.just(new Location("acme/lb/aws", "2.3.0", "git::file://" + modules + "//modules/lb?ref=v2.3.0")));
+        TerraformImport result = as(handler.importTerraform(new ImportTerraform(null, new Registry("acme/lb/aws", "2.3.0", "vault:terraform/registry"), null, null, null)), ana).block();
+        assertThat(result.version()).isEqualTo("2.3.0");
     }
 
     @Test
