@@ -62,10 +62,12 @@ exact path and the Swagger link), and one MCP tool, `vm_restart`, for an agent.
 5. **Publish** opens a change request: the diff of the YAML, the checks (schema, checks,
    playbooks, policy, replay of recent jobs, contracts with dependants, routes), and the release
    strategy (canary by default). The author cannot merge their own change; a reviewer with edit
-   rights on the owner team opens the change request (the Publish panel links it; share the link)
-   and presses *Merge and publish*. From then on the version is in the catalog, has its endpoint
-   and its MCP tool, and the canary release moves traffic to it stage by stage under **Releases**,
-   rolling back on its own when a gate fails.
+   rights on the owner team finds it under **Workflows → Change requests** (the open ones, counted
+   on the tab; the team's inbox also gets a *Review requested* notification that links it), reads
+   the candidate drawn on the canvas, the diff and the YAML, and presses *Merge and publish*. From
+   then on the version is in the catalog, has its endpoint and its MCP tool, and the canary
+   release moves traffic to it stage by stage under **Releases**, rolling back on its own when a
+   gate fails.
 
 Prefer a file? Write the YAML by hand under `workflows/<team>/` following
 [config as code](config-as-code.md) and run `npm run check:workflows`; the designer and the file

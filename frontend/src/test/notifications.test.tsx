@@ -57,8 +57,19 @@ describe('NotificationList', () => {
     expect(html).not.toContain('aria-label="Mark read: Patch window done"')
   })
 
+  it('asks the owner team for a review with a link to the change request', () => {
+    const review: Notification = { ...base, id: 'n-4', kind: 'review.requested', severity: 'info', title: 'Review requested: vm-restart 2.0.0', message: 'gonzalo opened a change request for workflow vm-restart 2.0.0', link: '/change-requests/cr-202', workflow: 'vm-restart', users: [], teams: ['team-compute'], read: false }
+    const html = text(renderToString(<NotificationList items={[review]} onRead={() => {}} />))
+    expect(html).toContain('Review requested: vm-restart 2.0.0')
+    expect(html).toContain('gonzalo opened a change request for workflow vm-restart 2.0.0')
+    expect(html).toContain('>review<')
+    expect(html).toContain('href="#/change-requests/cr-202"')
+    expect(html).toContain('Open change request')
+  })
+
   it('says when there is nothing', () => {
     const html = text(renderToString(<NotificationList items={[]} onRead={() => {}} />))
     expect(html).toContain('Nothing for you')
+    expect(html).toContain('change requests your team reviews')
   })
 })

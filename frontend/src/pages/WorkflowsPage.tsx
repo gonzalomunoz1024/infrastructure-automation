@@ -15,6 +15,7 @@ import {
   Select,
   StateTag,
   Table,
+  Tabs,
   Tag,
   cx,
   useOverlayClose,
@@ -28,10 +29,15 @@ import { api, errorMessage } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
 import type { ImportSource, WorkflowSummary } from '../lib/types'
 import { ErrorState, Mono, When } from '../components/common'
+import { CHANGE_REQUEST_FILTERS, ChangeRequestTable, filterOf, type ChangeRequestFilter } from '../components/ChangeRequestTable'
 import { emitYaml } from '../components/yaml-emit'
 import { IMPORT_SOURCES, importChoices, importField, importRequest } from '../components/workflow-import'
 
 type StatusFilter = 'all' | 'published' | 'draft'
+
+export type WorkflowsTab = 'workflows' | 'change-requests'
+/** `?tab=` as the view: the workflows unless it names the change requests. */
+export const workflowsTabOf = (q: string | undefined): WorkflowsTab => (q === 'change-requests' ? q : 'workflows')
 
 const unique = (values: (string | undefined)[]) => Array.from(new Set(values.filter((v): v is string => !!v))).sort()
 
@@ -39,8 +45,17 @@ function hasDraft(w: WorkflowSummary): boolean {
   return w.status === 'draft' || (!!w.publishedVersion && w.latestVersion !== w.publishedVersion)
 }
 
-export default function WorkflowsPage(_: PageProps) {
+export default function WorkflowsPage({ route }: PageProps) {
   const list = useQuery('workflows', () => api.workflows())
+  // the address holds the view and the change requests' status, so a link, a reload or Back lands on them
+  const tab = workflowsTabOf(route.query.tab)
+  const crFilter = filterOf(route.query.status)
+  // the open ones count on the tab from either view; the other statuses are asked for when shown
+  const openCrs = useQuery(['change-requests', 'open'], () => api.changeRequests('open'), { refetchInterval: 30_000 })
+  const otherCrs = useQuery(['change-requests', crFilter], () => api.changeRequests(crFilter === 'all' ? undefined : crFilter), { enabled: tab === 'change-requests' && crFilter !== 'open' })
+  const crs = crFilter === 'open' ? openCrs : otherCrs
+  const showChangeRequests = (status: ChangeRequestFilter) => navigate(pathFor('workflows', {}, { tab: 'change-requests', status: status === 'open' ? undefined : status }), { replace: true })
+  const switchTab = (t: WorkflowsTab) => (t === 'change-requests' ? showChangeRequests('open') : navigate(pathFor('workflows'), { replace: true }))
   const [q, setQ] = useState('')
   const [folder, setFolder] = useState('')
   const [owner, setOwner] = useState('')
@@ -160,40 +175,60 @@ export default function WorkflowsPage(_: PageProps) {
           </>
         }
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search workflows" aria-label="Search workflows" className="sm:max-w-xs" />
-          <Segmented
-            ariaLabel="Status"
-            size="sm"
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'published', label: 'Published' },
-              { value: 'draft', label: 'Drafts' },
-            ]}
-          />
-          <Select ariaLabel="Folder" size="sm" value={folder} onChange={setFolder} options={[{ value: '', label: 'Every folder' }, ...folders.map((f) => ({ value: f, label: f }))]} className="w-44" />
-          <Select ariaLabel="Owner" size="sm" value={owner} onChange={setOwner} options={[{ value: '', label: 'Every owner' }, ...owners.map((o) => ({ value: o, label: o }))]} className="w-44" />
-          {(q || folder || owner || status !== 'all') && (
-            <Button
+        <Tabs<WorkflowsTab>
+          ariaLabel="Workflows views"
+          value={tab}
+          onChange={switchTab}
+          className="mb-3"
+          tabs={[
+            { id: 'workflows', label: 'Workflows', icon: 'workflow', count: list.data?.length },
+            { id: 'change-requests', label: 'Change requests', icon: 'git-branch', count: openCrs.data?.length },
+          ]}
+        />
+        {tab === 'change-requests' ? (
+          <Segmented ariaLabel="Change request status" size="sm" value={crFilter} onChange={showChangeRequests} options={CHANGE_REQUEST_FILTERS} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search workflows" aria-label="Search workflows" className="sm:max-w-xs" />
+            <Segmented
+              ariaLabel="Status"
               size="sm"
-              variant="ghost"
-              icon="close"
-              onClick={() => {
-                setQ('')
-                setFolder('')
-                setOwner('')
-                setStatus('all')
-              }}
-            >
-              Clear
-            </Button>
-          )}
-        </div>
+              value={status}
+              onChange={setStatus}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'published', label: 'Published' },
+                { value: 'draft', label: 'Drafts' },
+              ]}
+            />
+            <Select ariaLabel="Folder" size="sm" value={folder} onChange={setFolder} options={[{ value: '', label: 'Every folder' }, ...folders.map((f) => ({ value: f, label: f }))]} className="w-44" />
+            <Select ariaLabel="Owner" size="sm" value={owner} onChange={setOwner} options={[{ value: '', label: 'Every owner' }, ...owners.map((o) => ({ value: o, label: o }))]} className="w-44" />
+            {(q || folder || owner || status !== 'all') && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="close"
+                onClick={() => {
+                  setQ('')
+                  setFolder('')
+                  setOwner('')
+                  setStatus('all')
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        )}
       </PageHeader>
 
-      {list.error && !list.data ? (
+      {tab === 'change-requests' ? (
+        crs.error && !crs.data ? (
+          <ErrorState error={crs.error} title="Could not load the change requests" onRetry={() => void crs.refetch()} />
+        ) : (
+          <ChangeRequestTable rows={crs.data ?? []} loading={crs.loading} filter={crFilter} />
+        )
+      ) : list.error && !list.data ? (
         <ErrorState error={list.error} title="Could not load the workflows" onRetry={() => void list.refetch()} />
       ) : (
         <Table

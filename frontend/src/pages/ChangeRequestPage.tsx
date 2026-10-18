@@ -11,6 +11,9 @@ import { ProblemList } from '../components/ProblemList'
 /** The read-only canvas is the designer's (it brings @xyflow/react): its own chunk, loaded when the tab opens. */
 const DocumentCanvas = lazy(() => import('../designer/views/DocumentCanvas'))
 
+/** Back to where a reviewer finds change requests: the Workflows page's tab, both kinds listed. */
+const BACK = { href: `#${pathFor('workflows', {}, { tab: 'change-requests' })}`, label: 'Change requests' }
+
 export type ContentTab = 'canvas' | 'diff' | 'yaml'
 
 const CONTENT_TABS: Record<ContentTab, { id: ContentTab; label: string; icon: IconName }> = {
@@ -170,7 +173,7 @@ export default function ChangeRequestPage({ route }: PageProps) {
   if (cr.error && !data) {
     return (
       <>
-        <PageHeader eyebrow="Change request" title={<span className="font-mono">{id}</span>} back={{ href: `#${pathFor('workflows')}`, label: 'Workflows' }} />
+        <PageHeader eyebrow="Change request" title={<span className="font-mono">{id}</span>} back={BACK} />
         <ErrorState error={cr.error} title="Could not load the change request" onRetry={() => void cr.refetch()} />
       </>
     )
@@ -199,7 +202,7 @@ export default function ChangeRequestPage({ route }: PageProps) {
             </span>
           )
         }
-        back={{ href: `#${pathFor('workflows')}`, label: 'Workflows' }}
+        back={BACK}
         actions={
           data && (
             <>

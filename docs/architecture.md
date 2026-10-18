@@ -373,7 +373,11 @@ real response", a spec refresh, the wizard's publish) is a change request the pa
 links. A workflow's change request opens on its candidate drawn on the designer's read-only
 canvas (its own chunk, loaded with the tab): the backend parses the YAML (`POST /workflows:parse`),
 the designer's model lays it out as the author saw it, and a double-click shows a step as written;
-the Diff and YAML tabs sit beside it, and a provider's change request has only those. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
+the Diff and YAML tabs sit beside it, and a provider's change request has only those. The
+Workflows page's Change requests tab lists both kinds (`GET /change-requests?status=`, the open ones
+by default and counted on the tab, the status in the address), so a reviewer on the owner team
+finds what waits for them, and the inbox renders the `review.requested` notification with a link
+to the change request. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
 the commit read), imports an Ansible repository or a Terraform module through the backend's
 drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,

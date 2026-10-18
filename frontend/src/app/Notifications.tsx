@@ -39,7 +39,7 @@ export function severityDot(severity: NotificationSeverity | string): DotKind {
   return severity === 'critical' ? 'critical' : severity === 'warning' ? 'warning' : 'neutral'
 }
 
-const KIND_LABEL: Record<string, string> = { notify: 'message', 'provider.alert': 'provider alert', 'approval.requested': 'approval', 'approval.escalated': 'escalation' }
+const KIND_LABEL: Record<string, string> = { notify: 'message', 'provider.alert': 'provider alert', 'approval.requested': 'approval', 'approval.escalated': 'escalation', 'review.requested': 'review' }
 
 export interface NotificationListProps {
   items: Notification[]
@@ -51,7 +51,7 @@ export interface NotificationListProps {
 
 /** The notifications themselves, newest first, each with where it leads and a way to mark it read. */
 export function NotificationList({ items, onRead, onOpen }: NotificationListProps) {
-  if (items.length === 0) return <EmptyState compact icon="bell" title="Nothing for you" message="Approvals waiting on your group, provider alerts and messages from workflows land here." />
+  if (items.length === 0) return <EmptyState compact icon="bell" title="Nothing for you" message="Approvals waiting on your group, change requests your team reviews, provider alerts and messages from workflows land here." />
   return (
     <ul className="divide-y divide-stroke-light" aria-label="Notifications">
       {items.map((n) => {

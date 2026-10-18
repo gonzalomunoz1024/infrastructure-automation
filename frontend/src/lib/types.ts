@@ -573,7 +573,7 @@ export type SealResult = { sealedAt: string; signature: string }
    Notifications
    ------------------------------------------------------------------------- */
 
-export type NotificationKind = 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated'
+export type NotificationKind = 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated' | 'review.requested'
 export type NotificationSeverity = 'info' | 'warning' | 'critical'
 /** One message for people: `link` is a path in the UI (`/jobs/job_123`); `read` is the caller's own. */
 export type Notification = {

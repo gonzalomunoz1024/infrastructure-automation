@@ -5,6 +5,7 @@ import type {
   AssistantSession,
   AuditVerification,
   CatalogEntry,
+  ChangeRequest,
   ChangeRequestDetail,
   Credential,
   Dependencies,
@@ -753,6 +754,58 @@ export const WORKFLOW_CR: ChangeRequestDetail = {
   yaml: 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart\n  version: 2.0.0\n',
 }
 
+/* ----------------------------------------------------------------------------
+   Every change request (GET /change-requests?status=): both kinds, open, merged and closed
+   ------------------------------------------------------------------------- */
+
+/** A change request as the list carries it: without its diff and YAML. */
+const listed = ({ diff: _diff, yaml: _yaml, ...cr }: ChangeRequestDetail): ChangeRequest => cr
+
+export const CHANGE_REQUESTS: ChangeRequest[] = [
+  listed(WORKFLOW_CR),
+  listed(PROVIDER_CR),
+  {
+    id: 'cr-41',
+    kind: 'workflow',
+    name: 'vm-restart',
+    version: '1.2.0',
+    branch: 'workflow/vm-restart-1.2.0',
+    title: 'Publish vm-restart 1.2.0',
+    author: 'ana',
+    status: 'merged',
+    checks: [
+      { id: 'checks', label: 'Workflow checks', status: 'passed' },
+      { id: 'replay', label: 'Replay of recent jobs', status: 'passed' },
+    ],
+    strategy: 'canary',
+    createdAt: ago(60 * 30),
+    mergedAt: ago(60 * 29),
+  },
+  {
+    id: 'cr-37',
+    kind: 'provider',
+    name: 'vsphere',
+    version: '2.1.0',
+    branch: 'provider/vsphere-2.1.0',
+    title: 'Change the SLO of vsphere',
+    author: 'mateo',
+    status: 'closed',
+    checks: [{ id: 'checks', label: 'Provider checks', status: 'skipped' }],
+    strategy: 'canary',
+    createdAt: ago(60 * 48),
+  },
+]
+
+/** GET /change-requests as the backend filters it: by `status`, every one without. */
+export function changeRequestRoutes(items: ChangeRequest[] = CHANGE_REQUESTS): Routes {
+  return {
+    'GET /change-requests': (req) => {
+      const status = req.query.get('status')
+      return status ? items.filter((c) => c.status === status) : items
+    },
+  }
+}
+
 /** The candidate of cr-202 as the backend parses its YAML (POST /workflows:parse): a lookup, the restart, a message. */
 export const WORKFLOW_CR_DEFINITION = {
   apiVersion: 'iaf.platform/v1',
@@ -848,6 +901,21 @@ export const NOTIFICATIONS: Notification[] = [
   { id: 'ntf-2', at: ago(40), kind: 'provider.alert', severity: 'critical', title: 'vsphere is failing', message: '3 timeouts in 10 minutes', link: '/providers/vsphere', channel: '#compute-alerts', provider: 'vsphere', users: [], teams: ['team-compute'], read: false },
   { id: 'ntf-3', at: ago(60 * 5), kind: 'notify', severity: 'info', title: 'Patch window done', message: '20 of 20 servers patched', link: '/jobs/job-5b10e7d2', jobId: 'job-5b10e7d2', workflow: 'patch-cve', users: ['gonzalo'], teams: [], read: true },
 ]
+
+/** The owner team is asked to review a change request someone opened (review.requested). */
+export const REVIEW_NOTIFICATION: Notification = {
+  id: 'ntf-4',
+  at: ago(2),
+  kind: 'review.requested',
+  severity: 'info',
+  title: 'Review requested: vm-restart 2.0.0',
+  message: 'gonzalo opened a change request for workflow vm-restart 2.0.0',
+  link: '/change-requests/cr-202',
+  workflow: 'vm-restart',
+  users: [],
+  teams: ['team-compute'],
+  read: false,
+}
 
 /** A mutable inbox: GET filters by `unread`, POST marks one read. */
 export function inboxRoutes(items: Notification[] = NOTIFICATIONS.map((n) => ({ ...n }))): Routes {
