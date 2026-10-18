@@ -238,6 +238,42 @@ class TeamWorkerStepsTest {
         }
     }
 
+    private static String encoding(io.temporal.api.common.v1.Payloads payloads) {
+        return payloads.getPayloads(0).getMetadataMap().get("encoding").toStringUtf8();
+    }
+
+    private static String result(List<HistoryEvent> events, ActivityTaskScheduledEventAttributes scheduled) {
+        long id = events.stream().filter(e -> e.hasActivityTaskScheduledEventAttributes() && e.getActivityTaskScheduledEventAttributes().equals(scheduled))
+                .findFirst().orElseThrow().getEventId();
+        return encoding(events.stream().filter(e -> e.hasActivityTaskCompletedEventAttributes() && e.getActivityTaskCompletedEventAttributes().getScheduledEventId() == id)
+                .findFirst().orElseThrow().getActivityTaskCompletedEventAttributes().getResult());
+    }
+
+    @Test
+    void withAPayloadKeyTheHistoryHoldsThePlatformsPayloadsSealedAndATeamWorkersCallReadable() {
+        t.close();
+        t = new TemporalTestEngine(new TemporalTestEngine.Options().payloadKey(PayloadEncryptionTest.key()).workers(env -> {
+            env.newWorker(QUEUE).registerActivitiesImplementations(team);
+            env.newWorker(ACTIVITIES).registerActivitiesImplementations(team);
+        }));
+        when(t.w.providers.provider(eq("reports"))).thenReturn(Mono.just(ProviderYaml.parse(PROVIDER)));
+        Job job = run(FLOW);
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+
+        List<HistoryEvent> events = t.client.fetchHistory(job.id()).getEvents();
+        assertThat(encoding(events.get(0).getWorkflowExecutionStartedEventAttributes().getInput())).as("the job").isEqualTo(PayloadEncryption.ENCODING);
+        ActivityTaskScheduledEventAttributes get = scheduled(job.id(), "CallProvider");
+        ActivityTaskScheduledEventAttributes report = scheduled(job.id(), "report.create");
+        assertThat(encoding(get.getInput())).isEqualTo(PayloadEncryption.ENCODING);
+        assertThat(result(events, get)).as("the provider's answer").isEqualTo(PayloadEncryption.ENCODING);
+        assertThat(encoding(report.getInput())).as("the contract the team's worker reads").isEqualTo("json/plain");
+        assertThat(result(events, report)).isEqualTo("json/plain");
+        assertThat(team.payload("report.create").path("input").path("title").asText()).isEqualTo("web-1042");
+        assertThat(t.job(job.id()).step("after").output().path("message").asText()).isEqualTo("done rpt-quarterly");
+        t.replay(job.id());
+    }
+
     @Test
     void aCallActivityStepRunsOnTheTaskQueueItNames() {
         Job job = run(FLOW);

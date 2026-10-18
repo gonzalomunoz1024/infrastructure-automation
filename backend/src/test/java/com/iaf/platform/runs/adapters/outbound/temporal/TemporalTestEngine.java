@@ -67,6 +67,7 @@ final class TemporalTestEngine implements AutoCloseable {
         Consumer<TestWorkflowEnvironment> workers = env -> {
         };
         StepTraces traces = StepTraces.UNTRACED;
+        PayloadEncryption codec;
 
         /** The runs wiring the engine works over (one built over another projection store, say). */
         Options wiring(RunsTestWiring wiring) {
@@ -103,6 +104,12 @@ final class TemporalTestEngine implements AutoCloseable {
             this.traces = traces;
             return this;
         }
+
+        /** Encrypts the payloads of the history with this base64 key, as {@code platform.temporal.payload-key} does. */
+        Options payloadKey(String base64) {
+            this.codec = PayloadEncryption.of(base64, QUEUE);
+            return this;
+        }
     }
 
     TemporalTestEngine() {
@@ -133,7 +140,7 @@ final class TemporalTestEngine implements AutoCloseable {
         props.getExecution().setMode("temporal");
         options.config.accept(props.getTemporal());
         env = TestWorkflowEnvironment.newInstance(TestEnvironmentOptions.newBuilder()
-                .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json())).build())
+                .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json(), options.codec)).build())
                 .build());
         worker = env.newWorker(QUEUE, TemporalConfig.workerOptions(props.getTemporal()));
         worker.registerWorkflowImplementationTypes(TemporalConfig.workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);

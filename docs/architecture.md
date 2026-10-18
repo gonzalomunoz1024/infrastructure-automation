@@ -334,6 +334,20 @@ history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the 
 (`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
 "Open in Temporal".
 
+The connection and the history can be secured. `platform.temporal.tls.ca`, `.cert` and `.key`
+(PEM files) give TLS to the server and, with a client certificate, mTLS;
+`platform.temporal.api-key`, a `vault:` reference resolved at startup, authenticates to Temporal
+Cloud on every call (and turns TLS on). With `platform.temporal.payload-key`, a `vault:` reference
+to a 32-byte AES key, every payload the platform writes (the job, its signals and queries, the
+inputs and results of its own activities, which may echo a secret a step read) is sealed with
+AES-256-GCM through a `CodecDataConverter` (`PayloadEncryption`): the Temporal UI and CLI then
+show ciphertext (`binary/encrypted` with the key's id), since no codec server decodes it for
+them; failure messages stay readable, masked like every error message. A call on a team's worker
+(an activity on another task queue) stays readable, because its payload is the contract the
+provider SDKs read and the worker holds no key; what was written before the key was set still
+replays. A key setting that is not a `vault:` reference stops the start, and a blank payload key
+is logged as a warning.
+
 The platform's own step calls heartbeat while they run: a provider call, an automation run or a
 script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`
 after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one, so a backend that

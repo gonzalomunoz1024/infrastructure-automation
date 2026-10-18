@@ -45,6 +45,12 @@ platform:
     heartbeat-timeout: 60s  # a step's call (provider, automation, script) without a heartbeat this long fails as worker-lost; 0 = never
     heartbeat-interval: 15s # how often those calls heartbeat
     ui-url: ""              # the Temporal web UI (e.g. http://localhost:8233): each job's view links to its execution there; blank = no link
+    payload-key: ""         # a vault: reference to the AES-256 key (32 bytes, base64) that encrypts the payloads in Temporal's history; blank = in clear, with a warning at startup
+    api-key: ""             # a vault: reference to a Temporal Cloud API key, sent with every call over TLS; blank = none
+    tls:                    # TLS to the server from PEM files; on when any is set (or an API key is)
+      ca: ""                # the CA of the server's certificate; blank = the JVM's trust store
+      cert: ""              # the client certificate for mTLS, with key
+      key: ""               # its PKCS#8 private key
   policy:
     mode: mock            # mock | opa
     opa-url: http://localhost:8181/v1/data/platform
