@@ -4,8 +4,8 @@
  * type's attributes) and written by hand for the flow steps (switch cases, fork branches, the
  * loop, wait, set). Every field writes straight into the step body through the store.
  */
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { Button, cx, Icon, Segmented, Tag, type SelectOption } from '@iaf/ui'
+import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react'
+import { Button, cx, Icon, Input, Segmented, Tag, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
@@ -17,6 +17,7 @@ import { effectTags } from '../creator/catalog'
 import { useNdv } from './context'
 import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
+import { hostsText, hostsValue, inventoryFor, inventoryKind, withGroupKey, type InventoryKind } from './inventory'
 
 interface StepEdit {
   stepId: string
@@ -200,6 +201,137 @@ export function gitResolveQuery(playbook: JsonValue | undefined): { repo: string
 const GIT_KINDS = ['token', 'basic']
 const MACHINE_KINDS = ['ssh-key', 'ssh']
 
+/** Host names typed with commas, written when the field loses focus or on Enter (a half-typed list never reaches the step). */
+function HostsInput({ field, label, description, value, onCommit, placeholder = 'web1, web2' }: { field: string; label: string; description?: string; value: string; onCommit: (text: string) => void; placeholder?: string }) {
+  const { readOnly } = useStepEdit()
+  const { problems } = useNdv()
+  const id = useId()
+  const [draft, setDraft] = useState<string | null>(null)
+  const own = problemsAt(problems, field)
+  const commit = () => {
+    if (draft === null) return
+    setDraft(null)
+    if (draft !== value) onCommit(draft)
+  }
+  return (
+    <div data-field={field}>
+      <FieldLabel htmlFor={id} label={label} description={description} />
+      <Input
+        id={id}
+        mono
+        value={draft ?? value}
+        placeholder={placeholder}
+        readOnly={readOnly}
+        invalid={own.some((p) => p.level === 'error')}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit()
+        }}
+        className="mt-1"
+      />
+      <ProblemList problems={own} className="mt-1" />
+    </div>
+  )
+}
+
+const INVENTORY_NOTE: Record<InventoryKind, string> = {
+  dynamic: 'The dynamic inventory the platform is configured with (platform.runners.ansible.dynamic-inventory).',
+  path: "An inventory file or directory inside the playbook's source.",
+  hosts: 'The hosts the playbook runs on, by name.',
+  group: 'Hosts that make up a group, with the variables of the group.',
+  none: "No inventory: the playbook runs on ansible's implicit localhost.",
+}
+
+/**
+ * The step's inventory in the runner's shapes (`./inventory`): dynamic, a path in the playbook's
+ * source, a list of hosts, a group `{ hosts, group?, vars? }`, or none. Choosing a kind whose field
+ * is still empty writes nothing until it is filled, so the step never holds an empty inventory.
+ */
+function InventoryParams() {
+  const { get, set, update, readOnly } = useStepEdit()
+  const { problems } = useNdv()
+  const value = get('inventory')
+  const [pending, setPending] = useState<{ kind: InventoryKind; from: JsonValue | undefined } | null>(null)
+  const kind = pending && pending.from === value ? pending.kind : inventoryKind(value)
+  const group = kind === 'group' ? asObject(value) : {}
+  const choose = (next: InventoryKind) => {
+    if (readOnly || next === kind) return
+    const write = inventoryFor(next, value)
+    if (write === 'pending') return setPending({ kind: next, from: value })
+    setPending(null)
+    set('inventory', write.value)
+  }
+  const setGroup = (key: 'hosts' | 'group' | 'vars', v: JsonValue | undefined) => update((b) => writeField(b, 'inventory', withGroupKey(readField(b, 'inventory'), key, v)), `inventory.${key}`)
+  return (
+    <>
+      <div data-field="inventory">
+        <FieldLabel label="Inventory" description="Where the playbook finds its hosts: the platform's dynamic inventory, a path in the playbook's source, a list of hosts or a group of them" />
+        <Segmented<InventoryKind>
+          value={kind}
+          onChange={choose}
+          ariaLabel="Inventory"
+          size="sm"
+          options={[
+            { value: 'dynamic', label: 'Dynamic' },
+            { value: 'path', label: 'Path' },
+            { value: 'hosts', label: 'Hosts' },
+            { value: 'group', label: 'Group' },
+            { value: 'none', label: 'None' },
+          ]}
+          className="mt-1"
+        />
+        <p className="mt-1 text-caption text-tertiary">{INVENTORY_NOTE[kind]}</p>
+        <ProblemList problems={problems.filter((p) => p.field === 'inventory' && kind !== 'path' && kind !== 'hosts')} className="mt-1" />
+      </div>
+      {kind === 'path' && (
+        <P
+          field="inventory"
+          label="Inventory path"
+          mono
+          value={inventoryKind(value) === 'path' ? value : ''}
+          placeholder="inventories/prod.ini"
+          description="A file or directory inside the playbook's source; an expression may also give dynamic or a list of hosts"
+        />
+      )}
+      {kind === 'hosts' && (
+        <HostsInput field="inventory" label="Hosts" description="Host names separated by commas; each may be an expression" value={Array.isArray(value) ? hostsText(value) : ''} onCommit={(t) => set('inventory', hostsValue(t, value))} />
+      )}
+      {kind === 'group' && (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <HostsInput field="inventory.hosts" label="Hosts" description="Host names separated by commas" value={hostsText(group.hosts)} onCommit={(t) => setGroup('hosts', hostsValue(t, group.hosts, true))} />
+            <P field="inventory.group" label="Group" mono expression={false} placeholder="all" value={group.group ?? ''} onChange={(v) => setGroup('group', v)} description="The group the hosts make up (letters, digits and _); all when empty" />
+          </div>
+          <div data-field="inventory.vars">
+            <FieldLabel label="Group variables" description="Variables every host of the group gets" />
+            <div className="mt-1">
+              <KeyValueEditor
+                value={asObject(group.vars)}
+                onChange={(v) => setGroup('vars', Object.keys(v).length > 0 ? v : undefined)}
+                addLabel="Add variable"
+                keyPlaceholder="variable"
+                problemsOf={(k) => problemsAt(problems, `inventory.vars.${k}`)}
+                readOnly={readOnly}
+              />
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+/** The limit: a host pattern, or the list of hosts a file wrote (kept a list when edited). */
+function LimitParam() {
+  const { get, set } = useStepEdit()
+  const value = get('limit')
+  if (Array.isArray(value)) {
+    return <HostsInput field="limit" label="Limit" description="The hosts of the inventory the run is limited to, as a list" value={hostsText(value)} onCommit={(t) => set('limit', hostsValue(t, value))} />
+  }
+  return <P field="limit" label="Limit" mono placeholder="web1,web2 or db*" description="A host pattern (web1,web2, db*, all:!db3) or a list of hosts: the hosts of the inventory the run is limited to" />
+}
+
 function AnsibleParams() {
   const { get, set, registry, readOnly } = useStepEdit()
   const { problems } = useNdv()
@@ -342,10 +474,10 @@ function AnsibleParams() {
           </p>
         )}
       </ParamSection>
-      <div className="grid grid-cols-2 gap-3">
-        <P field="inventory" label="Inventory" suggestions={['dynamic']} placeholder="dynamic" />
-        <P field="limit" label="Limit" placeholder="{{ $vm.name }}" />
-      </div>
+      <ParamSection title="Hosts">
+        <InventoryParams />
+        <LimitParam />
+      </ParamSection>
       <KeyValueParam field="extraVars" label="Extra vars" addLabel="Add variable" keyPlaceholder="variable" />
       <CredentialParam kinds={MACHINE_KINDS} label="Machine credential" description={`The SSH key the playbook reaches the hosts with. ${VAULT_NOTE}`} />
       <P field="executionEnvironment" label="Execution environment" mono placeholder="ee-platform:2.17" expression={false} />

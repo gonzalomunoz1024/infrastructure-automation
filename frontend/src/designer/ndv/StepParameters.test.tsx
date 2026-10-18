@@ -7,6 +7,7 @@ import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
 import { credentialOptions, gitResolveQuery, StepParameters } from './StepParameters'
+import { hostsValue, withGroupKey } from './inventory'
 
 /*
  * The git playbook of an ansible step: the repository's read token (`playbook.git.credential`) is
@@ -50,6 +51,77 @@ function render(doc: WorkflowDocument, stepId = 'restart'): string {
     </DesignerContext.Provider>,
   )
 }
+
+/** The checked option of a segmented control, by its aria-label. */
+function checked(html: string, group: string): string | null {
+  const start = html.indexOf(`aria-label="${group}"`)
+  if (start < 0) return null
+  const end = html.indexOf('</div>', start)
+  const m = /<button[^>]*role="radio" aria-checked="true"[^>]*>(?:<[^>]+>)*([^<]+)/.exec(html.slice(start, end))
+  return m ? m[1] : null
+}
+
+const withInventory = (inventory: unknown, limit?: unknown): WorkflowDocument => {
+  const doc = restartWith({ git: GIT, commit: 'abc' }) as WorkflowDocument & { workflow: { do: { restart: { with: Record<string, unknown> } }[] } }
+  const w = doc.workflow.do[0].restart.with
+  if (inventory === undefined) delete w.inventory
+  else w.inventory = inventory
+  if (limit !== undefined) w.limit = limit
+  return doc
+}
+
+describe("an ansible step's inventory and limit", () => {
+  it('shows the kind the inventory is and its own fields', () => {
+    const dynamic = render(withInventory('dynamic', '{{ $vm.name }}'))
+    expect(checked(dynamic, 'Inventory')).toBe('Dynamic')
+    expect(dynamic).toContain('The dynamic inventory the platform is configured with')
+    expect(dynamic).not.toContain('Inventory path')
+
+    const path = render(withInventory('inventories/prod.ini'))
+    expect(checked(path, 'Inventory')).toBe('Path')
+    expect(path).toContain('Inventory path')
+    expect(path).toContain('value="inventories/prod.ini"')
+
+    const hosts = render(withInventory(['web1', '{{ $vm.name }}']))
+    expect(checked(hosts, 'Inventory')).toBe('Hosts')
+    expect(hosts).toContain('value="web1, {{ $vm.name }}"')
+    expect(hosts).not.toContain('[object Object]')
+
+    const group = render(withInventory({ hosts: 'web1,web2', group: 'web', vars: { http_port: 8080 } }))
+    expect(checked(group, 'Inventory')).toBe('Group')
+    expect(field(group, 'inventory.hosts')).toContain('value="web1,web2"')
+    expect(field(group, 'inventory.group')).toContain('value="web"')
+    expect(field(group, 'inventory.vars')).toContain('value="http_port"')
+    expect(group).not.toContain('[object Object]')
+
+    const none = render(withInventory(undefined))
+    expect(checked(none, 'Inventory')).toBe('None')
+    expect(none).toContain("the playbook runs on ansible&#x27;s implicit localhost")
+  })
+
+  it('shows a limit as the pattern it is, or as the list a file wrote', () => {
+    expect(field(render(withInventory('dynamic', 'web*:!web3')), 'limit')).toContain('value="web*:!web3"')
+    expect(field(render(withInventory('dynamic', ['web1', 'web2'])), 'limit')).toContain('value="web1, web2"')
+  })
+
+  it('writes what the form edits in the shapes the runner reads, and reads them back', () => {
+    const store = new DesignerStore({ name: 'vm-restart', doc: withInventory('dynamic'), registry: REGISTRY })
+    const withOf = () => findStepNode(store.getState().graph, 'restart')?.data.body.with as Record<string, unknown>
+    // Hosts: the typed names as a list
+    store.updateStep('restart', (b) => writeField(b, 'inventory', hostsValue('web1, web2', 'dynamic')))
+    expect(withOf().inventory).toEqual(['web1', 'web2'])
+    // Group: the hosts move into it, then its name and variables
+    store.updateStep('restart', (b) => writeField(b, 'inventory', withGroupKey(['web1', 'web2'], 'group', 'web')))
+    store.updateStep('restart', (b) => writeField(b, 'inventory', withGroupKey(withOf().inventory as never, 'vars', { http_port: 8080 })))
+    expect(withOf().inventory).toEqual({ hosts: ['web1', 'web2'], group: 'web', vars: { http_port: 8080 } })
+    // a list limit stays a list
+    store.updateStep('restart', (b) => writeField(b, 'limit', hostsValue('web1', ['web1', 'web2'])))
+    expect(withOf().limit).toEqual(['web1'])
+    const doc = store.getState().doc
+    expect(graphToDocument(documentToGraph(doc), doc)).toEqual(doc)
+    expect(checked(render(doc), 'Inventory')).toBe('Group')
+  })
+})
 
 describe('the git credential of a playbook', () => {
   it('is what the pin sends to the resolve call, never the machine credential', () => {

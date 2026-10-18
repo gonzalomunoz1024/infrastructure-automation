@@ -42,6 +42,19 @@ describe('round trips', () => {
     expect(findStepNode(graph, 'a')?.data.step.attentionTimeout).toBe('PT4H')
     expect(graphToDocument(graph, doc)).toEqual(doc)
   })
+  it("keeps an ansible step's inventory and limit in every shape the runner reads", () => {
+    const ansible = (inventory: unknown, limit?: unknown) => ({ call: 'ansible', with: { playbook: 'ops/restart', inventory, ...(limit === undefined ? {} : { limit }) } })
+    const doc = minimal([
+      { a: ansible('dynamic', '{{ $vm.name }}') },
+      { b: ansible('inventories/prod.ini', 'web*:!web3') },
+      { c: ansible(['web1', 'web2'], ['web1']) },
+      { d: ansible({ hosts: 'web1,web2', group: 'web', vars: { http_port: 8080 } }) },
+      { e: { call: 'ansible', with: { playbook: 'ops/restart' } } },
+    ])
+    const graph = documentToGraph(doc)
+    expect(findStepNode(graph, 'd')?.data.body.with).toEqual({ playbook: 'ops/restart', inventory: { hosts: 'web1,web2', group: 'web', vars: { http_port: 8080 } } })
+    expect(graphToDocument(graph, doc)).toEqual(doc)
+  })
   it('writes positions only for positioned nodes', () => {
     const doc = minimal([{ a: { notify: { channel: '#x', message: 'm' } } }, { b: { notify: { channel: '#x', message: 'm' }, position: { x: 10, y: 20 } } }])
     const graph = documentToGraph(doc)

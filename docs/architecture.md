@@ -741,7 +741,12 @@ plan step `POST /workflows:import` drafts for the provider, parsed by `POST /wor
 An ansible step with a git playbook has two credential pickers fed by `GET /registry/credentials`:
 the Git credential (`playbook.git.credential`, the read token of a private repository) and the
 machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
-credential to `GET /playbooks:resolve`, never the machine credential. A `use` step's Check access
+credential to `GET /playbooks:resolve`, never the machine credential. The step's Hosts section
+writes the inventory in the shapes the ansible runner reads (`frontend/src/designer/ndv/inventory.ts`):
+Dynamic writes `dynamic`, Path a file or directory in the playbook's source, Hosts a list, Group
+`{ hosts, group, vars }` and None no key, so the playbook runs on ansible's implicit localhost; a
+kind whose field is still empty writes nothing until it is filled, and a limit a file wrote as a
+list stays a list. A `use` step's Check access
 switch is on unless the step opts out: switching it off writes `checkAccess: false` and switching
 it back on removes the key, so the canvas never writes `checkAccess: true`. A step's Settings tab
 offers its Decision timeout (`attentionTimeout`) beside Pause on failure while the step pauses:

@@ -176,6 +176,33 @@ test.describe('the playbook of an ansible step', () => {
     await expect(ndv.getByRole('textbox', { name: /^File/ })).toHaveValue('uploads/restart-3f1c.tar.gz')
   })
 
+  test("the inventory takes the runner's shapes: a list of hosts, then a group of them", async ({ page }) => {
+    const api = await openVmRestart(page)
+    await node(page, 'step:restart').dblclick()
+    const ndv = page.getByTestId('ndv')
+    const inventory = ndv.getByRole('radiogroup', { name: 'Inventory' })
+    await expect(inventory.getByRole('radio', { name: 'Dynamic' })).toHaveAttribute('aria-checked', 'true')
+    await expect(ndv.getByRole('textbox', { name: 'Limit', exact: true })).toHaveValue('{{ $vm.name }}')
+
+    // hosts by name: written as a list once the field is left
+    await inventory.getByRole('radio', { name: 'Hosts' }).click()
+    const hosts = ndv.getByRole('textbox', { name: /^Hosts/ })
+    await expect(hosts).toHaveValue('')
+    await hosts.fill('web-1042, web-1043')
+    await hosts.press('Enter')
+    // a group takes those hosts along, and a name
+    await inventory.getByRole('radio', { name: 'Group' }).click()
+    await expect(ndv.getByRole('textbox', { name: /^Hosts/ })).toHaveValue('web-1042, web-1043')
+    await ndv.getByRole('textbox', { name: /^Group/ }).fill('web')
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await page.getByTestId('save-button').click()
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const steps = (api.drafts[0].definition as { workflow: { do: Record<string, { with: Record<string, unknown> }>[] } }).workflow.do
+    const restart = steps.find((s) => 'restart' in s)?.restart
+    expect(restart?.with.inventory).toEqual({ hosts: ['web-1042', 'web-1043'], group: 'web' })
+    expect(restart?.with.limit).toBe('{{ $vm.name }}')
+  })
+
   test('a library playbook comes from the registry', async ({ page }) => {
     await openVmRestart(page)
     await node(page, 'step:restart').dblclick()
