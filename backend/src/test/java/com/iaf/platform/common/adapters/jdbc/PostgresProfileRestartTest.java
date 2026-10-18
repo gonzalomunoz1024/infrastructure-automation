@@ -6,6 +6,9 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +23,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.PlatformApplication;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
+import com.iaf.platform.common.adapters.telemetry.JdbcTelemetry;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
@@ -48,6 +52,10 @@ class PostgresProfileRestartTest {
      * before the restart still verifies after it.
      */
     static ConfigurableApplicationContext start(Path dir) {
+        return start(dir, false);
+    }
+
+    static ConfigurableApplicationContext start(Path dir, boolean demoHistory) {
         return new SpringApplicationBuilder(PlatformApplication.class)
                 .profiles("demo", "postgres")
                 .bannerMode(Banner.Mode.OFF)
@@ -57,8 +65,26 @@ class PostgresProfileRestartTest {
                         "--spring.datasource.username=sa",
                         "--spring.datasource.password=",
                         "--platform.content.dir=..",
-                        "--platform.demo.seed-history=false",
+                        "--platform.demo.seed-history=" + demoHistory,
                         "--platform.audit.signing-key=test-signing-key");
+    }
+
+    /** Rows in the tables the demo history fills, once the telemetry queue is written. */
+    static Map<String, Long> rows(ConfigurableApplicationContext ctx) {
+        ctx.getBean(JdbcTelemetry.class).flush();
+        Jdbc jdbc = ctx.getBean(Jdbc.class);
+        Map<String, Long> rows = new TreeMap<>();
+        for (String table : List.of("workflow_versions", "change_requests", "releases", "resources", "runs_jobs", "runs_events",
+                "evidence_records", "evidence_entries", "telemetry_samples")) {
+            rows.put(table, jdbc.first("SELECT COUNT(*) FROM " + table, (rs, i) -> rs.getLong(1)).orElse(0L));
+        }
+        return rows;
+    }
+
+    static Set<String> ids(JsonNode list) {
+        Set<String> ids = new TreeSet<>();
+        list.forEach(item -> ids.add(item.path("id").asText()));
+        return ids;
     }
 
     static WebTestClient http(ConfigurableApplicationContext ctx) {
@@ -133,6 +159,33 @@ class PostgresProfileRestartTest {
             JsonNode verification = get(http, "/api/v1/audit/{jobId}:verify", jobId);
             assertThat(verification.path("valid").asBoolean()).isTrue();
             assertThat(verification.path("seal").asText()).isEqualTo("verified");
+            assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
+        }
+    }
+
+    @Test
+    void theDemoHistoryIsWrittenOnTheFirstStartOnlyAndKept(@TempDir Path dir) {
+        Map<String, Long> seeded;
+        Set<String> jobs;
+        Set<String> releases;
+        Set<String> changeRequests;
+        try (ConfigurableApplicationContext ctx = start(dir, true)) {
+            seeded = rows(ctx);
+            assertThat(seeded).allSatisfy((table, rows) -> assertThat(rows).as(table).isPositive());
+            WebTestClient http = http(ctx);
+            jobs = ids(get(http, "/api/v1/jobs?limit={n}", 100_000));
+            releases = ids(get(http, "/api/v1/releases"));
+            changeRequests = ids(get(http, "/api/v1/change-requests"));
+            assertThat(jobs).isNotEmpty();
+            assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
+        }
+
+        try (ConfigurableApplicationContext ctx = start(dir, true)) {
+            assertThat(rows(ctx)).isEqualTo(seeded);
+            WebTestClient http = http(ctx);
+            assertThat(ids(get(http, "/api/v1/jobs?limit={n}", 100_000))).isEqualTo(jobs);
+            assertThat(ids(get(http, "/api/v1/releases"))).isEqualTo(releases);
+            assertThat(ids(get(http, "/api/v1/change-requests"))).isEqualTo(changeRequests);
             assertThat(ctx.getBean(Jdbc.class).callsOnNonBlockingThreads()).isZero();
         }
     }
