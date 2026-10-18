@@ -382,10 +382,13 @@ alone) and keeps the session in its address (`?session=`), so a reload or a shar
 from `GET /assistant/sessions/{id}`, in the session's mode. The settings page creates service
 accounts with the presets and the grouped scopes of `docs/api.md`.
 
-The job page's "Re-run from a step" sends `POST /jobs/{id}:rerun` with the step and only the
-fields typed, which the backend merges onto the job's input (a list or a scalar is refused before
-it is sent); a job still running or a batch, both refused by the backend, gets a sentence instead
-of the form. A batch offers its retry once it has ended, counting the rows
+The job page's cancel says what both engines do: the job stops (a wait at once, a runner process
+or a worker's activity stopped) and nothing is compensated; only Abort, on a run a failed step
+paused, rolls the finished steps back, and a paused run's cancel dialog points there. Its
+"Re-run from a step" sends `POST /jobs/{id}:rerun` with the step and only the fields typed, which
+the backend merges onto the job's input (a list or a scalar is refused before it is sent); a job
+still running or a batch, both refused by the backend, gets a sentence instead of the form. A
+batch offers its retry once it has ended, counting the rows
 `POST /jobs/{id}:retry-failed-rows` runs again in a new wave (the failed, cancelled and skipped
 ones, named when not all of them failed). The resource page draws the lineage's whole graph
 (`nodes` and `edges`, a column per hop on the longest chain, so every edge points right), and the

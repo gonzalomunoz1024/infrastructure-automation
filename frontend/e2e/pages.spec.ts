@@ -150,6 +150,29 @@ test.describe('jobs', () => {
     await expect(confirm).toBeHidden()
     expect(api.callsTo('POST', '/jobs/job-7f3a2c91:abort')).toHaveLength(0)
   })
+
+  test('cancelling says nothing is rolled back, points a paused run at Abort, then posts the cancel', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /jobs/{id}': JOB,
+      'GET /jobs/{id}/events': sse([]),
+      'GET /workflows': WORKFLOWS,
+      'POST /jobs/{id}:cancel': reply(202, { id: JOB.id, status: 'cancelled' }),
+    })
+    await page.goto('/#/jobs/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Cancel this job?' })
+    await expect(dialog).toContainText('Restart web-1042 stops: no further step starts')
+    await expect(dialog).toContainText('Nothing is rolled back: what the finished steps changed stays changed.')
+    await expect(dialog).toContainText('To roll them back instead, choose Abort for restart under Needs attention.')
+    await expect(dialog).not.toContainText('compensated')
+    await dialog.getByRole('button', { name: 'Keep running' }).click()
+    await expect(dialog).toBeHidden()
+    expect(api.callsTo('POST', '/jobs/job-7f3a2c91:cancel')).toHaveLength(0)
+
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Cancel this job?' }).getByRole('button', { name: 'Cancel job' }).click()
+    await expect.poll(() => api.callsTo('POST', '/jobs/job-7f3a2c91:cancel').length).toBe(1)
+  })
 })
 
 test.describe('approvals', () => {

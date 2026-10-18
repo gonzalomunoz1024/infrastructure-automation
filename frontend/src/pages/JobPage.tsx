@@ -21,6 +21,18 @@ type Tab = 'steps' | 'batch' | 'replay' | 'activity'
 
 const STEP_DOT: Record<JobStepStatus, DotKind> = { pending: 'neutral', running: 'healthy', waiting: 'warning', succeeded: 'healthy', failed: 'critical', skipped: 'neutral', compensated: 'warning' }
 
+/**
+ * What a cancel does, for its confirm dialog. Both engines stop the job without compensating:
+ * no further step starts, a wait ends at once, a playbook, plan or worker call in progress is
+ * stopped, and what the finished steps changed stays changed. Only Abort, on a run a failed step
+ * paused, runs the compensation steps; a paused run that offers it says so.
+ */
+export function cancelMessage(job: { title: string; attention?: { step: string; options: readonly string[] } }): string {
+  const stops = `${job.title} stops: no further step starts, a wait ends at once, and a playbook, plan or worker call in progress is stopped. Nothing is rolled back: what the finished steps changed stays changed.`
+  if (job.attention?.options.includes('abort')) return `${stops} To roll them back instead, choose Abort for ${job.attention.step} under Needs attention.`
+  return `${stops} Only Abort, offered when a failed step pauses the run, rolls back.`
+}
+
 /** One line for a live event, from the fields the backend puts in `data`. */
 function eventLine(ev: JobEvent): string {
   const d = ev.data ?? {}
@@ -288,7 +300,7 @@ export default function JobPage({ route }: PageProps) {
           title="Cancel this job?"
           tone="danger"
           icon="stop"
-          message={`${data.title} stops after the current step; steps that already changed something are compensated where the workflow says so.`}
+          message={cancelMessage(data)}
           confirmLabel="Cancel job"
           cancelLabel="Keep running"
           onConfirm={async () => {
