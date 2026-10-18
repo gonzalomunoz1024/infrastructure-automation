@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -33,12 +34,20 @@ public final class WorkflowImports {
     private WorkflowImports() {
     }
 
+    /** {@link #build(String, String, List, Collection, Collection, Collection)} when no published workflow has an MCP tool. */
+    public static ImportedWorkflow build(String source, String ref, List<ProviderDefinition> providers, Collection<String> resourceTypes, Collection<String> existing) {
+        return build(source, ref, providers, resourceTypes, existing, List.of());
+    }
+
     /**
      * @param providers     every registered provider
      * @param resourceTypes the registry's resource type names
      * @param existing      the names of workflows that already exist (for a rename note)
+     * @param tools         the MCP tools the published workflows have ({@code McpTools.toolNames}), which the draft must not take
      */
-    public static ImportedWorkflow build(String source, String ref, List<ProviderDefinition> providers, Collection<String> resourceTypes, Collection<String> existing) {
+    public static ImportedWorkflow build(String source, String ref, List<ProviderDefinition> providers, Collection<String> resourceTypes, Collection<String> existing,
+            Collection<String> tools) {
+        Taken taken = new Taken(existing == null ? List.of() : existing, tools == null ? List.of() : tools);
         if (source == null || !SOURCES.contains(source)) {
             throw new IllegalArgumentException("source is one of " + SOURCES.stream().sorted().toList());
         }
@@ -46,16 +55,16 @@ public final class WorkflowImports {
             throw new IllegalArgumentException("ref is required");
         }
         return switch (source) {
-            case "idp" -> idp(ref.trim(), providers, resourceTypes, existing);
-            case "ansible" -> ansible(ref.trim(), providers, existing);
-            case "terraform" -> terraform(ref.trim(), providers, existing);
-            default -> openapi(ref.trim(), providers, resourceTypes, existing);
+            case "idp" -> idp(ref.trim(), providers, resourceTypes, taken);
+            case "ansible" -> ansible(ref.trim(), providers, taken);
+            case "terraform" -> terraform(ref.trim(), providers, taken);
+            default -> openapi(ref.trim(), providers, resourceTypes, taken);
         };
     }
 
     // ---------------------------------------------------------------- idp
 
-    static ImportedWorkflow idp(String tile, List<ProviderDefinition> providers, Collection<String> resourceTypes, Collection<String> existing) {
+    static ImportedWorkflow idp(String tile, List<ProviderDefinition> providers, Collection<String> resourceTypes, Taken taken) {
         List<ProviderDefinition> idps = providers.stream().filter(p -> p.type() == ProviderType.IDP).toList();
         ProviderDefinition p = idps.stream().filter(d -> d.action(tile).isPresent()).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("No IDP tile '" + tile + "'; known tiles: "
@@ -64,12 +73,12 @@ public final class WorkflowImports {
         List<String> notes = new ArrayList<>();
         String slug = Ids.slug(tile);
         String noun = slug.endsWith("-request") ? slug.substring(0, slug.length() - "-request".length()) : slug;
-        Naming naming = free(slug, "from-" + p.name(), "/api/v1/" + noun + "s", "request", existing, notes);
+        Naming naming = free(slug, "from-" + p.name(), "/api/v1/" + noun + "s", noun, "request", taken, notes);
         String name = naming.name();
         String title = a.title() == null ? tile : a.title();
         JsonNode input = a.input() == null ? emptySchema() : a.input();
 
-        Doc doc = new Doc(name, title, noun, "request", p.owner(), "Request through the IDP tile " + tile + ". The tile is a mock until the IDP tiles API is wired.", List.of("idp", "imported"))
+        Doc doc = new Doc(name, title, noun, naming.verb(), p.owner(), "Request through the IDP tile " + tile + ". The tile is a mock until the IDP tiles API is wired.", List.of("idp", "imported"))
                 .api("POST", naming.path(), input, true)
                 .mcp(title + " through the developer portal.")
                 .policy(List.of("developer", "ops"), null, null)
@@ -101,7 +110,7 @@ public final class WorkflowImports {
 
     // ---------------------------------------------------------------- ansible
 
-    static ImportedWorkflow ansible(String ref, List<ProviderDefinition> providers, Collection<String> existing) {
+    static ImportedWorkflow ansible(String ref, List<ProviderDefinition> providers, Taken taken) {
         List<String> notes = new ArrayList<>();
         String repo;
         String gitRef;
@@ -159,7 +168,7 @@ public final class WorkflowImports {
         String[] nounVerb = nounVerbOfPlaybook(ref, path);
         String noun = nounVerb[0];
         String verb = nounVerb[1];
-        Naming naming = free(Ids.slug(noun + "-" + verb), from, "/api/v1/" + noun + "s:" + Ids.slug(verb), verb, existing, notes);
+        Naming naming = free(Ids.slug(noun + "-" + verb), from, "/api/v1/" + noun + "s:" + Ids.slug(verb), noun, verb, taken, notes);
         String name = naming.name();
         String title = actionTitle != null ? actionTitle : "Run " + (path == null ? ref : path);
 
@@ -172,7 +181,7 @@ public final class WorkflowImports {
         ArrayNode required = input.has("required") && input.get("required").isArray() ? (ArrayNode) input.get("required") : input.putArray("required");
         required.add("target");
 
-        Doc doc = new Doc(name, title, noun, verb, owner, "Runs the playbook " + (path == null ? ref : path) + " on a target.", List.of("ansible", "imported"))
+        Doc doc = new Doc(name, title, noun, naming.verb(), owner, "Runs the playbook " + (path == null ? ref : path) + " on a target.", List.of("ansible", "imported"))
                 .api("POST", naming.path(), input, true)
                 .mcp(title + ".")
                 .policy(List.of("ops"), null, null)
@@ -244,7 +253,7 @@ public final class WorkflowImports {
 
     // ---------------------------------------------------------------- terraform
 
-    static ImportedWorkflow terraform(String ref, List<ProviderDefinition> providers, Collection<String> existing) {
+    static ImportedWorkflow terraform(String ref, List<ProviderDefinition> providers, Taken taken) {
         List<ProviderDefinition> tfs = providers.stream().filter(p -> p.type() == ProviderType.TERRAFORM).toList();
         ProviderDefinition p = tfs.stream().filter(d -> d.name().equals(ref)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("No terraform provider '" + ref + "'; known: " + tfs.stream().map(ProviderDefinition::name).sorted().toList()));
@@ -264,12 +273,12 @@ public final class WorkflowImports {
         }
         String credential = p.spec().auth() == null ? null : p.spec().auth().credential();
         String noun = Ids.slug(p.name());
-        Naming naming = free(noun + "-apply", "from-" + p.name(), "/api/v1/" + noun + "s:apply", "apply", existing, notes);
+        Naming naming = free(noun + "-apply", "from-" + p.name(), "/api/v1/" + noun + "s:apply", noun, "apply", taken, notes);
         String name = naming.name();
         String title = "Apply " + p.title();
         JsonNode input = vars != null && vars.isObject() ? vars : emptySchema();
 
-        Doc doc = new Doc(name, title, noun, "apply", p.owner(), "Plan, approve and apply the Terraform module of " + p.name() + ".", List.of("terraform", "imported"))
+        Doc doc = new Doc(name, title, noun, naming.verb(), p.owner(), "Plan, approve and apply the Terraform module of " + p.name() + ".", List.of("terraform", "imported"))
                 .api("POST", naming.path(), input, true)
                 .mcp(title + " after an approval of the plan.")
                 .policy(List.of("ops"), "your-approvers", "4h")
@@ -311,7 +320,7 @@ public final class WorkflowImports {
 
     // ---------------------------------------------------------------- openapi
 
-    static ImportedWorkflow openapi(String ref, List<ProviderDefinition> providers, Collection<String> resourceTypes, Collection<String> existing) {
+    static ImportedWorkflow openapi(String ref, List<ProviderDefinition> providers, Collection<String> resourceTypes, Taken taken) {
         ProviderDefinition p = providers.stream().filter(d -> d.name().equals(ref)).findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("No provider '" + ref + "'; known: " + providers.stream().map(ProviderDefinition::name).sorted().toList()));
         Action a = p.actions().stream().filter(x -> x.effect() == Effect.CREATE).findFirst()
@@ -319,13 +328,13 @@ public final class WorkflowImports {
         List<String> notes = new ArrayList<>();
         int dot = a.id().indexOf('.');
         String noun = Ids.slug(dot > 0 ? a.id().substring(0, dot) : p.name());
-        Naming naming = free("create-" + noun, "from-" + p.name(), "/api/v1/" + noun + "s", "create", existing, notes);
+        Naming naming = free("create-" + noun, "from-" + p.name(), "/api/v1/" + noun + "s", noun, "create", taken, notes);
         String name = naming.name();
         String title = a.title() == null ? "Create " + noun : a.title();
         JsonNode input = a.input() == null ? (a.vars() == null ? emptySchema() : a.vars()) : a.input();
         String type = guessType(noun, resourceTypes, notes);
 
-        Doc doc = new Doc(name, title, noun, "create", p.owner(), title + " through " + p.title() + " and register it.", List.of(p.name(), "imported"))
+        Doc doc = new Doc(name, title, noun, naming.verb(), p.owner(), title + " through " + p.title() + " and register it.", List.of(p.name(), "imported"))
                 .api("POST", naming.path(), input, true)
                 .mcp(title + ". Returns a job id; the job output has the id of what was created.")
                 .policy(List.of("developer", "ops"), null, null)
@@ -368,28 +377,49 @@ public final class WorkflowImports {
         return null;
     }
 
-    /** The draft's name and route: the natural ones, or ones of its own when a workflow already has the natural name. */
-    private record Naming(String name, String path) {
+    /** The names the draft must not take: existing workflows' names and the published workflows' MCP tools. */
+    record Taken(Collection<String> names, Collection<String> tools) {
+
+        boolean tool(String noun, String verb) {
+            String tool = toolOf(noun, verb);
+            return tools.contains(tool) || tools.contains(tool + McpTools.BATCH_SUFFIX);
+        }
+    }
+
+    /** The draft's name, route and verb: the natural ones, or ones of its own when a workflow already has the natural name or MCP tool. */
+    private record Naming(String name, String path, String verb) {
+    }
+
+    /** The MCP tool a noun and verb give, as {@link WorkflowDefinition#mcpTool()} spells it. */
+    static String toolOf(String noun, String verb) {
+        return (Ids.slug(noun) + "_" + Ids.slug(verb)).replace('-', '_');
     }
 
     /**
-     * {@code base} with {@code naturalPath} unless a workflow already has that name; then
-     * {@code base-suffix} (numbered if that is taken too) and a route of its own, since the
-     * natural one is served by the existing workflow, with a note that says so.
+     * {@code base} with {@code naturalPath} and {@code verb} unless a workflow already has that
+     * name, or a published workflow the MCP tool {@code <noun>_<verb>} (or its batch tool); then
+     * {@code base-suffix} (numbered while that is taken too), a route of its own, since the
+     * natural one is served by the existing workflow, and the verb with the same tail, so the MCP
+     * tool is its own as well (publishing refuses a taken one: {@code mcp.toolName}), with a note
+     * that says so.
      */
-    private static Naming free(String base, String suffix, String naturalPath, String verb, Collection<String> existing, List<String> notes) {
-        if (existing == null || !existing.contains(base)) {
-            return new Naming(base, naturalPath);
+    private static Naming free(String base, String suffix, String naturalPath, String noun, String verb, Taken taken, List<String> notes) {
+        boolean nameTaken = taken.names().contains(base);
+        if (!nameTaken && !taken.tool(noun, verb)) {
+            return new Naming(base, naturalPath, verb);
         }
         String candidate = Ids.slug(base + "-" + suffix);
-        for (int n = 2; existing.contains(candidate); n++) {
+        for (int n = 2; taken.names().contains(candidate) || taken.tool(noun, verb + candidate.substring(base.length())); n++) {
             candidate = Ids.slug(base + "-" + suffix + "-" + n);
         }
         String tail = candidate.substring(base.length());
         String path = naturalPath.contains(":") ? naturalPath + tail : naturalPath + ":" + Ids.slug(verb) + tail;
-        notes.add("A workflow named " + base + " already exists and answers " + naturalPath + ", so this draft is named " + candidate
-                + " and answers " + path + "; change metadata.name and api.path if you prefer others.");
-        return new Naming(candidate, path);
+        String own = Ids.slug(verb) + tail;
+        notes.add((nameTaken ? "A workflow named " + base + " already exists and answers " + naturalPath
+                        : "A published workflow already has the MCP tool " + toolOf(noun, verb))
+                + ", so this draft is named " + candidate + ", answers " + path + " and has the MCP tool " + toolOf(noun, own)
+                + "; change metadata.name, metadata.verb and api.path if you prefer others.");
+        return new Naming(candidate, path, own);
     }
 
     private static ObjectNode emptySchema() {

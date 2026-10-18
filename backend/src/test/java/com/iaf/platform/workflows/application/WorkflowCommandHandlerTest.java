@@ -1121,6 +1121,13 @@ class WorkflowCommandHandlerTest {
                     assertThat(i.notes()).isNotEmpty();
                 })
                 .verifyComplete();
+        // a draft imported next to a published workflow with the same noun and verb validates: its route and MCP tool are its own
+        for (ImportRequest request : List.of(new ImportRequest("ansible", "ops-playbooks/vm.restart"), new ImportRequest("openapi", "vsphere"))) {
+            String yaml = handler.importFrom(request).block().yaml();
+            StepVerifier.create(handler.validate(WorkflowSource.ofYaml(yaml)))
+                    .assertNext(v -> assertThat(v.problems()).as(request.source()).filteredOn(Problem::isError).isEmpty())
+                    .verifyComplete();
+        }
         StepVerifier.create(handler.importFrom(new ImportRequest("idp", "nope"))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.importFrom(new ImportRequest("svn", "x"))).expectError(IllegalArgumentException.class).verify();
     }

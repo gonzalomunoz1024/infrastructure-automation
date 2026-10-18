@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
@@ -675,8 +676,9 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         }
         return Mono.zip(providers.all().collectList(),
                         resources.types().map(ResourceTypeDefinition::name).collectList(),
-                        blocking(() -> store.all().stream().map(WorkflowRecord::name).distinct().toList()))
-                .map(t -> WorkflowImports.build(request.source(), request.ref(), t.getT1(), t.getT2(), t.getT3()))
+                        blocking(() -> store.all().stream().map(WorkflowRecord::name).distinct().toList()),
+                        blocking(() -> publishedDefinitions().stream().flatMap(d -> McpTools.toolNames(d).stream()).toList()))
+                .map(t -> WorkflowImports.build(request.source(), request.ref(), t.getT1(), t.getT2(), t.getT3(), t.getT4()))
                 .map(i -> new Imported(i.yaml(), i.notes()));
     }
 
