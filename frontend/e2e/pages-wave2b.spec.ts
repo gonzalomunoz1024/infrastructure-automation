@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { CATALOG, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, RESOURCE_TYPES, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { CATALOG, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -275,5 +275,58 @@ test.describe('the API documents itself', () => {
     const about = page.getByTestId('api-links')
     await expect(about.getByRole('link', { name: 'Swagger UI' })).toHaveAttribute('href', '/swagger-ui')
     await expect(about.getByRole('link', { name: 'openapi.json' })).toHaveAttribute('href', '/api/v1/openapi.json')
+  })
+})
+
+test.describe('provider releases', () => {
+  const routes = {
+    'GET /workflows': WORKFLOWS,
+    'GET /providers': PROVIDERS,
+    'GET /releases': (req: { query: URLSearchParams }) => (req.query.get('provider') || req.query.get('kind') === 'provider' ? [PROVIDER_RELEASE] : req.query.get('kind') === 'all' ? [...RELEASES, PROVIDER_RELEASE] : RELEASES),
+    'GET /releases/{id}': (req: { params: Record<string, string> }) => [...RELEASES, PROVIDER_RELEASE].find((r) => r.id === req.params.id) ?? reply(404, { error: 'No such release' }),
+  }
+
+  test('the releases page lists provider releases by kind and the release page judges calls', async ({ page }) => {
+    const api = await mockApi(page, routes)
+    await page.goto('/#/releases')
+    const table = page.getByRole('table', { name: 'Releases' })
+    await expect(table.getByRole('row', { name: /vm-restart/ })).toBeVisible()
+    await expect(table.getByText('provider', { exact: true })).toHaveCount(0)
+
+    await page.getByRole('radio', { name: 'Providers' }).click()
+    await expect.poll(() => api.callsTo('GET', '/releases').some((c) => c.query === '?kind=provider')).toBe(true)
+    const row = table.getByRole('row', { name: /vsphere/ })
+    await expect(row).toContainText('provider')
+    await expect(row.getByRole('link', { name: 'vsphere' })).toHaveAttribute('href', '#/providers/vsphere')
+    await expect(row).toContainText('Stage 2 of 3')
+
+    await page.getByRole('radio', { name: 'Both' }).click()
+    await expect(table.getByRole('row').filter({ hasText: /→/ })).toHaveCount(3)
+
+    await table.getByRole('row', { name: /vsphere/ }).click()
+    await expect(page).toHaveURL(/#\/releases\/rel-p1$/)
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('vsphere')
+    await expect(page.getByText('Provider release')).toBeVisible()
+    await expect(page.getByText('340 calls since the release started, dev left out')).toBeVisible()
+    const gates = page.getByRole('table', { name: 'Gates' })
+    await expect(gates.getByRole('row', { name: /Sample size/ })).toContainText('12 calls')
+    await expect(gates.getByRole('row', { name: /Sample size/ })).toContainText('at least 20 calls')
+    await expect(page.getByRole('link', { name: 'vsphere' })).toHaveAttribute('href', '#/providers/vsphere')
+    await expect(page.getByText('the calls of every environment but dev')).toBeVisible()
+    // the same controls as a workflow release
+    await expect(page.getByRole('button', { name: 'Promote' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible()
+  })
+
+  test('the provider page shows the release in flight with its stage and gates', async ({ page }) => {
+    await mockApi(page, { ...routes, 'GET /providers/{name}': PROVIDER, 'GET /providers/{name}/alerts': PROVIDER_ALERTS })
+    await page.goto('/#/providers/vsphere')
+    const card = page.getByTestId('provider-release')
+    await expect(card).toContainText('Release in flight')
+    await expect(card).toContainText('Stage 2 of 3')
+    await expect(card.getByRole('list', { name: 'Gates' }).getByRole('listitem')).toHaveCount(4)
+    await expect(card).toContainText('2/4 gates')
+    await expect(card.getByRole('link', { name: 'Follow the release' })).toHaveAttribute('href', '#/releases/rel-p1')
+    await expect(page.getByText('canary 2.2.0 at 50%')).toBeVisible()
   })
 })

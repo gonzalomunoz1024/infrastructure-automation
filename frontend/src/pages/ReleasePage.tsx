@@ -6,20 +6,21 @@ import { api, errorMessage } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
 import type { Release, ReleaseGate } from '../lib/types'
 import { ErrorState, Facts, Mono, TextLink, When, useNow } from '../components/common'
-import { gateDot, isActiveRelease, stageLabel } from './ReleasesPage'
+import { gateDot, isActiveRelease, releaseSubject, stageLabel } from './ReleasesPage'
 
 type Command = 'promote' | 'pause' | 'resume' | 'rollback'
 
+/** The same commands for both kinds; the wording says what moves: jobs for a workflow version, calls (per job) for a provider version. */
 const COMMANDS: Record<Command, { title: (r: Release) => string; message: (r: Release) => string; label: string; tone?: 'warning' | 'danger'; done: string }> = {
   promote: {
     title: (r) => `Promote ${r.to}?`,
-    message: (r) => `Every new job moves to ${r.to} now, skipping the remaining stages and their gates.`,
+    message: (r) => (r.provider ? `Every call moves to ${r.to} now and it becomes the provider's current version, skipping the remaining stages and their gates.` : `Every new job moves to ${r.to} now, skipping the remaining stages and their gates.`),
     label: 'Promote',
     done: 'Promoted',
   },
   pause: {
     title: () => 'Pause the canary?',
-    message: (r) => `Traffic stays at ${r.stagePercent}% on ${r.to}; no stage advances until someone resumes.`,
+    message: (r) => (r.provider ? `Every call uses ${r.from ?? 'the current version'} while paused; no stage advances until someone resumes.` : `Traffic stays at ${r.stagePercent}% on ${r.to}; no stage advances until someone resumes.`),
     label: 'Pause',
     tone: 'warning',
     done: 'Paused',
@@ -32,7 +33,10 @@ const COMMANDS: Record<Command, { title: (r: Release) => string; message: (r: Re
   },
   rollback: {
     title: (r) => `Roll back to ${r.from ?? 'the previous version'}?`,
-    message: (r) => `Every new job goes back to ${r.from ?? 'the previous version'}. Jobs already running on ${r.to} finish where they are.`,
+    message: (r) =>
+      r.provider
+        ? `Every call goes back to ${r.from ?? 'the current version'}, which stays the provider's current version; the candidate is kept beside it.`
+        : `Every new job goes back to ${r.from ?? 'the previous version'}. Jobs already running on ${r.to} finish where they are.`,
     label: 'Roll back',
     tone: 'danger',
     done: 'Rolled back',
@@ -53,8 +57,8 @@ export function spanOf(ms: number): string {
   return m === 0 ? `${h} h` : `${h} h ${m} min`
 }
 
-/** How a gate's figure reads: its value and threshold in the gate's own unit, and the error types as a list. */
-export function gateFigures(g: ReleaseGate): { value: ReactNode; threshold: ReactNode; detail: ReactNode } {
+/** How a gate's figure reads: its value and threshold in the gate's own unit, and the error types as a list; `unit` is what the sample counts. */
+export function gateFigures(g: ReleaseGate, unit: 'job' | 'call' = 'job'): { value: ReactNode; threshold: ReactNode; detail: ReactNode } {
   const num = (v: number | string | undefined): number | null => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
   const raw = (v: number | string | undefined) => (v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v)
   const id = g.id.toLowerCase()
@@ -99,7 +103,7 @@ export function gateFigures(g: ReleaseGate): { value: ReactNode; threshold: Reac
   if (id === 'sample' || label.includes('sample')) {
     const v = num(g.value)
     const t = num(g.threshold)
-    return { value: v === null ? dash : plural(v, 'job'), threshold: t === null ? dash : `at least ${plural(t, 'job')}`, detail: g.detail || dash }
+    return { value: v === null ? dash : plural(v, unit), threshold: t === null ? dash : `at least ${plural(t, unit)}`, detail: g.detail || dash }
   }
   return { value: raw(g.value), threshold: raw(g.threshold), detail: g.detail || dash }
 }
@@ -121,7 +125,7 @@ export default function ReleasePage({ route }: PageProps) {
     try {
       await call(id)
       invalidate('release')
-      toast.success(COMMANDS[cmd].done, data ? `${data.workflow ?? data.provider} ${data.to}` : undefined)
+      toast.success(COMMANDS[cmd].done, data ? `${releaseSubject(data).name} ${data.to}` : undefined)
     } catch (e) {
       toast.error(`Could not ${COMMANDS[cmd].label.toLowerCase()}`, errorMessage(e))
       throw e
@@ -150,6 +154,8 @@ export default function ReleasePage({ route }: PageProps) {
     )
   }
 
+  const subject = data ? releaseSubject(data) : null
+  const unit = subject?.unit ?? 'job'
   const gateColumns: TableColumn<ReleaseGate>[] = [
     {
       key: 'result',
@@ -158,9 +164,9 @@ export default function ReleasePage({ route }: PageProps) {
       render: (g) => <StatusDot kind={gateDot(g)} label={g.passed === null ? 'pending' : g.passed ? 'passed' : 'failed'} />,
     },
     { key: 'label', header: 'Gate', render: (g) => <span className="text-primary">{g.label}</span> },
-    { key: 'value', header: 'Value', width: '8rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-primary">{gateFigures(g).value}</span> },
-    { key: 'threshold', header: 'Threshold', width: '9rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-secondary">{gateFigures(g).threshold}</span> },
-    { key: 'detail', header: 'Detail', render: (g) => <span className="block min-w-56 text-secondary">{gateFigures(g).detail}</span> },
+    { key: 'value', header: 'Value', width: '8rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-primary">{gateFigures(g, unit).value}</span> },
+    { key: 'threshold', header: 'Threshold', width: '9rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-secondary">{gateFigures(g, unit).threshold}</span> },
+    { key: 'detail', header: 'Detail', render: (g) => <span className="block min-w-56 text-secondary">{gateFigures(g, unit).detail}</span> },
   ]
 
   const current = data ? (data.status === 'promoted' ? data.stages.length : data.stageIndex) : 0
@@ -170,11 +176,11 @@ export default function ReleasePage({ route }: PageProps) {
   return (
     <>
       <PageHeader
-        eyebrow="Release"
+        eyebrow={subject?.kind === 'provider' ? 'Provider release' : 'Release'}
         title={
-          data ? (
+          data && subject ? (
             <span>
-              {data.workflow ?? data.provider} <span className="font-mono text-secondary">{data.from ?? 'new'}</span> → <span className="font-mono">{data.to}</span>
+              {subject.name} <span className="font-mono text-secondary">{data.from ?? 'new'}</span> → <span className="font-mono">{data.to}</span>
             </span>
           ) : (
             <span className="font-mono">{id}</span>
@@ -187,6 +193,11 @@ export default function ReleasePage({ route }: PageProps) {
               <Tag size="sm" outline>
                 {data.strategy}
               </Tag>
+              {subject?.kind === 'provider' && (
+                <Tag size="sm" outline title="A provider version: the gates are judged over its calls, every environment but dev">
+                  provider
+                </Tag>
+              )}
               <span>{stageLabel(data)}</span>
               {active && (
                 <Tag size="sm" tone="accent" dot pulse title="Refreshing every 5 seconds">
@@ -243,10 +254,10 @@ export default function ReleasePage({ route }: PageProps) {
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 space-y-5">
-              <Card title="Traffic" subtitle={totalJobs ? `${totalJobs} jobs since the release started` : 'No jobs since the release started'}>
+              <Card title="Traffic" subtitle={totalJobs ? `${plural(totalJobs, unit)} since the release started${unit === 'call' ? ', dev left out' : ''}` : `No ${unit}s since the release started`}>
                 <div className="space-y-4">
-                  <ProgressBar value={share} tone={data.status === 'rolled-back' ? 'critical' : data.status === 'paused' ? 'warning' : 'accent'} label={`${data.to} (candidate) · ${data.jobs.candidate} jobs`} showLabel showValue />
-                  <ProgressBar value={100 - share} label={`${data.from ?? 'previous'} (current) · ${data.jobs.current} jobs`} showLabel showValue />
+                  <ProgressBar value={share} tone={data.status === 'rolled-back' ? 'critical' : data.status === 'paused' ? 'warning' : 'accent'} label={`${data.to} (candidate) · ${plural(data.jobs.candidate, unit)}`} showLabel showValue />
+                  <ProgressBar value={100 - share} label={`${data.from ?? 'previous'} (current) · ${plural(data.jobs.current, unit)}`} showLabel showValue />
                 </div>
               </Card>
 
@@ -258,14 +269,18 @@ export default function ReleasePage({ route }: PageProps) {
                 <Facts
                   columns={2}
                   items={[
-                    { label: 'Workflow', value: <TextLink to={pathFor('workflow', { name: data.workflow ?? '' })} mono>{data.workflow}</TextLink>, wide: true },
+                    { label: subject?.kind === 'provider' ? 'Provider' : 'Workflow', value: <TextLink to={subject?.href ?? ''} mono>{subject?.name}</TextLink>, wide: true },
                     { label: 'From', value: <Mono className="text-primary">{data.from ?? '—'}</Mono> },
                     { label: 'To', value: <Mono className="text-primary">{data.to}</Mono> },
                     { label: 'Started', value: <When at={data.startedAt} now={now} /> },
                     { label: 'Ended', value: data.endedAt ? <When at={data.endedAt} now={now} /> : <span className="text-tertiary">in flight</span> },
                     { label: 'In this stage', value: active ? <span className="tabular-nums">{duration(now - Date.parse(data.stageStartedAt))}</span> : '—' },
-                    { label: 'Versions', value: <TextLink to={pathFor('workflow-versions', { name: data.workflow ?? '' })}>all versions</TextLink> },
-                    { label: 'Jobs', value: <TextLink to={pathFor('jobs', {}, { workflow: data.workflow ?? '' })}>jobs of {data.workflow}</TextLink>, wide: true },
+                    ...(subject?.kind === 'provider'
+                      ? [{ label: 'Judged on', value: 'the calls of every environment but dev; one version per job', wide: true }]
+                      : [
+                          { label: 'Versions', value: <TextLink to={pathFor('workflow-versions', { name: subject?.name ?? '' })}>all versions</TextLink> },
+                          { label: 'Jobs', value: <TextLink to={pathFor('jobs', {}, { workflow: subject?.name ?? '' })}>jobs of {subject?.name}</TextLink>, wide: true },
+                        ]),
                   ]}
                 />
               </Card>

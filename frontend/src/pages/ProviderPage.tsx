@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
-import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
+import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
-import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, TryResult } from '../lib/types'
+import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
 import { HealthBand } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { EffectTag, ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
+import { currentRelease, gateDot, isActiveRelease, stageLabel } from './ReleasesPage'
 
 type Tab = 'overview' | 'actions' | 'alerts' | 'changes' | 'yaml'
 
@@ -26,7 +27,9 @@ export default function ProviderPage({ route }: PageProps) {
   const [openAction, setOpenAction] = useState<ActionInfo | null>(null)
   const provider = useQuery(['provider', name], () => api.provider(name), { refetchInterval: 60_000 })
   const alerts = useQuery(['provider-alerts', name], () => api.providerAlerts(name), { enabled: !!provider.data })
+  const releases = useQuery(['releases', 'provider', name], () => api.releases({ provider: name }), { enabled: !!provider.data, refetchInterval: 30_000 })
   const data = provider.data
+  const release = currentRelease(releases.data)
 
   const daily = useMemo(() => (data?.daily ?? []).slice().sort((a, b) => a.date.localeCompare(b.date)), [data])
   // each point is a whole 24-hour window, labelled by the day it starts
@@ -138,6 +141,13 @@ export default function ProviderPage({ route }: PageProps) {
               </Tag>
               <span>{data.owner}</span>
               <Mono>{data.version}</Mono>
+              {release && isActiveRelease(release) && (
+                <TextLink to={pathFor('release', { id: release.id })}>
+                  <Tag size="sm" tone="accent" dot pulse={release.status === 'canary'} title="A new version is rolling out through a canary">
+                    {release.status === 'paused' ? 'canary paused' : 'canary'} {release.to} at {release.stagePercent}%
+                  </Tag>
+                </TextLink>
+              )}
               {data.environments.map((e) => (
                 <Tag key={e} size="sm" mono outline>
                   {e}
@@ -244,6 +254,7 @@ export default function ProviderPage({ route }: PageProps) {
           </div>
 
           <aside className="min-w-0 space-y-4">
+            {release && <ReleaseCard release={release} />}
             <Card title="Health">
               <HealthBand health={data.health} showReasons />
               {data.health.errorTrend?.length > 1 && (
@@ -361,6 +372,42 @@ export default function ProviderPage({ route }: PageProps) {
         />
       )}
     </>
+  )
+}
+
+/** The provider's release: the version rolling out (or the last one), its stage, and the gates judged over its calls. */
+function ReleaseCard({ release }: { release: Release }) {
+  const active = isActiveRelease(release)
+  const passed = release.gates.filter((g) => g.passed).length
+  return (
+    <Card title={active ? 'Release in flight' : 'Last release'} actions={<StateTag status={release.status} size="sm" />} data-testid="provider-release">
+      <div className="space-y-3">
+        <p className="text-sm text-primary">
+          <Mono className="text-secondary">{release.from ?? 'new'}</Mono> → <Mono className="text-primary">{release.to}</Mono>
+          <span className="text-secondary"> · {stageLabel(release)}</span>
+        </p>
+        <ProgressBar size="sm" value={release.status === 'promoted' ? 100 : release.status === 'rolled-back' ? 0 : release.stagePercent} tone={release.status === 'rolled-back' ? 'critical' : release.status === 'paused' ? 'warning' : 'accent'} label={`${release.stagePercent}% of calls on ${release.to}`} showLabel showValue />
+        {release.gates.length > 0 && (
+          <ul className="space-y-1" aria-label="Gates">
+            {release.gates.map((g) => (
+              <li key={g.id} className="flex items-center gap-2 text-caption">
+                <StatusDot kind={gateDot(g)} />
+                <span className="min-w-0 flex-1 truncate text-primary" title={g.detail}>
+                  {g.label}
+                </span>
+                <span className="text-tertiary">{g.passed === null ? 'pending' : g.passed ? 'passed' : 'failed'}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center justify-between gap-2 text-caption">
+          <span className="text-tertiary">
+            {passed}/{release.gates.length} gates · judged over calls
+          </span>
+          <TextLink to={pathFor('release', { id: release.id })}>{active ? 'Follow the release' : 'Open the release'}</TextLink>
+        </div>
+      </div>
+    </Card>
   )
 }
 
