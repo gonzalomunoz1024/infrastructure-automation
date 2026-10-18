@@ -337,7 +337,11 @@ export const APPROVALS: Approval[] = [
   },
 ]
 
-const daily = Array.from({ length: 14 }, (_, i) => ({ date: day(13 - i), calls: 900 + ((i * 137) % 400), successRate: 99.1 + ((i * 7) % 8) / 10, p50Ms: 180 + ((i * 13) % 40), p95Ms: 640 + ((i * 29) % 160) }))
+const daily = Array.from({ length: 14 }, (_, i) => {
+  const calls = 900 + ((i * 137) % 400)
+  const successRate = 99.1 + ((i * 7) % 8) / 10
+  return { date: day(13 - i), calls, errors: Math.round((calls * (100 - successRate)) / 100), successRate, p50Ms: 180 + ((i * 13) % 40), p95Ms: 640 + ((i * 29) % 160) }
+})
 
 export const PROVIDERS: ProviderSummary[] = [
   {
@@ -388,7 +392,7 @@ export const PROVIDER: ProviderDetail = {
   ],
 }
 
-export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91' }]
+export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), provider: 'vsphere', action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91', channel: '#compute-alerts' }]
 
 /** Two service accounts: a CI one with its scopes, and an older one the API reports no scopes for. */
 export const SERVICE_ACCOUNTS: ServiceAccount[] = [

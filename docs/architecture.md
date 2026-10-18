@@ -570,7 +570,9 @@ its address (`?tab=`): the list, with p50 beside p95; each provider's performanc
 with the 14-day error trend (`health.errorTrend`, a count a day); and the provider events of the
 platform audit stream (`GET /audit/platform?aggregate=provider`: the stream filters by aggregate,
 not by event type). The backend lists to someone outside the admins only their teams' providers
-and the ones no team owns, which an empty list says. A provider's actions table shows each
+and the ones no team owns, which an empty list says; a provider the caller may not see answers
+404 like one that does not exist, and its page says both at once instead of an error. The calls
+chart says how many calls failed in the 14 days (`daily[].errors`). A provider's actions table shows each
 action's band over the last 24 hours (`perAction[].band`, with the provider's `HealthBand`),
 judged against the action's own SLO when it has one, which the table shows, else the provider's,
 and colours the success rate and the p95 against that SLO.

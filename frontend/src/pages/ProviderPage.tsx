@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, isApiError } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
 import type { ActionInfo, ChangeRequest, OverrideRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
 import { useChangeRequestToast } from '../components/ChangeRequestToast'
@@ -19,7 +19,22 @@ const severityDot = (s: string): DotKind => (/crit|error|fail|page/i.test(s) ? '
 const rateDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: Math.round(v * 10) / 10, suffix: ' pts', label: 'vs the day before' })
 const msDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: v, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' })
 const approvalText = (a: ActionInfo['approval']): string => (a === true || a === 'required' ? 'required' : a === false || !a ? 'no' : String(a))
+const failedText = (n: number): string => (n === 0 ? 'None failed in the 14 days' : `${formatNumber(n)} failed in the 14 days`)
 const BAND_RANK: Record<string, number> = { failing: 3, degraded: 2, healthy: 1, unknown: 0 }
+
+/** A 404 for a provider: none of that name, or one the caller may not see; the API does not say which. */
+export function ProviderNotFound({ name }: { name: string }) {
+  return (
+    <Card flush>
+      <EmptyState
+        icon="search"
+        title={`No provider ${name} you can see`}
+        message="There is none of that name, or a team you are not in owns it. The providers list shows the ones you can see."
+        action={<Button onClick={() => navigate(pathFor('providers'))}>All providers</Button>}
+      />
+    </Card>
+  )
+}
 
 /** An action's band against the SLO it is judged by, and that SLO when it is the action's own. */
 export function ActionBand({ action, stats }: { action: Pick<ActionInfo, 'slo'>; stats?: Pick<ProviderActionStats, 'band'> }) {
@@ -62,7 +77,7 @@ export default function ProviderPage({ route }: PageProps) {
     return (
       <>
         <PageHeader eyebrow="Provider" title={name} back={{ href: `#${pathFor('providers')}`, label: 'Providers' }} />
-        <ErrorState error={provider.error} title="Could not load the provider" onRetry={() => void provider.refetch()} />
+        {isApiError(provider.error) && provider.error.status === 404 ? <ProviderNotFound name={name} /> : <ErrorState error={provider.error} title="Could not load the provider" onRetry={() => void provider.refetch()} />}
       </>
     )
   }
@@ -253,7 +268,7 @@ export default function ProviderPage({ route }: PageProps) {
               </Card>
             ) : (
               <>
-                <Card title="Calls per day">
+                <Card title="Calls per day" subtitle={failedText(daily.reduce((n, d) => n + (d.errors ?? 0), 0))}>
                   <LineChart values={daily.map((d) => d.calls)} labels={labels} area height={160} yFormat={(v) => formatNumber(v, { compact: true })} ariaLabel="Calls per day" />
                 </Card>
                 <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">

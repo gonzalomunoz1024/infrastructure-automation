@@ -219,6 +219,8 @@ test.describe('providers', () => {
     await expect(page).toHaveURL(/#\/providers\/vsphere$/)
 
     for (const name of ['Calls per day', 'Success rate per day', 'Latency per day', 'Calls by action']) await expect(page.getByRole('img', { name })).toBeVisible()
+    // each 24-hour window says how many of its calls failed
+    await expect(page.getByText(`${PROVIDER.daily.reduce((n, d) => n + d.errors, 0)} failed in the 14 days`)).toBeVisible()
     await expect(page.getByText('#compute-alerts')).toBeVisible()
 
     await page.getByRole('tab', { name: /Actions/ }).click()
@@ -280,6 +282,16 @@ test.describe('providers', () => {
     // a reload keeps the view
     await page.reload()
     await expect(page.getByRole('tablist', { name: 'Providers views' }).getByRole('tab', { name: /Audit/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('a provider the caller may not see is as missing as one that does not exist', async ({ page }) => {
+    await mockApi(page, { 'GET /providers/{name}': reply(404, { error: 'Provider not found: dns-records' }), 'GET /providers': PROVIDERS })
+    await page.goto('/#/providers/dns-records')
+    await expect(page.getByText('No provider dns-records you can see')).toBeVisible()
+    await expect(page.getByText('There is none of that name, or a team you are not in owns it.')).toBeVisible()
+    await expect(page.getByText('Could not load the provider')).toHaveCount(0)
+    await page.getByRole('button', { name: 'All providers' }).click()
+    await expect(page).toHaveURL(/#\/providers$/)
   })
 
   test('someone outside every provider team is told why the list is empty', async ({ page }) => {

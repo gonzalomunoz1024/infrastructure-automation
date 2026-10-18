@@ -411,8 +411,8 @@ export type ActionInfo = {
   /** the action's own SLO, which its calls are judged against; absent (null) when it takes the provider's */
   slo?: SloTarget | null
 }
-/** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
-export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
+/** One 24-hour window, oldest first; `date` is when it starts and `errors` how many of its calls failed. A window without calls has no rates. */
+export type ProviderDaily = { date: string; calls: number; errors: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
 /** One action's calls of the last 14 days. */
 export type ProviderActionStats = {
   action: string
@@ -438,7 +438,8 @@ export type ProviderDetail = ProviderSummary & {
   perAction: ProviderActionStats[]
   changeRequests: ChangeRequest[]
 }
-export type ProviderAlert = { id: string; at: string; action: string; message: string; severity: string; jobId?: string }
+/** `action` and `jobId` when the alert is about one call; `channel` is the provider's alert channel, where it is meant to go. */
+export type ProviderAlert = { id: string; at: string; provider?: string; action?: string; message: string; severity: string; jobId?: string; channel?: string }
 export type ProviderAuth = { type: 'bearer' | 'basic' | 'header' | 'none'; credential?: string; header?: string; where?: string }
 export type SpecOperation = {
   operationId: string
