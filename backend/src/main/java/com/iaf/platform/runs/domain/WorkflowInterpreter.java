@@ -406,7 +406,7 @@ public final class WorkflowInterpreter {
         return switch (s.type()) {
             case PROVIDER -> executor.callProvider(ctx, s, text(with, "provider"), text(with, "action"), with.path("input"), timeout);
             case HTTP, ANSIBLE, TERRAFORM, IDP, ACTIVITY -> executor.runAutomation(ctx, s, with, timeout);
-            case RUN -> executor.runChild(ctx, s, text(with, "workflow"), text(with, "version"), with.path("input"), timeout);
+            case RUN -> runChild(s, with, timeout);
             case APPROVAL -> approval(s, with, attempt);
             case WAIT -> wait(s, with, previous, timeout);
             case SET -> {
@@ -423,6 +423,19 @@ public final class WorkflowInterpreter {
             case SCRIPT -> executor.script(ctx, s, text(with, "language"), text(with, "code"), with.get("input"), timeout);
             default -> throw new StepFailure(s.id(), "unsupported", "Step type " + s.type().key() + " is not a leaf step", false, true);
         };
+    }
+
+    /** A child job; with {@code onFailure: continue} its failure becomes the step's output and the parent goes on. */
+    private JsonNode runChild(Step s, JsonNode with, Duration timeout) {
+        try {
+            return executor.runChild(ctx, s, text(with, "workflow"), text(with, "version"), with.path("input"), timeout);
+        } catch (ChildFailure f) {
+            if (!ChildFailure.continues(text(with, "onFailure"))) {
+                throw f;
+            }
+            executor.log(ctx, s.id() + ": child " + f.jobId() + " " + f.status().json() + "; continuing (onFailure: continue)");
+            return f.toOutput();
+        }
     }
 
     private JsonNode approval(Step s, JsonNode with, int attempt) {

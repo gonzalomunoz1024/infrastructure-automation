@@ -27,7 +27,9 @@ import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
+import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.Durations;
+import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
 import com.iaf.platform.runs.domain.JobContext;
@@ -75,7 +77,7 @@ public class PortStepExecutor implements StepExecutor {
 
         boolean cancelled(JobContext ctx);
 
-        /** Run a child job to its end and return {@code { jobId, status, outputs }}; a failed child is a {@link StepFailure}. */
+        /** Run a child job to its end and return {@code { jobId, status, outputs }}; a failed child is a {@link ChildFailure}. */
         JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout);
 
         List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches);
@@ -210,7 +212,9 @@ public class PortStepExecutor implements StepExecutor {
         WorkflowDefinition child = block(ports.workflows().resolve(workflow, range), LOOKUP_TIMEOUT, step)
                 .map(WorkflowRecord::definition)
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "No published version of '" + workflow + "' satisfies " + range, false));
-        return engine.runChild(ctx, step, child, input == null || input.isMissingNode() ? F.objectNode() : input, timeout);
+        // the child gets its schema's defaults, as a start through its own route would
+        JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? F.objectNode() : input);
+        return engine.runChild(ctx, step, child, in, timeout);
     }
 
     // ---------------------------------------------------------------- people
@@ -429,8 +433,7 @@ public class PortStepExecutor implements StepExecutor {
             PortStepExecutor childExecutor = new PortStepExecutor(ports, null, childJob, true, recorder, prefix + step.id() + "/");
             var outcome = new WorkflowInterpreter(child, childExecutor, cctx).run();
             if (!outcome.succeeded()) {
-                throw new StepFailure(step.id(), outcome.errorClass() == null ? "child_failed" : outcome.errorClass(),
-                        "Child " + child.name() + " " + outcome.status().json() + (outcome.message() == null ? "" : ": " + outcome.message()), false);
+                throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
             }
             ObjectNode out = F.objectNode();
             out.put("jobId", childJob.id());

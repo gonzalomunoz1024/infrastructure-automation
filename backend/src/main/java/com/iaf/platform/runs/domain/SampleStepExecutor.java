@@ -230,8 +230,7 @@ public class SampleStepExecutor implements StepExecutor {
         Outcome o = new WorkflowInterpreter(child, this, cctx).run();
         childRuns.add(new ChildRun(childId, ctx.jobId(), child, input, o, started, now()));
         if (!o.succeeded()) {
-            throw new StepFailure(step.id(), o.errorClass() == null ? "child_failed" : o.errorClass(),
-                    "Child job " + childId + " (" + workflow + ") " + o.status().json() + (o.message() == null ? "" : ": " + o.message()), false);
+            throw ChildFailure.of(step.id(), childId, workflow, o);
         }
         return childResult(childId, o);
     }

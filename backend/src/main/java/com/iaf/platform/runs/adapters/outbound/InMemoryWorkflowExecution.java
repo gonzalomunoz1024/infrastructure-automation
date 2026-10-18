@@ -37,6 +37,7 @@ import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
+import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.domain.Durations;
@@ -340,16 +341,11 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
                 parent.children.remove(childJob.id());
             }
         }
-        if (outcome.status() == JobStatus.CANCELLED) {
-            if (parent != null && parent.cancelled.get()) {
-                throw new JobCancelled(ctx.jobId());
-            }
-            throw new StepFailure(step.id(), "cancelled", "Child job " + childJob.id() + " (" + child.name() + ") was cancelled", false, true);
+        if (outcome.status() == JobStatus.CANCELLED && parent != null && parent.cancelled.get()) {
+            throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw new StepFailure(step.id(), outcome.errorClass() == null ? "child_failed" : outcome.errorClass(),
-                    "Child job " + childJob.id() + " (" + child.name() + ") " + outcome.status().json()
-                            + (outcome.message() == null ? "" : ": " + outcome.message()), false);
+            throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
         }
         ObjectNode out = F.objectNode();
         out.put("jobId", childJob.id());

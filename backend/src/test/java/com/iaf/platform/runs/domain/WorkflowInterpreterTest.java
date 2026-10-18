@@ -212,6 +212,36 @@ class WorkflowInterpreterTest {
         assertThat(ids(ex, "job_test", StepStatus.FAILED)).contains("database", "build");
     }
 
+    @Test
+    void aRunStepWithOnFailureContinueRecordsTheChildFailureAndGoesOn() {
+        String yaml = SampleContent.yaml("web-environment").replace("""
+                                    workflow: create-database
+                                    version: "^1"
+                """, """
+                                    workflow: create-database
+                                    version: "^1"
+                                    onFailure: continue
+                """);
+        assertThat(yaml).contains("onFailure: continue");
+        WorkflowDefinition d = com.iaf.platform.workflows.domain.WorkflowYaml.parse(yaml);
+        SampleStepExecutor ex = SampleContent.executor();
+        ex.failAt("waitReady", "timeout", "cluster never became healthy", false);
+        ex.attender(a -> Optional.of(AttentionDecision.abort("ana")));
+
+        Outcome o = new WorkflowInterpreter(d, ex, context(d, Map.of("name", "shop", "environment", "dev", "image", "img-1", "vmCount", 1))).run();
+
+        StepEvent database = last(ex, "job_test", "database", StepStatus.SUCCEEDED);
+        assertThat(database.output().path("status").asText()).isEqualTo("failed");
+        assertThat(database.output().path("error").path("step").asText()).as("the child's step that failed").isEqualTo("waitReady");
+        assertThat(database.output().path("error").path("class").asText()).isEqualTo("timeout");
+        assertThat(database.output().path("jobId").asText()).isNotBlank();
+        assertThat(ids(ex, "job_test", StepStatus.FAILED)).doesNotContain("database", "build");
+        assertThat(ex.logs()).anyMatch(l -> l.contains("continuing (onFailure: continue)"));
+        // the parent went on past the fork: what fails now is a later step that needs the database
+        assertThat(ids(ex, "job_test", StepStatus.SUCCEEDED)).contains("build", "loadBalancer");
+        assertThat(o.failedStep()).isNotEqualTo("database");
+    }
+
     // ---------------------------------------------------------------- patch-cve
 
     @Test
