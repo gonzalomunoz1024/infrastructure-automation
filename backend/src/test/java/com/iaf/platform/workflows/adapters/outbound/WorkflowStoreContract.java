@@ -21,8 +21,8 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 /**
- * What every {@link WorkflowStorePort} does, run against the in-memory store and the JDBC one
- * (H2, and PostgreSQL when {@code PLATFORM_TEST_POSTGRES_URL} is set).
+ * What every {@link WorkflowStorePort} does, run against the in-memory store and the MongoDB one
+ * (when {@code PLATFORM_TEST_MONGO_URI} is set).
  */
 abstract class WorkflowStoreContract {
 

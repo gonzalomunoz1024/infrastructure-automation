@@ -45,7 +45,7 @@ import reactor.core.publisher.Sinks;
 
 /**
  * The read model of the runs slice: every job, approval and per-job event history, kept in the
- * {@link ProjectionStore} (in memory, or in PostgreSQL with the {@code postgres} profile) and
+ * {@link ProjectionStore} (in memory, or in MongoDB with the {@code mongo} profile) and
  * updated from the {@code job.*} and {@code batch.*} events. Command handlers
  * {@link #put} a job (with its definition snapshot and the requester's identity, which no event
  * carries) before publishing {@code job.started}; everything after that is folded from events,

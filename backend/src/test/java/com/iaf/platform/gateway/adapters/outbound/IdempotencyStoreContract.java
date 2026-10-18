@@ -14,8 +14,8 @@ import com.iaf.platform.gateway.domain.StoredAnswer;
 import com.iaf.platform.gateway.ports.outbound.IdempotencyStore;
 
 /**
- * What every {@link IdempotencyStore} does, run against the in-memory store and the JDBC one
- * (H2, and PostgreSQL when {@code PLATFORM_TEST_POSTGRES_URL} is set).
+ * What every {@link IdempotencyStore} does, run against the in-memory store and the MongoDB one
+ * (when {@code PLATFORM_TEST_MONGO_URI} names a server).
  */
 abstract class IdempotencyStoreContract {
 

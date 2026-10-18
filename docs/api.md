@@ -235,7 +235,7 @@ burst of 60, and per-team overrides. A batch takes one token whatever its size. 
 (MCP: a JSON-RPC error with `data.tooManyRequests` and `data.retryAfter`). Jobs the platform
 starts itself (triggers, `run` steps, reruns) are not charged, and neither is a request that is
 rejected (400, 403, 404): the token is taken once the request is validated and allowed, or given
-back when the handler refuses it. With the `postgres` profile the keys and the buckets are in the
+back when the handler refuses it. With the `mongo` profile the keys and the buckets are in the
 database and shared by every API replica; without it they live in each instance's memory.
 
 Generated paths may live under any API version (`/api/v1/`, `/api/v2/`, …); the platform's

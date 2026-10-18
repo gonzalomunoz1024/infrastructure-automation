@@ -3,7 +3,7 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.temporal-postgres.yml up
 #
-# Everything else in docker-compose.yml stays as it is; the platform's own PostgreSQL is untouched.
+# Everything else in docker-compose.yml stays as it is; the platform's own MongoDB is untouched.
 services:
   temporal:
     image: temporalio/auto-setup:1.29.1

@@ -40,12 +40,12 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s:%s" $repo (toString (default .ctx.Chart.AppVersion .image.tag)) -}}
 {{- end -}}
 
-{{/* SPRING_PROFILES_ACTIVE: backend.profiles, plus the profiles the postgres and audit values turn on */}}
+{{/* SPRING_PROFILES_ACTIVE: backend.profiles, plus the profiles the mongo and audit values turn on */}}
 {{- define "platform.profiles" -}}
 {{- $profiles := .Values.backend.profiles | default list -}}
 {{- $implied := list -}}
-{{- if .Values.postgres.enabled -}}
-{{- $implied = append $implied "postgres" -}}
+{{- if .Values.mongo.enabled -}}
+{{- $implied = append $implied "mongo" -}}
 {{- end -}}
 {{- if .Values.audit.siem.enabled -}}
 {{- $implied = append $implied "siem" -}}
@@ -234,15 +234,15 @@ spec:
         {{- end }}
         - name: JAVA_TOOL_OPTIONS
           value: {{ $v.backend.javaToolOptions | quote }}
-        {{- if $v.postgres.enabled }}
-        - name: SPRING_DATASOURCE_URL
-          value: {{ $v.postgres.url | quote }}
-        - name: SPRING_DATASOURCE_USERNAME
-          value: {{ $v.postgres.username | quote }}
-        {{- if $v.postgres.passwordSecret.name }}
-        - name: SPRING_DATASOURCE_PASSWORD
+        {{- if $v.mongo.enabled }}
+        - name: SPRING_DATA_MONGODB_URI
+        {{- if $v.mongo.uriSecret.name }}
           valueFrom:
-            secretKeyRef: { name: {{ $v.postgres.passwordSecret.name | quote }}, key: {{ $v.postgres.passwordSecret.key | quote }} }
+            secretKeyRef: { name: {{ $v.mongo.uriSecret.name | quote }}, key: {{ $v.mongo.uriSecret.key | quote }} }
+        {{- else if regexMatch "^mongodb(\\+srv)?://[^/@]*:[^/@]*@" (toString $v.mongo.uri) }}
+        {{- fail "mongo.uri carries a password: put the connection string in a Secret and name it in mongo.uriSecret" }}
+        {{- else }}
+          value: {{ $v.mongo.uri | quote }}
         {{- end }}
         {{- end }}
         {{- with include "platform.secretEnv" (dict "env" "PLATFORM_AUDIT_SIGNINGKEY" "secret" $v.audit.signingKeySecret) }}

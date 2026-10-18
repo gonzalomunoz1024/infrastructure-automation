@@ -389,7 +389,7 @@ class AssistantCommandHandlerTest {
         assertThat(as(h.send(id, "y"))).hasSize(1);
     }
 
-    /** A store that notes every call made on a non-blocking thread, where the JDBC store would stall the event loop. */
+    /** A store that notes every call made on a non-blocking thread, where the MongoDB store would stall the event loop. */
     static final class ThreadCheckingStore implements com.iaf.platform.assistant.ports.outbound.SessionStore {
         final InMemorySessionStore inner = new InMemorySessionStore();
         final List<String> offenders = new CopyOnWriteArrayList<>();

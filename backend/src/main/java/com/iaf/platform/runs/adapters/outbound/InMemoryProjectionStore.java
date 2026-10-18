@@ -17,8 +17,8 @@ import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobEvent;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 
-/** The demo runs index: jobs, approvals and event histories in maps, gone with the process. */
-@Profile("!postgres")
+/** The runs index without the {@code mongo} profile: jobs, approvals and event histories in maps, gone with the process. */
+@Profile("!mongo")
 @Component
 public class InMemoryProjectionStore implements ProjectionStore {
 

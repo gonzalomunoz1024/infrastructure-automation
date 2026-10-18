@@ -1,5 +1,5 @@
 # The platform on Kubernetes: the API, the interpreter's workers, the web app and the teams'
-# provider workers. Temporal and PostgreSQL run elsewhere; point at them below. Secrets are only
+# provider workers. Temporal and MongoDB run elsewhere; point at them below. Secrets are only
 # referenced (names of existing Secrets, or Vault agent annotations): the chart never holds a value.
 
 image:
@@ -34,7 +34,7 @@ backend:
     repository: platform-backend
     tag: ""                      # the chart's appVersion when empty
   # SPRING_PROFILES_ACTIVE; temporal runs the jobs on Temporal. Add opa, vault, oidc, live, github
-  # as the install uses them; postgres, siem, worm and worm-s3 are added from postgres.enabled,
+  # as the install uses them; mongo, siem, worm and worm-s3 are added from mongo.enabled,
   # audit.siem.enabled and audit.worm.mode. There is no git profile: the Git workflow store is the
   # property platform.content.git, which content.gitStore sets (below).
   profiles: [temporal]
@@ -62,7 +62,7 @@ api:
   affinity: {}
 
 # The interpreter's Temporal workers (platform.roles worker). With enabled false the API pods run the
-# worker too. A separate worker needs a job store the API shares (postgres.enabled), since the
+# worker too. A separate worker needs a job store the API shares (mongo.enabled), since the
 # worker records the progress the API shows.
 worker:
   enabled: true
@@ -115,15 +115,18 @@ temporal:
   # executions it encrypted may be replayed or read.
   payloadKey: ""
 
-postgres:
-  # turns on the backend's postgres profile; with false every pod keeps its state in memory
+mongo:
+  # turns on the backend's mongo profile; with false every pod keeps its state in memory
   enabled: false
-  url: jdbc:postgresql://postgres.example.internal:5432/platform
-  username: platform
-  # an existing Secret holding the password
-  passwordSecret:
+  # the connection string (SPRING_DATA_MONGODB_URI) when it holds no credentials; the database it
+  # names is the platform's. A replica set is what production runs; a standalone server works too.
+  uri: mongodb://mongo.example.internal:27017/platform?replicaSet=rs0
+  # an existing Secret whose key holds the whole connection string, credentials included, like
+  # mongodb://platform:<password>@mongo-0.data.svc:27017/platform?replicaSet=rs0; it wins over uri,
+  # and the chart refuses a uri that carries a password
+  uriSecret:
     name: ""
-    key: password
+    key: uri
 
 # The demo's generated history: jobs, provider-call samples, releases and their evidence over the
 # sample content (platform.demo.seed-history, which the backend turns on by default). An install
@@ -150,7 +153,7 @@ content:
   # so it runs on one backend pod (api.replicas 1 and worker.enabled false; the chart refuses
   # more) whose clone lives on a volume (existingClaim, ReadWriteOnce is enough), cloned once with
   # its history and kept across restarts. With enabled false the workflows live in the database
-  # (postgres.enabled; in memory without it), seeded from a fresh clone at every start, on any
+  # (mongo.enabled; in memory without it), seeded from a fresh clone at every start, on any
   # number of pods.
   gitStore:
     enabled: true
@@ -185,7 +188,7 @@ audit:
   # write-once evidence: "files" (adds the worm profile: read-only files with retention sidecars on
   # a volume) or "s3" (adds worm-s3: S3 Object Lock in COMPLIANCE mode, AWS credentials from the
   # SDK's default chain, such as IRSA through serviceAccount.annotations). Empty keeps the evidence
-  # in the database (postgres.enabled) or in memory.
+  # in the database (mongo.enabled) or in memory.
   worm:
     mode: ""
     files:

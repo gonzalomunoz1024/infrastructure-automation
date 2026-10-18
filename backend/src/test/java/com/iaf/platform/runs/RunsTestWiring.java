@@ -82,7 +82,7 @@ public final class RunsTestWiring {
         this(new InMemoryProjectionStore());
     }
 
-    /** The same wiring over another runs index, such as the JDBC one. */
+    /** The same wiring over another runs index, such as the MongoDB one. */
     public RunsTestWiring(ProjectionStore store) {
         projection = new JobProjection(bus, store, clock);
         projection.register();

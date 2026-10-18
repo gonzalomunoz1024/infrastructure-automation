@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.ports.outbound.SessionStore;
 
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemorySessionStore implements SessionStore {
 

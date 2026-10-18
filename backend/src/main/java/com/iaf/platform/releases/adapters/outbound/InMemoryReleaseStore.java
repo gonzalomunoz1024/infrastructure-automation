@@ -13,8 +13,8 @@ import org.springframework.stereotype.Component;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 
-/** The demo store: a map, newest release first. */
-@Profile("!postgres")
+/** The demo store: a map, newest release first. With the {@code mongo} profile, {@link MongoReleaseStore} keeps the releases instead. */
+@Profile("!mongo")
 @Component
 public class InMemoryReleaseStore implements ReleaseStore {
 

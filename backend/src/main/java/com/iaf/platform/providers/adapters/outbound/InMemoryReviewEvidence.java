@@ -20,9 +20,10 @@ import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
  * The demo evidence store: per provider name, the last {@value #MAX_CONNECTIONS} connection tests
  * and the last {@value #MAX_TRIES} tries, with a count of the older ones dropped to keep to that.
  * A response larger than {@value #MAX_RESPONSE_BYTES} bytes is kept without its body (the try
- * still counts; the schema comparison skips it).
+ * still counts; the schema comparison skips it). The {@code mongo} profile keeps the same in
+ * MongoDB ({@link MongoReviewEvidence}).
  */
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryReviewEvidence implements ReviewEvidencePort {
 

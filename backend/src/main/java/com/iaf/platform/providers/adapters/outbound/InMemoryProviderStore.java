@@ -31,10 +31,11 @@ import lombok.extern.slf4j.Slf4j;
  * memory. With {@code platform.content.git} on, a save also writes the file back to
  * {@code providers/<owner>/<name>.yaml} (the commit is the workflows slice's job). Every version
  * saved since start is kept in memory; a canary candidate ({@link #saveVersion}) is not written
- * until it is promoted and saved as the current version.
+ * until it is promoted and saved as the current version. The {@code mongo} profile keeps providers
+ * and their versions in MongoDB ({@link MongoProviderStore}).
  */
 @Slf4j
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryProviderStore implements ProviderStorePort {
 

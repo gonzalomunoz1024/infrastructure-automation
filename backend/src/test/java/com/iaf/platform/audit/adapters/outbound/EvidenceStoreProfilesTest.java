@@ -8,6 +8,7 @@ import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
@@ -19,14 +20,14 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.StandardEnvironment;
 
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
-import com.iaf.platform.common.adapters.jdbc.Jdbc;
-import com.iaf.platform.common.adapters.jdbc.TestDatabase;
+import com.iaf.platform.common.adapters.mongo.Mongo;
 import com.iaf.platform.config.PlatformProperties;
 
 /**
  * The evidence store a profile picks: a write-once store wins when {@code worm} or {@code worm-s3}
- * is active, else {@code postgres} keeps the evidence in the database, else it stays in memory.
- * {@code live} has no say in it.
+ * is active, else {@code mongo} keeps the evidence in the database, else it stays in memory. Under
+ * {@code mongo} the in-memory store is not even created. {@code live} has no say in it. No MongoDB
+ * is needed: the MongoDB store only creates its indexes when it is built, here on a mock.
  */
 class EvidenceStoreProfilesTest {
 
@@ -43,7 +44,7 @@ class EvidenceStoreProfilesTest {
                 .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
                 .withUserConfiguration(Stores.class)
                 .withBean(PlatformProperties.class, PlatformProperties::new)
-                .withBean(Jdbc.class, () -> new Jdbc(TestDatabase.h2Named("evidence-profiles")))
+                .withBean(Mongo.class, () -> Mockito.mock(Mongo.class))
                 .withPropertyValues("platform.audit.worm.dir=" + dir)
                 .withInitializer(ctx -> ctx.getEnvironment().setActiveProfiles(profiles));
     }
@@ -53,18 +54,19 @@ class EvidenceStoreProfilesTest {
         runner().run(ctx -> {
             assertThat(ctx).hasNotFailed();
             assertThat(ctx.getBean(EvidenceStore.class)).isInstanceOf(InMemoryEvidenceStore.class);
-            assertThat(ctx).doesNotHaveBean(FileSystemEvidenceStore.class).doesNotHaveBean(JdbcEvidenceStore.class);
+            assertThat(ctx).doesNotHaveBean(FileSystemEvidenceStore.class).doesNotHaveBean(MongoEvidenceStore.class);
         });
     }
 
     @Test
-    void thePostgresProfileKeepsEvidenceInTheDatabaseLiveOrNot() {
-        for (String[] profiles : new String[][] {{"postgres"}, {"postgres", "live"}}) {
+    void theMongoProfileKeepsEvidenceInTheDatabaseLiveOrNot() {
+        for (String[] profiles : new String[][] {{"mongo"}, {"mongo", "live"}}) {
             String named = String.join("+", profiles);
             runner(profiles).run(ctx -> {
                 assertThat(ctx).as(named).hasNotFailed();
-                assertThat(ctx.getBean(EvidenceStore.class)).as(named).isInstanceOf(JdbcEvidenceStore.class);
-                assertThat(ctx).as(named).doesNotHaveBean(FileSystemEvidenceStore.class);
+                assertThat(ctx.getBean(EvidenceStore.class)).as(named).isInstanceOf(MongoEvidenceStore.class);
+                assertThat(ctx.getBeansOfType(EvidenceStore.class)).as(named).hasSize(1);
+                assertThat(ctx).as(named).doesNotHaveBean(FileSystemEvidenceStore.class).doesNotHaveBean(InMemoryEvidenceStore.class);
             });
         }
     }
@@ -79,11 +81,12 @@ class EvidenceStoreProfilesTest {
     }
 
     @Test
-    void aWormProfileWinsOverPostgres() {
-        runner("postgres", "worm").run(ctx -> {
+    void aWormProfileWinsOverMongo() {
+        runner("mongo", "worm").run(ctx -> {
             assertThat(ctx).hasNotFailed();
             assertThat(ctx.getBean(EvidenceStore.class)).isInstanceOf(FileSystemEvidenceStore.class);
-            assertThat(ctx).doesNotHaveBean(JdbcEvidenceStore.class);
+            assertThat(ctx.getBeansOfType(EvidenceStore.class)).hasSize(1);
+            assertThat(ctx).doesNotHaveBean(MongoEvidenceStore.class).doesNotHaveBean(InMemoryEvidenceStore.class);
         });
     }
 
@@ -95,17 +98,33 @@ class EvidenceStoreProfilesTest {
     @Test
     void theS3ProfilePicksTheObjectLockStoreWhateverElseIsOn() {
         assertThat(primaryStores("worm-s3")).containsExactly("S3ObjectLockEvidenceStore");
-        assertThat(primaryStores("postgres", "worm-s3")).containsExactly("S3ObjectLockEvidenceStore");
-        assertThat(primaryStores("postgres", "live", "worm-s3")).containsExactly("S3ObjectLockEvidenceStore");
-        assertThat(primaryStores("postgres", "worm")).containsExactly("FileSystemEvidenceStore");
-        assertThat(primaryStores("postgres", "live")).containsExactly("JdbcEvidenceStore");
-        assertThat(primaryStores("postgres")).containsExactly("JdbcEvidenceStore");
+        assertThat(primaryStores("mongo", "worm-s3")).containsExactly("S3ObjectLockEvidenceStore");
+        assertThat(primaryStores("mongo", "live", "worm-s3")).containsExactly("S3ObjectLockEvidenceStore");
+        assertThat(primaryStores("mongo", "worm")).containsExactly("FileSystemEvidenceStore");
+        assertThat(primaryStores("mongo", "live")).containsExactly("MongoEvidenceStore");
+        assertThat(primaryStores("mongo")).containsExactly("MongoEvidenceStore");
         assertThat(primaryStores("live")).isEmpty();
         assertThat(primaryStores()).isEmpty();
+        assertThat(stores("mongo", "worm-s3")).as("under mongo nothing stays in memory").containsExactly("S3ObjectLockEvidenceStore");
+        assertThat(stores("mongo", "worm")).containsExactly("FileSystemEvidenceStore");
+        assertThat(stores("mongo")).containsExactly("MongoEvidenceStore");
+        assertThat(stores()).containsExactly("InMemoryEvidenceStore");
     }
 
     /** The {@code @Primary} evidence stores the component scan admits under these profiles. */
     static Set<String> primaryStores(String... profiles) {
+        return scanned(profiles).stream()
+                .filter(c -> c.isAnnotationPresent(Primary.class))
+                .map(Class::getSimpleName)
+                .collect(Collectors.toSet());
+    }
+
+    /** Every evidence store the component scan admits under these profiles, primary or not. */
+    static Set<String> stores(String... profiles) {
+        return scanned(profiles).stream().map(Class::getSimpleName).collect(Collectors.toSet());
+    }
+
+    static Set<Class<?>> scanned(String... profiles) {
         StandardEnvironment env = new StandardEnvironment();
         env.setActiveProfiles(profiles);
         ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(true, env);
@@ -113,8 +132,6 @@ class EvidenceStoreProfilesTest {
                 .map(BeanDefinition::getBeanClassName)
                 .map(EvidenceStoreProfilesTest::load)
                 .filter(EvidenceStore.class::isAssignableFrom)
-                .filter(c -> c.isAnnotationPresent(Primary.class))
-                .map(Class::getSimpleName)
                 .collect(Collectors.toSet());
     }
 

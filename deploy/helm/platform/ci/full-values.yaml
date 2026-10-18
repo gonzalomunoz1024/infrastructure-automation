@@ -33,11 +33,9 @@ temporal:
   apiKeySecret: { name: temporal-cloud, key: api-key }
   payloadKey: vault:temporal/payload-key
 
-postgres:
+mongo:
   enabled: true
-  url: jdbc:postgresql://platform-db.data.svc.cluster.local:5432/platform
-  username: platform
-  passwordSecret: { name: platform-db, key: password }
+  uriSecret: { name: platform-db, key: uri }
 
 content:
   repository: https://git.example.com/platform/content.git

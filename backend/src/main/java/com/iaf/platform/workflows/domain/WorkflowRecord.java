@@ -9,7 +9,7 @@ import com.iaf.platform.common.domain.Hashes;
  * One stored version of a workflow: the file as written plus what the store knows about it.
  * {@code yaml} is canonical (see {@link WorkflowYaml#toYaml}), so {@code contentHash} is stable.
  * {@code rolledBack} marks a retired version a release rollback took out: it stays readable,
- * and nothing resolves to it any more (stored in the record, so the JDBC row's doc keeps it).
+ * and nothing resolves to it any more (stored in the record, so the stored document keeps it).
  */
 public record WorkflowRecord(
         String name,

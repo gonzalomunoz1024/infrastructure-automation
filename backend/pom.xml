@@ -87,23 +87,10 @@
             <artifactId>nimbus-jose-jwt</artifactId>
             <version>10.10</version>
         </dependency>
-        <!-- durable storage (profile postgres): the registry, the audit log and the runs index -->
+        <!-- durable storage (profile mongo): the registry, the audit log and the runs index -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-jdbc</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-database-postgresql</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
+            <groupId>org.mongodb</groupId>
+            <artifactId>mongodb-driver-sync</artifactId>
         </dependency>
         <!-- playbook archives (.zip, .tar.gz): safe listing and extraction -->
         <dependency>
@@ -166,11 +153,6 @@
             <groupId>io.temporal</groupId>
             <artifactId>temporal-testing</artifactId>
             <version>${temporal.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.h2database</groupId>
-            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

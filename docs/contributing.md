@@ -6,7 +6,7 @@
 # backend (Java 21, Maven)
 cd backend && mvn -B -q compile && mvn -B -q test
 cd backend && mvn spring-boot:run                       # http://localhost:8080, demo profile
-cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=demo,postgres   # state in PostgreSQL (docker compose up postgres)
+cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=demo,mongo      # state in MongoDB (docker compose up mongo)
 
 # frontend (Node 22)
 npm install                                             # workspaces: packages/ui, packages/workflow-checks, frontend
@@ -55,14 +55,15 @@ terraform executable) enables `TerraformRealRunTest`.
 - Blocking work (JGit, process runners, Temporal client) goes through
   `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())`.
 - Stores: a store port has one contract test, an abstract `<Port>Contract`, that every adapter's
-  test extends, so the in-memory and the JDBC adapter behave the same. A JDBC adapter
-  (`@Profile("postgres") @Primary`, over `Jdbc`) runs it on `TestDatabase.h2()` (H2 in PostgreSQL
-  mode, migrated by Flyway, no Spring) and, when `PLATFORM_TEST_POSTGRES_URL` names a PostgreSQL
-  (`jdbc:postgresql://localhost:5432/platform?user=platform` with `docker compose up postgres`), on
-  `TestDatabase.postgres()`, a fresh schema per test. A schema change is a new migration: portable
-  SQL in `db/migration/common`, PostgreSQL-only DDL in `db/migration/postgresql` (with its H2 twin
-  under `src/test/resources`); never edit one that has shipped. A JDBC store blocks, so it is
-  reached from `boundedElastic` or a worker thread, never from a timer or `parallel` thread.
+  test extends, so the in-memory and the MongoDB adapter behave the same. A MongoDB adapter
+  (`@Profile("mongo") @Primary`, over `Mongo`) runs it through `TestMongo`, a fresh database per
+  test, dropped after it, when `PLATFORM_TEST_MONGO_URI` names a MongoDB (`mongodb://localhost:27017`
+  with `docker compose up mongo`; without it those tests are skipped). A record is stored whole
+  under `doc`, with top-level copies of what is filtered, sorted or kept unique, so a new field
+  needs no migration; an index is created in the adapter's constructor, on every start. There are
+  no multi-document transactions: each write that must be atomic is one document's. A MongoDB
+  store blocks, so it is reached from `boundedElastic` or a worker thread, never from a timer or
+  `parallel` thread.
 - Records everywhere; enums serialise lowercase with `@JsonValue`; Jackson `non_null`; one
   injectable `Clock`; ids via `Ids.next("job")`.
 - Errors: `IllegalArgumentException` (400), `NotFoundException` (404), `ForbiddenException`

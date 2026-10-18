@@ -13,8 +13,9 @@ import com.iaf.platform.audit.domain.ShareToken;
 /**
  * Where evidence lives. Append-only by design: entries are chained as they arrive, a closed record
  * is sealed once, an open one collects checkpoints, and nothing is ever updated or deleted. The
- * demo adapter keeps records in memory; the {@code worm} and {@code worm-s3} profiles write each
- * entry as a write-once object (a read-only file, an S3 Object Lock object).
+ * demo adapter keeps records in memory; the {@code mongo} profile keeps them in MongoDB, entries
+ * only ever inserted; the {@code worm} and {@code worm-s3} profiles write each entry as a
+ * write-once object (a read-only file, an S3 Object Lock object).
  */
 public interface EvidenceStore {
 

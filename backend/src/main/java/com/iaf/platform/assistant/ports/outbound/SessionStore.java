@@ -6,7 +6,7 @@ import java.util.function.UnaryOperator;
 
 import com.iaf.platform.assistant.domain.AssistantSession;
 
-/** Where builder sessions live while the UI talks to them: memory in the demo, PostgreSQL under {@code postgres}. */
+/** Where builder sessions live while the UI talks to them: memory in the demo, MongoDB under {@code mongo}. */
 public interface SessionStore {
 
     void save(AssistantSession session);

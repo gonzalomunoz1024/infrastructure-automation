@@ -48,8 +48,8 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * Reads evidence records and turns them into rows, verifications, files and packs. Every store read
- * runs on boundedElastic: the stores are synchronous (JDBC, files, the S3 client), and only the
- * {@code postgres} profile moves whole requests off the event loop.
+ * runs on boundedElastic: the stores are synchronous (the MongoDB driver, files, the S3 client),
+ * and only the {@code mongo} profile moves whole requests off the event loop.
  */
 @Primary
 @Service
