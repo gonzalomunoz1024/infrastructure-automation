@@ -561,12 +561,57 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), admin)).expectNextCount(1).verifyComplete();
         StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), admin)).expectNextCount(1).verifyComplete();
         owned("vault:fleet/token", null);
+        // the outsider's own team's draft: the try is evidence for a provider they may edit
+        String theirs = YAML.replace("owner: team-compute", "owner: team-data");
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
-        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(theirs, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
         // a reference the store does not know is judged where it is resolved, as before
         when(credentials.info("vault:fleet/token")).thenReturn(Mono.empty());
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
-        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(theirs, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void onlyTheProvidersTeamAddsToItsReviewEvidence() {
+        when(http.probe(any(), any())).thenReturn(Mono.just(new ProbeResult(true, 12, "HEAD 200 in 12 ms")));
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\"}")));
+        Map<String, String> endpoints = Map.of("dev", "https://fleet-dev.example.com");
+        JsonNode auth = json("{\"type\":\"none\"}");
+        Identity guest = new Identity("guest", "Guest", null, List.of(), List.of("user"), false, Identity.Kind.USER);
+
+        // a draft that is not published: its owner team, or any team member when it names none
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("provider fleet").hasMessageContaining("team-compute"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), guest))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("brand-new"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), OUTSIDER)).expectNextCount(1).verifyComplete();
+        // without a provider name nothing is kept, so nothing is judged but the credential
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), guest)).expectNextCount(1).verifyComplete();
+        verify(calls, never()).call(any());
+        verify(http, org.mockito.Mockito.times(2)).probe(any(), any());
+
+        // a published provider: its stored owner decides, whatever the posted file claims
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
+        String claimed = YAML.replace("owner: team-compute", "owner: team-data");
+        StepVerifier.create(as(handler.tryAction(new TryAction(claimed, "vm.get", "dev", null)), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("team-compute"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet")), OUTSIDER))
+                .expectError(ForbiddenException.class).verify();
+        verify(calls, never()).call(any());
+        verify(http, org.mockito.Mockito.times(2)).probe(any(), any());
+        assertThat(evidence.evidence("fleet").tries()).isEmpty();
+        assertThat(evidence.evidence("fleet").connections()).isEmpty();
+
+        // its team's try is kept with the endpoint and the credential reference it used
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OWNER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet")), OWNER)).expectNextCount(1).verifyComplete();
+        ActionTry kept = evidence.evidence("fleet").tries().get(0);
+        assertThat(kept.endpoint()).isEqualTo("https://fleet-dev.example.com");
+        assertThat(kept.credential()).isEqualTo("vault:fleet/token");
+        assertThat(evidence.evidence("fleet").connections()).hasSize(1);
     }
 
     @Test

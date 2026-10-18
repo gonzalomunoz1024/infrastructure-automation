@@ -302,13 +302,18 @@ type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
 ```
 
 The review judges a provider file against what the platform itself saw in the wizard, kept per
-provider name: the Test connection results sent with `provider`, and every Try it call. Its checks
-come after the file's own checks on the change request:
+provider name: the Test connection results sent with `provider`, and every Try it call with the
+endpoint and credential reference it used. Only the provider's team adds to it: the published
+provider's owner team, else the owner team the draft names, else any member of a team (an admin
+always); anyone else gets a 403 before anything is probed or called. A store keeps the newest 50
+connection tests and 500 tries of a provider and counts the older ones it drops; the review warns
+(`evidence.dropped`) when it judges what is left. Its checks come after the file's own checks on
+the change request:
 
 | Check | Fails when |
 |-------|------------|
 | `connection` | the last Test connection to `dev` or to `test` (the ones the provider declares; its first environment when it has neither) is missing, failed, or used another endpoint or credential reference than the file has now. A missing `test` endpoint is a warning. openapi and http providers only |
-| `tried` | an action never answered when tried against `dev` (its first environment without one). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
+| `tried` | an action never answered when tried against `dev` (its first environment without one), or was only tried at another endpoint or with another credential reference than the file has now (`action.staleTry`). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
 | `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it, or (openapi, http) there are no error classes at all while an action creates, changes or deletes something. A tried error that no class matches is a warning, and so are no error classes on a provider that only reads. The file's own checks hold a provider that changes things to `alerts.channel` the same way (`alerts.channel`, a warning for a read-only one) |
 | `preview` | a destructive action has neither a `plan` action nor an `effectDetail` line |
 | `responses` | an action's last real response still disagrees with its schema after the `overrides` |

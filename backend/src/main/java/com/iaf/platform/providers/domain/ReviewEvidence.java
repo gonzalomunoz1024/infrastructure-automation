@@ -10,9 +10,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 /**
  * What the wizard proved about a provider before it is published: the connection tests per
  * environment and the "Try it" calls per action, as the platform recorded them (never as the
- * caller claims them). The review judges a provider file against this evidence.
+ * caller claims them). The review judges a provider file against this evidence. A store keeps the
+ * newest entries of a provider only; {@code droppedConnections} and {@code droppedTries} count the
+ * older ones it no longer has, so the review can say its judgement rests on what is left.
  */
-public record ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> tries) {
+public record ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> tries, int droppedConnections, int droppedTries) {
 
     public static final ReviewEvidence NONE = new ReviewEvidence(List.of(), List.of());
 
@@ -23,15 +25,30 @@ public record ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> t
 
     /**
      * One Try it call. {@code response} is the real answer of a call that went through (null for a
-     * failure); {@code status} is the HTTP status (0 when nothing answered).
+     * failure); {@code status} is the HTTP status (0 when nothing answered). {@code endpoint} and
+     * {@code credential} are the URL of the environment and the credential reference (never a
+     * value) the call used; both are null on a try recorded before they were kept.
      */
     public record ActionTry(String action, String environment, boolean ok, int status, long durationMs, String errorClass,
-            JsonNode response, Boolean verified, Instant at, String by) {
+            JsonNode response, Boolean verified, Instant at, String by, String endpoint, String credential) {
+
+        /** A try without the endpoint and credential it used. */
+        public ActionTry(String action, String environment, boolean ok, int status, long durationMs, String errorClass,
+                JsonNode response, Boolean verified, Instant at, String by) {
+            this(action, environment, ok, status, durationMs, errorClass, response, verified, at, by, null, null);
+        }
     }
 
     public ReviewEvidence {
         connections = connections == null ? List.of() : List.copyOf(connections);
         tries = tries == null ? List.of() : List.copyOf(tries);
+        droppedConnections = Math.max(0, droppedConnections);
+        droppedTries = Math.max(0, droppedTries);
+    }
+
+    /** Evidence of which nothing was dropped. */
+    public ReviewEvidence(List<ConnectionTest> connections, List<ActionTry> tries) {
+        this(connections, tries, 0, 0);
     }
 
     /** The newest connection test of an environment. */

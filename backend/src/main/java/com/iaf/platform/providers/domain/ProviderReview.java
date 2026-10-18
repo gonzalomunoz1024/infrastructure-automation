@@ -30,14 +30,16 @@ import com.iaf.platform.workflows.domain.ChangeRequest.Check;
  * <ul>
  * <li>{@code connection}: the last Test connection to dev and to test passed, against the
  * endpoints and credential the file declares now (only the ones the provider has);</li>
- * <li>{@code tried}: every action answered at least once when tried against dev;</li>
+ * <li>{@code tried}: every action answered at least once when tried against dev, at the endpoint and
+ * with the credential the file declares now;</li>
  * <li>{@code errors}: every error class has a match rule, and no tried error went unclassified;</li>
  * <li>{@code preview}: every destructive action has a plan action or a declared effect detail;</li>
  * <li>{@code responses}: no action's real response still disagrees with its schema after the overrides;</li>
  * <li>{@code slo-suggested}: an SLO suggested from the tried calls' p95, shown and never enforced.</li>
  * </ul>
  * Connection and tries apply to the providers the platform calls over HTTP (openapi and http);
- * the other types run through their runner or worker and skip them.
+ * the other types run through their runner or worker and skip them. Evidence a store no longer
+ * keeps (it keeps the newest entries of a provider) is counted, and the review warns about it.
  */
 public final class ProviderReview {
 
@@ -168,6 +170,9 @@ public final class ProviderReview {
                 warning(CONNECTION, "connection.noTest", null, "spec.endpoints", "There is no test endpoint, so only " + String.join(" and ", required)
                         + " was tested; add one so the connection is proven outside " + String.join(" and ", required) + " too");
             }
+            if (evidence.droppedConnections() > 0) {
+                warning(CONNECTION, "evidence.dropped", null, "spec.endpoints", dropped(evidence.droppedConnections(), "connection test", "connection tests"));
+            }
             details.put(CONNECTION, "Answered: " + String.join(", ", passed));
         }
 
@@ -185,11 +190,23 @@ public final class ProviderReview {
                 return;
             }
             String env = sandbox(def);
+            String endpoint = def.spec().endpoints() == null ? null : def.spec().endpoints().get(env);
+            String credential = blankToNull(def.spec().auth() == null ? null : def.spec().auth().credential());
             int answered = 0;
             for (int i = 0; i < actions.size(); i++) {
                 Action a = actions.get(i);
                 String field = "spec.actions[" + i + "]";
-                List<ActionTry> tries = evidence.triesOf(a.id(), env);
+                List<ActionTry> all = evidence.triesOf(a.id(), env);
+                // a try proves the endpoint and credential it used: one made against others does not count
+                List<ActionTry> tries = all.stream().filter(t -> current(t, endpoint, credential)).toList();
+                if (tries.isEmpty() && !all.isEmpty()) {
+                    ActionTry last = all.get(all.size() - 1);
+                    error(TRIED, "action.staleTry", a.id(), field, sameUrl(last.endpoint(), endpoint)
+                            ? a.id() + " was tried with " + (blankToNull(last.credential()) == null ? "no credential" : last.credential())
+                                    + ", but the provider now uses " + (credential == null ? "none" : credential) + "; try it again"
+                            : a.id() + " was tried at " + last.endpoint() + ", but the provider now points at " + endpoint + "; try it again");
+                    continue;
+                }
                 if (tries.isEmpty()) {
                     error(TRIED, "action.untried", a.id(), field, "Try " + a.id() + " against " + env + " before publishing");
                     continue;
@@ -206,6 +223,9 @@ public final class ProviderReview {
                     warning(TRIED, "action.notVerified", a.id(), field + ".verify", a.id() + " answered, but " + verify
                             + " still found the thing afterwards; check that the test resource is really gone");
                 }
+            }
+            if (evidence.droppedTries() > 0) {
+                warning(TRIED, "evidence.dropped", null, "spec.actions", dropped(evidence.droppedTries(), "try", "tries"));
             }
             details.put(TRIED, answered + " of " + actions.size() + (actions.size() == 1 ? " action" : " actions") + " answered in " + env);
         }
@@ -420,6 +440,23 @@ public final class ProviderReview {
 
     static boolean sameUrl(String a, String b) {
         return Objects.equals(trimUrl(a), trimUrl(b));
+    }
+
+    /**
+     * Whether a try was made against the endpoint and credential the file declares now. A try
+     * recorded before the endpoint was kept (it has none) is taken as it is.
+     */
+    static boolean current(ActionTry t, String endpoint, String credential) {
+        if (t.endpoint() == null) {
+            return true;
+        }
+        return sameUrl(t.endpoint(), endpoint) && Objects.equals(blankToNull(t.credential()), credential);
+    }
+
+    /** What the review says about evidence a store no longer keeps. */
+    static String dropped(int count, String one, String many) {
+        return count + " older " + (count == 1 ? one + " of this provider is" : many + " of this provider are")
+                + " no longer kept (a store keeps the newest ones only); the review judges what is left";
     }
 
     private static String trimUrl(String url) {

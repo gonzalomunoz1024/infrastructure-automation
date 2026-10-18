@@ -78,6 +78,9 @@ s, pv = call('POST', A + '/providers:validate', {'yaml': yaml_p}, expect=200)
 print('provider validate ->', [(c['id'], c['status']) for c in pv.get('checks', [])], [p['code'] for p in pv.get('problems', [])])
 s, tr = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, expect=200, timeout=60)
 print('try ->', str(tr)[:300])
+# a try is evidence for the provider's review: only its team (or an admin) adds to it
+s, _ = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, user='ana', expect=403, note='ana tries a team-compute provider')
+s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'none'}, 'provider': 'vsphere'}, user='ana', expect=403, note='ana adds a connection test to vsphere')
 # the connection test resolves the provider's credential as a real call would: a reference that is not in the vault fails it
 s, _ = call('POST', A + '/credentials', {'name': 'fleet/token', 'type': 'token', 'value': 'e2e-fleet-token', 'owner': 'team-compute'}, expect=202, note='store the fleet token the provider names')
 s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'bearer', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')

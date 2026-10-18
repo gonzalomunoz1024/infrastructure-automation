@@ -22,6 +22,7 @@ import com.iaf.platform.assistant.ports.inbound.AssistantCommands;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -430,8 +431,10 @@ public class ProviderCommandHandler implements ProviderCommands {
                                 auth.credential(), r.ok(), r.durationMs(), Redactor.redact(r.message(), secrets::known, REDACTED), clock.instant(), who.id()));
                         return r;
                     }));
+            // results kept as evidence for a provider's review: only its team may add to them, judged before anything is probed
+            Mono<Boolean> reviewer = provider == null ? Mono.just(true) : blocking(() -> requireReviewer(who, provider, null));
             // the credential goes to every endpoint named: only once the caller may use it
-            return CredentialUse.require(credentials, who, auth.credential()).thenMany(probes).collectList()
+            return reviewer.then(CredentialUse.require(credentials, who, auth.credential())).thenMany(probes).collectList()
                     .flatMap(results -> blocking(() -> {
                         ObjectNode data = F.objectNode();
                         if (provider != null) {
@@ -477,8 +480,11 @@ public class ProviderCommandHandler implements ProviderCommands {
                     "Provider " + def.name() + " has no action '" + command.action() + "'" + Suggest.closest(command.action(), ids).map(s -> "; did you mean " + s + "?").orElse("")));
             String environment = environmentOf(def, command.environment());
             JsonNode input = command.input() == null || command.input().isNull() ? F.objectNode() : command.input();
-            // the call resolves the draft's credentials: only once the caller may use them
-            return CredentialUse.guarded(credentials, who, () -> {
+            String endpoint = endpointOf(def, environment);
+            String credential = blank(def.spec().auth() == null ? null : def.spec().auth().credential()) ? null : def.spec().auth().credential().trim();
+            // the try is evidence for the provider's review: only its team may add to it, and the call resolves the
+            // draft's credentials: only once the caller may use them
+            return blocking(() -> requireReviewer(who, def.name(), def.owner())).then(CredentialUse.guarded(credentials, who, () -> {
                 long started = System.nanoTime();
                 // a review call: it reaches the system, but records no sample under a published provider's name
                 return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false)).contextWrite(ReviewCall::with)
@@ -497,7 +503,8 @@ public class ProviderCommandHandler implements ProviderCommands {
                             // the evidence copy is redacted; the live answer goes back to the caller as it came
                             String errorClass = result.ok() ? null : result.response().path("error").path("class").asText(null);
                             evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
-                                    errorClass, result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id()));
+                                    errorClass, result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id(),
+                                    endpoint, credential));
                             ObjectNode data = F.objectNode();
                             data.put("provider", def.name());
                             data.put("action", action.id());
@@ -512,7 +519,7 @@ public class ProviderCommandHandler implements ProviderCommands {
                             events.publish(TRIED_EVENT, "provider", def.name(), who.id(), data); // the outcome, never the response
                             return result;
                         }));
-            }, credentialsOf(def).toArray(String[]::new));
+            }, credentialsOf(def).toArray(String[]::new)));
         }));
     }
 
@@ -1029,6 +1036,31 @@ public class ProviderCommandHandler implements ProviderCommands {
             throw new IllegalArgumentException("Provider " + def.name() + " has no environment '" + environment + "'; one of " + environments);
         }
         return environment;
+    }
+
+    /** The URL a call to {@code environment} goes to, trimmed as Test connection records it; null when the provider names none. */
+    static String endpointOf(ProviderDefinition def, String environment) {
+        Map<String, String> endpoints = def.spec() == null || def.spec().endpoints() == null ? Map.of() : def.spec().endpoints();
+        String url = environment == null ? null : endpoints.get(environment);
+        return url == null || url.isBlank() ? null : url.trim();
+    }
+
+    /**
+     * Throws unless {@code who} may add review evidence (a connection test or a try) for the provider
+     * {@code name}: the published provider's owner team when it is stored (an admin always), else the
+     * draft's owner team when it names one, else any member of a team. A store read: call where
+     * blocking is allowed.
+     */
+    private boolean requireReviewer(Identity who, String name, String draftOwner) {
+        Optional<StoredProvider> stored = store.get(name);
+        if (stored.isPresent()) {
+            AccessRules.requireEdit(who, stored.get().definition().owner(), "provider " + name);
+        } else if (!blank(draftOwner)) {
+            AccessRules.requireEdit(who, draftOwner, "provider " + name);
+        } else if (!who.admin() && who.teams().isEmpty()) {
+            throw new ForbiddenException(who.name() + " may not test or try provider " + name + ": only members of a team may");
+        }
+        return true;
     }
 
     /** Work that may block (stores, change requests, the GitHub API) runs on the bounded elastic scheduler. */

@@ -109,6 +109,41 @@ class ProviderReviewTest {
         assertThat(check(r, "responses").detail()).isEqualTo("2 of 2 responses match");
     }
 
+    @Test
+    void aTryCountsOnlyAtTheEndpointAndWithTheCredentialTheFileHasNow() {
+        List<Object> items = new ArrayList<>(proof().subList(0, 2));
+        items.add(new ActionTry("vm.get", "dev", true, 200, 200, null, json("{\"id\":\"vm-1\",\"name\":\"web\"}"), null, T0, "mateo",
+                "https://fleet-dev.example.com/", "vault:fleet/token"));
+        items.add(new ActionTry("vm.delete", "dev", true, 200, 400, null, json("{}"), null, T0, "mateo", "https://fleet-dev.example.com", "vault:fleet/token"));
+        assertThat(review(YAML, items).ready()).isTrue();
+
+        Result moved = review(YAML.replace("dev: https://fleet-dev.example.com", "dev: https://fleet-dev2.example.com"), items);
+        assertThat(codes(moved)).containsExactly("connection.stale", "action.staleTry", "action.staleTry");
+        assertThat(moved.problems().get(1).message())
+                .isEqualTo("vm.get was tried at https://fleet-dev.example.com/, but the provider now points at https://fleet-dev2.example.com; try it again");
+        assertThat(moved.problems().get(1).step()).isEqualTo("vm.get");
+
+        Result rekeyed = review(YAML.replace("credential: vault:fleet/token", "credential: vault:fleet/token-2"), items);
+        assertThat(codes(rekeyed)).containsExactly("connection.stale", "connection.stale", "action.staleTry", "action.staleTry");
+        assertThat(rekeyed.problems().get(2).message())
+                .isEqualTo("vm.get was tried with vault:fleet/token, but the provider now uses vault:fleet/token-2; try it again");
+        // a try recorded before the endpoint was kept is taken as it is
+        assertThat(codes(review(YAML.replace("dev: https://fleet-dev.example.com", "dev: https://fleet-dev2.example.com"), proof())))
+                .containsExactly("connection.stale");
+    }
+
+    @Test
+    void evidenceAStoreNoLongerKeepsIsCountedAndWarnedAbout() {
+        ReviewEvidence e = evidence(proof());
+        Result r = ProviderReview.review(ProviderYaml.parse(YAML), new ReviewEvidence(e.connections(), e.tries(), 3, 1));
+        assertThat(r.ready()).isTrue();
+        assertThat(codes(r)).containsExactly("evidence.dropped", "evidence.dropped");
+        assertThat(r.problems().get(0).message()).startsWith("3 older connection tests of this provider are no longer kept");
+        assertThat(r.problems().get(1).message()).startsWith("1 older try of this provider is no longer kept");
+        assertThat(check(r, "tried").detail()).isEqualTo("2 of 2 actions answered in dev; 1 warning");
+        assertThat(check(r, "connection").detail()).isEqualTo("Answered: dev in 15 ms, test in 15 ms; 1 warning");
+    }
+
     // ---------------------------------------------------------------- connection
 
     @Test
