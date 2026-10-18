@@ -54,6 +54,7 @@ import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.ReplayResult;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -967,6 +968,90 @@ class WorkflowCommandHandlerTest {
         // the published version itself has nothing older than 1.2.0 to compare with
         StepVerifier.create(handler.replayCheck("vm-restart", "1.2.0")).assertNext(r -> assertThat(r.replayed()).isZero()).verifyComplete();
         StepVerifier.create(handler.replayCheck("vm-restart", "9.9.9")).expectError(com.iaf.platform.common.domain.NotFoundException.class).verify();
+    }
+
+    /** A dry run that takes the definition's own steps, in order, each with what it is written with. */
+    static DryRunResult walk(WorkflowDefinition def) {
+        List<DryRunResult.DryRunStep> steps = def.steps().stream()
+                .map(s -> new DryRunResult.DryRunStep(s.id(), s.displayName(), "succeeded", s.with() == null ? F.objectNode() : s.with(), null, null)).toList();
+        return new DryRunResult(true, steps.stream().map(DryRunResult.DryRunStep::id).toList(), steps, null);
+    }
+
+    /** The steps a job of {@code def} recorded when it took every step, as the runs slice serves them. */
+    static List<JsonNode> recorded(WorkflowDefinition def) {
+        return def.steps().stream().<JsonNode>map(s -> F.objectNode().put("id", s.id()).put("name", s.displayName()).put("status", "succeeded")
+                .set("input", s.with() == null ? F.objectNode() : s.with())).toList();
+    }
+
+    /** vm-restart with the backup check after the approval instead of before it. */
+    static String swapped(String yaml) {
+        int backup = yaml.indexOf("    - noBackupRunning:");
+        int approval = yaml.indexOf("    - approval:");
+        int restart = yaml.indexOf("    - restart:");
+        assertThat(backup).isPositive().isLessThan(approval);
+        assertThat(approval).isLessThan(restart);
+        return yaml.substring(0, backup) + yaml.substring(approval, restart) + yaml.substring(backup, approval) + yaml.substring(restart);
+    }
+
+    static JobOutcome outcome(String id, String status, String failedStep) {
+        return new JobOutcome(id, "vm-restart", "1.2.0", status, NOW.minusSeconds(3600), NOW.minusSeconds(3000), 600_000, failedStep == null ? null : "provider_error",
+                failedStep, F.objectNode().put("vmId", "vm-1"));
+    }
+
+    @Test
+    void aReorderedStepIsADivergenceAndARenamedTitleIsNot() {
+        when(runs.dryRun(any(), any(), any())).thenAnswer(inv -> Mono.just(walk(inv.getArgument(0))));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        when(runsQueries.steps("job_1")).thenReturn(Mono.just(recorded(store.published("vm-restart").orElseThrow().definition())));
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(vmRestart.replace("name: Check VM exists", "name: Look the VM up"))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r).isEqualTo(new ReplayResult(true, 1, List.of())))
+                .verifyComplete();
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(swapped(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r.divergences()).containsExactly(new ReplayResult.Divergence("job_1", "noBackupRunning",
+                        "the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval")))
+                .verifyComplete();
+
+        String otherAction = vmRestart.replace("action: vm.waitForPowerState\n          input: { id: \"{{ $input.vmId }}\", state: poweredOn, timeout: 600 }",
+                "action: vm.get\n          input: { id: \"{{ $input.vmId }}\" }");
+        assertThat(otherAction).doesNotContain("vm.waitForPowerState");
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(otherAction)).block();
+        String crId = handler.publish("vm-restart", null).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("replay")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("failed");
+            assertThat(c.detail()).isEqualTo("1 of 1 replayed job(s) diverge: job_1 at validate: the job ran validate (vsphere vm.waitForPowerState)"
+                    + " where 1.2.1 runs validate (vsphere vm.get)");
+        });
+    }
+
+    @Test
+    void aJobThatStoppedEarlyOrTookARouteTheSamplesDoNotIsComparedAsFarAsItCanBe() {
+        WorkflowDefinition published = store.published("vm-restart").orElseThrow().definition();
+        when(runs.dryRun(any(), any(), any())).thenAnswer(inv -> Mono.just(walk(inv.getArgument(0))));
+        // job_1 failed at the restart and ran the catch block; job_2 skipped the backup check, a route the samples never take
+        List<JsonNode> failed = new ArrayList<>(recorded(published).subList(0, 4));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) failed.get(3)).put("status", "failed");
+        failed.add(F.objectNode().put("id", "notifyOwner").put("status", "succeeded"));
+        List<JsonNode> branched = recorded(published).stream().filter(s -> !s.path("id").asText().equals("noBackupRunning")).toList();
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "failed", "restart"), outcome("job_2", "succeeded", null))));
+        when(runsQueries.steps("job_1")).thenReturn(Mono.just(failed));
+        when(runsQueries.steps("job_2")).thenReturn(Mono.just(branched));
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r).isEqualTo(new ReplayResult(true, 2, List.of())))
+                .verifyComplete();
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(swapped(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r.divergences()).containsExactly(
+                        new ReplayResult.Divergence("job_1", "noBackupRunning", "the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval"),
+                        new ReplayResult.Divergence("job_2", "noBackupRunning",
+                                "1.2.0 on the samples ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval")))
+                .verifyComplete();
     }
 
     @Test

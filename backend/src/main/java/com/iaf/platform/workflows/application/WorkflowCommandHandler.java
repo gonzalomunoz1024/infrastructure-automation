@@ -51,6 +51,7 @@ import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.PlaybookPins;
 import com.iaf.platform.workflows.domain.PublishChecks;
+import com.iaf.platform.workflows.domain.ReplayPaths;
 import com.iaf.platform.workflows.domain.ReplayResult;
 import com.iaf.platform.workflows.domain.ReplayResult.Divergence;
 import com.iaf.platform.workflows.domain.Semver;
@@ -568,21 +569,76 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 : replay(name, c.record().definition(), c.previousVersion(), c.who()));
     }
 
-    /** Dry-run the definition with the input of every job of {@code previousVersion} in the last seven days. */
+    /**
+     * Dry-run the definition with the input of every job of {@code previousVersion} in the last
+     * seven days. A job diverges when that dry run fails, or when the new version would take
+     * another path than the job did ({@link ReplayPaths}: other steps, another order, another
+     * provider action). When the samples cannot reproduce the job's own path (the previous
+     * version's dry run already takes another route, as when real data chose a branch), that dry
+     * run stands in for the job.
+     */
     Mono<ReplayResult> replay(String name, WorkflowDefinition def, String previousVersion, Identity who) {
         Instant since = clock.instant().minus(REPLAY_WINDOW);
-        return runsQueries.outcomes(name, previousVersion, since)
-                .defaultIfEmpty(List.of())
-                .flatMapMany(Flux::fromIterable)
-                .concatMap(o -> runs.dryRun(def, o.input() == null || o.input().isNull() ? F.objectNode() : o.input(), who)
-                        .map(r -> divergence(o, r))
-                        .defaultIfEmpty(Optional.of(new Divergence(o.id(), null, "no dry-run result")))
-                        .onErrorResume(e -> Mono.just(Optional.of(new Divergence(o.id(), null, "dry run failed: " + e.getMessage())))))
-                .collectList()
+        return blocking(() -> store.get(name, previousVersion).map(WorkflowRecord::definition))
+                .flatMap(previous -> runsQueries.outcomes(name, previousVersion, since)
+                        .defaultIfEmpty(List.of())
+                        .flatMapMany(Flux::fromIterable)
+                        .concatMap(o -> replayed(o, def, previous.orElse(null), who))
+                        .collectList())
                 .map(all -> {
                     List<Divergence> divergences = all.stream().flatMap(Optional::stream).toList();
                     return new ReplayResult(divergences.isEmpty(), all.size(), divergences);
                 });
+    }
+
+    /** One job of the previous version against the new definition: its dry run, then its path. */
+    private Mono<Optional<Divergence>> replayed(JobOutcome o, WorkflowDefinition def, WorkflowDefinition previous, Identity who) {
+        JsonNode input = o.input() == null || o.input().isNull() ? F.objectNode() : o.input();
+        return runs.dryRun(def, input, who)
+                .flatMap(r -> divergence(o, r).map(d -> Mono.just(Optional.of(d))).orElseGet(() -> pathDivergence(o, r, def, previous, input, who)))
+                .defaultIfEmpty(Optional.of(new Divergence(o.id(), null, "no dry-run result")))
+                .onErrorResume(e -> Mono.just(Optional.of(new Divergence(o.id(), null, "dry run failed: " + e.getMessage()))));
+    }
+
+    /**
+     * Whether the new version's dry run takes the path the job took. A job that did not succeed
+     * stopped early, so only the part it ran is compared; a job without recorded steps is not.
+     */
+    private Mono<Optional<Divergence>> pathDivergence(JobOutcome o, DryRunResult next, WorkflowDefinition def, WorkflowDefinition previous, JsonNode input,
+            Identity who) {
+        if (previous == null) {
+            return Mono.just(Optional.empty());
+        }
+        return runsQueries.steps(o.id()).defaultIfEmpty(List.of()).flatMap(recorded -> {
+            if (recorded.isEmpty()) {
+                return Mono.just(Optional.<Divergence>empty());
+            }
+            boolean complete = "succeeded".equals(o.status());
+            Map<String, List<ReplayPaths.Taken>> job = ReplayPaths.path(recorded.stream().map(WorkflowCommandHandler::ran).toList(), previous);
+            Map<String, List<ReplayPaths.Taken>> candidate = ReplayPaths.path(ran(next), def);
+            Optional<ReplayPaths.Difference> difference = ReplayPaths.compare(job, candidate, complete, "the job", def.version());
+            if (difference.isEmpty()) {
+                return Mono.just(Optional.<Divergence>empty());
+            }
+            // do the samples reproduce what the job did? when the previous version's dry run takes another route, it stands in for the job
+            return runs.dryRun(previous, input, who)
+                    .map(before -> {
+                        Map<String, List<ReplayPaths.Taken>> old = ReplayPaths.path(ran(before), previous);
+                        return !before.passed() || ReplayPaths.compare(job, old, complete, "", "").isEmpty() ? difference
+                                : ReplayPaths.compare(old, candidate, true, previous.version() + " on the samples", def.version());
+                    })
+                    .defaultIfEmpty(difference)
+                    .onErrorResume(e -> Mono.just(difference))
+                    .map(d -> d.map(x -> new Divergence(o.id(), x.step(), x.reason())));
+        });
+    }
+
+    private static ReplayPaths.Ran ran(JsonNode step) {
+        return new ReplayPaths.Ran(step.path("id").asText(null), step.path("status").asText(null), step.get("input"));
+    }
+
+    private static List<ReplayPaths.Ran> ran(DryRunResult r) {
+        return r.steps() == null ? List.of() : r.steps().stream().map(s -> new ReplayPaths.Ran(s.id(), s.status(), s.input())).toList();
     }
 
     static Optional<Divergence> divergence(JobOutcome outcome, DryRunResult result) {
