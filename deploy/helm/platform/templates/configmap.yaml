@@ -1,13 +1,4 @@
 {{- $temporal := dict "target" .Values.temporal.address "namespace" .Values.temporal.namespace "task-queue" .Values.temporal.taskQueue "ui-url" .Values.temporal.uiUrl -}}
-{{- with .Values.temporal.tls -}}
-{{- if .secretName -}}
-{{- $tls := dict -}}
-{{- if .caKey }}{{ $_ := set $tls "ca" "/etc/temporal-tls/ca.crt" }}{{ end -}}
-{{- if .certKey }}{{ $_ := set $tls "cert" "/etc/temporal-tls/tls.crt" }}{{ end -}}
-{{- if .keyKey }}{{ $_ := set $tls "key" "/etc/temporal-tls/tls.key" }}{{ end -}}
-{{- $_ := set $temporal "tls" $tls -}}
-{{- end -}}
-{{- end -}}
 {{- if hasKey (dig "platform" "content" (dict) (.Values.backend.config | default dict)) "git" -}}
 {{- fail "set content.gitStore.enabled, not backend.config.platform.content.git: the chart places the pods and keeps the clone by it" -}}
 {{- end -}}

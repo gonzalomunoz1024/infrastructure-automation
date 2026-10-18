@@ -29,8 +29,9 @@ temporal:
   uiUrl: https://temporal.example.com
   tls:
     secretName: temporal-client-tls
+  apiKey: vault:temporal/cloud-api-key
   apiKeySecret: { name: temporal-cloud, key: api-key }
-  payloadKeySecret: { name: temporal-payload-key, key: key }
+  payloadKey: vault:temporal/payload-key
 
 postgres:
   enabled: true

@@ -96,6 +96,33 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- end -}}
 
+{{/* The backend's Temporal connection settings as env: the paths of the mounted TLS files (temporal.tls) and the vault: references of temporal.apiKey and temporal.payloadKey, which the backend resolves at startup; anything but a reference fails the render, as it would fail the backend */}}
+{{- define "platform.temporalEnv" -}}
+{{- $t := .Values.temporal -}}
+{{- with $t.tls -}}
+{{- if .secretName -}}
+{{- if .caKey }}
+- { name: PLATFORM_TEMPORAL_TLS_CA, value: /etc/temporal-tls/ca.crt }
+{{- end -}}
+{{- if .certKey }}
+- { name: PLATFORM_TEMPORAL_TLS_CERT, value: /etc/temporal-tls/tls.crt }
+{{- end -}}
+{{- if .keyKey }}
+- { name: PLATFORM_TEMPORAL_TLS_KEY, value: /etc/temporal-tls/tls.key }
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $setting, $env := dict "apiKey" "PLATFORM_TEMPORAL_APIKEY" "payloadKey" "PLATFORM_TEMPORAL_PAYLOADKEY" -}}
+{{- with get $t $setting -}}
+{{- if not (hasPrefix "vault:" (toString .)) -}}
+{{- fail (printf "temporal.%s is a vault: reference to the key, like vault:temporal/%s, never the key itself: the backend refuses anything else at startup" $setting (kebabcase $setting)) -}}
+{{- end }}
+- name: {{ $env }}
+  value: {{ toString . | quote }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* "true" when the workflows live in the clone of the content repository (content.repository with content.gitStore.enabled); refuses what the Git workflow store cannot run on */}}
 {{- define "platform.gitStore" -}}
 {{- $c := .Values.content -}}
@@ -221,10 +248,7 @@ spec:
         {{- with include "platform.secretEnv" (dict "env" "PLATFORM_AUDIT_SIGNINGKEY" "secret" $v.audit.signingKeySecret) }}
         {{- . | nindent 8 }}
         {{- end }}
-        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_TEMPORAL_APIKEY" "secret" $v.temporal.apiKeySecret) }}
-        {{- . | nindent 8 }}
-        {{- end }}
-        {{- with include "platform.secretEnv" (dict "env" "PLATFORM_TEMPORAL_PAYLOADKEY" "secret" $v.temporal.payloadKeySecret) }}
+        {{- with include "platform.temporalEnv" $ctx | trim }}
         {{- . | nindent 8 }}
         {{- end }}
         {{- range $v.secrets.env }}

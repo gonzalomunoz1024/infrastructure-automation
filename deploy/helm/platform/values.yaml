@@ -84,29 +84,36 @@ temporal:
   taskQueue: platform-interpreter
   # the Temporal web UI, for each job's "Open in Temporal" link; no link when empty
   uiUrl: ""
-  # mTLS to the frontend (Temporal Cloud with certificates, or a server that asks for them): an
-  # existing Secret holding the CA, the client certificate and its key in PEM, mounted at
-  # /etc/temporal-tls and named by platform.temporal.tls.ca, .cert and .key. Set caKey to "" when
-  # the server's certificate is publicly trusted. The provider workers get the same files and the
-  # API key below as IAF_TEMPORAL_TLS_CA/_CERT/_KEY and IAF_TEMPORAL_API_KEY (a worker's own env
-  # entries override them); a Java worker reads the key in PKCS #8 (cert-manager:
-  # privateKey.encoding: PKCS8).
+  # TLS to the frontend, and mTLS with a client certificate (Temporal Cloud with certificates, or
+  # a server that asks for them): an existing Secret holding the CA, the client certificate and its
+  # key in PEM, mounted at /etc/temporal-tls. The backend pods get the files' paths as
+  # PLATFORM_TEMPORAL_TLS_CA, _CERT and _KEY (platform.temporal.tls.ca, .cert and .key), the
+  # provider workers as IAF_TEMPORAL_TLS_CA, _CERT and _KEY (a worker's own env entries override
+  # them). Set caKey to "" when the server's certificate is publicly trusted, certKey and keyKey to
+  # "" for TLS without a client certificate. The key is PKCS #8 (cert-manager:
+  # privateKey.encoding: PKCS8), which the backend and a Java worker require.
   tls:
     secretName: ""
     caKey: ca.crt
     certKey: tls.crt
     keyKey: tls.key
-  # a Temporal Cloud API key: an existing Secret (PLATFORM_TEMPORAL_APIKEY, platform.temporal.api-key;
-  # IAF_TEMPORAL_API_KEY on the provider workers)
+  # a Temporal Cloud API key for the backend, as a vault: reference its credentials store resolves
+  # at startup, like vault:temporal/api-key (PLATFORM_TEMPORAL_APIKEY, platform.temporal.api-key);
+  # it turns TLS on by itself. The backend refuses anything but a vault: reference, and so does the
+  # chart.
+  apiKey: ""
+  # the same key for the provider workers, which read the key itself and resolve no vault:
+  # reference: an existing Secret (IAF_TEMPORAL_API_KEY)
   apiKeySecret:
     name: ""
     key: api-key
-  # the AES-256 key (base64, 32 bytes) that encrypts what the interpreter writes into Temporal's
-  # histories: an existing Secret (PLATFORM_TEMPORAL_PAYLOADKEY, platform.temporal.payload-key).
-  # Without one the histories hold activity inputs and results in clear.
-  payloadKeySecret:
-    name: ""
-    key: payload-key
+  # a vault: reference to the AES-256 key (32 bytes, base64: openssl rand -base64 32) that encrypts
+  # every payload the backend writes into Temporal's histories, like vault:temporal/payload-key
+  # (PLATFORM_TEMPORAL_PAYLOADKEY, platform.temporal.payload-key). The backend refuses anything but
+  # a vault: reference, and so does the chart. Blank: the histories hold the jobs' inputs and the
+  # steps' results in clear, and the backend warns at startup. Keep the key for as long as the
+  # executions it encrypted may be replayed or read.
+  payloadKey: ""
 
 postgres:
   # turns on the backend's postgres profile; with false every pod keeps its state in memory

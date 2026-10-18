@@ -237,3 +237,13 @@ jobs:
             echo "a repository with two API pods and the workers rendered the Git workflow store"
             exit 1
           fi
+      - name: Check the Temporal keys
+        # the backend takes its Temporal API key and payload key only as vault: references, so the
+        # chart renders them as such and refuses a key itself
+        run: |
+          chart=deploy/helm/platform
+          helm template platform $chart -f $chart/ci/full-values.yaml | grep -qE '^ +value: "vault:temporal/payload-key"$'
+          if helm template platform $chart --set temporal.payloadKey=not-a-reference > /dev/null 2>&1; then
+            echo "a payload key that is not a vault: reference rendered"
+            exit 1
+          fi

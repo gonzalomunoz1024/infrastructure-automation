@@ -190,12 +190,15 @@ the key that signs evidence seals (without it every pod signs with a random key 
 seal cannot be verified after a restart), `audit.siem` turns on the SIEM export and
 `audit.worm.mode` write-once evidence (`files` on an existing volume claim, `s3` with Object
 Lock); each adds its profile. For Temporal Cloud or a server that requires mTLS,
-`temporal.tls.secretName` mounts the CA, certificate and key (`platform.temporal.tls.ca`, `.cert`,
-`.key`), `temporal.apiKeySecret` sets `platform.temporal.api-key`, and `temporal.payloadKeySecret`
-the key that encrypts what the interpreter writes into Temporal's histories
-(`platform.temporal.payload-key`). The provider workers get the same certificate files and API
-key as the SDKs' `IAF_TEMPORAL_TLS_CA`, `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` and
-`IAF_TEMPORAL_API_KEY`.
+`temporal.tls.secretName` mounts the CA, certificate and key and points
+`platform.temporal.tls.ca`, `.cert` and `.key` at them. `temporal.apiKey` and
+`temporal.payloadKey` are `vault:` references to the Temporal Cloud API key and to the key that
+encrypts what the backend writes into Temporal's histories (`platform.temporal.api-key`,
+`platform.temporal.payload-key`); the chart refuses anything else, as the backend does. The
+provider workers get the same certificate files as the SDKs' `IAF_TEMPORAL_TLS_CA`,
+`IAF_TEMPORAL_TLS_CERT` and `IAF_TEMPORAL_TLS_KEY`, and the API key itself as
+`IAF_TEMPORAL_API_KEY` from the Secret `temporal.apiKeySecret` names, since they resolve no
+`vault:` reference.
 
 Evidence, notifications and change records have profiles of their own: `worm` (write-once
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
