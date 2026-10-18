@@ -272,6 +272,7 @@ finding is a `Problem` (docs/api.md). Among them:
 | `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
 | `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
 | `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
+| `trigger.schedule`        | error   | a `schedule` trigger: the platform runs no schedules; use an alert, an event or the API |
 | `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
 
 ### Versions and contracts

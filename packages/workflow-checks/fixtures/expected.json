@@ -96,5 +96,8 @@
   ],
   "duplicate-key.yaml": [
     "error yaml.invalid"
+  ],
+  "schedule-trigger.yaml": [
+    "error trigger.schedule"
   ]
 }

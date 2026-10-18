@@ -372,7 +372,7 @@ public final class WorkflowChecks {
                         s.aliases.add("event");
                         expressions(t.spec() == null ? null : t.spec().get("input"), null, field + ".input", s);
                     }
-                    case "schedule" -> warning("trigger.schedule", null, field, "Schedules are not supported; use an alert or the API");
+                    case "schedule" -> error("trigger.schedule", null, field, "Schedules are not supported; use an alert or the API");
                     default -> error("trigger.type", null, field, "Unknown trigger type '" + t.type() + "' (alert, event)");
                 }
             }

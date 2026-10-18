@@ -477,7 +477,7 @@ class Checker {
           break;
         }
         case 'schedule':
-          this.warning('trigger.schedule', null, field, 'Schedules are not supported; use an alert or the API');
+          this.error('trigger.schedule', null, field, 'Schedules are not supported; use an alert or the API');
           break;
         default:
           this.error('trigger.type', null, field, `Unknown trigger type '${t.type}' (alert, event)`);

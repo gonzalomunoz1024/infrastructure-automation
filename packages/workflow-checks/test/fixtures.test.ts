@@ -209,7 +209,7 @@ describe('rules beyond the fixtures', () => {
           triggers: [{ alert: { input: { vmId: '{{ $alert.labels.vm }}' } } }, { event: { topic: 'vm.created' } }, { schedule: { cron: '* * * * *' } }, { type: 'webhook' }, { alert: { match: { source: 'x' }, input: { id: '{{ $json.id }}' } } }],
         }),
       ),
-    ).toEqual(['error trigger.match', 'warning trigger.schedule', 'error trigger.type', 'error expr.noPredecessor']);
+    ).toEqual(['error trigger.match', 'error trigger.schedule', 'error trigger.type', 'error expr.noPredecessor']);
   });
 
   it('judges each step kind', () => {
