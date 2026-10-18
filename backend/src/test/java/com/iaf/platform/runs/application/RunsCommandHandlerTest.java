@@ -408,6 +408,39 @@ class RunsCommandHandlerTest {
     }
 
     @Test
+    void theEngineTakesADecisionBeforeItIsPublished() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        List<Approval.Status> whenSignalled = new ArrayList<>();
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any()))
+                .thenReturn(Mono.fromRunnable(() -> whenSignalled.add(w.projection.approval("apr_1").orElseThrow().status())));
+
+        handler.approve(a.id(), "fine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
+
+        assertThat(whenSignalled).as("still pending while the engine takes it").containsExactly(Approval.Status.PENDING);
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.APPROVED);
+    }
+
+    @Test
+    void aDecisionTheEngineCannotTakeAnswersConflictAndTheApprovalStaysPending() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any())).thenReturn(Mono.error(new ConflictException("Job " + jobId + " is not running")));
+
+        StepVerifier.create(handler.approve(a.id(), "fine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("is not running"))
+                .verify();
+
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.PENDING);
+        assertThat(eventTypes()).doesNotContain("job.approval-decided");
+
+        when(engine.signalApproval(eq(jobId), eq("apr_1"), any())).thenReturn(Mono.empty()); // the job runs again (a resumed job)
+        CommandAccepted acc = handler.reject(a.id(), "not now").contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
+        assertThat(acc.status()).as("a later decision is not refused as already decided").isEqualTo("rejected");
+        assertThat(w.projection.approval("apr_1").orElseThrow().status()).isEqualTo(Approval.Status.REJECTED);
+    }
+
+    @Test
     void anEscalatedApprovalMayBeDecidedByTheEscalationGroupToo() {
         String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
         Approval a = pendingApproval(jobId);

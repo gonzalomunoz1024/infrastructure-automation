@@ -345,6 +345,11 @@ public class RunsCommandHandler implements RunsCommands {
         return decide(approvalId, comment, false);
     }
 
+    /**
+     * The engine takes the decision first and only then is it published, so a job the engine
+     * does not hold answers 409 and its approval stays pending for a later decision, instead of
+     * reading as decided while the job waits for good.
+     */
     private Mono<CommandAccepted> decide(String approvalId, String comment, boolean approved) {
         return CurrentIdentity.current().flatMap(who -> {
             Approval a = projection.approval(approvalId).orElseThrow(() -> new NotFoundException("approval", approvalId));
@@ -355,9 +360,8 @@ public class RunsCommandHandler implements RunsCommands {
                 AccessRules.requireApprove(who, a.group(), a.workflow());   // escalated: the escalation group may decide too
             }
             ApprovalDecision d = approved ? ApprovalDecision.approved(who.id(), comment, now()) : ApprovalDecision.rejected(who.id(), comment, now());
-            events.approvalDecided(a, d);
-            return execution.isRunning(a.jobId())
-                    .flatMap(running -> running ? execution.signalApproval(a.jobId(), a.id(), d) : Mono.empty())
+            return execution.signalApproval(a.jobId(), a.id(), d)
+                    .then(Mono.fromRunnable(() -> events.approvalDecided(a, d)))
                     .thenReturn(accepted(a.id(), d.decision(), a.jobId()));
         });
     }

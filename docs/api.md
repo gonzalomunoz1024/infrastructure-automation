@@ -243,7 +243,7 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
 | GET    | `/approvals/{id}`                      | `Approval` |
-| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
+| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted`. The engine takes the decision first, then it is recorded: 409 when the job is not running in the engine (the approval stays pending) or the approval was already decided |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
