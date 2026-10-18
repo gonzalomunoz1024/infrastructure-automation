@@ -27,10 +27,11 @@ import lombok.extern.slf4j.Slf4j;
 
 /**
  * The demo store: every {@code kind: Workflow} file under the content dir becomes a published
- * version at startup; drafts and later versions live in memory until the process ends.
+ * version at startup; drafts and later versions live in memory until the process ends. With the
+ * {@code mongo} profile, {@link MongoWorkflowStore} keeps them instead.
  */
 @Slf4j
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryWorkflowStore implements WorkflowStorePort {
 

@@ -12,8 +12,8 @@ import org.springframework.stereotype.Component;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
-/** Change requests kept in memory and merged from the UI; GitHub pull requests are planned. */
-@Profile("!postgres")
+/** Change requests kept in memory and merged from the UI. With the {@code mongo} profile, {@link MongoChangeRequests} keeps them instead. */
+@Profile("!mongo")
 @Component
 public class InMemoryChangeRequests implements ChangeRequestPort {
 
