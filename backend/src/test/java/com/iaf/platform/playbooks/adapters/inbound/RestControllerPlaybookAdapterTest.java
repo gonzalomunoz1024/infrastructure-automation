@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
+import org.springframework.http.codec.multipart.DefaultPartHttpMessageReader;
 import org.springframework.http.codec.json.Jackson2JsonEncoder;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.util.unit.DataSize;
@@ -114,6 +115,26 @@ class RestControllerPlaybookAdapterTest {
                 .expectBody().jsonPath("$.error").isEqualTo("The file is larger than 1024 bytes (platform.playbooks.max-upload-size)");
         post(multipart("huge.zip", new byte[200 * 1024], null)).expectStatus().isEqualTo(413);
 
+        verify(commands, never()).upload(any());
+    }
+
+    @Test
+    void aPartOverTheReadersDiskLimitIsRefusedWith413() {
+        props.setMaxUploadSize(DataSize.ofMegabytes(1));
+        WebTestClient capped = WebTestClient.bindToController(new RestControllerPlaybookAdapter(commands, queries, props))
+                .controllerAdvice(new GlobalExceptionHandler())
+                .httpMessageCodecs(c -> c.defaultCodecs().configureDefaultCodec(codec -> {
+                    if (codec instanceof DefaultPartHttpMessageReader reader) {
+                        reader.setMaxInMemorySize(1024);
+                        reader.setMaxDiskUsagePerPart(2048);
+                    }
+                }))
+                .build();
+
+        capped.post().uri("/api/v1/playbooks:upload").contentType(MediaType.MULTIPART_FORM_DATA)
+                .body(BodyInserters.fromMultipartData(multipart("big.zip", new byte[8192], null).build())).exchange()
+                .expectStatus().isEqualTo(413)
+                .expectBody().jsonPath("$.error").isEqualTo("The file is larger than 1 MB (platform.playbooks.max-upload-size)");
         verify(commands, never()).upload(any());
     }
 

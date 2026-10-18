@@ -7,6 +7,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferLimitException;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -62,7 +63,8 @@ public class RestControllerPlaybookAdapter {
         if (declared > max + MULTIPART_SLACK) {
             return Mono.error(tooLarge(max));
         }
-        return exchange.getMultipartData().flatMap(parts -> {
+        // spring.webflux.multipart.max-disk-usage-per-part stops a part without a length at the same limit
+        return exchange.getMultipartData().onErrorMap(DataBufferLimitException.class, e -> tooLarge(max)).flatMap(parts -> {
             Part file = parts.getFirst("file");
             if (!(file instanceof FilePart part)) {
                 return Mono.error(new IllegalArgumentException("file is required: a multipart part named file"));

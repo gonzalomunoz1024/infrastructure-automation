@@ -7,6 +7,10 @@ spring:
       write-dates-as-timestamps: false
   profiles:
     default: demo
+  webflux:
+    multipart:
+      max-disk-usage-per-part: ${platform.playbooks.max-upload-size:20MB}   # a part sent without a length stops at the upload limit
+      max-parts: 16
 
 server:
   port: 8080
