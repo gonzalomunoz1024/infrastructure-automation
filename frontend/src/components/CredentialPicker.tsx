@@ -20,6 +20,11 @@ export const CREDENTIAL_TYPES: SelectOption[] = [
   { value: 'file', label: 'File', hint: 'A certificate, a kubeconfig' },
 ]
 
+/** The type a new credential starts as: the first of the kinds a field asks for that the store takes, else a token. */
+export function defaultCredentialType(kinds?: readonly string[]): string {
+  return kinds?.find((k) => CREDENTIAL_TYPES.some((t) => t.value === k)) ?? 'token'
+}
+
 const MULTILINE = new Set(['ssh-key', 'file'])
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_./-]*$/
 const TEAM_RE = /^[a-z][a-z0-9-]*$/
@@ -108,21 +113,25 @@ export function CredentialPicker({ value, onChange, ariaLabel = 'Credential', re
   )
 }
 
-export function AddCredentialModal({ onClose, onCreated, raised }: { onClose: () => void; onCreated?: (ref: string, name: string) => void; raised?: boolean }) {
+/**
+ * Stores a new credential and hands back its `vault:` reference, name and type, never its value.
+ * `kinds` are the kinds the field it opens from asks for: the form starts on the first the store takes.
+ */
+export function AddCredentialModal({ onClose, onCreated, raised, kinds }: { onClose: () => void; onCreated?: (ref: string, name: string, type: string) => void; raised?: boolean; kinds?: readonly string[] }) {
   return (
     <Modal onClose={onClose} width="max-w-lg" label="Add credential" raised={raised}>
-      <AddCredentialForm onCreated={onCreated} />
+      <AddCredentialForm onCreated={onCreated} kinds={kinds} />
     </Modal>
   )
 }
 
-function AddCredentialForm({ onCreated }: { onCreated?: (ref: string, name: string) => void }) {
+function AddCredentialForm({ onCreated, kinds }: { onCreated?: (ref: string, name: string, type: string) => void; kinds?: readonly string[] }) {
   const close = useOverlayClose()
   const toast = useToast()
   const user = useCurrentUser()
   const me = useQuery(['me', user ?? 'default'], () => api.me())
   const [name, setName] = useState('')
-  const [type, setType] = useState('token')
+  const [type, setType] = useState(() => defaultCredentialType(kinds))
   const [value, setValue] = useState('')
   const [owner, setOwner] = useState('')
   const [otherTeam, setOtherTeam] = useState('')
@@ -148,7 +157,7 @@ function AddCredentialForm({ onCreated }: { onCreated?: (ref: string, name: stri
       // the store answers with the reference a provider file uses, vault:<name>
       const ref = accepted?.id?.startsWith('vault:') ? accepted.id : credentialRef({ name: bare, path: '' })
       toast.success('Credential stored', `${bare} is in the store for ${team}. Its value is never shown again.`)
-      onCreated?.(ref, bare)
+      onCreated?.(ref, bare, type)
       close()
     } catch (err) {
       setError(errorMessage(err))
