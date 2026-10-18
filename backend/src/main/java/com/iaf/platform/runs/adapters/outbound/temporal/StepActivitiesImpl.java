@@ -259,8 +259,8 @@ public class StepActivitiesImpl implements StepActivities {
     }
 
     @Override
-    public void attentionResolved(String jobId, String stepId, String action, String by) {
-        events.attentionResolved(jobId, stepId, action, by);
+    public void attentionResolved(String jobId, String stepId, String action, String by, JsonNode input) {
+        events.attentionResolved(jobId, stepId, action, by, input, null);
     }
 
     @Override

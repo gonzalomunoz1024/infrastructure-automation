@@ -406,8 +406,9 @@ A job's record holds `requested` (with `publish`: the version's `contentHash` an
 published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, `publishedBy`,
 `changeRequestId`), `preview`, `policy`, `change` (opened, then closed with its state),
 `approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
-provider, action, effect, target), `decision` (on a job that needed attention, with the edited
-input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
+provider, action, effect, target), `decision` (on a job that needed attention: the action, who
+took it and, for `edit-input`, the edited input, on either engine) and `closed` (with the
+retention date). Commands that are not about a job (drafts, change
 requests, publishes, provider changes, credentials by name and type, service accounts, release
 decisions, builder sessions, retired resources) go on the platform stream, a chain of its own
 whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the

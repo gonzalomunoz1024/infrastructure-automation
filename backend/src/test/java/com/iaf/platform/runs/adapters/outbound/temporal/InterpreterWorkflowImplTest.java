@@ -365,6 +365,24 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void anEditInputDecisionPublishesTheEditedInputForTheAudit() {
+        t = new TemporalTestEngine(calls -> TemporalTestEngine.failing(calls, "vm.get", 1));
+        Job job = t.start(yaml(FLAKY), Map.of("id", "vm-1042"));
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        t.awaitWorkflowStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+
+        t.execution.signalAttention(job.id(), AttentionDecision.editInput(SampleContent.json(Map.of("input", Map.of("id", "vm-2001"))), "ana")).block();
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        DomainEvent resolved = t.event(job.id(), "job.attention-resolved");
+        assertThat(resolved.data().path("action").asText()).isEqualTo("edit-input");
+        assertThat(resolved.data().path("by").asText()).isEqualTo("ana");
+        assertThat(resolved.data().at("/input/input/id").asText()).isEqualTo("vm-2001");
+        assertThat(t.job(job.id()).step("after").output().path("message").asText()).isEqualTo("after web-2001");
+        t.replay(job.id());
+    }
+
+    @Test
     void skipLeavesTheFailedStepBehindAndContinues() {
         t = new TemporalTestEngine();
         Job job = t.start(yaml(ATTENTION), Map.of("id", "vm-1042"));

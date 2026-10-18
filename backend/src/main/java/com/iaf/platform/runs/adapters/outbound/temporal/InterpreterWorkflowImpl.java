@@ -537,7 +537,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (decision != null) {
             AttentionDecision d = decision;
             invoke(step, () -> {
-                events.attentionResolved(ref.id(), step.id(), d.action().json(), d.by());
+                events.attentionResolved(ref.id(), step.id(), d.action().json(), d.by(), d.input());
                 return null;
             });
         }

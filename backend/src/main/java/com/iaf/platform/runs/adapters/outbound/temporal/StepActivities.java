@@ -101,8 +101,11 @@ public interface StepActivities {
     /** {@code job.attention}. */
     void publishAttention(String jobId, Attention attention);
 
-    /** {@code job.attention-resolved}. */
-    void attentionResolved(String jobId, String stepId, String action, String by);
+    /**
+     * {@code job.attention-resolved}, with the edited input of an edit-input decision (null for
+     * the others; an activity scheduled before the input was added runs with null too).
+     */
+    void attentionResolved(String jobId, String stepId, String action, String by, JsonNode input);
 
     /** {@code job.step}. */
     void publishStep(String jobId, StepEventData event);
