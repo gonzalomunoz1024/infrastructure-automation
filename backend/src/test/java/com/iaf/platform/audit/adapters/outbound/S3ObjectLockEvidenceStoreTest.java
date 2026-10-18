@@ -166,7 +166,9 @@ class S3ObjectLockEvidenceStoreTest {
 
         assertThat(store().findShareToken(token.token())).contains(token);
         PutObjectRequest put = s3.puts.get(s3.puts.size() - 1);
-        assertThat(put.key()).isEqualTo("iaf/share-tokens/" + token.token() + ".json");
+        assertThat(put.key()).as("kept under the hash of the token, never the token")
+                .isEqualTo("iaf/share-tokens/" + com.iaf.platform.common.domain.Hashes.sha256(token.token()) + ".json");
+        assertThat(new String(s3.objects.get(put.key()), java.nio.charset.StandardCharsets.UTF_8)).doesNotContain(token.token());
         assertThat(put.objectLockRetainUntilDate()).isEqualTo(expires);
         assertThat(store().findShareToken("no-such-token-0123456789")).isEmpty();
     }

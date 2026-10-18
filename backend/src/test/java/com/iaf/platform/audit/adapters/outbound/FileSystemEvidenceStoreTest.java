@@ -8,9 +8,13 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -26,6 +30,7 @@ import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.domain.Signatures;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.NotFoundException;
 
 class FileSystemEvidenceStoreTest {
@@ -253,15 +258,81 @@ class FileSystemEvidenceStoreTest {
     }
 
     @Test
-    void shareTokensOutliveARestartAndAreKeptUntilTheyExpire() {
+    void shareTokensOutliveARestartAndAreKeptUntilTheyExpire() throws IOException {
         Instant expires = AT.plus(Duration.ofDays(7));
         ShareToken token = store().shareToken("job_1", expires);
 
         assertThat(store().findShareToken(token.token())).contains(token);
-        assertThat(new FileSystemWormObjects(dir).retainUntil("share-tokens/" + token.token() + ".json")).contains(expires);
+        String key = WormEvidenceStore.tokenKey(Hashes.sha256(token.token()));
+        assertThat(new FileSystemWormObjects(dir).retainUntil(key)).contains(expires);
+        assertThat(Files.readString(dir.resolve(key))).as("the object never holds the token").doesNotContain(token.token());
+        assertThat(dir.resolve("share-tokens/" + token.token() + ".json")).doesNotExist();
         assertThat(store().findShareToken("../../evidence/job_1/seal")).isEmpty();
         assertThat(store().findShareToken("no-such-token-0123456789")).isEmpty();
         assertThat(store().findShareToken(null)).isEmpty();
+    }
+
+    /** A clock the test moves. */
+    static final class MovingClock extends Clock {
+        final AtomicReference<Instant> now;
+
+        MovingClock(Instant start) {
+            now = new AtomicReference<>(start);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now.get();
+        }
+    }
+
+    @Test
+    void sealedRecordsLeaveTheBoundedCacheAndReadBackFromTheirFiles() {
+        WormEvidenceStore store = new WormEvidenceStore(new FileSystemWormObjects(dir), 7, Clock.fixed(AT, ZoneOffset.UTC), 2) {
+        };
+        for (int i = 1; i <= 5; i++) {
+            String id = "job_" + i;
+            store.append(id, requested(AT.plusSeconds(i), "vm-restart"));
+            EvidenceEntry last = store.append(id, closed());
+            store.seal(id, seal(AT.plusSeconds(60), "sig-" + i, last));
+        }
+        store.append("job_open", requested(AT, "vm-restart"));
+
+        assertThat(store.cachedRecords()).as("the open record and the two most recently used sealed ones").isEqualTo(3);
+        EvidenceRecord evicted = store.record("job_1").orElseThrow();
+        assertThat(evicted.sealed().signature()).isEqualTo("sig-1");
+        assertThat(evicted.entries()).hasSize(2);
+        assertThatThrownBy(() -> store.append("job_1", step("late"))).isInstanceOf(IllegalStateException.class).hasMessageContaining("is sealed");
+        assertThat(store.cachedRecords()).isEqualTo(3);
+        assertThat(store.records(EvidenceFilter.ALL)).hasSize(6);
+    }
+
+    @Test
+    void anExpiredShareLinkLeavesTheCacheAndMintingSweepsTheRest() {
+        MovingClock clock = new MovingClock(AT);
+        FileSystemEvidenceStore store = new FileSystemEvidenceStore(dir, 7, clock);
+        ShareToken first = store.shareToken("job_1", AT.plus(Duration.ofHours(1)));
+        ShareToken second = store.shareToken("job_2", AT.plus(Duration.ofHours(2)));
+        assertThat(store.cachedTokens()).isEqualTo(2);
+
+        clock.now.set(AT.plus(Duration.ofMinutes(90)));
+        assertThat(store.findShareToken(first.token())).as("still found, so the API can say it expired").contains(first);
+        assertThat(store.cachedTokens()).isEqualTo(1);
+        assertThat(store.findShareToken(second.token())).contains(second);
+
+        clock.now.set(AT.plus(Duration.ofHours(3)));
+        store.shareToken("job_3", AT.plus(Duration.ofDays(7)));
+        assertThat(store.cachedTokens()).as("the expired link is swept when the next one is minted").isEqualTo(1);
     }
 
     @Test

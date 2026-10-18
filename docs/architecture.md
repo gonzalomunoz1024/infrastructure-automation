@@ -229,7 +229,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 
 | Port (slice)                       | Adapters |
 |------------------------------------|----------|
-| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
+| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects; a share link is kept under the SHA-256 of its token, never the token; the cache holds the open records, the 256 most recently used sealed ones and 1024 share links, and drops a link once it expired): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |

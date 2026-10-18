@@ -1,7 +1,9 @@
 package com.iaf.platform.audit.adapters.outbound;
 
 import java.nio.file.Path;
+import java.time.Clock;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
@@ -21,11 +23,15 @@ import com.iaf.platform.config.PlatformProperties;
 public class FileSystemEvidenceStore extends WormEvidenceStore {
 
     @Autowired
-    public FileSystemEvidenceStore(WormProperties worm, PlatformProperties platform) {
-        this(Path.of(worm.getDir()), platform.getAudit().getRetentionYears());
+    public FileSystemEvidenceStore(WormProperties worm, PlatformProperties platform, ObjectProvider<Clock> clock) {
+        this(Path.of(worm.getDir()), platform.getAudit().getRetentionYears(), clock.getIfAvailable(Clock::systemUTC));
     }
 
     public FileSystemEvidenceStore(Path dir, int retentionYears) {
-        super(new FileSystemWormObjects(dir), retentionYears);
+        this(dir, retentionYears, Clock.systemUTC());
+    }
+
+    public FileSystemEvidenceStore(Path dir, int retentionYears, Clock clock) {
+        super(new FileSystemWormObjects(dir), retentionYears, clock);
     }
 }
