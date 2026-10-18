@@ -201,21 +201,6 @@ platform:
     mode: temporal
 
 ---
-# The postgres profile (docker compose, scripts/dev.sh --postgres): the stores live in PostgreSQL
-# instead of memory, so workflow versions, change requests, providers with their kept versions and
-# review evidence, releases, the resource registry, audit evidence, service accounts, builder
-# sessions, provider-call samples and the jobs (with their steps and events) survive a restart. The connection is spring.datasource.*: set
-# SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD in the
-# environment (a password never goes in this file). Flyway applies db/migration on start.
-spring:
-  config:
-    activate:
-      on-profile: postgres
-  datasource:
-    url: jdbc:postgresql://localhost:5432/platform
-    username: platform
-
----
 # The mongo profile (docker compose, scripts/dev.sh --mongo): the stores live in MongoDB instead of
 # memory, so workflow versions, change requests, providers with their kept versions and review
 # evidence, releases, the resource registry, audit evidence, service accounts, builder sessions,
