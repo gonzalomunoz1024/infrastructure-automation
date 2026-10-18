@@ -5,6 +5,7 @@ import {
   CATALOG,
   CONNECTION,
   CREDENTIALS,
+  DNS_RECORD,
   EVIDENCE,
   IMAGE,
   IMAGE_LINEAGE,
@@ -333,7 +334,7 @@ test.describe('audit', () => {
 
 test.describe('resources', () => {
   test('a resource draws its lineage, and retiring one in use lists its dependents', async ({ page }) => {
-    const all = [IMAGE, BASE_IMAGE, ...VMS]
+    const all = [IMAGE, BASE_IMAGE, ...VMS, DNS_RECORD]
     await mockApi(page, {
       'GET /resources/{id}': (req) => all.find((r) => r.id === req.params.id) ?? reply(404, { error: 'No such resource' }),
       'GET /resources/{id}/lineage': (req) => (req.params.id === IMAGE.id ? IMAGE_LINEAGE : { resource: all.find((r) => r.id === req.params.id), builtFrom: [IMAGE], dependents: [] }),
@@ -342,6 +343,10 @@ test.describe('resources', () => {
     await page.goto('/#/resources/img-77')
     const graph = page.locator('svg').filter({ hasText: 'ubuntu-2404-cis1' })
     for (const name of ['ubuntu-2404', 'web-1042', 'web-1043']) await expect(graph).toContainText(name)
+    // the backend answers the whole graph: the DNS record of web-1042 is two hops away, and says how it came
+    await expect(graph).toHaveAttribute('aria-label', 'Lineage of ubuntu-2404-cis1: built from 1, 2 dependents; 1 upstream and 3 downstream in all')
+    await expect(graph.getByRole('link', { name: /web-1042\.prod/ })).toHaveAttribute('href', '#/resources/dns-1042')
+    await expect(graph.locator('path[data-edge="vm-1042>dns-1042"] title')).toHaveText('web-1042.prod was built from web-1042 by register-dns')
 
     await page.getByRole('button', { name: 'Retire' }).click()
     await page.getByRole('dialog', { name: /Retire ubuntu-2404-cis1/ }).getByRole('button', { name: 'Retire' }).click()

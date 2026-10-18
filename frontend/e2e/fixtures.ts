@@ -269,7 +269,20 @@ export const VMS: Resource[] = [
   resource('vm-1042', 'vm', 'web-1042', { attributes: { cpu: 4, memoryGb: 16, environment: 'prod', image: 'img-77' }, builtFrom: ['img-77'] }),
   resource('vm-1043', 'vm', 'web-1043', { attributes: { cpu: 4, memoryGb: 16, environment: 'prod', image: 'img-77' }, builtFrom: ['img-77'] }),
 ]
-export const IMAGE_LINEAGE: Lineage = { resource: IMAGE, builtFrom: [BASE_IMAGE], dependents: VMS }
+/** Two hops from the image: a DNS record registered for web-1042. */
+export const DNS_RECORD = resource('dns-1042', 'dns-record', 'web-1042.prod', { createdBy: { jobId: 'job-dns-1042', workflow: 'register-dns' }, builtFrom: ['vm-1042'] })
+/** The backend's answer: the direct lists, and the whole graph around the image as nodes and edges. */
+export const IMAGE_LINEAGE: Lineage = {
+  resource: IMAGE,
+  builtFrom: [BASE_IMAGE],
+  dependents: VMS,
+  nodes: [IMAGE, BASE_IMAGE, ...VMS, DNS_RECORD],
+  edges: [
+    { from: BASE_IMAGE.id, to: IMAGE.id, via: 'build-vm-image' },
+    ...VMS.map((vm) => ({ from: IMAGE.id, to: vm.id, via: 'create-vm' })),
+    { from: 'vm-1042', to: DNS_RECORD.id, via: 'register-dns' },
+  ],
+}
 
 export const PREVIEW: Preview = {
   workflow: 'vm-restart',

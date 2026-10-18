@@ -612,7 +612,13 @@ export type Resource = {
   builtFrom: string[]
   createdAt: string
 }
-export type Lineage = { resource: Resource; builtFrom: Resource[]; dependents: Resource[] }
+/** `to` was built from `from`; `via` is the workflow that registered `to`, when known. */
+export type LineageEdge = { from: string; to: string; via?: string }
+/**
+ * `builtFrom` and `dependents` are the direct neighbours; `nodes` and `edges`, when the backend
+ * sends them, are the whole graph around the resource in both directions (the resource first).
+ */
+export type Lineage = { resource: Resource; builtFrom: Resource[]; dependents: Resource[]; nodes?: Resource[]; edges?: LineageEdge[] }
 export type ResourceFilter = { type?: string; owner?: string; status?: string }
 
 /* ----------------------------------------------------------------------------
