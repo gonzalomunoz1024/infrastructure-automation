@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SERVICE_ACCOUNTS, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import type { ServiceAccount } from '../src/lib/types'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -679,5 +680,61 @@ test.describe('assistant', () => {
     await expect(page).toHaveURL(/#\/change-requests\/cr-120$/)
     expect(api.callsTo('POST', '/workflows')[0].body).toEqual({ yaml: ASSISTANT_DRAFT_YAML })
     expect(api.callsTo('POST', '/workflows/vm-restart-safe:publish')[0].body).toEqual({ strategy: 'canary' })
+  })
+})
+
+test.describe('service accounts', () => {
+  test('the form offers the presets and the grouped scopes, the list shows each account’s scopes, and the token once', async ({ page }) => {
+    let accounts = SERVICE_ACCOUNTS
+    const api = await mockApi(page, {
+      'GET /service-accounts': () => reply(200, accounts),
+      'POST /service-accounts': (req) => {
+        const body = req.body as { name: string; preset?: string; scopes?: string[] }
+        const scopes = body.scopes ?? (body.preset === 'ci' ? ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write', 'providers:write'] : ['registry:read', 'jobs:start', 'jobs:read'])
+        accounts = [...accounts, { id: 'sa-new', name: body.name, roles: ['ops'], teams: ['team-platform'], createdAt: new Date().toISOString(), scopes: scopes as ServiceAccount['scopes'] }]
+        return reply(201, { id: 'sa-new', token: 'iaf_sa_example_token_not_a_secret', scopes })
+      },
+    })
+    await page.goto('/#/settings')
+    const table = page.getByRole('table', { name: 'Service accounts' })
+    const ci = table.getByRole('row', { name: /ci-deployer/ })
+    await expect(ci.getByLabel('Scopes')).toContainText('ci')
+    await expect(ci.getByLabel('Scopes')).toContainText('providers:write')
+    await expect(table.getByRole('row', { name: /cost-bot/ })).toContainText('not reported')
+
+    await page.getByRole('button', { name: 'New service account' }).click()
+    const dialog = page.getByRole('dialog', { name: 'New service account' })
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('release-bot')
+    // the invoker preset is the default; CI fills its set
+    await expect(dialog.getByRole('radio', { name: 'Invoker' })).toHaveAttribute('aria-checked', 'true')
+    await expect(dialog.getByRole('checkbox', { name: /jobs:start/ })).toBeChecked()
+    await dialog.getByRole('radio', { name: 'CI' }).click()
+    await expect(dialog.getByRole('checkbox', { name: /jobs:start/ })).not.toBeChecked()
+    await expect(dialog.getByRole('checkbox', { name: /workflows:write/ })).toBeChecked()
+    const groups = dialog.getByTestId('scope-groups')
+    await expect(groups.getByRole('group')).toHaveCount(5)
+    await expect(groups.getByRole('group', { name: 'Jobs' }).getByRole('checkbox')).toHaveCount(2)
+    // a scope outside the preset makes the set custom; back inside, the preset applies with the scopes it keeps
+    await dialog.locator('#sa-scope-admin').check()
+    await expect(dialog.getByRole('radio', { name: 'Custom' })).toHaveAttribute('aria-checked', 'true')
+    await dialog.getByRole('radio', { name: 'CI' }).click()
+    await expect(dialog.locator('#sa-scope-admin')).not.toBeChecked()
+    await dialog.getByRole('checkbox', { name: /providers:write/ }).uncheck()
+    await expect(dialog.getByRole('radio', { name: 'CI' })).toHaveAttribute('aria-checked', 'true')
+    await dialog.getByRole('button', { name: 'Create' }).click()
+
+    // the token, once, with what it may call; then the list carries the scopes
+    const token = page.getByRole('dialog', { name: 'Service account token' })
+    await expect(token).toContainText('iaf_sa_example_token_not_a_secret')
+    await expect(token.getByLabel('Scopes')).toContainText('workflows:write')
+    expect(api.callsTo('POST', '/service-accounts')[0].body).toEqual({
+      name: 'release-bot',
+      roles: ['ops'],
+      teams: [],
+      preset: 'ci',
+      scopes: ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write'],
+    })
+    await token.getByRole('button', { name: 'Done' }).click()
+    await expect(table.getByRole('row', { name: /release-bot/ }).getByLabel('Scopes')).toContainText('workflows:write')
   })
 })

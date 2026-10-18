@@ -25,6 +25,7 @@ import type {
   Release,
   Resource,
   ResourceType,
+  ServiceAccount,
   SpecImport,
   TerraformImport,
   TestConnectionResult,
@@ -370,6 +371,12 @@ export const PROVIDER: ProviderDetail = {
 }
 
 export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91' }]
+
+/** Two service accounts: a CI one with its scopes, and an older one the API reports no scopes for. */
+export const SERVICE_ACCOUNTS: ServiceAccount[] = [
+  { id: 'sa-ci', name: 'ci-deployer', roles: ['ops'], teams: ['team-platform'], createdAt: ago(60 * 24 * 5), scopes: ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write', 'providers:write'] },
+  { id: 'sa-bot', name: 'cost-bot', roles: ['sre'], createdAt: ago(60 * 24 * 40) },
+]
 
 export const CREDENTIALS: Credential[] = [
   { name: 'backup/api-key', type: 'api-key', path: 'vault:backup/api-key', updatedAt: ago(60 * 24 * 10) },
