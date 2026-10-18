@@ -1,19 +1,29 @@
 package com.iaf.platform.common.adapters.mongo;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.bson.BsonReader;
+import org.bson.BsonType;
+import org.bson.BsonWriter;
 import org.bson.Document;
+import org.bson.codecs.BsonTypeClassMap;
+import org.bson.codecs.Codec;
 import org.bson.codecs.CollectionCodecProvider;
+import org.bson.codecs.DecoderContext;
 import org.bson.codecs.DocumentCodecProvider;
+import org.bson.codecs.EncoderContext;
 import org.bson.codecs.IterableCodecProvider;
 import org.bson.codecs.MapCodecProvider;
 import org.bson.codecs.configuration.CodecRegistries;
 import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.conversions.Bson;
+import org.bson.types.Decimal128;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
@@ -48,11 +58,11 @@ import reactor.core.scheduler.Schedulers;
  * mapping is the application's JSON (ISO instants to the nanosecond, lowercase enums, no nulls)
  * turned into a document field by field, never parsed as extended JSON, so a key such as
  * {@code $ref} in an imported schema stays a key, and read back with {@link #codecs}, so a part of
- * a schema that holds {@code $id} beside {@code $ref} stays a document. Unknown fields are ignored
- * on the way back, so a document written before a record grew a field still reads, and records
- * are their components (no is-getter discovery, so {@code Job.isBatch()} does not shadow
- * {@code batch}). Instants that a query compares are also kept as epoch nanoseconds
- * ({@link #nanos}), which order exactly.
+ * a schema that holds {@code $id} beside {@code $ref} stays a document and an integer beyond a long
+ * comes back as that integer. Unknown fields are ignored on the way back, so a document written
+ * before a record grew a field still reads, and records are their components (no is-getter
+ * discovery, so {@code Job.isBatch()} does not shadow {@code batch}). Instants that a query
+ * compares are also kept as epoch nanoseconds ({@link #nanos}), which order exactly.
  */
 @Slf4j
 public class Mongo {
@@ -79,15 +89,68 @@ public class Mongo {
     }
 
     /**
-     * The codecs documents are written and read with: the driver's, except that a sub-document
-     * stays a document. The driver reads one that has both {@code $ref} and {@code $id} keys as a
-     * DBRef, dropping its other keys, and a JSON schema may well have both.
+     * The codecs documents are written and read with: the driver's, with two changes so a record
+     * comes back as stored. A sub-document stays a document: the driver reads one that has both
+     * {@code $ref} and {@code $id} keys as a DBRef, dropping its other keys, and a JSON schema may
+     * well have both. And an integer beyond a long (an OpenAPI {@code uint64} bound), which the
+     * driver cannot write, is stored as a Decimal128, exact to 34 digits (a longer one is refused,
+     * never rounded); a Decimal128 reads back as the integer it holds.
      */
     static CodecRegistry codecs(CodecRegistry driver) {
+        BsonTypeClassMap types = new BsonTypeClassMap(Map.of(BsonType.DECIMAL128, Number.class));
         return CodecRegistries.fromRegistries(
-                CodecRegistries.fromProviders(new DocumentCodecProvider(), new CollectionCodecProvider(), new IterableCodecProvider(),
-                        new MapCodecProvider()),
+                CodecRegistries.fromCodecs(new BigIntegerCodec(), new DecimalCodec()),
+                CodecRegistries.fromProviders(new DocumentCodecProvider(types), new CollectionCodecProvider(types),
+                        new IterableCodecProvider(types), new MapCodecProvider(types)),
                 driver);
+    }
+
+    /** An integer beyond a long, as a Decimal128. */
+    private static final class BigIntegerCodec implements Codec<BigInteger> {
+
+        @Override
+        public void encode(BsonWriter writer, BigInteger value, EncoderContext context) {
+            writer.writeDecimal128(new Decimal128(new BigDecimal(value)));
+        }
+
+        @Override
+        public BigInteger decode(BsonReader reader, DecoderContext context) {
+            return reader.readDecimal128().bigDecimalValue().toBigIntegerExact();
+        }
+
+        @Override
+        public Class<BigInteger> getEncoderClass() {
+            return BigInteger.class;
+        }
+    }
+
+    /** A stored Decimal128 as a number: the integer it holds, else a BigDecimal (NaN, the infinities and -0 stay a Decimal128). */
+    private static final class DecimalCodec implements Codec<Number> {
+
+        @Override
+        public void encode(BsonWriter writer, Number value, EncoderContext context) {
+            writer.writeDecimal128(value instanceof Decimal128 d ? d : new Decimal128(new BigDecimal(value.toString())));
+        }
+
+        @Override
+        public Number decode(BsonReader reader, DecoderContext context) {
+            Decimal128 stored = reader.readDecimal128();
+            if (!stored.isFinite()) {
+                return stored;
+            }
+            BigDecimal value;
+            try {
+                value = stored.bigDecimalValue();
+            } catch (ArithmeticException negativeZero) {
+                return stored;
+            }
+            return value.scale() <= 0 ? value.toBigIntegerExact() : value;
+        }
+
+        @Override
+        public Class<Number> getEncoderClass() {
+            return Number.class;
+        }
     }
 
     /** The mapper between records and their documents. */
