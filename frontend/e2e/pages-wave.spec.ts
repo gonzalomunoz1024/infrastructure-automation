@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 import {
   BASE_IMAGE,
+  BATCH_JOB,
+  BATCH_RETRIED,
   BUILD_JOB,
   CATALOG,
   CREATE_PREVIEW,
@@ -198,6 +200,49 @@ test.describe('job: built inputs, continued failures and the replay', () => {
     await page.getByRole('tab', { name: /Time travel/ }).click()
     await expect(page.getByTestId('rerun-unavailable')).toHaveText('A job can be re-run once it has ended.')
     await expect(page.getByRole('button', { name: /Re-run from/ })).toHaveCount(0)
+  })
+})
+
+test.describe('job: a stopped batch', () => {
+  test('retrying runs the failed and skipped rows again in a new wave, and the panel follows', async ({ page }) => {
+    let retried = false
+    const api = await mockApi(page, {
+      'GET /jobs/{id}': () => (retried ? BATCH_RETRIED : BATCH_JOB),
+      'GET /jobs/{id}/events': sse([]),
+      'POST /jobs/{id}:retry-failed-rows': () => {
+        retried = true
+        return reply(202, { id: BATCH_JOB.id, status: 'queued' })
+      },
+      'GET /workflows': WORKFLOWS,
+    })
+    await page.goto('/#/jobs/job-b4d2e9a1')
+    // a batch opens on its rows
+    await expect(page.getByRole('tab', { name: /Batch/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('alert').filter({ hasText: 'Stopped: stopped after wave 1: 2 of 3 rows failed (more than 20%)' })).toBeVisible()
+    const rows = page.getByRole('table', { name: 'Batch rows' })
+    await expect(rows).toContainText('package_conflict at apply')
+    await expect(rows.getByRole('link', { name: 'job-b4d2-r1' })).toHaveAttribute('href', '#/jobs/job-b4d2-r1')
+
+    // the backend retries the failed, cancelled and skipped rows: two failed and three skipped here
+    await expect(page.getByText('2 failed, 3 skipped: they run again in a new wave')).toBeVisible()
+    await page.getByRole('button', { name: 'Retry 5 rows' }).click()
+    await expect(page.getByText('Retrying the rows')).toBeVisible()
+    expect(api.callsTo('POST', '/jobs/job-b4d2e9a1:retry-failed-rows')).toHaveLength(1)
+
+    // the job reads again: queued, a fourth wave pending, nothing left to retry
+    await expect(page.getByText('Wave 4 · 100%')).toBeVisible()
+    await expect(page.getByText('5 rows · pending')).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Retry/ })).toHaveCount(0)
+    await expect(page.getByRole('alert').filter({ hasText: 'Stopped:' })).toHaveCount(0)
+    await expect(rows).not.toContainText('package_conflict at apply')
+  })
+
+  test('a batch still running offers no retry, even with a failed row', async ({ page }) => {
+    const running = { ...BATCH_JOB, status: 'running' as const, endedAt: undefined, durationMs: undefined, batch: { ...BATCH_JOB.batch!, waves: [BATCH_JOB.batch!.waves[0], { ...BATCH_JOB.batch!.waves[1], status: 'running', endedAt: undefined }, { ...BATCH_JOB.batch!.waves[2], status: 'pending', endedAt: undefined }], stoppedReason: undefined } }
+    await mockApi(page, { 'GET /jobs/{id}': running, 'GET /jobs/{id}/events': sse([]), 'GET /workflows': WORKFLOWS })
+    await page.goto('/#/jobs/job-b4d2e9a1')
+    await expect(page.getByRole('table', { name: 'Batch rows' })).toContainText('package_conflict at apply')
+    await expect(page.getByRole('button', { name: /^Retry/ })).toHaveCount(0)
   })
 })
 

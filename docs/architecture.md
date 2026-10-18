@@ -382,7 +382,9 @@ alone) and keeps the session in its address (`?session=`), so a reload or a shar
 from `GET /assistant/sessions/{id}`, in the session's mode. The job page's "Re-run from a step"
 sends `POST /jobs/{id}:rerun` with the step and only the fields typed, which the backend merges
 onto the job's input (a list or a scalar is refused before it is sent); a job still running or a
-batch, both refused by the backend, gets a sentence instead of the form. The settings page creates
+batch, both refused by the backend, gets a sentence instead of the form. A batch offers its retry
+once it has ended, counting the rows `POST /jobs/{id}:retry-failed-rows` runs again in a new wave
+(the failed, cancelled and skipped ones, named when not all of them failed). The settings page creates
 service accounts with the presets and the grouped scopes of `docs/api.md`.
 
 The designer works from the registry. Its node creator inserts a terraform provider's action with

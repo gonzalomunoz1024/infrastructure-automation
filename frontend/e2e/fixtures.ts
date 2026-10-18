@@ -597,6 +597,68 @@ export const REPLAY: JobReplay = {
 }
 
 /* ----------------------------------------------------------------------------
+   A batch the backend stopped (GET /jobs/job-b4d2e9a1), as the in-memory engine leaves it: waves
+   done, done, skipped; the second wave's failures crossed stopIfFailedPercent, so the third wave's
+   rows were skipped and the job failed. POST /jobs/job-b4d2e9a1:retry-failed-rows runs the failed
+   and skipped rows again in a fourth wave and queues the job again (BATCH_RETRIED).
+   ------------------------------------------------------------------------- */
+
+const patchRow = (index: number, host: string) => ({ index, input: { host, cve: 'CVE-2026-1234' } })
+
+export const BATCH_JOB: JobDetail = {
+  id: 'job-b4d2e9a1',
+  workflow: 'patch-cve',
+  title: 'Patch CVE-2026-1234 on 6 servers',
+  version: '0.3.0',
+  status: 'failed',
+  requester: 'maria',
+  channel: 'batch',
+  startedAt: ago(40),
+  endedAt: ago(31),
+  durationMs: 540_000,
+  kind: 'batch',
+  progress: { done: 6, total: 6, failed: 2 },
+  input: { cve: 'CVE-2026-1234' },
+  output: { total: 6, succeeded: 1, failed: 2, skipped: 3 },
+  steps: [],
+  approvals: [],
+  traceId: '4b0e6f2d9a1c3e5f7a9b1c3d5e7f9a1b',
+  batch: {
+    rollout: { waves: [20, 50, 100], maxParallel: 2, stopIfFailedPercent: 20 },
+    waves: [
+      { index: 0, percent: 20, size: 1, status: 'done', startedAt: ago(40), endedAt: ago(37) },
+      { index: 1, percent: 50, size: 2, status: 'done', startedAt: ago(37), endedAt: ago(31) },
+      { index: 2, percent: 100, size: 3, status: 'skipped', endedAt: ago(31) },
+    ],
+    rows: [
+      { ...patchRow(0, 'web-01'), jobId: 'job-b4d2-r0', status: 'succeeded' },
+      { ...patchRow(1, 'web-02'), jobId: 'job-b4d2-r1', status: 'failed', error: 'package_conflict at apply' },
+      { ...patchRow(2, 'web-03'), jobId: 'job-b4d2-r2', status: 'failed', error: 'unreachable at gather' },
+      { ...patchRow(3, 'web-04'), status: 'skipped' },
+      { ...patchRow(4, 'web-05'), status: 'skipped' },
+      { ...patchRow(5, 'web-06'), status: 'skipped' },
+    ],
+    stoppedReason: 'stopped after wave 1: 2 of 3 rows failed (more than 20%)',
+  },
+}
+
+/** BATCH_JOB once :retry-failed-rows accepted: queued again, the five rows pending in wave 4. */
+export const BATCH_RETRIED: JobDetail = {
+  ...BATCH_JOB,
+  status: 'queued',
+  endedAt: undefined,
+  durationMs: undefined,
+  output: undefined,
+  progress: { done: 1, total: 6, failed: 0 },
+  batch: {
+    ...BATCH_JOB.batch!,
+    waves: [...BATCH_JOB.batch!.waves, { index: 3, percent: 100, size: 5, status: 'pending' }],
+    rows: BATCH_JOB.batch!.rows.map((r) => (r.status === 'succeeded' ? r : { index: r.index, input: r.input, status: 'pending' })),
+    stoppedReason: undefined,
+  },
+}
+
+/* ----------------------------------------------------------------------------
    A workflow change request with the publish checks (GET /change-requests/cr-202)
    ------------------------------------------------------------------------- */
 

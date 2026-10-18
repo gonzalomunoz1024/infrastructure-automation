@@ -227,7 +227,7 @@ export default function JobPage({ route }: PageProps) {
                 </Card>
               )}
               {tab === 'batch' && data.batch && (
-                <BatchPanel batch={data.batch} onRetryFailed={() => act(() => api.retryFailedRows(id), 'Retrying the failed rows', 'Could not retry the rows')} />
+                <BatchPanel batch={data.batch} ended={!active} onRetryFailed={() => act(() => api.retryFailedRows(id), 'Retrying the rows', 'Could not retry the rows', 'They run again in a new wave.')} />
               )}
               {tab === 'replay' && <TimeTravel jobId={id} workflow={data.workflow} steps={data.steps} input={data.input} rerunBlocked={rerunBlocker({ active, batch: isBatch })} />}
               {tab === 'activity' && <Activity events={events} live={live === 'open' && active} />}

@@ -11,20 +11,43 @@ import { TextLink, When, summarize } from './common'
 
 export interface BatchPanelProps {
   batch: Batch
-  onRetryFailed?: () => Promise<void>
+  /** POST /jobs/{id}:retry-failed-rows; offered once the batch has ended and some rows did not succeed */
+  onRetryFailed?: () => Promise<unknown>
+  /** the batch job has ended (the backend retries rows of an ended batch only); without it, every wave has ended */
+  ended?: boolean
   className?: string
 }
 
 const isDone = (s: string) => ['succeeded', 'failed', 'cancelled', 'rolled-back', 'skipped'].includes(s)
 const isFailed = (s: string) => s === 'failed' || s === 'rolled-back'
+/** a wave ends done, stopped (cancelled) or skipped (the batch stopped before it) */
+const waveEnded = (s: string) => ['done', 'stopped', 'skipped', 'succeeded', 'failed', 'cancelled'].includes(s)
+const RETRIED = ['failed', 'cancelled', 'skipped'] as const
 
-export function BatchPanel({ batch, onRetryFailed, className }: BatchPanelProps) {
+/** The rows `:retry-failed-rows` runs again, by status: the failed, cancelled and skipped ones. */
+export function retryableRows(batch: Batch): { total: number } & Record<(typeof RETRIED)[number], number> {
+  const count = (status: string) => batch.rows.filter((r) => r.status === status).length
+  const by = { failed: count('failed'), cancelled: count('cancelled'), skipped: count('skipped') }
+  return { ...by, total: by.failed + by.cancelled + by.skipped }
+}
+
+/** The retry button's words: "Retry 2 failed rows", or "Retry 6 rows" when some were skipped or cancelled. */
+export function retryLabel(rows: ReturnType<typeof retryableRows>): { label: string; detail?: string } {
+  if (rows.total === rows.failed) return { label: `Retry ${plural(rows.total, 'failed row')}` }
+  const parts = RETRIED.filter((s) => rows[s] > 0).map((s) => `${rows[s]} ${s}`)
+  return { label: `Retry ${plural(rows.total, 'row')}`, detail: `${parts.join(', ')}: they run again in a new wave` }
+}
+
+export function BatchPanel({ batch, onRetryFailed, ended, className }: BatchPanelProps) {
   const [busy, setBusy] = useState(false)
   const [filter, setFilter] = useState<'all' | 'failed'>('all')
   const total = batch.rows.length
   const done = batch.rows.filter((r) => isDone(r.status)).length
   const failed = batch.rows.filter((r) => isFailed(r.status)).length
   const failedPct = total ? (failed / total) * 100 : 0
+  const allEnded = batch.waves.length > 0 && batch.waves.every((w) => waveEnded(w.status))
+  const retryable = retryableRows(batch)
+  const retry = onRetryFailed && (ended ?? allEnded) && retryable.total > 0 ? retryLabel(retryable) : null
   const currentWave = Math.max(
     0,
     batch.waves.findIndex((w) => w.status === 'running' || w.status === 'pending' || w.status === 'queued'),
@@ -34,7 +57,7 @@ export function BatchPanel({ batch, onRetryFailed, className }: BatchPanelProps)
     label: `Wave ${w.index + 1} · ${w.percent}%`,
     description: `${plural(w.size, 'row')} · ${w.status.replace(/-/g, ' ')}`,
   }))
-  const current = batch.waves.every((w) => isDone(w.status)) ? batch.waves.length : currentWave
+  const current = allEnded ? batch.waves.length : currentWave
 
   const rows = filter === 'failed' ? batch.rows.filter((r) => isFailed(r.status)) : batch.rows
   const columns: TableColumn<BatchRow>[] = [
@@ -74,18 +97,24 @@ export function BatchPanel({ batch, onRetryFailed, className }: BatchPanelProps)
               </p>
             )}
           </div>
-          {onRetryFailed && failed > 0 && (
-            <Button
-              icon="refresh"
-              variant="primary"
-              loading={busy}
-              onClick={() => {
-                setBusy(true)
-                void onRetryFailed().finally(() => setBusy(false))
-              }}
-            >
-              Retry {plural(failed, 'failed row')}
-            </Button>
+          {onRetryFailed && retry && (
+            <div className="flex flex-col items-end gap-1">
+              <Button
+                icon="refresh"
+                variant="primary"
+                loading={busy}
+                onClick={() => {
+                  setBusy(true)
+                  // the page reports a failure (toast); nothing more to do here
+                  void onRetryFailed()
+                    .catch(() => undefined)
+                    .finally(() => setBusy(false))
+                }}
+              >
+                {retry.label}
+              </Button>
+              {retry.detail && <span className="text-caption2 text-tertiary">{retry.detail}</span>}
+            </div>
           )}
         </div>
         {waves.length > 0 && <Stepper steps={waves} current={current} className="mt-5" />}

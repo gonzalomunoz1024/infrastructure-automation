@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { Batch, EvidenceEntry, JobStep, JobSummary, Lineage, Preview, Problem, Resource, Schema } from '../lib/types'
-import { BatchPanel } from '../components/BatchPanel'
+import { BatchPanel, retryLabel, retryableRows } from '../components/BatchPanel'
 import { EvidenceTimeline, summarizeEntry } from '../components/EvidenceTimeline'
 import { LineageGraph } from '../components/LineageGraph'
 import { PreviewCard } from '../components/PreviewCard'
@@ -182,12 +182,51 @@ describe('BatchPanel', () => {
     expect(html).not.toContain('Retry 1 failed row')
   })
 
-  it('offers to retry the failed rows and says why it stopped', () => {
-    const html = text(renderToString(<BatchPanel batch={{ ...BATCH, stoppedReason: 'more than 10% failed in wave 2' }} onRetryFailed={async () => {}} />))
-    expect(html).toContain('Retry 1 failed row')
-    expect(html).toContain('more than 10% failed in wave 2')
+  it('offers no retry while the batch runs: the backend retries the rows of an ended batch only', () => {
+    const html = text(renderToString(<BatchPanel batch={BATCH} onRetryFailed={async () => {}} />))
+    expect(html).toContain('vCenter timeout')
+    expect(html).not.toContain('Retry')
+    expect(text(renderToString(<BatchPanel batch={BATCH} ended={false} onRetryFailed={async () => {}} />))).not.toContain('Retry')
+  })
+
+  it('offers to retry the rows that did not succeed once it stopped, and says why it stopped', () => {
+    const html = text(renderToString(<BatchPanel batch={STOPPED} onRetryFailed={async () => {}} />))
+    expect(html).toContain('Retry 4 rows')
+    expect(html).toContain('2 failed, 2 skipped: they run again in a new wave')
+    expect(html).toContain('stopped after wave 1: 2 of 3 rows failed (more than 10%)')
+    // the waves ended (done, done, skipped): none is the current one
+    expect(html).not.toContain('aria-current="step"')
+    expect(text(renderToString(<BatchPanel batch={STOPPED} ended onRetryFailed={async () => {}} />))).toContain('Retry 4 rows')
+    expect(text(renderToString(<BatchPanel batch={STOPPED} />))).not.toContain('Retry')
+  })
+
+  it('counts the rows the backend retries: failed, cancelled and skipped', () => {
+    expect(retryableRows(STOPPED)).toEqual({ failed: 2, cancelled: 0, skipped: 2, total: 4 })
+    expect(retryLabel(retryableRows(STOPPED))).toEqual({ label: 'Retry 4 rows', detail: '2 failed, 2 skipped: they run again in a new wave' })
+    const onlyFailed = { ...STOPPED, rows: STOPPED.rows.filter((r) => r.status !== 'skipped') }
+    expect(retryLabel(retryableRows(onlyFailed))).toEqual({ label: 'Retry 2 failed rows' })
+    const cancelled = { ...STOPPED, rows: [{ index: 0, input: {}, status: 'cancelled' }] }
+    expect(retryLabel(retryableRows(cancelled))).toEqual({ label: 'Retry 1 row', detail: '1 cancelled: they run again in a new wave' })
   })
 })
+
+/** A batch the backend stopped after its second wave: waves done, done, skipped; the job failed. */
+const STOPPED: Batch = {
+  rollout: { waves: [20, 60, 100], maxParallel: 2, stopIfFailedPercent: 10 },
+  waves: [
+    { index: 0, percent: 20, size: 1, status: 'done', startedAt: '2026-10-17T09:00:00Z', endedAt: '2026-10-17T09:01:00Z' },
+    { index: 1, percent: 60, size: 2, status: 'done', startedAt: '2026-10-17T09:01:00Z', endedAt: '2026-10-17T09:03:00Z' },
+    { index: 2, percent: 100, size: 2, status: 'skipped', endedAt: '2026-10-17T09:03:00Z' },
+  ],
+  rows: [
+    { index: 0, input: { vmId: 'vm-1' }, jobId: 'job-r0', status: 'succeeded' },
+    { index: 1, input: { vmId: 'vm-2' }, jobId: 'job-r1', status: 'failed', error: 'vcenter_timeout at restart' },
+    { index: 2, input: { vmId: 'vm-3' }, jobId: 'job-r2', status: 'failed', error: 'failed' },
+    { index: 3, input: { vmId: 'vm-4' }, status: 'skipped' },
+    { index: 4, input: { vmId: 'vm-5' }, status: 'skipped' },
+  ],
+  stoppedReason: 'stopped after wave 1: 2 of 3 rows failed (more than 10%)',
+}
 
 /* ---------------------------------------------------------------- EvidenceTimeline */
 
