@@ -66,6 +66,10 @@ import reactor.test.StepVerifier;
 class RunsCommandHandlerTest {
 
     private static final Identity NOBODY = new Identity("nobody", "Nobody", null, List.of(), List.of(), false, Identity.Kind.USER);
+    /** Neither in team-compute nor an ops, sre or compute-approver: may steer only the jobs they started. */
+    private static final Identity OUTSIDER = new Identity("outsider", "Outsider", null, List.of("team-web"), List.of("developer"), false, Identity.Kind.USER);
+    /** In the owner team of vm-restart without any of its rbac roles. */
+    private static final Identity COMPUTE_DEV = new Identity("dev", "Dev", null, List.of("team-compute"), List.of("developer"), false, Identity.Kind.USER);
 
     private RunsTestWiring w;
     private WorkflowExecutionPort engine;
@@ -415,6 +419,37 @@ class RunsCommandHandlerTest {
         handler.cancel(jobId).contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO)).block();
         verify(engine).cancel(jobId, "gonzalo");
         assertThat(eventTypes()).doesNotContain("job.cancelled");
+    }
+
+    @Test
+    void aStrangerMayNotSteerAJobTheRequesterAndTheOwnerTeamMay() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Job job = w.projection.update(jobId, j -> j.toBuilder().requester(OUTSIDER).build()).orElseThrow();
+        when(engine.isRunning(jobId)).thenReturn(Mono.just(true));
+
+        StepVerifier.create(handler.cancel(jobId).contextWrite(c -> CurrentIdentity.with(c, NOBODY)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining(jobId).hasMessageContaining("Nobody"))
+                .verify();
+        w.events.attention(jobId, new Attention("validate", new StepError("timeout", "not powered on", true), Attention.OPTIONS, Instant.now(), "P7D"));
+        StepVerifier.create(handler.retry(jobId, "validate", null).contextWrite(c -> CurrentIdentity.with(c, NOBODY))).expectError(ForbiddenException.class).verify();
+        StepVerifier.create(handler.skip(jobId, "validate").contextWrite(c -> CurrentIdentity.with(c, NOBODY))).expectError(ForbiddenException.class).verify();
+        StepVerifier.create(handler.abort(jobId).contextWrite(c -> CurrentIdentity.with(c, NOBODY))).expectError(ForbiddenException.class).verify();
+        verify(engine, never()).signalAttention(anyString(), any());
+        verify(engine, never()).cancel(anyString(), anyString());
+
+        assertThat(RunsCommandHandler.canControl(OUTSIDER, job)).as("the requester").isTrue();
+        assertThat(RunsCommandHandler.canControl(COMPUTE_DEV, job)).as("the owner team").isTrue();
+        assertThat(RunsCommandHandler.canControl(SampleContent.ANA, job)).as("an ops, named by policy.rbac").isTrue();
+        assertThat(RunsCommandHandler.canControl(new Identity("ca", "Approver", null, List.of("compute-approvers"), List.of(), false, Identity.Kind.USER), job))
+                .as("an approver of the workflow").isTrue();
+        assertThat(RunsCommandHandler.canControl(NOBODY, job)).isFalse();
+        assertThat(RunsCommandHandler.canControl(new Identity("web", "Web", null, List.of("team-web"), List.of("developer"), false, Identity.Kind.USER), job))
+                .as("another team's developer").isFalse();
+
+        handler.skip(jobId, "validate").contextWrite(c -> CurrentIdentity.with(c, OUTSIDER)).block();
+        verify(engine).signalAttention(eq(jobId), argThat(d -> d.action() == AttentionDecision.Action.SKIP && d.by().equals("outsider")));
+        handler.cancel(jobId).contextWrite(c -> CurrentIdentity.with(c, COMPUTE_DEV)).block();
+        verify(engine).cancel(jobId, "dev");
     }
 
     @Test

@@ -63,6 +63,7 @@ import com.iaf.platform.runs.ports.outbound.PriceListPort;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.Step;
+import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -206,6 +207,7 @@ public class RunsCommandHandler implements RunsCommands {
     public Mono<CommandAccepted> cancel(String jobId) {
         return CurrentIdentity.current().flatMap(who -> {
             Job job = job(jobId);
+            requireControl(who, job);
             if (job.status() != null && job.status().terminal()) {
                 throw new ConflictException("Job " + jobId + " already ended (" + job.status().json() + ")");
             }
@@ -218,7 +220,7 @@ public class RunsCommandHandler implements RunsCommands {
     @Override
     public Mono<CommandAccepted> retry(String jobId, String step, JsonNode input) {
         return CurrentIdentity.current().flatMap(who -> {
-            Job job = needsAttention(jobId, step);
+            Job job = needsAttention(who, jobId, step);
             AttentionDecision decision = input == null || input.isNull() || input.isMissingNode()
                     ? AttentionDecision.retry(who.id())
                     : AttentionDecision.editInput(input, who.id());
@@ -228,16 +230,63 @@ public class RunsCommandHandler implements RunsCommands {
 
     @Override
     public Mono<CommandAccepted> skip(String jobId, String step) {
-        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(jobId, step), AttentionDecision.skip(who.id())));
+        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(who, jobId, step), AttentionDecision.skip(who.id())));
     }
 
     @Override
     public Mono<CommandAccepted> abort(String jobId) {
-        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(jobId, null), AttentionDecision.abort(who.id())));
+        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(who, jobId, null), AttentionDecision.abort(who.id())));
     }
 
-    private Job needsAttention(String jobId, String step) {
+    /**
+     * Who may steer a job (cancel it, or retry, skip and abort a step waiting for attention): its
+     * requester, a member of the workflow's owner team, anyone the workflow's {@code policy.rbac}
+     * or approver groups name, and admins. Anyone else is refused with the job's id.
+     */
+    static boolean canControl(Identity who, Job job) {
+        if (who.admin() || (who.id() != null && who.id().equals(job.requesterId()))) {
+            return true;
+        }
+        WorkflowDefinition def = job.definition();
+        if (def == null) {
+            return false;
+        }
+        String owner = def.metadata() == null ? null : def.metadata().owner();
+        if (owner != null && who.teams().contains(owner)) {
+            return true;
+        }
+        List<String> rbac = rbac(def);
+        if (rbac != null && !rbac.isEmpty() && AccessRules.canInvoke(who, rbac)) {
+            return true;
+        }
+        return approverGroups(def).stream().anyMatch(g -> AccessRules.canApprove(who, g));
+    }
+
+    static void requireControl(Identity who, Job job) {
+        if (!canControl(who, job)) {
+            throw new ForbiddenException(who.name() + " may not control job " + job.id() + " (" + job.workflow()
+                    + " started by " + job.requesterId() + ")");
+        }
+    }
+
+    /** The groups the workflow's approval policy and its approval steps name. */
+    private static List<String> approverGroups(WorkflowDefinition def) {
+        List<String> groups = new ArrayList<>();
+        if (def.policy() != null && def.policy().approval() != null && def.policy().approval().group() != null) {
+            groups.add(def.policy().approval().group());
+        }
+        for (Step s : def.allSteps()) {
+            String group = s.type() == StepType.APPROVAL ? s.withText("group") : null;
+            if (group != null && !group.isBlank()) {
+                groups.add(group);
+            }
+        }
+        return groups;
+    }
+
+    private Job needsAttention(Identity who, String jobId, String step) {
         Job job = job(jobId);
+        requireControl(who, job);
         if (job.status() != JobStatus.NEEDS_ATTENTION || job.attention() == null) {
             throw new ConflictException("Job " + jobId + " is not waiting for attention (" + (job.status() == null ? "unknown" : job.status().json()) + ")");
         }

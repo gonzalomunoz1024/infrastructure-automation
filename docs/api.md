@@ -235,10 +235,10 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
-| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted` |
-| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input) |
-| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted` |
-| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back) |
+| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
+| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input); 403 as cancel |
+| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted`; 403 as cancel |
+| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back); 403 as cancel |
 | POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
@@ -246,6 +246,11 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
+
+Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`) is for its requester, a member of the
+workflow's owner team, anyone the workflow's `policy.rbac` roles or approver groups name, and
+admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
+(`policy.rbac`), and approvals by their group.
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
