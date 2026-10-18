@@ -113,6 +113,14 @@ class JGitSourceTest {
     }
 
     @Test
+    void aReadKeepsAtMostItsByteCapAndSkipsEveryFileAfterIt() {
+        JGitSource capped = new JGitSource(credentials, true, Duration.ofSeconds(30), 40);
+        Snapshot s = capped.read(repo, "main", "", p -> !p.endsWith(".png"), null).block();
+        assertThat(s.files()).containsOnlyKeys("README.md");
+        assertThat(s.skipped()).containsExactly("specs/link.yaml (not a regular file)", "specs/openapi.yaml (more than 40 bytes of files)");
+    }
+
+    @Test
     void oneFileComesWithTheCommitItWasReadFrom() {
         StepVerifier.create(git.file(repo, "v1.0.0", "/specs/openapi.yaml", null))
                 .assertNext(f -> assertThat(f).isEqualTo(new GitFile("specs/openapi.yaml", SPEC_V1, first)))

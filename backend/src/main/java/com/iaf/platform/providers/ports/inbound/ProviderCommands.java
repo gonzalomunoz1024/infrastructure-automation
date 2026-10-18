@@ -71,7 +71,10 @@ public interface ProviderCommands {
         }
     }
 
-    /** {@code strategy} is canary or all (default all: a provider has no traffic to split). */
+    /**
+     * {@code strategy} is canary or all (default canary: a new version takes a share of the jobs'
+     * calls until the release's gates promote it; the first version of a provider takes them all).
+     */
     record Publish(String yaml, String strategy) {
     }
 

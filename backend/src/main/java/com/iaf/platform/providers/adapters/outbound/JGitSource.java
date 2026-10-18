@@ -37,6 +37,7 @@ import org.springframework.stereotype.Component;
 import com.iaf.platform.common.adapters.http.OutboundAddresses;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.providers.domain.RepoPaths;
 import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 
 import lombok.extern.slf4j.Slf4j;
@@ -57,12 +58,15 @@ public class JGitSource implements GitSourcePort {
 
     static final int MAX_FILES = 2000;
     static final int MAX_FILE_BYTES = 1024 * 1024;
+    /** What one read keeps in memory in all: 2000 files of 1 MB would be 2 GB. */
+    static final long MAX_TOTAL_BYTES = 32L * 1024 * 1024;
     private static final Pattern SCHEME = Pattern.compile("^[a-zA-Z][a-zA-Z0-9+.-]*:");
     private static final String TOKEN_USER = "x-access-token";
 
     private final CredentialsPort credentials;
     private final boolean allowLocal;
     private final Duration timeout;
+    private final long maxTotalBytes;
 
     @Autowired
     public JGitSource(CredentialsPort credentials, PlatformProperties props) {
@@ -70,9 +74,14 @@ public class JGitSource implements GitSourcePort {
     }
 
     public JGitSource(CredentialsPort credentials, boolean allowLocal, Duration timeout) {
+        this(credentials, allowLocal, timeout, MAX_TOTAL_BYTES);
+    }
+
+    JGitSource(CredentialsPort credentials, boolean allowLocal, Duration timeout, long maxTotalBytes) {
         this.credentials = credentials;
         this.allowLocal = allowLocal;
         this.timeout = timeout == null ? Duration.ofSeconds(60) : timeout;
+        this.maxTotalBytes = maxTotalBytes;
     }
 
     @Override
@@ -80,7 +89,7 @@ public class JGitSource implements GitSourcePort {
         return Mono.defer(() -> {
             String uri = uriOf(repo);
             String at = ref == null || ref.isBlank() ? null : ref.trim();
-            String under = dir == null ? "" : dir.trim().replaceAll("^/+|/+$", "");
+            String under = RepoPaths.trimSlashes(dir);
             if (under.contains("..")) {
                 throw new IllegalArgumentException("path must stay inside the repository: " + dir);
             }
@@ -123,6 +132,8 @@ public class JGitSource implements GitSourcePort {
                 }
                 Map<String, String> files = new TreeMap<>();
                 List<String> skipped = new ArrayList<>();
+                long total = 0;
+                boolean full = false;
                 while (tree.next()) {
                     String path = tree.getPathString();
                     if (!wanted.test(path)) {
@@ -142,6 +153,12 @@ public class JGitSource implements GitSourcePort {
                         skipped.add(path + " (larger than 1 MB)");
                         continue;
                     }
+                    if (full || total + loader.getSize() > maxTotalBytes) {
+                        full = true;
+                        skipped.add(path + " (more than " + (maxTotalBytes >= 1 << 20 ? (maxTotalBytes >> 20) + " MB" : maxTotalBytes + " bytes") + " of files)");
+                        continue;
+                    }
+                    total += loader.getSize();
                     byte[] bytes = loader.getBytes();
                     if (binary(bytes)) {
                         skipped.add(path + " (binary)");
