@@ -38,6 +38,8 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -112,6 +114,19 @@ class ProviderCommandHandlerTest {
               alerts: { channel: "#compute-alerts" }
             """;
     static final String YAML_V1 = YAML.replace("version: 1.1.0", "version: 1.0.0");
+    /** The same provider with its spec in a private repository. */
+    static final String YAML_FROM_GIT = YAML.replace("spec: { url: https://fleet.example.com/openapi.json, ",
+            "spec: { git: { repo: https://github.com/acme/fleet-api, ref: main, path: openapi.yaml, credential: vault:github/read-token }, commit: 3f2a9c1d, ");
+    static final String ANSIBLE = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: ops-playbooks, owner: team-compute, version: 1.0.0 }
+            spec:
+              type: ansible
+              source: { git: { repo: https://github.com/acme/ops-playbooks, ref: v3.1.0, credential: vault:github/read-token }, commit: 4e1d9a2c }
+              auth: { type: none, credential: vault:ssh/automation }
+              actions: [{ id: vm.restart, playbook: vm/restart.yml, effect: change }]
+            """;
 
     ProviderStorePort store;
     ChangeRequestPort changeRequests;
@@ -123,6 +138,7 @@ class ProviderCommandHandlerTest {
     InMemoryReviewEvidence evidence;
     GitSourcePort gitSource;
     ReleaseQueries releases;
+    CredentialsPort credentials;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -139,12 +155,19 @@ class ProviderCommandHandlerTest {
         gitSource = mock(GitSourcePort.class);
         releases = mock(ReleaseQueries.class);
         when(releases.providerCandidate(anyString())).thenReturn(Mono.empty());
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases);
+        credentials = mock(CredentialsPort.class);
+        when(credentials.info(any())).thenReturn(Mono.empty());
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases, credentials);
         handler.listen();
     }
 
     static <T> Mono<T> as(Mono<T> mono, Identity who) {
         return mono.contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+    }
+
+    /** The credential store knows {@code reference} as owned by {@code team} (null: anyone may use it). */
+    void owned(String reference, String team) {
+        when(credentials.info(reference)).thenReturn(Mono.just(new CredentialInfo(reference.substring("vault:".length()), "token", reference, team, NOW)));
     }
 
     static StoredProvider stored(String yaml) {
@@ -414,6 +437,74 @@ class ProviderCommandHandlerTest {
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("staging"))
                 .verify();
         StepVerifier.create(handler.tryAction(new TryAction("kind: [", "vm.get", "dev", null))).expectError(IllegalArgumentException.class).verify();
+    }
+
+    // ---------------------------------------------------------------- who may send a credential outward
+
+    @Test
+    void aCredentialAnotherTeamOwnsNeverLeavesTheWizard() {
+        owned("vault:fleet/token", "team-data");
+        Map<String, String> endpoints = Map.of("dev", "https://fleet-dev.example.com");
+        JsonNode auth = json("{\"type\":\"bearer\",\"credential\":\"vault:fleet/token\"}");
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet")), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Mateo may not use credential vault:fleet/token (owned by team-data)"))
+                .verify();
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", json("{\"id\":\"vm-1\"}"))), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("vault:fleet/token"))
+                .verify();
+        verify(http, never()).probe(any(), any());
+        verify(calls, never()).call(any());
+        verify(credentials, never()).resolve(any());
+        assertThat(evidence.evidence("fleet").connections()).isEmpty();
+        assertThat(evidence.evidence("fleet").tries()).isEmpty();
+    }
+
+    @Test
+    void theOwnerTeamAnAdminAndAnyoneWithAnUnownedCredentialMayTestAndTry() {
+        when(http.probe(any(), any())).thenReturn(Mono.just(new ProbeResult(true, 12, "HEAD 200 in 12 ms")));
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\"}")));
+        Map<String, String> endpoints = Map.of("dev", "https://fleet-dev.example.com");
+        JsonNode auth = json("{\"type\":\"bearer\",\"credential\":\"vault:fleet/token\"}");
+        Identity admin = new Identity("root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
+        owned("vault:fleet/token", "team-compute");
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OWNER)).assertNext(r -> assertThat(r.allOk()).isTrue()).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OWNER)).assertNext(r -> assertThat(r.ok()).isTrue()).verifyComplete();
+        owned("vault:fleet/token", "team-data");
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), admin)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), admin)).expectNextCount(1).verifyComplete();
+        owned("vault:fleet/token", null);
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        // a reference the store does not know is judged where it is resolved, as before
+        when(credentials.info("vault:fleet/token")).thenReturn(Mono.empty());
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void aSpecImportFromGitChecksTheReadTokenBeforeReadingTheRepository() {
+        owned("vault:github/read-token", "team-data");
+        GitRef git = new GitRef("https://github.com/acme/machines-api", "v2.4.0", "api/openapi.yaml", "vault:github/read-token");
+        StepVerifier.create(as(handler.importSpec(new ImportSpec("openapi", null, null, git)), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessageContaining("vault:github/read-token").hasMessageContaining("team-data"))
+                .verify();
+        verify(gitSource, never()).file(any(), any(), any(), any());
+        when(gitSource.file(any(), any(), any(), any())).thenReturn(Mono.just(new GitFile("api/openapi.yaml", spec(), "3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c")));
+        StepVerifier.create(as(handler.importSpec(new ImportSpec("openapi", null, null, git)), OUTSIDER)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void aTryChecksEveryReferenceTheCallWouldResolve() {
+        assertThat(ProviderCommandHandler.credentialsOf(ProviderYaml.parse(YAML))).containsExactly("vault:fleet/token");
+        assertThat(ProviderCommandHandler.credentialsOf(ProviderYaml.parse(YAML_FROM_GIT))).containsExactly("vault:fleet/token", "vault:github/read-token");
+        assertThat(ProviderCommandHandler.credentialsOf(ProviderYaml.parse(ANSIBLE))).containsExactly("vault:ssh/automation", "vault:github/read-token");
+        owned("vault:github/read-token", "team-data");
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML_FROM_GIT, "vm.get", "dev", null)), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("vault:github/read-token"))
+                .verify();
+        verify(calls, never()).call(any());
     }
 
     // ---------------------------------------------------------------- validate

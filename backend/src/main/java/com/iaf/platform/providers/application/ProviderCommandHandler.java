@@ -27,6 +27,7 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.common.schema.Schemas.Mismatch;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -79,6 +80,9 @@ import reactor.core.scheduler.Schedulers;
  * <p>A merged version with the {@code canary} strategy is kept beside the current one and rolled
  * out by a provider release (the releases slice); it becomes current on {@code release.promoted}.
  * Edits made while it rolls out build on it.
+ *
+ * <p>A {@code vault:} reference only goes outward (to an endpoint, to a repository) once the
+ * caller may use the credential ({@link CredentialUse}); the secret is never resolved before that.
  */
 @Slf4j
 @Primary
@@ -115,6 +119,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final ReviewEvidencePort evidence;
     private final GitSourcePort git;
     private final ReleaseQueries releases;
+    private final CredentialsPort credentials;
 
     @PostConstruct
     void listen() {
@@ -140,7 +145,9 @@ public class ProviderCommandHandler implements ProviderCommands {
                     throw new IllegalArgumentException("Give the spec's url, its content or its file in Git, one of them");
                 }
                 GitRef g = requireGitRef(command.git());
-                return readFromGit(g, g.ref()).map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()));
+                return CurrentIdentity.current()
+                        .flatMap(who -> CredentialUse.guarded(credentials, who, () -> readFromGit(g, g.ref()), g.credential()))
+                        .map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()));
             }
             if (!hasUrl && !hasContent) {
                 throw new IllegalArgumentException("Give the spec's url, paste its content or name its file in Git");
@@ -207,15 +214,15 @@ public class ProviderCommandHandler implements ProviderCommands {
             }
             requireNoOpenChange(name);
             return current;
-        }).flatMap(current -> latestSpec(current.definition().spec().specSource(), c)
+        }).flatMap(current -> latestSpec(who, current.definition().spec().specSource(), c)
                 .flatMap(latest -> blocking(() -> refreshed(who, current, latest, c)))));
     }
 
-    private Mono<LatestSpec> latestSpec(SpecSource source, RefreshSpec c) {
+    private Mono<LatestSpec> latestSpec(Identity who, SpecSource source, RefreshSpec c) {
         if (source.fromGit()) {
             GitRef g = requireGitRef(source.git());
             String ref = blank(c.ref()) ? g.ref() : c.ref().trim();
-            return readFromGit(g, ref).map(f -> new LatestSpec(f.content(), f.commit(), ref));
+            return CredentialUse.guarded(credentials, who, () -> readFromGit(g, ref), g.credential()).map(f -> new LatestSpec(f.content(), f.commit(), ref));
         }
         if (source.pasted()) {
             return Mono.just(new LatestSpec(c.content(), null, null));
@@ -368,7 +375,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             }
             Auth auth = authOf(command.auth());
             // probed at once, recorded in the order of the environments
-            return Flux.fromIterable(command.endpoints().entrySet())
+            Flux<ConnectionResult> probes = Flux.fromIterable(command.endpoints().entrySet())
                     .flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth).map(r -> Map.entry(e.getValue() == null ? "" : e.getValue().trim(), r)))
                     .concatMap(t -> provider == null ? Mono.just(t.getValue()) : blocking(() -> {
                         ConnectionResult r = t.getValue();
@@ -376,6 +383,8 @@ public class ProviderCommandHandler implements ProviderCommands {
                                 auth.credential(), r.ok(), r.durationMs(), r.message(), clock.instant(), who.id()));
                         return r;
                     }));
+            // the credential goes to every endpoint named: only once the caller may use it
+            return CredentialUse.require(credentials, who, auth.credential()).thenMany(probes);
         }).collectList().map(ConnectionResult.Results::new));
     }
 
@@ -403,26 +412,48 @@ public class ProviderCommandHandler implements ProviderCommands {
                     "Provider " + def.name() + " has no action '" + command.action() + "'" + Suggest.closest(command.action(), ids).map(s -> "; did you mean " + s + "?").orElse("")));
             String environment = environmentOf(def, command.environment());
             JsonNode input = command.input() == null || command.input().isNull() ? F.objectNode() : command.input();
-            long started = System.nanoTime();
-            return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false))
-                    .flatMap(response -> {
-                        long ms = elapsedMs(started);
-                        List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
-                        return verify(def, action, environment, input).map(v -> {
-                            Instant at = clock.instant();
-                            return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
-                                    withSample(command.yaml(), action.id(), response, environment, at));
-                        });
-                    })
-                    .onErrorResume(ProviderCallException.class, e -> Mono.just(new TryResult(false, e.status() > 0 ? e.status() : 502,
-                            elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
-                    .flatMap(result -> blocking(() -> {
-                        evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
-                                result.ok() ? null : result.response().path("error").path("class").asText(null),
-                                result.ok() ? result.response() : null, result.verified(), result.at(), who.id()));
-                        return result;
-                    }));
+            // the call resolves the draft's credentials: only once the caller may use them
+            return CredentialUse.guarded(credentials, who, () -> {
+                long started = System.nanoTime();
+                return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false))
+                        .flatMap(response -> {
+                            long ms = elapsedMs(started);
+                            List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
+                            return verify(def, action, environment, input).map(v -> {
+                                Instant at = clock.instant();
+                                return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
+                                        withSample(command.yaml(), action.id(), response, environment, at));
+                            });
+                        })
+                        .onErrorResume(ProviderCallException.class, e -> Mono.just(new TryResult(false, e.status() > 0 ? e.status() : 502,
+                                elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
+                        .flatMap(result -> blocking(() -> {
+                            evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
+                                    result.ok() ? null : result.response().path("error").path("class").asText(null),
+                                    result.ok() ? result.response() : null, result.verified(), result.at(), who.id()));
+                            return result;
+                        }));
+            }, credentialsOf(def).toArray(String[]::new));
         }));
+    }
+
+    /** The references a call of the provider resolves: its auth, and the read token of a spec or a playbook source kept in Git. */
+    static List<String> credentialsOf(ProviderDefinition def) {
+        List<String> refs = new ArrayList<>();
+        ProviderDefinition.Spec spec = def.spec();
+        if (spec == null) {
+            return refs;
+        }
+        if (spec.auth() != null) {
+            refs.add(spec.auth().credential());
+        }
+        if (spec.specSource() != null && spec.specSource().fromGit()) {
+            refs.add(spec.specSource().git().credential());
+        }
+        if (spec.source() != null) {
+            refs.add(spec.source().path("git").path("credential").asText(null));
+        }
+        return refs.stream().filter(r -> r != null && r.startsWith("vault:")).distinct().toList();
     }
 
     /**
