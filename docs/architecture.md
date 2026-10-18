@@ -612,10 +612,11 @@ job where it is until the projection keeps the event, rather than losing a `job.
 leaving the job running for good; the Temporal UI shows the activity retrying with the store's
 error. Records that mint an id (an approval, a child) still run once and fail the step instead,
 so a retry never creates a second one. A cancel from the Temporal UI or CLI ends the job as cancelled by
-`temporal`. Without the `postgres` profile the job
+`temporal`. Without the `mongo` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
-history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
+history are read back from MongoDB, never from Temporal's own database, which the platform does
+not read. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
 `docker-compose.yml`), each job's view carries `links.temporal`, its execution there
 (`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
 "Open in Temporal".
@@ -652,7 +653,7 @@ executions; one with the `worker` role runs the interpreter's worker. Without th
 instance answers nothing but the actuator (health, metrics), so its probes and scrapes keep
 working. One role alone needs the `temporal` profile, and the context refuses to start without
 it. Since the worker that runs a job's steps is the instance that records them, API instances see
-that progress only through a shared job store (the Postgres adapters); with the in-memory
+that progress only through a shared job store (the MongoDB adapters); with the in-memory
 projection every instance keeps both roles.
 
 ### Changing the interpreter workflow
@@ -750,7 +751,7 @@ Besides the test server of the backend's suite, these ran against a Temporal dev
   call had finished, replayed the history and finished the job by itself. A job waiting for an
   approval outlived a restart too; its approval went in as the `approve` signal through the
   Temporal CLI, since the new instance's in-memory projection does not know the job (the
-  `postgres` profile fills that gap).
+  `mongo` profile fills that gap).
 - `reserve-ip-address` through `POST /api/v1/addresses` on the Go (`ip-pool`) and Python
   (`dns-records`) example workers, alone and as a three-row batch whose rows ran as child
   workflows; a scratch workflow added the Java example (`cmdb`) as a third step.
