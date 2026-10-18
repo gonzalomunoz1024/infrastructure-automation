@@ -31,6 +31,7 @@ The generated surface:
 | Bulk runs | `POST <path>:batch` with `{ items, defaults, rollout }` |
 | Blast-radius preview | `POST <path>:preview` |
 | OpenAPI 3.1 | `GET /openapi.json` |
+| Swagger UI over it | <http://localhost:8080/swagger-ui> |
 | MCP server (Streamable HTTP, JSON-RPC 2.0) | `POST /api/v1/mcp` |
 | Job events | `GET /api/v1/jobs/{id}/events` (SSE), `ws://…/ws/jobs/{id}` |
 

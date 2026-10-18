@@ -99,6 +99,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
+| GET    | `/swagger-ui` (outside `/api/v1`)   | Swagger UI over that document: redirects to `/swagger-ui/index.html`, assets from the swagger-ui webjar under `/webjars/swagger-ui/`; the page and its assets load without a caller, a bearer token typed into the page goes with every request it makes |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure or an `x-resource` id the registry does not know; 403 on RBAC |
 | POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200) |
