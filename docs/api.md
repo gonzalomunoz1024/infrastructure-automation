@@ -4,7 +4,10 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 `/api/v<n>/<noun>s…` and resource read endpoints under `/api/v1/<plural>`. The nouns `workflows`,
 `jobs`, `approvals`, `providers`, `releases`, `audit`, `resources`, `resource-types`,
 `credentials`, `registry`, `catalog`, `assistant`, `triggers`, `change-requests`, `templates`,
-`service-accounts`, `me`, `mcp`, `openapi.json`, `playbooks` are reserved for the platform.
+`service-accounts`, `me`, `mcp`, `openapi.json`, `openapi`, `batches`, `evidence`, `ws`,
+`actuator`, `playbooks`, `notifications`, `schemas` are reserved for the platform
+(`ReservedNouns.java`, the one list the gateway and both check twins use; a workflow path that
+starts with one of them is `api.reservedPath`).
 
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),

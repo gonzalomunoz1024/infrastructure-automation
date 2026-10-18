@@ -31,29 +31,38 @@ const DATE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}
 /** The roots an expression can always start from; an alias may not shadow them. */
 export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
 
-/** The first path segments under /api/v1/ that belong to the platform. */
+/**
+ * The first path segments under /api/v<n>/ that belong to the platform: the gateway's list,
+ * ReservedNouns.java in the backend. The test reserved-nouns.test.ts keeps the two the same.
+ */
 export const RESERVED_NOUNS: readonly string[] = [
   'workflows',
   'jobs',
+  'approvals',
   'providers',
-  'catalog',
   'releases',
   'audit',
   'resources',
-  'me',
-  'service-accounts',
-  'approvals',
+  'resource-types',
   'credentials',
+  'registry',
+  'catalog',
   'assistant',
+  'triggers',
+  'change-requests',
+  'templates',
+  'service-accounts',
+  'me',
   'mcp',
+  'openapi.json',
+  'openapi',
   'batches',
   'evidence',
-  'resource-types',
-  'registry',
-  'triggers',
-  'openapi',
+  'ws',
+  'actuator',
   'playbooks',
   'notifications',
+  'schemas',
 ];
 
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */

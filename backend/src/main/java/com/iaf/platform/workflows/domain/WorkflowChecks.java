@@ -26,6 +26,7 @@ import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.expressions.Reference;
+import com.iaf.platform.catalog.domain.ReservedNouns;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -49,9 +50,6 @@ public final class WorkflowChecks {
     private static final Pattern SEMVER_RANGE = Pattern.compile("^(\\*|[~^]?\\d+(\\.\\d+){0,2}(\\.x)?|latest)$");
     private static final Pattern DURATION = Pattern.compile("^(P(?!$)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?|\\d+(ms|s|m|h|d))$");
     private static final Pattern SECRET_KEY = Pattern.compile("(?i)(password|passwd|secret|token|apikey|api_key|credential|privateKey)");
-    private static final Set<String> RESERVED_NOUNS = Set.of("workflows", "jobs", "providers", "catalog", "releases", "audit", "resources",
-            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi", "playbooks",
-            "notifications");
     private static final Pattern API_PREFIX = Pattern.compile("^/api/v[1-9][0-9]*/");
     private static final Pattern DATE = Pattern.compile("^(\\d{4})-(\\d{2})-(\\d{2})(T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2}))?$");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
@@ -183,7 +181,7 @@ public final class WorkflowChecks {
                     error("api.path", null, "api.path", "Generated paths live under /api/v<n>/, like /api/v1/ or /api/v2/");
                 } else {
                     String first = a.path().substring(prefix.end()).split("[/:?]")[0];
-                    if (RESERVED_NOUNS.contains(first)) {
+                    if (ReservedNouns.NOUNS.contains(first)) {
                         error("api.reservedPath", null, "api.path", prefix.group() + first + " belongs to the platform; pick another noun");
                     }
                 }
