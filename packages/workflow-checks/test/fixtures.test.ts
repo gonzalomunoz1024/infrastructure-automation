@@ -196,7 +196,7 @@ describe('rules beyond the fixtures', () => {
       { u: { use: { type: 'vm' } } },
       { re: { register: { type: 'vm', attributes: 'x' } } },
       { n: { notify: {} } },
-      { sc: { script: { language: 'python' } } },
+      { sc: { script: { language: 'ruby' } } },
       { t: { call: 'terraform', with: { module: { source: 'git::x' }, action: 'destroy' } } },
       { t2: { call: 'terraform', with: { action: 'build' } } },
       { an: { call: 'ansible', with: { playbook: 'noslash' } } },

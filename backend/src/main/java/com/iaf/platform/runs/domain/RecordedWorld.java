@@ -154,7 +154,7 @@ public final class RecordedWorld {
      * library reference {@code <provider>/<action>}), terraform by module source + action, idp by
      * tile. HTTP never touches the network ({@code { status: 200, body: {} }}), activities answer
      * {@code { ok: true, activity }}, notify {@code { delivered: true, channel, message }} and
-     * scripts run on {@link MiniScript}.
+     * JavaScript scripts run on {@link MiniScript} (scripts in other languages answer {@code {}}).
      */
     public static Answer automation(List<ProviderDefinition> providers, StepType type, JsonNode with, String jobId, int seq, boolean checkMode) {
         JsonNode w = with == null ? F.objectNode() : with;
@@ -181,7 +181,8 @@ public final class RecordedWorld {
                 out.put("message", w.path("message").asText(null));
                 yield new Answer(out, null, null);
             }
-            case SCRIPT -> new Answer(MiniScript.run(w.path("code").asText(null), w.get("input")), null, null);
+            case SCRIPT -> new Answer("javascript".equals(w.path("language").asText("javascript"))
+                    ? MiniScript.run(w.path("code").asText(null), w.get("input")) : F.objectNode(), null, null);
             default -> throw new IllegalArgumentException("Not an automation step: " + type.key());
         };
     }

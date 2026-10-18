@@ -1,7 +1,9 @@
 package com.iaf.platform.config;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -12,8 +14,9 @@ import lombok.Data;
 
 /**
  * {@code platform.runners}: the live automation runners (profile {@code live}). Every executable
- * is a name looked up on the platform's PATH or an absolute path; the processes themselves get a
- * minimal environment, never the platform's own.
+ * is an absolute path or a name looked up on {@code path}, then on the platform's own PATH; the
+ * processes themselves get a minimal environment, never the platform's own. A step that names no
+ * timeout gets the engine's (10 minutes).
  */
 @Data
 @Configuration
@@ -26,10 +29,11 @@ public class RunnersProperties {
     private String containerRuntime = "";
     /** How often a running step reports that it is alive, between its own progress events. */
     private Duration heartbeat = Duration.ofSeconds(10);
-    /** The timeout of a step that names none. */
-    private Duration defaultTimeout = Duration.ofMinutes(10);
     /** The PATH of processes run on the host, after the directory of the executable itself. */
     private String path = "/usr/local/bin:/usr/bin:/bin";
+    /** The platform's environment variables ansible and terraform also get (proxies, CA bundles, locale); never secrets. */
+    private List<String> passEnv = new ArrayList<>(List.of("HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy",
+            "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "LANG", "TZ"));
     private Ansible ansible = new Ansible();
     private Terraform terraform = new Terraform();
     private Script script = new Script();
@@ -47,6 +51,8 @@ public class RunnersProperties {
         private String defaultImage = "";
         /** The container network; blank keeps the runtime's default (playbooks reach their hosts over it). */
         private String network = "";
+        /** A file or directory (inventory plugin configs, scripts) copied in for steps that say {@code inventory: dynamic}. */
+        private String dynamicInventory = "";
         /** Extra environment of every run, never secrets: ANSIBLE_HOST_KEY_CHECKING, ANSIBLE_FORKS. */
         private Map<String, String> env = new LinkedHashMap<>();
     }

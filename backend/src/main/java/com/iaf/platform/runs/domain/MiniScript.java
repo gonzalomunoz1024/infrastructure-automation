@@ -22,7 +22,8 @@ import com.iaf.platform.common.expressions.ExpressionException;
  * access, comparisons, arithmetic, string and array methods, arrow functions, object and array
  * literals with shorthand properties) plus {@code Math.max/min}, {@code Object.keys},
  * {@code Number()} and {@code String()}. The identifier {@code input} is the step's input;
- * every other bare identifier must have been declared. Production runs scripts on GraalJS.
+ * every other bare identifier must have been declared. Production (profile {@code live}) runs
+ * scripts as processes: node, python, bash or go.
  */
 public final class MiniScript {
 

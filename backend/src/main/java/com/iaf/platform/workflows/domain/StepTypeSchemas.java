@@ -61,7 +61,7 @@ public final class StepTypeSchemas {
             case USE -> "Resolve a registry resource by id, optionally waiting until it is ready and checking access.";
             case REGISTER -> "Record what the job created in the registry, with what it was built from.";
             case NOTIFY -> "Send a message to a channel.";
-            case SCRIPT -> "Run a small sandboxed JavaScript function over an input and return its result.";
+            case SCRIPT -> "Run a small sandboxed script (JavaScript, Python, Bash or Go) over an input and return its result.";
         };
     }
 
@@ -163,7 +163,9 @@ public final class StepTypeSchemas {
                     .props(prop("channel", "string", "A channel like #ops"), prop("message", "string", "May contain expressions"))
                     .build();
             case SCRIPT -> object("code")
-                    .props(enumProp("language", "javascript"), prop("code", "string", "The function body; input is in scope"), prop("input", "object", "What the script sees as input"))
+                    .props(enumProp("language", "javascript", "python", "bash", "go"),
+                            prop("code", "string", "javascript and python: the function body, input in scope; bash and go: a program reading JSON on stdin"),
+                            prop("input", "object", "What the script sees as input"))
                     .build();
         };
     }

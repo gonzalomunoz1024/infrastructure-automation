@@ -409,8 +409,8 @@ public final class WorkflowChecks {
                 }
                 case SCRIPT -> {
                     String lang = s.withText("language");
-                    if (lang != null && !"javascript".equals(lang)) {
-                        error("script.language", s.id(), "language", "Scripts are JavaScript");
+                    if (lang != null && !Set.of("javascript", "python", "bash", "go").contains(lang)) {
+                        error("script.language", s.id(), "language", "Scripts are javascript, python, bash or go");
                     }
                     require(s, "code", "step.missing", "A script needs code");
                 }
