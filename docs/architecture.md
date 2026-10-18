@@ -347,7 +347,7 @@ the in-memory engine was running when the backend stopped keep the status they h
 ### The Git workflow store
 
 With `platform.content.git` on, `GitWorkflowStore` is the workflow store under every profile (it is
-`@Primary`, and neither `JdbcWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
+`@Primary`, and neither `MongoWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
 in `platform.content.dir`, through JGit. A draft or a candidate is its file on the branch
 `change/<name>-<version>`. Publishing commits the file on the checked-out branch (main), as a merge
 of that branch when it exists, and deletes the branch; a retired version is read back from main's
@@ -369,8 +369,8 @@ switches the store on with a content repository (`content.repository`, with
 backend pod (`api.replicas: 1` and `worker.enabled: false`, so the API pod runs the interpreter's
 worker too), its clone on a volume (`content.gitStore.existingClaim`; cloned once with its history,
 then kept), replaced with `Recreate` so that two pods never hold it at once. More replicas need
-`content.gitStore.enabled: false`: the workflows then live in the database (`workflow_versions`),
-seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
+`content.gitStore.enabled: false`: the workflows then live in MongoDB (`workflow_versions`, with
+`mongo.enabled`), seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
 the repository (`github`). Sharing the Git store between replicas would take a push after each
 commit, and a fetch and a reindex whenever the remote moves.
 
@@ -380,15 +380,17 @@ Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners
 `Mono.fromCallable(...).subscribeOn(Schedulers.boundedElastic())` or `Mono.fromFuture` on async
 stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` from the
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
-The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
-that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`,
-first in the filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and
-generated-route filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
+The store ports are synchronous, and the MongoDB stores of the `mongo` profile block (the
+driver's synchronous client). So under that profile `BlockingStoresWebFilter` subscribes each
+request's whole chain on `boundedElastic` and delivers the request body there too, first in the
+filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and generated-route
+filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
 and the S3 client under any profile, so the audit handlers read and write them on `boundedElastic`
 themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
-there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
-runs on a non-blocking thread, and the wiring test expects none.
+there, so the job events that follow are stored from there. `Mongo` counts any call that still
+runs on a non-blocking thread (a Netty event loop or a Reactor timer) and logs the first, and the
+wiring test expects none.
 
 ### Conventions
 
