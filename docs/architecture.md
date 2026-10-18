@@ -149,11 +149,14 @@ token is the secret (the audit slice keeps only its SHA-256 and refuses an expir
 
 ### Data
 
-PostgreSQL (the `postgres` profile, below) holds the registry (workflow versions while the Git
-store is off, change requests, providers and their versions, releases, resource types and
-resources), the audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index
-(jobs, approvals and their events), the gateway's quotas and idempotency keys, the inbox, and the
-other stores the table below lists. Git is the source of truth for workflows and providers: every
+MongoDB (the `mongo` profile, below) holds the registry (workflow versions while the Git store is
+off, change requests, providers and their versions, releases, resource types and resources), the
+audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index (jobs, approvals
+and their events), the gateway's quotas and idempotency keys, the inbox, and the other stores the
+table below lists. Temporal keeps its own database: the dev server's SQLite file in
+`docker-compose.yml`, or a PostgreSQL of its own with `docker-compose.temporal-postgres.yml`. The
+platform reaches Temporal through its API only and never reads that database. Git is the source
+of truth for workflows and providers: every
 start seeds them from the content repository in `platform.content.dir`, and with
 `platform.content.git` on that repository is the workflow store itself (`GitWorkflowStore`, below,
 which commits every draft and publish) and a provider saved through the platform is written back
