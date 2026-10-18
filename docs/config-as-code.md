@@ -352,7 +352,10 @@ Before a new version is published, the wizard's review checks the file against w
 saw: the connection to dev and test passed with these endpoints and this credential, every action
 answered when tried against dev, every error class has a match rule, every delete has a `plan`
 or an `effectDetail`, and no real response still disagrees with its schema after the
-`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
+`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers). A
+provider with an action that creates, changes or deletes something is held to two more gates: its
+`errors` classified (openapi and http providers) and `alerts.channel` set; a provider that only
+reads gets a warning for each instead.
 
 Health is judged over the last 24 hours against `spec.slo` (default 99% success, p95 1000 ms;
 `PUT /providers/{name}/slo` changes it). An action may carry an `slo` of its own, which wins over

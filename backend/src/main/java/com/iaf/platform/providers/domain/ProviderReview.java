@@ -234,8 +234,14 @@ public final class ProviderReview {
                     skip(ERRORS, "No error classes");
                     return;
                 }
-                warning(ERRORS, "errors.none", null, "spec.errors", "No error classes: failures fall back to the HTTP status (404 not_found, "
-                        + "429 rate_limited, 5xx unavailable); classify the errors this API answers");
+                // a gate for a provider that changes things, a warning for one that only reads
+                String message = "No error classes: failures fall back to the HTTP status (404 not_found, 429 rate_limited, 5xx unavailable); "
+                        + "classify the errors this API answers";
+                if (def.changesThings()) {
+                    error(ERRORS, "errors.none", null, "spec.errors", message + " before a provider that creates, changes or deletes things is published");
+                } else {
+                    warning(ERRORS, "errors.none", null, "spec.errors", message);
+                }
             }
             for (int i = 0; i < errors.size(); i++) {
                 ErrorClass e = errors.get(i);

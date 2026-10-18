@@ -233,6 +233,28 @@ class ProviderReviewTest {
         assertThat(codes(none)).containsExactly("errors.none");
     }
 
+    @Test
+    void noErrorClassesBlocksAProviderThatChangesThingsAndWarnsAReadOnlyOne() {
+        String noErrors = YAML.replace("  errors:\n    - { match: { status: 404 }, class: not_found, retry: false }\n", "");
+        Result changes = review(noErrors, proof());
+        assertThat(changes.errors()).extracting(Problem::code).as("vm.delete deletes things").containsExactly("errors.none");
+        assertThat(changes.ready()).isFalse();
+        assertThat(changes.checks()).filteredOn(c -> c.id().equals("errors")).extracting(Check::status).containsExactly("failed");
+
+        String readOnly = noErrors.replace("""
+                    - id: vm.delete
+                      operation: deleteVm
+                      effect: delete
+                      approval: required
+                      plan: vm.get
+                      verify: { action: vm.get, expect: notFound }
+                """, "");
+        Result reads = review(readOnly, proof());
+        assertThat(codes(reads)).containsExactly("errors.none");
+        assertThat(reads.errors()).isEmpty();
+        assertThat(reads.ready()).isTrue();
+    }
+
     // ---------------------------------------------------------------- preview
 
     @Test

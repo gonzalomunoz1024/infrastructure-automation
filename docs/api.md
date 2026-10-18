@@ -309,7 +309,7 @@ come after the file's own checks on the change request:
 |-------|------------|
 | `connection` | the last Test connection to `dev` or to `test` (the ones the provider declares; its first environment when it has neither) is missing, failed, or used another endpoint or credential reference than the file has now. A missing `test` endpoint is a warning. openapi and http providers only |
 | `tried` | an action never answered when tried against `dev` (its first environment without one). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
-| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it. A tried error that no class matches, or no error classes at all, is a warning |
+| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it, or (openapi, http) there are no error classes at all while an action creates, changes or deletes something. A tried error that no class matches is a warning, and so are no error classes on a provider that only reads. The file's own checks hold a provider that changes things to `alerts.channel` the same way (`alerts.channel`, a warning for a read-only one) |
 | `preview` | a destructive action has neither a `plan` action nor an `effectDetail` line |
 | `responses` | an action's last real response still disagrees with its schema after the `overrides` |
 | `slo-suggested` | never: it suggests `p95Ms` as 1.5 times the tried calls' p95, rounded up to 50 ms (at least 100), and warns when the file's p95 is below what the tries took |
@@ -347,7 +347,8 @@ The wizard's steps are audited too, without the document, the secret or the answ
 
 The two imports draft a provider file from what a repository holds and save nothing: the draft
 goes through Validate and Publish like a file written by hand, and `notes` says what is left to do
-(the credentials, the execution environment, what the import could not read). They read Git like
+(the credentials, the execution environment, the alert channel the file checks hold a provider
+that changes things to, what the import could not read). They read Git like
 Import spec does (https only, a private repository names a `vault:` read token, at most 2000 files
 of up to 1 MB and 32 MB in all) and pin the commit they read, so a later push changes nothing
 until a new version is published. When a provider of that name exists, the draft is its next

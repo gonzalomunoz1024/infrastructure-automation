@@ -539,7 +539,13 @@ public final class ProviderChecks {
                 details.put(SLO, details.get(SLO) + "; " + own + (own == 1 ? " action with an SLO of its own" : " actions with SLOs of their own"));
             }
             if (spec.path("alerts").path("channel").asText("").isBlank()) {
-                warning(SLO, "alerts.channel", null, "spec.alerts.channel", "Set alerts.channel so health alerts reach the owning team");
+                // a gate for a provider that changes things, a warning for one that only reads
+                if (def.changesThings()) {
+                    error(SLO, "alerts.channel", null, "spec.alerts.channel", "Set alerts.channel so health alerts reach the owning team: "
+                            + "a provider that creates, changes or deletes things is not published without one");
+                } else {
+                    warning(SLO, "alerts.channel", null, "spec.alerts.channel", "Set alerts.channel so health alerts reach the owning team");
+                }
             }
         }
 

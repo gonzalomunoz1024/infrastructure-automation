@@ -163,6 +163,11 @@ public record ProviderDefinition(
         return actions().stream().filter(a -> a.id().equals(id)).findFirst();
     }
 
+    /** Whether any action creates, changes or deletes something: such a provider is held to the stricter review gates. */
+    public boolean changesThings() {
+        return actions().stream().anyMatch(a -> a.effect() == Effect.CREATE || a.effect() == Effect.CHANGE || a.effect() == Effect.DELETE);
+    }
+
     public Slo slo() {
         return spec.slo() == null ? Slo.DEFAULT : spec.slo();
     }

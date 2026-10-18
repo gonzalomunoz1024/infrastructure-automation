@@ -201,9 +201,15 @@ class ProviderChecksTest {
     }
 
     @Test
-    void aMissingAlertChannelIsAWarning() {
+    void aMissingAlertChannelBlocksAProviderThatChangesThingsAndWarnsAReadOnlyOne() {
         Result r = ProviderChecks.check(VALID.replace("alerts: { channel: \"#compute-alerts\" }", ""));
-        assertThat(codes(r)).containsExactly("warning alerts.channel");
+        assertThat(codes(r)).as("vm.delete deletes things").containsExactly("error alerts.channel");
+        assertThat(status(r, "slo")).isEqualTo("failed");
+        String readOnly = VALID.replace("alerts: { channel: \"#compute-alerts\" }", "")
+                .replace("    - { id: vm.delete, title: Delete VM, operation: deleteVm, effect: delete, retry: unsafe, approval: required, plan: vm.get, verify: { action: vm.get, expect: notFound } }\n", "");
+        Result warned = ProviderChecks.check(readOnly);
+        assertThat(codes(warned)).containsExactly("warning alerts.channel");
+        assertThat(status(warned, "slo")).isEqualTo("passed");
     }
 
     @Test
