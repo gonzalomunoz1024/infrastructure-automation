@@ -23,6 +23,7 @@ public final class TestDatabase implements BeforeEachCallback, AfterEachCallback
 
     private final boolean postgres;
     private DriverManagerDataSource dataSource;
+    private String url;
     private String schema;
     private Jdbc jdbc;
 
@@ -59,9 +60,11 @@ public final class TestDatabase implements BeforeEachCallback, AfterEachCallback
             }
             schema = name;
             new Jdbc(new DriverManagerDataSource(url)).update("CREATE SCHEMA " + schema);
-            dataSource = new DriverManagerDataSource(url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema);
+            this.url = url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema;
+            dataSource = new DriverManagerDataSource(this.url);
         } else {
-            dataSource = new DriverManagerDataSource(h2Url(name), "sa", "");
+            this.url = h2Url(name);
+            dataSource = new DriverManagerDataSource(this.url, "sa", "");
         }
         Migrations.migrate(dataSource);
         jdbc = new Jdbc(dataSource);
@@ -82,6 +85,11 @@ public final class TestDatabase implements BeforeEachCallback, AfterEachCallback
 
     public DataSource dataSource() {
         return dataSource;
+    }
+
+    /** The JDBC URL of this test's database (for PostgreSQL, with its schema as the current one). */
+    public String url() {
+        return url;
     }
 
     public Jdbc jdbc() {
