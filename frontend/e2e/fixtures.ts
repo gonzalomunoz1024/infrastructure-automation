@@ -604,7 +604,7 @@ export const EVIDENCE: EvidenceRecord = {
     { seq: 5, at: ago(5), kind: 'step', data: { name: 'Restart the VM', status: 'failed' }, hash: hash('e5'), previous: hash('d4') },
   ],
   latestHash: hash('e5'),
-  sealed: { at: ago(2), signature: hash('5ea1'), keyId: 'audit-2026-10' },
+  sealed: { at: ago(2), signature: hash('5ea1'), keyId: 'audit-2026-10', seq: 5, hash: hash('e5') },
   retention: { until: '2033-10-17T00:00:00Z' },
   change: { id: 'CHG-4521', url: 'https://itsm.example.com/CHG-4521' },
 }

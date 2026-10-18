@@ -670,7 +670,10 @@ pinned to an exact version (`X-Workflow-Version`, bypassing the canary split; a 
 release rollback took out is still offered, marked rolled back as the versions page marks it) and every
 submission carries one `Idempotency-Key` per form, so a resend after a 429 (shown with the
 backend's `Retry-After` wait) or a lost answer replays the same job; the header bell is the inbox
-(`/notifications`); the audit page has a tab on the platform stream; the releases, release and
+(`/notifications`); the audit page has a tab on the platform stream, and its Seal now says how
+many closed records it sealed and open ones it checkpointed, with which key; an open record shows
+its last checkpoint, and a share link reads whole (the API answers a path) or, for someone the
+backend refuses, as its 403 message in the dialog; the releases, release and
 provider pages show provider releases judged over calls. Every provider edit (the SLO, "Use the
 real response", a spec refresh, the wizard's publish) is a change request the page names and
 links. A workflow's change request opens on its candidate drawn on the designer's read-only

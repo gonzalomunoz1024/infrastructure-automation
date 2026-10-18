@@ -565,6 +565,51 @@ test.describe('audit', () => {
     await expect(page.getByRole('link', { name: 'CHG-4521' })).toHaveAttribute('href', 'https://itsm.example.com/CHG-4521')
   })
 
+  test('an open record shows its last checkpoint instead of a seal', async ({ page }) => {
+    const checkpoint = { at: new Date(Date.now() - 30 * 60_000).toISOString(), signature: 'hmac-of-entry-4', keyId: 'audit-2026-10', seq: 4, hash: EVIDENCE.entries[3].hash }
+    await mockApi(page, { 'GET /audit/{jobId}': { ...EVIDENCE, sealed: undefined, checkpoints: [checkpoint] }, 'GET /audit/{jobId}:verify': VERIFIED })
+    await page.goto('/#/audit/job-7f3a2c91')
+    await expect(page.getByTitle(/^Still open/)).toHaveText('Checkpointed')
+    await expect(page.getByText('over entry 4')).toBeVisible()
+    await expect(page.getByText('audit-2026-10')).toBeVisible()
+  })
+
+  test('sharing gives an auditor a whole link, or says who may share instead', async ({ page }) => {
+    const refusal = 'ana may not share the evidence of job-7f3a2c91: only its requester (gonzalo), a member of compute or an admin may'
+    let refuse = false
+    await mockApi(page, {
+      'GET /audit/{jobId}': EVIDENCE,
+      'GET /audit/{jobId}:verify': VERIFIED,
+      'POST /audit/{jobId}:share': () => (refuse ? reply(403, { error: refusal }) : { url: '/api/v1/audit/shared/tok-example', expiresAt: '2033-10-17T00:00:00Z' }),
+    })
+    await page.goto('/#/audit/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Share', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Share evidence' })
+    await dialog.getByRole('button', { name: 'Create link' }).click()
+    await expect(dialog.getByRole('textbox', { name: 'Link' })).toHaveValue(/^http:\/\/localhost:\d+\/api\/v1\/audit\/shared\/tok-example$/)
+    await dialog.getByRole('button', { name: 'Done' }).click()
+
+    // someone the backend refuses reads its answer in the dialog, with nothing to retry
+    refuse = true
+    await page.getByRole('button', { name: 'Share', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Create link' }).click()
+    await expect(dialog.getByTestId('share-refused')).toHaveText(refusal)
+    await expect(dialog.getByRole('button', { name: 'Create link' })).toHaveCount(0)
+    await expect(page.getByRole('status').filter({ hasText: 'Could not create the link' })).toHaveCount(0)
+  })
+
+  test('sealing now says how many records it signed, and with which key', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /audit': [],
+      'GET /workflows': WORKFLOWS,
+      'POST /audit:seal': { sealedAt: new Date().toISOString(), signature: 'hmac-of-the-ledger', keyId: 'audit-2026-10', sealed: 3, checkpointed: 2 },
+    })
+    await page.goto('/#/audit')
+    await page.getByRole('button', { name: 'Seal now' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Sealed' })).toContainText('Sealed 3 closed records and checkpointed 2 open ones with key audit-2026-10')
+    expect(api.callsTo('POST', '/audit:seal')).toHaveLength(1)
+  })
+
   test('a broken chain says where it broke', async ({ page }) => {
     await mockApi(page, { 'GET /audit/{jobId}': EVIDENCE, 'GET /audit/{jobId}:verify': { valid: false, entries: 5, brokenAt: 4 } })
     await page.goto('/#/audit/job-7f3a2c91')

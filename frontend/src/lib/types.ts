@@ -562,6 +562,8 @@ export type Release = {
 
 export type EvidenceKind = 'requested' | 'preview' | 'policy' | 'change' | 'approval' | 'step' | 'changed' | 'closed' | 'decision'
 export type EvidenceEntry = { seq: number; at: string; kind: EvidenceKind; actor?: string; data: Record<string, unknown>; hash: string; previous: string }
+/** A signature over a record's head: the HMAC of `hash`, the hash of entry `seq`, made with key `keyId`. */
+export type Seal = { at: string; signature: string; keyId: string; seq?: number; hash?: string }
 export type EvidenceRecord = {
   jobId: string
   workflow: string
@@ -570,9 +572,12 @@ export type EvidenceRecord = {
   channel: JobChannel
   entries: EvidenceEntry[]
   latestHash: string
-  sealed?: { at: string; signature: string; keyId: string }
+  /** the final seal, once the job closed and a seal ran */
+  sealed?: Seal
   retention: { until: string }
   change?: { id: string; url: string }
+  /** the seal's checkpoints over the head while the job was still open */
+  checkpoints?: Seal[]
 }
 export type AuditSummary = { jobId: string; workflow: string; requester: string; channel: JobChannel; at: string; entries: number; status: JobStatus }
 export type AuditFilter = { workflow?: string; from?: string; to?: string; requester?: string }
@@ -589,7 +594,8 @@ export type PlatformAuditFilter = { from?: string; to?: string; aggregate?: stri
 /** The platform stream, oldest first; each entry's `data` carries `event`, `aggregate` and `aggregateId`. */
 export type PlatformStream = { entries: EvidenceEntry[]; total: number; latestHash: string; verification: AuditVerification }
 export type ShareLink = { url: string; expiresAt: string }
-export type SealResult = { sealedAt: string; signature: string }
+/** POST /audit:seal: closed records got their final seal (`sealed`), open ones and the platform stream a checkpoint (`checkpointed`), all with key `keyId`. */
+export type SealResult = { sealedAt: string; signature: string; keyId: string; sealed: number; checkpointed: number }
 
 /* ----------------------------------------------------------------------------
    Notifications
