@@ -300,6 +300,7 @@ Among the codes:
 | `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
 | `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |
 | `run.onFailure`           | error   | `onFailure` is neither `fail` nor `continue`                            |
+| `run.cycle`               | error   | a run step (or an `orCreateWith` input) starts a workflow that, through the ones the published workflows start, ends up starting this one again: `vm-restart -> patch-cve -> vm-restart`, at the step or input that closes the loop. A job would wait for itself and never finish. Both twins judge it from the file plus what the context knows the published workflows start (CI: the repository's workflows); an `orCreateWith` of the workflow itself is one with no registry at all. The platform judges it again with the registry at publish, `:validate` and merge |
 | `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
 | `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
 | `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |

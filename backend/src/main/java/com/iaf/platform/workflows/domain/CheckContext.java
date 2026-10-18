@@ -67,6 +67,15 @@ public interface CheckContext {
     }
 
     /**
+     * The workflows a published workflow starts (its run steps and {@code orCreateWith} inputs), by
+     * name; empty when it starts none or is unknown. With them a run step whose workflow ends up
+     * starting this one again is a cycle ({@code run.cycle}).
+     */
+    default Set<String> workflowRuns(String name) {
+        return Set.of();
+    }
+
+    /**
      * The published workflows the MCP server gives a tool of this name ({@code vm_restart}, or the
      * batch tool {@code vm_restart_batch}), by name; empty when none does or the registry is not
      * known.
@@ -178,6 +187,7 @@ public interface CheckContext {
         Set<String> typeNames = Set.copyOf(types.keySet());
         Map<String, Set<String>> tools = new HashMap<>();
         byName.values().forEach(d -> McpTools.toolNames(d).forEach(t -> tools.computeIfAbsent(t, k -> new TreeSet<>()).add(d.name())));
+        Map<String, Set<String>> runs = DependencyRules.runs(byName.values());
         return new CheckContext() {
             @Override
             public Optional<ProviderDefinition> provider(String name) {
@@ -230,6 +240,11 @@ public interface CheckContext {
             @Override
             public Optional<JsonNode> resourceTypeSchema(String type) {
                 return Optional.ofNullable(type == null ? null : types.get(type));
+            }
+
+            @Override
+            public Set<String> workflowRuns(String name) {
+                return name == null ? Set.of() : runs.getOrDefault(name, Set.of());
             }
 
             @Override

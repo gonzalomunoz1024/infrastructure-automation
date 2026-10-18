@@ -1,8 +1,10 @@
 package com.iaf.platform.workflows.domain;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -185,6 +187,73 @@ public final class DependencyRules {
             }
         }
         return new Graph(List.copyOf(produces), List.copyOf(consumes), List.copyOf(runs), java.util.Collections.unmodifiableMap(declared), cycles(runs));
+    }
+
+    /** A run link of a workflow that leads back to it, and the loop it closes: {@code [a, b, c, a]}, from the workflow back to it. */
+    public record Loop(RunLink link, List<String> path) {
+    }
+
+    /**
+     * The run links of {@code def} (its {@code orCreateWith} inputs, then its run steps) that lead
+     * back to it through the workflows {@code runs} says each one starts, each with the shortest
+     * loop (the next workflows taken in name order). {@code def} is judged as it is now: its own
+     * links come from the file, never from {@code runs}. A run step that starts the workflow
+     * itself is left out ({@code run.self} says so); an {@code orCreateWith} of itself is a loop.
+     */
+    public static List<Loop> loops(WorkflowDefinition def, Function<String, Collection<String>> runs) {
+        List<Loop> out = new ArrayList<>();
+        if (def == null || def.metadata() == null || def.name() == null) {
+            return out;
+        }
+        for (RunLink link : of(List.of(def), Map.of()).runsOf(def.name())) {
+            if (link.producer().equals(def.name())) {
+                if (link.via() == Via.OR_CREATE_WITH) {
+                    out.add(new Loop(link, List.of(def.name(), def.name())));
+                }
+                continue;
+            }
+            shortestPath(link.producer(), def.name(), runs).ifPresent(p -> {
+                List<String> path = new ArrayList<>();
+                path.add(def.name());
+                path.addAll(p);
+                out.add(new Loop(link, List.copyOf(path)));
+            });
+        }
+        return out;
+    }
+
+    /** The workflows each of the given workflows starts (run steps and {@code orCreateWith} inputs), by name. */
+    public static Map<String, Set<String>> runs(Collection<WorkflowDefinition> workflows) {
+        Map<String, Set<String>> out = new TreeMap<>();
+        for (RunLink r : of(workflows, Map.of()).runs()) {
+            out.computeIfAbsent(r.consumer(), k -> new TreeSet<>()).add(r.producer());
+        }
+        return out;
+    }
+
+    /** Breadth first from {@code from} to {@code to}, the next workflows in name order; the path names both ends. */
+    private static Optional<List<String>> shortestPath(String from, String to, Function<String, Collection<String>> runs) {
+        Map<String, String> parent = new HashMap<>();
+        parent.put(from, null);
+        ArrayDeque<String> queue = new ArrayDeque<>(List.of(from));
+        while (!queue.isEmpty()) {
+            String node = queue.poll();
+            if (node.equals(to)) {
+                List<String> path = new ArrayList<>();
+                for (String n = to; n != null; n = parent.get(n)) {
+                    path.add(0, n);
+                }
+                return Optional.of(path);
+            }
+            Collection<String> next = runs.apply(node);
+            for (String n : new TreeSet<>(next == null ? List.of() : next)) {
+                if (!parent.containsKey(n)) {
+                    parent.put(n, node);
+                    queue.add(n);
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     /** An input that points at the registry: its field, its type and the workflow that can build one. */

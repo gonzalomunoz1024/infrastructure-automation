@@ -96,6 +96,33 @@ workflow:
     expect(checkYaml(consumer('^1'), { ...maker, workflowVersions: {} }).map((p) => p.code)).toEqual(['contract.type', 'expr.unknownField']);
   });
 
+  it('a run step whose workflow ends up starting this one again is a cycle', () => {
+    const yaml = fixture('run-cycle.yaml');
+    expect(checkYaml(yaml, ctx).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`)).toEqual([
+      'run.cycle @patchFirst.workflow: Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart; a job would wait for itself and never finish',
+    ]);
+    expect(ctx.workflowRuns?.['patch-cve']).toEqual(['vm-restart']);
+    expect(ctx.workflowRuns?.['web-environment']).toEqual(['build-vm-image', 'create-database', 'create-vm']);
+    // without what the published workflows start the cycle is not visible; an orCreateWith of the workflow itself is one either way
+    expect(checkYaml(yaml, EMPTY_CONTEXT)).toEqual([]);
+    const selfCreate = `apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: folder-create, title: Folder create, noun: folder, verb: create, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    properties:
+      parent: { type: string, x-resource: { type: vm, orCreateWith: folder-create } }
+policy: { rbac: [ops] }
+workflow:
+  do:
+    - say: { notify: { channel: "#x", message: hi } }
+`;
+    expect(checkYaml(selfCreate, EMPTY_CONTEXT).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`)).toEqual([
+      'run.cycle @.api.input.parent: Runs go round in a cycle: folder-create -> folder-create; a job would wait for itself and never finish',
+    ]);
+  });
+
   it('steps a switch always jumps past never run', () => {
     const yaml = fixture('unreachable-step.yaml');
     const problems = checkYaml(yaml, ctx);

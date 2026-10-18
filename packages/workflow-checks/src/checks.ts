@@ -10,6 +10,7 @@
  * designer learns it from `:validate`) and whether the artifact store still holds an upload
  * (`playbook.missing`).
  */
+import { loops, workflowRuns } from './cycles.ts';
 import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
 import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';
 import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WORKFLOW_KIND, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
@@ -102,12 +103,13 @@ export function buildContext(
  * tools each one gets, each type's attribute schema.
  */
 export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceTypes: Iterable<ResourceTypeDocument>): Required<ContextSchemas> {
+  const all = [...workflows];
   const workflowInputs: Record<string, JsonSchema> = {};
   const workflowOutputs: Record<string, string[]> = {};
   const workflowVersions: Record<string, string> = {};
   const resourceTypeSchemas: Record<string, JsonSchema> = {};
   const mcpTools: Record<string, string[]> = {};
-  for (const w of workflows) {
+  for (const w of all) {
     const input = w.api === null ? undefined : w.api.input;
     if (isObject(input)) {
       workflowInputs[w.metadata.name] = input as JsonSchema;
@@ -126,7 +128,7 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
       resourceTypeSchemas[asText(get(get(t, 'metadata'), 'name'))] = schema as JsonSchema;
     }
   }
-  return { workflowInputs, workflowOutputs, workflowVersions, resourceTypeSchemas, mcpTools };
+  return { workflowInputs, workflowOutputs, workflowVersions, workflowRuns: workflowRuns(all), resourceTypeSchemas, mcpTools };
 }
 
 /**
@@ -347,6 +349,24 @@ class Checker {
     this.steps();
     this.triggers();
     this.mcpToolName();
+    this.runCycles();
+  }
+
+  /**
+   * run.cycle: a run step (or an orCreateWith input) whose workflow, through the ones the registry
+   * says it starts, ends up starting this one again: the job would wait for itself and never
+   * finish. Without the registry's runs only an orCreateWith of the workflow itself is one.
+   */
+  runCycles(): void {
+    const runs = this.ctx.workflowRuns ?? {};
+    for (const l of loops(this.def, (n) => (Object.hasOwn(runs, n) ? (runs[n] ?? []) : []))) {
+      const message = `Runs go round in a cycle: ${l.path.join(' -> ')}; a job would wait for itself and never finish`;
+      if (l.link.via === 'run') {
+        this.error('run.cycle', l.link.at, 'workflow', message);
+      } else {
+        this.error('run.cycle', null, `api.input.${l.link.at}`, message);
+      }
+    }
   }
 
   /**

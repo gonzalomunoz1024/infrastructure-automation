@@ -160,6 +160,35 @@ class WorkflowChecksTest {
         assertThat(ctx.workflowOutputs("maker", null)).contains(List.of("fresh"));
     }
 
+    static final String SELF_CREATE = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: folder-create, title: Folder create, noun: folder, verb: create, owner: team-compute, version: 1.0.0 }
+            api:
+              input:
+                type: object
+                properties:
+                  parent: { type: string, x-resource: { type: vm, orCreateWith: folder-create } }
+            policy: { rbac: [ops] }
+            workflow:
+              do:
+                - say: { notify: { channel: "#x", message: hi } }
+            """;
+
+    @Test
+    void aRunStepWhoseWorkflowEndsUpStartingThisOneAgainIsACycle() throws IOException {
+        String yaml = Files.readString(FIXTURES.resolve("run-cycle.yaml"));
+        CheckContext ctx = SampleContentTest.context();
+        assertThat(WorkflowChecks.check(yaml, ctx)).extracting(Problem::level, Problem::code, Problem::step, Problem::field, Problem::message)
+                .containsExactly(tuple(Problem.Level.ERROR, "run.cycle", "patchFirst", "workflow", "Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart; a job would wait for itself and never finish"));
+        assertThat(ctx.workflowRuns("patch-cve")).containsExactly("vm-restart");
+        assertThat(ctx.workflowRuns("web-environment")).containsExactly("build-vm-image", "create-database", "create-vm");
+        // without what the published workflows start the cycle is not visible; an orCreateWith of the workflow itself is one either way
+        assertThat(WorkflowChecks.check(yaml, CheckContext.EMPTY)).isEmpty();
+        assertThat(WorkflowChecks.check(SELF_CREATE, CheckContext.EMPTY)).extracting(Problem::code, Problem::step, Problem::field, Problem::message)
+                .containsExactly(tuple("run.cycle", null, "api.input.parent", "Runs go round in a cycle: folder-create -> folder-create; a job would wait for itself and never finish"));
+    }
+
     @Test
     void didYouMeanFixesCarryTheReplacement() {
         String yaml = """

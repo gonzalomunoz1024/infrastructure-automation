@@ -255,6 +255,11 @@ export interface CheckContext {
    * judged against the published input.
    */
   workflowVersions?: Record<string, string>;
+  /**
+   * The workflows each published workflow starts (run steps and `orCreateWith` inputs), sorted,
+   * by name; with them a run step whose workflow ends up starting this one again is `run.cycle`.
+   */
+  workflowRuns?: Record<string, string[]>;
   /** Resource types' attribute schemas by type. */
   resourceTypeSchemas?: Record<string, JsonSchema>;
   /**
@@ -269,6 +274,7 @@ export interface ContextSchemas {
   workflowInputs?: Record<string, JsonSchema>;
   workflowOutputs?: Record<string, string[]>;
   workflowVersions?: Record<string, string>;
+  workflowRuns?: Record<string, string[]>;
   resourceTypeSchemas?: Record<string, JsonSchema>;
   mcpTools?: Record<string, string[]>;
 }

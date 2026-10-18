@@ -216,7 +216,19 @@ public final class PublishChecks {
      * published workflows, with {@code def} in place of its own published version.
      */
     public static List<Problem> registryProblems(WorkflowDefinition def, List<WorkflowDefinition> published) {
-        return mcpToolNames(def, published);
+        List<Problem> out = new ArrayList<>(mcpToolNames(def, published));
+        out.addAll(runCycles(def, published));
+        return out;
+    }
+
+    /**
+     * {@code run.cycle}: a run step or {@code orCreateWith} input of {@code def} whose workflow,
+     * through what the other published workflows start, ends up starting {@code def} again.
+     */
+    public static List<Problem> runCycles(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        Map<String, Set<String>> runs = DependencyRules.runs(published.stream()
+                .filter(o -> o != null && o.name() != null && !o.name().equals(def.name())).toList());
+        return DependencyRules.loops(def, n -> runs.getOrDefault(n, Set.of())).stream().map(WorkflowChecks::cycleProblem).toList();
     }
 
     /**

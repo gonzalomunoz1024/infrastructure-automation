@@ -220,6 +220,19 @@ class PublishChecksTest {
     }
 
     @Test
+    void aCycleThroughThePublishedWorkflowsIsARegistryError() {
+        List<WorkflowDefinition> published = DependencyRulesTest.samples();
+        WorkflowDefinition restart = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
+        assertThat(PublishChecks.runCycles(restart, published)).isEmpty();
+        WorkflowDefinition looping = WorkflowYaml.parse(SampleFixtures.yaml("packages/workflow-checks/fixtures/run-cycle.yaml"));
+        assertThat(PublishChecks.registryProblems(looping, published)).extracting(Problem::code, Problem::step, Problem::field, Problem::message)
+                .containsExactly(tuple("run.cycle", "patchFirst", "workflow", "Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart; a job would wait for itself and never finish"));
+        // patch-cve as it would be published without its run step breaks the loop
+        List<WorkflowDefinition> withoutRun = published.stream().filter(d -> !d.name().equals("patch-cve")).toList();
+        assertThat(PublishChecks.runCycles(looping, withoutRun)).isEmpty();
+    }
+
+    @Test
     void aRegistryErrorReplacesTheDesignersWarningOfTheSameCodeAndIsListedOnce() {
         Problem warning = Problem.warning("mcp.toolName", null, "mcp.expose", "older");
         Problem error = Problem.error("mcp.toolName", null, "mcp.expose", "now");

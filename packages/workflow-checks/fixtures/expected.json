@@ -117,5 +117,8 @@
   ],
   "mcp-tool-name.yaml": [
     "warning mcp.toolName"
+  ],
+  "run-cycle.yaml": [
+    "error run.cycle"
   ]
 }

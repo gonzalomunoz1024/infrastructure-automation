@@ -129,6 +129,15 @@ public final class WorkflowChecks {
         return out;
     }
 
+    /** What {@code run.cycle} says, in the designer and at publish: the loop, at the run step or input that starts it. */
+    static Problem cycleProblem(DependencyRules.Loop loop) {
+        String message = "Runs go round in a cycle: " + String.join(" -> ", loop.path()) + "; a job would wait for itself and never finish";
+        DependencyRules.RunLink link = loop.link();
+        return link.via() == DependencyRules.Via.RUN
+                ? Problem.error("run.cycle", link.at(), "workflow", message)
+                : Problem.error("run.cycle", null, "api.input." + link.at(), message);
+    }
+
     /** What {@code mcp.toolName} says, in the designer and at publish: the tool and the workflow that already has it. */
     static String mcpToolMessage(String tool, String other) {
         return "MCP tool " + tool + " is already exposed by workflow " + other + "; give this workflow another noun or verb, or set mcp.expose to false";
@@ -238,6 +247,16 @@ public final class WorkflowChecks {
             triggers();
             credentialOwners();
             mcpToolName();
+            runCycles();
+        }
+
+        /**
+         * run.cycle: a run step (or an orCreateWith input) whose workflow, through the ones the
+         * registry says it starts, ends up starting this one again: the job would wait for itself
+         * and never finish. Judged when the context knows what the published workflows start.
+         */
+        void runCycles() {
+            DependencyRules.loops(def, ctx::workflowRuns).forEach(l -> problems.add(cycleProblem(l)));
         }
 
         /**

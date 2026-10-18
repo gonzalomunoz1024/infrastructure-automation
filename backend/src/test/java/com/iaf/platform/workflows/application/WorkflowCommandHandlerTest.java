@@ -515,6 +515,53 @@ class WorkflowCommandHandlerTest {
         assertThat(store.published("thing-renew")).isEmpty();
     }
 
+    static String ring(String name, String version, String runs) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: %s, title: Ring %s, noun: ring, verb: %s, owner: team-compute, version: %s }
+                api:
+                  path: /api/v1/rings/{ringId}:%s
+                  input: { type: object, required: [ringId], properties: { ringId: { type: string } } }
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - say:
+                        notify: { channel: "#x", message: "hi {{ $input.ringId }}" }
+                %s""".formatted(name, name, name.substring(5), version, name.substring(5),
+                runs == null ? "" : "    - next:\n        run: { workflow: " + runs + ", version: \"^1\", input: { ringId: \"{{ $input.ringId }}\" } }\n");
+    }
+
+    @Test
+    void aRunStepThatClosesACycleIsRefusedAtPublishAndOneThatClosedSinceAtMerge() {
+        // ring-a and ring-b are published and start nothing
+        for (String name : List.of("ring-a", "ring-b")) {
+            handler.createDraft(WorkflowSource.ofYaml(ring(name, "1.0.0", null))).block();
+            handler.mergeChangeRequest(handler.publish(name, null).block().id()).block();
+        }
+        // each change on its own is no cycle: a starts b, b starts a (as published, a starts nothing)
+        handler.saveDraft("ring-a", WorkflowSource.ofYaml(ring("ring-a", "1.1.0", "ring-b"))).block();
+        handler.saveDraft("ring-b", WorkflowSource.ofYaml(ring("ring-b", "1.1.0", "ring-a"))).block();
+        String first = handler.publish("ring-a", null).block().id();
+        String second = handler.publish("ring-b", null).block().id();
+        handler.mergeChangeRequest(first).block();
+
+        String loop = "Runs go round in a cycle: ring-b -> ring-a -> ring-b; a job would wait for itself and never finish";
+        StepVerifier.create(handler.mergeChangeRequest(second))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::step, Problem::message)
+                        .containsExactly(tuple("run.cycle", "next", loop)))
+                .verify();
+        assertThat(store.published("ring-b").orElseThrow().version()).isEqualTo("1.0.0");
+
+        // with ring-a 1.1.0 published, the same change is refused at publish and opens nothing
+        handler.closeChangeRequest(second).block();
+        StepVerifier.create(handler.publish("ring-b", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).filteredOn(p -> p.code().equals("run.cycle")).as("listed once")
+                        .extracting(Problem::step, Problem::message).containsExactly(tuple("next", loop)))
+                .verify();
+        assertThat(changeRequests.all()).filteredOn(cr -> cr.status() == ChangeRequest.Status.OPEN).isEmpty();
+    }
+
     @Test
     void aPolicyEngineThatCannotBeReachedAnswersTryAgainAndOpensNothing() {
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
