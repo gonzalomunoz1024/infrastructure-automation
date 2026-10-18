@@ -187,6 +187,36 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
 Run one backend per database: the runs index is folded from the events this instance sees. Jobs
 the in-memory engine was running when the backend stopped keep the status they had.
 
+### The Git workflow store
+
+With `platform.content.git` on, `GitWorkflowStore` is the workflow store under every profile (it is
+`@Primary`, and neither `JdbcWorkflowStore` nor `DemoWorkflowHistory` is created): the content repo
+in `platform.content.dir`, through JGit. A draft or a candidate is its file on the branch
+`change/<name>-<version>`. Publishing commits the file on the checked-out branch (main), as a merge
+of that branch when it exists, and deletes the branch; a retired version is read back from main's
+history (the last 500 commits). A write is an in-core commit whose branch update fails if the
+branch moved meanwhile. Reads never touch Git: they come from an index built from the branches
+when the store starts and updated by each write it makes. The same switch has the provider stores
+write a provider saved through the platform back to its file in that working tree
+(`providers/<owner>/<name>.yaml`), uncommitted.
+
+The store pushes nothing and fetches nothing. Its commits stay in that clone, and what reaches the
+remote another way (a change request merged on GitHub under the `github` profile, a push) is read
+only by a clone made after it. So it cannot be shared between replicas: each backend instance has
+its own clone and index, a version published through one is unknown to the others (the other API
+pods, and the workers, which resolve the workflow of every `run` step), and an instance whose clone
+is not kept loses its commits when it is replaced. A deployment with the Git store needs a single
+writer that is also the only reader: one backend instance whose clone outlives it. The Helm chart
+switches the store on with a content repository (`content.repository`, with
+`content.gitStore.enabled` true by default) and then runs exactly that, refusing other values: one
+backend pod (`api.replicas: 1` and `worker.enabled: false`, so the API pod runs the interpreter's
+worker too), its clone on a volume (`content.gitStore.existingClaim`; cloned once with its history,
+then kept), replaced with `Recreate` so that two pods never hold it at once. More replicas need
+`content.gitStore.enabled: false`: the workflows then live in the database (`workflow_versions`),
+seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
+the repository (`github`). Sharing the Git store between replicas would take a push after each
+commit, and a fetch and a reindex whenever the remote moves.
+
 ### Reactive boundaries
 
 Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners) are wrapped in
