@@ -68,6 +68,15 @@ workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
 provider calls). `docker-compose.yml` starts a Temporal dev server and the stack on it.
 
+Evidence, notifications and change records have profiles of their own: `worm` (write-once
+evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
+COMPLIANCE mode), `siem` (every evidence entry also to Splunk HEC and syslog), `slack`
+(Slack-compatible incoming webhooks), `mail` (email) and `servicenow` (change records over the
+ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references;
+the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
+`MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
+spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics.
+
 ## Checks
 
 ```bash
