@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -41,7 +40,8 @@ public class SiemExporter {
     private final AtomicLong exported = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
-    private final AtomicInteger inFlight = new AtomicInteger();
+    /** Entries offered and not yet delivered or given up: what {@link #flush} waits for. */
+    private final AtomicLong pending = new AtomicLong();
     private final Counter exportedCounter;
     private final Counter droppedCounter;
     private final Counter failedCounter;
@@ -109,9 +109,11 @@ public class SiemExporter {
         }
         SiemEvent event = new SiemEvent(streamOf(recordId), recordId, workflow, entry.seq(), entry.at(),
                 entry.kind() == null ? null : entry.kind().json(), entry.actor(), entry.data(), entry.hash(), entry.previous());
+        pending.incrementAndGet();
         if (queue.offer(event)) {
             return true;
         }
+        pending.decrementAndGet();
         long n = dropped.incrementAndGet();
         if (droppedCounter != null) {
             droppedCounter.increment();
@@ -127,7 +129,11 @@ public class SiemExporter {
         List<SiemEvent> batch = new ArrayList<>();
         queue.drainTo(batch, Math.max(1, props.getBatchSize()));
         if (!batch.isEmpty()) {
-            deliver(batch);
+            try {
+                deliver(batch);
+            } finally {
+                pending.addAndGet(-batch.size());
+            }
         }
         return batch.size();
     }
@@ -136,7 +142,7 @@ public class SiemExporter {
     public boolean flush(Duration timeout) {
         long deadline = System.nanoTime() + timeout.toNanos();
         while (System.nanoTime() < deadline) {
-            if (queue.isEmpty() && inFlight.get() == 0) {
+            if (pending.get() <= 0) {
                 return true;
             }
             if (worker == null) {
@@ -150,7 +156,7 @@ public class SiemExporter {
                 return false;
             }
         }
-        return queue.isEmpty() && inFlight.get() == 0;
+        return pending.get() <= 0;
     }
 
     public long exported() {
@@ -176,14 +182,13 @@ public class SiemExporter {
                 if (first == null) {
                     continue;
                 }
-                inFlight.incrementAndGet();
+                List<SiemEvent> batch = new ArrayList<>();
+                batch.add(first);
+                queue.drainTo(batch, Math.max(1, props.getBatchSize()) - 1);
                 try {
-                    List<SiemEvent> batch = new ArrayList<>();
-                    batch.add(first);
-                    queue.drainTo(batch, Math.max(1, props.getBatchSize()) - 1);
                     deliver(batch);
                 } finally {
-                    inFlight.decrementAndGet();
+                    pending.addAndGet(-batch.size());
                 }
             } catch (InterruptedException e) {
                 if (!running) {

@@ -57,5 +57,20 @@ platform:
         prefix: ""
         region: ""        # blank = AWS_REGION / the profile / instance metadata
         endpoint: ""      # blank = AWS; set for an S3-compatible store with Object Lock
+  siem:                   # profile siem: every evidence entry (jobs, releases, the platform stream) also goes to the SIEM
+    queue-capacity: 10000 # bounded; when the SIEM is down long enough the newest entries are dropped and counted
+    batch-size: 100
+    max-attempts: 5       # per batch and SIEM, backing off from initial-backoff, doubling
+    initial-backoff: PT1S
+    hec:                  # Splunk HTTP Event Collector; on when url is set
+      url: ""             # e.g. https://splunk.example.com:8088/services/collector/event
+      token: ""           # a vault: reference to the HEC token, never the token
+      index: ""
+    syslog:               # RFC 5424; on when host is set
+      host: ""
+      port: 514
+      protocol: udp       # udp | tcp (octet counting, RFC 6587)
+      facility: 13        # log audit
+      sd-id: iaf@32473    # the structured-data id; replace 32473 with the firm's enterprise number
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
