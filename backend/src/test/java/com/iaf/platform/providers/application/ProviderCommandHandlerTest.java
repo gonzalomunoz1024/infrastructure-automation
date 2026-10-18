@@ -220,9 +220,17 @@ class ProviderCommandHandlerTest {
     @Test
     void importsASpecByUrl() {
         when(http.fetch("https://fleet.example.com/openapi.yaml")).thenReturn(Mono.just(spec()));
-        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", "https://fleet.example.com/openapi.yaml", null)))
+        StepVerifier.create(as(handler.importSpec(new ImportSpec("openapi", "https://fleet.example.com/openapi.yaml", null)), OWNER))
                 .assertNext(s -> assertThat(s.sha256()).hasSize(64))
                 .verifyComplete();
+        DomainEvent imported = event("provider.spec-imported").orElseThrow();
+        assertThat(imported.actor()).isEqualTo("mateo");
+        assertThat(imported.data().path("source").asText()).isEqualTo("url");
+        assertThat(imported.data().path("url").asText()).isEqualTo("https://fleet.example.com/openapi.yaml");
+        assertThat(imported.data().path("sha256").asText()).hasSize(64).isEqualTo(imported.aggregateId());
+        assertThat(imported.data().path("operations").asInt()).isEqualTo(8);
+        assertThat(imported.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(imported.data().toString()).as("the document itself stays out of the trail").doesNotContain("paths");
     }
 
     @Test
@@ -252,6 +260,13 @@ class ProviderCommandHandlerTest {
                     assertThat(s.sha256()).hasSize(64);
                 })
                 .verifyComplete();
+        JsonNode imported = event("provider.spec-imported").orElseThrow().data();
+        assertThat(imported.path("source").asText()).isEqualTo("git");
+        assertThat(imported.path("repo").asText()).isEqualTo("https://github.com/acme/machines-api");
+        assertThat(imported.path("ref").asText()).isEqualTo("v2.4.0");
+        assertThat(imported.path("path").asText()).isEqualTo("api/openapi.yaml");
+        assertThat(imported.path("commit").asText()).isEqualTo("3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c");
+        assertThat(imported.path("credential").asText()).as("the reference, never the token").isEqualTo("vault:github/read-token");
     }
 
     @Test
@@ -322,9 +337,20 @@ class ProviderCommandHandlerTest {
         assertThat(recorded.get(1).ok()).isFalse();
         assertThat(recorded.get(1).message()).isEqualTo("HEAD 401");
         assertThat(recorded).allMatch(c -> "mateo".equals(c.by()) && NOW.equals(c.at()));
+        DomainEvent tested = event("provider.connection-tested").orElseThrow();
+        assertThat(tested.aggregateId()).isEqualTo("fleet");
+        assertThat(tested.actor()).isEqualTo("mateo");
+        assertThat(tested.data().path("provider").asText()).isEqualTo("fleet");
+        assertThat(tested.data().path("environments")).extracting(JsonNode::asText).containsExactly("dev", "test");
+        assertThat(tested.data().path("ok").path("dev").asBoolean()).isTrue();
+        assertThat(tested.data().path("ok").path("test").asBoolean()).isFalse();
+        assertThat(tested.data().path("credential").asText()).isEqualTo("vault:fleet/token");
+        assertThat(tested.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(tested.data().has("message")).as("the probe's answer is evidence, not audit").isFalse();
         // without a provider name nothing is recorded, and a bad name is refused
         StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null))).expectNextCount(1).verifyComplete();
         assertThat(evidence.evidence("fleet").connections()).hasSize(2);
+        assertThat(published.stream().filter(e -> e.type().equals("provider.connection-tested")).count()).as("an unnamed test is still audited").isEqualTo(2);
         StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null, "Fleet API"))).expectError(IllegalArgumentException.class).verify();
     }
 
@@ -355,6 +381,16 @@ class ProviderCommandHandlerTest {
         assertThat(t.response().path("apiToken").asText()).as("the evidence copy is redacted too").isEqualTo("vault:redacted");
         assertThat(t.response().toString()).doesNotContain("s3cr3t");
         assertThat(t.by()).isEqualTo("mateo");
+        DomainEvent tried = event("provider.tried").orElseThrow();
+        assertThat(tried.aggregateId()).isEqualTo("fleet");
+        assertThat(tried.actor()).isEqualTo("mateo");
+        assertThat(tried.data().path("provider").asText()).isEqualTo("fleet");
+        assertThat(tried.data().path("action").asText()).isEqualTo("vm.get");
+        assertThat(tried.data().path("environment").asText()).isEqualTo("dev");
+        assertThat(tried.data().path("ok").asBoolean()).isTrue();
+        assertThat(tried.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(tried.data().has("response")).as("the answer never goes on the trail").isFalse();
+        assertThat(tried.data().toString()).doesNotContain("s3cr3t").doesNotContain("web");
     }
 
     @Test
@@ -393,6 +429,10 @@ class ProviderCommandHandlerTest {
         assertThat(t.status()).isEqualTo(404);
         assertThat(t.errorClass()).isEqualTo("not_found");
         assertThat(t.response()).isNull();
+        JsonNode tried = event("provider.tried").orElseThrow().data();
+        assertThat(tried.path("ok").asBoolean()).isFalse();
+        assertThat(tried.path("status").asInt()).isEqualTo(404);
+        assertThat(tried.path("errorClass").asText()).isEqualTo("not_found");
     }
 
     @Test

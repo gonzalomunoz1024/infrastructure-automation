@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.assistant.domain.ProviderDraft;
@@ -99,6 +100,10 @@ public class ProviderCommandHandler implements ProviderCommands {
     public static final String MERGED_EVENT = "change-request.merged";
     public static final String PUBLISHED_EVENT = "provider.published";
     public static final String CHANGE_REQUESTED_EVENT = "provider.change-requested";
+    /** The wizard's steps on the audit trail: what was imported (by hash), tested and tried, by whom; never a secret or a response body. */
+    public static final String SPEC_IMPORTED_EVENT = "provider.spec-imported";
+    public static final String CONNECTION_TESTED_EVENT = "provider.connection-tested";
+    public static final String TRIED_EVENT = "provider.tried";
 
     /** What a secret-looking field of a recorded sample becomes in the provider file. */
     public static final String REDACTED = "vault:redacted";
@@ -137,7 +142,7 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<SpecImport> importSpec(ImportSpec command) {
-        return Mono.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Mono.defer(() -> {
             if (command == null) {
                 throw new IllegalArgumentException("type is required");
             }
@@ -152,20 +157,54 @@ public class ProviderCommandHandler implements ProviderCommands {
                     throw new IllegalArgumentException("Give the spec's url, its content or its file in Git, one of them");
                 }
                 GitRef g = requireGitRef(command.git());
-                return CurrentIdentity.current()
-                        .flatMap(who -> CredentialUse.guarded(credentials, who, () -> readFromGit(g, g.ref()), g.credential()))
-                        .map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()));
+                return CredentialUse.guarded(credentials, who, () -> readFromGit(g, g.ref()), g.credential())
+                        .map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()))
+                        .flatMap(spec -> imported(who, spec, "git", null, g));
             }
             if (!hasUrl && !hasContent) {
                 throw new IllegalArgumentException("Give the spec's url, paste its content or name its file in Git");
             }
             if (hasContent) {
-                return Mono.fromCallable(() -> OpenApiImporter.parse(command.content()));
+                return Mono.fromCallable(() -> OpenApiImporter.parse(command.content()))
+                        .flatMap(spec -> imported(who, spec, "content", null, null));
             }
             String url = command.url().trim();
             return http.fetch(url)
                     .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not fetch " + url + ": " + reason(e)))
-                    .map(OpenApiImporter::parse);
+                    .map(OpenApiImporter::parse)
+                    .flatMap(spec -> imported(who, spec, "url", url, null));
+        }));
+    }
+
+    /** The import on the audit trail: where the document came from and its hash, never the document itself. */
+    private Mono<SpecImport> imported(Identity who, SpecImport spec, String source, String url, GitRef git) {
+        return blocking(() -> {
+            ObjectNode data = F.objectNode();
+            data.put("source", source);
+            if (url != null) {
+                data.put("url", url);
+            }
+            if (git != null) {
+                data.put("repo", git.repo());
+                if (git.ref() != null) {
+                    data.put("ref", git.ref());
+                }
+                data.put("path", git.path());
+                if (git.credential() != null) {
+                    data.put("credential", git.credential()); // the reference, never the token
+                }
+            }
+            if (spec.commit() != null) {
+                data.put("commit", spec.commit());
+            }
+            data.put("sha256", spec.sha256());
+            if (spec.title() != null) {
+                data.put("title", spec.title());
+            }
+            data.put("operations", spec.operations() == null ? 0 : spec.operations().size());
+            data.put("by", who.id());
+            events.publish(SPEC_IMPORTED_EVENT, "spec", spec.sha256(), who.id(), data);
+            return spec;
         });
     }
 
@@ -372,7 +411,7 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<ConnectionResult.Results> testConnection(TestConnection command) {
-        return CurrentIdentity.current().flatMap(who -> Flux.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Mono.defer(() -> {
             if (command == null || command.endpoints() == null || command.endpoints().isEmpty()) {
                 throw new IllegalArgumentException("endpoints is required: one URL per environment");
             }
@@ -391,8 +430,26 @@ public class ProviderCommandHandler implements ProviderCommands {
                         return r;
                     }));
             // the credential goes to every endpoint named: only once the caller may use it
-            return CredentialUse.require(credentials, who, auth.credential()).thenMany(probes);
-        }).collectList().map(ConnectionResult.Results::new));
+            return CredentialUse.require(credentials, who, auth.credential()).thenMany(probes).collectList()
+                    .flatMap(results -> blocking(() -> {
+                        ObjectNode data = F.objectNode();
+                        if (provider != null) {
+                            data.put("provider", provider);
+                        }
+                        ArrayNode environments = data.putArray("environments");
+                        ObjectNode ok = data.putObject("ok");
+                        for (ConnectionResult r : results) {
+                            environments.add(r.environment());
+                            ok.put(r.environment(), r.ok());
+                        }
+                        if (auth.credential() != null && !auth.credential().isBlank()) {
+                            data.put("credential", auth.credential());
+                        }
+                        data.put("by", who.id());
+                        events.publish(CONNECTION_TESTED_EVENT, "provider", provider, who.id(), data);
+                        return new ConnectionResult.Results(results);
+                    }));
+        }));
     }
 
     private Mono<ConnectionResult> probe(String environment, String url, Auth auth) {
@@ -436,9 +493,21 @@ public class ProviderCommandHandler implements ProviderCommands {
                                 elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
                         .flatMap(result -> blocking(() -> {
                             // the evidence copy is redacted; the live answer goes back to the caller as it came
+                            String errorClass = result.ok() ? null : result.response().path("error").path("class").asText(null);
                             evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
-                                    result.ok() ? null : result.response().path("error").path("class").asText(null),
-                                    result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id()));
+                                    errorClass, result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id()));
+                            ObjectNode data = F.objectNode();
+                            data.put("provider", def.name());
+                            data.put("action", action.id());
+                            data.put("environment", environment);
+                            data.put("ok", result.ok());
+                            data.put("status", result.status());
+                            if (errorClass != null) {
+                                data.put("errorClass", errorClass);
+                            }
+                            data.put("durationMs", result.durationMs());
+                            data.put("by", who.id());
+                            events.publish(TRIED_EVENT, "provider", def.name(), who.id(), data); // the outcome, never the response
                             return result;
                         }));
             }, credentialsOf(def).toArray(String[]::new));

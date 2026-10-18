@@ -330,6 +330,10 @@ rolls out through a canary; overrides and SLO edits change no call and use `all`
 is still running, in which case they build on its candidate and roll out as a canary too.
 `provider.change-requested` carries `{ name; version; changeRequestId; by; owner; change?; strategy? }` (`owner` is the
 team a reviewer is notified in); `provider.published` carries `{ name; version; previous?; strategy; by }`.
+The wizard's steps are audited too, without the document, the secret or the answer:
+`provider.spec-imported` `{ source: 'url' | 'content' | 'git'; url?; repo?; ref?; path?; credential?; commit?; sha256; title?; operations; by }`,
+`provider.connection-tested` `{ provider?; environments; ok: { [environment]: boolean }; credential?; by }` and
+`provider.tried` `{ provider; action; environment; ok; status; errorClass?; durationMs; by }` (a `credential` is always the `vault:` reference).
 
 The two imports draft a provider file from what a repository holds and save nothing: the draft
 goes through Validate and Publish like a file written by hand, and `notes` says what is left to do
@@ -412,8 +416,9 @@ published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, 
 `approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
 provider, action, effect, target), `decision` (on a job that needed attention, with the edited
 input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
-requests, publishes, provider changes, credentials by name and type, service accounts, release
-decisions, builder sessions, retired resources) go on the platform stream, a chain of its own
+requests, publishes, provider changes and the wizard's imports, connection tests and tries,
+credentials by name and type, service accounts, release decisions, builder sessions, retired
+resources, seals, uploaded playbooks) go on the platform stream, a chain of its own
 whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the
 file. Every entry is redacted before it is chained: secret-looking fields and values resolved from
 Vault during the run become `***`, `vault:` references stay; job views are redacted the same way.
