@@ -5,10 +5,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Optional;
 import java.util.concurrent.Callable;
@@ -25,10 +27,10 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * The default {@link ArtifactStorePort}: files under {@code platform.artifacts.dir}, at
- * {@code sha256/<first two digits>/<digest>}, and a named object at its name
- * ({@code jobs/<id>/logs.ndjson}). A put writes a staging file, then links it into place, which
- * fails rather than overwrites when the digest or the name is already there; stored files are
- * read-only.
+ * {@code sha256/<first two digits>/<digest>}. A put hashes into a staging file, then links it
+ * into place, which fails rather than overwrites when the digest is already there; stored files
+ * are read-only. A named object ({@code jobs/<id>/logs.ndjson}) is a file at its name, written to
+ * a staging file and renamed over the old one, so a reader sees one or the other whole.
  */
 @Slf4j
 @Component
@@ -79,12 +81,9 @@ public class FilesystemArtifactStore implements ArtifactStorePort {
     }
 
     @Override
-    public Mono<Boolean> putNamed(String name, byte[] content) {
+    public Mono<Void> putNamed(String name, byte[] content) {
         return blocking(() -> {
             Path target = root.resolve(ArtifactStorePort.name(name));
-            if (Files.exists(target)) {
-                return false;
-            }
             Path staging = root.resolve("staging");
             Files.createDirectories(staging);
             Path part = Files.createTempFile(staging, "put-", ".part");
@@ -93,22 +92,16 @@ public class FilesystemArtifactStore implements ArtifactStorePort {
                 Files.createDirectories(target.getParent());
                 readOnly(part);
                 try {
-                    Files.createLink(target, part);
-                } catch (FileAlreadyExistsException e) {
-                    return false;
-                } catch (UnsupportedOperationException | FileSystemException e) {
-                    try {
-                        Files.move(part, target);
-                    } catch (FileAlreadyExistsException taken) {
-                        return false;
-                    }
+                    Files.move(part, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(part, target, StandardCopyOption.REPLACE_EXISTING);
                 }
                 log.debug("stored {} ({} bytes)", name, content == null ? 0 : content.length);
                 return true;
             } finally {
                 Files.deleteIfExists(part);
             }
-        });
+        }).then();
     }
 
     @Override

@@ -13,9 +13,10 @@ import reactor.core.publisher.Mono;
  * stores them once, and nothing is ever overwritten or deleted through this port. Reads check
  * the digest again, so a corrupted object never reaches a run.
  *
- * <p>A named object is kept under a name of its own instead, such as a finished job's archive
- * ({@code jobs/<id>/logs.ndjson}): written once as well (the first content under a name stays),
- * beside the content-addressed objects and never among them.</p>
+ * <p>A named object is kept under a name of its own instead, such as an ended job's archive
+ * ({@code jobs/<id>/logs.ndjson}), beside the content-addressed objects and never among them.
+ * Writing a name again replaces its content as a whole: a reader gets the old content or the new,
+ * never a mix, and its digest is checked on every read where the store keeps one.</p>
  */
 public interface ArtifactStorePort {
 
@@ -34,8 +35,8 @@ public interface ArtifactStorePort {
 
     Mono<Boolean> exists(String sha256);
 
-    /** Store {@code content} under {@code name} unless something is stored there already: true when this call stored it. */
-    Mono<Boolean> putNamed(String name, byte[] content);
+    /** Store {@code content} under {@code name}, replacing whatever was stored there. */
+    Mono<Void> putNamed(String name, byte[] content);
 
     /** What is stored under {@code name}; empty when nothing is. */
     Mono<byte[]> getNamed(String name);

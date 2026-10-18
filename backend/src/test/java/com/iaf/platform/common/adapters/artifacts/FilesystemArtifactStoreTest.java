@@ -121,34 +121,42 @@ class FilesystemArtifactStoreTest {
     }
 
     @Test
-    void aNamedObjectIsWrittenOnceReadOnlyAndReadBack() throws Exception {
+    void aNamedObjectIsStoredReadOnlyReadBackAndReplacedWhenWrittenAgain() throws Exception {
         FilesystemArtifactStore store = store();
         byte[] first = "{\"seq\":1}\n".getBytes(StandardCharsets.UTF_8);
-
-        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", first)).expectNext(true).verifyComplete();
-        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", "other".getBytes(StandardCharsets.UTF_8))).expectNext(false).verifyComplete();
-
+        byte[] second = "{\"seq\":1}\n{\"seq\":2}\n".getBytes(StandardCharsets.UTF_8);
         Path stored = dir.resolve("store/jobs/j1/logs.ndjson");
+
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", first)).verifyComplete();
+
         assertThat(stored).hasBinaryContent(first);
         assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(stored))).isEqualTo("r--r--r--");
         StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(first)).verifyComplete();
         StepVerifier.create(store.existsNamed("jobs/j1/logs.ndjson")).expectNext(true).verifyComplete();
+
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", second)).verifyComplete();
+
+        StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(second)).verifyComplete();
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(stored))).isEqualTo("r--r--r--");
         try (Stream<Path> staging = Files.list(dir.resolve("store/staging"))) {
             assertThat(staging.count()).as("no staging file is left behind").isZero();
         }
     }
 
     @Test
-    void concurrentWritesOfOneNameStoreExactlyOneOfThem() throws Exception {
+    void concurrentWritesOfOneNameLeaveOneOfThemWhole() throws Exception {
         FilesystemArtifactStore store = store();
+        String big = "x".repeat(64 * 1024);
 
-        List<Boolean> stored = Flux.range(0, 8)
-                .flatMap(i -> store.putNamed("jobs/j2/plan.json", ("{\"n\":" + i + "}").getBytes(StandardCharsets.UTF_8))
+        Flux.range(0, 8)
+                .flatMap(i -> store.putNamed("jobs/j2/plan.json", ("{\"n\":" + i + ",\"pad\":\"" + big + "\"}").getBytes(StandardCharsets.UTF_8))
                         .subscribeOn(Schedulers.parallel()), 8)
-                .collectList().block(Duration.ofSeconds(10));
+                .then().block(Duration.ofSeconds(10));
 
-        assertThat(stored).hasSize(8).filteredOn(Boolean::booleanValue).hasSize(1);
-        assertThat(Files.readString(dir.resolve("store/jobs/j2/plan.json"))).matches("\\{\"n\":[0-7]}");
+        assertThat(Files.readString(dir.resolve("store/jobs/j2/plan.json"))).matches("\\{\"n\":[0-7],\"pad\":\"x{65536}\"}");
+        try (Stream<Path> staging = Files.list(dir.resolve("store/staging"))) {
+            assertThat(staging.count()).as("no staging file is left behind").isZero();
+        }
     }
 
     @Test

@@ -197,32 +197,41 @@ class S3ArtifactStoreTest {
     }
 
     @Test
-    void aNamedObjectIsWrittenOnceUnderThePrefixAndReadBack() {
+    void aNamedObjectIsPutUnderThePrefixReadBackAndReplacedWhenWrittenAgain() {
         S3ArtifactStore store = store(vault());
         byte[] logs = "{\"seq\":1}\n".getBytes(StandardCharsets.UTF_8);
+        byte[] more = "{\"seq\":1}\n{\"seq\":2}\n".getBytes(StandardCharsets.UTF_8);
         String key = "/plans/artifacts/jobs/j1/logs.ndjson";
 
-        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", logs)).expectNext(true).verifyComplete();
-        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", "again".getBytes(StandardCharsets.UTF_8))).expectNext(false).verifyComplete();
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", logs)).verifyComplete();
 
         assertThat(objects).containsOnlyKeys(key);
         assertThat(objects.get(key)).isEqualTo(logs);
-        assertThat(seen).filteredOn(s -> s.method().equals("PUT")).as("the second write stops at the HEAD").hasSize(1);
-        Seen put = seen.stream().filter(s -> s.method().equals("PUT")).findFirst().orElseThrow();
+        assertThat(seen).extracting(Seen::method).as("a plain PUT, nothing asked first").containsExactly("PUT");
+        Seen put = seen.get(0);
         assertThat(put.path()).isEqualTo(key);
-        assertThat(put.header("If-None-Match")).isEqualTo("*");
+        assertThat(put.header("If-None-Match")).isNull();
         assertThat(put.header("Content-Type")).isEqualTo("application/x-ndjson");
+        assertThat(put.header("x-amz-checksum-sha256")).isNotBlank();
         assertThat(put.header("x-amz-meta-sha256")).isEqualTo("40fe96e5dc9e9822902a3f343389fa3cd531c145a19eb55881b0be5e9b0962e7");
         StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(logs)).verifyComplete();
         StepVerifier.create(store.existsNamed("jobs/j1/logs.ndjson")).expectNext(true).verifyComplete();
         StepVerifier.create(store.existsNamed("jobs/j1/plan.json")).expectNext(false).verifyComplete();
         StepVerifier.create(store.getNamed("jobs/j1/plan.json")).verifyComplete();
+
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", more)).verifyComplete();
+
+        assertThat(objects.get(key)).isEqualTo(more);
+        assertThat(digests).containsEntry(key, "2dc3eda31cdc4f48b964946ebb421f585e14e377623c34652b6bd6840db370cf");
+        StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(more)).verifyComplete();
     }
 
     @Test
-    void aNamedWriteThatLosesTheRaceDidNotStoreIt() {
+    void aNamedWriteTheBucketRefusesIsAnError() {
         answer412 = true;
-        StepVerifier.create(store(vault()).putNamed("jobs/j1/plan.json", "{}".getBytes(StandardCharsets.UTF_8))).expectNext(false).verifyComplete();
+        StepVerifier.create(store(vault()).putNamed("jobs/j1/plan.json", "{}".getBytes(StandardCharsets.UTF_8)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(software.amazon.awssdk.services.s3.model.S3Exception.class))
+                .verify();
         assertThat(objects).isEmpty();
     }
 
