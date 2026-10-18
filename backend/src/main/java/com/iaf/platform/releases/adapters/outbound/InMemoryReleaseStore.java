@@ -7,12 +7,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 
 /** The demo store: a map, newest release first. */
+@Profile("!postgres")
 @Component
 public class InMemoryReleaseStore implements ReleaseStore {
 

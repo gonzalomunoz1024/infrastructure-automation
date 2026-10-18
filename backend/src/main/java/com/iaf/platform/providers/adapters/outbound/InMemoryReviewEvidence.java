@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -20,6 +21,7 @@ import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
  * and the last {@value #MAX_TRIES} tries. A response larger than {@value #MAX_RESPONSE_BYTES} bytes
  * is kept without its body (the try still counts; the schema comparison skips it).
  */
+@Profile("!postgres")
 @Component
 public class InMemoryReviewEvidence implements ReviewEvidencePort {
 

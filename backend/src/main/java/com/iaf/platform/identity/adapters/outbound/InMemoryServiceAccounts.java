@@ -5,11 +5,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 
+@Profile("!postgres")
 @Component
 public class InMemoryServiceAccounts implements ServiceAccountStore {
 

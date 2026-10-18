@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.runs.domain.Approval;
@@ -17,6 +18,7 @@ import com.iaf.platform.runs.domain.JobEvent;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 
 /** The demo runs index: jobs, approvals and event histories in maps, gone with the process. */
+@Profile("!postgres")
 @Component
 public class InMemoryProjectionStore implements ProjectionStore {
 

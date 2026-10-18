@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.content.ContentFiles;
@@ -33,6 +34,7 @@ import lombok.extern.slf4j.Slf4j;
  * until it is promoted and saved as the current version.
  */
 @Slf4j
+@Profile("!postgres")
 @Component
 public class InMemoryProviderStore implements ProviderStorePort {
 

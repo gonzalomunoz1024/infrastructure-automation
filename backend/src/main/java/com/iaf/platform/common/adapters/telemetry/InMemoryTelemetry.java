@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.ports.TelemetryPort;
@@ -23,6 +24,7 @@ import io.micrometer.core.instrument.Timer;
  * shows {@code provider_call} (timer, tags provider/action/outcome) and {@code provider_errors}
  * (counter, tags provider/action/class). Production keeps the meters and adds an OTel exporter.
  */
+@Profile("!postgres")
 @Component
 public class InMemoryTelemetry implements TelemetryPort {
 

@@ -5,11 +5,13 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.ports.outbound.SessionStore;
 
+@Profile("!postgres")
 @Component
 public class InMemorySessionStore implements SessionStore {
 

@@ -6,12 +6,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
 /** Change requests kept in memory and merged from the UI; GitHub pull requests are planned. */
+@Profile("!postgres")
 @Component
 public class InMemoryChangeRequests implements ChangeRequestPort {
 

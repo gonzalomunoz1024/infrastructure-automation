@@ -124,7 +124,10 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 
-A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
+Under that profile the in-memory twins of these stores are not created at all
+(`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only
+implementations in the context (the evidence store keeps its in-memory default, which the `worm`
+profiles replace). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
 (workflow, status, requester, times). Times are also kept as epoch nanoseconds, so the order is
 exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, which the tests use.
 
