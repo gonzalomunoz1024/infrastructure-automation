@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -51,17 +54,38 @@ func (p *Provider) unknown(ctx context.Context, _ converter.EncodedValues) (any,
 	return nil, toTemporal(Fatal(UnknownAction, fmt.Sprintf("Provider %s has no action '%s'", p.name, name)))
 }
 
-// Options says where the worker finds Temporal and how long a stopping worker lets the calls in
-// flight finish.
+// Options says where the worker finds Temporal, how it proves who it is there, and how long a
+// stopping worker lets the calls in flight finish. A CA, a client certificate or an API key makes
+// the connection TLS: the CA verifies the frontend (the system's CAs without one), the certificate
+// and its key are the worker's identity for mutual TLS, the API key (Temporal Cloud) goes with
+// every request as a bearer token.
 type Options struct {
 	Address      string
 	Namespace    string
 	DrainTimeout time.Duration
+	// TLSCA is a PEM file of the CA that signed the frontend's certificate.
+	TLSCA string
+	// TLSCert and TLSKey are PEM files of the worker's client certificate and its key, for mutual
+	// TLS; both or neither.
+	TLSCert, TLSKey string
+	// APIKey is a Temporal Cloud API key. String never shows it.
+	APIKey string
+}
+
+// String describes the options without the API key.
+func (o Options) String() string {
+	key := "none"
+	if o.APIKey != "" {
+		key = "(set)"
+	}
+	return fmt.Sprintf("{Address:%s Namespace:%s DrainTimeout:%s TLSCA:%s TLSCert:%s TLSKey:%s APIKey:%s}",
+		o.Address, o.Namespace, o.DrainTimeout, o.TLSCA, o.TLSCert, o.TLSKey, key)
 }
 
 // OptionsFromEnv reads TEMPORAL_ADDRESS (default 127.0.0.1:7233), TEMPORAL_NAMESPACE (default
-// "default") and WORKER_DRAIN_SECONDS (default 30; a value that is not a whole number of seconds is
-// logged and falls back to it, as in the other SDKs).
+// "default"), WORKER_DRAIN_SECONDS (default 30; a value that is not a whole number of seconds is
+// logged and falls back to it, as in the other SDKs), and IAF_TEMPORAL_TLS_CA,
+// IAF_TEMPORAL_TLS_CERT, IAF_TEMPORAL_TLS_KEY and IAF_TEMPORAL_API_KEY for TLS and Temporal Cloud.
 func OptionsFromEnv() Options {
 	return optionsFrom(os.Getenv)
 }
@@ -74,6 +98,10 @@ func optionsFrom(env func(string) string) Options {
 	if v := strings.TrimSpace(env("TEMPORAL_NAMESPACE")); v != "" {
 		o.Namespace = v
 	}
+	o.TLSCA = strings.TrimSpace(env("IAF_TEMPORAL_TLS_CA"))
+	o.TLSCert = strings.TrimSpace(env("IAF_TEMPORAL_TLS_CERT"))
+	o.TLSKey = strings.TrimSpace(env("IAF_TEMPORAL_TLS_KEY"))
+	o.APIKey = strings.TrimSpace(env("IAF_TEMPORAL_API_KEY"))
 	if v := strings.TrimSpace(env("WORKER_DRAIN_SECONDS")); v != "" {
 		if s, err := strconv.Atoi(v); err == nil && s >= 0 {
 			o.DrainTimeout = time.Duration(s) * time.Second
@@ -86,7 +114,7 @@ func optionsFrom(env func(string) string) Options {
 }
 
 // NewWorker is a worker on the provider's task queue with its actions registered, on a client
-// you built (TLS, API keys, interceptors). Stopping it lets the calls in flight finish for
+// you built (interceptors, a data converter). Stopping it lets the calls in flight finish for
 // opts.WorkerStopTimeout (30s when zero).
 func NewWorker(c client.Client, p *Provider, opts worker.Options) worker.Worker {
 	if opts.WorkerStopTimeout == 0 {
@@ -103,10 +131,65 @@ func runOptions(opts Options) worker.Options {
 	return worker.Options{WorkerStopTimeout: opts.DrainTimeout, DisableWorkflowWorker: true}
 }
 
-// Run connects to Temporal, serves the provider until ctx is done or the process gets SIGINT or
-// SIGTERM, then stops polling and lets the calls in flight finish for the drain timeout.
+// clientOptions is how the worker dials Temporal: TLS when a CA, a client certificate or an API
+// key asks for it, and the API key as the credentials. A file that cannot be read fails here,
+// naming the variable it comes from.
+func clientOptions(o Options) (client.Options, error) {
+	co := client.Options{HostPort: o.Address, Namespace: o.Namespace}
+	if (o.TLSCert == "") != (o.TLSKey == "") {
+		return co, errors.New("IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together: the worker's client certificate and its key, for mutual TLS")
+	}
+	if o.TLSCA != "" || o.TLSCert != "" || o.APIKey != "" {
+		cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if o.TLSCA != "" {
+			pem, err := os.ReadFile(o.TLSCA)
+			if err != nil {
+				return co, fmt.Errorf("read the CA of the Temporal frontend (IAF_TEMPORAL_TLS_CA): %w", err)
+			}
+			cfg.RootCAs = x509.NewCertPool()
+			if !cfg.RootCAs.AppendCertsFromPEM(pem) {
+				return co, fmt.Errorf("%s (IAF_TEMPORAL_TLS_CA) holds no PEM certificate", o.TLSCA)
+			}
+		}
+		if o.TLSCert != "" {
+			pair, err := tls.LoadX509KeyPair(o.TLSCert, o.TLSKey)
+			if err != nil {
+				return co, fmt.Errorf("load the client certificate and key (IAF_TEMPORAL_TLS_CERT, IAF_TEMPORAL_TLS_KEY): %w", err)
+			}
+			cfg.Certificates = []tls.Certificate{pair}
+		}
+		co.ConnectionOptions.TLS = cfg
+	}
+	if o.APIKey != "" {
+		co.Credentials = client.NewAPIKeyStaticCredentials(o.APIKey)
+	}
+	return co, nil
+}
+
+// connection describes how the worker connects, for its start-up line: never the key itself.
+func connection(o Options) string {
+	transport := "plaintext"
+	switch {
+	case o.TLSCert != "":
+		transport = "mutual TLS"
+	case o.TLSCA != "" || o.APIKey != "":
+		transport = "TLS"
+	}
+	if o.APIKey != "" {
+		return transport + " with an API key"
+	}
+	return transport
+}
+
+// Run connects to Temporal (TLS and an API key when the options say so), serves the provider until
+// ctx is done or the process gets SIGINT or SIGTERM, then stops polling and lets the calls in
+// flight finish for the drain timeout.
 func Run(ctx context.Context, p *Provider, opts Options) error {
-	c, err := client.Dial(client.Options{HostPort: opts.Address, Namespace: opts.Namespace})
+	co, err := clientOptions(opts)
+	if err != nil {
+		return err
+	}
+	c, err := client.Dial(co)
 	if err != nil {
 		return fmt.Errorf("connect to Temporal at %s: %w", opts.Address, err)
 	}
@@ -118,7 +201,7 @@ func Run(ctx context.Context, p *Provider, opts Options) error {
 		return fmt.Errorf("start the worker on %s: %w", p.taskQueue, err)
 	}
 	slog.Info("provider serves its actions", "provider", p.name, "version", p.version, "actions", len(p.actions),
-		"taskQueue", p.taskQueue, "address", opts.Address, "namespace", opts.Namespace)
+		"taskQueue", p.taskQueue, "address", opts.Address, "namespace", opts.Namespace, "connection", connection(opts))
 	<-ctx.Done()
 	slog.Info("provider stops polling and drains", "provider", p.name, "drainTimeout", opts.DrainTimeout)
 	w.Stop()

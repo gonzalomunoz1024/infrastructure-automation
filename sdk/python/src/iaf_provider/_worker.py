@@ -17,6 +17,7 @@ from temporalio import activity
 from temporalio.client import Client
 from temporalio.common import RawValue
 from temporalio.exceptions import ApplicationError, CancelledError
+from temporalio.service import TLSConfig
 from temporalio.worker import Worker
 
 from ._errors import (
@@ -210,17 +211,29 @@ def activity_for(provider: Provider, action_id: str) -> Callable[..., Any]:
 
 @dataclass(frozen=True)
 class WorkerOptions:
-    """Where the worker finds Temporal and how long a stopping worker lets the calls in flight finish."""
+    """Where the worker finds Temporal, how it proves who it is there, and how long a stopping worker
+    lets the calls in flight finish. A CA, a client certificate or an API key makes the connection
+    TLS: the CA verifies the frontend (the system's CAs without one), the certificate and its key are
+    the worker's identity for mutual TLS, the API key (Temporal Cloud) goes with every request as a
+    bearer token."""
 
     address: str = "127.0.0.1:7233"
     namespace: str = "default"
     drain_timeout: timedelta = timedelta(seconds=30)
+    #: A PEM file of the CA that signed the frontend's certificate.
+    tls_ca: str | None = None
+    #: PEM files of the worker's client certificate and its key, for mutual TLS; both or neither.
+    tls_cert: str | None = None
+    tls_key: str | None = None
+    #: A Temporal Cloud API key; never in the repr.
+    api_key: str | None = field(default=None, repr=False)
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> WorkerOptions:
         """``TEMPORAL_ADDRESS``, ``TEMPORAL_NAMESPACE`` and ``WORKER_DRAIN_SECONDS``, each falling back to
-        the default; a drain time that is not a whole number of seconds is logged and falls back too, as
-        in the other SDKs."""
+        the default (a drain time that is not a whole number of seconds is logged and falls back too, as
+        in the other SDKs), and ``IAF_TEMPORAL_TLS_CA``, ``IAF_TEMPORAL_TLS_CERT``, ``IAF_TEMPORAL_TLS_KEY``
+        and ``IAF_TEMPORAL_API_KEY`` for TLS and Temporal Cloud."""
         env = os.environ if env is None else env
         d = WorkerOptions()
         drain = (env.get("WORKER_DRAIN_SECONDS") or "").strip()
@@ -237,7 +250,45 @@ class WorkerOptions:
             address=(env.get("TEMPORAL_ADDRESS") or "").strip() or d.address,
             namespace=(env.get("TEMPORAL_NAMESPACE") or "").strip() or d.namespace,
             drain_timeout=drain_timeout,
+            tls_ca=(env.get("IAF_TEMPORAL_TLS_CA") or "").strip() or None,
+            tls_cert=(env.get("IAF_TEMPORAL_TLS_CERT") or "").strip() or None,
+            tls_key=(env.get("IAF_TEMPORAL_TLS_KEY") or "").strip() or None,
+            api_key=(env.get("IAF_TEMPORAL_API_KEY") or "").strip() or None,
         )
+
+
+def _read_file(path: str, variable: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise ValueError(f"Cannot read {path} ({variable}): {e}") from e
+
+
+def _connect_options(options: WorkerOptions) -> dict[str, Any]:
+    """The keyword arguments of ``Client.connect`` for these options: TLS when a CA, a client
+    certificate or an API key asks for it, and the API key. A file that cannot be read fails here,
+    naming the variable it comes from."""
+    if bool(options.tls_cert) != bool(options.tls_key):
+        raise ValueError(
+            "IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together: the worker's client certificate and its key, for mutual TLS"
+        )
+    tls: bool | TLSConfig = False
+    if options.tls_ca or options.tls_cert:
+        tls = TLSConfig(
+            server_root_ca_cert=_read_file(options.tls_ca, "IAF_TEMPORAL_TLS_CA") if options.tls_ca else None,
+            client_cert=_read_file(options.tls_cert, "IAF_TEMPORAL_TLS_CERT") if options.tls_cert else None,
+            client_private_key=_read_file(options.tls_key, "IAF_TEMPORAL_TLS_KEY") if options.tls_key else None,
+        )
+    elif options.api_key:
+        tls = True
+    return {"namespace": options.namespace, "tls": tls, "api_key": options.api_key}
+
+
+def _connection(options: WorkerOptions) -> str:
+    """How the worker connects, for its start-up line: never the key itself."""
+    transport = "mutual TLS" if options.tls_cert else "TLS" if options.tls_ca or options.api_key else "plaintext"
+    return f"{transport} with an API key" if options.api_key else transport
 
 
 def new_worker(
@@ -248,7 +299,7 @@ def new_worker(
     drain_timeout: timedelta = timedelta(seconds=30),
 ) -> Worker:
     """A worker on the provider's task queue with its actions registered, on a client you built
-    (TLS, API keys, interceptors). Sync handlers run on ``activity_executor``."""
+    (interceptors, a data converter). Sync handlers run on ``activity_executor``."""
     acts = activities(provider)
     needs_executor = any(not a.is_async for a in provider.actions)
     if needs_executor and activity_executor is None:
@@ -263,11 +314,12 @@ def new_worker(
 
 
 async def run_worker(provider: Provider, options: WorkerOptions | None = None, *, stop: asyncio.Event | None = None) -> None:
-    """Connect to Temporal and serve the provider until SIGINT or SIGTERM (or ``stop`` is set),
-    then stop polling and let the calls in flight finish for the drain timeout."""
+    """Connect to Temporal (TLS and an API key when the options say so) and serve the provider until
+    SIGINT or SIGTERM (or ``stop`` is set), then stop polling and let the calls in flight finish for
+    the drain timeout."""
     options = options or WorkerOptions.from_env()
     provider.validate()
-    client = await Client.connect(options.address, namespace=options.namespace)
+    client = await Client.connect(options.address, **_connect_options(options))
     stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -279,13 +331,14 @@ async def run_worker(provider: Provider, options: WorkerOptions | None = None, *
         worker = new_worker(client, provider, activity_executor=executor, drain_timeout=options.drain_timeout)
         async with worker:
             log.info(
-                "provider %s %s serves %d action(s) on task queue %s at %s (namespace %s)",
+                "provider %s %s serves %d action(s) on task queue %s at %s (namespace %s, %s)",
                 provider.name,
                 provider.version,
                 len(provider.actions),
                 provider.task_queue,
                 options.address,
                 options.namespace,
+                _connection(options),
             )
             await stop.wait()
             log.info("provider %s stops polling and drains for up to %s", provider.name, options.drain_timeout)

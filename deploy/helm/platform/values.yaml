@@ -87,13 +87,17 @@ temporal:
   # mTLS to the frontend (Temporal Cloud with certificates, or a server that asks for them): an
   # existing Secret holding the CA, the client certificate and its key in PEM, mounted at
   # /etc/temporal-tls and named by platform.temporal.tls.ca, .cert and .key. Set caKey to "" when
-  # the server's certificate is publicly trusted.
+  # the server's certificate is publicly trusted. The provider workers get the same files and the
+  # API key below as IAF_TEMPORAL_TLS_CA/_CERT/_KEY and IAF_TEMPORAL_API_KEY (a worker's own env
+  # entries override them); a Java worker reads the key in PKCS #8 (cert-manager:
+  # privateKey.encoding: PKCS8).
   tls:
     secretName: ""
     caKey: ca.crt
     certKey: tls.crt
     keyKey: tls.key
-  # a Temporal Cloud API key: an existing Secret (PLATFORM_TEMPORAL_APIKEY, platform.temporal.api-key)
+  # a Temporal Cloud API key: an existing Secret (PLATFORM_TEMPORAL_APIKEY, platform.temporal.api-key;
+  # IAF_TEMPORAL_API_KEY on the provider workers)
   apiKeySecret:
     name: ""
     key: api-key

@@ -97,14 +97,18 @@ replace a derived schema.
 
 | Variable | Default | |
 |---|---|---|
-| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend |
-| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in |
+| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend (on Temporal Cloud, the namespace's gRPC endpoint) |
+| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in (on Temporal Cloud, `<namespace>.<account>`) |
 | `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish; a value that is not a whole number of seconds is logged and falls back to 30 |
+| `IAF_TEMPORAL_TLS_CA` | | a PEM file of the CA that signed the frontend's certificate; without it TLS trusts the system's CAs |
+| `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` | | PEM files of the worker's client certificate and its key, for mutual TLS |
+| `IAF_TEMPORAL_API_KEY` | | a Temporal Cloud API key, sent as a bearer token over TLS; never logged |
 | `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `Submit` |
 | `IAF_PLATFORM_TOKEN` | | a service-account token (`iaf_...`), for `Submit`; sent, never printed |
 
-To connect with TLS or an API key, dial your own `client.Client` and use
-`provider.NewWorker(c, p, worker.Options{})`.
+Any `IAF_TEMPORAL_*` variable turns TLS on (`Options.TLSCA`, `TLSCert`, `TLSKey` and `APIKey` in code); a
+file that cannot be read stops `Run`, naming its variable. For anything else (interceptors, a data
+converter), dial your own `client.Client` and use `provider.NewWorker(c, p, worker.Options{})`.
 
 ## Testing
 

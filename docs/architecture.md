@@ -336,7 +336,11 @@ The in-memory demo answers an `sdk` action from its `sample`, as it does for eve
 `live` profile without Temporal fails it with a message saying it needs the `temporal` profile.
 Each worker is a deployment of its own, which the team that owns it scales and releases (the
 Helm chart's `providerWorkers`, the example workers in `docker-compose.yml`); a stopping worker
-stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default).
+stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default). A
+worker reaches Temporal Cloud or a TLS frontend with `IAF_TEMPORAL_TLS_CA` (the frontend's CA),
+`IAF_TEMPORAL_TLS_CERT` and `IAF_TEMPORAL_TLS_KEY` (its client certificate, for mutual TLS) and
+`IAF_TEMPORAL_API_KEY` (a bearer token over TLS), the same in the three SDKs; the chart sets them
+from `temporal.tls` and `temporal.apiKeySecret`.
 
 ### Verified against a real Temporal server
 

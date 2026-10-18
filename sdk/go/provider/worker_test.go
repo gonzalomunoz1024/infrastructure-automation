@@ -3,9 +3,19 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
+	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -284,4 +294,104 @@ func TestOptionsComeFromTheEnvironment(t *testing.T) {
 	env := map[string]string{"TEMPORAL_ADDRESS": "temporal-frontend.temporal:7233", "TEMPORAL_NAMESPACE": "platform", "WORKER_DRAIN_SECONDS": "90"}
 	assert.Equal(t, Options{Address: "temporal-frontend.temporal:7233", Namespace: "platform", DrainTimeout: 90 * time.Second},
 		optionsFrom(func(k string) string { return env[k] }))
+}
+
+// writeCerts writes a test CA, a client certificate it signed and the client's key, as PEM files.
+func writeCerts(t *testing.T) (ca, cert, key string) {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, typ string, der []byte) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600))
+		return p
+	}
+	now := time.Now()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	caTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test CA"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+	caCert, err := x509.ParseCertificate(caDER)
+	require.NoError(t, err)
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	clientTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "provider-worker"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	clientDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, &clientKey.PublicKey, caKey)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(clientKey)
+	require.NoError(t, err)
+	return write("ca.crt", "CERTIFICATE", caDER), write("tls.crt", "CERTIFICATE", clientDER), write("tls.key", "PRIVATE KEY", keyDER)
+}
+
+func TestAPlainConnectionHasNoTLSAndNoCredentials(t *testing.T) {
+	co, err := clientOptions(optionsFrom(func(string) string { return "" }))
+
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:7233", co.HostPort)
+	assert.Equal(t, "default", co.Namespace)
+	assert.Nil(t, co.ConnectionOptions.TLS)
+	assert.Nil(t, co.Credentials)
+	assert.Equal(t, "plaintext", connection(Options{}))
+}
+
+func TestTheEnvironmentNamesTheTLSFilesAndTheAPIKey(t *testing.T) {
+	ca, cert, key := writeCerts(t)
+	env := map[string]string{"TEMPORAL_ADDRESS": "platform.a1b2c.tmprl.cloud:7233", "TEMPORAL_NAMESPACE": "platform.a1b2c",
+		"IAF_TEMPORAL_TLS_CA": ca, "IAF_TEMPORAL_TLS_CERT": cert, "IAF_TEMPORAL_TLS_KEY": " " + key + " ", "IAF_TEMPORAL_API_KEY": " test-api-key "}
+
+	o := optionsFrom(func(k string) string { return env[k] })
+	co, err := clientOptions(o)
+
+	assert.Equal(t, Options{Address: "platform.a1b2c.tmprl.cloud:7233", Namespace: "platform.a1b2c", DrainTimeout: 30 * time.Second,
+		TLSCA: ca, TLSCert: cert, TLSKey: key, APIKey: "test-api-key"}, o)
+	require.NoError(t, err)
+	require.NotNil(t, co.ConnectionOptions.TLS)
+	caPEM, err := os.ReadFile(ca)
+	require.NoError(t, err)
+	want := x509.NewCertPool()
+	require.True(t, want.AppendCertsFromPEM(caPEM))
+	assert.True(t, want.Equal(co.ConnectionOptions.TLS.RootCAs), "the CA verifies the frontend")
+	require.Len(t, co.ConnectionOptions.TLS.Certificates, 1)
+	assert.Equal(t, "provider-worker", co.ConnectionOptions.TLS.Certificates[0].Leaf.Subject.CommonName)
+	assert.NotNil(t, co.Credentials, "the API key")
+	assert.Equal(t, "mutual TLS with an API key", connection(o))
+	assert.NotContains(t, fmt.Sprint(o), "test-api-key")
+	assert.Contains(t, fmt.Sprint(o), "APIKey:(set)")
+}
+
+func TestAnAPIKeyAloneTalksTLSWithTheSystemsCAs(t *testing.T) {
+	o := Options{Address: "platform.a1b2c.tmprl.cloud:7233", Namespace: "platform.a1b2c", APIKey: "test-api-key"}
+
+	co, err := clientOptions(o)
+
+	require.NoError(t, err)
+	require.NotNil(t, co.ConnectionOptions.TLS)
+	assert.Nil(t, co.ConnectionOptions.TLS.RootCAs)
+	assert.Empty(t, co.ConnectionOptions.TLS.Certificates)
+	assert.NotNil(t, co.Credentials)
+	assert.Equal(t, "TLS with an API key", connection(o))
+}
+
+func TestTLSSettingsThatCannotWorkNameTheirVariable(t *testing.T) {
+	ca, cert, _ := writeCerts(t)
+	notPEM := filepath.Join(t.TempDir(), "ca.crt")
+	require.NoError(t, os.WriteFile(notPEM, []byte("not a certificate\n"), 0o600))
+
+	for _, c := range []struct {
+		o    Options
+		want string
+	}{
+		{Options{TLSCert: cert}, "IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together"},
+		{Options{TLSCA: filepath.Join(t.TempDir(), "missing.crt")}, "(IAF_TEMPORAL_TLS_CA)"},
+		{Options{TLSCA: notPEM}, notPEM + " (IAF_TEMPORAL_TLS_CA) holds no PEM certificate"},
+		{Options{TLSCert: cert, TLSKey: ca}, "(IAF_TEMPORAL_TLS_CERT, IAF_TEMPORAL_TLS_KEY)"},
+	} {
+		_, err := clientOptions(c.o)
+
+		require.Error(t, err, c.want)
+		assert.Contains(t, err.Error(), c.want)
+	}
 }

@@ -103,7 +103,9 @@ Lock); each adds its profile. For Temporal Cloud or a server that requires mTLS,
 `temporal.tls.secretName` mounts the CA, certificate and key (`platform.temporal.tls.ca`, `.cert`,
 `.key`), `temporal.apiKeySecret` sets `platform.temporal.api-key`, and `temporal.payloadKeySecret`
 the key that encrypts what the interpreter writes into Temporal's histories
-(`platform.temporal.payload-key`).
+(`platform.temporal.payload-key`). The provider workers get the same certificate files and API
+key as the SDKs' `IAF_TEMPORAL_TLS_CA`, `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` and
+`IAF_TEMPORAL_API_KEY`.
 
 Evidence, notifications and change records have profiles of their own: `worm` (write-once
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in

@@ -1,7 +1,9 @@
 package com.iaf.provider.sdk;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 
@@ -27,6 +29,35 @@ class WorkerSettingsTest {
                 "WORKER_DRAIN_SECONDS", "90"));
 
         assertThat(s).isEqualTo(new WorkerSettings("temporal-frontend.temporal:7233", "platform", Duration.ofSeconds(90)));
+    }
+
+    @Test
+    void theEnvironmentNamesTheTlsFilesAndTheApiKey() {
+        WorkerSettings s = WorkerSettings.from(Map.of(
+                "TEMPORAL_ADDRESS", "platform.a1b2c.tmprl.cloud:7233",
+                "TEMPORAL_NAMESPACE", "platform.a1b2c",
+                "IAF_TEMPORAL_TLS_CA", "/etc/temporal-tls/ca.crt",
+                "IAF_TEMPORAL_TLS_CERT", "/etc/temporal-tls/tls.crt",
+                "IAF_TEMPORAL_TLS_KEY", " /etc/temporal-tls/tls.key ",
+                "IAF_TEMPORAL_API_KEY", " test-api-key "));
+
+        assertThat(s).isEqualTo(new WorkerSettings("platform.a1b2c.tmprl.cloud:7233", "platform.a1b2c", Duration.ofSeconds(30),
+                Path.of("/etc/temporal-tls/ca.crt"), Path.of("/etc/temporal-tls/tls.crt"), Path.of("/etc/temporal-tls/tls.key"), "test-api-key"));
+        assertThat(s.tls()).isTrue();
+        assertThat(WorkerSettings.from(Map.of()).tls()).isFalse();
+        assertThat(WorkerSettings.from(Map.of("IAF_TEMPORAL_API_KEY", "test-api-key")).tls()).isTrue();
+    }
+
+    @Test
+    void aClientCertificateWithoutItsKeyIsRefused() {
+        assertThatThrownBy(() -> WorkerSettings.from(Map.of("IAF_TEMPORAL_TLS_CERT", "/etc/temporal-tls/tls.crt")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("IAF_TEMPORAL_TLS_CERT and IAF_TEMPORAL_TLS_KEY go together: the worker's client certificate and its key, for mutual TLS");
+    }
+
+    @Test
+    void theApiKeyNeverShowsInTheSettings() {
+        assertThat(WorkerSettings.defaults().withApiKey("test-api-key").toString()).doesNotContain("test-api-key").contains("apiKey=(set)");
     }
 
     @Test
