@@ -23,6 +23,7 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.ServiceUnavailableException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.ArtifactStorePort;
@@ -430,6 +431,40 @@ class WorkflowCommandHandlerTest {
         assertThat(event.data().path("strategy").asText()).isEqualTo("all");
         assertThat(event.data().path("by").asText()).isEqualTo("platform");
         StepVerifier.create(handler.mergeChangeRequest(crId)).as("merging twice").expectError(ConflictException.class).verify();
+    }
+
+    @Test
+    void aPolicyEngineThatCannotBeReachedAnswersTryAgainAndOpensNothing() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        // the engine errors, or the OPA adapter denies with its unreachable rule (fail closed for jobs)
+        for (Mono<PolicyDecision> down : List.of(Mono.<PolicyDecision>error(new IllegalStateException("Connection refused: opa:8181")),
+                Mono.just(new PolicyDecision("deny", List.of(new PolicyPort.Rule("opa.unreachable", "deny", "The policy engine could not be reached")), "opa")))) {
+            when(policy.evaluate(any())).thenReturn(down);
+            StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow("all", null)))
+                    .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("policy engine unavailable, try again"))
+                    .verify();
+            assertThat(changeRequests.all()).isEmpty();
+            assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.DRAFT);
+            assertThat(eventsOf("change-request.opened")).isEmpty();
+        }
+
+        when(policy.evaluate(any())).thenReturn(Mono.just(PolicyDecision.allow("opa")));
+        String crId = handler.publish("vm-restart", new PublishWorkflow("all", null)).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("policy")).extracting(Check::status).containsExactly("passed");
+    }
+
+    @Test
+    void anArtifactStoreThatCannotAnswerAnswersTryAgainAndOpensNothing() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.error(new IllegalStateException("S3 timed out")));
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow(DIGEST))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("artifact store unavailable, try again"))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("site-deploy")).isPresent();
     }
 
     @Test

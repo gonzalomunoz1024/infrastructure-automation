@@ -14,6 +14,7 @@ import org.springframework.web.server.ServerWebInputException;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.ServiceUnavailableException;
 import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.runs.domain.InvalidInputException;
 
@@ -23,7 +24,7 @@ import reactor.core.publisher.Mono;
 /**
  * Central error mapping: IllegalArgumentException -> 400 (with problems or rows when the input
  * failed its schema), NotFound -> 404, Forbidden -> 403, Conflict -> 409 (with its detail),
- * ResponseStatusException -> its status, everything else -> 500.
+ * ServiceUnavailable -> 503, ResponseStatusException -> its status, everything else -> 500.
  */
 @Slf4j
 @RestControllerAdvice
@@ -69,6 +70,11 @@ public class GlobalExceptionHandler {
             b.put("detail", ex.detail());
         }
         return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(b));
+    }
+
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public Mono<ResponseEntity<Map<String, Object>>> unavailable(ServiceUnavailableException ex) {
+        return Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body(ex.getMessage())));
     }
 
     /** Over a quota: 429 with {@code Retry-After} in seconds, and the same number in the body. */

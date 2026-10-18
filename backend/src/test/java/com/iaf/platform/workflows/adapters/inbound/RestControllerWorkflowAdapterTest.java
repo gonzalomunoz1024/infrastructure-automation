@@ -1,6 +1,8 @@
 package com.iaf.platform.workflows.adapters.inbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -21,6 +23,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.config.GlobalExceptionHandler;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
@@ -31,6 +34,8 @@ import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.application.WorkflowCommandHandler;
 import com.iaf.platform.workflows.application.WorkflowQueryHandler;
+
+import reactor.core.publisher.Mono;
 
 /**
  * The slice end to end over HTTP: the real handlers and in-memory adapters, the sample content,
@@ -46,6 +51,7 @@ class RestControllerWorkflowAdapterTest {
     InMemoryWorkflowStore store = InMemoryWorkflowStore.empty(clock);
     InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
     EventBus events = new EventBus(clock);
+    PolicyPort policy = SampleFixtures.policy();
     WebTestClient client;
 
     @BeforeEach
@@ -53,7 +59,7 @@ class RestControllerWorkflowAdapterTest {
         store.seed(SampleFixtures.ROOT);
         WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
         WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(),
-                SampleFixtures.runs(), SampleFixtures.runsQueries(), SampleFixtures.policy(), events, clock);
+                SampleFixtures.runs(), SampleFixtures.runsQueries(), policy, events, clock);
         commands.init();
         PlatformProperties props = new PlatformProperties();
         client = WebTestClient.bindToController(new RestControllerWorkflowAdapter(commands, queries))
@@ -69,6 +75,18 @@ class RestControllerWorkflowAdapterTest {
     static String edited(String yaml) {
         return yaml.replace("description: Restart a virtual machine after safety checks, with an approval for production.",
                 "description: Restart a virtual machine after safety checks (edited).");
+    }
+
+    @Test
+    void aPublishWhileThePolicyEngineIsDownAnswers503AndOpensNothing() {
+        String vmRestart = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+        client.put().uri("/api/v1/workflows/vm-restart/draft").bodyValue(Map.of("yaml", edited(vmRestart))).exchange().expectStatus().isOk();
+        when(policy.evaluate(any())).thenReturn(Mono.error(new IllegalStateException("Connection refused")));
+
+        client.post().uri("/api/v1/workflows/vm-restart:publish").bodyValue(Map.of("strategy", "all")).exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody().jsonPath("$.error").isEqualTo("policy engine unavailable, try again");
+        client.get().uri("/api/v1/change-requests").exchange().expectStatus().isOk().expectBody().jsonPath("$.length()").isEqualTo(0);
     }
 
     @Test

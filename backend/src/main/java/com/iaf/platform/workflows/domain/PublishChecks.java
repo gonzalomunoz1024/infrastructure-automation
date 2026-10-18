@@ -154,10 +154,6 @@ public final class PublishChecks {
         return new Check("policy", "Policy", decision.allowed() ? PASSED : FAILED, decision.engine() + " says " + decision.decision() + rules);
     }
 
-    public static Check policyUnavailable(String reason) {
-        return new Check("policy", "Policy", FAILED, "policy engine unavailable: " + reason);
-    }
-
     /** @param previousVersion the version whose jobs were replayed, null when there was none */
     public static Check replay(ReplayResult result, String previousVersion) {
         if (previousVersion == null) {

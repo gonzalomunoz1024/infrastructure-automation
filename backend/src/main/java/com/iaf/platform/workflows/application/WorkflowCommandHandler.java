@@ -28,6 +28,7 @@ import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.ServiceUnavailableException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.ArtifactStorePort;
@@ -94,6 +95,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final Set<String> STRATEGIES = Set.of("canary", "all");
     private static final Duration REPLAY_WINDOW = Duration.ofDays(7);
+    /** The rule the OPA adapter denies with when it cannot reach the engine (fail closed for jobs); at publish it means try again. */
+    private static final String POLICY_UNREACHABLE = "opa.unreachable";
+    static final String POLICY_UNAVAILABLE = "policy engine unavailable, try again";
+    static final String ARTIFACTS_UNAVAILABLE = "artifact store unavailable, try again";
 
     private final WorkflowStorePort store;
     private final ChangeRequestPort changeRequests;
@@ -322,10 +327,13 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 return Mono.error(new ConflictException("checks failed", problems));
             }
             String strategy = requested != null ? requested : def.rolloutOrDefault().strategy();
+            // an engine that cannot answer is no verdict: open nothing (an open change request blocks the next publish) and say try again
             Mono<Check> policyCheck = policy.evaluate(new PolicyInput(PolicyPort.Phase.PUBLISH, c.who(), name, def.version(), WorkflowYaml.toJson(def),
                             data().put("strategy", strategy).put("owner", def.metadata().owner()).put("previous", c.previousVersion())))
-                    .map(PublishChecks::policy)
-                    .onErrorResume(e -> Mono.just(PublishChecks.policyUnavailable(String.valueOf(e.getMessage()))));
+                    .onErrorMap(e -> new ServiceUnavailableException(POLICY_UNAVAILABLE, e))
+                    .flatMap(d -> d.rules() != null && d.rules().stream().anyMatch(r -> POLICY_UNREACHABLE.equals(r.id()))
+                            ? Mono.<Check>error(new ServiceUnavailableException(POLICY_UNAVAILABLE, null))
+                            : Mono.just(PublishChecks.policy(d)));
             Mono<Check> replayCheck = c.previous() == null
                     ? Mono.just(PublishChecks.replay(ReplayResult.none(), null))
                     : replay(name, def, c.previousVersion(), c.who())
@@ -365,7 +373,8 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 .filterWhen(u -> artifacts.exists(u.sha256()).map(exists -> !exists))
                 .map(u -> Problem.error("playbook.missing", u.step(), "playbook.upload.sha256",
                         "The artifact store holds no upload with this digest; upload the file again (POST /api/v1/playbooks:upload) and pin the sha256 it answers"))
-                .collectList();
+                .collectList()
+                .onErrorMap(e -> new ServiceUnavailableException(ARTIFACTS_UNAVAILABLE, e));
     }
 
     /** The candidate with its git playbooks pinned to the commits their refs name now (written into the version). */
