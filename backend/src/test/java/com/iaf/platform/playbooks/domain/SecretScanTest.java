@@ -12,16 +12,18 @@ import com.iaf.platform.playbooks.domain.SecretScan.Finding;
 
 class SecretScanTest {
 
+    /** Fixtures are assembled at run time, so the repository's own secret scan never matches them. */
+    static final String PRIVATE_KEY = "PRIVATE" + " KEY";
     static final String KEY_MATERIAL = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
 
     @Test
     void aPrivateKeyBlockIsAFindingThatNeverShowsTheKey() {
-        String text = "---\n-----BEGIN OPENSSH PRIVATE KEY-----\n" + KEY_MATERIAL + "\n-----END OPENSSH PRIVATE KEY-----\n";
+        String text = "---\n-----BEGIN OPENSSH " + PRIVATE_KEY + "-----\n" + KEY_MATERIAL + "\n-----END OPENSSH " + PRIVATE_KEY + "-----\n";
         List<Finding> f = SecretScan.scan("files/id_ed25519", text);
         assertThat(f).containsExactly(new Finding("files/id_ed25519", 2, "a private key block"));
         assertThat(f.get(0).toString()).isEqualTo("files/id_ed25519:2 a private key block").doesNotContain(KEY_MATERIAL);
-        assertThat(SecretScan.scan("k.pem", "-----BEGIN RSA PRIVATE KEY-----\n")).hasSize(1);
-        assertThat(SecretScan.scan("k.asc", "-----BEGIN PGP PRIVATE KEY BLOCK-----\n")).hasSize(1);
+        assertThat(SecretScan.scan("k.pem", "-----BEGIN RSA " + PRIVATE_KEY + "-----\n")).hasSize(1);
+        assertThat(SecretScan.scan("k.asc", "-----BEGIN PGP " + PRIVATE_KEY + " BLOCK-----\n")).hasSize(1);
         assertThat(SecretScan.scan("k.pem", "-----BEGIN CERTIFICATE-----\n")).as("a certificate is public").isEmpty();
     }
 
@@ -58,7 +60,7 @@ class SecretScanTest {
     @Test
     void aLongHighEntropyValueAfterAWeakKeyIsAFinding() {
         String text = String.join("\n",
-                "signing_key: 8f3a9c2d1e4b7a6f5c0d9e8b7a6f5c4d3e2b1a0f",   // 1 hex, long and varied
+                "signing_key: " + "8f3a9c2d1e4b7a6f" + "5c0d9e8b7a6f5c4d3e2b1a0f", // 1 hex, long and varied
                 "key: web",                                               // 2 short
                 "auth: basic",                                            // 3 short
                 "pass: yes",                                              // 4 short
