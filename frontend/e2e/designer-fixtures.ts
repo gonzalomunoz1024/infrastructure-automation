@@ -115,6 +115,8 @@ export function terraformImport(ref: string): { yaml: string; notes: string[] } 
       apiVersion: 'iaf.platform/v1',
       kind: 'Workflow',
       metadata: { name: `${ref}-apply`, title: `Apply ${String(meta.title ?? ref)}`, owner: String(meta.owner ?? '') },
+      // as WorkflowImports writes it: every workflow names who may run it
+      policy: { approval: { required: true, group: 'your-approvers', timeout: '4h' }, rbac: ['ops'] },
       workflow: {
         do: [
           { plan: { name: 'Plan', call: 'terraform', with: { module, action: 'plan', vars: {}, credential }, output: { as: 'plan' } } },

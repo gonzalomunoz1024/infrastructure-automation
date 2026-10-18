@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { registryPlaybooks, registryProviders } from './designer-fixtures'
-import { NOTIFICATIONS, REVIEW_NOTIFICATION, WORKFLOWS, WORKFLOW_CR, WORKFLOW_CR_DEFINITION, changeRequestRoutes, inboxRoutes, mockApi } from './fixtures'
+import { NOTIFICATIONS, REVIEW_NOTIFICATION, WORKFLOWS, WORKFLOW_CR, WORKFLOW_CR_DEFINITION, changeRequestRoutes, inboxRoutes, mockApi, reply } from './fixtures'
 
 /*
  * The workflows page against a mocked /api/v1: the New workflow dialog's imports send the
@@ -46,6 +46,24 @@ test.describe('workflows: import', () => {
     await dialog.getByRole('button', { name: 'Import', exact: true }).click()
     await expect.poll(() => api.callsTo('POST', '/workflows:import').length).toBe(3)
     expect(api.callsTo('POST', '/workflows:import')[2].body).toEqual({ source: 'terraform', ref: 'terraform-modules' })
+  })
+})
+
+test.describe('workflows: blank', () => {
+  test('a blank workflow lets its owner team run it, and leaves out what was left empty', async ({ page }) => {
+    const api = await mockApi(page, { 'GET /workflows': WORKFLOWS, 'POST /workflows': reply(202, { id: 'service-restart', status: 'accepted' }) })
+    await page.goto('/#/workflows')
+    await page.getByRole('button', { name: 'New workflow' }).first().click()
+    const dialog = page.getByRole('dialog', { name: 'New workflow' })
+    await dialog.getByRole('button', { name: /^Blank/ }).click()
+    await dialog.getByLabel('Title').fill('Restart a service')
+    await dialog.getByLabel('Owner').fill('team-platform')
+    await dialog.getByRole('button', { name: 'Create and open' }).click()
+    await expect.poll(() => api.callsTo('POST', '/workflows').length).toBe(1)
+    const yaml = (api.callsTo('POST', '/workflows')[0].body as { yaml: string }).yaml
+    expect(yaml).toContain('name: service-restart\n')
+    expect(yaml).toContain('policy:\n  rbac:\n    - team-platform\n')
+    expect(yaml).not.toMatch(/noun|verb|folder|null/)
   })
 })
 

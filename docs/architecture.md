@@ -742,7 +742,10 @@ credential to `GET /playbooks:resolve`, never the machine credential. A `use` st
 switch is on unless the step opts out: switching it off writes `checkAccess: false` and switching
 it back on removes the key, so the canvas never writes `checkAccess: true`. A step's Settings tab
 offers its Decision timeout (`attentionTimeout`) beside Pause on failure while the step pauses:
-how long it waits for someone before it aborts, seven days when left empty. The assistant panel shows a
+how long it waits for someone before it aborts, seven days when left empty. A new workflow, from
+the Blank tile, the designer's New workflow dialog or a template that names no role, lets its
+owner team run it (`policy.rbac`): a workflow that names no role or team is `policy.missing`, an
+error, which the Settings tab's required field shows and offers to fix with the owner team. The assistant panel shows a
 draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
 after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
 is, like an explanation, is a message with nothing to apply. The Executions tab's replay walks a

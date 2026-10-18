@@ -300,6 +300,8 @@ test.describe('workflow designer', () => {
     await page.keyboard.press('ControlOrMeta+s')
     await expect.poll(() => api.created.length).toBe(1)
     expect((api.created[0].definition as { metadata: { name: string } }).metadata.name).toBe('disk-resize')
+    // every workflow names who may run it: the new one lets its owner team
+    expect((api.created[0].definition as { policy?: unknown }).policy).toEqual({ rbac: ['team-compute'] })
     await expect(page).toHaveURL(/#\/workflows\/disk-resize$/)
     await expect(node(page, 'trigger:api')).toBeVisible()
   })

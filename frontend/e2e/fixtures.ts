@@ -817,6 +817,7 @@ export const WORKFLOW_CR_DEFINITION = {
   kind: 'Workflow',
   metadata: { name: 'vm-restart', title: 'VM restart', noun: 'vm', verb: 'restart', owner: 'team-compute', version: '2.0.0' },
   api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart', input: { type: 'object', required: ['vmId', 'reason'], properties: { vmId: { type: 'string' }, reason: { type: 'string' } } } },
+  policy: { rbac: ['ops', 'sre'] },
   workflow: {
     do: [
       { lookup: { name: 'Look up the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '{{ $input.vmId }}' } } } },
@@ -835,6 +836,7 @@ export const CREATE_VM_DEFINITION = {
   kind: 'Workflow',
   metadata: { name: 'create-vm', title: 'Create a VM', noun: 'vm', verb: 'create', owner: 'team-compute', version: '2.0.0' },
   api: { method: 'POST', path: '/api/v1/vms', input: CATALOG[1].input },
+  policy: { rbac: ['ops', 'sre', 'developer'] },
   workflow: {
     do: [
       { build: { name: 'Build the image', run: { workflow: 'build-vm-image', version: '^1', input: { os: '{{ $input.image.create.os }}' } } } },
@@ -1109,6 +1111,7 @@ export const ASSISTANT_DRAFT_DEFINITION = {
   kind: 'Workflow',
   metadata: { name: 'vm-restart-safe', title: 'Safe VM restart', noun: 'vm', verb: 'restart-safely', owner: 'team-compute', version: '0.1.0' },
   api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart-safely', input: { type: 'object', required: ['vmId'], properties: { vmId: { type: 'string' } } } },
+  policy: { rbac: ['ops'] },
   workflow: {
     do: [
       { check: { name: 'Check the backups', call: 'provider', with: { provider: 'backup', action: 'listJobs', input: { target: '{{ $input.vmId }}' } } } },

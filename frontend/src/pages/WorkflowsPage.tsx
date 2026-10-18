@@ -323,6 +323,32 @@ function kebab(s: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+/**
+ * The first draft of the Blank tile, the skeleton the designer opens: its policy lets the owner
+ * team run it, since every workflow names at least one role or team (`policy.missing` otherwise);
+ * a field left empty is left out (an empty YAML value would read as null).
+ */
+export function blankWorkflowDocument(meta: { name: string; title: string; noun?: string; verb?: string; owner: string; folder?: string }) {
+  const owner = meta.owner.trim()
+  return {
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: {
+      name: meta.name,
+      title: meta.title.trim(),
+      noun: meta.noun?.trim() || undefined,
+      verb: meta.verb?.trim() || undefined,
+      owner,
+      folder: meta.folder?.trim() || undefined,
+      version: '0.1.0',
+    },
+    api: { input: { type: 'object', properties: {} }, response: { status: 202 } },
+    mcp: { expose: false },
+    policy: { rbac: [owner] },
+    workflow: { do: [] },
+  }
+}
+
 function BlankForm({ onBack }: { onBack: () => void }) {
   const toast = useToast()
   const close = useOverlayClose()
@@ -348,23 +374,7 @@ function BlankForm({ onBack }: { onBack: () => void }) {
   const submit = () => {
     if (!valid || create.loading) return
     // the skeleton the designer opens; yaml-emit is the browser's one YAML writer (see its header)
-    const doc = {
-      apiVersion: 'iaf.platform/v1',
-      kind: 'Workflow',
-      metadata: {
-        name: effectiveName,
-        title: title.trim(),
-        noun: noun.trim() || undefined,
-        verb: verb.trim() || undefined,
-        owner: owner.trim(),
-        folder: folder.trim() || undefined,
-        version: '0.1.0',
-      },
-      api: { input: { type: 'object', properties: {} }, response: { status: 202 } },
-      mcp: { expose: false },
-      workflow: { do: [] },
-    }
-    void create.mutate(emitYaml(doc))
+    void create.mutate(emitYaml(blankWorkflowDocument({ name: effectiveName, title, noun, verb, owner, folder })))
   }
 
   return (
