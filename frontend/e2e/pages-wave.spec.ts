@@ -166,6 +166,39 @@ test.describe('job: built inputs, continued failures and the replay', () => {
     // the existing actions stay
     await expect(page.getByRole('button', { name: /Re-run from/ })).toBeVisible()
   })
+
+  test('re-running from a step sends the step and the fields you change, then opens the new job', async ({ page }) => {
+    const api = await mockApi(page, {
+      ...routes,
+      'POST /jobs/{id}:rerun': { id: 'job-rerun-1', status: 'queued' },
+    })
+    await page.goto('/#/jobs/job-9b2e4f10')
+    await page.getByRole('tab', { name: /Time travel/ }).click()
+    await expect(page.getByRole('button', { name: 'Re-run from image.create' })).toBeEnabled()
+    await page.getByRole('button', { name: 'From step' }).click()
+    await page.getByRole('option', { name: /^clone/ }).click()
+
+    // a list is not an input: the button waits for an object
+    const box = page.locator('#rerun-input')
+    await box.fill('[{ "name": "web-1045" }]')
+    await expect(page.getByText('Expected a JSON object')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Re-run from clone' })).toBeDisabled()
+    await box.fill('{ "name": "web-1045" }')
+    await page.getByRole('button', { name: 'Re-run from clone' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Re-run from clone?' })
+    await expect(dialog).toContainText("on this job's input with your changes")
+    await dialog.getByRole('button', { name: 'Start the re-run' }).click()
+    await expect(page).toHaveURL(/#\/jobs\/job-rerun-1$/)
+    expect(api.callsTo('POST', '/jobs/job-9b2e4f10:rerun').map((c) => c.body)).toEqual([{ fromStep: 'clone', input: { name: 'web-1045' } }])
+  })
+
+  test('a job still running says it can be re-run once it ends, instead of a form the backend refuses', async ({ page }) => {
+    await mockApi(page, { ...routes, 'GET /jobs/{id}': { ...BUILD_JOB, status: 'running', endedAt: undefined, durationMs: undefined } })
+    await page.goto('/#/jobs/job-9b2e4f10')
+    await page.getByRole('tab', { name: /Time travel/ }).click()
+    await expect(page.getByTestId('rerun-unavailable')).toHaveText('A job can be re-run once it has ended.')
+    await expect(page.getByRole('button', { name: /Re-run from/ })).toHaveCount(0)
+  })
 })
 
 test.describe('change request: the publish checks', () => {

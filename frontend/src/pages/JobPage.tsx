@@ -10,8 +10,8 @@ import { ApprovalCard } from '../components/ApprovalCard'
 import { AttentionPanel } from '../components/AttentionPanel'
 import { BatchPanel } from '../components/BatchPanel'
 import { EngineLinks } from '../components/EngineLinks'
-import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { PreviewCard } from '../components/PreviewCard'
+import { RerunCard, rerunBlocker } from '../components/RerunCard'
 import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
 import { StepTimeline } from '../components/StepTimeline'
 import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
@@ -229,7 +229,7 @@ export default function JobPage({ route }: PageProps) {
               {tab === 'batch' && data.batch && (
                 <BatchPanel batch={data.batch} onRetryFailed={() => act(() => api.retryFailedRows(id), 'Retrying the failed rows', 'Could not retry the rows')} />
               )}
-              {tab === 'replay' && <TimeTravel jobId={id} workflow={data.workflow} steps={data.steps} input={data.input} />}
+              {tab === 'replay' && <TimeTravel jobId={id} workflow={data.workflow} steps={data.steps} input={data.input} rerunBlocked={rerunBlocker({ active, batch: isBatch })} />}
               {tab === 'activity' && <Activity events={events} live={live === 'open' && active} />}
             </div>
           </div>
@@ -364,20 +364,17 @@ const DIFF_COLUMNS: TableColumn<StepDiff>[] = [
   { key: 'after', header: 'This run', render: (d) => <Mono className="text-primary">{summarize(d.after, 80)}</Mono> },
 ]
 
-function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown> }) {
+function TimeTravel({ jobId, workflow, steps, input, rerunBlocked }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown>; rerunBlocked: string | null }) {
   const toast = useToast()
   const [compareTo, setCompareTo] = useState('')
   const [replay, setReplay] = useState<JobReplay | null>(null)
   const [replayError, setReplayError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<'replay' | 'rerun' | null>(null)
-  const [fromStep, setFromStep] = useState(steps[0]?.id ?? '')
-  const [inputText, setInputText] = useState('')
-  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
   const siblings = useQuery(['jobs', 'of', workflow], () => api.jobs({ workflow, limit: 50 }))
   const others = useMemo(() => (siblings.data ?? []).filter((j) => j.id !== jobId), [siblings.data, jobId])
 
   const runReplay = async () => {
-    setBusy('replay')
+    setBusy(true)
     setReplayError(null)
     try {
       setReplay(await apiExtra.jobReplay(jobId, compareTo || undefined))
@@ -387,21 +384,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
       setReplayError(message)
       toast.error('Replay failed', message)
     } finally {
-      setBusy(null)
-    }
-  }
-
-  const parsed = parseJsonText(inputText)
-  const rerun = async () => {
-    setBusy('rerun')
-    try {
-      const accepted = await api.rerunJob(jobId, { fromStep, input: parsed.empty ? undefined : (parsed.value as Record<string, unknown>) })
-      toast.success('Re-run started', `A new job starts at ${fromStep}.`)
-      navigate(pathFor('job', { id: accepted.id }))
-    } catch (e) {
-      toast.error('Could not re-run', errorMessage(e))
-    } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
@@ -419,7 +402,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
               options={[{ value: '', label: 'Last successful run' }, ...others.map((j) => ({ value: j.id, label: shortJobId(j.id), hint: `${j.status} · ${j.version} · ${j.requester}` }))]}
             />
           </Field>
-          <Button variant="primary" icon="history" loading={busy === 'replay'} onClick={() => void runReplay()}>
+          <Button variant="primary" icon="history" loading={busy} onClick={() => void runReplay()}>
             Replay
           </Button>
         </div>
@@ -458,39 +441,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
         )}
       </Card>
 
-      <Card title="Re-run from a step" subtitle="Starts a new job with this one's input, skipping straight to the step you choose.">
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="From step">
-              <Select ariaLabel="From step" value={fromStep} onChange={setFromStep} mono options={steps.map((s) => ({ value: s.id, label: s.id, hint: `${s.name} · ${s.status}` }))} />
-            </Field>
-            <Field label="Input" hint="Leave empty to reuse this job's input" htmlFor="rerun-input">
-              <Button size="sm" variant="ghost" icon="copy" onClick={() => setInputText(JSON.stringify(input, null, 2))}>
-                Start from this job's input
-              </Button>
-            </Field>
-          </div>
-          <JsonEditor id="rerun-input" value={inputText} onChange={setInputText} rows={5} placeholder='{ "name": "…" }' objectOnly />
-          <div className="flex justify-end">
-            <Button variant="primary" icon="play" disabled={!fromStep || !!parsed.error} loading={busy === 'rerun'} onClick={() => setConfirm(true)}>
-              Re-run from {fromStep || 'step'}
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      {confirm && (
-        <ConfirmDialog
-          title={`Re-run from ${fromStep}?`}
-          icon="play"
-          message="A new job starts now and runs every step from there, with real effects."
-          confirmLabel="Start the re-run"
-          onConfirm={async () => {
-            await rerun()
-          }}
-          onClose={() => setConfirm(false)}
-        />
-      )}
+      <RerunCard jobId={jobId} steps={steps} input={input} blocked={rerunBlocked} />
     </div>
   )
 }

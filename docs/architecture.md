@@ -379,8 +379,11 @@ assistant page shows the validation's problems as the designer's Issues list, th
 events from the platform stream, and submits a ready draft as a change request. It reads the
 message stream as the backend writes it (the SSE event name is the type, the data the payload
 alone) and keeps the session in its address (`?session=`), so a reload or a shared link goes on
-from `GET /assistant/sessions/{id}`, in the session's mode. The settings page creates service
-accounts with the presets and the grouped scopes of `docs/api.md`.
+from `GET /assistant/sessions/{id}`, in the session's mode. The job page's "Re-run from a step"
+sends `POST /jobs/{id}:rerun` with the step and only the fields typed, which the backend merges
+onto the job's input (a list or a scalar is refused before it is sent); a job still running or a
+batch, both refused by the backend, gets a sentence instead of the form. The settings page creates
+service accounts with the presets and the grouped scopes of `docs/api.md`.
 
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
