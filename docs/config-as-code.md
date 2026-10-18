@@ -295,7 +295,7 @@ Among the codes:
 | `schema.invalid`          | error   | the file does not match the Workflow schema: an unknown key, a value of the wrong type, no `metadata.name`; the field is the JSON pointer of the value |
 | `api.input.invalid`       | error   | `api.input` is not a JSON Schema the validator can use (`required: vmId` instead of a list, a type that does not exist, a pattern that does not compile, a `#` reference to nothing); one per location, with the validator's message. The TypeScript twin checks the vocabulary keywords; the backend checks against the full meta-schema and compiles the schema |
 | `schema.remoteRef`        | error   | `api.input` or `api.response.body` refers outside itself (`$ref: https://...`): only `#/...` references resolve, and nothing is fetched |
-| `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`): a duplicate would silently keep one value, so both twins and the designer refuse it |
+| `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`, the TypeScript twin adds the line and column): a duplicate would silently keep one value, so both twins, the designer and `npm run check:workflows` refuse it, in any content file |
 | `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
 | `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
 | `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |

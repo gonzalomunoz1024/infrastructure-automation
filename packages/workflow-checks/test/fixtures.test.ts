@@ -128,6 +128,13 @@ workflow:
     expect(checkYaml(yaml, ctx).map((p) => p.code)).toEqual(['step.unknownProvider', 'run.unknownWorkflow', 'resource.unknownType']);
   });
 
+  it('a key written twice is one yaml.invalid problem naming the key, in the words of WorkflowYaml.java', () => {
+    expect(checkYaml(fixture('duplicate-key.yaml'), ctx)).toEqual([
+      { level: 'error', code: 'yaml.invalid', message: "YAML syntax: Duplicate field 'examples' at line 12, column 9" },
+    ]);
+    expect(checkYaml('kind: Workflow\nkind: Workflow\n', ctx)[0]?.message).toBe("YAML syntax: Duplicate field 'kind' at line 2, column 1");
+  });
+
   it('a broken YAML file is one yaml.invalid problem', () => {
     const problems = checkYaml(fixture('invalid-yaml.yaml'), ctx);
     expect(problems).toHaveLength(1);

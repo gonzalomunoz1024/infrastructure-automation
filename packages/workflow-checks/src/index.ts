@@ -136,4 +136,5 @@ export type { Effect } from './providers.ts';
 export { closest, levenshtein } from './suggest.ts';
 
 export { CALL_KINDS, isStepType, STEP_TYPE_KEYS, STEP_TYPES } from './step-types.ts';
+export { parseYamlText, YamlSyntaxError } from './yaml-text.ts';
 export type { StepCategory, StepType, StepTypeInfo } from './step-types.ts';

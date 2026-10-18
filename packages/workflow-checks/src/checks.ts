@@ -5,13 +5,13 @@
  * WorkflowChecks.java, with the same codes, levels, fixes and messages; the shared fixtures under
  * ./fixtures prove both sides agree.
  */
-import { parse as parseYaml } from 'yaml';
 import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
 import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';
 import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WORKFLOW_KIND, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
 import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
 import { describeRemoteRef, dotted, isClosed, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
 import { validateWorkflowDocument } from './workflow-schema.ts';
+import { parseYamlText, YamlSyntaxError } from './yaml-text.ts';
 import { STEP_TYPES } from './step-types.ts';
 import { closest } from './suggest.ts';
 import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
@@ -115,13 +115,19 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
   return { workflowInputs, workflowOutputs, resourceTypeSchemas };
 }
 
-/** Check YAML text: a syntax error is one `yaml.invalid` problem; otherwise the document is checked as {@link check} says. */
+/**
+ * Check YAML text: a syntax error, a key written twice among them, is one `yaml.invalid` problem;
+ * otherwise the document is checked as {@link check} says.
+ */
 export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
   let doc: unknown;
   try {
-    doc = parseYaml(yaml) ?? {};
+    doc = parseYamlText(yaml);
   } catch (e) {
-    return [problem('error', 'yaml.invalid', null, null, `YAML syntax: ${firstLine(e)}`)];
+    if (e instanceof YamlSyntaxError) {
+      return [problem('error', 'yaml.invalid', null, null, e.message)];
+    }
+    throw e;
   }
   return check(doc, ctx);
 }
@@ -183,12 +189,6 @@ export function inputSchemaProblems(input: unknown): Problem[] {
 function remoteRefProblem(schema: unknown, field: string): Problem | null {
   const r = remoteRef(schema);
   return r === null ? null : problem('error', 'schema.remoteRef', null, `${field}${dotted(r.pointer)}`, describeRemoteRef(r, field));
-}
-
-function firstLine(e: unknown): string {
-  const message = e instanceof Error ? e.message : String(e);
-  const nl = message.indexOf('\n');
-  return nl < 0 ? message : message.substring(0, nl);
 }
 
 function problem(level: ProblemLevel, code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): Problem {

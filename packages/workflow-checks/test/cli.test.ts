@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { checkRepo, formatProblem, formatReport, main } from '../cli.ts';
-import { REPO_ROOT } from './repo.ts';
+import { fixture, REPO_ROOT } from './repo.ts';
 
 const temp = mkdtempSync(join(tmpdir(), 'workflow-checks-'));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
@@ -53,6 +53,23 @@ describe('cli', () => {
     const failing: string[] = [];
     expect(main([temp], (l) => failing.push(l))).toBe(1);
     expect(failing[0]).toBe("workflows/team/bad.yaml: error step.unknownProvider @a.provider - Unknown provider 'q' [Did you mean p?]");
+  });
+
+  it('reports a key written twice as a YAML syntax error naming the key, as the backend does', () => {
+    const root = mkdtempSync(join(tmpdir(), 'workflow-checks-duplicate-'));
+    try {
+      mkdirSync(join(root, 'workflows/team-compute'), { recursive: true });
+      writeFileSync(join(root, 'workflows/team-compute/vm-note.yaml'), fixture('duplicate-key.yaml'));
+      const lines: string[] = [];
+      expect(main([root], (l) => lines.push(l))).toBe(1);
+      expect(lines).toEqual([
+        "workflows/team-compute/vm-note.yaml: error yaml.invalid - YAML syntax: Duplicate field 'examples' at line 12, column 9",
+        '',
+        'Checked 0 workflows against 0 providers and 0 resource types: 1 error, 0 warnings.',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('formats a problem with its location', () => {
