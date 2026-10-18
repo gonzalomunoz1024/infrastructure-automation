@@ -560,7 +560,11 @@ Per workflow, for the jobs this instance runs (history seeded into the past coun
 
 Every span is also a timer: `iaf_gateway_seconds`, `iaf_mcp_seconds`, `iaf_job_seconds`,
 `iaf_step_seconds`, `iaf_provider_call_seconds`, with an `error_class` tag (`none` when it
-succeeded) and an `…_active_seconds` long-task timer for what is still running. Tracing samples
+succeeded) and an `…_active_seconds` long-task timer for what is still running. The provider call
+timer is also tagged `provider`, `action`, `environment` and `dry_run`, and has histogram buckets
+from 10 ms to an hour (`iaf_provider_call_seconds_bucket`, under `management.metrics.distribution`
+in `application.yml`), so its p95 can be computed across replicas.
+`deploy/grafana/platform-dashboard.json` reads the meters of this section and nothing else. Tracing samples
 every request and job (`management.tracing.sampling.probability: 1.0`); spans leave the process
 only when `management.otlp.tracing.endpoint` (`MANAGEMENT_OTLP_TRACING_ENDPOINT`) names an OTLP
 collector, which the demo leaves unset.

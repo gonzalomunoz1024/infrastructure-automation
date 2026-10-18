@@ -116,8 +116,10 @@ the S3 store takes its credentials from the AWS SDK's default chain. Tracing is 
 `MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
 spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics;
 `deploy/grafana/platform-dashboard.json` is a Grafana dashboard over them (starts, finishes by
-status, duration percentiles, failed steps by error class), which `metrics.grafanaDashboard.enabled`
-ships as a ConfigMap with the `grafana_dashboard` label for Grafana's sidecar.
+status, duration percentiles, failed steps by workflow and error class, failed jobs by version and
+channel, and the provider calls' outcome, success rate and p95), which
+`metrics.grafanaDashboard.enabled` ships as a ConfigMap with the `grafana_dashboard` label for
+Grafana's sidecar.
 With the `postgres` profile the idempotency keys, the per-team job quotas and the in-app inbox
 live in the database too (`idempotency_keys`, `quota_buckets`, `inbox_*`), so every API replica
 sees the same keys and draws from the same buckets; without it they are in memory, per instance,

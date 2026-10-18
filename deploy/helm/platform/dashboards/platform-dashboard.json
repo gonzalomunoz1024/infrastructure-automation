@@ -1,8 +1,8 @@
 {
   "title": "Infrastructure automation platform",
   "uid": "iaf-platform-jobs",
-  "description": "Jobs per workflow from the platform's /actuator/prometheus: starts, finishes by status, duration percentiles and failed steps by error class.",
-  "tags": ["platform", "workflows"],
+  "description": "Jobs per workflow from the platform's /actuator/prometheus: starts, finishes by status, duration percentiles and failed steps; and the calls the steps make to providers: outcome, success rate and p95.",
+  "tags": ["platform", "workflows", "providers"],
   "editable": true,
   "graphTooltip": 1,
   "schemaVersion": 39,
@@ -32,6 +32,21 @@
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
         "definition": "label_values(workflow_jobs_started_total, workflow)",
         "query": { "query": "label_values(workflow_jobs_started_total, workflow)", "refId": "workflows" },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "hide": 0,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(iaf_provider_call_seconds_count, provider)",
+        "query": { "query": "label_values(iaf_provider_call_seconds_count, provider)", "refId": "providers" },
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
@@ -191,6 +206,85 @@
       "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed" } } } ],
       "targets": [
         { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (workflow, version) (increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"failed\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Failed step attempts by workflow and error class",
+      "description": "Step attempts that failed in the selected range, per workflow and error class; a retried step counts each failed attempt.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "failed attempts", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed attempts" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (workflow, class) (increase(workflow_steps_failed_total{workflow=~\"$workflow\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Failed jobs by channel",
+      "description": "Jobs that finished as failed in the selected range, per channel they were started from (api, mcp, trigger, ui...).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "align": "auto", "cellOptions": { "type": "auto" } } }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "failed", "desc": true } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "failed" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (channel) (increase(workflow_jobs_finished_total{workflow=~\"$workflow\", status=\"failed\"}[$__range]))", "format": "table", "instant": true, "range": false }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Provider calls per minute, by provider and outcome",
+      "description": "rate(iaf_provider_call_seconds_count[5m]) per provider and error class (none for a call that succeeded, cancelled, or the provider's own class), as calls per minute; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (provider, error_class) (rate(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\"}[5m])) * 60", "legendFormat": "{{provider}} {{error_class}}", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Provider call p95, by provider and action",
+      "description": "95th percentile of iaf_provider_call_seconds, from the histogram buckets management.metrics.distribution.percentiles-histogram turns on for it; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2, "min": 0, "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "spanNulls": true } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by (le, provider, action) (rate(iaf_provider_call_seconds_bucket{provider=~\"$provider\", dry_run=\"false\"}[5m])))", "legendFormat": "{{provider}}.{{action}} p95", "range": true, "instant": false }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Provider call success rate, by provider and action",
+      "description": "Calls that succeeded over every call in the selected range (a failed or cancelled call is not a success), per provider action; previews (dry runs) left out.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 44 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0.9 }, { "color": "green", "value": 0.98 } ] },
+          "custom": { "align": "auto", "cellOptions": { "type": "color-text" } }
+        },
+        "overrides": []
+      },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "success rate", "desc": false } ] },
+      "transformations": [ { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Value": "success rate" } } } ],
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (provider, action) (increase(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\", error_class=\"none\"}[$__range])) / sum by (provider, action) (increase(iaf_provider_call_seconds_count{provider=~\"$provider\", dry_run=\"false\"}[$__range]))", "format": "table", "instant": true, "range": false }
       ]
     }
   ]
