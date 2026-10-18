@@ -561,8 +561,8 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), admin)).expectNextCount(1).verifyComplete();
         StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), admin)).expectNextCount(1).verifyComplete();
         owned("vault:fleet/token", null);
-        // the outsider's own team's draft: the try is evidence for a provider they may edit
-        String theirs = YAML.replace("owner: team-compute", "owner: team-data");
+        // the outsider's own team's draft (under a name of its own: team-compute holds "fleet" since its first try)
+        String theirs = YAML.replace("owner: team-compute", "owner: team-data").replace("name: fleet,", "name: fleet-data,");
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
         StepVerifier.create(as(handler.tryAction(new TryAction(theirs, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
         // a reference the store does not know is judged where it is resolved, as before
@@ -587,6 +587,17 @@ class ProviderCommandHandlerTest {
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("brand-new"))
                 .verify();
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), OUTSIDER)).expectNextCount(1).verifyComplete();
+        // the first team to record evidence for a name not yet published holds it: no other team adds to it (and
+        // pushes its entries out of the window), whatever owner a posted file names, until it is published
+        assertThat(evidence.evidence("brand-new").connections()).extracting(ConnectionTest::team).containsOnly("team-data");
+        assertThat(evidence.evidence("brand-new").claim()).contains("team-data");
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("brand-new").hasMessageContaining("team-data"))
+                .verify();
+        String otherDraft = YAML.replace("name: fleet", "name: brand-new");
+        StepVerifier.create(as(handler.tryAction(new TryAction(otherDraft, "vm.get", "dev", null)), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("being drafted by team-data"))
+                .verify();
         // without a provider name nothing is kept, so nothing is judged but the credential
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), guest)).expectNextCount(1).verifyComplete();
         verify(calls, never()).call(any());
@@ -611,6 +622,7 @@ class ProviderCommandHandlerTest {
         ActionTry kept = evidence.evidence("fleet").tries().get(0);
         assertThat(kept.endpoint()).isEqualTo("https://fleet-dev.example.com");
         assertThat(kept.credential()).isEqualTo("vault:fleet/token");
+        assertThat(kept.team()).isEqualTo("team-compute");
         assertThat(evidence.evidence("fleet").connections()).hasSize(1);
     }
 
