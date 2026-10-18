@@ -225,6 +225,30 @@ class InMemoryWorkflowExecutionTest {
     }
 
     @Test
+    void aRunStepWithoutAVersionRunsTheProducersCurrentMajorWithItsDefaults() {
+        Job job = start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: one-vm, title: One VM, noun: vm, verb: one, owner: team-compute, version: 1.0.0 }
+                workflow:
+                  do:
+                    - make:
+                        run: { workflow: create-vm, input: { name: web-1, image: img-1 } }
+                        output: { as: made }
+                  outputs:
+                    vmId: "{{ $made.outputs.vmId }}"
+                """), Map.of());
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        verify(w.workflows).resolve("create-vm", "^2");
+        assertThat(w.projection.children(job.id())).singleElement().satisfies(child -> {
+            assertThat(child.input().path("size").asText()).as("the child's own defaults").isEqualTo("small");
+            assertThat(child.input().path("environment").asText()).isEqualTo("dev");
+        });
+        assertThat(job(job.id()).output().path("vmId").asText()).isNotBlank();
+    }
+
+    @Test
     void aBatchRunsInWavesAndStopsWhenTooManyRowsFail() {
         WorkflowDefinition def = yaml("""
                 apiVersion: iaf.platform/v1

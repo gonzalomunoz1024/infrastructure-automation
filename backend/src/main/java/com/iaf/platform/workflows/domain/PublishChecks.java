@@ -5,13 +5,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.domain.ContractRules.Consumer;
 
 /**
  * The pure CI checks of a change request: schema, checks (lint), ansible-lint, policy, replay,
@@ -137,17 +141,82 @@ public final class PublishChecks {
      * {@code /vms/{id}} and {@code /vms/{vmId}} are the same route.
      */
     public static Check routes(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        List<String> clashes = routeClashes(def, published);
+        if (clashes.isEmpty()) {
+            return new Check("routes", "Routes", PASSED, def.method() + " " + def.path() + ", POST " + def.batchPath());
+        }
+        return new Check("routes", "Routes", FAILED, String.join("; ", clashes));
+    }
+
+    /** Each route of {@code def} another published workflow already answers: {@code POST /api/v1/vms is served by vm-create}. */
+    static List<String> routeClashes(WorkflowDefinition def, List<WorkflowDefinition> published) {
         Map<String, String> taken = new LinkedHashMap<>();
         for (WorkflowDefinition other : published) {
             if (other != null && !other.name().equals(def.name())) {
                 routeKeys(other).forEach(k -> taken.putIfAbsent(k, other.name()));
             }
         }
-        List<String> clashes = routeKeys(def).stream().filter(taken::containsKey).map(k -> k + " is served by " + taken.get(k)).toList();
-        if (clashes.isEmpty()) {
-            return new Check("routes", "Routes", PASSED, def.method() + " " + def.path() + ", POST " + def.batchPath());
+        return routeKeys(def).stream().filter(taken::containsKey).map(k -> k + " is served by " + taken.get(k)).toList();
+    }
+
+    /**
+     * Fails when this version breaks its consumers without a new major version ({@link
+     * ContractRules#breakingChanges}). The detail lists every consumer the version reaches: run
+     * steps whose range accepts it, {@code orCreateWith} inputs, and the workflows that use a
+     * resource type it registers. A breaking change with a major bump passes and still lists
+     * them, with the run steps that stay on the old major. Skipped for a first version.
+     */
+    public static Check contracts(WorkflowDefinition next, WorkflowDefinition previous, DependencyRules.Graph graph) {
+        if (previous == null) {
+            return new Check("contracts", "Contracts", SKIPPED, "no previous published version");
         }
-        return new Check("routes", "Routes", FAILED, String.join("; ", clashes));
+        List<String> changes = ContractRules.breakingChanges(previous, next);
+        List<Consumer> affected = affected(next, graph);
+        String consumers = affected.isEmpty() ? "none" : affected.stream().map(Consumer::describe).collect(Collectors.joining(", "));
+        if (changes.isEmpty()) {
+            return new Check("contracts", "Contracts", PASSED, "no breaking change against " + previous.version()
+                    + (affected.isEmpty() ? "" : "; consumers: " + consumers));
+        }
+        String what = String.join("; ", changes);
+        if (ContractRules.isMajorBump(previous.version(), next.version())) {
+            List<Consumer> staying = ContractRules.staying(graph, next.name(), next.version());
+            return new Check("contracts", "Contracts", PASSED, "new major version " + next.version() + " with breaking changes against " + previous.version()
+                    + ": " + what + ". Affected consumers: " + consumers
+                    + (staying.isEmpty() ? "" : ". Staying on the old major: " + staying.stream().map(Consumer::describe).collect(Collectors.joining(", "))));
+        }
+        return new Check("contracts", "Contracts", FAILED, next.version() + " breaks the contract of " + previous.version() + " without a new major version: "
+                + what + ". Affected consumers: " + consumers);
+    }
+
+    private static List<Consumer> affected(WorkflowDefinition next, DependencyRules.Graph graph) {
+        Set<String> types = new TreeSet<>(graph.typesProducedBy(next.name()));
+        types.addAll(ContractRules.registered(next).keySet());
+        return ContractRules.affected(graph, next.name(), next.version(), types);
+    }
+
+    /**
+     * The change-request checks judged from the files alone (ansible-lint, routes, contracts) as
+     * problems, so the validate endpoint reports what the change request would fail on. Policy
+     * and replay need the engine and stay with the change request.
+     *
+     * @param def       the definition with the version it would be published as
+     * @param previous  the current published version of the same workflow, null when there is none
+     */
+    public static List<Problem> problems(WorkflowDefinition def, CheckContext ctx, List<WorkflowDefinition> published, WorkflowDefinition previous,
+            DependencyRules.Graph graph) {
+        List<Problem> out = new ArrayList<>();
+        def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && !pinned(s, ctx)).forEach(s -> out.add(Problem.error("publish.ansibleLint", s.id(), "playbook",
+                "The ansible-lint check of the change request fails: pin the playbook to a commit")));
+        if (def.path() != null) {
+            routeClashes(def, published).forEach(c -> out.add(Problem.error("publish.routes", null, "api.path", "The routes check of the change request fails: " + c)));
+        }
+        Check contracts = contracts(def, previous, graph);
+        if (FAILED.equals(contracts.status())) {
+            String major = (Semver.parse(previous.version()).major() + 1) + ".0.0";
+            out.add(Problem.error("publish.contracts", null, "metadata.version", "The contracts check of the change request fails: " + contracts.detail(),
+                    Fix.replace("Publish as " + major, major)));
+        }
+        return out;
     }
 
     static List<String> routeKeys(WorkflowDefinition d) {

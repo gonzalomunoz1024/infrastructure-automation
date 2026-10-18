@@ -5,6 +5,8 @@ import static com.iaf.platform.workflows.application.WorkflowQueryHandler.blocki
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -40,6 +42,7 @@ import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.CheckContext;
+import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.PublishChecks;
 import com.iaf.platform.workflows.domain.ReplayResult;
 import com.iaf.platform.workflows.domain.ReplayResult.Divergence;
@@ -169,10 +172,34 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     @Override
     public Mono<Validation> validate(WorkflowSource source) {
-        return queries.checkContext().map(ctx -> {
-            List<Problem> problems = problems(source, ctx);
+        return Mono.zip(queries.checkContext(), resources.types().collectList()).flatMap(t -> blocking(() -> {
+            List<Problem> problems = new ArrayList<>(problems(source, t.getT1()));
+            if (problems.stream().noneMatch(p -> "yaml.invalid".equals(p.code()))) {
+                problems.addAll(publishProblems(source.parse(), t.getT1(), t.getT2(), problems));
+            }
             return new Validation(!WorkflowChecks.hasErrors(problems), problems);
-        });
+        }));
+    }
+
+    /**
+     * What the change request would fail on beyond the designer checks, judged from the files
+     * alone: the version is the one a save would give the draft, and the catalog is what is
+     * published now. An ansible-lint failure replaces the designer's unpinned warning.
+     */
+    private List<Problem> publishProblems(WorkflowDefinition parsed, CheckContext ctx, List<ResourceTypeDefinition> types, List<Problem> problems) {
+        String name = parsed.name();
+        if (name == null || name.isBlank()) {
+            return List.of();
+        }
+        List<WorkflowRecord> versions = store.versions(name);
+        WorkflowDefinition def = parsed.withVersion(VersionRules.draftVersion(versions, parsed.metadata().version()));
+        List<WorkflowDefinition> published = publishedDefinitions();
+        WorkflowDefinition previous = store.published(name).map(WorkflowRecord::definition).orElse(null);
+        List<Problem> out = PublishChecks.problems(def, ctx, published, previous, DependencyRules.of(published, WorkflowQueryHandler.producedBy(types)));
+        Set<String> unpinned = new HashSet<>();
+        out.stream().filter(p -> "publish.ansibleLint".equals(p.code())).forEach(p -> unpinned.add(p.step()));
+        problems.removeIf(p -> "ansible.unpinned".equals(p.code()) && unpinned.contains(p.step()));
+        return out;
     }
 
     @Override
@@ -236,7 +263,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             openChangeRequest(name).ifPresent(cr -> {
                 throw new ConflictException("change request " + cr.id() + " is already open for workflow " + name, Map.of("changeRequest", cr.id()));
             });
-            return new Candidate(draft, store.published(name).orElse(null), who);
+            return new Candidate(pinned(draft), store.published(name).orElse(null), who);
         })).flatMap(c -> queries.checkContext().flatMap(ctx -> {
             WorkflowDefinition def = c.record().definition();
             List<Problem> problems = WorkflowChecks.check(def, ctx);
@@ -253,12 +280,28 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                     : replay(name, def, c.previousVersion(), c.who())
                             .map(r -> PublishChecks.replay(r, c.previousVersion()))
                             .onErrorResume(e -> Mono.just(PublishChecks.replayUnavailable(String.valueOf(e.getMessage()))));
-            return Mono.zip(policyCheck, replayCheck)
-                    .flatMap(t -> blocking(() -> open(c, ctx, problems, strategy, notes, t.getT1(), t.getT2())));
+            return Mono.zip(policyCheck, replayCheck, resources.types().collectList())
+                    .flatMap(t -> blocking(() -> open(c, ctx, problems, strategy, notes, t.getT1(), t.getT2(), contracts(c, t.getT3()))));
         }));
     }
 
-    private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck) {
+    /**
+     * The draft as it will be published: a run step that names no version gets its producer's
+     * current major ({@code ^2}), written into the file the way an author would pin it.
+     */
+    private WorkflowRecord pinned(WorkflowRecord draft) {
+        WorkflowDefinition def = DependencyRules.pinRanges(draft.definition(), wf -> store.published(wf).map(WorkflowRecord::version));
+        return def == draft.definition() ? draft : draft.withDefinition(def, draft.updatedAt(), draft.updatedBy());
+    }
+
+    /** The contracts check: this version against the published one, with the consumers it reaches. */
+    private Check contracts(Candidate c, List<ResourceTypeDefinition> types) {
+        DependencyRules.Graph graph = DependencyRules.of(publishedDefinitions(), WorkflowQueryHandler.producedBy(types));
+        return PublishChecks.contracts(c.record().definition(), c.previous() == null ? null : c.previous().definition(), graph);
+    }
+
+    private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck,
+            Check contractsCheck) {
         WorkflowRecord draft = c.record();
         WorkflowDefinition def = draft.definition();
         String previousVersion = c.previousVersion();
@@ -269,6 +312,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 PublishChecks.ansibleLint(def, ctx),
                 policyCheck,
                 replayCheck,
+                contractsCheck,
                 PublishChecks.diff(diff, previousVersion),
                 PublishChecks.routes(def, publishedDefinitions()),
                 PublishChecks.yaml(draft));

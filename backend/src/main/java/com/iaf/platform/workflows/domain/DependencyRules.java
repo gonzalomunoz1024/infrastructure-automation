@@ -5,6 +5,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -12,9 +13,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.function.Function;
 
 import com.fasterxml.jackson.annotation.JsonValue;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * How workflows depend on each other, read from the files alone so the platform never needs to
@@ -277,6 +280,49 @@ public final class DependencyRules {
             return null;
         }
         return "^" + Semver.parse(producerVersion).major();
+    }
+
+    /**
+     * The definition as it is published: every run step that names no version gets its
+     * producer's current major ({@link #defaultRange}), written right after {@code workflow} the
+     * way an author would pin it. {@code currentVersion} answers a producer's current published
+     * version; a producer it does not know stays unpinned (the checks report it). Returns
+     * {@code def} itself when nothing needs a pin.
+     */
+    public static WorkflowDefinition pinRanges(WorkflowDefinition def, Function<String, Optional<String>> currentVersion) {
+        Function<Step, Optional<String>> range = s -> text(s, "workflow").flatMap(currentVersion).map(DependencyRules::defaultRange);
+        if (def.allSteps().stream().noneMatch(s -> unpinned(s) && range.apply(s).isPresent())) {
+            return def;
+        }
+        // a fresh copy, so the caller's definition (and its step parameters) stay as they were
+        WorkflowDefinition copy = WorkflowYaml.fromJson(WorkflowYaml.toJson(def).deepCopy());
+        for (Step s : copy.allSteps()) {
+            if (unpinned(s) && s.with() instanceof ObjectNode with) {
+                range.apply(s).ifPresent(r -> insertAfter(with, "workflow", "version", r));
+            }
+        }
+        return copy;
+    }
+
+    private static boolean unpinned(Step s) {
+        return s.type() == StepType.RUN && text(s, "workflow").isPresent() && text(s, "version").isEmpty();
+    }
+
+    private static void insertAfter(ObjectNode node, String after, String key, String value) {
+        Map<String, JsonNode> fields = new LinkedHashMap<>();
+        node.fields().forEachRemaining(e -> fields.put(e.getKey(), e.getValue()));
+        node.removeAll();
+        fields.forEach((k, v) -> {
+            if (!k.equals(key)) {
+                node.set(k, v);
+                if (k.equals(after)) {
+                    node.put(key, value);
+                }
+            }
+        });
+        if (!node.has(key)) {
+            node.put(key, value);
+        }
     }
 
     private static Optional<String> text(Step s, String field) {

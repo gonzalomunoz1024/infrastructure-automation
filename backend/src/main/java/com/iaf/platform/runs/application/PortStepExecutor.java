@@ -43,6 +43,7 @@ import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort.RunRequest;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
+import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
@@ -208,13 +209,25 @@ public class PortStepExecutor implements StepExecutor {
         if (workflow == null || workflow.isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "run needs a workflow", false, true);
         }
-        String range = version == null || version.isBlank() ? "*" : version;
+        String range = version == null || version.isBlank() ? currentMajor(ctx, step, workflow) : version;
         WorkflowDefinition child = block(ports.workflows().resolve(workflow, range), LOOKUP_TIMEOUT, step)
                 .map(WorkflowRecord::definition)
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "No published version of '" + workflow + "' satisfies " + range, false));
         // the child gets its schema's defaults, as a start through its own route would
         JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? F.objectNode() : input);
         return engine.runChild(ctx, step, child, in, timeout);
+    }
+
+    /**
+     * The range of a run step that names none: the producer's current major ({@code ^2}), the
+     * range a publish writes into the file, so a new major of the producer never reaches it.
+     */
+    private String currentMajor(JobContext ctx, Step step, String workflow) {
+        String range = block(ports.workflows().published(workflow), LOOKUP_TIMEOUT, step)
+                .map(r -> Optional.ofNullable(DependencyRules.defaultRange(r.version())).orElse(r.version()))
+                .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "'" + workflow + "' has no published version", false));
+        log(ctx, step.id() + ": no version given, running " + workflow + " " + range + " (its current major)");
+        return range;
     }
 
     // ---------------------------------------------------------------- people

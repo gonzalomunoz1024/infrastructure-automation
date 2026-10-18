@@ -129,6 +129,29 @@ class DependencyRulesTest {
     }
 
     @Test
+    void aRunStepWithoutAVersionIsPinnedToTheProducersCurrentMajorAtPublish() {
+        WorkflowDefinition consumer = workflow("consumer", "1.0.0", "x: { type: string }", """
+                - make:
+                    run: { workflow: create-vm, input: { name: web-1, image: img-1 } }
+                - keep:
+                    run: { workflow: create-database, version: "~1.4", input: { name: db } }
+                - stray:
+                    run: { workflow: nobody, input: {} }
+                """);
+        Map<String, String> current = Map.of("create-vm", "2.0.1", "create-database", "1.4.0");
+
+        WorkflowDefinition pinned = DependencyRules.pinRanges(consumer, w -> java.util.Optional.ofNullable(current.get(w)));
+
+        assertThat(pinned.step("make").orElseThrow().withText("version")).isEqualTo("^2");
+        assertThat(pinned.step("keep").orElseThrow().withText("version")).as("a written range stays").isEqualTo("~1.4");
+        assertThat(pinned.step("stray").orElseThrow().withText("version")).as("an unknown producer is left to the checks").isNull();
+        assertThat(WorkflowYaml.toYaml(pinned)).contains("run:\n          workflow: create-vm\n          version: ^2\n          input:");
+        assertThat(consumer.step("make").orElseThrow().withText("version")).as("the caller's definition is untouched").isNull();
+        // nothing to pin: the same definition comes back
+        assertThat(DependencyRules.pinRanges(pinned, w -> java.util.Optional.ofNullable(current.get(w)))).isSameAs(pinned);
+    }
+
+    @Test
     void resourceInputsNameTheirTypeAndTheWorkflowThatCanBuildOne() {
         WorkflowDefinition createVm = samples().stream().filter(w -> w.name().equals("create-vm")).findFirst().orElseThrow();
 

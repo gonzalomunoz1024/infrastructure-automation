@@ -99,8 +99,9 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     @Override
     public Mono<CheckContext> checkContext() {
         Mono<Map<String, ProviderDefinition>> providerMap = providers.all().collectMap(ProviderDefinition::name, p -> p);
-        Mono<Set<String>> types = resources.types().map(ResourceTypeDefinition::name).collect(Collectors.toSet());
-        Mono<Set<String>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::name).collect(Collectors.toSet()));
+        // every type with its attribute schema (null when the file has none), for the fields use and register steps return
+        Mono<Map<String, JsonNode>> types = resources.types().<Map<String, JsonNode>>collect(HashMap::new, (m, t) -> m.put(t.name(), t.schema()));
+        Mono<List<WorkflowDefinition>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::definition).toList());
         return Mono.zip(providerMap, types, published).map(t -> CheckContext.of(t.getT1(), t.getT3(), t.getT2()));
     }
 
