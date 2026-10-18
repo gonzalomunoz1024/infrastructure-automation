@@ -337,6 +337,15 @@ class RestControllerProviderAdapterTest {
     }
 
     @Test
+    void publishingAMergedChangeRequestIsAPortCallNotAnEndpoint() {
+        when(commands.publishMerged("cr_1")).thenReturn(Mono.empty());
+        new RestControllerProviderAdapter(commands, queries).publishMerged("cr_1").block();
+        verify(commands).publishMerged("cr_1");
+        client.post().uri("/api/v1/providers:publish-merged").contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("id", "cr_1")).exchange()
+                .expectStatus().isNotFound();
+    }
+
+    @Test
     void badInputIs400() {
         when(commands.tryAction(any())).thenReturn(Mono.error(new IllegalArgumentException("action is required")));
         client.post().uri("/api/v1/providers:try").contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("yaml", YAML)).exchange()

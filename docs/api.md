@@ -335,7 +335,11 @@ Publish, refresh spec, overrides and the SLO all change a provider through a cha
 open at a time per provider: a second one is a 409 that names the open change request, so merging
 one can never publish over another. Merging publishes the provider: a first version, or one whose
 change request says `strategy: 'all'`, becomes the current version at once; otherwise the version
-is kept beside the current one and a provider release rolls it out (see Releases). A spec refresh
+is kept beside the current one and a provider release rolls it out (see Releases). The publish is
+the providers slice's `publishMerged(changeRequestId)`, called once the change request is saved
+as merged; it is idempotent (a version already kept is left alone and no second
+`provider.published` goes out), so the `change-request.merged` listener that also calls it
+changes nothing the second time. A spec refresh
 rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
 is still running, in which case they build on its candidate and roll out as a canary too.
 `provider.change-requested` carries `{ name; version; changeRequestId; by; owner; change?; strategy? }` (`owner` is the

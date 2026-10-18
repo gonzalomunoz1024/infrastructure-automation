@@ -860,9 +860,41 @@ public class ProviderCommandHandler implements ProviderCommands {
     // ---------------------------------------------------------------- merged change requests
 
     /**
-     * The workflows slice merges change requests; a merged provider change request publishes the
-     * provider: as the current version, or, rolled out by a canary, beside it until the release
-     * is promoted.
+     * Publishes the provider file of a merged change request: as the current version, or, rolled
+     * out by a canary, beside it until the release is promoted. The workflows slice calls it when it
+     * merges a provider change request, after saving the change request as merged, and fails the
+     * merge when it errors. Idempotent: a version the store already keeps was published before, and
+     * a second call for the same change request changes nothing and publishes no event.
+     *
+     * @throws NotFoundException (404) when there is no such change request
+     * @throws IllegalArgumentException (400) when it is not a provider change request
+     * @throws ConflictException (409) when it is not merged, or carries no provider file
+     */
+    @Override
+    public Mono<Void> publishMerged(String changeRequestId) {
+        return blocking(() -> {
+            if (changeRequestId == null || changeRequestId.isBlank()) {
+                throw new IllegalArgumentException("changeRequestId is required");
+            }
+            ChangeRequest cr = changeRequests.get(changeRequestId).orElseThrow(() -> new NotFoundException("change request", changeRequestId));
+            if (cr.kind() != ChangeRequest.Kind.PROVIDER) {
+                throw new IllegalArgumentException("change request " + changeRequestId + " is not a provider change request");
+            }
+            if (cr.status() != ChangeRequest.Status.MERGED) {
+                throw new ConflictException("change request " + changeRequestId + " is " + cr.status().json() + "; only a merged one is published");
+            }
+            if (cr.yaml() == null || cr.yaml().isBlank()) {
+                throw new ConflictException("change request " + changeRequestId + " carries no provider file to publish");
+            }
+            String by = !blank(cr.mergedBy()) ? cr.mergedBy() : !blank(cr.author()) ? cr.author() : Identity.SYSTEM.id();
+            return publishMerged(cr.id(), cr.yaml(), by, cr.strategy());
+        }).then();
+    }
+
+    /**
+     * Kept for the change requests the workflows slice merges without calling {@link #publishMerged(String)}:
+     * a merged provider change request publishes the provider (a no-op when it was published already);
+     * a promoted provider release makes its candidate current.
      */
     void on(DomainEvent event) {
         if (RELEASE_PROMOTED.equals(event.type()) && event.data() != null && event.data().hasNonNull("provider")) {
@@ -885,14 +917,26 @@ public class ProviderCommandHandler implements ProviderCommands {
             log.warn("change request {} merged without a provider file; nothing published", id);
             return;
         }
-        ProviderDefinition def = ProviderYaml.parse(yaml);
         String by = d.path("by").asText(null);
         if (by == null || by.isBlank()) {
             by = event.actor() == null ? Identity.SYSTEM.id() : event.actor();
         }
+        publishMerged(id, yaml, by, changeRequests.get(id).map(ChangeRequest::strategy).orElse(null));
+    }
+
+    /**
+     * Publishes {@code yaml}, the file of merged change request {@code id}; returns false, and
+     * changes nothing, when the store already keeps that version (it was published before).
+     */
+    boolean publishMerged(String id, String yaml, String by, String changeRequestStrategy) {
+        ProviderDefinition def = ProviderYaml.parse(yaml);
         String version = def.metadata().version();
+        if (store.version(def.name(), version).isPresent()) {
+            log.info("provider {} {} of change request {} is published already; nothing to do", def.name(), version, id);
+            return false;
+        }
         String previous = store.get(def.name()).map(p -> p.definition().metadata().version()).orElse(null);
-        String strategy = changeRequests.get(id).map(ChangeRequest::strategy).filter(st -> !st.isBlank()).orElse(DEFAULT_STRATEGY);
+        String strategy = blank(changeRequestStrategy) ? DEFAULT_STRATEGY : changeRequestStrategy;
         StoredProvider merged = new StoredProvider(def, yaml, pathOf(def), clock.instant(), by);
         boolean canary = previous != null && !previous.equals(version) && !ALL.equals(strategy);
         if (canary) {
@@ -909,6 +953,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         events.publish(PUBLISHED_EVENT, "provider", def.name(), by, data);
         log.info("provider {} {} published by {} from change request {} ({})", def.name(), version, by, id,
                 canary ? "canary from " + previous : "current");
+        return true;
     }
 
     /**

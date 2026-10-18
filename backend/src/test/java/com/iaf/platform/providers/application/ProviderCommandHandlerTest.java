@@ -779,6 +779,67 @@ class ProviderCommandHandlerTest {
         assertThat(event("provider.published")).isPresent();
     }
 
+    ChangeRequest mergedRequest(String id, ChangeRequest.Kind kind, ChangeRequest.Status status, String strategy) {
+        return new ChangeRequest(id, kind, "fleet", "1.1.0", "b", "t", "mateo", status, List.of(), strategy, YAML, "", NOW,
+                status == ChangeRequest.Status.MERGED ? NOW : null, status == ChangeRequest.Status.MERGED ? "gonzalo" : null, null);
+    }
+
+    @Test
+    void publishMergedPublishesTheFileOfAMergedChangeRequestOnce() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.get("cr_9")).thenReturn(Optional.of(mergedRequest("cr_9", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.MERGED, "all")));
+
+        StepVerifier.create(handler.publishMerged("cr_9")).verifyComplete();
+
+        ArgumentCaptor<StoredProvider> saved = ArgumentCaptor.forClass(StoredProvider.class);
+        verify(store).save(saved.capture());
+        assertThat(saved.getValue().definition().metadata().version()).isEqualTo("1.1.0");
+        assertThat(saved.getValue().updatedBy()).as("who merged it").isEqualTo("gonzalo");
+        DomainEvent e = event("provider.published").orElseThrow();
+        assertThat(e.data().path("previous").asText()).isEqualTo("1.0.0");
+        assertThat(e.data().path("strategy").asText()).isEqualTo("all");
+        assertThat(e.data().path("by").asText()).isEqualTo("gonzalo");
+
+        // once the store keeps the version, a second call and the merged event change nothing
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        StepVerifier.create(handler.publishMerged("cr_9")).verifyComplete();
+        ObjectNode data = JSON.createObjectNode();
+        data.put("id", "cr_9");
+        data.put("kind", "provider");
+        data.put("yaml", YAML);
+        events.publish("change-request.merged", "change-request", "cr_9", "gonzalo", data);
+        verify(store, org.mockito.Mockito.times(1)).save(any());
+        verify(store, never()).saveVersion(any());
+        assertThat(published.stream().filter(p -> p.type().equals("provider.published"))).hasSize(1);
+    }
+
+    @Test
+    void publishMergedRollsACanaryOutBesideTheCurrentVersion() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.get("cr_8")).thenReturn(Optional.of(mergedRequest("cr_8", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.MERGED, "canary")));
+        StepVerifier.create(handler.publishMerged("cr_8")).verifyComplete();
+        verify(store).saveVersion(argThat(p -> p.definition().metadata().version().equals("1.1.0")));
+        verify(store, never()).save(any());
+        assertThat(event("provider.published").orElseThrow().data().path("strategy").asText()).isEqualTo("canary");
+    }
+
+    @Test
+    void publishMergedRefusesWhatIsNotAMergedProviderChangeRequest() {
+        when(changeRequests.get("cr_open")).thenReturn(Optional.of(mergedRequest("cr_open", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.OPEN, "all")));
+        when(changeRequests.get("cr_wf")).thenReturn(Optional.of(mergedRequest("cr_wf", ChangeRequest.Kind.WORKFLOW, ChangeRequest.Status.MERGED, "all")));
+        when(changeRequests.get("cr_none")).thenReturn(Optional.empty());
+
+        StepVerifier.create(handler.publishMerged("cr_none")).expectError(NotFoundException.class).verify();
+        StepVerifier.create(handler.publishMerged("cr_wf")).expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(handler.publishMerged("cr_open"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("is open"))
+                .verify();
+        StepVerifier.create(handler.publishMerged(" ")).expectError(IllegalArgumentException.class).verify();
+        verify(store, never()).save(any());
+        verify(store, never()).saveVersion(any());
+        assertThat(event("provider.published")).isEmpty();
+    }
+
     @Test
     void mergedWorkflowChangeRequestsAreIgnored() {
         ObjectNode data = JSON.createObjectNode();
