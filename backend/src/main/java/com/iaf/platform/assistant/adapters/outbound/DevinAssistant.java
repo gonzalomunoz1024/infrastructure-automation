@@ -23,6 +23,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -42,6 +43,7 @@ import com.iaf.platform.config.PlatformProperties;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.core.scheduler.Schedulers;
 
 /**
@@ -53,9 +55,14 @@ import reactor.core.scheduler.Schedulers;
  * ({@code POST /sessions/{id}/messages}). The session ({@code GET /sessions/{id}}) and its messages
  * ({@code GET /sessions/{id}/messages}) are polled every {@code devin-poll-every} (15 s, kept within
  * 10 to 30 s): status changes, Devin's messages and every change of the structured output become
- * events. The platform checks every draft itself, so Devin's own validation is not passed on.
- * Timeouts and errors end the stream with a message and a failed done. Admins create or update the
- * playbooks from {@code devin/*.md} ({@code GET}, {@code POST} and {@code PUT /playbooks}).
+ * events. Messages are read once: each poll reads on from the {@code end_cursor} of the last page,
+ * and only a cursor Devin refuses sends the read back to the start. The platform checks every
+ * draft itself, so Devin's own validation is not passed on. Timeouts and errors end the stream with
+ * a message and a failed done. A session nobody waits for any more (the builder closed the stream
+ * before the draft was done, or the timeout fired) is ended and archived
+ * ({@code DELETE /sessions/{id}?archive=true}), best effort, so it stops spending ACUs. Admins
+ * create or update the playbooks from {@code devin/*.md} ({@code GET}, {@code POST} and
+ * {@code PUT /playbooks}).
  */
 @Slf4j
 @Component
@@ -74,6 +81,8 @@ public class DevinAssistant implements AssistantPort {
     static final Duration DEFAULT_POLL = Duration.ofSeconds(15);
     private static final int PAGE_SIZE = 200;
     private static final int MAX_PAGES = 20;
+    /** How long ending a session may take; it never holds up the stream. */
+    static final Duration END_TIMEOUT = Duration.ofSeconds(10);
     /** Session statuses on the way to work: Devin has picked the message up. */
     private static final Set<String> STARTING = Set.of("new", "claimed", "resuming");
     /** Suspension reasons that end a session for good: limits, billing, errors. */
@@ -154,7 +163,44 @@ public class DevinAssistant implements AssistantPort {
     private record Started(String id, Snapshot before) {
     }
 
-    private record Page(List<Message> items, String next) {
+    /** One page of messages: {@code next} is the cursor of the next page, {@code end} the cursor after this one's last item. */
+    private record Page(List<Message> items, String next, String end) {
+    }
+
+    /**
+     * The messages of one session read so far, and the cursor to read on from: the
+     * {@code end_cursor} of the last page read. Polls run one after another, on whatever thread.
+     */
+    static final class Transcript {
+        private final List<Message> messages = new ArrayList<>();
+        private final Set<String> ids = new HashSet<>();
+        private String cursor;
+
+        synchronized String cursor() {
+            return cursor;
+        }
+
+        /** Forgets everything, so the next read starts from the first message. */
+        synchronized void restart() {
+            messages.clear();
+            ids.clear();
+            cursor = null;
+        }
+
+        /** Adds the messages not seen yet, moves the cursor on, and answers every message so far. */
+        synchronized List<Message> add(List<Page> pages) {
+            for (Page p : pages) {
+                for (Message m : p.items()) {
+                    if (ids.add(m.id())) {
+                        messages.add(m);
+                    }
+                }
+                if (p.end() != null) {
+                    cursor = p.end();
+                }
+            }
+            return List.copyOf(messages);
+        }
     }
 
     // ---------------------------------------------------------------- the port
@@ -165,22 +211,36 @@ public class DevinAssistant implements AssistantPort {
             requireOrg();
             String external = request.session() == null ? null : request.session().externalId();
             boolean fresh = external == null || external.isBlank();
+            Transcript transcript = new Transcript();
             Mono<Started> started = fresh
                     ? workflowSession(request).flatMap(this::createSession).map(id -> new Started(id, Snapshot.NONE))
                     // what the session showed before this message, so neither its old messages nor its old output count as new
-                    : snapshot(external, true).flatMap(before -> sendMessage(external, request.fromPlatform() ? request.text() : followUp(request))
+                    : snapshot(external, transcript).flatMap(before -> sendMessage(external, request.fromPlatform() ? request.text() : followUp(request))
                             .thenReturn(new Started(external, before)));
             AtomicBoolean ended = new AtomicBoolean();
-            return started.flatMapMany(s -> Flux.concat(
-                    Flux.just(Events.status(now(), opening(fresh, request.fromPlatform(), s.id()), s.id())),
-                    poll(s.id(), s.before(), !fresh).doOnNext(e -> {
-                        if (Events.isDone(e)) {
-                            ended.set(true);
-                        }
-                    })))
+            AtomicReference<String> session = new AtomicReference<>();
+            return started.flatMapMany(s -> {
+                        session.set(s.id());
+                        return Flux.concat(
+                                Flux.just(Events.status(now(), opening(fresh, request.fromPlatform(), s.id()), s.id())),
+                                poll(s.id(), s.before(), !fresh, transcript).doOnNext(e -> {
+                                    if (Events.isDone(e)) {
+                                        ended.set(true);
+                                    }
+                                }));
+                    })
                     .take(timeout)
+                    // the builder stopped listening, or the timeout fired, before Devin finished: nobody will read the
+                    // rest, so the session is ended; an error leaves it alone (the next message may still reach it)
+                    .doFinally(signal -> {
+                        if (!ended.get() && signal != SignalType.ON_ERROR && session.get() != null) {
+                            end(session.get(), signal == SignalType.CANCEL ? "the builder stopped listening" : "no draft within " + minutes(timeout));
+                        }
+                    })
                     .concatWith(Flux.defer(() -> ended.get() ? Flux.empty()
-                            : Flux.just(Events.message(now(), "Devin did not finish within " + minutes(timeout) + "."),
+                            : Flux.just(Events.message(now(), "Devin did not finish within " + minutes(timeout)
+                                            + ", so the platform is ending the session; your next message starts a new one."),
+                                    Events.sessionEnded(now(), "Ending Devin session " + session.get()),
                                     Events.failed(now(), "timeout after " + timeout))));
         }).onErrorResume(e -> {
             log.warn("devin assistant failed: {}", e.toString());
@@ -208,11 +268,26 @@ public class DevinAssistant implements AssistantPort {
             return sessionBody(providerPrompt(request), playbook, PROVIDER_SCHEMA, tags(PROVIDER_KIND, request.draftId(), request.who()),
                     "Provider draft: " + Words.clip(request.description(), 60))
                     .flatMap(this::createSession)
-                    .flatMapMany(id -> snapshots(id, false))
-                    .take(timeout)
-                    .takeUntil(s -> !ending(s, true, null, now()).isEmpty())
-                    .filter(s -> s.structuredOutput() != null && s.structuredOutput().isObject())
-                    .reduce((first, second) -> second)
+                    .flatMap(id -> {
+                        AtomicBoolean finished = new AtomicBoolean();
+                        return snapshots(id, null)
+                                .take(timeout)
+                                .takeUntil(s -> {
+                                    boolean last = !ending(s, true, null, now()).isEmpty();
+                                    if (last) {
+                                        finished.set(true);
+                                    }
+                                    return last;
+                                })
+                                // the wizard left or the timeout fired before Devin finished: end the session
+                                .doFinally(signal -> {
+                                    if (!finished.get() && signal != SignalType.ON_ERROR) {
+                                        end(id, signal == SignalType.CANCEL ? "the provider wizard stopped listening" : "no provider draft within " + minutes(timeout));
+                                    }
+                                })
+                                .filter(s -> s.structuredOutput() != null && s.structuredOutput().isObject())
+                                .reduce((first, second) -> second);
+                    })
                     .map(s -> providerDraft(s.structuredOutput()))
                     .switchIfEmpty(Mono.error(new IllegalStateException("Devin returned no provider draft")));
         });
@@ -320,13 +395,28 @@ public class DevinAssistant implements AssistantPort {
                 .then();
     }
 
-    /** {@code GET /sessions/{id}}, and its messages when {@code withMessages}. */
-    Mono<Snapshot> snapshot(String sessionId, boolean withMessages) {
+    /**
+     * Ends a session nobody waits for any more and archives it ({@code DELETE /sessions/{id}?archive=true}),
+     * in the background and best effort: a failure is logged, never passed on.
+     */
+    void end(String sessionId, String why) {
+        client.delete().uri(b -> b.path("/sessions/{id}").queryParam("archive", "true").build(sessionId))
+                .header(HttpHeaders.AUTHORIZATION, bearer())
+                .retrieve()
+                .toBodilessEntity()
+                .timeout(END_TIMEOUT)
+                .subscribe(
+                        ok -> log.info("ended Devin session {}: {}", sessionId, why),
+                        e -> log.warn("could not end Devin session {} ({}): {}", sessionId, why, e.toString()));
+    }
+
+    /** {@code GET /sessions/{id}}, and its new messages when there is a {@code transcript} to keep them in. */
+    Mono<Snapshot> snapshot(String sessionId, Transcript transcript) {
         Mono<JsonNode> session = client.get().uri("/sessions/{id}", sessionId)
                 .header(HttpHeaders.AUTHORIZATION, bearer())
                 .retrieve()
                 .bodyToMono(JsonNode.class);
-        Mono<List<Message>> messages = withMessages ? messages(sessionId) : Mono.just(List.of());
+        Mono<List<Message>> messages = transcript == null ? Mono.just(List.of()) : messages(sessionId, transcript);
         return Mono.zip(session, messages).map(t -> {
             JsonNode n = t.getT1();
             JsonNode so = n.get("structured_output");
@@ -334,12 +424,29 @@ public class DevinAssistant implements AssistantPort {
         });
     }
 
-    /** Every message of the session, page by page ({@code first}, {@code after} and {@code end_cursor}). */
-    Mono<List<Message>> messages(String sessionId) {
-        return page(sessionId, null)
+    /**
+     * Every message of the session so far: the pages after the transcript's cursor ({@code first},
+     * {@code after} and {@code end_cursor}) added to what it holds. A cursor Devin refuses (a 4xx)
+     * starts the read again from the first message.
+     */
+    Mono<List<Message>> messages(String sessionId, Transcript transcript) {
+        // deferred: each poll resubscribes and must read the cursor as the last poll left it
+        return Mono.defer(() -> {
+            String from = transcript.cursor();
+            return pages(sessionId, from)
+                    .onErrorResume(e -> from != null && e instanceof WebClientResponseException w && w.getStatusCode().is4xxClientError(), e -> {
+                        log.info("Devin refused the message cursor of session {} ({}); reading its messages from the start", sessionId, e.getMessage());
+                        transcript.restart();
+                        return pages(sessionId, null);
+                    })
+                    .map(transcript::add);
+        });
+    }
+
+    private Mono<List<Page>> pages(String sessionId, String after) {
+        return page(sessionId, after)
                 .expand(p -> p.next() == null ? Mono.empty() : page(sessionId, p.next()))
                 .take(MAX_PAGES)
-                .concatMapIterable(Page::items)
                 .collectList();
     }
 
@@ -359,7 +466,7 @@ public class DevinAssistant implements AssistantPort {
                         i++;
                     }
                     String cursor = n.path("end_cursor").asText("");
-                    return new Page(items, n.path("has_next_page").asBoolean(false) && !cursor.isBlank() ? cursor : null);
+                    return new Page(items, n.path("has_next_page").asBoolean(false) && !cursor.isBlank() ? cursor : null, cursor.isBlank() ? null : cursor);
                 });
     }
 
@@ -373,9 +480,9 @@ public class DevinAssistant implements AssistantPort {
         }
     }
 
-    /** The session polled every {@code pollEvery} until the stream is cancelled. */
-    private Flux<Snapshot> snapshots(String sessionId, boolean withMessages) {
-        return snapshot(sessionId, withMessages).repeatWhen(completions -> completions.delayElements(pollEvery));
+    /** The session polled every {@code pollEvery} until the stream is cancelled; its messages read on in {@code transcript}. */
+    private Flux<Snapshot> snapshots(String sessionId, Transcript transcript) {
+        return snapshot(sessionId, transcript).repeatWhen(completions -> completions.delayElements(pollEvery));
     }
 
     /**
@@ -384,12 +491,12 @@ public class DevinAssistant implements AssistantPort {
      * polls may still show the session waiting from before, so an end counts only once Devin has
      * moved: it started working, wrote a message or changed the output.
      */
-    Flux<AssistantEvent> poll(String sessionId, Snapshot before, boolean followUp) {
+    Flux<AssistantEvent> poll(String sessionId, Snapshot before, boolean followUp, Transcript transcript) {
         return Flux.defer(() -> {
             AtomicReference<Snapshot> previous = new AtomicReference<>(before);
             AtomicBoolean moved = new AtomicBoolean(!followUp);
             JsonNode baseline = followUp ? before.structuredOutput() : null;
-            return snapshots(sessionId, true)
+            return snapshots(sessionId, transcript)
                     .concatMap(snap -> {
                         Snapshot last = previous.getAndSet(snap);
                         if (!moved.get() && moved(before, snap)) {

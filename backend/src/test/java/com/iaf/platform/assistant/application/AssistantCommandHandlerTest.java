@@ -335,6 +335,34 @@ class AssistantCommandHandlerTest {
     }
 
     @Test
+    void anAgentSessionThatEndedIsForgottenSoTheNextMessageStartsANewOne() {
+        AssistantCommandHandler h = handler(ScriptedAgent.of(Events.status(NOW, "Devin session devin-1 started", "devin-1"),
+                Events.message(NOW, "Devin did not finish within 30 minutes"), Events.sessionEnded(NOW, "Ending Devin session devin-1"),
+                Events.failed(NOW, "timeout after PT30M")));
+        String id = as(h.startSession("create", null, null));
+
+        as(h.send(id, "x"));
+
+        assertThat(store.get(id).orElseThrow().externalId()).isNull();
+        assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.FAILED);
+    }
+
+    @Test
+    void aClientThatLeavesMidStreamClosesTheSessionAndForgetsTheAgentsOwn() throws Exception {
+        AssistantCommandHandler h = handler(new ScriptedAgent(r -> Flux.concat(Flux.just(Events.status(NOW, "Devin session devin-7 started", "devin-7")), Flux.never())));
+        String id = as(h.startSession("create", null, null));
+
+        h.send(id, "take your time").take(1).contextWrite(ctx -> CurrentIdentity.with(ctx, WHO)).blockLast(Duration.ofSeconds(5));
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!AssistantSession.DONE.equals(store.get(id).orElseThrow().status()) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.DONE);
+        assertThat(store.get(id).orElseThrow().externalId()).as("the agent ends its session on the cancel").isNull();
+    }
+
+    @Test
     void unknownSessionsAndBlankMessagesAreRejected() {
         AssistantCommandHandler h = handler(ScriptedAgent.of(Events.done(NOW)));
         assertThatThrownBy(() -> as(h.send("asst-missing", "x"))).isInstanceOf(NotFoundException.class);

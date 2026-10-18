@@ -64,6 +64,7 @@ class DevinAssistantTest {
         final Deque<String> sessions = new ArrayDeque<>();
         final Deque<String> messages = new ArrayDeque<>();
         int createStatus = 200;
+        int deleteStatus = 200;
         String createBody = "{\"session_id\":\"devin-1\",\"status\":\"new\"}";
         String playbooks = "{\"items\":[],\"has_next_page\":false}";
 
@@ -90,6 +91,8 @@ class DevinAssistantTest {
                 LocalHttp.respond(ex, createStatus, createBody);
             } else if (method.equals("POST") && path.endsWith("/messages")) {
                 LocalHttp.respond(ex, 200, "{\"session_id\":\"devin-1\",\"status\":\"resuming\"}");
+            } else if (method.equals("DELETE") && path.contains("/sessions/")) {
+                LocalHttp.respond(ex, deleteStatus, "{\"session_id\":\"" + path.substring(path.lastIndexOf('/') + 1) + "\",\"status\":\"exit\"}");
             } else if (method.equals("GET") && path.endsWith("/messages")) {
                 LocalHttp.respond(ex, 200, next(messages, "{\"items\":[],\"has_next_page\":false}"));
             } else if (method.equals("GET") && path.contains("/sessions/")) {
@@ -107,6 +110,30 @@ class DevinAssistantTest {
 
         List<Hit> hits(String method, String pathSuffix) {
             return hits.stream().filter(h -> h.method().equals(method) && h.path().endsWith(pathSuffix)).toList();
+        }
+
+        /** The hits once at least one arrived (the session is ended in the background), or none after a while. */
+        List<Hit> await(String method, String pathSuffix) {
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (hits(method, pathSuffix).isEmpty() && System.nanoTime() < deadline) {
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return hits(method, pathSuffix);
+        }
+
+        /** No hit of the kind within a short wait. */
+        List<Hit> settle(String method, String pathSuffix) {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return hits(method, pathSuffix);
         }
     }
 
@@ -214,6 +241,7 @@ class DevinAssistantTest {
         assertThat(events.get(4).data().path("status").asText()).isEqualTo("Devin is waiting for you");
         assertThat(events.get(6).data().path("workflowYaml").asText()).isEqualTo("kind: Workflow\n");
         assertThat(Events.isFailed(events.get(7))).isFalse();
+        assertThat(fake.settle("DELETE", "/sessions/devin-1")).as("a session that finished is left for follow-ups").isEmpty();
     }
 
     @Test
@@ -302,14 +330,138 @@ class DevinAssistantTest {
     }
 
     @Test
-    void aSessionThatNeverEndsTimesOutWithAFailedDone() {
+    void aSessionThatNeverEndsTimesOutWithAFailedDoneAndIsEndedAndForgotten() {
         fake.sessions("{\"status\":\"running\",\"status_detail\":\"working\"}");
         StepVerifier.create(agent(Duration.ofSeconds(2)).run(request("restart a vm", null, null)))
                 .expectNextMatches(e -> AssistantEvent.STATUS.equals(e.type()))
                 .expectNextMatches(e -> AssistantEvent.STATUS.equals(e.type()) && "Devin is working".equals(e.data().path("status").asText()))
-                .expectNextMatches(e -> AssistantEvent.MESSAGE.equals(e.type()) && Events.textOf(e).contains("did not finish"))
+                .expectNextMatches(e -> AssistantEvent.MESSAGE.equals(e.type()) && Events.textOf(e).contains("did not finish")
+                        && Events.textOf(e).contains("your next message starts a new one"))
+                .expectNextMatches(e -> AssistantEvent.STATUS.equals(e.type()) && e.data().path("externalId").asText("x").isEmpty())
                 .expectNextMatches(e -> AssistantEvent.DONE.equals(e.type()) && Events.isFailed(e))
                 .verifyComplete();
+
+        List<Hit> ended = fake.await("DELETE", "/sessions/devin-1");
+        assertThat(ended).hasSize(1);
+        assertThat(ended.get(0).path()).isEqualTo(ORG + "/sessions/devin-1");
+        assertThat(ended.get(0).query()).isEqualTo("archive=true");
+        assertThat(ended.get(0).auth()).isEqualTo("Bearer key-1");
+    }
+
+    @Test
+    void aBuilderThatStopsListeningEndsTheSessionBestEffort() {
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"working\"}");
+
+        List<AssistantEvent> seen = agent(Duration.ofSeconds(30)).run(request("restart a vm", null, null)).take(2).collectList().block(Duration.ofSeconds(10));
+
+        assertThat(seen).hasSize(2);
+        assertThat(fake.await("DELETE", "/sessions/devin-1")).singleElement().satisfies(h -> assertThat(h.query()).isEqualTo("archive=true"));
+
+        // a Devin that refuses to end it only costs a log line
+        fake.hits.clear();
+        fake.deleteStatus = 500;
+        List<AssistantEvent> again = agent(Duration.ofSeconds(30)).run(request("restart a vm", null, null)).take(2).collectList().block(Duration.ofSeconds(10));
+        assertThat(again).hasSize(2);
+        assertThat(fake.await("DELETE", "/sessions/devin-1")).hasSize(1);
+    }
+
+    @Test
+    void aProviderDraftThatTimesOutEndsItsSession() {
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"working\"}");
+        StepVerifier.create(agent(Duration.ofMillis(300)).draftProvider("the backup service", WHO))
+                .expectErrorMatches(e -> e.getMessage().contains("no provider draft"))
+                .verify(Duration.ofSeconds(10));
+        assertThat(fake.await("DELETE", "/sessions/devin-1")).hasSize(1);
+    }
+
+    @Test
+    void eachPollReadsOnFromTheLastEndCursorInsteadOfTheWholeHistory() {
+        HttpServer cursored = null;
+        try {
+            List<String> queries = new CopyOnWriteArrayList<>();
+            java.util.concurrent.atomic.AtomicInteger polls = new java.util.concurrent.atomic.AtomicInteger();
+            cursored = LocalHttp.start(ex -> {
+                String path = ex.getRequestURI().getPath();
+                if (path.endsWith("/messages")) {
+                    String q = ex.getRequestURI().getRawQuery();
+                    queries.add(q);
+                    if (!q.contains("after=")) {
+                        LocalHttp.respond(ex, 200, "{\"items\":[" + msg("e1", "devin", "Reading the registry") + "],\"has_next_page\":false,\"end_cursor\":\"c1\"}");
+                    } else if (q.contains("after=c1") && polls.get() < 3) {
+                        LocalHttp.respond(ex, 200, "{\"items\":[],\"has_next_page\":false,\"end_cursor\":null}");
+                    } else if (q.contains("after=c1")) {
+                        LocalHttp.respond(ex, 200, "{\"items\":[" + msg("e2", "devin", "Here is the draft") + "],\"has_next_page\":false,\"end_cursor\":\"c2\"}");
+                    } else {
+                        LocalHttp.respond(ex, 200, "{\"items\":[],\"has_next_page\":false,\"end_cursor\":null}");
+                    }
+                } else if (path.endsWith("/sessions")) {
+                    LocalHttp.respond(ex, 200, "{\"session_id\":\"devin-1\"}");
+                } else {
+                    int n = polls.incrementAndGet();
+                    LocalHttp.respond(ex, 200, n < 5 ? "{\"status\":\"running\",\"status_detail\":\"working\"}" : "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\"}");
+                }
+            });
+            PlatformProperties.Assistant p = props();
+            p.setDevinUrl(LocalHttp.url(cursored) + "/v3");
+
+            List<AssistantEvent> events = run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("x", null, null));
+
+            assertThat(events).filteredOn(e -> AssistantEvent.MESSAGE.equals(e.type())).extracting(Events::textOf)
+                    .containsExactly("Reading the registry", "Here is the draft");
+            assertThat(queries.get(0)).isEqualTo("first=200");
+            assertThat(queries.subList(1, queries.size())).as("every later poll reads on from the cursor").isNotEmpty()
+                    .allSatisfy(q -> assertThat(q).startsWith("first=200&after=c"));
+            assertThat(queries).contains("first=200&after=c2");
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } finally {
+            if (cursored != null) {
+                cursored.stop(0);
+            }
+        }
+    }
+
+    @Test
+    void aCursorDevinRefusesSendsTheReadBackToTheStartWithoutRepeatingMessages() {
+        HttpServer refusing = null;
+        try {
+            List<String> queries = new CopyOnWriteArrayList<>();
+            java.util.concurrent.atomic.AtomicInteger polls = new java.util.concurrent.atomic.AtomicInteger();
+            refusing = LocalHttp.start(ex -> {
+                String path = ex.getRequestURI().getPath();
+                if (path.endsWith("/messages")) {
+                    String q = ex.getRequestURI().getRawQuery();
+                    queries.add(q);
+                    if (q.contains("after=stale")) {
+                        LocalHttp.respond(ex, 400, "{\"title\":\"invalid cursor\",\"status\":400}");
+                    } else if (!q.contains("after=")) {
+                        String items = polls.get() < 2 ? msg("e1", "devin", "first") : msg("e1", "devin", "first") + "," + msg("e2", "devin", "second");
+                        LocalHttp.respond(ex, 200, "{\"items\":[" + items + "],\"has_next_page\":false,\"end_cursor\":\"stale\"}");
+                    } else {
+                        LocalHttp.respond(ex, 200, "{\"items\":[],\"has_next_page\":false,\"end_cursor\":null}");
+                    }
+                } else if (path.endsWith("/sessions")) {
+                    LocalHttp.respond(ex, 200, "{\"session_id\":\"devin-1\"}");
+                } else {
+                    int n = polls.incrementAndGet();
+                    LocalHttp.respond(ex, 200, n < 3 ? "{\"status\":\"running\",\"status_detail\":\"working\"}" : "{\"status\":\"running\",\"status_detail\":\"waiting_for_user\"}");
+                }
+            });
+            PlatformProperties.Assistant p = props();
+            p.setDevinUrl(LocalHttp.url(refusing) + "/v3");
+
+            List<AssistantEvent> events = run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("x", null, null));
+
+            assertThat(events).filteredOn(e -> AssistantEvent.MESSAGE.equals(e.type())).extracting(Events::textOf).containsExactly("first", "second");
+            assertThat(queries).containsSubsequence("first=200", "first=200&after=stale", "first=200");
+            assertThat(events).last().satisfies(e -> assertThat(Events.isFailed(e)).isFalse());
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } finally {
+            if (refusing != null) {
+                refusing.stop(0);
+            }
+        }
     }
 
     @Test
@@ -321,6 +473,7 @@ class DevinAssistantTest {
         assertThat(Events.textOf(events.get(0))).contains("Devin could not be reached");
         assertThat(Events.isFailed(events.get(1))).isTrue();
         assertThat(events.get(1).data().path("error").asText()).contains("500");
+        assertThat(fake.settle("DELETE", "/sessions")).as("no session, nothing to end").isEmpty();
     }
 
     @Test

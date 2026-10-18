@@ -173,11 +173,16 @@ public class AssistantCommandHandler implements AssistantCommands {
         });
     }
 
-    /** The client went away mid-stream: the session is closed, off the cancelling thread (a Netty event loop). */
+    /**
+     * The client went away mid-stream: the session is closed, off the cancelling thread (a Netty
+     * event loop), and forgets the agent's session, which the agent ends on the cancel.
+     */
     private void closeOnCancel(String sessionId) {
         Schedulers.boundedElastic().schedule(() -> {
             try {
-                sessions.update(sessionId, s -> AssistantSession.WORKING.equals(s.status()) ? s.withStatus(AssistantSession.DONE, clock.instant()) : s);
+                sessions.update(sessionId, s -> AssistantSession.WORKING.equals(s.status())
+                        ? s.withStatus(AssistantSession.DONE, clock.instant()).withExternalId(null, clock.instant())
+                        : s);
             } catch (RuntimeException e) {
                 log.warn("assistant session {} could not be closed after the client left: {}", sessionId, e.toString());
             }
@@ -229,7 +234,7 @@ public class AssistantCommandHandler implements AssistantCommands {
                 return Flux.just(done);
             }
             int errors = r.review().errors().size();
-            if (lastRound || external.get() == null || request.session() == null) {
+            if (lastRound || external.get() == null || external.get().isBlank() || request.session() == null) {
                 return Flux.just(Events.message(clock.instant(), "The platform's checks still find " + count(errors, "error") + " after "
                         + count(round, "round") + " with the agent, so the draft needs a person: "
                         + String.join("; ", r.review().errors().stream().map(DraftReview::line).toList()) + "."), done);
@@ -288,7 +293,8 @@ public class AssistantCommandHandler implements AssistantCommands {
     private void record(String sessionId, AssistantEvent e, AtomicBoolean ended, Identity who) {
         Instant now = clock.instant();
         if (e.data() != null && e.data().hasNonNull("externalId")) {
-            String external = e.data().get("externalId").asText();
+            // an empty id: the agent ended its session, and the next message starts a new one
+            String external = e.data().get("externalId").asText().isBlank() ? null : e.data().get("externalId").asText();
             sessions.update(sessionId, s -> s.withExternalId(external, now));
         }
         switch (e.type()) {

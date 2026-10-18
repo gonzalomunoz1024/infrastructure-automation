@@ -533,6 +533,12 @@ started it. A service account, admin or not, only uses the sessions it started i
 nothing happened on for `platform.assistant.session-retention` (default 30 days) is deleted, and
 then answers 404.
 
+Closing the stream before its `done` (the panel closed, the page left) ends the agent's own session:
+with Devin, the platform ends and archives it (`DELETE /sessions/{id}?archive=true`) so it stops
+spending ACUs, and so it does when `platform.assistant.devin-timeout` passes without a draft (the
+stream then ends with a message, a `status` whose `externalId` is empty, and a failed `done`). The
+next message on the builder session starts a new Devin session with the current draft.
+
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
 `validation`, `dryRun`).

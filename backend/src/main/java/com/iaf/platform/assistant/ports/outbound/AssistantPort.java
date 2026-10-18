@@ -42,7 +42,12 @@ public interface AssistantPort {
     record PlaybookSync(String file, String macro, String playbookId, String action) {
     }
 
-    /** Streams status, message, draft and validation events and ends with done. */
+    /**
+     * Streams status, message, draft and validation events and ends with done. Cancelling the
+     * stream before its done ends the agent's own session, as does an agent giving up on time (it
+     * then says so with {@link com.iaf.platform.assistant.domain.Events#sessionEnded}): the next
+     * message on the builder session starts a new agent session with the current draft.
+     */
     Flux<AssistantEvent> run(AssistantRequest request);
 
     Mono<ProviderDraft> draftProvider(String description, Identity who);
