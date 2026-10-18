@@ -114,9 +114,15 @@ type DryRunResult = { passed: boolean; path: string[]; steps: { id; name; status
 ```
 
 Drafts of providers: `providers` on `:validate` and `:dry-run` is a list of provider files (YAML, as
-`POST /providers:publish` takes one) that nobody published yet. Each is read and checked as a provider
-publish checks it, and one with an error is a 400 `{ error; problems }` with its problems; an empty
-entry and two files of one provider are a 400 too. A draft stands in for the published provider of its name,
+`POST /providers:publish` takes one) that nobody published yet, possibly still being written. A draft
+that is no usable provider file is a 400 `{ error; problems }` with those problems: it does not parse,
+is not of kind Provider, has no spec or an unknown type, names no provider or owner team, has no
+actions, an action id twice, an action without its operation or playbook, a schema that is no object, a
+plan, verify or override naming no action, or a secret (`credential.plain`); an empty entry and two
+files of one provider are a 400 too. What only gates publishing (the alert channel, the credential
+reference, a delete's approval, the pinned spec, endpoints, SLO ranges) does not stop the call:
+`:validate` returns each such error as a `provider.draft` warning whose field is under `providers[i]`
+(`valid` is not affected), and the review is decided by `POST /providers:validate` and `:publish`. A draft stands in for the published provider of its name,
 or adds one, for that call only: the checks see its actions, and the dry run answers its provider calls,
 and the ansible and terraform steps whose playbook or module it describes, from its samples as for a
 published provider. Nothing is stored.

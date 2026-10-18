@@ -43,6 +43,7 @@ import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
+import com.iaf.platform.providers.domain.ProviderChecks;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
@@ -1196,6 +1197,32 @@ class WorkflowCommandHandlerTest {
                 .expectErrorMessage("providers[1] is a second draft of provider ticketing; send one file per provider")
                 .verify();
         verify(runs, never()).dryRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void aDraftStillBeingWrittenServesTheCallAndWhatStopsItsPublishComesBackAsWarnings() {
+        String draft = SampleFixtures.TICKETING_UNFINISHED;
+        assertThat(ProviderChecks.check(draft).errors()).extracting(Problem::code)
+                .containsExactlyInAnyOrder("credential.missing", "action.approvalRequired", "alerts.channel");
+
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, draft)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).as("%s", v.problems()).isTrue();
+                    assertThat(v.problems()).filteredOn(p -> p.code().equals("provider.draft"))
+                            .allSatisfy(p -> {
+                                assertThat(p.isError()).isFalse();
+                                assertThat(p.step()).isNull();
+                                assertThat(p.message()).startsWith("The draft provider ticketing is not ready to publish: ");
+                            })
+                            .extracting(Problem::field)
+                            .containsExactlyInAnyOrder("providers[0].spec.auth.credential", "providers[0].spec.actions[2].approval", "providers[0].spec.alerts.channel");
+                    assertThat(v.problems()).extracting(Problem::code).doesNotContain("step.unknownProvider", "step.unknownAction");
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(draft))))
+                .assertNext(r -> assertThat(r.passed()).isTrue())
+                .verifyComplete();
+        verify(runs).dryRun(any(), any(), any(), any());
     }
 
     @Test

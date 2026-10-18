@@ -103,9 +103,9 @@ public final class ProviderChecks {
 
     /**
      * Reads a provider file as publishing does: its own checks first, and a file with an error
-     * among them is refused with what {@code refused} makes of them (a publish answers 409, a
-     * draft a workflow's dry run carries 400); then its definition, whose name and owner team
-     * become its path in the content repo and so must be slugs (an IllegalArgumentException).
+     * among them is refused with what {@code refused} makes of them (a publish answers 409); then
+     * its definition, whose name and owner team become its path in the content repo and so must
+     * be slugs (an IllegalArgumentException). A draft for one call is read by {@link #draft}.
      */
     public static Publishable publishable(String yaml, Function<Result, ? extends RuntimeException> refused) {
         Result checks = check(yaml);
@@ -116,6 +116,47 @@ public final class ProviderChecks {
         ContentFiles.requireSlug("The provider name", def.name());
         ContentFiles.requireSlug("The owner team", def.owner());
         return new Publishable(def, checks);
+    }
+
+    /**
+     * The errors that leave a provider file unusable even as a draft that a workflow's dry run or
+     * validate carries for one call: it is no provider file (it does not parse, is not of kind
+     * Provider, has no spec or an unknown type), it has no name or owner team to be known by, its
+     * actions cannot be told apart, called or followed (none, an id used twice, no operation or
+     * playbook, a schema that is no object, a plan, verify or override naming no action), or it
+     * holds a secret. Every other error only gates publishing (the alert channel, the credential
+     * reference, a delete's approval, the pinned spec, endpoints, SLO ranges...), which a draft
+     * still being written need not pass yet. {@code spec.missing} counts only as the schema's (no
+     * spec at all), not as the spec-pinned check's (an OpenAPI provider whose spec is not named).
+     */
+    private static final Set<String> UNUSABLE_DRAFT = Set.of("yaml.invalid", "kind.invalid", "type.unknown", "name.format", "metadata.owner",
+            "actions.empty", "action.duplicateId", "action.operation", "action.method", "action.playbook", "action.schema", "action.unknownPlan",
+            "action.unknownVerify", "override.unknownAction", "credential.plain");
+
+    /** A draft provider file: its definition, and the errors it still has that only gate publishing ({@link #UNUSABLE_DRAFT}). */
+    public record Draft(ProviderDefinition definition, List<Problem> gates) {
+    }
+
+    /**
+     * Reads a provider file as a draft for one call: refused with what {@code refused} makes of the
+     * errors that leave it unusable ({@link #UNUSABLE_DRAFT}), else its definition, whose name and
+     * owner team must be slugs (an IllegalArgumentException), and the errors that would still stop
+     * it being published.
+     */
+    public static Draft draft(String yaml, Function<List<Problem>, ? extends RuntimeException> refused) {
+        Result checks = check(yaml);
+        List<Problem> unusable = checks.problems().stream().filter(ProviderChecks::unusableInDraft).toList();
+        if (!unusable.isEmpty()) {
+            throw refused.apply(unusable);
+        }
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        ContentFiles.requireSlug("The provider name", def.name());
+        ContentFiles.requireSlug("The owner team", def.owner());
+        return new Draft(def, checks.errors());
+    }
+
+    private static boolean unusableInDraft(Problem p) {
+        return p.isError() && (UNUSABLE_DRAFT.contains(p.code()) || ("spec.missing".equals(p.code()) && "spec".equals(p.field())));
     }
 
     /** A field name that holds a secret (password, token, api key...): its value never goes in a provider file. */

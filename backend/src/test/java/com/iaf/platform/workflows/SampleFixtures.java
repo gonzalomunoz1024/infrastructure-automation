@@ -116,6 +116,32 @@ public final class SampleFixtures {
               alerts: { channel: "#compute-alerts" }
             """;
 
+    /**
+     * {@link #TICKETING} while the designer is still writing it: no credential picked yet, a create
+     * and a delete action, no alert channel, and the delete's approval turned off. Usable for a dry
+     * run or a validate, not publishable yet.
+     */
+    public static final String TICKETING_UNFINISHED = TICKETING
+            .replace("auth: { type: header, header: X-Api-Key, credential: vault:ticketing/api-key }", "auth: { type: header, header: X-Api-Key }")
+            .replace("  slo: { successRate: 99.0, p95Ms: 800 }\n  alerts: { channel: \"#compute-alerts\" }\n", "")
+            .replace("""
+                          sample: { id: "{{ $input.id }}", state: open }
+                    """, """
+                          sample: { id: "{{ $input.id }}", state: open }
+                        - id: ticket.create
+                          title: Open a ticket
+                          operation: { method: POST, path: /tickets }
+                          effect: create
+                          retry: unsafe
+                          sample: { id: T-100, state: open }
+                        - id: ticket.delete
+                          title: Delete a ticket
+                          operation: { method: DELETE, path: "/tickets/{id}" }
+                          effect: delete
+                          retry: unsafe
+                          approval: none
+                    """);
+
     /** A new workflow that calls the {@link #TICKETING} provider. */
     public static final String TICKET_CHECK = """
             apiVersion: iaf.platform/v1

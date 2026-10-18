@@ -234,46 +234,67 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<Validation> validate(ValidateRequest request) {
         WorkflowSource source = request.source();
         return Mono.fromCallable(() -> drafts(request.providers()))
-                .flatMap(drafts -> Mono.zip(queries.checkContext().map(ctx -> ctx.withProviders(drafts)), resources.types().collectList()))
-                .flatMap(t -> blocking(() -> {
-                    List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
-                    List<Problem> problems = designer;
-                    if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
-                        List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
-                        problems = PublishChecks.merge(designer, publish);
-                    }
-                    return new Validation(!WorkflowChecks.hasErrors(problems), problems);
-                }));
+                .flatMap(drafts -> Mono.zip(queries.checkContext().map(ctx -> ctx.withProviders(drafts.definitions())), resources.types().collectList())
+                        .flatMap(t -> blocking(() -> {
+                            List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
+                            List<Problem> problems = designer;
+                            if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
+                                List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
+                                problems = PublishChecks.merge(designer, publish);
+                            }
+                            boolean valid = !WorkflowChecks.hasErrors(problems);
+                            if (!drafts.gates().isEmpty()) {
+                                problems = new ArrayList<>(problems);
+                                problems.addAll(drafts.gates());
+                            }
+                            return new Validation(valid, problems);
+                        })));
     }
 
     /**
-     * The drafts of providers a dry run or a validate carries, each read and checked as a provider
-     * publish reads it ({@link ProviderChecks#publishable}): a draft with an error is a 400 with its
-     * problems, and so are an empty entry and a second draft of one name. They serve that call
-     * only; nothing is stored.
+     * The drafts of providers a dry run or a validate carries, and what still stops each being
+     * published, as warnings ({@code provider.draft}, its field under {@code providers[i]}): the
+     * workflow's checks are not the place a provider's review is decided, and the designer's
+     * Publish asks POST /providers:validate for that.
      */
-    static List<ProviderDefinition> drafts(List<String> files) {
+    record Drafts(List<ProviderDefinition> definitions, List<Problem> gates) {
+        static final Drafts NONE = new Drafts(List.of(), List.of());
+    }
+
+    /**
+     * The drafts of providers a dry run or a validate carries, each read as a draft for that one
+     * call ({@link ProviderChecks#draft}): one that is no usable provider file (it does not parse,
+     * names no provider or owner, its actions cannot be called, it holds a secret) is a 400 with
+     * those problems, and so are an empty entry and a second draft of one name. What only gates
+     * publishing (an alert channel, a credential, a delete's approval, a pinned spec, SLO ranges)
+     * does not stop the call. They serve that call only; nothing is stored.
+     */
+    static Drafts drafts(List<String> files) {
         if (files == null || files.isEmpty()) {
-            return List.of();
+            return Drafts.NONE;
         }
         List<ProviderDefinition> out = new ArrayList<>();
+        List<Problem> gates = new ArrayList<>();
         for (int i = 0; i < files.size(); i++) {
             String yaml = files.get(i);
             String which = "providers[" + i + "]";
             if (yaml == null || yaml.isBlank()) {
                 throw new IllegalArgumentException(which + " is empty: each entry of providers is a provider file");
             }
-            ProviderDefinition def = ProviderChecks.publishable(yaml, checks -> {
-                int n = checks.errors().size();
+            ProviderChecks.Draft draft = ProviderChecks.draft(yaml, unusable -> {
+                int n = unusable.size();
                 return InvalidInputException.of("The draft provider " + draftLabel(yaml, which) + " has " + n + (n == 1 ? " problem" : " problems") + " to fix",
-                        checks.problems());
-            }).definition();
+                        unusable);
+            });
+            ProviderDefinition def = draft.definition();
             if (ProviderDrafts.named(out, def.name()).isPresent()) {
                 throw new IllegalArgumentException(which + " is a second draft of provider " + def.name() + "; send one file per provider");
             }
             out.add(def);
+            draft.gates().forEach(p -> gates.add(Problem.warning("provider.draft", null, p.field() == null ? which : which + "." + p.field(),
+                    "The draft provider " + def.name() + " is not ready to publish: " + p.message())));
         }
-        return List.copyOf(out);
+        return new Drafts(List.copyOf(out), List.copyOf(gates));
     }
 
     /** {@code vsphere (providers[0])}, or {@code in providers[0]} when the file names no provider. */
@@ -311,7 +332,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<DryRunResult> dryRun(DryRunRequest request) {
         return CurrentIdentity.current().flatMap(who -> {
             WorkflowDefinition def = request.source().parse();
-            List<ProviderDefinition> drafts = drafts(request.providers());
+            List<ProviderDefinition> drafts = drafts(request.providers()).definitions();
             JsonNode input = request.input() == null || request.input().isNull() ? F.objectNode() : request.input();
             return dryRun(def, input, who, drafts);
         });

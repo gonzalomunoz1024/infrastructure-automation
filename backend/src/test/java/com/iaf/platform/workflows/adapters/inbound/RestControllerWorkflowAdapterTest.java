@@ -258,6 +258,21 @@ class RestControllerWorkflowAdapterTest {
     }
 
     @Test
+    void aDraftNotReadyToPublishStillServesValidateAndDryRun() {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        List<String> drafts = List.of(SampleFixtures.TICKETING_UNFINISHED);
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", drafts)).exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.valid").isEqualTo(true)
+                .jsonPath("$.problems[?(@.code == 'provider.draft')].field")
+                .isEqualTo(List.of("providers[0].spec.auth.credential", "providers[0].spec.actions[2].approval", "providers[0].spec.alerts.channel"))
+                .jsonPath("$.problems[?(@.code == 'provider.draft')].level").isEqualTo(List.of("warning", "warning", "warning"));
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", drafts))
+                .exchange().expectStatus().isOk().expectBody().jsonPath("$.passed").isEqualTo(true);
+    }
+
+    @Test
     void aPublishTakesTheProviderChangeRequestsItRequiresAndMergesAfterThem() throws Exception {
         String ticketCheck = SampleFixtures.TICKET_CHECK;
         changeRequests.save(new ChangeRequest("cr_tick", ChangeRequest.Kind.PROVIDER, "ticketing", "0.1.0", "change/provider-ticketing-0.1.0", "Publish ticketing 0.1.0",
