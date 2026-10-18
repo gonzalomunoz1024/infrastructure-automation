@@ -787,6 +787,59 @@ class WorkflowInterpreterTest {
         assertThat(o.message()).doesNotContain("aborted");
     }
 
+    /** A condition that never holds, for half an hour. */
+    static final String NEVER = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-never, title: Never, noun: thing, verb: wait, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - never:
+                    name: Never
+                    wait: { until: "{{ $input.ready == true }}" }
+                    timeout: 30m
+                    pauseOnFailure: false
+            """;
+
+    /** An executor that remembers its sleeps and polls as {@code polling} says. */
+    static final class SleepCounter extends SampleStepExecutor {
+        final List<Duration> slept = new ArrayList<>();
+        private final Polling polling;
+
+        SleepCounter(Polling polling) {
+            super(SampleContent.providers(), SampleContent::child, SampleContent.types(), T0);
+            this.polling = polling;
+        }
+
+        @Override
+        public Polling polling(JobContext ctx) {
+            return polling;
+        }
+
+        @Override
+        public void sleep(JobContext ctx, Duration duration) {
+            slept.add(duration);
+            super.sleep(ctx, duration);
+        }
+    }
+
+    @Test
+    void aWaitUntilLooksAgainAsOftenAsItsEngineSaysAndNeverPastItsTimeout() {
+        SleepCounter backoff = new SleepCounter(Polling.BACKOFF);
+        Outcome o = run(NEVER, backoff, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(o.errorClass()).isEqualTo("timeout");
+        assertThat(o.message()).isEqualTo("Condition did not hold within 30m");
+        assertThat(backoff.slept).startsWith(Duration.ofSeconds(5), Duration.ofSeconds(10), Duration.ofSeconds(20), Duration.ofSeconds(40),
+                Duration.ofSeconds(80), Duration.ofSeconds(160), Duration.ofMinutes(5));
+        assertThat(backoff.slept).hasSizeLessThan(15);
+        assertThat(backoff.slept.stream().reduce(Duration.ZERO, Duration::plus)).as("the last wait ends at the timeout").isEqualTo(Duration.ofMinutes(30));
+
+        SleepCounter fixed = new SleepCounter(Polling.FIXED);
+        run(NEVER, fixed, WorkflowInterpreter.Rules.CURRENT);
+        assertThat(fixed.slept).hasSize(360).containsOnly(WorkflowInterpreter.POLL_INTERVAL);
+    }
+
     /** A malformed wait duration on a step that would retry. */
     static final String LEAF_ERROR = """
             apiVersion: iaf.platform/v1

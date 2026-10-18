@@ -69,7 +69,8 @@ public final class WorkflowInterpreter {
     public static final String OUTPUTS = "outputs";
     public static final Duration DEFAULT_APPROVAL_TIMEOUT = Duration.ofHours(24);
     public static final Duration DEFAULT_WAIT_TIMEOUT = Duration.ofHours(24);
-    public static final Duration POLL_INTERVAL = Duration.ofSeconds(5);
+    /** The interval of a {@code wait until} in process ({@link Polling#FIXED}). */
+    public static final Duration POLL_INTERVAL = Polling.FIXED.first();
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     /**
@@ -665,12 +666,25 @@ public final class WorkflowInterpreter {
         Duration limit = timeout == null ? DEFAULT_WAIT_TIMEOUT : timeout;
         Instant deadline = executor.now().plus(limit);
         int polls = 0;
-        while (!ExpressionEngine.truthy(ExpressionEngine.resolve(rawUntil, ctx.view(previous)))) {
+        Polling polling = null;
+        Duration interval = null;
+        JsonNode seen = null;
+        while (true) {
+            JsonNode value = ExpressionEngine.resolve(rawUntil, ctx.view(previous));
+            if (ExpressionEngine.truthy(value)) {
+                break;
+            }
             checkCancelled();
             if (!executor.now().isBefore(deadline)) {
                 throw new StepFailure(s.id(), "timeout", "Condition did not hold within " + Durations.format(limit), true);
             }
-            executor.sleep(ctx, POLL_INTERVAL);
+            if (polling == null) {
+                polling = executor.polling(ctx);
+            }
+            // the engine's interval: back to the first one when the condition's value changed since the last look
+            interval = polling.next(interval, seen != null && !seen.equals(value), Duration.between(executor.now(), deadline));
+            seen = value;
+            executor.sleep(ctx, interval);
             polls++;
         }
         out.put("polls", polls);

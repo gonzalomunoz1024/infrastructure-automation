@@ -142,10 +142,10 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `fork: { branches: [ [steps], [steps] ] }` | parallel branches, joined                                     |
 | `for: { each, in, do }`  | loop                                                                           |
 | `try: { do, catch: { as, do } }` | scoped error handling: inside `catch` the failure is `$error` (with `as`, `$<as>`): `{ step, message, class, retryable }`; the name holds only while the catch runs |
-| `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
+| `wait: PT5M`             | ISO duration or `{ until: expression }`: the condition is looked at every 5 s in process; on Temporal after 5 s, then twice as long each time up to 5 minutes; at most the step's `timeout` (24h when unset) |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
+| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready, for at most the step's `timeout` (10m when unset): in process the registry's events wake the step; on Temporal the step looks again after 5 s, backing off to one look every 5 minutes, and soon again once the status moves |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |

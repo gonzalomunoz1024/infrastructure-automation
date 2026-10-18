@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.outbound.temporal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -15,6 +16,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 
@@ -616,6 +619,70 @@ class InterpreterWorkflowImplTest {
                 .map(e -> e.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds()))
                 .as("the hour, less what passed since the step failed").singleElement().satisfies(s -> assertThat(s).isBetween(3500L, 3600L));
         t.replay(job.id());
+    }
+
+    private static List<Long> timers(WorkflowExecutionHistory history) {
+        return history.getEvents().stream().filter(HistoryEvent::hasTimerStartedEventAttributes)
+                .map(e -> e.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds()).toList();
+    }
+
+    @Test
+    void aDayLongWaitUntilBacksOffSoItsHistoryStaysSmall() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-day, title: Day, noun: thing, verb: wait, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - never:
+                        name: Never
+                        wait: { until: "{{ $input.ready == true }}" }
+                        timeout: 24h
+                        pauseOnFailure: false
+                """), Map.of("ready", false));
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.errorClass()).isEqualTo("timeout");
+        assertThat(outcome.message()).isEqualTo("Condition did not hold within 1d");
+        WorkflowExecutionHistory history = t.client.fetchHistory(job.id());
+        assertThat(timers(history)).startsWith(5L, 10L, 20L, 40L, 80L, 160L, 300L, 300L);
+        assertThat(timers(history).stream().mapToLong(Long::longValue).sum()).as("the waits add up to the day (whole seconds)")
+                .isBetween(Duration.ofHours(24).toSeconds() - 5, Duration.ofHours(24).toSeconds());
+        assertThat(history.getEvents()).as("every 5 s for a day would be ~86,000 events").hasSizeLessThan(2000);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aUseThatWaitsForAResourceBacksOffAndLooksSoonAgainOnceItsStatusMoves() {
+        t = new TemporalTestEngine();
+        Deque<String> states = new ArrayDeque<>(List.of("building", "building", "configuring", "configuring", "ready"));
+        when(t.w.resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(
+                RunsTestWiring.resource(i.getArgument(0), i.getArgument(1), states.size() > 1 ? states.poll() : states.peek())));
+        Job job = t.start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-use, title: Use, noun: thing, verb: use, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - ready:
+                        name: Ready
+                        use: { type: vm, id: vm-201, waitUntil: ready }
+                        timeout: 1h
+                """), Map.of());
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(timers(t.client.fetchHistory(job.id()))).as("5 s, doubled, then 5 s again once building turned configuring").containsExactly(5L, 10L, 5L, 10L);
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeBackedOffPollsStillReplayLookingEveryFiveSeconds() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory polls = history("/temporal/before-poll-backoff/polls.json");
+        assertThat(timers(polls)).as("recorded looking every 5 s").containsOnly(5L).hasSize(14);
+
+        t.replay(polls);
     }
 
     @Test

@@ -38,6 +38,7 @@ import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
+import com.iaf.platform.runs.domain.Polling;
 import com.iaf.platform.runs.domain.StepEvent;
 import com.iaf.platform.runs.domain.StepExecutor;
 import com.iaf.platform.runs.domain.StepFailure;
@@ -121,6 +122,13 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * with the rules they were recorded with (fixture {@code before-interpreter-rules}).
      */
     static final String INTERPRETER_RULES = "interpreter-rules";
+    /**
+     * The change id of backed-off polls (version 1): a {@code wait until} and a {@code use …
+     * waitUntil: ready} look again after 5 s, then after twice the last wait up to 5 minutes, and
+     * after 5 s again once what they watch changed, so a day-long wait stays a few hundred timers.
+     * Executions without its marker look every 5 s (fixture {@code before-poll-backoff}).
+     */
+    static final String POLL_BACKOFF = "poll-backoff";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
     static final RetryOptions PUBLISH = RetryOptions.newBuilder()
@@ -368,6 +376,9 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         StepActivities activities = calls(PortStepExecutor.LOOKUP_TIMEOUT);
         Duration limit = timeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : timeout;
         Instant deadline = now().plus(limit);
+        Polling polling = null;
+        Duration interval = null;
+        String seen = null;
         while (true) {
             JsonNode resource = invoke(step, () -> activities.useResource(call, lookup));
             String state = resource == null ? null : resource.path("status").asText(null);
@@ -381,8 +392,20 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (cancelled) {
                 throw new JobCancelled(ctx.jobId());
             }
-            sleep(ctx, PortStepExecutor.USE_POLL);
+            if (polling == null) {
+                polling = polling(ctx);
+            }
+            // a lookup is an activity: back off, and look again soon once the resource moved on to another state
+            interval = polling.next(interval, seen != null && !seen.equals(state), Duration.between(now(), deadline));
+            seen = state;
+            sleep(ctx, interval);
         }
+    }
+
+    /** Backed-off polls on Temporal, where every look is history; fixed for executions recorded before ({@link #POLL_BACKOFF}). */
+    @Override
+    public Polling polling(JobContext ctx) {
+        return Workflow.getVersion(POLL_BACKOFF, Workflow.DEFAULT_VERSION, 1) >= 1 ? Polling.BACKOFF : Polling.FIXED;
     }
 
     @Override

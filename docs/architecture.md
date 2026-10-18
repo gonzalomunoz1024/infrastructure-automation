@@ -264,10 +264,10 @@ or `outputs`, like any step failure: compensation and the workflow's `catch` run
 never ends the job as `engine_error` for it. A `catch` names the failure it caught (`$error`, or
 `$<as>`) only while it runs.
 
-A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
-in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
-bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
-signal a registry listener sends to the waiting workflow.
+A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`
+in process: the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
+bounded by the step's timeout and ended by a cancel. On Temporal the workflow polls instead: a
+`useResource` activity reads the resource, then a timer waits before the next read (see below).
 
 A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
 the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
@@ -292,7 +292,14 @@ beans: a step's calls go through the same `PortStepExecutor` as in memory, once,
 timeout (the interpreter does the retrying), and every event goes through `JobEvents`, so the
 projection, the audit log and the streams cannot tell the engines apart. Approvals, attention
 decisions and cancels are the signals `approve`, `attention` and `cancel`; `status` and `waitingOn`
-are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` polls are timers; `run`
+are queries. Waits, timeouts, retry backoffs and the polls of `wait until` and `use … waitUntil: ready`
+are timers. Every timer and every lookup is history, and an execution stops at Temporal's limit of
+51,200 events, so a poll backs off: it looks again after 5 s, then after twice the last wait up to
+5 minutes, and after 5 s again once what it watches changed (the condition's value, the resource's
+status); its last wait ends at the step's timeout. A day-long `wait until` is a few hundred timers
+instead of 17,000. In process a `wait until` looks every 5 s and a `use` waits for the registry's
+events. The backoff is gated with `Workflow.getVersion` (`poll-backoff`): an execution recorded
+before it (fixture `before-poll-backoff`) keeps looking every 5 s. `run`
 steps and batch rows are child workflows whose ids are the child job ids. A run step's child is
 resolved and checked by the parent's `childJob` activity through `ChildStarts`, the same code the
 in-memory engine runs: the range as written, else the workflow's current major; then the child's
