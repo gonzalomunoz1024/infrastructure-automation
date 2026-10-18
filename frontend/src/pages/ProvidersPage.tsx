@@ -55,11 +55,14 @@ export function emptyProviders(me: Pick<Me, 'admin' | 'teams'> | undefined, filt
   return { title: 'No providers yet', message: 'Add the first one: an OpenAPI spec, a few HTTP endpoints, an Ansible repository or a Terraform module.' }
 }
 
+/** Actions and environments are also on each provider's page; below 1680px they give their room to the names, owners and SLOs, which stay on one line. */
+const WIDE_ONLY = 'hidden min-[1680px]:table-cell'
+
 function ProviderCell({ p }: { p: ProviderSummary }) {
   return (
     <div className="min-w-0">
-      <div className="font-medium text-primary">{p.title}</div>
-      <Mono className="text-tertiary">
+      <div className="whitespace-nowrap font-medium text-primary">{p.title}</div>
+      <Mono className="whitespace-nowrap text-tertiary">
         {p.name} · {p.version}
       </Mono>
     </div>
@@ -89,7 +92,7 @@ export const LIST_COLUMNS: TableColumn<ProviderSummary>[] = [
       </Tag>
     ),
   },
-  { key: 'owner', header: 'Owner', sortable: true, accessor: (p) => p.owner, width: '9rem', render: (p) => <span className="text-primary">{p.owner}</span> },
+  { key: 'owner', header: 'Owner', sortable: true, accessor: (p) => p.owner, width: '9rem', render: (p) => <span className="whitespace-nowrap text-primary">{p.owner}</span> },
   { key: 'health', header: 'Health', sortable: true, accessor: (p) => p.health.status, width: '8rem', render: (p) => <HealthBand health={p.health} /> },
   {
     key: 'success',
@@ -112,10 +115,12 @@ export const LIST_COLUMNS: TableColumn<ProviderSummary>[] = [
   },
   { key: 'calls', header: 'Calls', numeric: true, sortable: true, accessor: (p) => p.health.calls, width: '6rem', render: (p) => <span className="text-primary">{formatNumber(p.health.calls, { compact: true })}</span> },
   { key: 'trend', header: 'Errors', width: '8rem', render: (p) => <ErrorTrend trend={p.health.errorTrend} /> },
-  { key: 'actions', header: 'Actions', numeric: true, width: '5rem', render: (p) => <span className="text-primary">{p.actionCount}</span> },
+  { key: 'actions', header: 'Actions', numeric: true, width: '5rem', className: WIDE_ONLY, headerClassName: WIDE_ONLY, render: (p) => <span className="text-primary">{p.actionCount}</span> },
   {
     key: 'env',
     header: 'Environments',
+    className: WIDE_ONLY,
+    headerClassName: WIDE_ONLY,
     render: (p) => (
       <span className="inline-flex flex-wrap gap-1">
         {p.environments.map((e) => (
@@ -130,7 +135,7 @@ export const LIST_COLUMNS: TableColumn<ProviderSummary>[] = [
     key: 'slo',
     header: 'SLO',
     width: '9rem',
-    render: (p) => (p.slo ? <Mono className="text-secondary">{`${percent(p.slo.successRate, { digits: 1 })} · ${duration(p.slo.p95Ms)}`}</Mono> : <span className="text-tertiary">none</span>),
+    render: (p) => (p.slo ? <Mono className="whitespace-nowrap text-secondary">{`${percent(p.slo.successRate, { digits: 1 })} · ${duration(p.slo.p95Ms)}`}</Mono> : <span className="text-tertiary">none</span>),
   },
 ]
 
