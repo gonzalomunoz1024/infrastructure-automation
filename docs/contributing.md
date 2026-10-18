@@ -17,7 +17,8 @@ scripts/dev.sh
 
 # config as code checks (what CI runs)
 npm run check:workflows                                 # packages/workflow-checks over workflows/, providers/, resource-types/
-npm run lint:playbooks                                  # ansible-lint on every pinned git playbook, at its commit (pip install ansible-lint)
+npm run lint:playbooks                                  # ansible-lint on every pinned git playbook, at its commit (pip install ansible-lint);
+                                                        # GITLEAKS=<gitleaks> also scans each pinned source for secrets
 cd backend && mvn -B -q test -Dtest=SampleWorkflowsDryRunTest   # every sample workflow dry-runs against its recorded samples
 ```
 

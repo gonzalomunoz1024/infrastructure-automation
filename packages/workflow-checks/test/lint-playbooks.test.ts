@@ -95,7 +95,9 @@ describe('lint-playbooks', () => {
   let first = '';
   const lintLog = join(temp, 'lint.log');
   const fakeLint = join(temp, 'bin', 'ansible-lint');
-  const env = (exitCode = 0): NodeJS.ProcessEnv => ({ ...process.env, ANSIBLE_LINT: fakeLint, FAKE_LINT_EXIT: String(exitCode), GITHUB_ACTIONS: '' });
+  const fakeLeaks = join(temp, 'bin', 'gitleaks');
+  const leaksLog = join(temp, 'gitleaks.log');
+  const env = (exitCode = 0): NodeJS.ProcessEnv => ({ ...process.env, ANSIBLE_LINT: fakeLint, FAKE_LINT_EXIT: String(exitCode), GITHUB_ACTIONS: '', GITLEAKS: '' });
 
   beforeAll(() => {
     repo = join(temp, 'origin');
@@ -110,6 +112,8 @@ describe('lint-playbooks', () => {
     git(repo, 'commit', '-q', '-m', 'second');
     write('bin/ansible-lint', `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ansible-lint 0.0.0"; exit 0; fi\necho "$(pwd) $*" >> '${lintLog}'\nexit "\${FAKE_LINT_EXIT:-0}"\n`);
     chmodSync(fakeLint, 0o755);
+    write('bin/gitleaks', `#!/bin/sh\necho "$*" >> '${leaksLog}'\nexit "\${FAKE_LEAKS_EXIT:-0}"\n`);
+    chmodSync(fakeLeaks, 0o755);
   });
 
   function content(name: string, path: string, commit: string, repoUrl = `file://${repo}`): string {
@@ -129,6 +133,7 @@ describe('lint-playbooks', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatch(/\/lint-playbooks-[^/]+\/0 site\/restart\.yml$/);
     expect(lines[lines.length - 1]).toBe('Linted 1 playbook from 1 source: 0 failures, 0 skipped.');
+    expect(lines).toContain('notice: the pinned sources are not scanned for secrets: set GITLEAKS to a gitleaks executable');
     rmSync(lintLog);
   });
 
@@ -143,13 +148,27 @@ describe('lint-playbooks', () => {
     rmSync(lintLog, { force: true });
   });
 
+  it('scans each fetched source for secrets when GITLEAKS names gitleaks', () => {
+    const root = content('secrets', 'site/restart.yml', first);
+    const clean: string[] = [];
+
+    expect(main([root, '--allow-file-urls'], (l) => clean.push(l), { ...env(), GITLEAKS: fakeLeaks })).toBe(0);
+    expect(readFileSync(leaksLog, 'utf8').trim()).toMatch(/^dir --redact --verbose --no-banner --exit-code 1 \/.*\/lint-playbooks-[^/]+\/0$/);
+    expect(clean.join('\n')).not.toContain('not scanned for secrets');
+
+    const found: string[] = [];
+    expect(main([root, '--allow-file-urls'], (l) => found.push(l), { ...env(), GITLEAKS: fakeLeaks, FAKE_LEAKS_EXIT: '1' })).toBe(1);
+    expect(found).toContain(`error: gitleaks found secrets in file://${repo}@${first.slice(0, 12)} (pinned by workflows/w.yaml @fixIt)`);
+    rmSync(lintLog, { force: true });
+  });
+
   it('skips a source it cannot fetch with a notice and without ansible-lint', () => {
     const root = content('unreachable', 'site/restart.yml', 'c'.repeat(40), `file://${join(temp, 'nowhere')}`);
     const lines: string[] = [];
 
     expect(main([root, '--allow-file-urls'], (l) => lines.push(l), { ...env(), ANSIBLE_LINT: join(temp, 'not-installed') })).toBe(0);
 
-    expect(lines[0]).toMatch(/^notice: skipped file:\/\/.*\/nowhere@cccccccccccc \(pinned by workflows\/w\.yaml @fixIt\): could not fetch it: /);
+    expect(lines.find((l) => l.startsWith('notice: skipped'))).toMatch(/^notice: skipped file:\/\/.*\/nowhere@cccccccccccc \(pinned by workflows\/w\.yaml @fixIt\): could not fetch it: /);
     expect(lines[lines.length - 1]).toBe('Linted 0 playbooks from 0 sources: 0 failures, 1 skipped.');
   });
 
@@ -159,6 +178,6 @@ describe('lint-playbooks', () => {
 
     expect(main([root, '--allow-file-urls'], (l) => lines.push(l), { ...env(), ANSIBLE_LINT: join(temp, 'not-installed'), GITHUB_ACTIONS: 'true' })).toBe(1);
 
-    expect(lines[0]).toBe(`::error title=lint-playbooks::${join(temp, 'not-installed')} is not installed (pip install ansible-lint)`);
+    expect(lines).toContain(`::error title=lint-playbooks::${join(temp, 'not-installed')} is not installed (pip install ansible-lint)`);
   });
 });

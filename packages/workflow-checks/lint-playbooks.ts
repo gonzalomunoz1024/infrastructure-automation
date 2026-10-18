@@ -5,7 +5,9 @@
  * kept in the content repository itself (`playbooks/`) are linted in place. A source that cannot
  * be fetched (unreachable, private, a commit the remote does not have) is skipped with a notice,
  * like the unpinned and uploaded playbooks; a pinned playbook missing at its commit or a lint
- * failure fails the run. `scripts/lint-playbooks.mjs` at the repository root runs it.
+ * failure fails the run. With GITLEAKS naming a gitleaks executable, the files of each fetched
+ * source are also scanned for secrets, and a finding fails the run. `scripts/lint-playbooks.mjs`
+ * at the repository root runs it.
  */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -20,6 +22,8 @@ export interface LintOptions {
   /** The ansible-lint executable. */
   ansibleLint: string;
   git: string;
+  /** gitleaks, to scan each fetched source for secrets; null skips the scan. */
+  gitleaks: string | null;
   /** Tests only: accept `file://` repositories. */
   allowFileUrls: boolean;
   /** GitHub workflow commands for notices and errors (`::notice::`). */
@@ -117,9 +121,23 @@ export function lintPlaybooks(o: LintOptions): LintSummary {
     }
   };
 
+  const scanSecrets = (dir: string, what: string): void => {
+    const r = run(o.gitleaks ?? 'gitleaks', ['dir', '--redact', '--verbose', '--no-banner', '--exit-code', '1', dir], o.root, o.env, LINT_TIMEOUT_MS, true);
+    if (r.error !== undefined) {
+      error(`gitleaks could not scan ${what}: ${r.error.message}`);
+      summary.failed++;
+    } else if (r.status !== 0) {
+      error(`gitleaks found secrets in ${what}`);
+      summary.failed++;
+    }
+  };
+
   if (local.length > 0) {
     summary.sources++;
     lint(o.root, local, 'playbooks/');
+  }
+  if (o.gitleaks === null && pins.length > 0) {
+    notice('the pinned sources are not scanned for secrets: set GITLEAKS to a gitleaks executable');
   }
   const work = mkdtempSync(join(tmpdir(), 'lint-playbooks-'));
   try {
@@ -133,6 +151,9 @@ export function lintPlaybooks(o: LintOptions): LintSummary {
         return;
       }
       summary.sources++;
+      if (o.gitleaks !== null) {
+        scanSecrets(dir, `${at} (pinned by ${pin.from.join(', ')})`);
+      }
       const missing = pin.playbooks.filter((p) => !existsSync(join(dir, p)));
       for (const p of missing) {
         error(`${at} has no ${p} (pinned by ${pin.from.join(', ')})`);
@@ -149,11 +170,12 @@ export function lintPlaybooks(o: LintOptions): LintSummary {
   return summary;
 }
 
-/** `lint-playbooks [root] [--allow-file-urls]`; ANSIBLE_LINT and GIT name the executables. The exit code. */
+/** `lint-playbooks [root] [--allow-file-urls]`; ANSIBLE_LINT, GIT and GITLEAKS name the executables. The exit code. */
 export function main(argv: readonly string[], write: (line: string) => void = (line) => console.log(line), env: NodeJS.ProcessEnv = process.env): number {
   if (argv.includes('-h') || argv.includes('--help')) {
     write('Usage: lint-playbooks [root] [--allow-file-urls]');
     write('Runs ansible-lint on every git playbook the content of <root> pins, at its commit, and on <root>/playbooks.');
+    write('ANSIBLE_LINT, GIT and GITLEAKS name the executables; with GITLEAKS each pinned source is scanned for secrets.');
     return 0;
   }
   const args = argv.filter((a) => !a.startsWith('-'));
@@ -161,6 +183,7 @@ export function main(argv: readonly string[], write: (line: string) => void = (l
     root: resolve(args[0] ?? process.cwd()),
     ansibleLint: env['ANSIBLE_LINT'] ?? 'ansible-lint',
     git: env['GIT'] ?? 'git',
+    gitleaks: env['GITLEAKS'] !== undefined && env['GITLEAKS'].trim() !== '' ? env['GITLEAKS'] : null,
     allowFileUrls: argv.includes('--allow-file-urls'),
     annotate: env['GITHUB_ACTIONS'] === 'true',
     env,
