@@ -161,11 +161,28 @@ type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successR
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
 type ProviderDetail = ProviderSummary & { yaml; actions: ActionInfo[]; daily: { date; calls; successRate; p50Ms; p95Ms }[];
   perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
-type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean }
+type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;
+  effectDetail?; recorded?: { environment; at } }
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[] }
-type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean }
+type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean;
+  environment; at; yaml? }   // yaml: the draft with the response saved as the action's sample, when the call went through
+type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
+  slo?: { successRate; p95Ms; observedP95Ms; calls; detail } }   // slo is a suggestion, never enforced
 ```
+
+The review judges a provider file against what the platform itself saw in the wizard, kept per
+provider name: the Test connection results sent with `provider`, and every Try it call. Its checks
+come after the file's own checks on the change request:
+
+| Check | Fails when |
+|-------|------------|
+| `connection` | the last Test connection to `dev` or to `test` (the ones the provider declares; its first environment when it has neither) is missing, failed, or used another endpoint or credential reference than the file has now. A missing `test` endpoint is a warning. openapi and http providers only |
+| `tried` | an action never answered when tried against `dev` (its first environment without one). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
+| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it. A tried error that no class matches, or no error classes at all, is a warning |
+| `preview` | a destructive action has neither a `plan` action nor an `effectDetail` line |
+| `responses` | an action's last real response still disagrees with its schema after the `overrides` |
+| `slo-suggested` | never: it suggests `p95Ms` as 1.5 times the tried calls' p95, rounded up to 50 ms (at least 100), and warns when the file's p95 is below what the tries took |
 
 | Method | Path                                      | Body / Returns |
 |--------|-------------------------------------------|----------------|
@@ -173,10 +190,10 @@ type TryResult = { ok: boolean; status; durationMs; response; mismatches: { fiel
 | GET    | `/providers/{name}`                       | `ProviderDetail` |
 | GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? }` → `SpecImport` (200) |
-| POST   | `/providers:test-connection`              | `{ endpoints; auth }` → `{ results: { environment; ok; durationMs; message }[] }` (200). Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
-| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200) |
-| POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[] }` (200) |
-| POST   | `/providers:publish`                      | `{ yaml; strategy? }` → `CommandAccepted` (change request id) |
+| POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
+| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted` |
+| POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
+| POST   | `/providers:publish`                      | `{ yaml; strategy? }` → `CommandAccepted` (change request id). 409 with the problems when the file has errors or the review is not ready; the change request carries both sets of checks |
 | POST   | `/providers:draft`                        | `{ description }` → `{ yaml; summary; assumptions[] }` (Ask Devin, `!provider-draft`) |
 | POST   | `/providers/{name}/overrides`             | `{ action; response }` → `CommandAccepted` |
 | PUT    | `/providers/{name}/slo`                   | `{ successRate; p95Ms; channel }` → `CommandAccepted` |

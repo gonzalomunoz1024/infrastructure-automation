@@ -1,10 +1,13 @@
 package com.iaf.platform.providers.application;
 
 import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -33,7 +36,10 @@ import com.iaf.platform.providers.domain.ProviderChecks;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
+import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
+import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TextDiff;
 import com.iaf.platform.providers.domain.TryResult;
@@ -41,10 +47,12 @@ import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.workflows.domain.ChangeRequest;
+import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
@@ -53,6 +61,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The Add provider wizard's backend and the admin edits. Publishing opens a change request; the
@@ -70,6 +79,9 @@ public class ProviderCommandHandler implements ProviderCommands {
     public static final String UPDATED_EVENT = "provider.updated";
     public static final String CHANGE_REQUESTED_EVENT = "provider.change-requested";
 
+    /** What a secret-looking field of a recorded sample becomes in the provider file. */
+    public static final String REDACTED = "vault:redacted";
+
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final Set<String> STRATEGIES = Set.of("canary", "all");
 
@@ -80,6 +92,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final HttpProbePort http;
     private final EventBus events;
     private final Clock clock;
+    private final ReviewEvidencePort evidence;
 
     @PostConstruct
     void listen() {
@@ -115,13 +128,22 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<ConnectionResult.Results> testConnection(TestConnection command) {
-        return Flux.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Flux.defer(() -> {
             if (command == null || command.endpoints() == null || command.endpoints().isEmpty()) {
                 throw new IllegalArgumentException("endpoints is required: one URL per environment");
             }
+            String provider = command.provider() == null || command.provider().isBlank() ? null : command.provider().trim();
+            if (provider != null) {
+                ContentFiles.requireSlug("The provider name", provider);
+            }
             Auth auth = authOf(command.auth());
-            return Flux.fromIterable(command.endpoints().entrySet()).flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth));
-        }).collectList().map(ConnectionResult.Results::new);
+            return Flux.fromIterable(command.endpoints().entrySet()).flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth)
+                    .flatMap(r -> provider == null ? Mono.just(r) : blocking(() -> {
+                        evidence.recordConnection(provider, new ConnectionTest(r.environment(), e.getValue() == null ? null : e.getValue().trim(),
+                                auth.credential(), r.ok(), r.durationMs(), r.message(), clock.instant(), who.id()));
+                        return r;
+                    })));
+        }).collectList().map(ConnectionResult.Results::new));
     }
 
     private Mono<ConnectionResult> probe(String environment, String url, Auth auth) {
@@ -135,7 +157,7 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<TryResult> tryAction(TryAction command) {
-        return Mono.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Mono.defer(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
@@ -152,13 +174,69 @@ public class ProviderCommandHandler implements ProviderCommands {
             return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false))
                     .flatMap(response -> {
                         long ms = elapsedMs(started);
-                        List<Mismatch> mismatches = Schemas.mismatches(effectiveOutput(def, action), response);
-                        return verify(def, action, environment, input)
-                                .map(v -> new TryResult(true, 200, ms, response, mismatches, v.orElse(null)));
+                        List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
+                        return verify(def, action, environment, input).map(v -> {
+                            Instant at = clock.instant();
+                            return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
+                                    withSample(command.yaml(), action.id(), response, environment, at));
+                        });
                     })
-                    .onErrorResume(ProviderCallException.class, e -> Mono.just(
-                            new TryResult(false, e.status() > 0 ? e.status() : 502, elapsedMs(started), errorBody(e), List.of(), null)));
-        });
+                    .onErrorResume(ProviderCallException.class, e -> Mono.just(new TryResult(false, e.status() > 0 ? e.status() : 502,
+                            elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
+                    .flatMap(result -> blocking(() -> {
+                        evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
+                                result.ok() ? null : result.response().path("error").path("class").asText(null),
+                                result.ok() ? result.response() : null, result.verified(), result.at(), who.id()));
+                        return result;
+                    }));
+        }));
+    }
+
+    /**
+     * The provider draft with a real response saved as the action's sample (the answer dry runs
+     * give), where it came from in {@code recorded}, and secret-looking fields kept out of the file.
+     * Null when the draft is not a provider mapping with that action.
+     */
+    static String withSample(String yaml, String actionId, JsonNode response, String environment, Instant at) {
+        JsonNode root;
+        try {
+            root = WorkflowYaml.readTree(yaml);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (root == null || !root.isObject() || response == null) {
+            return null;
+        }
+        for (JsonNode a : root.path("spec").path("actions")) {
+            if (a.isObject() && actionId.equals(a.path("id").asText(null))) {
+                ObjectNode action = (ObjectNode) a;
+                action.set("sample", redacted(response));
+                ObjectNode recorded = action.putObject("recorded");
+                recorded.put("environment", environment);
+                recorded.put("at", at.toString());
+                return ProviderYaml.toYaml(root);
+            }
+        }
+        return null;
+    }
+
+    /** A copy with the values of secret-looking fields (token, password, api key...) replaced by {@value #REDACTED}. */
+    static JsonNode redacted(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        if (node.isObject()) {
+            ObjectNode out = F.objectNode();
+            node.fields().forEachRemaining(e -> out.set(e.getKey(), ProviderChecks.secretKey(e.getKey()) && e.getValue().isValueNode() && !e.getValue().isNull()
+                    ? F.textNode(REDACTED) : redacted(e.getValue())));
+            return out;
+        }
+        if (node.isArray()) {
+            com.fasterxml.jackson.databind.node.ArrayNode out = F.arrayNode();
+            node.forEach(v -> out.add(redacted(v)));
+            return out;
+        }
+        return node.deepCopy();
     }
 
     /** After a destructive try, the verify action proves the effect: {@code expect: notFound} means the thing is gone. */
@@ -186,18 +264,29 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<ValidationResult> validate(Validate command) {
-        return Mono.fromCallable(() -> {
+        return blocking(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
             ProviderChecks.Result r = ProviderChecks.check(command.yaml());
-            return new ValidationResult(r.checks(), r.problems());
+            return new ValidationResult(r.checks(), r.problems(), reviewOf(command.yaml()));
         });
+    }
+
+    /** The review of a provider file against what was proved for its name; null when the file cannot be read as a provider. */
+    ProviderReview.Result reviewOf(String yaml) {
+        ProviderDefinition def;
+        try {
+            def = ProviderYaml.parse(yaml);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        return ProviderReview.review(def, evidence.evidence(def.name()));
     }
 
     @Override
     public Mono<CommandAccepted> publish(Publish command) {
-        return CurrentIdentity.current().map(who -> {
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
@@ -224,11 +313,20 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (open) {
                 throw new ConflictException("A change request for provider " + def.name() + " " + version + " is already open");
             }
+            // the review step: what the wizard proved, judged by the platform (credentials work, every action tried...)
+            ProviderReview.Result review = ProviderReview.review(def, evidence.evidence(def.name()));
+            if (!review.ready()) {
+                int n = review.errors().size();
+                throw new ConflictException("The provider's review has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published",
+                        review.errors());
+            }
+            List<Check> all = new ArrayList<>(checks.checks());
+            all.addAll(review.checks());
             String path = pathOf(def);
             String diff = TextDiff.unified(current.map(StoredProvider::yaml).orElse(null), command.yaml(), path);
             String id = Ids.next("cr");
             ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
-                    "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, checks.checks(), strategy, command.yaml(), diff,
+                    "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, command.yaml(), diff,
                     clock.instant(), null, null, null);
             changeRequests.save(cr);
             ObjectNode data = F.objectNode();
@@ -238,7 +336,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             data.put("by", who.id());
             events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
             return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id));
-        });
+        }));
     }
 
     @Override
@@ -398,12 +496,9 @@ public class ProviderCommandHandler implements ProviderCommands {
         return environment;
     }
 
-    static JsonNode effectiveOutput(ProviderDefinition def, Action action) {
-        JsonNode override = def.override(action.id());
-        if (override != null && override.has("response")) {
-            return Schemas.merge(action.output(), override.get("response"));
-        }
-        return action.output();
+    /** Work that may block (stores, change requests, the GitHub API) runs on the bounded elastic scheduler. */
+    static <T> Mono<T> blocking(Callable<T> work) {
+        return Mono.fromCallable(work).subscribeOn(Schedulers.boundedElastic());
     }
 
     static ObjectNode errorBody(ProviderCallException e) {

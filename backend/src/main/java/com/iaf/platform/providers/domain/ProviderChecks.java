@@ -91,6 +91,11 @@ public final class ProviderChecks {
         return problems.stream().anyMatch(Problem::isError);
     }
 
+    /** A field name that holds a secret (password, token, api key...): its value never goes in a provider file. */
+    public static boolean secretKey(String key) {
+        return key != null && SECRET_KEY.matcher(key).find();
+    }
+
     private static final class Checker {
         final JsonNode root;
         final List<Problem> problems = new ArrayList<>();

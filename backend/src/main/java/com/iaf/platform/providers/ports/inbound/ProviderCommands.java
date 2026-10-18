@@ -8,6 +8,7 @@ import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.providers.domain.ConnectionResult;
+import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TryResult;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
@@ -24,8 +25,14 @@ public interface ProviderCommands {
     record ImportSpec(String type, String url, String content) {
     }
 
-    /** {@code auth} is the provider file's auth block: {@code { type, credential, header }}. */
-    record TestConnection(Map<String, String> endpoints, JsonNode auth) {
+    /**
+     * {@code auth} is the provider file's auth block: {@code { type, credential, header }}. With
+     * {@code provider} (the provider's name) the results are recorded as review evidence.
+     */
+    record TestConnection(Map<String, String> endpoints, JsonNode auth, String provider) {
+        public TestConnection(Map<String, String> endpoints, JsonNode auth) {
+            this(endpoints, auth, null);
+        }
     }
 
     record TryAction(String yaml, String action, String environment, JsonNode input) {
@@ -34,7 +41,15 @@ public interface ProviderCommands {
     record Validate(String yaml) {
     }
 
-    record ValidationResult(List<Check> checks, List<Problem> problems) {
+    /**
+     * {@code checks} and {@code problems} judge the file ({@code valid} is about them alone);
+     * {@code review} judges it against what the wizard proved and gates the publish.
+     */
+    record ValidationResult(List<Check> checks, List<Problem> problems, ProviderReview.Result review) {
+        public ValidationResult(List<Check> checks, List<Problem> problems) {
+            this(checks, problems, null);
+        }
+
         public boolean valid() {
             return problems.stream().noneMatch(Problem::isError);
         }

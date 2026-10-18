@@ -152,6 +152,8 @@ spec:
       operation: getVm        # operationId in the spec (openapi); or { method, path } (http)
       effect: read            # read | create | change | delete
       retry: safe             # safe | unsafe
+      sample: { id: vm-1, name: web, powerState: poweredOn }   # what dry runs answer; Try it saves the real response here
+      recorded: { environment: dev, at: "2026-10-17T10:00:00Z" } # where and when that response came from
     - id: vm.delete
       title: Delete VM
       operation: deleteVm
@@ -159,6 +161,7 @@ spec:
       retry: unsafe
       approval: required      # delete defaults to required
       plan: vm.get            # preview via another action
+      effectDetail: Deletes the VM and its disks   # or one plain line the preview shows instead of a plan
       verify: { action: vm.get, expect: notFound }   # after a destructive try, prove it worked
   overrides:                  # fixes from real responses; the vendor spec is never edited
     vm.get:
@@ -169,6 +172,12 @@ spec:
   slo: { successRate: 99.5, p95Ms: 800 }
   alerts: { channel: "#compute-alerts" }
 ```
+
+Before a new version is published, the wizard's review checks the file against what the platform
+saw: the connection to dev and test passed with these endpoints and this credential, every action
+answered when tried against dev, every error class has a match rule, every delete has a `plan`
+or an `effectDetail`, and no real response still disagrees with its schema after the
+`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
 
 Type-specific `spec` blocks:
 

@@ -61,7 +61,17 @@ public record ProviderDefinition(
             JsonNode example,          // http without a spec: one example response
             String playbook,           // ansible
             JsonNode vars,             // ansible/terraform: variables that become inputs
-            String description) {
+            String description,
+            String effectDetail,       // one line the preview shows when there is no plan action
+            JsonNode recorded) {       // where the sample came from: { environment, at }
+
+        /** An action without a declared effect detail or a recorded sample origin. */
+        public Action(String id, String title, String operation, String method, String path, Effect effect, boolean retrySafe,
+                boolean approvalRequired, String plan, Verify verify, JsonNode input, JsonNode output, JsonNode sample, JsonNode example,
+                String playbook, JsonNode vars, String description) {
+            this(id, title, operation, method, path, effect, retrySafe, approvalRequired, plan, verify, input, output, sample, example,
+                    playbook, vars, description, null, null);
+        }
 
         public boolean destructive() {
             return effect != null && effect.destructive();
@@ -116,5 +126,14 @@ public record ProviderDefinition(
     /** The override block for an action, or null. */
     public JsonNode override(String action) {
         return spec.overrides() == null ? null : spec.overrides().get(action);
+    }
+
+    /** The output schema calls are judged against: the declared one with the action's override merged in. */
+    public JsonNode effectiveOutput(Action action) {
+        JsonNode override = override(action.id());
+        if (override != null && override.has("response")) {
+            return com.iaf.platform.common.schema.Schemas.merge(action.output(), override.get("response"));
+        }
+        return action.output();
     }
 }

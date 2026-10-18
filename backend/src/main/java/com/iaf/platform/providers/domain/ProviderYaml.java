@@ -83,8 +83,10 @@ public final class ProviderYaml {
             boolean approval = a.has("approval") ? !"none".equals(a.get("approval").asText()) && !"false".equals(a.get("approval").asText()) : effect.destructive();
             JsonNode v = a.get("verify");
             Verify verify = v != null && v.isObject() ? new Verify(text(v, "action"), text(v, "expect")) : null;
+            JsonNode recorded = a.get("recorded");
             actions.add(new Action(id, text(a, "title"), operation, method, path, effect, retrySafe, approval, text(a, "plan"), verify,
-                    a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description")));
+                    a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description"),
+                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null));
         }
         Map<String, JsonNode> overrides = new LinkedHashMap<>();
         s.path("overrides").fields().forEachRemaining(e -> overrides.put(e.getKey(), e.getValue()));
@@ -170,6 +172,7 @@ public final class ProviderYaml {
             if (a.effect() != null) {
                 o.put("effect", a.effect().json());
             }
+            put(o, "effectDetail", a.effectDetail());
             o.put("retry", a.retrySafe() ? "safe" : "unsafe");
             if (a.approvalRequired()) {
                 o.put("approval", "required");
@@ -194,6 +197,9 @@ public final class ProviderYaml {
             }
             if (a.sample() != null) {
                 o.set("sample", a.sample());
+            }
+            if (a.recorded() != null) {
+                o.set("recorded", a.recorded());
             }
             put(o, "description", a.description());
         }

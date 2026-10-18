@@ -38,7 +38,10 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
+import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.Draft;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.ImportSpec;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.Publish;
@@ -55,6 +58,7 @@ import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.workflows.domain.ChangeRequest;
+import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
 import reactor.core.publisher.Mono;
@@ -94,7 +98,10 @@ class ProviderCommandHandlerTest {
                   effect: delete
                   retry: unsafe
                   approval: required
+                  plan: vm.get
                   verify: { action: vm.get, expect: notFound }
+              errors:
+                - { match: { status: 404 }, class: not_found, retry: false }
               slo: { successRate: 99.5, p95Ms: 800 }
               alerts: { channel: "#compute-alerts" }
             """;
@@ -107,6 +114,7 @@ class ProviderCommandHandlerTest {
     HttpProbePort http;
     EventBus events;
     List<DomainEvent> published;
+    InMemoryReviewEvidence evidence;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -119,7 +127,8 @@ class ProviderCommandHandlerTest {
         events = new EventBus(CLOCK);
         published = new ArrayList<>();
         events.register(published::add);
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK);
+        evidence = new InMemoryReviewEvidence();
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence);
         handler.listen();
     }
 
@@ -149,6 +158,14 @@ class ProviderCommandHandlerTest {
 
     Optional<DomainEvent> event(String type) {
         return published.stream().filter(e -> e.type().equals(type)).findFirst();
+    }
+
+    /** What the wizard would have proved for the fleet provider: dev answers and both actions were tried there. */
+    void proven() {
+        evidence.recordConnection("fleet", new ConnectionTest("dev", "https://fleet-dev.example.com", "vault:fleet/token", true, 12, "HEAD 200 in 12 ms", NOW, "mateo"));
+        evidence.recordTry("fleet", new ActionTry("vm.get", "dev", true, 200, 120, null,
+                json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\"}"), null, NOW, "mateo"));
+        evidence.recordTry("fleet", new ActionTry("vm.delete", "dev", true, 200, 300, null, json("{}"), true, NOW, "mateo"));
     }
 
     // ---------------------------------------------------------------- import spec
@@ -212,7 +229,73 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(handler.testConnection(new TestConnection(Map.of(), null))).expectError(IllegalArgumentException.class).verify();
     }
 
+    @Test
+    void aConnectionTestForANamedProviderIsKeptAsReviewEvidence() {
+        when(http.probe(eq("https://fleet-dev.example.com"), any())).thenReturn(Mono.just(new ProbeResult(true, 12, "HEAD 200 in 12 ms")));
+        when(http.probe(eq("https://fleet-test.example.com"), any())).thenReturn(Mono.just(new ProbeResult(false, 30, "HEAD 401")));
+        Map<String, String> endpoints = new LinkedHashMap<>();
+        endpoints.put("dev", "https://fleet-dev.example.com ");
+        endpoints.put("test", "https://fleet-test.example.com");
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, json("{\"type\":\"bearer\",\"credential\":\"vault:fleet/token\"}"), "fleet")), OWNER))
+                .expectNextCount(1)
+                .verifyComplete();
+        List<ConnectionTest> recorded = evidence.evidence("fleet").connections();
+        assertThat(recorded).extracting(ConnectionTest::environment).containsExactly("dev", "test");
+        assertThat(recorded.get(0).endpoint()).isEqualTo("https://fleet-dev.example.com");
+        assertThat(recorded.get(0).credential()).isEqualTo("vault:fleet/token");
+        assertThat(recorded.get(0).ok()).isTrue();
+        assertThat(recorded.get(1).ok()).isFalse();
+        assertThat(recorded.get(1).message()).isEqualTo("HEAD 401");
+        assertThat(recorded).allMatch(c -> "mateo".equals(c.by()) && NOW.equals(c.at()));
+        // without a provider name nothing is recorded, and a bad name is refused
+        StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null))).expectNextCount(1).verifyComplete();
+        assertThat(evidence.evidence("fleet").connections()).hasSize(2);
+        StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null, "Fleet API"))).expectError(IllegalArgumentException.class).verify();
+    }
+
     // ---------------------------------------------------------------- try it
+
+    @Test
+    void aTryThatAnswersSavesTheResponseAsTheActionsSampleInTheDraft() {
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\",\"apiToken\":\"s3cr3t\"}")));
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", json("{\"id\":\"vm-1\"}"))), OWNER))
+                .assertNext(r -> {
+                    assertThat(r.ok()).isTrue();
+                    assertThat(r.environment()).isEqualTo("dev");
+                    assertThat(r.at()).isEqualTo(NOW);
+                    var action = ProviderYaml.parse(r.yaml()).action("vm.get").orElseThrow();
+                    assertThat(action.sample().path("name").asText()).isEqualTo("web");
+                    assertThat(action.sample().path("apiToken").asText()).as("secrets stay out of the file").isEqualTo("vault:redacted");
+                    assertThat(action.recorded().path("environment").asText()).isEqualTo("dev");
+                    assertThat(action.recorded().path("at").asText()).isEqualTo("2026-10-17T10:00:00Z");
+                    assertThat(r.yaml()).doesNotContain("s3cr3t");
+                    assertThat(r.response().path("apiToken").asText()).as("the caller still sees the real answer").isEqualTo("s3cr3t");
+                })
+                .verifyComplete();
+        ActionTry t = evidence.evidence("fleet").tries().get(0);
+        assertThat(t.action()).isEqualTo("vm.get");
+        assertThat(t.environment()).isEqualTo("dev");
+        assertThat(t.ok()).isTrue();
+        assertThat(t.response().path("name").asText()).isEqualTo("web");
+        assertThat(t.by()).isEqualTo("mateo");
+    }
+
+    @Test
+    void aFailedTryIsEvidenceWithoutASample() {
+        when(calls.call(any())).thenReturn(Mono.error(new ProviderCallException("not_found", "no such vm", false, 404)));
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", json("{\"id\":\"vm-9\"}"))), OWNER))
+                .assertNext(r -> {
+                    assertThat(r.ok()).isFalse();
+                    assertThat(r.yaml()).isNull();
+                    assertThat(r.environment()).isEqualTo("dev");
+                })
+                .verifyComplete();
+        ActionTry t = evidence.evidence("fleet").tries().get(0);
+        assertThat(t.ok()).isFalse();
+        assertThat(t.status()).isEqualTo(404);
+        assertThat(t.errorClass()).isEqualTo("not_found");
+        assertThat(t.response()).isNull();
+    }
 
     @Test
     void triesAnActionForRealAndReportsTheMismatches() {
@@ -303,12 +386,50 @@ class ProviderCommandHandlerTest {
                 .verifyComplete();
     }
 
+    @Test
+    void validationCarriesTheReviewNextToTheFileChecks() {
+        StepVerifier.create(handler.validate(new Validate(YAML)))
+                .assertNext(r -> {
+                    assertThat(r.valid()).as("the file itself is fine").isTrue();
+                    assertThat(r.review().ready()).isFalse();
+                    assertThat(r.review().errors()).extracting(Problem::code)
+                            .containsExactly("connection.untested", "action.untried", "action.untried");
+                    assertThat(r.review().slo()).isNull();
+                })
+                .verifyComplete();
+        proven();
+        StepVerifier.create(handler.validate(new Validate(YAML)))
+                .assertNext(r -> {
+                    assertThat(r.review().ready()).isTrue();
+                    assertThat(r.review().slo().p95Ms()).isEqualTo(450);
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.validate(new Validate("kind: [")))
+                .assertNext(r -> assertThat(r.review()).as("no review of a file that is not a provider").isNull())
+                .verifyComplete();
+    }
+
+    @Test
+    void publishingWithoutProofIsRefusedWithTheReviewProblems() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.all()).thenReturn(List.of());
+        StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OWNER))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ConflictException.class).hasMessage("The provider's review has 3 problems to fix before it can be published");
+                    assertThat(((ConflictException) e).detail()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.list(Problem.class))
+                            .extracting(Problem::code).containsExactly("connection.untested", "action.untried", "action.untried");
+                })
+                .verify();
+        verify(changeRequests, never()).save(any());
+    }
+
     // ---------------------------------------------------------------- publish
 
     @Test
     void publishingOpensAChangeRequestWithTheChecksAndTheDiff() {
         when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
         when(changeRequests.all()).thenReturn(List.of());
+        proven();
         StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OWNER))
                 .assertNext(accepted -> {
                     assertThat(accepted.id()).startsWith("cr_");
@@ -327,7 +448,10 @@ class ProviderCommandHandlerTest {
         assertThat(cr.author()).isEqualTo("mateo");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
         assertThat(cr.strategy()).isEqualTo("all");
-        assertThat(cr.checks()).hasSize(5).allMatch(c -> "passed".equals(c.status()));
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "spec-pinned", "credentials", "actions", "slo",
+                "connection", "tried", "errors", "preview", "responses", "slo-suggested");
+        assertThat(cr.checks()).allMatch(c -> "passed".equals(c.status()));
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("tried")).extracting(Check::detail).containsExactly("2 of 2 actions answered in dev");
         assertThat(cr.yaml()).isEqualTo(YAML);
         assertThat(cr.diff()).startsWith("--- a/providers/team-compute/fleet.yaml\n+++ b/providers/team-compute/fleet.yaml\n");
         assertThat(cr.diff()).contains("-metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.0.0 }");
@@ -342,6 +466,7 @@ class ProviderCommandHandlerTest {
     void aNewProviderDiffsAgainstNothing() {
         when(store.get("fleet")).thenReturn(Optional.empty());
         when(changeRequests.all()).thenReturn(List.of());
+        proven();
         StepVerifier.create(as(handler.publish(new Publish(YAML, "canary")), OWNER)).expectNextCount(1).verifyComplete();
         ArgumentCaptor<ChangeRequest> captor = ArgumentCaptor.forClass(ChangeRequest.class);
         verify(changeRequests).save(captor.capture());
