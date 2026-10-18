@@ -114,4 +114,29 @@ abstract class TelemetryContract {
         assumeTrue(after != null, "this store does not outlive the process");
         assertThat(after.samples("vsphere", null)).containsExactly(s);
     }
+
+    /** A call served by a known provider version, which a provider canary's gates judge by. */
+    static CallSample served(Instant at, String providerVersion, boolean ok, long ms) {
+        return new CallSample(at, "fleet", "vm.get", "prod", ok, ms, ok ? null : "unavailable", "job_7", "vm-restart", "1.2.0", providerVersion);
+    }
+
+    @Test
+    void keepsTheProviderVersionThatServedEachCall() {
+        TelemetryPort telemetry = store();
+        CallSample candidate = served(NOW.minusSeconds(3), "1.1.0", true, 120);
+        CallSample current = served(NOW.minusSeconds(2), "1.0.0", false, 900);
+        CallSample unknown = served(NOW.minusSeconds(1), null, true, 80);
+        telemetry.record(candidate);
+        telemetry.record(current);
+        telemetry.record(unknown);
+        telemetry.record(new CallSample(null, "fleet", "vm.get", "prod", true, 5, null, null, null, null, "1.1.0"));
+
+        List<CallSample> fleet = telemetry.samples("fleet", NOW.minusSeconds(10));
+        assertThat(fleet).containsExactly(candidate, current, unknown, new CallSample(NOW, "fleet", "vm.get", "prod", true, 5, null, null, null, null, "1.1.0"));
+        assertThat(fleet).extracting(CallSample::providerVersion).containsExactly("1.1.0", "1.0.0", null, "1.1.0");
+
+        TelemetryPort after = reopen();
+        assumeTrue(after != null, "this store does not outlive the process");
+        assertThat(after.samples("fleet", NOW.minusSeconds(10))).isEqualTo(fleet);
+    }
 }

@@ -64,6 +64,33 @@ class JdbcProviderStoreTest {
             store.delete("echo");
             assertThat(other.get("echo")).isEmpty();
         }
+
+        @Test
+        void anotherInstanceSeesAKeptVersionAtOnce() throws Exception {
+            write(ECHO);
+            ProviderStorePort store = newStore(props(content, false));
+            ProviderStorePort other = reopen(props(content, false));
+            assertThat(other.versions("echo")).hasSize(1);
+            StoredProvider candidate = echo("1.1.0", "ana");
+            store.saveVersion(candidate);
+            assertThat(other.version("echo", "1.1.0")).contains(candidate);
+            assertThat(other.get("echo").map(StoredProvider::updatedBy)).contains("content");
+        }
+
+        @Test
+        void aDatabaseWrittenBeforeVersionsWereKeptListsTheCurrentVersion() throws Exception {
+            write(ECHO);
+            ProviderStorePort store = newStore(props(content, false));
+            db().jdbc().update("DELETE FROM provider_versions");
+            db().jdbc().bump(JdbcProviderStore.STORE);
+            StoredProvider current = store.get("echo").orElseThrow();
+            assertThat(store.versions("echo")).containsExactly(current);
+            assertThat(store.version("echo", "1.0.0")).contains(current);
+
+            store.saveVersion(echo("1.1.0", "ana"));
+            assertThat(versionsOf(store.versions("echo"))).containsExactly("1.1.0", "1.0.0");
+            assertThat(store.version("echo", "1.0.0")).contains(current);
+        }
     }
 
     @Nested

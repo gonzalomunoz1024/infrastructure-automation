@@ -19,6 +19,8 @@ import com.iaf.platform.releases.ports.outbound.ReleaseStore;
 /**
  * The releases of the {@code postgres} profile: one row per release in {@code releases}, newest
  * first (started at, then id), the active ones (canary or paused) found by their status column.
+ * A workflow release is found by its {@code workflow} column, a provider release by its
+ * {@code provider} column; {@link #list(String)} with no workflow returns both kinds, as in memory.
  */
 @Component
 @Primary
@@ -41,10 +43,12 @@ public class JdbcReleaseStore implements ReleaseStore {
     public Release save(Release release) {
         String status = release.status() == null ? null : release.status().json();
         String doc = jdbc.json(release);
-        jdbc.upsert("UPDATE releases SET workflow = ?, status = ?, started_at = ?, started_ns = ?, doc = ? WHERE id = ?",
-                new Object[] {release.workflow(), status, Jdbc.time(release.startedAt()), Jdbc.nanos(release.startedAt()), doc, release.id()},
-                "INSERT INTO releases (id, workflow, status, started_at, started_ns, doc) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                new Object[] {release.id(), release.workflow(), status, Jdbc.time(release.startedAt()), Jdbc.nanos(release.startedAt()), doc});
+        jdbc.upsert("UPDATE releases SET workflow = ?, provider = ?, status = ?, started_at = ?, started_ns = ?, doc = ? WHERE id = ?",
+                new Object[] {release.workflow(), release.provider(), status, Jdbc.time(release.startedAt()), Jdbc.nanos(release.startedAt()), doc,
+                        release.id()},
+                "INSERT INTO releases (id, workflow, provider, status, started_at, started_ns, doc) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                new Object[] {release.id(), release.workflow(), release.provider(), status, Jdbc.time(release.startedAt()), Jdbc.nanos(release.startedAt()),
+                        doc});
         return release;
     }
 
@@ -62,13 +66,33 @@ public class JdbcReleaseStore implements ReleaseStore {
     }
 
     @Override
+    public List<Release> listProvider(String provider) {
+        if (provider == null) {
+            return List.of();
+        }
+        return newestFirst(jdbc.query("SELECT doc FROM releases WHERE provider = ?", (rs, i) -> read(rs.getString(1)), provider));
+    }
+
+    @Override
     public List<Release> active() {
         return newestFirst(jdbc.query("SELECT doc FROM releases WHERE " + ACTIVE, (rs, i) -> read(rs.getString(1))));
     }
 
     @Override
     public Optional<Release> active(String workflow) {
+        if (workflow == null) {
+            return Optional.empty();
+        }
         return newestFirst(jdbc.query("SELECT doc FROM releases WHERE workflow = ? AND " + ACTIVE, (rs, i) -> read(rs.getString(1)), workflow))
+                .stream().findFirst();
+    }
+
+    @Override
+    public Optional<Release> activeProvider(String provider) {
+        if (provider == null) {
+            return Optional.empty();
+        }
+        return newestFirst(jdbc.query("SELECT doc FROM releases WHERE provider = ? AND " + ACTIVE, (rs, i) -> read(rs.getString(1)), provider))
                 .stream().findFirst();
     }
 

@@ -84,7 +84,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
-| `ReviewEvidencePort`    | a persistent store (planned)           | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded) |
+| `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
@@ -114,13 +114,14 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 |----------------------------------|-----------------------|--------|
 | `WorkflowStorePort` (workflows)  | `JdbcWorkflowStore`   | `workflow_versions` |
 | `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
-| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers` |
-| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` |
+| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
+| `ReviewEvidencePort` (providers) | `JdbcReviewEvidence`  | `review_evidence` |
+| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` (workflow and provider releases) |
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
 | `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
 | `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
-| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` |
+| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 
 A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
@@ -132,6 +133,15 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   content; one changed through the platform is never reset. Resource types are rewritten from
   their files at every start. Reads come from a copy of the table that is reloaded when
   `store_revisions` shows a write from any instance.
+- A provider's current version is its `providers` row; every version saved since the database
+  was made, the current one among them, is also a `provider_versions` row, so a canary candidate
+  (`ProviderStorePort.saveVersion`) is kept beside the current version, routed to by its release,
+  and survives a restart until it is promoted and saved as current. The versions read newest
+  first, as in memory, and a kept version is never written back to the content repo until it is current.
+- Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
+  is one `review_evidence` row per result, with the in-memory bounds: the last 50 connection
+  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body. A row
+  holds endpoints, credential references and responses, never a credential value.
 - Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
   deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
   triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,
@@ -144,7 +154,9 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
   fan-out (SSE, WebSocket) stays in memory.
 - Provider-call samples are queued, and a background thread writes them in batches, so recording
-  never waits for the database (a read writes the queue first). Samples older than
+  never waits for the database (a read writes the queue first). Each row keeps the provider
+  version that served the call, so a provider canary's gates judge the candidate's calls against
+  the current version's after a restart too. Samples older than
   `platform.persistence.telemetry-retention` (30 days) are deleted every hour and never served.
 - The demo history (`platform.demo.seed-history`) is written once per database (`store_seeds`).
   A later start finds it claimed and turns the switch off before any seeder runs.

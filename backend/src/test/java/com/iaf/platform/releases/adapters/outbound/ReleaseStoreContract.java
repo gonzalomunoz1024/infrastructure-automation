@@ -140,4 +140,60 @@ abstract class ReleaseStoreContract {
         assumeTrue(after != null, "this store does not outlive the process");
         assertThat(after.active("vm-restart")).contains(canary);
     }
+
+    // ---------------------------------------------------------------- provider releases
+
+    /** A canary of a provider version: no workflow, gates that count calls. */
+    static Release providerCanary(String id, String provider, Instant startedAt) {
+        return Release.canary(id, null, "1.0.0", "1.1.0", STAGES, startedAt, "mateo").forProvider(provider);
+    }
+
+    @Test
+    void aProviderReleaseHasNoWorkflowAndIsFoundByItsProvider() {
+        Release first = Release.promotedAtOnce("rel_fleet0", null, null, "1.0.0", null, NOW.minusSeconds(120), "first version takes every call", "mateo")
+                .forProvider("fleet");
+        Release canary = providerCanary("rel_fleet1", "fleet", NOW.minusSeconds(60));
+        Release other = providerCanary("rel_vault1", "vault", NOW.minusSeconds(30));
+        Release workflow = canary("rel_wf", "vm-restart", NOW);
+        store.save(first);
+        store.save(canary);
+        store.save(other);
+        store.save(workflow);
+
+        assertThat(store.find("rel_fleet1")).contains(canary);
+        assertThat(store.find("rel_fleet1").orElseThrow().workflow()).isNull();
+        assertThat(store.list(null)).extracting(Release::id).containsExactly("rel_wf", "rel_vault1", "rel_fleet1", "rel_fleet0");
+        assertThat(store.list("vm-restart")).containsExactly(workflow);
+        assertThat(store.list("fleet")).as("a provider is not a workflow").isEmpty();
+        assertThat(store.listProvider("fleet")).containsExactly(canary, first);
+        assertThat(store.listProvider("vault")).containsExactly(other);
+        assertThat(store.listProvider("vm-restart")).isEmpty();
+        assertThat(store.listProvider(null)).isEmpty();
+        assertThat(store.active()).extracting(Release::id).containsExactly("rel_wf", "rel_vault1", "rel_fleet1");
+        assertThat(store.active("vm-restart")).contains(workflow);
+        assertThat(store.active("fleet")).isEmpty();
+        assertThat(store.activeProvider("fleet")).contains(canary);
+        assertThat(store.activeProvider("vault")).contains(other);
+        assertThat(store.activeProvider("vm-restart")).isEmpty();
+        assertThat(store.activeProvider(null)).isEmpty();
+    }
+
+    @Test
+    void theNewestActiveReleaseDecidesForItsProvider() {
+        store.save(providerCanary("rel_older", "fleet", NOW.minusSeconds(60)));
+        store.save(providerCanary("rel_newer", "fleet", NOW));
+        store.save(providerCanary("rel_done", "fleet", NOW.plusSeconds(1)).rolledBack(NOW.plusSeconds(2), "superseded by 1.2.0", "mateo"));
+        assertThat(store.activeProvider("fleet")).map(Release::id).contains("rel_newer");
+        assertThat(store.listProvider("fleet")).extracting(Release::id).containsExactly("rel_done", "rel_newer", "rel_older");
+    }
+
+    @Test
+    void keepsAProviderReleaseAcrossARestart() {
+        Release canary = store.save(providerCanary("rel_fleet1", "fleet", NOW));
+        ReleaseStore after = reopen();
+        assumeTrue(after != null, "this store does not outlive the process");
+        assertThat(after.find("rel_fleet1")).contains(canary);
+        assertThat(after.activeProvider("fleet")).contains(canary);
+        assertThat(after.list(null)).containsExactly(canary);
+    }
 }

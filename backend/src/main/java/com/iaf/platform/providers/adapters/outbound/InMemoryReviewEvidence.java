@@ -50,8 +50,7 @@ public class InMemoryReviewEvidence implements ReviewEvidencePort {
         if (provider == null || tryResult == null) {
             return;
         }
-        ActionTry kept = tooLarge(tryResult) ? new ActionTry(tryResult.action(), tryResult.environment(), tryResult.ok(), tryResult.status(),
-                tryResult.durationMs(), tryResult.errorClass(), null, tryResult.verified(), tryResult.at(), tryResult.by()) : tryResult;
+        ActionTry kept = bounded(tryResult);
         Deque<ActionTry> q = tries.computeIfAbsent(provider, k -> new ArrayDeque<>());
         synchronized (q) {
             q.addLast(kept);
@@ -67,6 +66,11 @@ public class InMemoryReviewEvidence implements ReviewEvidencePort {
             return ReviewEvidence.NONE;
         }
         return new ReviewEvidence(snapshot(connections.get(provider)), snapshot(tries.get(provider)));
+    }
+
+    /** A try as every store keeps it: without its body when the response is over {@value #MAX_RESPONSE_BYTES} bytes. */
+    static ActionTry bounded(ActionTry t) {
+        return tooLarge(t) ? new ActionTry(t.action(), t.environment(), t.ok(), t.status(), t.durationMs(), t.errorClass(), null, t.verified(), t.at(), t.by()) : t;
     }
 
     private static <T> List<T> snapshot(Deque<T> q) {
