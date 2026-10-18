@@ -15,6 +15,7 @@ import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -22,7 +23,6 @@ import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
 import com.iaf.platform.identity.ports.outbound.UserDirectory;
-import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
@@ -99,7 +99,7 @@ public class IdentityWebFilter implements WebFilter {
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7).trim();
             if (token.startsWith("iaf_")) {
-                return Mono.just(serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> {
+                return Mono.just(serviceAccounts.byTokenHash(Hashes.sha256(token)).map(a -> {
                     exchange.getAttributes().put(ServiceScopes.ATTRIBUTE, a.grantedScopes());
                     return a.identity();
                 }));

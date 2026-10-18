@@ -89,6 +89,8 @@ public final class Scopes {
             rule("POST", "/providers/" + ID + "/overrides", PROVIDERS_WRITE),
             rule("PUT", "/providers/" + ID + "/slo", PROVIDERS_WRITE),
             rule("POST", "/providers/" + ID + ":refresh-spec", PROVIDERS_WRITE),
+            // the list holds names, types and owners, never a value: a read like GET /registry/credentials
+            rule("GET", "/credentials", REGISTRY_READ),
             rule("*", "/credentials", PROVIDERS_WRITE));
 
     private static final Pattern VERSIONED = Pattern.compile("^/api/v\\d+(/.*)?$");

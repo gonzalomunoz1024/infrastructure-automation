@@ -24,8 +24,8 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | Method | Path                      | Returns |
 |--------|---------------------------|---------|
 | GET    | `/me`                     | `{ id, name, email, teams: string[], roles: string[], admin: boolean }` |
-| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` |
-| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes }` (token shown once; admin only) |
+| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` (admin only; 403 otherwise) |
+| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes, teams, note? }` (token shown once; admin only). `teams` are the teams the account acts for: without any it takes its creator's, and `note` says so (or, when the creator has none either, that the policy refuses every job it starts) |
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
@@ -45,13 +45,13 @@ in it. An unknown scope or preset is a 400. People are judged by roles and teams
 
 | Scope | Allows |
 |-------|--------|
-| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; generated resource reads; MCP `tools/list` and the resource tools |
+| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; the credential list (`GET /credentials`: names, types and owners, never a value); generated resource reads; MCP `tools/list` and the resource tools |
 | `workflows:validate` | `/workflows:validate`, `:parse`, `:render`, `:replay-check` and `/providers:validate` |
 | `workflows:dry-run` | `/workflows:dry-run` |
 | `workflows:write` | creating, importing, editing, deleting and publishing workflows; merging and closing change requests; assistant sessions and drafts; the MCP draft tool |
 | `jobs:start` | starting jobs (`/jobs`, `/jobs:batch`, generated routes, the MCP invoke, batch and cancel tools), steering them (cancel, retry, skip, abort, rerun) and `/triggers/*` |
 | `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails; the job WebSocket; the MCP job status tool |
-| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and `/credentials` |
+| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and storing credentials (`POST /credentials`) |
 | `admin` | everything, and makes the account an admin; an endpoint the table does not name needs it |
 
 `/me`, `/mcp` (each tool is judged on its own) and GET `/actuator/*` need no scope.

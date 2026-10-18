@@ -8,9 +8,9 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
-import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 /** What every {@link ServiceAccountStore} does, in memory and in a database. */
 abstract class ServiceAccountStoreContract {
@@ -24,7 +24,7 @@ abstract class ServiceAccountStoreContract {
     abstract ServiceAccountStore reopen();
 
     static ServiceAccount account(String id, String token, Instant createdAt) {
-        return new ServiceAccount(id, "agent " + id, List.of("ops"), List.of("team-compute", "team-data"), WorkflowYaml.sha256(token), createdAt);
+        return new ServiceAccount(id, "agent " + id, List.of("ops"), List.of("team-compute", "team-data"), Hashes.sha256(token), createdAt);
     }
 
     @Test
@@ -34,8 +34,8 @@ abstract class ServiceAccountStoreContract {
         store.save(agent);
         store.save(account("sa_2", "iaf_secret-two", NOW.plusNanos(1)));
 
-        assertThat(store.byTokenHash(WorkflowYaml.sha256("iaf_secret-one"))).contains(agent);
-        assertThat(store.byTokenHash(WorkflowYaml.sha256("iaf_unknown"))).isEmpty();
+        assertThat(store.byTokenHash(Hashes.sha256("iaf_secret-one"))).contains(agent);
+        assertThat(store.byTokenHash(Hashes.sha256("iaf_unknown"))).isEmpty();
         assertThat(store.byTokenHash("iaf_secret-one")).as("the token itself finds nothing").isEmpty();
     }
 
@@ -57,8 +57,8 @@ abstract class ServiceAccountStoreContract {
         ServiceAccount rotated = account("sa_1", "iaf_new", NOW);
         store.save(rotated);
         assertThat(store.all()).containsExactly(rotated);
-        assertThat(store.byTokenHash(WorkflowYaml.sha256("iaf_old"))).isEmpty();
-        assertThat(store.byTokenHash(WorkflowYaml.sha256("iaf_new"))).contains(rotated);
+        assertThat(store.byTokenHash(Hashes.sha256("iaf_old"))).isEmpty();
+        assertThat(store.byTokenHash(Hashes.sha256("iaf_new"))).contains(rotated);
     }
 
     @Test
@@ -68,7 +68,7 @@ abstract class ServiceAccountStoreContract {
         store.save(agent);
         ServiceAccountStore after = reopen();
         assumeTrue(after != null, "this store does not outlive the process");
-        assertThat(after.byTokenHash(WorkflowYaml.sha256("iaf_secret-one"))).contains(agent);
+        assertThat(after.byTokenHash(Hashes.sha256("iaf_secret-one"))).contains(agent);
         assertThat(after.all()).containsExactly(agent);
     }
 }

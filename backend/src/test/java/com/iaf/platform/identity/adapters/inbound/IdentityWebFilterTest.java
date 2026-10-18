@@ -16,6 +16,7 @@ import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.WebFilterChain;
 
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -24,7 +25,6 @@ import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
 import com.iaf.platform.identity.ports.outbound.UserDirectory;
-import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import reactor.core.publisher.Mono;
 
@@ -81,8 +81,8 @@ class IdentityWebFilterTest {
 
     @Test
     void aServiceAccountTokenResolvesToTheAccount() {
-        ServiceAccount account = new ServiceAccount("sa_ci", "ci-bot", List.of("ops"), List.of("team-compute"), WorkflowYaml.sha256("iaf_secret"), Instant.now());
-        when(accounts.byTokenHash(WorkflowYaml.sha256("iaf_secret"))).thenReturn(Optional.of(account));
+        ServiceAccount account = new ServiceAccount("sa_ci", "ci-bot", List.of("ops"), List.of("team-compute"), Hashes.sha256("iaf_secret"), Instant.now());
+        when(accounts.byTokenHash(Hashes.sha256("iaf_secret"))).thenReturn(Optional.of(account));
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
         Identity who = run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_secret").build()).who();
         assertThat(who).isEqualTo(account.identity());
@@ -91,9 +91,9 @@ class IdentityWebFilterTest {
 
     @Test
     void aServiceAccountsScopesGoAlongForTheScopeFilterAndTheCodeBehindIt() {
-        ServiceAccount account = new ServiceAccount("sa_devin", "devin", List.of(), List.of(), WorkflowYaml.sha256("iaf_devin"), Instant.now(),
+        ServiceAccount account = new ServiceAccount("sa_devin", "devin", List.of(), List.of(), Hashes.sha256("iaf_devin"), Instant.now(),
                 List.of("registry:read", "workflows:validate", "workflows:dry-run"));
-        when(accounts.byTokenHash(WorkflowYaml.sha256("iaf_devin"))).thenReturn(Optional.of(account));
+        when(accounts.byTokenHash(Hashes.sha256("iaf_devin"))).thenReturn(Optional.of(account));
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
         MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_devin").build());
         AtomicReference<Object> inContext = new AtomicReference<>();

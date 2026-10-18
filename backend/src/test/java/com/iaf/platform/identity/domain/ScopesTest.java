@@ -44,6 +44,9 @@ class ScopesTest {
         assertThat(scope("POST", "/api/v1/providers:publish")).isEqualTo(Scopes.PROVIDERS_WRITE);
         assertThat(scope("POST", "/api/v1/providers/vsphere:refresh-spec")).isEqualTo(Scopes.PROVIDERS_WRITE);
         assertThat(scope("PUT", "/api/v1/providers/vsphere/slo")).isEqualTo(Scopes.PROVIDERS_WRITE);
+        // listing credentials (names, types, owners; never a value) is a read, storing one a write
+        assertThat(scope("GET", "/api/v1/credentials")).isEqualTo(Scopes.REGISTRY_READ);
+        assertThat(scope("POST", "/api/v1/credentials")).isEqualTo(Scopes.PROVIDERS_WRITE);
     }
 
     @Test
