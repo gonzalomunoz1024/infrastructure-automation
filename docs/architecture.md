@@ -108,7 +108,12 @@ version a story says was live and adds the canary traffic, `DemoResources` deriv
 from the resource types and workflows, and `DemoReleaseSeed` records the releases last and judges
 their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode agrees with the
 others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
-platform code.
+platform code. The demo seeders read the sample content rather than naming it:
+`DemoTelemetrySeeder` gives every provider the registry has two weeks of background calls,
+drawn from its declared SLO and a deterministic hash of its name, and hands the failing hour,
+the slow p95 and the success rate under the SLO to whichever providers can show them whatever
+the draw; every sample carries the provider's version, so a provider release's gates have a
+baseline. A provider added to the content gets its traffic without a code change.
 
 ### Persistence
 
