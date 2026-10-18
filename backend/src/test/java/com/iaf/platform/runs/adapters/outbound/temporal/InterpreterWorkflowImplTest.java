@@ -416,6 +416,8 @@ class InterpreterWorkflowImplTest {
             assertThat(child.workflow()).isEqualTo("build-vm-image");
             assertThat(child.status()).isEqualTo(JobStatus.SUCCEEDED);
             assertThat(child.traceId()).isEqualTo(job.traceId());
+            assertThat(child.input().path("hardening").asText()).as("the child starts with its schema's defaults, as its own route would fill them").isEqualTo("cis-l1");
+            assertThat(child.step("registerBuilding").input().path("attributes").path("hardening").asText()).isEqualTo("cis-l1");
             assertThat(t.result(child.id()).registered()).as("the child workflow's result carries what it registered (building, then ready)")
                     .isNotEmpty().allSatisfy(r -> assertThat(r.type()).isEqualTo("image"))
                     .extracting(JobContext.Registered::id).containsOnly(t.result(child.id()).registered().get(0).id());

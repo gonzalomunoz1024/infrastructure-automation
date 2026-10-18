@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.config.PlatformProperties;
@@ -22,6 +23,7 @@ import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.application.PortStepExecutor;
 import com.iaf.platform.runs.application.StepExecutors;
+import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
@@ -200,7 +202,9 @@ public class StepActivitiesImpl implements StepActivities {
             throw new StepFailureData(stepId, timeout ? "timeout" : "error", timeout ? "Step " + stepId + " timed out" : msg, true, false)
                     .toApplicationFailure();
         }
-        Job job = JobFactory.child(parent.toJob(), child, input, clock.instant());
+        // the child gets its schema's defaults, as a start through its own route would
+        JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? JsonNodeFactory.instance.objectNode() : input);
+        Job job = JobFactory.child(parent.toJob(), child, in, clock.instant());
         projection.put(job);
         events.started(job);
         return job;
