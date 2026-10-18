@@ -23,12 +23,13 @@ import reactor.core.publisher.Mono;
 /**
  * The HTTP side of {@code platform.roles}. An instance without the api role serves the actuator
  * only (health, metrics), so a worker keeps its probes and its scrape target: every other request
- * answers 404 before any other filter or route sees it. The roles are checked when the context
+ * answers 404 before any other filter or route sees it (only {@code BlockingStoresWebFilter}, which
+ * moves the chain off the event loop under {@code postgres}, runs ahead of it). The roles are checked when the context
  * starts: an instance has at least one, and only the {@code temporal} engine can split them.
  */
 @Slf4j
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE)
+@Order(Ordered.HIGHEST_PRECEDENCE + 5)
 public class RoleWebFilter implements WebFilter {
 
     static final String WORKER_ONLY = "{\"error\":\"This instance has the worker role only; instances with the api role serve the API\"}";

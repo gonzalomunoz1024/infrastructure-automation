@@ -6,11 +6,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.OrderUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.env.MockEnvironment;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.WebFilterChain;
+
+import com.iaf.platform.common.adapters.jdbc.BlockingStoresWebFilter;
+import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 
 import reactor.core.publisher.Mono;
 
@@ -72,5 +77,14 @@ class RoleWebFilterTest {
     void theContextRefusesRolesThatCannotWork() {
         assertThatThrownBy(() -> new RoleWebFilter(new PlatformProperties(), new MockEnvironment().withProperty("platform.roles", "api")))
                 .isInstanceOf(IllegalStateException.class).hasMessageStartingWith("platform.roles [api] needs the temporal profile");
+    }
+
+
+    @Test
+    void itRunsRightAfterTheBlockingStoresFilterAndBeforeTheIdentityFilter() {
+        int role = OrderUtils.getOrder(RoleWebFilter.class, Ordered.LOWEST_PRECEDENCE);
+
+        assertThat(OrderUtils.getOrder(BlockingStoresWebFilter.class, Ordered.LOWEST_PRECEDENCE)).as("the chain moves off the event loop first").isLessThan(role);
+        assertThat(role).as("a worker-only instance answers before an identity is looked up").isLessThan(OrderUtils.getOrder(IdentityWebFilter.class, Ordered.LOWEST_PRECEDENCE));
     }
 }

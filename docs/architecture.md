@@ -186,7 +186,9 @@ Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners
 stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` from the
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
 The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
-that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`.
+that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`,
+first in the filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and
+generated-route filters).
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
 there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
 runs on a non-blocking thread, and the wiring test expects none.
