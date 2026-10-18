@@ -152,7 +152,7 @@ test.describe('jobs', () => {
 })
 
 test.describe('approvals', () => {
-  test('approving posts the decision with the comment and empties the queue', async ({ page }) => {
+  test('approving posts the decision with the comment and empties the queue, the preview in view', async ({ page }) => {
     let pending = [...APPROVALS]
     const api = await mockApi(page, {
       'GET /approvals': (req) => (req.query.get('status') === 'pending' ? pending : []),
@@ -163,6 +163,13 @@ test.describe('approvals', () => {
     })
     await page.goto('/#/approvals')
     await expect(page.getByText('Restart web-1042 in prod for a kernel patch.')).toBeVisible()
+    // what the approver decides on: the run's steps, what it touches and what policy said
+    const preview = page.getByTestId('preview-card')
+    await expect(preview).toBeVisible()
+    await expect(preview).toContainText('Needs approval')
+    await expect(preview).toContainText('Restart the VM')
+    await expect(preview.getByRole('link', { name: /web-1042/ })).toHaveAttribute('href', '#/resources/vm-1042')
+    await expect(preview).toContainText('Production changes need compute-approvers')
     await page.getByRole('textbox', { name: 'Comment' }).fill('Window agreed')
     await page.getByRole('button', { name: 'Approve', exact: true }).click()
     await expect(page.getByText('Nothing waiting for you')).toBeVisible()
