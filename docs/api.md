@@ -401,7 +401,8 @@ outside a job and every job while the release is paused use the current version.
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
 The commands need edit rights on the owner team of the release's workflow or provider; when it
-has none (the workflow or provider is gone, or names no owner) only an admin may. Release
+has none (the workflow or provider is gone, or names no owner) only an admin may. A rollback by
+hand says who, in the history and in the event's `reason` alike ("rolled back by Ana"). Release
 events (`release.started`, `release.stage`, `release.promoted`, `release.paused`,
 `release.resumed`, `release.rolled-back`) carry `{ releaseId; workflow | provider; from; to }`.
 

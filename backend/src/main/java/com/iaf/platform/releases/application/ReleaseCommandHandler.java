@@ -373,7 +373,7 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         return authorized(releaseId).map(a -> {
             Release r = requireActive(a.release(), "roll back");
             String reason = "rolled back by " + a.who().name();
-            Release done = store.save(r.rolledBack(clock.instant(), "rolled back", a.who().id()));
+            Release done = store.save(r.rolledBack(clock.instant(), reason, a.who().id()));
             events.publish("release.rolled-back", AGGREGATE, done.id(), a.who().id(), versions(done).put("reason", reason));
             return accepted(done);
         });

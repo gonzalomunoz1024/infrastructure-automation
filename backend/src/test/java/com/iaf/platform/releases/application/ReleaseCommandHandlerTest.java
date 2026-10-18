@@ -369,6 +369,7 @@ class ReleaseCommandHandlerTest {
         assertThat(r.stagePercent()).isZero();
         assertThat(r.endedAt()).isEqualTo(NOW);
         assertThat(only("release.rolled-back").data().get("reason").asText()).isEqualTo("rolled back by Mateo");
+        assertThat(r.history().get(1).event()).as("the history says who, as the event does").isEqualTo("rolled back by Mateo");
         assertThat(store.active("vm-restart")).isEmpty();
     }
 
