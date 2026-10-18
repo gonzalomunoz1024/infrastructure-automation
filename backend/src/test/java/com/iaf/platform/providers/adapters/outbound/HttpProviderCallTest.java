@@ -1,6 +1,7 @@
 package com.iaf.platform.providers.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,6 +35,7 @@ import com.iaf.platform.providers.adapters.outbound.HttpProviderCall.Operation;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.GitSourcePort;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.testing.LocalHttp;
@@ -219,6 +221,31 @@ class HttpProviderCallTest {
     }
 
     @Test
+    void anErrorRuleNamesTheStatusAndABodyTextOnlyNarrowsIt() {
+        ProviderDefinition p = ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: quotas, owner: team-compute, version: 1.0.0 }
+                spec:
+                  type: http
+                  endpoints: { dev: https://quotas.example.com }
+                  actions: [ { id: x.get, operation: { method: GET, path: /x }, effect: read, retry: safe } ]
+                  errors:
+                    - { match: { body: quota }, class: body_only, retry: true }
+                    - { match: { status: 400, body: quota }, class: quota_exceeded, retry: true }
+                    - { match: { status: 400 }, class: bad_input, retry: false }
+                """);
+        ProviderCallException quota = HttpProviderCall.classify(p, 400, "{\"error\":\"quota exceeded for project\"}");
+        assertThat(quota.errorClass()).isEqualTo("quota_exceeded");
+        assertThat(quota.retryable()).isTrue();
+        assertThat(HttpProviderCall.classify(p, 400, "{\"error\":\"name is required\"}").errorClass()).isEqualTo("bad_input");
+        // a rule without a status never matches (the review refuses it): the status decides
+        ProviderCallException server = HttpProviderCall.classify(p, 500, "quota service down");
+        assertThat(server.errorClass()).isEqualTo("server_error");
+        assertThat(HttpProviderCall.classify(p, 404, "quota").errorClass()).isEqualTo("not_found");
+    }
+
+    @Test
     void aRejectedCredentialIsUnauthorizedByDefault() {
         when(credentials.resolve("vault:fleet/token")).thenReturn(Mono.just("wrong"));
         StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)))
@@ -373,9 +400,57 @@ class HttpProviderCallTest {
         assertThat(input.isEmpty()).isTrue();
         ObjectNode body = (ObjectNode) json("{\"path\":\"databases/orders\",\"data\":{\"a\":1},\"limit\":5}");
         String post = HttpProviderCall.url("http://h", new Operation("POST", "/secret/data/{path}", Set.of("limit")), body);
-        assertThat(post).isEqualTo("http://h/secret/data/databases/orders?limit=5");
+        assertThat(post).isEqualTo("http://h/secret/data/databases%2Forders?limit=5");
         assertThat(body.fieldNames()).toIterable().containsExactly("data");
         assertThat(HttpProviderCall.queryNames("/jobs?target={target}&state={state}")).containsExactly("target", "state");
         assertThat(HttpProviderCall.queryNames("/jobs")).isEmpty();
+    }
+
+    @Test
+    void aPathParameterFillsOneSegmentAndNeverWalksOutOfThePath() {
+        Operation get = new Operation("GET", "/vms/{id}", Set.of());
+        assertThat(HttpProviderCall.url("http://h", get, (ObjectNode) json("{\"id\":\"a/b\"}"))).isEqualTo("http://h/vms/a%2Fb");
+        assertThat(HttpProviderCall.url("http://h", get, (ObjectNode) json("{\"id\":\"web..example\"}"))).isEqualTo("http://h/vms/web..example");
+        for (String escape : List.of("..", ".", "../admin", "a/../../other", "a/./b", "..\\admin", "x/..")) {
+            ObjectNode input = JSON.createObjectNode().put("id", escape);
+            assertThatThrownBy(() -> HttpProviderCall.url("http://h", get, input))
+                    .as(escape)
+                    .isInstanceOfSatisfying(ProviderCallException.class, e -> {
+                        assertThat(e.errorClass()).isEqualTo("invalid_input");
+                        assertThat(e.retryable()).isFalse();
+                        assertThat(e.getMessage()).contains("id");
+                    });
+        }
+        // a query value is not a path: it is encoded whole and may hold dots
+        ObjectNode query = (ObjectNode) json("{\"target\":\"../etc\",\"state\":\"a/b\"}");
+        assertThat(HttpProviderCall.url("http://h", new Operation("GET", "/jobs?target={target}&state={state}", Set.of()), query))
+                .isEqualTo("http://h/jobs?target=..%2Fetc&state=a%2Fb");
+    }
+
+    @Test
+    void aReviewCallReachesTheSystemButRecordsNoSample() {
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)).contextWrite(ReviewCall::with))
+                .assertNext(r -> assertThat(r.path("name").asText()).isEqualTo("web"))
+                .verifyComplete();
+        StepVerifier.create(call.call(callOf("vm.missing", "{}", false)).contextWrite(ReviewCall::with))
+                .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("not_found"))
+                .verify();
+        assertThat(hits).containsExactly("GET /api/vms/vm-1", "GET /api/missing");
+        verify(telemetry, never()).record(any());
+        // the same call outside a review is a run's call and lands in the telemetry
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false))).expectNextCount(1).verifyComplete();
+        verify(telemetry).record(any());
+    }
+
+    @Test
+    void anInputThatWouldLeaveThePathIsRefusedBeforeTheCredentialIsSent() {
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"../../admin\"}", false)))
+                .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("invalid_input"))
+                .verify();
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1/../../admin\"}", false)))
+                .expectError(ProviderCallException.class)
+                .verify();
+        assertThat(hits).isEmpty();
+        verify(telemetry, never()).record(any());
     }
 }

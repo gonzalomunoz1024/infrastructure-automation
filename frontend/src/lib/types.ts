@@ -44,9 +44,14 @@ export type Strategy = 'canary' | 'all'
 
 export type IdentityKind = 'user' | 'service' | 'system'
 export type Me = { id: string; name: string; email?: string; teams: string[]; roles: string[]; admin: boolean; kind?: IdentityKind }
-export type ServiceAccount = { id: string; name: string; roles: string[]; teams?: string[]; createdAt: string }
-export type CreateServiceAccount = { name: string; roles: string[]; teams?: string[] }
-export type ServiceAccountCreated = { id: string; token: string }
+/** What a service account may call; `admin` allows everything (docs/api.md, Identity). */
+export type ServiceAccountScope = 'registry:read' | 'workflows:validate' | 'workflows:dry-run' | 'workflows:write' | 'jobs:start' | 'jobs:read' | 'providers:write' | 'admin'
+/** A named scope set: `invoker` (what an account created without scopes gets), `assistant` (the builder agent's token), `ci`. */
+export type ServiceAccountPreset = 'invoker' | 'assistant' | 'ci'
+export type ServiceAccount = { id: string; name: string; roles: string[]; teams?: string[]; createdAt: string; scopes?: ServiceAccountScope[] }
+/** `scopes` given with a `preset` must fit in it; neither means the `invoker` set. */
+export type CreateServiceAccount = { name: string; roles: string[]; teams?: string[]; scopes?: ServiceAccountScope[]; preset?: ServiceAccountPreset }
+export type ServiceAccountCreated = { id: string; token: string; scopes?: ServiceAccountScope[] }
 
 /* ----------------------------------------------------------------------------
    Workflows
@@ -101,7 +106,7 @@ export type StepRetry = { maxAttempts?: number; backoff?: string }
 
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
 
-export type CheckStatus = 'passed' | 'failed' | 'skipped'
+export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning'
 export type Check = { id: string; label: string; status: CheckStatus; detail?: string }
 
 export type ChangeRequestStatus = 'open' | 'merged' | 'closed'
@@ -207,7 +212,17 @@ export type CatalogEntry = {
   version: string
   description?: string
   batch: { max: number; rollout: Rollout }
+  /** The operation still answers, with Deprecation, Sunset and Link headers (docs/api.md, Calls that start jobs). */
+  deprecated?: Deprecation
 }
+/** `since` and `sunset` are dates (YYYY-MM-DD or ISO date-times); `replacement` is the successor's path. */
+export type Deprecation = { since: string; sunset: string; replacement?: string; message?: string }
+/**
+ * What a call that starts jobs sends besides its input: `version` pins the call to exactly that
+ * published or retired version (`X-Workflow-Version`, no canary split), `idempotencyKey` makes the
+ * same request answer the same job again (`Idempotency-Key`, scoped to the caller).
+ */
+export type RunOptions = { version?: string; idempotencyKey?: string }
 export type RunAccepted = { jobId: string; status: 'queued'; links: { job: string } }
 export type BatchRequest = { items: Record<string, unknown>[]; defaults?: Record<string, unknown>; rollout?: Rollout }
 export type BatchAccepted = { jobId: string; rows: BatchRow[] }
@@ -278,7 +293,7 @@ export type JobStep = {
 }
 
 export type AttentionOption = 'retry' | 'edit-input' | 'skip' | 'abort'
-export type Attention = { step: string; error: string; options: AttentionOption[]; since: string; timeout: string }
+export type Attention = { step: string; error?: JobStepError; options: AttentionOption[]; since: string; timeout: string }
 
 export type BatchRow = { index: number; input: Record<string, unknown>; jobId?: string; status: string; error?: string }
 export type BatchWave = { index: number; percent: number; size: number; status: string; startedAt?: string; endedAt?: string }
@@ -314,6 +329,8 @@ export type JobDetail = JobSummary & {
   traceId: string
   /** where the engine's own tools show the job: its execution in the Temporal UI on the temporal engine with a UI URL */
   links?: { temporal?: string }
+  /** true when the call pinned `version` (`X-Workflow-Version`, `?version=` or the body's `version`), skipping the canary split; absent when the backend does not say */
+  pinned?: boolean
 }
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'
@@ -379,6 +396,10 @@ export type ActionInfo = {
   output: Schema
   sample?: unknown
   overridden: boolean
+  /** the line a destructive action shows before it runs, when it has no plan action */
+  effectDetail?: string
+  /** where the sample came from: the Try it call that recorded it */
+  recorded?: { environment: string; at: string }
 }
 /** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
 export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
@@ -395,6 +416,7 @@ export type ProviderDetail = ProviderSummary & {
   endpoints: Record<string, string>
   /** how it signs in; the credential is a vault: name, never a value */
   auth?: ProviderAuth
+  description?: string
   yaml: string
   actions: ActionInfo[]
   daily: ProviderDaily[]
@@ -420,9 +442,38 @@ export type SpecImport = {
   auth: { type: string; where?: string }
   servers: string[]
   operations: SpecOperation[]
+  /** the commit a spec read from Git came from; it goes in the file's spec.commit */
+  commit?: string
 }
-export type SpecImportRequest = { type: 'openapi'; url?: string; content?: string }
-export type TestConnectionRequest = { endpoints: Record<string, string>; auth: ProviderAuth }
+/** A file in a Git repository: https `repo`, `ref` a branch, tag or commit (default main), `credential` the `vault:` reference of a read token. */
+export type GitRef = { repo: string; ref?: string; path?: string; credential?: string }
+export type SpecImportRequest = { type: 'openapi'; url?: string; content?: string; git?: GitRef }
+/** POST /providers:import-ansible: the playbooks of a repository at a ref, as an ansible provider draft. */
+export type AnsibleImportRequest = { git: GitRef; playbooks?: string[]; name?: string; owner?: string; credential?: string; executionEnvironment?: string }
+export type ImportedPlaybook = {
+  path: string
+  action: string
+  title: string
+  effect: Effect
+  roles: string[]
+  vars: Schema
+  /** where each input came from */
+  sources: Record<string, string>
+  /** variables kept out of vars: the runner gives them from Vault */
+  secrets: string[]
+  description?: string
+  notes: string[]
+}
+export type AnsibleImport = { repo: string; ref: string; commit: string; playbooks: ImportedPlaybook[]; chosen: string[]; requirements: string[]; skipped: string[]; notes: string[]; yaml: string }
+/** POST /providers:import-terraform: a module from Git or from the module registry, as a terraform provider draft. */
+export type TerraformImportRequest = { git?: GitRef; registry?: { module: string; version?: string; credential?: string }; name?: string; owner?: string; credential?: string }
+export type TerraformVariable = { name: string; type: string; required: boolean; sensitive: boolean; secret: boolean; description?: string; default?: unknown; file: string }
+export type TerraformOutput = { name: string; description?: string; sensitive: boolean; file: string }
+export type TerraformImport = { source: string; version: string; commit?: string; notes: string[]; yaml: string; variables: TerraformVariable[]; outputs: TerraformOutput[] }
+/** One of the two imports, as the wizard reviews it. */
+export type ProviderImport = { kind: 'ansible'; result: AnsibleImport } | { kind: 'terraform'; result: TerraformImport }
+/** `provider` (the provider's name) keeps the results as review evidence for its change request. */
+export type TestConnectionRequest = { endpoints: Record<string, string>; auth: ProviderAuth; provider?: string }
 export type TestConnectionResult = { results: { environment: string; ok: boolean; durationMs: number; message: string }[] }
 export type TryRequest = { yaml: string; action: string; environment: string; input: Record<string, unknown> }
 export type TryResult = {
@@ -432,10 +483,21 @@ export type TryResult = {
   response: unknown
   mismatches: { field: string; expected: unknown; actual: unknown }[]
   verified?: boolean
+  environment?: string
+  at?: string
+  /** the draft with the response saved as the action's sample, when the call went through */
+  yaml?: string
 }
-export type ProviderValidation = { checks: Check[]; problems: Problem[] }
+/** What the review suggests as the SLO, from the tried calls; never enforced. */
+export type SloSuggestion = { successRate: number; p95Ms: number; observedP95Ms: number; calls: number; detail: string }
+/** The review of a provider file against the wizard's own evidence (test connections, tries), as the change request shows it. */
+export type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[]; slo?: SloSuggestion | null }
+/** `review` is null when the file is not a provider. */
+export type ProviderValidation = { checks: Check[]; problems: Problem[]; review?: ProviderReview | null }
 export type ProviderDraft = { yaml: string; summary: string; assumptions: string[] }
 export type OverrideRequest = { action: string; response: Record<string, unknown> }
+/** POST /providers/{name}:refresh-spec: read the spec again, at `ref` for a Git spec or from `content` for a pasted one. */
+export type RefreshSpecRequest = { ref?: string; content?: string }
 
 /* ----------------------------------------------------------------------------
    Releases
@@ -443,9 +505,14 @@ export type OverrideRequest = { action: string; response: Record<string, unknown
 
 export type ReleaseStatus = 'canary' | 'paused' | 'promoted' | 'rolled-back'
 export type ReleaseGate = { id: string; label: string; passed: boolean | null; value?: number | string; threshold?: number | string; detail: string }
+/** What GET /releases lists without a name: a kind of release (`workflow` is the default). */
+export type ReleaseKind = 'workflow' | 'provider' | 'all'
+export type ReleaseFilter = { workflow?: string; provider?: string; kind?: ReleaseKind }
+/** A release rolls out a workflow version (`workflow`) or a provider version (`provider`); a provider release's gates count calls. */
 export type Release = {
   id: string
-  workflow: string
+  workflow?: string
+  provider?: string
   from?: string
   to: string
   strategy: Strategy
@@ -481,9 +548,46 @@ export type EvidenceRecord = {
 }
 export type AuditSummary = { jobId: string; workflow: string; requester: string; channel: JobChannel; at: string; entries: number; status: JobStatus }
 export type AuditFilter = { workflow?: string; from?: string; to?: string; requester?: string }
-export type AuditVerification = { valid: boolean; entries: number; brokenAt?: number }
+export type SealStatus = 'verified' | 'mismatch' | 'unverifiable'
+export type AuditVerification = {
+  valid: boolean
+  entries: number
+  brokenAt?: number
+  seal?: SealStatus
+  seals?: { kind: 'checkpoint' | 'seal'; at: string; seq?: number; keyId: string; status: SealStatus }[]
+}
+/** GET /audit/platform: the commands that are not about a job (publishes, change requests, provider changes, service accounts...). */
+export type PlatformAuditFilter = { from?: string; to?: string; aggregate?: string; actor?: string }
+/** The platform stream, oldest first; each entry's `data` carries `event`, `aggregate` and `aggregateId`. */
+export type PlatformStream = { entries: EvidenceEntry[]; total: number; latestHash: string; verification: AuditVerification }
 export type ShareLink = { url: string; expiresAt: string }
 export type SealResult = { sealedAt: string; signature: string }
+
+/* ----------------------------------------------------------------------------
+   Notifications
+   ------------------------------------------------------------------------- */
+
+export type NotificationKind = 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated'
+export type NotificationSeverity = 'info' | 'warning' | 'critical'
+/** One message for people: `link` is a path in the UI (`/jobs/job_123`); `read` is the caller's own. */
+export type Notification = {
+  id: string
+  at: string
+  kind: NotificationKind
+  severity: NotificationSeverity
+  title: string
+  message: string
+  link?: string
+  channel?: string
+  jobId?: string
+  workflow?: string
+  provider?: string
+  users: string[]
+  teams: string[]
+  read: boolean
+}
+/** GET /notifications: what was addressed to the caller or one of their teams, newest first. */
+export type Inbox = { items: Notification[]; unread: number }
 
 /* ----------------------------------------------------------------------------
    Resources
@@ -535,8 +639,10 @@ export type AssistantDraft = {
   validation: { valid: boolean; rounds?: number; errors?: string[] }
   dryRun?: { passed?: boolean; path?: string[]; error?: string }
 }
+/** The `validation` event: the platform's checks on the draft, on their steps, as the designer lists them. */
+export type AssistantValidation = { valid: boolean; problems: Problem[] }
 export type AssistantMessage = { role: 'user' | 'assistant'; text: string; at?: string }
-export type AssistantSession = { sessionId: string; status: string; draft?: AssistantDraft; history: AssistantMessage[] }
+export type AssistantSession = { sessionId: string; mode?: AssistantMode; workflow?: string; status: string; draft?: AssistantDraft; history: AssistantMessage[]; createdAt?: string; updatedAt?: string }
 
 /* ----------------------------------------------------------------------------
    Platform (actuator)

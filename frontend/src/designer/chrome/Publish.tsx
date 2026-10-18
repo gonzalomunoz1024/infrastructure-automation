@@ -153,7 +153,7 @@ function CheckRow({ check }: { check: Check }) {
 
 function Merged({ cr, workflow }: { cr: ChangeRequestDetail; workflow: string }) {
   const [found, setFound] = useState(false)
-  const releases = useQuery(['releases', workflow], () => api.releases(workflow), { refetchInterval: found ? undefined : 3000 })
+  const releases = useQuery(['releases', workflow], () => api.releases({ workflow }), { refetchInterval: found ? undefined : 3000 })
   const release: Release | undefined = releases.data?.find((r) => r.to === cr.version)
   // the poll stops once the release is there (adjusted during render, React's derived-state pattern)
   if (release && !found) setFound(true)

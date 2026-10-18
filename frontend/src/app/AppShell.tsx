@@ -20,7 +20,8 @@ import {
 import { Link, navigate, pathFor, useRoute, type PageProps, type Route, type RouteName } from './router'
 import { NAV_GROUPS, PAGE_ITEMS, PARENT_ROUTE, navIdFor } from './nav'
 import { BrandLockup } from './BrandMark'
-import { api, isApiError, useCurrentUser } from '../lib/api'
+import { NotificationsBell } from './Notifications'
+import { OPENAPI_URL, api, isApiError, useCurrentUser } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { JobSummary } from '../lib/types'
 
@@ -63,6 +64,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   approvals: ApprovalsPage,
   providers: ProvidersPage,
   'provider-new': ProviderWizardPage,
+  'provider-edit': ProviderWizardPage,
   provider: ProviderPage,
   resources: ResourcesPage,
   resource: ResourcePage,
@@ -217,9 +219,10 @@ function Shell() {
                   </span>
                 </Tooltip>
               )}
+              <NotificationsBell />
               <Tooltip label="API reference" side="bottom">
                 <a
-                  href="/api/v1/openapi.json"
+                  href={OPENAPI_URL}
                   target="_blank"
                   rel="noreferrer"
                   aria-label="API reference"

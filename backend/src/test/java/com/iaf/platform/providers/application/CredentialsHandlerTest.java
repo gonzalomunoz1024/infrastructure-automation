@@ -34,6 +34,7 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 
 class CredentialsHandlerTest {
@@ -213,6 +214,25 @@ class CredentialsHandlerTest {
         storeAnswers();
         // the draft does not count as a use, so the credential is still unclaimed
         StepVerifier.create(as(handler.storeCredential(new StoreCredential("ssh/dba", "ssh-key", "x")), MATEO)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void theStoreReadsRunOffTheThreadTheVaultAnsweredOn() {
+        List<String> threads = new ArrayList<>();
+        when(providers.all()).thenAnswer(inv -> {
+            threads.add("providers " + Thread.currentThread().getName());
+            return List.of();
+        });
+        when(workflows.all()).thenAnswer(inv -> {
+            threads.add("workflows " + Thread.currentThread().getName());
+            return List.of();
+        });
+        // a real vault answers on an event-loop thread; here the parallel scheduler stands in for it
+        when(port.info("fleet/token")).thenReturn(Mono.just(info("fleet/token", "team-compute")).publishOn(Schedulers.parallel()));
+        storeAnswers();
+        StepVerifier.create(as(handler.storeCredential(new StoreCredential("fleet/token", "token", "x")), MATEO)).expectNextCount(1).verifyComplete();
+        assertThat(threads).hasSize(2).allSatisfy(t -> assertThat(t).contains("boundedElastic").doesNotContain("parallel"));
+        assertThat(published).hasSize(1);
     }
 
     @Test

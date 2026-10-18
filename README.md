@@ -4,7 +4,8 @@ A platform where a team designs an infrastructure workflow on an n8n-style canva
 config as code in Git, and runs it on Temporal. Publishing a workflow generates its REST
 endpoint, its OpenAPI entry and its MCP tool. The systems a workflow talks to (a vCenter, an Ops
 Manager, a backup service, an Ansible library, a Terraform module) are registered as *providers*
-through a wizard, without code.
+through a wizard, without code: from an OpenAPI spec (a URL, a file or a Git repository), a few
+HTTP endpoints, or imported from an Ansible repository or a Terraform module.
 
 Everything a team builds (VM restart, MongoDB upgrade, Delete VM, Patch a CVE) is sample content
 under `workflows/`. Nothing in `backend/` or `frontend/` knows what a VM is.
@@ -59,6 +60,7 @@ docs/               architecture, config as code, API, design language, contribu
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md): a first run, a first workflow, a first provider.
 - [Architecture](docs/architecture.md): slices, CQRS rules, ports and adapters, the interpreter.
 - [Config as code](docs/config-as-code.md): the `Workflow`, `Provider` and `ResourceType` files,
   step kinds and expressions.
@@ -89,6 +91,85 @@ it runs on one backend instance (see
 `-f docker-compose.temporal-postgres.yml` runs Temporal self-hosted on its own PostgreSQL
 (`temporalio/auto-setup`) instead of the dev server's SQLite file.
 
+## Identity and OIDC
+
+Locally every request runs as the person the `X-User` header names, or as
+`platform.identity.default-user` (`gonzalo`) without one; service accounts call with
+`Authorization: Bearer iaf_<token>` in every mode. Under the `oidc` profile, with
+`platform.identity.mode: oidc`, a person calls with the identity provider's JWT, a request
+without one is a 401 and the dev header is ignored. The properties (under `platform.identity.`,
+or as environment variables such as `PLATFORM_IDENTITY_OIDC_AUDIENCE`):
+
+| Property | Default | What it is |
+|----------|---------|------------|
+| `oidc-issuer` | required | the `iss` the tokens carry |
+| `oidc-audience` | required | the `aud` the tokens carry for the platform; a token for another audience is refused |
+| `oidc-jwks-uri` | required | the issuer's JWKS endpoint (https; plain http only for a local provider) |
+| `oidc-teams-claim` | `groups` | the claim that lists the caller's teams |
+| `oidc-roles-claim` | `roles` | the claim that lists the caller's roles |
+| `oidc-admin-role` | `platform-admin` | the role in that claim that makes the caller a platform admin |
+
+The three required properties are checked at startup: a blank one stops the API with a message
+that names it (`platform.identity.oidc-audience is required under the oidc profile: ...`). A token
+must be signed by a key of the JWKS with an asymmetric algorithm (RS256/384/512, PS256/384/512,
+ES256/384/512; never an HMAC), carry `sub` and `exp`, and match the issuer and the audience; the
+teams and roles claims may be lists or space- or comma-separated strings, and `name` falls back to
+`sub`. The keys are cached for ten minutes, refreshed a minute before they expire, fetched at most
+twice in 30 seconds when tokens name a key the cache lacks, and kept for an hour while the endpoint
+is down; tokens are verified on a worker thread, never on the request's event loop.
+
+## Natural-language builder on Devin
+
+The builder panel and the "Ask Devin" step of the Add provider wizard run on a deterministic demo
+agent until the `devin` profile is on; then every message becomes a Devin session in your
+organization, run by the playbooks in `devin/` against their structured-output schemas, and the
+platform still checks every draft itself ([the assistant endpoints](docs/api.md#assistant-natural-language-builder)).
+The properties, under `platform.assistant.` (or environment variables such as
+`PLATFORM_ASSISTANT_DEVINORG`):
+
+| Property | Default | What it is |
+|----------|---------|------------|
+| `mode` | `mock` | descriptive only: the `devin` profile is what switches the adapter |
+| `devin-url` | `https://api.devin.ai/v3` | the Devin API; every call goes to `<devin-url>/organizations/<devin-org>` |
+| `devin-org` | required | the organization id (`org-...`) |
+| `devin-api-key` | required | the service user's API key, as a `vault:` reference such as `vault:devin/api-key`, resolved through the credentials store at each call (the key itself still works, with a warning at startup) |
+| `devin-playbook-id` | blank | the `!workflow-draft` playbook (`devin/nl-builder-playbook.md`); blank uses the id the last sync found or created |
+| `devin-provider-playbook-id` | blank | the `!provider-draft` playbook (`devin/provider-draft-playbook.md`), the same way |
+| `platform-token-secret-id` | blank | the id of the Devin organization secret that holds `PLATFORM_TOKEN`, attached to every session |
+| `devin-repos` | `[]` | repositories attached to every session as context, as Devin names them (for example `acme/platform-content`) |
+| `devin-max-acu-limit` | `10` | the ACU ceiling of each session; `0` sends none |
+| `devin-poll-every` | `PT15S` | how often a session and its new messages are read, kept within 10 to 30 seconds |
+| `devin-timeout` | `PT30M` | a session with no draft by then is ended and archived, and the stream fails |
+| `devin-dir` | blank | the playbooks and schemas; blank means `<platform.content.dir>/devin` |
+| `sync-playbooks-on-startup` | `false` | create or update the playbooks from `devin/*.md` when the platform starts |
+| `platform-api-url` | blank | the platform API the agent calls back (the `PLATFORM_API` of the prompt); blank means `http://localhost:<server.port>` |
+| `max-rounds` | `3` | times the platform sends its own check results back to the agent before it settles a draft |
+| `session-retention` | `P30D` | builder sessions not updated for this long are deleted (checked every hour) |
+
+Setting it up:
+
+1. Create a Devin service user for the platform and an API key for it. Running sessions needs
+   `UseDevinSessions`; store the key in the credentials store (`POST /api/v1/credentials`, or
+   Vault under the `vault` profile) and set `devin-api-key` to its reference.
+2. Create a platform service account with the `assistant` preset (`POST /api/v1/service-accounts`
+   with `preset: assistant`: `registry:read`, `workflows:validate`, `workflows:dry-run`, nothing
+   that changes anything). Store its token in Devin as an organization secret named
+   `PLATFORM_TOKEN` and put that secret's id in `platform-token-secret-id`; the playbooks call the
+   platform with it at `platform-api-url`, which Devin's machines must reach.
+3. Create the playbooks. `POST /api/v1/assistant/playbooks:sync` (admins) creates the ones Devin
+   lacks and updates the changed ones, but managing playbooks needs a key allowed to do so, which
+   the service user's should not be: run the sync once with a broader admin key, or create the
+   two playbooks by hand from `devin/*.md` (the title and macro of the front matter, the markdown
+   after it as the body; every session sends the schema itself) and put their ids in
+   `devin-playbook-id` and `devin-provider-playbook-id`.
+4. List the repositories the agent may read in `devin-repos`. They are attached as context; they
+   stay read-only because the playbooks forbid branches, commits and pull requests, not through
+   an API flag, so give the service user no write access to them.
+
+A session the builder stops waiting for (the panel closed, or `devin-timeout` passed) is ended
+and archived so it stops spending ACUs, and the next message starts a new one with the current
+draft.
+
 ## Deployment
 
 `backend/Dockerfile` and `frontend/Dockerfile` (nginx serving the build and proxying `/api` and
@@ -118,8 +199,10 @@ Evidence, notifications and change records have profiles of their own: `worm` (w
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
 COMPLIANCE mode), `siem` (every evidence entry also to Splunk HEC and syslog), `slack`
 (Slack-compatible incoming webhooks), `mail` (email) and `servicenow` (change records over the
-ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references;
-the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
+ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references,
+and so is `platform.audit.signing-key`, the HMAC key that signs seals and evidence packs (blank: a
+random key per run, so seals cannot be verified after a restart; a literal key still works, with a
+warning at startup); the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
 `MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
 spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics;
 `deploy/grafana/platform-dashboard.json` is a Grafana dashboard over them (starts, finishes by

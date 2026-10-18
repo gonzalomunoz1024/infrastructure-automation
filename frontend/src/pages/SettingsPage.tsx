@@ -7,7 +7,6 @@ import {
   CodeBlock,
   CopyButton,
   Field,
-  Icon,
   Input,
   Modal,
   OverlayBody,
@@ -30,7 +29,9 @@ import {
 import type { PageProps } from '../app/router'
 import { API_BASE, api, errorMessage, isApiError, setCurrentUser, useCurrentUser } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
-import type { ActuatorHealth, Me, ServiceAccount, ServiceAccountCreated } from '../lib/types'
+import type { ActuatorHealth, CreateServiceAccount, Me, ServiceAccount, ServiceAccountCreated, ServiceAccountScope } from '../lib/types'
+import { ApiLinks } from '../components/ApiLinks'
+import { PRESETS, PRESET_INFO, SCOPE_GROUPS, fitsPreset, orderScopes, presetOf, scopesRequest, type PresetChoice } from '../components/service-account-scopes'
 
 const DEV_USERS = ['gonzalo', 'ana', 'mateo', 'junior'] as const
 const ROLES = ['ops', 'sre', 'admin'] as const
@@ -94,6 +95,11 @@ export default function SettingsPage({ route }: PageProps) {
         ) : (
           <span className="text-tertiary">—</span>
         ),
+    },
+    {
+      key: 'scopes',
+      header: 'Scopes',
+      render: (a) => <ScopeTags scopes={a.scopes} />,
     },
     {
       key: 'createdAt',
@@ -195,11 +201,8 @@ export default function SettingsPage({ route }: PageProps) {
           <CardRow label="Design system" description="@iaf/ui">
             <span className="text-primary">Atlas</span>
           </CardRow>
-          <CardRow label="API reference" description="OpenAPI 3.1 of every published workflow and resource type">
-            <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-accent transition-opacity hover:opacity-70">
-              openapi.json
-              <Icon name="external" size={13} />
-            </a>
+          <CardRow label="API reference" description="OpenAPI 3.1 of every published workflow and resource type, and Swagger UI to try it">
+            <ApiLinks />
           </CardRow>
         </Card>
       </div>
@@ -273,19 +276,52 @@ function CancelButton({ children = 'Cancel', disabled }: { children?: string; di
   )
 }
 
+/** An account's scopes as tags, in the docs' order; the preset they make, when they make one, comes first. */
+function ScopeTags({ scopes, size = 'sm' }: { scopes?: ServiceAccountScope[]; size?: 'sm' | 'md' }) {
+  if (!scopes || scopes.length === 0) return <span className="text-tertiary">not reported</span>
+  const preset = presetOf(scopes)
+  return (
+    <div className="flex flex-wrap gap-1" aria-label="Scopes">
+      {preset && (
+        <Tag size={size} tone="accent" title={`The ${preset} preset`}>
+          {preset}
+        </Tag>
+      )}
+      {orderScopes(scopes).map((s) => (
+        <Tag key={s} size={size} mono outline tone={s === 'admin' ? 'warning' : 'neutral'}>
+          {s}
+        </Tag>
+      ))}
+    </div>
+  )
+}
+
 function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void; onCreated: (created: ServiceAccountCreated) => void }) {
   const toast = useToast()
   const [name, setName] = useState('')
   const [roles, setRoles] = useState<string[]>(['ops'])
   const [teams, setTeams] = useState('')
-  const create = useMutation((body: { name: string; roles: string[]; teams: string[] }) => api.createServiceAccount(body), {
+  // the preset fills the scopes; a scope outside it turns the choice into a custom set
+  const [choice, setChoice] = useState<PresetChoice>('invoker')
+  const [scopes, setScopes] = useState<ServiceAccountScope[]>(PRESETS.invoker)
+  const create = useMutation((body: CreateServiceAccount) => api.createServiceAccount(body), {
     invalidates: ['service-accounts'],
     onSuccess: (data, body) => {
       toast.success('Service account created', body.name)
       onCreated(data)
     },
   })
-  const valid = name.trim().length >= 2 && roles.length > 0
+  const valid = name.trim().length >= 2 && roles.length > 0 && scopes.length > 0
+
+  const pickPreset = (next: PresetChoice) => {
+    setChoice(next)
+    if (next !== 'custom') setScopes(PRESETS[next])
+  }
+  const toggleScope = (scope: ServiceAccountScope, on: boolean) => {
+    const next = orderScopes(on ? [...scopes, scope] : scopes.filter((s) => s !== scope))
+    setScopes(next)
+    if (choice !== 'custom' && !fitsPreset(next, choice)) setChoice('custom')
+  }
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
@@ -297,8 +333,10 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean),
+      ...scopesRequest(choice, scopes),
     })
   }
+  const presetText = choice === 'custom' ? 'Exactly the scopes ticked below.' : (PRESET_INFO.find((p) => p.preset === choice)?.text ?? '')
 
   return (
     <Modal onClose={onClose} width="max-w-md" label="New service account">
@@ -318,6 +356,28 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
           <Field label="Teams" htmlFor="sa-teams" hint="Comma-separated. Scopes what the account can see.">
             <Input id="sa-teams" value={teams} onChange={(e) => setTeams(e.target.value)} placeholder="team-compute, team-platform" autoComplete="off" />
           </Field>
+          <Field label="Preset" hint={presetText}>
+            <Segmented
+              ariaLabel="Preset"
+              full
+              size="sm"
+              value={choice}
+              onChange={pickPreset}
+              options={[...PRESET_INFO.map((p) => ({ value: p.preset as PresetChoice, label: p.label })), { value: 'custom' as PresetChoice, label: 'Custom' }]}
+            />
+          </Field>
+          <Field label="Scopes" hint="Every call needs the scope of its endpoint; one outside the account's scopes is a 403 that names it.">
+            <div className="space-y-3 py-1" data-testid="scope-groups">
+              {SCOPE_GROUPS.map((g) => (
+                <fieldset key={g.group} className="space-y-2">
+                  <legend className="mb-1 text-caption font-medium uppercase tracking-wide text-tertiary">{g.group}</legend>
+                  {g.scopes.map((info) => (
+                    <Checkbox key={info.scope} id={`sa-scope-${info.scope}`} label={<span className="font-mono">{info.scope}</span>} description={info.allows} checked={scopes.includes(info.scope)} onChange={(on) => toggleScope(info.scope, on)} />
+                  ))}
+                </fieldset>
+              ))}
+            </div>
+          </Field>
           {create.error ? (
             <p className="text-caption text-critical" role="alert">
               {errorMessage(create.error)}
@@ -326,7 +386,7 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
         </OverlayBody>
         <OverlayFooter>
           <CancelButton disabled={create.loading} />
-          <Button type="submit" variant="primary" disabled={!valid} loading={create.loading}>
+          <Button type="submit" variant="primary" disabled={!valid} loading={create.loading} title={scopes.length === 0 ? 'Tick at least one scope' : undefined}>
             Create
           </Button>
         </OverlayFooter>
@@ -344,6 +404,12 @@ function TokenModal({ created, onClose }: { created: ServiceAccountCreated; onCl
         <p className="text-caption text-tertiary">
           Send it as <span className="font-mono text-secondary">Authorization: Bearer …</span>. The platform keeps only a hash of it.
         </p>
+        {created.scopes && created.scopes.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-caption text-secondary">It may call:</p>
+            <ScopeTags scopes={created.scopes} />
+          </div>
+        )}
       </OverlayBody>
       <OverlayFooter>
         <CopyButton text={created.token} label="Copy token" size="md" />

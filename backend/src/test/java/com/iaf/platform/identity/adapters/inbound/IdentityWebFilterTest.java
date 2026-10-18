@@ -16,6 +16,7 @@ import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.WebFilterChain;
 
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -24,7 +25,6 @@ import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
 import com.iaf.platform.identity.ports.outbound.UserDirectory;
-import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import reactor.core.publisher.Mono;
 
@@ -81,8 +81,8 @@ class IdentityWebFilterTest {
 
     @Test
     void aServiceAccountTokenResolvesToTheAccount() {
-        ServiceAccount account = new ServiceAccount("sa_ci", "ci-bot", List.of("ops"), List.of("team-compute"), WorkflowYaml.sha256("iaf_secret"), Instant.now());
-        when(accounts.byTokenHash(WorkflowYaml.sha256("iaf_secret"))).thenReturn(Optional.of(account));
+        ServiceAccount account = new ServiceAccount("sa_ci", "ci-bot", List.of("ops"), List.of("team-compute"), Hashes.sha256("iaf_secret"), Instant.now());
+        when(accounts.byTokenHash(Hashes.sha256("iaf_secret"))).thenReturn(Optional.of(account));
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
         Identity who = run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_secret").build()).who();
         assertThat(who).isEqualTo(account.identity());
@@ -91,9 +91,9 @@ class IdentityWebFilterTest {
 
     @Test
     void aServiceAccountsScopesGoAlongForTheScopeFilterAndTheCodeBehindIt() {
-        ServiceAccount account = new ServiceAccount("sa_devin", "devin", List.of(), List.of(), WorkflowYaml.sha256("iaf_devin"), Instant.now(),
+        ServiceAccount account = new ServiceAccount("sa_devin", "devin", List.of(), List.of(), Hashes.sha256("iaf_devin"), Instant.now(),
                 List.of("registry:read", "workflows:validate", "workflows:dry-run"));
-        when(accounts.byTokenHash(WorkflowYaml.sha256("iaf_devin"))).thenReturn(Optional.of(account));
+        when(accounts.byTokenHash(Hashes.sha256("iaf_devin"))).thenReturn(Optional.of(account));
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
         MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_devin").build());
         AtomicReference<Object> inContext = new AtomicReference<>();
@@ -132,7 +132,7 @@ class IdentityWebFilterTest {
     @Test
     void oidcModeNeedsAVerifiedTokenAndIgnoresTheDevHeader() {
         props.getIdentity().setMode("oidc");
-        TokenVerifier verifier = token -> "good".equals(token) ? Optional.of(ANA) : Optional.empty();
+        TokenVerifier verifier = token -> "good".equals(token) ? Mono.just(ANA) : Mono.empty();
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.of(verifier));
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer good").build()).who()).isEqualTo(ANA);
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer bad").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
@@ -145,6 +145,29 @@ class IdentityWebFilterTest {
         AtomicReference<Boolean> reached = new AtomicReference<>(false);
         filter.filter(exchange, ex -> Mono.fromRunnable(() -> reached.set(true))).block();
         return reached.get() && exchange.getResponse().getStatusCode() != HttpStatus.UNAUTHORIZED;
+    }
+
+    @Test
+    void aSharedEvidenceLinkOpensWithoutACallerAsAnIdentityThatHoldsNothing() {
+        props.getIdentity().setMode("oidc");
+        TokenVerifier verifier = token -> "good".equals(token) ? Mono.just(ANA) : Mono.empty();
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.of(verifier));
+
+        Outcome shared = run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").build());
+        assertThat(shared.status()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(shared.who()).isEqualTo(IdentityWebFilter.SHARED_LINK);
+        assertThat(shared.who().admin()).isFalse();
+        assertThat(shared.who().teams()).isEmpty();
+        assertThat(shared.who().roles()).isEmpty();
+        // a signed-in caller stays who they are; a credential that does not verify is still a 401
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").header("Authorization", "Bearer good").build()).who()).isEqualTo(ANA);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_4f2a9c").header("Authorization", "Bearer bad").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        // only the read of a link: the record itself, other audit reads and writes still need a caller
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/audit/shared/shr_4f2a9c").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/job_1").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/shr_1/export").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/audit/shared/..%2Fjob_1").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
     @Test

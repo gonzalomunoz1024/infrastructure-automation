@@ -1,5 +1,7 @@
 package com.iaf.platform.providers.adapters.inbound;
 
+import java.util.Optional;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -66,6 +68,11 @@ public class RestControllerProviderAdapter implements ProviderCommands, Provider
     }
 
     @Override
+    public Optional<String> ownerOf(String name) {
+        return queries.ownerOf(name);
+    }
+
+    @Override
     @PostMapping("/providers:import-spec")
     public Mono<SpecImport> importSpec(@RequestBody ImportSpec command) {
         return commands.importSpec(command);
@@ -121,5 +128,11 @@ public class RestControllerProviderAdapter implements ProviderCommands, Provider
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> slo(@PathVariable String name, @RequestBody SetSlo command) {
         return commands.slo(name, command);
+    }
+
+    /** Not an endpoint: merging the change request (the workflows slice) publishes the provider. */
+    @Override
+    public Mono<Void> publishMerged(String changeRequestId) {
+        return commands.publishMerged(changeRequestId);
     }
 }

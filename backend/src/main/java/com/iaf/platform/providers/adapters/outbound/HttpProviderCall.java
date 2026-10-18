@@ -48,6 +48,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.ErrorClass;
 import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
 import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.ports.outbound.GitSourcePort;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
@@ -63,7 +64,8 @@ import reactor.netty.http.client.HttpClient;
  * action's method and path, {@code {param}} segments and query parameters filled from the input
  * and the rest sent as the JSON body, auth resolved through the {@link CredentialsPort} at call
  * time, errors classified by the provider's {@code errors} table, every call recorded on the
- * {@link TelemetryPort}, and the response compared with the action's schema (logged, never failed).
+ * {@link TelemetryPort} but a review call ({@link ReviewCall}: the wizard's tries), and the response
+ * compared with the action's schema (logged, never failed).
  * A dry run never touches the system: it answers from the action's sample.
  */
 @Slf4j
@@ -116,7 +118,7 @@ public class HttpProviderCall implements ProviderCallPort {
 
     @Override
     public Mono<JsonNode> call(ProviderCall call) {
-        return Mono.defer(() -> {
+        return Mono.deferContextual(ctx -> {
             ProviderDefinition p = call.provider();
             Action a = call.action();
             if (call.dryRun()) {
@@ -129,7 +131,7 @@ public class HttpProviderCall implements ProviderCallPort {
                 return Mono.error(new ProviderCallException("unsupported", "HttpProviderCall runs openapi and http providers; " + p.name() + " is " + p.type().key(), false, 0));
             }
             String base = endpoint(p, call.environment());
-            return operation(p, a).flatMap(op -> headers(p.spec().auth()).flatMap(h -> execute(call, base, op, h)));
+            return operation(p, a).flatMap(op -> headers(p.spec().auth()).flatMap(h -> execute(call, base, op, h, !ReviewCall.in(ctx))));
         });
     }
 
@@ -253,7 +255,7 @@ public class HttpProviderCall implements ProviderCallPort {
 
     // ---------------------------------------------------------------- the call
 
-    private Mono<JsonNode> execute(ProviderCall call, String base, Operation op, HttpHeaders headers) {
+    private Mono<JsonNode> execute(ProviderCall call, String base, Operation op, HttpHeaders headers, boolean recorded) {
         ProviderDefinition p = call.provider();
         Action a = call.action();
         ObjectNode remaining = call.input() != null && call.input().isObject() ? ((ObjectNode) call.input()).deepCopy() : F.objectNode();
@@ -270,17 +272,17 @@ public class HttpProviderCall implements ProviderCallPort {
                     long ms = elapsed(started);
                     if (raw.status() >= 200 && raw.status() < 300) {
                         JsonNode json = parseBody(raw.body());
-                        record(call, at, ms, true, null);
+                        record(call, recorded, at, ms, true, null);
                         compare(p, a, json);
                         return Mono.just(json);
                     }
                     ProviderCallException ex = classify(p, raw.status(), raw.body());
-                    record(call, at, ms, false, ex.errorClass());
+                    record(call, recorded, at, ms, false, ex.errorClass());
                     return Mono.<JsonNode>error(ex);
                 })
                 .onErrorResume(e -> !(e instanceof ProviderCallException), e -> {
                     ProviderCallException ex = transport(e);
-                    record(call, at, elapsed(started), false, ex.errorClass());
+                    record(call, recorded, at, elapsed(started), false, ex.errorClass());
                     return Mono.error(ex);
                 });
     }
@@ -328,6 +330,11 @@ public class HttpProviderCall implements ProviderCallPort {
         return pairs.isEmpty() ? full : full + "?" + String.join("&", pairs);
     }
 
+    /**
+     * A path parameter fills its segment and nothing more: a {@code /} in the value stays encoded
+     * ({@code %2F}), and a value with a {@code .} or {@code ..} segment is refused before anything is
+     * sent, so no input walks the call out of the operation's path with the provider's credential.
+     */
     private static String fill(String template, ObjectNode remaining, boolean pathSegment) {
         Matcher m = PARAM.matcher(template);
         StringBuilder sb = new StringBuilder();
@@ -335,16 +342,26 @@ public class HttpProviderCall implements ProviderCallPort {
             JsonNode v = remaining.get(m.group(1));
             String replacement = "";
             if (v != null && !v.isNull()) {
-                replacement = encode(text(v));
+                String value = text(v);
                 if (pathSegment) {
-                    replacement = replacement.replace("%2F", "/");
+                    requireInsideThePath(m.group(1), value);
                 }
+                replacement = encode(value);
                 remaining.remove(m.group(1));
             }
             m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
         m.appendTail(sb);
         return sb.toString();
+    }
+
+    private static void requireInsideThePath(String name, String value) {
+        for (String segment : value.split("[/\\\\]", -1)) {
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new ProviderCallException("invalid_input",
+                        "Path parameter " + name + " may not have a '.' or '..' segment; it fills one segment of the operation's path", false, 0);
+            }
+        }
     }
 
     static String text(JsonNode v) {
@@ -371,7 +388,7 @@ public class HttpProviderCall implements ProviderCallPort {
 
     // ---------------------------------------------------------------- errors
 
-    /** The provider's {@code errors} table first ({@code match.status}, optional {@code match.body} substring), then sensible defaults. */
+    /** The provider's {@code errors} table first, in order ({@code match.status}, narrowed by an optional {@code match.body} substring), then sensible defaults. */
     static ProviderCallException classify(ProviderDefinition p, int status, String body) {
         String message = "HTTP " + status + (body == null || body.isBlank() ? "" : ": " + (body.length() > 300 ? body.substring(0, 300) + "…" : body.trim()));
         if (p.spec().errors() != null) {
@@ -380,9 +397,12 @@ public class HttpProviderCall implements ProviderCallPort {
                 if (match == null || !match.isObject()) {
                     continue;
                 }
-                boolean statusMatches = !match.has("status") || match.get("status").asInt() == status;
-                boolean bodyMatches = !match.has("body") || (body != null && body.contains(match.get("body").asText()));
-                if (match.has("status") && statusMatches && bodyMatches) {
+                // a rule names the status (the review refuses one without: errors.noStatus); a body text only narrows a
+                // status several classes share, so a rule without a status never matches
+                if (!match.has("status") || match.get("status").asInt() != status) {
+                    continue;
+                }
+                if (!match.has("body") || (body != null && body.contains(match.get("body").asText()))) {
                     return new ProviderCallException(e.errorClass(), message, e.retry(), status);
                 }
             }
@@ -406,7 +426,10 @@ public class HttpProviderCall implements ProviderCallPort {
 
     // ---------------------------------------------------------------- telemetry and schema
 
-    private void record(ProviderCall call, Instant at, long ms, boolean ok, String errorClass) {
+    private void record(ProviderCall call, boolean recorded, Instant at, long ms, boolean ok, String errorClass) {
+        if (!recorded) {
+            return;
+        }
         try {
             telemetry.record(new CallSample(at, call.provider().name(), call.action().id(), call.environment(), ok, ms, errorClass, call.jobId(), null, null,
                     call.provider().metadata().version()));

@@ -172,7 +172,9 @@ class TerraformModuleTest {
         assertThat(apply.output().path("properties").path("outputs").path("properties").fieldNames()).toIterable().containsExactly("url");
         assertThat(apply.output().path("properties").has("add")).isTrue();
         assertThat(def.spec().auth().credential()).isEqualTo("vault:terraform/platform");
-        assertThat(ProviderChecks.check(yaml).errors()).isEmpty();
+        assertThat(ProviderChecks.check(yaml).errors()).as("an apply creates things: the alert channel is the one gate left to the author")
+                .extracting(p -> p.code()).containsExactly("alerts.channel");
+        assertThat(ProviderChecks.check(yaml.replace("  slo:", "  alerts: { channel: \"#platform-alerts\" }\n  slo:")).errors()).isEmpty();
         assertThat(ProviderReview.review(def, ReviewEvidence.NONE).ready()).isTrue();
     }
 

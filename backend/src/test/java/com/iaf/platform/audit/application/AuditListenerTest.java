@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,8 @@ import com.iaf.platform.audit.ports.outbound.SiemPort;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.config.PlatformProperties;
+
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class AuditListenerTest {
 
@@ -278,14 +281,31 @@ class AuditListenerTest {
         events.publish("release.paused", "release", "rel_9", "mateo", node().put("releaseId", "rel_9").put("workflow", "vm-restart").put("to", "1.3.0"));
         events.publish("assistant.started", "assistant-session", "asst_1", "ana", node().put("sessionId", "asst_1").put("mode", "create"));
         events.publish("provider.alert", "provider", "vsphere", "platform", node().put("message", "slow"));
+        events.publish("provider.spec-imported", "spec", "9f86d081", "mateo", node().put("source", "url")
+                .put("url", "https://fleet.example.com/openapi.yaml").put("sha256", "9f86d081").put("operations", 8).put("by", "mateo"));
+        events.publish("provider.connection-tested", "provider", "fleet", "mateo", node().put("provider", "fleet")
+                .put("credential", "vault:fleet/token").put("by", "mateo"));
+        events.publish("provider.tried", "provider", "fleet", "ana", node().put("provider", "fleet").put("action", "vm.get")
+                .put("environment", "dev").put("ok", true).put("status", 200).put("by", "ana"));
+        events.publish("audit.sealed", "audit", "job_1", "platform", node().put("jobId", "job_1").put("keyId", "k-2026"));
+        events.publish("playbook.uploaded", "playbook", "ab12", "mateo", node().put("file", "restart.yml").put("sha256", "ab12")
+                .put("content", "- hosts: all\n"));
 
         EvidenceRecord stream = store.record(EvidenceRecord.PLATFORM).orElseThrow();
         assertThat(stream.channel()).isEqualTo("platform");
         assertThat(stream.workflow()).isNull();
         assertThat(stream.entries()).extracting(e -> e.data().get("event").asText()).containsExactly(
                 "workflow.draft-saved", "change-request.merged", "credential.stored", "service-account.created", "release.paused",
-                "assistant.started");
-        assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana");
+                "assistant.started", "provider.spec-imported", "provider.connection-tested", "provider.tried", "audit.sealed",
+                "playbook.uploaded");
+        assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana",
+                "mateo", "mateo", "ana", "platform", "mateo");
+        assertThat(stream.entries().get(6).data().get("sha256").asText()).isEqualTo("9f86d081");
+        assertThat(stream.entries().get(8).data().get("action").asText()).isEqualTo("vm.get");
+        assertThat(stream.entries().get(9).data().get("keyId").asText()).isEqualTo("k-2026");
+        JsonNode uploaded = stream.entries().get(10).data();
+        assertThat(uploaded.has("content")).as("a playbook is a file: its hash goes on the trail").isFalse();
+        assertThat(uploaded.get("contentSha256").asText()).hasSize(64);
         JsonNode merged = stream.entries().get(1).data();
         assertThat(merged.has("yaml")).isFalse();
         assertThat(merged.get("yamlSha256").asText()).hasSize(64);
@@ -362,16 +382,71 @@ class AuditListenerTest {
         assertThat(sent.get(1).recordId()).isEqualTo(EvidenceRecord.PLATFORM);
     }
 
+    /** A store whose appends fail while {@code failures} lasts. */
+    static final class FlakyStore extends InMemoryEvidenceStore {
+        final AtomicInteger failures;
+        final AtomicInteger calls = new AtomicInteger();
+
+        FlakyStore(int failures) {
+            this.failures = new AtomicInteger(failures);
+        }
+
+        @Override
+        public EvidenceEntry append(String jobId, EvidenceEntry entry) {
+            calls.incrementAndGet();
+            if (failures.getAndDecrement() > 0) {
+                throw new java.io.UncheckedIOException(new java.io.IOException("disk full"));
+            }
+            return super.append(jobId, entry);
+        }
+    }
+
+    @Test
+    void aFailedAppendIsRetriedOnceThenCountedAndTheJobGoesOn() {
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        FlakyStore once = new FlakyStore(1);
+        EventBus bus = new EventBus(clock);
+        new AuditListener(once, bus, props, clock, mapper, new SecretValues(), SiemExporter.none(), meters).subscribe();
+        bus.publish("job.started", "job", "job_f", "ana", node().put("jobId", "job_f").put("workflow", "vm-restart").put("version", "1.2.0"));
+
+        assertThat(once.calls.get()).as("tried twice").isEqualTo(2);
+        assertThat(once.record("job_f").orElseThrow().entries()).hasSize(1);
+        assertThat(meters.counter(AuditListener.APPEND_FAILED, "store", "FlakyStore").count()).isZero();
+
+        SimpleMeterRegistry failing = new SimpleMeterRegistry();
+        FlakyStore broken = new FlakyStore(2);
+        EventBus other = new EventBus(clock);
+        List<String> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        new AuditListener(broken, other, props, clock, mapper, new SecretValues(), SiemExporter.none(), failing).subscribe();
+        other.register(e -> seen.add(e.type()));
+        other.publish("job.started", "job", "job_g", "ana", node().put("jobId", "job_g").put("workflow", "vm-restart").put("version", "1.2.0"));
+        other.publish("job.step", "job", "job_g", "platform", node().put("jobId", "job_g").put("step", "s").put("status", "succeeded"));
+
+        assertThat(seen).as("the bus and the listeners after the audit carry on").containsExactly("job.started", "job.step");
+        assertThat(failing.counter(AuditListener.APPEND_FAILED, "store", "FlakyStore").count()).isEqualTo(1.0);
+        assertThat(broken.record("job_g").orElseThrow().entries()).extracting(EvidenceEntry::kind).containsExactly(EvidenceKind.STEP);
+    }
+
+    @Test
+    void aSealedRecordRefusingALateEntryIsNotAFailure() {
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        InMemoryEvidenceStore own = new InMemoryEvidenceStore();
+        EventBus bus = new EventBus(clock);
+        new AuditListener(own, bus, props, clock, mapper, new SecretValues(), SiemExporter.none(), meters).subscribe();
+        bus.publish("job.started", "job", "job_s", "ana", node().put("jobId", "job_s").put("workflow", "vm-restart").put("version", "1.2.0"));
+        own.seal("job_s", new EvidenceRecord.Seal(NOW, "sig", "key-1", 1, own.record("job_s").orElseThrow().latestHash()));
+
+        bus.publish("job.step", "job", "job_s", "platform", node().put("jobId", "job_s").put("step", "late").put("status", "succeeded"));
+
+        assertThat(own.record("job_s").orElseThrow().entries()).hasSize(1);
+        assertThat(meters.counter(AuditListener.APPEND_FAILED, "store", "InMemoryEvidenceStore").count()).isZero();
+    }
+
     private void job(String type, String actor, JsonNode data) {
         events.publish(type, "job", data.path("jobId").asText(null), actor, data);
     }
 
     private ObjectNode node() {
         return mapper.createObjectNode();
-    }
-
-    @SuppressWarnings("unused")
-    private static List<EvidenceKind> kinds(EvidenceRecord r) {
-        return r.entries().stream().map(EvidenceEntry::kind).toList();
     }
 }

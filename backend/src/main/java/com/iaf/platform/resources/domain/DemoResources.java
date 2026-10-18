@@ -123,7 +123,7 @@ public final class DemoResources {
                 List<String> builtFrom = from.values().stream().flatMap(List::stream).map(Resource::id).toList();
                 Instant createdAt = now.minus(Duration.ofDays(30L - serial)).minus(Duration.ofHours(i));
                 String producer = t.producedBy();
-                Resource r = new Resource(id, name, attributes.path("name").asText(id), state, attributes, t.owner(), "team",
+                Resource r = new Resource(id, name, attributes.path("name").asText(id), state, attributes, t.owner(), t.defaultVisibility(),
                         new Resource.Origin("job_demo" + String.format("%03d", serial), producer, producer == null ? null : versions.get(producer)),
                         builtFrom, createdAt, deprecated ? createdAt.plus(Duration.ofDays(3)) : createdAt);
                 ofType.add(r);

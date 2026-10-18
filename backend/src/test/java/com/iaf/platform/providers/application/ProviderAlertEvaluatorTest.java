@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,9 +20,11 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
+import com.iaf.platform.providers.adapters.outbound.InMemoryProviderAlertState;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.ports.outbound.ProviderAlertStatePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
 
@@ -48,6 +51,7 @@ class ProviderAlertEvaluatorTest {
     TelemetryPort telemetry;
     EventBus events;
     List<DomainEvent> published;
+    InMemoryProviderAlertState state;
     ProviderAlertEvaluator evaluator;
 
     @BeforeEach
@@ -58,7 +62,8 @@ class ProviderAlertEvaluatorTest {
         published = new ArrayList<>();
         events.register(published::add);
         when(store.all()).thenReturn(List.of(new StoredProvider(ProviderYaml.parse(YAML), YAML, "providers/team-compute/fleet.yaml", NOW, "content")));
-        evaluator = new ProviderAlertEvaluator(store, telemetry, events, CLOCK);
+        state = new InMemoryProviderAlertState();
+        evaluator = new ProviderAlertEvaluator(store, telemetry, events, CLOCK, state);
     }
 
     static List<CallSample> samples(Instant from, int ok, int failed, String errorClass) {
@@ -148,5 +153,45 @@ class ProviderAlertEvaluatorTest {
         when(telemetry.samples(isNull(), any())).thenThrow(new IllegalStateException("telemetry down"));
         evaluator.evaluate();
         assertThat(published).isEmpty();
+    }
+
+    @Test
+    void aRestartJudgesOnlyTheCallsThatFailedSinceTheLastEvaluation() {
+        List<CallSample> failures = samples(NOW.minusSeconds(3600), 9, 3, "timeout");
+        when(telemetry.samples(isNull(), any())).thenReturn(failures);
+        assertThat(evaluator.evaluateAt(NOW)).hasSize(4);
+        assertThat(state.lastEvaluatedAt()).contains(NOW);
+
+        // a new instance over the same state, as after a restart: the calls it already judged raise nothing again
+        ProviderAlertEvaluator restarted = new ProviderAlertEvaluator(store, telemetry, events, CLOCK, state);
+        List<CallSample> later = new ArrayList<>(failures);
+        later.add(new CallSample(NOW.plusSeconds(30), "fleet", "vm.get", "dev", false, 100, "unavailable", "job_new", null, null));
+        when(telemetry.samples(isNull(), any())).thenReturn(later);
+        List<ProviderAlert> raised = restarted.evaluateAt(NOW.plusSeconds(60));
+        assertThat(raised).filteredOn(a -> a.action() != null).extracting(ProviderAlert::jobId).containsExactly("job_new");
+        assertThat(state.lastEvaluatedAt()).contains(NOW.plusSeconds(60));
+
+        // with nothing kept, the first evaluation judges the whole window, as before
+        ProviderAlertEvaluator fresh = new ProviderAlertEvaluator(store, telemetry, events, CLOCK, new InMemoryProviderAlertState());
+        assertThat(fresh.evaluateAt(NOW.plusSeconds(60))).filteredOn(a -> a.action() != null).hasSize(4);
+    }
+
+    @Test
+    void aStateThatCannotBeWrittenNeverStopsAnEvaluation() {
+        ProviderAlertStatePort broken = new ProviderAlertStatePort() {
+            @Override
+            public Optional<Instant> lastEvaluatedAt() {
+                return Optional.empty();
+            }
+
+            @Override
+            public void lastEvaluatedAt(Instant at) {
+                throw new IllegalStateException("database down");
+            }
+        };
+        ProviderAlertEvaluator withBrokenState = new ProviderAlertEvaluator(store, telemetry, events, CLOCK, broken);
+        when(telemetry.samples(isNull(), any())).thenReturn(samples(NOW.minusSeconds(100), 9, 1, "timeout"));
+        assertThat(withBrokenState.evaluateAt(NOW)).hasSize(2);
+        assertThat(withBrokenState.evaluateAt(NOW.plusSeconds(60))).as("this instance still remembers").isEmpty();
     }
 }

@@ -48,6 +48,16 @@ class AccessRulesTest {
     }
 
     @Test
+    void aProviderIsSeenByItsOwnerTeamByEveryoneWhenItHasNoOwnerAndByAdmins() {
+        assertThat(AccessRules.canSeeProvider(LEA, "team-platform")).isTrue();
+        assertThat(AccessRules.canSeeProvider(MATEO, "team-platform")).isFalse();
+        assertThat(AccessRules.canSeeProvider(GUEST, "team-compute")).isFalse();
+        assertThat(AccessRules.canSeeProvider(GUEST, null)).isTrue();
+        assertThat(AccessRules.canSeeProvider(MATEO, " ")).isTrue();
+        assertThat(AccessRules.canSeeProvider(ROOT, "team-data")).isTrue();
+    }
+
+    @Test
     void aCredentialIsUsedByItsOwnerTeamByAnyoneWhenItHasNoneAndByAdmins() {
         assertThat(AccessRules.canUseCredential(MATEO, "team-compute")).isTrue();
         assertThat(AccessRules.canUseCredential(MATEO, "team-data")).isFalse();

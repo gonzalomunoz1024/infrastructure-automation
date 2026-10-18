@@ -109,10 +109,43 @@ abstract class ResourceStoreContract {
     @Test
     void listsASavedTypeByName() {
         ResourceStorePort store = store(false);
-        ResourceTypeDefinition bucket = new ResourceTypeDefinition("bucket", "buckets", "team-storage", null, List.of("ready", "retired"), null, "Object storage");
+        ResourceTypeDefinition bucket = new ResourceTypeDefinition("bucket", "buckets", "team-storage", null, List.of("ready", "retired"), null, "Object storage", "public");
         store.saveType(bucket);
         assertThat(store.types()).extracting(ResourceTypeDefinition::name).containsExactly("bucket", "database", "environment", "image", "vm", "volume");
         assertThat(store.type("bucket")).contains(bucket);
+        assertThat(store.type("bucket").orElseThrow().defaultVisibility()).isEqualTo("public");
+    }
+
+    @Test
+    void readsTheVisibilityOfTheTypes() {
+        ResourceStorePort store = store(true);
+        assertThat(store.type("image").orElseThrow().visibility()).as("golden images are every team's").isEqualTo("public");
+        assertThat(store.type("vm").orElseThrow().visibility()).isEqualTo("team");
+        assertThat(store.resources()).filteredOn(r -> r.type().equals("image")).isNotEmpty().allMatch(r -> r.visibility().equals("public"));
+        assertThat(store.resources()).filteredOn(r -> r.type().equals("vm")).isNotEmpty().allMatch(r -> r.visibility().equals("team"));
+    }
+
+    @Test
+    void listsWhatIsBuiltDirectlyFromAResource() {
+        ResourceStorePort store = store(false);
+        Resource image = new Resource("image-demo01", "image", "golden", "ready", null, "team-platform", "public", null, List.of(), NOW.minusSeconds(60), null);
+        store.save(image);
+        store.save(vm("vm-b", NOW));
+        store.save(vm("vm-a", NOW));
+        Resource volume = new Resource("volume-1", "volume", "data", "ready", JsonNodeFactory.instance.objectNode().put("name", "data"), "team-platform", "team",
+                new Resource.Origin("job_v1", "request-storage", "1.0.0"), List.of("vm-a", "image-demo01"), NOW.plusSeconds(1), null);
+        store.save(volume);
+        Resource unrelated = new Resource("volume-2", "volume", "other", "ready", JsonNodeFactory.instance.objectNode().put("name", "image-demo01"), "team-platform", "team",
+                null, List.of(), NOW.plusSeconds(2), null);
+        store.save(unrelated);
+        assertThat(store.builtFrom("image-demo01")).as("the registry's order, and only a builtFrom counts")
+                .extracting(Resource::id).containsExactly("vm-a", "vm-b", "volume-1");
+        assertThat(store.builtFrom("vm-a")).extracting(Resource::id).containsExactly("volume-1");
+        assertThat(store.builtFrom("vm-b")).isEmpty();
+        assertThat(store.builtFrom("image-demo0")).as("a prefix of an id is not the id").isEmpty();
+        assertThat(store.builtFrom("%")).isEmpty();
+        assertThat(store.builtFrom(null)).isEmpty();
+        assertThat(store.builtFrom("")).isEmpty();
     }
 
     @Test

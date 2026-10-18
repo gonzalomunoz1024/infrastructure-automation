@@ -4,7 +4,7 @@ import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api } from '../lib/api'
 import { useQuery } from '../lib/queries'
-import type { Release, ReleaseGate } from '../lib/types'
+import type { Release, ReleaseGate, ReleaseKind } from '../lib/types'
 import { ErrorState, Mono, TextLink, When, useNow } from '../components/common'
 
 /** A canary still moving or held: it can change under you. */
@@ -21,15 +21,38 @@ export function stageLabel(r: Release): string {
   return `Stage ${Math.min(r.stageIndex + 1, r.stages.length)} of ${r.stages.length}`
 }
 
+/** What a release rolls out: a workflow version, judged over jobs, or a provider version, judged over its calls. */
+export function releaseSubject(r: Pick<Release, 'workflow' | 'provider'>): { kind: 'workflow' | 'provider'; name: string; href: string; unit: 'job' | 'call' } {
+  if (r.provider) return { kind: 'provider', name: r.provider, href: pathFor('provider', { name: r.provider }), unit: 'call' }
+  const name = r.workflow ?? ''
+  return { kind: 'workflow', name, href: pathFor('workflow', { name }), unit: 'job' }
+}
+
+/** The release a provider page follows: the one in flight, else the newest (the API lists newest first). */
+export function currentRelease(list: readonly Release[] | undefined): Release | undefined {
+  if (!list || list.length === 0) return undefined
+  return list.find(isActiveRelease) ?? list[0]
+}
+
 type Scope = 'active' | 'all'
+
+const KINDS: { value: ReleaseKind; label: string }[] = [
+  { value: 'workflow', label: 'Workflows' },
+  { value: 'provider', label: 'Providers' },
+  { value: 'all', label: 'Both' },
+]
 
 export default function ReleasesPage({ route }: PageProps) {
   const [workflow, setWorkflow] = useState(route.query.workflow ?? '')
+  const [provider, setProvider] = useState(route.query.provider ?? '')
+  const [kind, setKind] = useState<ReleaseKind>(() => (route.query.kind === 'provider' || route.query.kind === 'all' ? route.query.kind : route.query.provider ? 'provider' : 'workflow'))
   const [scope, setScope] = useState<Scope>('all')
   const [polling, setPolling] = useState(true)
   const now = useNow(polling ? 1000 : 30_000)
-  const workflows = useQuery('workflows', () => api.workflows())
-  const list = useQuery(['releases', workflow], () => api.releases(workflow || undefined), { refetchInterval: polling ? 5000 : undefined })
+  const workflows = useQuery('workflows', () => api.workflows(), { enabled: kind === 'workflow' })
+  const providers = useQuery('providers', () => api.providers(), { enabled: kind === 'provider' })
+  const filter = kind === 'workflow' ? { workflow: workflow || undefined } : kind === 'provider' ? (provider ? { provider } : { kind }) : { kind }
+  const list = useQuery(['releases', kind, workflow, provider], () => api.releases(filter), { refetchInterval: polling ? 5000 : undefined })
   // every 5 s while a canary is in flight, then at rest
   const anyActive = !list.data || list.data.some(isActiveRelease)
   if (anyActive !== polling) setPolling(anyActive)
@@ -38,20 +61,30 @@ export default function ReleasesPage({ route }: PageProps) {
 
   const columns: TableColumn<Release>[] = [
     {
-      key: 'workflow',
-      header: 'Workflow',
+      key: 'subject',
+      header: kind === 'provider' ? 'Provider' : kind === 'all' ? 'Subject' : 'Workflow',
       sortable: true,
-      accessor: (r) => r.workflow,
-      render: (r) => (
-        <div className="min-w-0">
-          <TextLink to={pathFor('workflow', { name: r.workflow })} mono onClick={(e) => e.stopPropagation()}>
-            {r.workflow}
-          </TextLink>
-          <div className="text-caption text-tertiary">
-            <Mono>{r.from ?? 'new'}</Mono> → <Mono className="text-primary">{r.to}</Mono>
+      accessor: (r) => releaseSubject(r).name,
+      render: (r) => {
+        const s = releaseSubject(r)
+        return (
+          <div className="min-w-0">
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              <TextLink to={s.href} mono onClick={(e) => e.stopPropagation()}>
+                {s.name}
+              </TextLink>
+              {s.kind === 'provider' && (
+                <Tag size="sm" outline title="A provider version, judged over its calls">
+                  provider
+                </Tag>
+              )}
+            </span>
+            <div className="text-caption text-tertiary">
+              <Mono>{r.from ?? 'new'}</Mono> → <Mono className="text-primary">{r.to}</Mono>
+            </div>
           </div>
-        </div>
-      ),
+        )
+      },
     },
     { key: 'status', header: 'Status', sortable: true, width: '9rem', accessor: (r) => r.status, render: (r) => <StateTag status={r.status} /> },
     {
@@ -108,16 +141,29 @@ export default function ReleasesPage({ route }: PageProps) {
 
   return (
     <>
-      <PageHeader title="Releases" subtitle="How new versions reach traffic: stage by stage, gated on how they behave.">
+      <PageHeader title="Releases" subtitle="How new versions reach traffic: stage by stage, gated on how they behave. A workflow version is judged over its jobs, a provider version over its calls.">
         <div className="flex flex-wrap items-center gap-2">
-          <Select
-            ariaLabel="Workflow"
-            size="sm"
-            mono
-            value={workflow}
-            onChange={setWorkflow}
-            options={[{ value: '', label: 'Every workflow' }, ...(workflows.data ?? []).map((w) => ({ value: w.name, label: w.name, hint: w.title }))]}
-          />
+          <Segmented ariaLabel="Kind" size="sm" value={kind} onChange={setKind} options={KINDS} />
+          {kind === 'workflow' && (
+            <Select
+              ariaLabel="Workflow"
+              size="sm"
+              mono
+              value={workflow}
+              onChange={setWorkflow}
+              options={[{ value: '', label: 'Every workflow' }, ...(workflows.data ?? []).map((w) => ({ value: w.name, label: w.name, hint: w.title }))]}
+            />
+          )}
+          {kind === 'provider' && (
+            <Select
+              ariaLabel="Provider"
+              size="sm"
+              mono
+              value={provider}
+              onChange={setProvider}
+              options={[{ value: '', label: 'Every provider' }, ...(providers.data ?? []).map((p) => ({ value: p.name, label: p.name, hint: p.title }))]}
+            />
+          )}
           <Segmented
             ariaLabel="Scope"
             size="sm"
@@ -143,7 +189,7 @@ export default function ReleasesPage({ route }: PageProps) {
           defaultSort={{ key: 'started', dir: 'desc' }}
           emptyIcon="release"
           emptyTitle={scope === 'active' ? 'Nothing in flight' : 'No releases yet'}
-          emptyMessage={scope === 'active' ? 'Every release has finished.' : 'Merging a change request with the canary strategy starts one.'}
+          emptyMessage={scope === 'active' ? 'Every release has finished.' : kind === 'provider' ? 'Merging a provider change request with the canary strategy starts one.' : 'Merging a change request with the canary strategy starts one.'}
           caption="Releases"
         />
       )}

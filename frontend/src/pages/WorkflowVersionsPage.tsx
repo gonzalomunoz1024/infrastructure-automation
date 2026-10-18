@@ -6,6 +6,7 @@ import { api, errorMessage } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
 import type { WorkflowDefinition, WorkflowVersion } from '../lib/types'
 import { ErrorState, Mono, TextLink, When } from '../components/common'
+import { DeprecatedTag } from '../components/Deprecation'
 import { unifiedDiff } from '../components/diff'
 import { allStepLocations } from '../designer/model/graph'
 import { stepTypeOfBody } from '../designer/model/fixes'
@@ -121,20 +122,24 @@ export default function WorkflowVersionsPage({ route }: PageProps) {
   ]
 
   const title = detail.data?.title ?? name
+  const deprecated = detail.data?.definition.api?.deprecated
   return (
     <>
       <PageHeader
         eyebrow="Versions"
         title={title}
         subtitle={
-          <span>
-            <Mono>{name}</Mono>
-            {detail.data && (
-              <>
-                {' · '}
-                {detail.data.publishedVersion ? `${detail.data.publishedVersion} published` : 'nothing published yet'} · latest {detail.data.latestVersion}
-              </>
-            )}
+          <span className="inline-flex flex-wrap items-center gap-2">
+            {deprecated && <DeprecatedTag deprecated={deprecated} />}
+            <span>
+              <Mono>{name}</Mono>
+              {detail.data && (
+                <>
+                  {' · '}
+                  {detail.data.publishedVersion ? `${detail.data.publishedVersion} published` : 'nothing published yet'} · latest {detail.data.latestVersion}
+                </>
+              )}
+            </span>
           </span>
         }
         back={{ href: `#${pathFor('workflows')}`, label: 'Workflows' }}

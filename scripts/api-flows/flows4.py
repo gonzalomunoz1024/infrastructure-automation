@@ -98,8 +98,16 @@ if isinstance(acc, dict) and acc.get('jobId'):
     vm81 = next((v for v in vms if (v.get('attributes') or {}).get('name') == 'web-81' or v.get('name') == 'web-81'), None)
     check(vm81, 'web-81 registered')
     if vm81:
-        s, lin = call('GET', A + f'/resources/{vm81["id"]}', expect=200)
-        print('web-81 lineage:', {k: lin.get(k) for k in ('builtFrom', 'dependsOn', 'lineage', 'parents') if k in lin})
+        s, lin = call('GET', A + f'/resources/{vm81["id"]}/lineage', expect=200)
+        if isinstance(lin, dict):
+            built = [b.get('id') for b in lin.get('builtFrom', [])]
+            nodes = [n.get('id') for n in lin.get('nodes', [])]
+            edges = lin.get('edges', [])
+            print('web-81 lineage: builtFrom', built, 'nodes', nodes, 'edges', [(e.get('from'), e.get('to'), e.get('via')) for e in edges])
+            check(any('rhel-golden-e2e' in json.dumps(b) for b in lin.get('builtFrom', [])), f'web-81 is built from the image the job built: {built}')
+            check(lin.get('dependents') == [], f'nothing is built from a new vm: {lin.get("dependents")}')
+            check(nodes[:1] == [vm81['id']] and all(b in nodes for b in built), f'the graph holds the vm first and its sources: {nodes}')
+            check(any(e.get('to') == vm81['id'] and e.get('from') in built and e.get('via') == 'create-vm' for e in edges), f'an edge image -> vm via create-vm: {edges}')
 
 # ---------------- replay against the last successful run
 s, jobs = call('GET', A + '/jobs?workflow=vm-restart&limit=50', expect=200)

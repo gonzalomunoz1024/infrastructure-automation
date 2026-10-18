@@ -32,6 +32,7 @@ import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Credentials by name, type and owner team: the value goes to the {@code CredentialsPort} and
@@ -81,11 +82,14 @@ public class CredentialsHandler implements CredentialsCommands, CredentialsQueri
             String wanted = command.owner() == null || command.owner().isBlank() ? null : ContentFiles.requireSlug("The owner team", command.owner().trim());
             String key = name;
             return credentials.info(key).map(Optional::of).defaultIfEmpty(Optional.empty())
-                    .flatMap(existing -> {
+                    // the checks read every provider and workflow from the stores: never on the thread the vault answered on
+                    .flatMap(existing -> Mono.fromCallable(() -> {
                         requireChange(who, key, existing.orElse(null));
-                        String owner = ownerOf(who, wanted, existing.orElse(null));
-                        return credentials.store(key, type, command.value(), who.id(), owner);
-                    })
+                        return ownerOf(who, wanted, existing.orElse(null));
+                    }).subscribeOn(Schedulers.boundedElastic()))
+                    .flatMap(owner -> credentials.store(key, type, command.value(), who.id(), owner))
+                    // the audit listener writes to its store as the event is published
+                    .publishOn(Schedulers.boundedElastic())
                     .map(info -> {
                         ObjectNode data = F.objectNode();
                         data.put("name", info.name());

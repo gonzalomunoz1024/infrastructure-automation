@@ -1,5 +1,6 @@
 package com.iaf.platform.assistant.adapters.outbound;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 
@@ -15,7 +16,8 @@ import com.iaf.platform.common.adapters.jdbc.Jdbc;
  * The builder sessions of the {@code postgres} profile: one row per session in
  * {@code assistant_sessions}, so a conversation and its draft survive a restart. An update locks
  * the row while it changes the session, so concurrent turns never lose one another; a change
- * that returns null removes the session, as in memory.
+ * that returns null removes the session, as in memory. {@code SessionRetention} deletes the rows
+ * not updated within {@code platform.assistant.session-retention}.
  */
 @Component
 @Primary
@@ -63,5 +65,10 @@ public class JdbcSessionStore implements SessionStore {
                     next.requester(), next.status(), Jdbc.time(next.updatedAt()), jdbc.json(next), id);
             return Optional.of(next);
         });
+    }
+
+    @Override
+    public int deleteUpdatedBefore(Instant cutoff) {
+        return jdbc.update("DELETE FROM assistant_sessions WHERE updated_at < ?", Jdbc.time(cutoff));
     }
 }

@@ -142,6 +142,7 @@ export function resourceTone(status: string): Tone {
 export function checkDot(status: CheckStatus | string): DotKind {
   if (status === 'passed') return 'healthy'
   if (status === 'failed') return 'critical'
+  if (status === 'warning') return 'warning'
   return 'neutral'
 }
 

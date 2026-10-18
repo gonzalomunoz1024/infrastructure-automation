@@ -53,6 +53,7 @@ class ReleaseCommandHandlerTest {
     static final List<Integer> STAGES = List.of(10, 50, 100);
     static final Identity ANA = new Identity("ana", "Ana", "ana@example.com", List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
     static final Identity MATEO = new Identity("mateo", "Mateo", "mateo@example.com", List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity GONZALO = new Identity("gonzalo", "Gonzalo", "gonzalo@example.com", List.of("team-compute", "team-platform"), List.of(), true, Identity.Kind.USER);
 
     final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     final InMemoryReleaseStore store = new InMemoryReleaseStore();
@@ -368,6 +369,7 @@ class ReleaseCommandHandlerTest {
         assertThat(r.stagePercent()).isZero();
         assertThat(r.endedAt()).isEqualTo(NOW);
         assertThat(only("release.rolled-back").data().get("reason").asText()).isEqualTo("rolled back by Mateo");
+        assertThat(r.history().get(1).event()).as("the history says who, as the event does").isEqualTo("rolled back by Mateo");
         assertThat(store.active("vm-restart")).isEmpty();
     }
 
@@ -395,6 +397,38 @@ class ReleaseCommandHandlerTest {
     @Test
     void anUnknownReleaseIsNotFound() {
         StepVerifier.create(handler.promote("rel_missing")).expectError(NotFoundException.class).verify();
+    }
+
+    @Test
+    void aReleaseWithoutAnOwnerIsLeftToAnAdmin() {
+        store.save(Release.canary("rel_gone", "retired-flow", "1.0.0", "1.1.0", STAGES, THREE_HOURS_AGO, "ana"));
+        when(workflows.version("retired-flow", "1.1.0")).thenReturn(Mono.empty());
+        String gone = "Mateo may not change release rel_gone of retired-flow: its workflow no longer exists, so only an admin may";
+        forbidden(handler.promote("rel_gone"), MATEO, gone);
+        forbidden(handler.pause("rel_gone"), MATEO, gone);
+        forbidden(handler.rollback("rel_gone"), MATEO, gone);
+        assertThat(store.find("rel_gone").orElseThrow().status()).isEqualTo(ReleaseStatus.CANARY);
+        StepVerifier.create(handler.rollback("rel_gone").contextWrite(ctx -> CurrentIdentity.with(ctx, GONZALO)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("rolled-back"))
+                .verifyComplete();
+
+        store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        when(providers.provider("fleet")).thenReturn(Mono.empty());
+        forbidden(handler.promote("rel_p"), MATEO, "Mateo may not change release rel_p of fleet: its provider no longer exists, so only an admin may");
+        assertThat(store.find("rel_p").orElseThrow().status()).isEqualTo(ReleaseStatus.CANARY);
+
+        store.save(Release.canary("rel_loose", "loose-flow", "1.0.0", "1.1.0", STAGES, THREE_HOURS_AGO, "ana"));
+        when(workflows.version("loose-flow", "1.1.0")).thenReturn(Mono.just(record("loose-flow", "1.1.0", null, STAGES)));
+        forbidden(handler.pause("rel_loose"), ANA, "Ana may not change release rel_loose of loose-flow: its workflow names no owner, so only an admin may");
+        StepVerifier.create(handler.pause("rel_loose").contextWrite(ctx -> CurrentIdentity.with(ctx, GONZALO)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("paused"))
+                .verifyComplete();
+    }
+
+    private static void forbidden(Mono<?> command, Identity who, String message) {
+        StepVerifier.create(command.contextWrite(ctx -> CurrentIdentity.with(ctx, who)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessage(message))
+                .verify();
     }
 
     // ---- provider releases -------------------------------------------------------------------

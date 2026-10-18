@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button, ConfirmDialog, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, cx, useOverlayClose } from '@iaf/ui'
 import type { Attention, JobStep } from '../lib/types'
 import { JsonEditor, parseJsonText } from './JsonEditor'
@@ -17,10 +17,14 @@ export interface AttentionPanelProps {
   onRetryWithInput: (input: Record<string, unknown>) => Promise<void>
   onSkip: () => Promise<void>
   onAbort: () => Promise<void>
+  /** holds every action, as while a 429's Retry-After passes */
+  disabled?: boolean
+  /** shown under the actions: why they wait */
+  notice?: ReactNode
   className?: string
 }
 
-export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onSkip, onAbort, className }: AttentionPanelProps) {
+export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onSkip, onAbort, disabled, notice, className }: AttentionPanelProps) {
   const now = useNow(30_000)
   const [busy, setBusy] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<'skip' | 'abort' | null>(null)
@@ -29,10 +33,14 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
   const left = deadline ? countdown(deadline, now) : null
   const can = (o: Attention['options'][number]) => attention.options.includes(o)
 
-  const run = async (name: string, fn: () => Promise<void>) => {
+  // the page's handler reports a failure (a toast); here it only says whether the action went through
+  const run = async (name: string, fn: () => Promise<void>): Promise<boolean> => {
     setBusy(name)
     try {
       await fn()
+      return true
+    } catch {
+      return false
     } finally {
       setBusy(null)
     }
@@ -49,7 +57,13 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           <p className="mt-0.5 text-sm text-secondary">
             Step <span className="font-medium text-primary">{step?.name ?? attention.step}</span> stopped the run.
           </p>
-          <p className="mt-2 rounded-md bg-surface px-3 py-2 font-mono text-caption text-critical">{attention.error}</p>
+          {attention.error && (
+            <p className="mt-2 rounded-md bg-surface px-3 py-2 font-mono text-caption text-critical" data-testid="attention-error">
+              <span className="font-medium">{attention.error.class}</span>
+              <span className="ml-2 text-primary">{attention.error.message}</span>
+              <span className="ml-2 text-tertiary">{attention.error.retryable ? 'retryable' : 'not retryable'}</span>
+            </p>
+          )}
           <p className="mt-2 text-caption text-tertiary">
             Waiting since <When at={attention.since} now={now} />
             {left && (
@@ -61,26 +75,27 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {can('retry') && (
-              <Button variant="primary" icon="refresh" loading={busy === 'retry'} disabled={!!busy} onClick={() => void run('retry', onRetry)}>
+              <Button variant="primary" icon="refresh" loading={busy === 'retry'} disabled={!!busy || disabled} onClick={() => void run('retry', onRetry)}>
                 Retry
               </Button>
             )}
             {can('edit-input') && (
-              <Button icon="edit" disabled={!!busy} onClick={() => setEditing(true)}>
+              <Button icon="edit" disabled={!!busy || disabled} onClick={() => setEditing(true)}>
                 Edit input
               </Button>
             )}
             {can('skip') && (
-              <Button icon="chevron-right" disabled={!!busy} onClick={() => setConfirm('skip')}>
+              <Button icon="chevron-right" disabled={!!busy || disabled} onClick={() => setConfirm('skip')}>
                 Skip
               </Button>
             )}
             {can('abort') && (
-              <Button variant="warning-outline" icon="stop" disabled={!!busy} onClick={() => setConfirm('abort')}>
+              <Button variant="warning-outline" icon="stop" disabled={!!busy || disabled} onClick={() => setConfirm('abort')}>
                 Abort
               </Button>
             )}
           </div>
+          {notice}
         </div>
       </div>
 
@@ -89,7 +104,9 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           title="Skip this step?"
           message={`The run continues after ${step?.name ?? attention.step} as if it had succeeded. Whatever it should have done stays undone.`}
           confirmLabel="Skip step"
-          onConfirm={() => run('skip', onSkip)}
+          onConfirm={async () => {
+            await run('skip', onSkip)
+          }}
           onClose={() => setConfirm(null)}
         />
       )}
@@ -100,7 +117,9 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           icon="stop"
           message="The run stops here and every compensation step runs in reverse order. This cannot be undone."
           confirmLabel="Abort run"
-          onConfirm={() => run('abort', onAbort)}
+          onConfirm={async () => {
+            await run('abort', onAbort)
+          }}
           onClose={() => setConfirm(null)}
         />
       )}
@@ -110,8 +129,7 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           initial={step?.input}
           onClose={() => setEditing(false)}
           onSubmit={async (input) => {
-            await run('edit', () => onRetryWithInput(input))
-            setEditing(false)
+            if (await run('edit', () => onRetryWithInput(input))) setEditing(false)
           }}
         />
       )}

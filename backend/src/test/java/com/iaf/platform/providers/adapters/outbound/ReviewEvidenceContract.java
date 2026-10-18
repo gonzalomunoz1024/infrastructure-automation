@@ -93,7 +93,10 @@ abstract class ReviewEvidenceContract {
         assertThat(fleet.connections().get(0).durationMs()).as("the oldest go first").isEqualTo(5);
         assertThat(fleet.lastConnection("dev").orElseThrow().durationMs()).isEqualTo(InMemoryReviewEvidence.MAX_CONNECTIONS + 4);
         assertThat(fleet.tries()).hasSize(1);
+        assertThat(fleet.droppedConnections()).as("what the bound dropped is counted, never hidden").isEqualTo(5);
+        assertThat(fleet.droppedTries()).isZero();
         assertThat(store.evidence("vault").connections()).as("another provider's evidence is its own").hasSize(1);
+        assertThat(store.evidence("vault").droppedConnections()).isZero();
     }
 
     @Test
@@ -106,17 +109,33 @@ abstract class ReviewEvidenceContract {
         assertThat(fleet.tries().get(0).durationMs()).as("the oldest go first").isEqualTo(3);
         assertThat(fleet.lastAnswer("vm.get", "dev").orElseThrow().durationMs()).isEqualTo(InMemoryReviewEvidence.MAX_TRIES + 2);
         assertThat(fleet.connections()).isEmpty();
+        assertThat(fleet.droppedTries()).isEqualTo(3);
+        assertThat(fleet.droppedConnections()).isZero();
+        store.recordTry("fleet", failed("vm.delete", T0.plusSeconds(1000)));
+        store.recordTry("fleet", failed("vm.delete", T0.plusSeconds(1001)));
+        assertThat(store.evidence("fleet").droppedTries()).as("the count adds up").isEqualTo(5);
+        assertThat(store.evidence("fleet").tries()).hasSize(InMemoryReviewEvidence.MAX_TRIES);
+    }
+
+    @Test
+    void aTryKeepsTheEndpointAndTheCredentialReferenceItUsed() {
+        ActionTry t = new ActionTry("vm.get", "dev", true, 200, 10, null, null, null, T0, "mateo", "https://fleet-dev.example.com", "vault:fleet/token");
+        store.recordTry("fleet", t);
+        ActionTry kept = store.evidence("fleet").tries().get(0);
+        assertThat(kept).isEqualTo(t);
+        assertThat(kept.endpoint()).isEqualTo("https://fleet-dev.example.com");
+        assertThat(kept.credential()).isEqualTo("vault:fleet/token");
     }
 
     @Test
     void aHugeResponseCountsAsATryWithoutItsBody() {
         ObjectNode big = JsonNodeFactory.instance.objectNode();
         big.put("blob", "x".repeat(InMemoryReviewEvidence.MAX_RESPONSE_BYTES + 1));
-        store.recordTry("fleet", new ActionTry("vm.get", "dev", true, 200, 10, null, big, null, T0, "mateo"));
+        store.recordTry("fleet", new ActionTry("vm.get", "dev", true, 200, 10, null, big, null, T0, "mateo", "https://fleet-dev.example.com", "vault:fleet/token"));
         ActionTry kept = store.evidence("fleet").tries().get(0);
         assertThat(kept.ok()).isTrue();
         assertThat(kept.response()).isNull();
-        assertThat(kept).isEqualTo(new ActionTry("vm.get", "dev", true, 200, 10, null, null, null, T0, "mateo"));
+        assertThat(kept).isEqualTo(new ActionTry("vm.get", "dev", true, 200, 10, null, null, null, T0, "mateo", "https://fleet-dev.example.com", "vault:fleet/token"));
     }
 
     @Test
@@ -124,11 +143,15 @@ abstract class ReviewEvidenceContract {
         store.recordConnection("fleet", connection("dev", true, 120, T0));
         store.recordTry("fleet", answered("vm.get", 80, T0.plusSeconds(2)));
         store.recordTry("fleet", failed("vm.delete", T0.plusSeconds(3)));
+        for (int i = 0; i < InMemoryReviewEvidence.MAX_CONNECTIONS + 2; i++) {
+            store.recordConnection("vault", connection("dev", true, i, T0.plusSeconds(i)));
+        }
         ReviewEvidence before = store.evidence("fleet");
 
         ReviewEvidencePort after = reopen();
         assumeTrue(after != null, "this store does not outlive the process");
         assertThat(after.evidence("fleet")).isEqualTo(before);
         assertThat(after.evidence("fleet").tries()).hasSize(2);
+        assertThat(after.evidence("vault").droppedConnections()).isEqualTo(2);
     }
 }

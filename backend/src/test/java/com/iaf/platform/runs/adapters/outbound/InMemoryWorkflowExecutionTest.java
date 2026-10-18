@@ -48,7 +48,7 @@ class InMemoryWorkflowExecutionTest {
     private static final Duration WAIT = Duration.ofSeconds(15);
 
     private RunsTestWiring w;
-    private final List<DomainEvent> published = new ArrayList<>();
+    private final List<DomainEvent> published = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {

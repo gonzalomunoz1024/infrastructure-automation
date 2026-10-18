@@ -1,5 +1,7 @@
 package com.iaf.platform.providers.ports.inbound;
 
+import java.util.Optional;
+
 import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDetail;
@@ -42,4 +44,11 @@ public interface ProviderQueries {
 
     /** The provider's open alerts ({@code GET /providers/{name}/alerts}); 404 when unknown. */
     Flux<ProviderAlert> alerts(String name);
+
+    /**
+     * The owner team of the published provider (its current stored version), which decides who may
+     * change it; empty when no provider has that name or it names no owner. A store read: call it
+     * where blocking is allowed, as a command handler's bounded elastic section is.
+     */
+    Optional<String> ownerOf(String name);
 }

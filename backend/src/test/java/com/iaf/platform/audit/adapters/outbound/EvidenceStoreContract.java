@@ -24,6 +24,7 @@ import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
+import com.iaf.platform.audit.ports.outbound.EvidenceStore.Unsealed;
 import com.iaf.platform.common.domain.NotFoundException;
 
 /** What every {@link EvidenceStore} does, in memory and in a database. */
@@ -57,6 +58,43 @@ abstract class EvidenceStoreContract {
 
     static String text(JsonNode node) {
         return node == null ? null : node.toString();
+    }
+
+    @Test
+    void unsealedListsTheRecordsThatStillTakeSignaturesNewestFirstWithoutTheirEntries() {
+        EvidenceStore store = newStore();
+        store.append("job_a", requested(T0, "vm-restart", "ana"));
+        EvidenceEntry closedA = store.append("job_a", closed(T0.plusSeconds(10), Instant.parse("2033-10-17T00:00:00Z")));
+        store.append("job_b", requested(T0.plusSeconds(1), "create-vm", "mateo"));
+        store.append("job_c", requested(T0.plusSeconds(2), "vm-restart", "ana"));
+        EvidenceEntry closedC = store.append("job_c", closed(T0.plusSeconds(20), Instant.parse("2033-10-17T00:00:00Z")));
+        store.seal("job_c", new EvidenceRecord.Seal(T0.plusSeconds(30), "sig-c", "key-1", closedC.seq(), closedC.hash()));
+        EvidenceEntry platform = store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(T0.plusSeconds(3), EvidenceKind.DECISION, "ana",
+                JSON.createObjectNode().put("event", "workflow.published")));
+
+        List<Unsealed> unsealed = store.unsealed();
+
+        assertThat(unsealed).extracting(Unsealed::jobId).containsExactly(EvidenceRecord.PLATFORM, "job_b", "job_a");
+        Unsealed a = unsealed.get(2);
+        assertThat(a.closed()).isTrue();
+        assertThat(a.entries()).isEqualTo(2);
+        assertThat(a.latestHash()).isEqualTo(closedA.hash());
+        assertThat(a.at()).isEqualTo(T0);
+        assertThat(a.latestCheckpoint()).isNull();
+        assertThat(unsealed.get(1).closed()).isFalse();
+        assertThat(unsealed.get(0).platform()).isTrue();
+        assertThat(unsealed.get(0).latestHash()).isEqualTo(platform.hash());
+
+        try {
+            EvidenceEntry headB = store.record("job_b").orElseThrow().entries().get(0);
+            store.checkpoint("job_b", new EvidenceRecord.Seal(T0.plusSeconds(40), "sig-b", "key-1", headB.seq(), headB.hash()));
+            Unsealed b = store.unsealed().stream().filter(u -> u.jobId().equals("job_b")).findFirst().orElseThrow();
+            assertThat(b.latestCheckpoint().hash()).isEqualTo(headB.hash());
+        } catch (UnsupportedOperationException noCheckpoints) {
+            // a store without checkpoints has nothing more to show
+        }
+        store.seal("job_a", new EvidenceRecord.Seal(T0.plusSeconds(50), "sig-a", "key-1", closedA.seq(), closedA.hash()));
+        assertThat(store.unsealed()).extracting(Unsealed::jobId).containsExactly(EvidenceRecord.PLATFORM, "job_b");
     }
 
     @Test

@@ -145,7 +145,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
+| `use: { type, id, waitUntil: ready, checkAccess: false }` | resolve a registry resource; policy judges whether the requester may use it unless `checkAccess: false` opts the step out (the demo policy: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always); with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |
@@ -166,6 +166,13 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
   artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+  An upload is unpacked and checked before it is kept: every text file is scanned for secrets (a
+  private key block, a `password`/`token`/`secret`/`api_key` with a literal value instead of a
+  `vault:` reference or an expression, AWS, GitHub and Slack token shapes) and refused naming the
+  file and line, never the value; then `platform.playbooks.lint-command` (blank by default, which
+  skips the lint and the answer says so) runs a linter such as `ansible-lint --offline {playbook}`
+  in the unpacked upload and refuses it on a non-zero exit with the linter's output. The pin
+  checks at publish therefore skip uploads: they were checked when uploaded.
 - `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
   pinned by the provider's `source.commit`.
 
@@ -326,6 +333,7 @@ spec:
       operation: getVm        # operationId in the spec (openapi); or { method, path } (http)
       effect: read            # read | create | change | delete
       retry: safe             # safe | unsafe
+      slo: { successRate: 99.9, p95Ms: 300 }   # optional: this action's own SLO; a field left out takes the provider's value
       sample: { id: vm-1, name: web, powerState: poweredOn }   # what dry runs answer; Try it saves the real response here
       recorded: { environment: dev, at: "2026-10-17T10:00:00Z" } # where and when that response came from
     - id: vm.delete
@@ -351,11 +359,34 @@ Before a new version is published, the wizard's review checks the file against w
 saw: the connection to dev and test passed with these endpoints and this credential, every action
 answered when tried against dev, every error class has a match rule, every delete has a `plan`
 or an `effectDetail`, and no real response still disagrees with its schema after the
-`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
+`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers). A
+provider with an action that creates, changes or deletes something is held to two more gates: its
+`errors` classified (openapi and http providers) and `alerts.channel` set; a provider that only
+reads gets a warning for each instead.
+
+Health is judged over the last 24 hours against `spec.slo` (default 99% success, p95 1000 ms;
+`PUT /providers/{name}/slo` changes it). An action may carry an `slo` of its own, which wins over
+the provider's for its calls: the provider's band is then the worst band of its parts, the calls
+of the actions without one judged together against the provider's SLO and each action with one
+judged against its own. A part with fewer than 5 calls is unknown and does not count; when no part
+has enough calls the provider is judged as a whole against its own SLO. The success rate and the
+latencies shown beside the band are always those of all the calls.
 
 Endpoints are https URLs. The one exception is plain http to a loopback host (`localhost`,
 `127.x.x.x`, `::1`) for a provider under development on the same machine: the file checks let it
 through with a warning (`endpoints.https`) instead of an error.
+
+A call fills each `{name}` in the operation's path from the input field of that name, and the
+value fills that one segment: a `/` in it is sent encoded (`%2F`), and a value with a `.` or `..`
+segment fails the call with `invalid_input` before anything is sent. The declared query parameters
+come next, and the rest of the input is the JSON body (query parameters for a method without one).
+
+An error rule matches a failed call by its `status`, narrowed by a `body` text when several classes
+share a status (`match: { status: 400, body: quota }`). The rules are tried in order and the first
+that matches names the class; a call no rule matches falls back to its status (401 and 403
+`unauthorized`, 404 `not_found`, 409 `conflict`, 429 `rate_limited`, 408, 502, 503 and 504
+`unavailable`, any other 5xx `server_error`, any other 4xx `client_error`). A rule without a status
+never matches, and the review refuses it.
 
 The spec can also live in a Git repository. The file then names the repository, the ref and the
 path, and pins the commit it was read from; calls look operations up in that commit, never in
@@ -446,10 +477,14 @@ schema:
     os: { type: string }
 states: [building, ready, deprecated, retired]
 producedBy: build-vm-image     # the workflow whose register step creates this type
+visibility: public             # what new resources of the type get: public (every team's) or team (the default: the owner team's)
 ```
 
 The registry generates `GET /api/v1/images`, `GET /api/v1/images/{id}` and the MCP tools
-`list_images`, `get_image` for every type.
+`list_images`, `get_image` for every type. A resource belongs to the team that registered it;
+only that team, the job that created it or an admin may update it through a later `register`,
+and only the team or an admin may retire it. `visibility` is what a `use` step's access check
+reads: a `public` resource is any team's, a `team` resource its owner team's.
 
 ## kind: PriceList
 

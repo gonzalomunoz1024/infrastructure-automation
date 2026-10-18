@@ -5,6 +5,8 @@ import { navigate, pathFor } from '../app/router'
 import { api } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { CatalogEntry } from '../lib/types'
+import { ApiLinks } from '../components/ApiLinks'
+import { DeprecatedTag } from '../components/Deprecation'
 import { ErrorState, Mono } from '../components/common'
 
 type View = 'table' | 'cards'
@@ -60,7 +62,10 @@ export default function CatalogPage(_: PageProps) {
       accessor: (e) => e.title,
       render: (e) => (
         <div className="min-w-0 max-w-md">
-          <div className="font-medium text-primary">{e.title}</div>
+          <div className="flex flex-wrap items-center gap-2 font-medium text-primary">
+            {e.title}
+            {e.deprecated && <DeprecatedTag deprecated={e.deprecated} />}
+          </div>
           {e.description && <div className="truncate text-caption text-secondary">{e.description}</div>}
         </div>
       ),
@@ -88,16 +93,19 @@ export default function CatalogPage(_: PageProps) {
       <PageHeader title="Catalog" subtitle="Every published workflow, ready to run from a form, the API or an MCP tool.">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the catalog" aria-label="Search the catalog" className="sm:max-w-xs" />
-          <Segmented
-            ariaLabel="View"
-            size="sm"
-            value={view}
-            onChange={setView}
-            options={[
-              { value: 'table', icon: 'list', title: 'Table' },
-              { value: 'cards', icon: 'grid', title: 'Cards' },
-            ]}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <ApiLinks lead="The same operations:" />
+            <Segmented
+              ariaLabel="View"
+              size="sm"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'table', icon: 'list', title: 'Table' },
+                { value: 'cards', icon: 'grid', title: 'Cards' },
+              ]}
+            />
+          </div>
         </div>
       </PageHeader>
 
@@ -138,7 +146,10 @@ export default function CatalogPage(_: PageProps) {
                     {e.persona && ` · for ${e.persona}`}
                   </p>
                 </div>
-                <Ways entry={e} />
+                <span className="inline-flex flex-wrap justify-end gap-1">
+                  {e.deprecated && <DeprecatedTag deprecated={e.deprecated} />}
+                  <Ways entry={e} />
+                </span>
               </div>
               {e.description && <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-secondary">{e.description}</p>}
               <div className="mt-4 flex items-center justify-between gap-3 border-t border-stroke-light pt-3">

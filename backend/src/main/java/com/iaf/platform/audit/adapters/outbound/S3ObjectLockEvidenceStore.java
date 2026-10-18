@@ -1,7 +1,9 @@
 package com.iaf.platform.audit.adapters.outbound;
 
 import java.net.URI;
+import java.time.Clock;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
@@ -29,12 +31,16 @@ public class S3ObjectLockEvidenceStore extends WormEvidenceStore {
     private final S3Client s3;
 
     @Autowired
-    public S3ObjectLockEvidenceStore(WormProperties worm, PlatformProperties platform) {
-        this(client(worm.getS3()), worm.getS3(), platform.getAudit().getRetentionYears());
+    public S3ObjectLockEvidenceStore(WormProperties worm, PlatformProperties platform, ObjectProvider<Clock> clock) {
+        this(client(worm.getS3()), worm.getS3(), platform.getAudit().getRetentionYears(), clock.getIfAvailable(Clock::systemUTC));
     }
 
     S3ObjectLockEvidenceStore(S3Client s3, WormProperties.S3 config, int retentionYears) {
-        super(locked(new S3ObjectLockObjects(s3, config.getBucket(), config.getPrefix())), retentionYears);
+        this(s3, config, retentionYears, Clock.systemUTC());
+    }
+
+    S3ObjectLockEvidenceStore(S3Client s3, WormProperties.S3 config, int retentionYears, Clock clock) {
+        super(locked(new S3ObjectLockObjects(s3, config.getBucket(), config.getPrefix())), retentionYears, clock);
         this.s3 = s3;
     }
 

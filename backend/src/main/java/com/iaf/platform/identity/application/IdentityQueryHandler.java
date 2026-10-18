@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.inbound.IdentityQueries;
@@ -25,10 +26,16 @@ public class IdentityQueryHandler implements IdentityQueries {
         return CurrentIdentity.current();
     }
 
+    /** Admins only, like creating them: the list names every automation and what it may call. */
     @Override
     public Mono<List<ServiceAccount>> serviceAccounts() {
-        return Mono.fromSupplier(() -> store.all().stream()
-                .map(ServiceAccount::withoutSecret)
-                .toList());
+        return CurrentIdentity.current().map(who -> {
+            if (!who.admin()) {
+                throw new ForbiddenException("Only admins list service accounts");
+            }
+            return store.all().stream()
+                    .map(ServiceAccount::withoutSecret)
+                    .toList();
+        });
     }
 }

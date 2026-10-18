@@ -49,7 +49,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `observability` | job and step spans, traced provider calls, per-workflow metrics          |
 | `resources` | resource types, registry, lineage, retire                             |
 | `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
-| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always) |
+| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always; who sees a provider: the same rule, for scoping the provider list) |
 | `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock, redaction, trace ids |
 | `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
 
@@ -78,14 +78,15 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256) |
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
-| `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
+| `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine; its resource-access rule: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always) |
 | `TelemetryPort`         | `JdbcTelemetry` (profile `postgres`, the samples in `telemetry_samples`) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
 | `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
-| `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded) |
+| `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
+| `ProviderAlertStatePort` | `JdbcProviderAlertState` (profile `postgres`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
@@ -102,7 +103,10 @@ repository, the module registry) only after `AccessRules.requireUseCredential` h
 caller against the owner the store reports, through `CredentialUse` in the providers slice: admins
 pass, so does anyone for a credential without an owner. The check runs before the secret is
 resolved, and a name the store does not know is left to fail where it is resolved, so a refusal
-never reveals a credential another team owns.
+never reveals a credential another team owns. The same rule, as `identity.application.CredentialAccess`,
+guards the playbooks slice: `GET /playbooks:resolve` with a credential, and the pinning of git
+playbooks at publish (`PlaybookPinning`), which judges the publishing identity and refuses the
+publish with 403 rather than sending another team's credential to a repository.
 
 The demo data follows one fixture, `common.demo.DemoReleases`: the release stories (versions,
 stages, outcomes, who decided). `DemoWorkflowHistory` keeps the versions those releases replaced
@@ -110,12 +114,36 @@ and the change requests that published them, `DemoRunsSeeder` routes each seeded
 version a story says was live and adds the canary traffic, `DemoResources` derives the registry
 from the resource types and workflows, and `DemoReleaseSeed` records the releases last and judges
 their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode agrees with the
-others, the way the Atlas topology fixture does. These demo classes are the only platform code that
-names the sample content (`DemoReleases` tells the stories of mongodb-upgrade, create-vm and
-vm-restart, `DemoRunsSeeder` puts its live states on mongodb-upgrade, vm-restart and patch-cve,
-`DemoTelemetrySeeder` gives the sample providers their traffic), and they are demo-only: each seeds
-only with `platform.demo.seed-history`, which the backend turns on by default for the demo and the
-Helm chart turns off (`demo.seedHistory`).
+others, the way the Atlas topology fixture does. The release stories are the only platform code
+that names the sample content (`DemoReleases` tells the stories of mongodb-upgrade, create-vm and
+vm-restart, `DemoRunsSeeder` puts its live states on mongodb-upgrade, vm-restart and patch-cve);
+the other demo seeders read the sample content rather than naming it: `DemoTelemetrySeeder` gives
+every provider the registry has two weeks of background calls, drawn from its declared SLO and a
+deterministic hash of its name, and hands the failing hour, the slow p95 and the success rate under
+the SLO to whichever providers can show them whatever the draw; every sample carries the provider's
+version, so a provider release's gates have a baseline. A provider added to the content gets its
+traffic without a code change. All of them are demo-only: each seeds only with
+`platform.demo.seed-history`, which the backend turns on by default for the demo and the Helm chart
+turns off (`demo.seedHistory`).
+
+### Identity
+
+`IdentityWebFilter` resolves the caller of every request before anything else runs and puts it
+in the Reactor context (`CurrentIdentity`): a service account token (`iaf_…`, looked up by its
+SHA-256), an OIDC JWT under the `oidc` profile, the dev `X-User` header, the default user. Under
+`oidc`, `JwtTokenVerifier` checks the signature against the issuer's JWKS (asymmetric algorithms
+only, the RSA, RSA-PSS and EC families, the key chosen by the token's algorithm and key id), the
+issuer, the audience, `sub` and `exp`, and maps the claims: `name`, `email`, the teams claim
+(`platform.identity.oidc-teams-claim`, default `groups`), the roles claim (`oidc-roles-claim`,
+`roles`), and admin when the roles hold `oidc-admin-role` (`platform-admin`; no other role makes
+an admin). The issuer, the audience and the JWKS URI are required: a blank one fails the start
+with a message that names the property, so no token of the issuer for another audience ever
+verifies. The JWKS is cached and refreshed ahead of its expiry on a schedule, rate limited and
+outage tolerant, and a token is verified on `boundedElastic` (`TokenVerifier` answers a `Mono`),
+since a key the cache lacks is fetched over HTTP. Two kinds of request come in without a
+credential, each as an identity that holds nothing: a signed webhook (its controller checks the
+signature) and the read of a shared evidence link, `GET /api/v1/audit/shared/{token}`, whose
+token is the secret (the audit slice keeps only its SHA-256 and refuses an expired one).
 
 ### Persistence
 
@@ -133,11 +161,12 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
 | `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
 | `ReviewEvidencePort` (providers) | `JdbcReviewEvidence`  | `review_evidence` |
+| `ProviderAlertStatePort` (providers) | `JdbcProviderAlertState` | `provider_alert_state` (one row: when the alert evaluator last ran) |
 | `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` (workflow and provider releases) |
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
 | `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
-| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
+| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` (rows not updated within `platform.assistant.session-retention` are deleted every hour by `SessionRetention`) |
 | `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 | `IdempotencyStore` (gateway)     | `JdbcIdempotencyStore` | `idempotency_keys` (claim = insert or take over a stale row; replay from the stored status, headers and body; a release deletes an unanswered row; expired rows swept every ten minutes) |
@@ -163,8 +192,12 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   first, as in memory, and a kept version is never written back to the content repo until it is current.
 - Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
   is one `review_evidence` row per result, with the in-memory bounds: the last 50 connection
-  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body. A row
-  holds endpoints, credential references and responses, never a credential value.
+  tests and the last 500 tries of a provider, a response over 256 KiB kept without its body, and
+  one count row per provider and kind (`dropped-connection`, `dropped-try`) for what the bounds
+  deleted. A row holds endpoints, credential references and responses, never a credential value.
+- The provider alert evaluator keeps when it last ran in `provider_alert_state`, so the first
+  evaluation after a restart raises alerts only for the calls that failed since, not for every
+  failed call of the last 24 hours again.
 - Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
   deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
   triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,
@@ -226,7 +259,9 @@ stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` f
 The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
 that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`,
 first in the filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and
-generated-route filters).
+generated-route filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
+and the S3 client under any profile, so the audit handlers read and write them on `boundedElastic`
+themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
 there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
 runs on a non-blocking thread, and the wiring test expects none.
@@ -248,8 +283,8 @@ runs on a non-blocking thread, and the wiring test expects none.
 
 | Port (slice)                       | Adapters |
 |------------------------------------|----------|
-| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
-| `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
+| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects; a `sealed/<record>.json` index object per sealed record, so a sealing run never reads one; a share link is kept under the SHA-256 of its token, never the token; the cache holds the open records, the 256 most recently used sealed ones and 1024 share links, and drops a link once it expired): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
+| `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set; neither is `@Primary`, every configured SIEM gets every batch) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
 | `IdempotencyStore`, `QuotaStore` (gateway) | `InMemoryIdempotencyStore` and `InMemoryQuotaStore` (per instance, so several API replicas need sticky routing); `JdbcIdempotencyStore` and `JdbcQuotaStore` under `postgres`, shared by every replica |
@@ -258,7 +293,29 @@ runs on a non-blocking thread, and the wiring test expects none.
   `release:<id>` and every other recorded command into the platform stream. Each entry is
   redacted (`common/redaction`: secret-looking fields and the values resolved from Vault during
   the run) before it is chained, then queued for the SIEM by `SiemExporter` (bounded, batched,
-  retried with backoff). The scheduled seal seals closed records and checkpoints open ones.
+  retried with backoff). A store that fails an append is tried once more; a second failure loses
+  that entry, counts it in `audit.append.failed` (tag `store`; `audit_append_failed_total` on
+  `/actuator/prometheus`) and logs an error naming the record. The job goes on: evidence never
+  stops a job, so alert on that counter. A sealed record refusing a late entry
+  (`SealedRecordException`) is a refusal, logged as a warning and not counted. The scheduled seal
+  seals closed records and checkpoints open ones; it reads only the records still taking
+  signatures (`EvidenceStore.unsealed()`: their head, entry count, whether they are closed and
+  their last checkpoint, never their entries), so a run costs the open records, not the history.
+  The JDBC store answers it from the headers (`sealed_at IS NULL`), the WORM stores skip every
+  record named in their `sealed/` index (one write-once object per sealed record, written with the
+  seal; a record sealed before the index existed is indexed the first time a run finds it). On
+  demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
+  member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
+  them, the workflow's owner team) or an admin, and each link is published as `audit.shared`
+  (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
+  is built (each record serialised straight into the zip, its sha256 taken on the way), streamed in
+  64 KiB chunks and deleted once sent, failed or abandoned; a pack whose client left before its
+  body was sent is swept from `java.io.tmpdir/iaf-evidence-packs` after an hour. Seals, checkpoints
+  and packs are signed by `AuditSigner` with `platform.audit.signing-key`: a `vault:` reference
+  resolved through `CredentialsPort` when it signs (each sealing run, verification and pack takes
+  the key once, so one never mixes two keys; a rotated key signs from the next run on, and seals
+  signed before read as `unverifiable`), a literal key (accepted with a startup warning) or, blank,
+  a random key per run.
 - `IdempotencyWebFilter` (after the identity filter) and `JobQuotas` guard every request that
   starts jobs; MCP `tools/call` goes through the same `IdempotencyHandler` and quotas.
 - `NotificationListener` turns notify steps, provider alerts, approval requests and escalations
@@ -343,10 +400,20 @@ result through `ChildResults`, which carries those registrations. The same class
   child workflows, `Workflow.await` for approvals and pause-on-failure, and durable timers for
   waits. The definition snapshot travels in the workflow input.
 
-A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
+A `use` step asks the policy engine whether the requester may use the resource (phase
+`RESOURCE_ACCESS`, the resource's owner and visibility in the input) unless it says
+`checkAccess: false`; the YAML parsers of both twins apply that default. One that waits for a
+resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
 in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
 bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
 signal a registry listener sends to the waiting workflow.
+
+The registry judges its own writes (`resources.domain.ResourceRules`): a resource is its owner
+team's, so only that team, the job that created it or an admin may update it through a `register`
+step, and only the team or an admin may retire it. Retiring and lineage walk
+`ResourceStorePort.builtFrom` (`ResourceGraph`: depth-first in both directions, each resource once,
+at most 32 hops and 1000 resources) instead of reading the whole registry; the JDBC store finds a
+resource's dependents with a LIKE on the document text and judges the candidates' `builtFrom`.
 
 A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
 the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
@@ -496,6 +563,23 @@ See `docs/design-language.md`. The shell (every page but the canvas) is built fr
 `packages/ui`, the Atlas design system. The canvas (`frontend/src/designer`) replicates n8n's
 editor on `@xyflow/react`. Routing is a small hash router in `frontend/src/app/router.ts`; no
 router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`.
+
+The shell renders what the API judges and never decides for itself: the catalog and the run page
+show an operation's deprecation (since, sunset, successor) as the catalog reports it; a run can be
+pinned to an exact version (`X-Workflow-Version`, bypassing the canary split) and every
+submission carries one `Idempotency-Key` per form, so a resend after a 429 (shown with the
+backend's `Retry-After` wait) or a lost answer replays the same job; the header bell is the inbox
+(`/notifications`); the audit page has a tab on the platform stream; the releases, release and
+provider pages show provider releases judged over calls. Every provider edit (the SLO, "Use the
+real response", a spec refresh, the wizard's publish) is a change request the page names and
+links. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
+the commit read), imports an Ansible repository or a Terraform module through the backend's
+drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
+it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
+so an edit keeps the file as it is and bumps its version by a line edit of the metadata block. The
+assistant page shows the validation's problems as the designer's Issues list, the session's own
+events from the platform stream, and submits a ready draft as a change request. The settings page
+creates service accounts with the presets and the grouped scopes of `docs/api.md`.
 
 ## Where things are in Git
 

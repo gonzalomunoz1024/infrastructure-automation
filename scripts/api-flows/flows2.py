@@ -62,13 +62,30 @@ if a2:
     j2 = wait_status(inv2['jobId'], ['failed', 'cancelled', 'rolled-back'])
     print('rejected job ->', j2.get('status'))
 
-# cancel a waiting job
+# cancel a waiting job: a stranger to the job and its workflow is refused first
 s, inv3 = call('POST', A + f'/vms/{VM3}:restart', {'reason': 'cancel me'}, expect=202)
 wait_status(inv3['jobId'], ['waiting-approval'])
+s, _ = call('POST', A + f'/jobs/{inv3["jobId"]}:cancel', user='nobody', expect=403, note='stranger cancels')
 s, _ = call('POST', A + f'/jobs/{inv3["jobId"]}:cancel', expect=202)
 j3 = wait_status(inv3['jobId'], ['cancelled'])
 s, _ = call('POST', A + f'/jobs/{inv3["jobId"]}:cancel', expect=409, note='cancel twice')
 s, _ = call('POST', A + '/jobs/job_nope:cancel', expect=404)
+
+# steering is for the requester, the workflow's owner team, its rbac roles and approvers, or an admin:
+# junior (team-compute, ops) may steer vm-restart jobs but not a team-data upgrade
+s, _dbs = call('GET', A + '/resources?type=database&status=ready', expect=200)
+_dbitems = _dbs if isinstance(_dbs, list) else (_dbs.get('items') or []) if isinstance(_dbs, dict) else []
+if _dbitems:
+    db = _dbitems[0]
+    target = '7.0' if (db.get('attributes') or {}).get('version') == '8.0' else '8.0'
+    s, up = call('POST', A + f'/mongodb-clusters/{db["id"]}:upgrade', {'targetVersion': target}, expect=202, note='upgrade to cancel')
+    if isinstance(up, dict) and up.get('jobId'):
+        wait_status(up['jobId'], ['waiting-approval', 'needs-attention', 'succeeded', 'failed'])
+        s, _ = call('POST', A + f'/jobs/{up["jobId"]}:cancel', user='junior', expect=403, note='junior cancels a data job')
+        s, _ = call('POST', A + f'/jobs/{up["jobId"]}:retry', {}, user='junior', expect=403, note='junior retries a data job')
+        s, _ = call('POST', A + f'/jobs/{up["jobId"]}:cancel', expect=[202, 409], note='gonzalo cancels it')
+else:
+    issue('no ready database to try the steering rule on')
 
 # generic POST /jobs
 s, gj = call('POST', A + '/jobs', {'workflow': 'request-storage', 'input': {'vmId': VM, 'sizeGb': 50}}, expect=202, note='generic start')

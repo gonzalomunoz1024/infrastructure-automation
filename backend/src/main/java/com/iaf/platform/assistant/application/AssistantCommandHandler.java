@@ -19,6 +19,7 @@ import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.domain.DraftReview;
 import com.iaf.platform.assistant.domain.Events;
 import com.iaf.platform.assistant.domain.ProviderDraft;
+import com.iaf.platform.assistant.domain.SessionRules;
 import com.iaf.platform.assistant.domain.WorkflowDraft;
 import com.iaf.platform.assistant.domain.Words;
 import com.iaf.platform.assistant.ports.inbound.AssistantCommands;
@@ -48,6 +49,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Builder sessions: start one, send a message and stream the agent's events while the session
@@ -141,6 +143,7 @@ public class AssistantCommandHandler implements AssistantCommands {
                 throw new IllegalArgumentException("text is required");
             }
             AssistantSession session = sessions.get(sessionId).orElseThrow(() -> new NotFoundException("Assistant session", sessionId));
+            SessionRules.requireUse(who, session);
             Instant now = clock.instant();
             String message = text.trim();
             AssistantSession working = session.withTurn("user", message, now).withStatus(AssistantSession.WORKING, now);
@@ -156,6 +159,8 @@ public class AssistantCommandHandler implements AssistantCommands {
                         return Flux.just(Events.message(clock.instant(), "The assistant failed: " + e.getMessage()), Events.failed(clock.instant(), e.getMessage()));
                     })
                     .takeUntil(Events::isDone)
+                    // the agent emits on its own threads (a poll timer, the HTTP client): the session store may block
+                    .publishOn(Schedulers.boundedElastic())
                     .doOnNext(e -> record(sessionId, e, ended, who));
             return stream.concatWith(Flux.defer(() -> {
                 if (ended.get()) {
@@ -164,7 +169,23 @@ public class AssistantCommandHandler implements AssistantCommands {
                 AssistantEvent done = Events.done(clock.instant());
                 record(sessionId, done, ended, who);
                 return Flux.just(done);
-            })).doOnCancel(() -> sessions.update(sessionId, s -> AssistantSession.WORKING.equals(s.status()) ? s.withStatus(AssistantSession.DONE, clock.instant()) : s));
+            })).doOnCancel(() -> closeOnCancel(sessionId));
+        });
+    }
+
+    /**
+     * The client went away mid-stream: the session is closed, off the cancelling thread (a Netty
+     * event loop), and forgets the agent's session, which the agent ends on the cancel.
+     */
+    private void closeOnCancel(String sessionId) {
+        Schedulers.boundedElastic().schedule(() -> {
+            try {
+                sessions.update(sessionId, s -> AssistantSession.WORKING.equals(s.status())
+                        ? s.withStatus(AssistantSession.DONE, clock.instant()).withExternalId(null, clock.instant())
+                        : s);
+            } catch (RuntimeException e) {
+                log.warn("assistant session {} could not be closed after the client left: {}", sessionId, e.toString());
+            }
         });
     }
 
@@ -213,7 +234,7 @@ public class AssistantCommandHandler implements AssistantCommands {
                 return Flux.just(done);
             }
             int errors = r.review().errors().size();
-            if (lastRound || external.get() == null || request.session() == null) {
+            if (lastRound || external.get() == null || external.get().isBlank() || request.session() == null) {
                 return Flux.just(Events.message(clock.instant(), "The platform's checks still find " + count(errors, "error") + " after "
                         + count(round, "round") + " with the agent, so the draft needs a person: "
                         + String.join("; ", r.review().errors().stream().map(DraftReview::line).toList()) + "."), done);
@@ -272,7 +293,8 @@ public class AssistantCommandHandler implements AssistantCommands {
     private void record(String sessionId, AssistantEvent e, AtomicBoolean ended, Identity who) {
         Instant now = clock.instant();
         if (e.data() != null && e.data().hasNonNull("externalId")) {
-            String external = e.data().get("externalId").asText();
+            // an empty id: the agent ended its session, and the next message starts a new one
+            String external = e.data().get("externalId").asText().isBlank() ? null : e.data().get("externalId").asText();
             sessions.update(sessionId, s -> s.withExternalId(external, now));
         }
         switch (e.type()) {

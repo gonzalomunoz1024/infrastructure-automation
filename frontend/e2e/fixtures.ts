@@ -1,18 +1,23 @@
 import type { Page } from '@playwright/test'
 import type {
+  AnsibleImport,
   Approval,
   AuditVerification,
   CatalogEntry,
   ChangeRequestDetail,
   Credential,
   Dependencies,
+  EvidenceEntry,
   EvidenceRecord,
   JobDetail,
   JobReplay,
   JobSummary,
   Lineage,
   Me,
+  Notification,
+  PlatformStream,
   Preview,
+  Problem,
   ProviderAlert,
   ProviderDetail,
   ProviderSummary,
@@ -20,7 +25,9 @@ import type {
   Release,
   Resource,
   ResourceType,
+  ServiceAccount,
   SpecImport,
+  TerraformImport,
   TestConnectionResult,
   TryResult,
   WorkflowSummary,
@@ -45,6 +52,7 @@ export interface Reply {
   json?: unknown
   body?: string
   contentType?: string
+  headers?: Record<string, string>
 }
 
 export interface MockRequest {
@@ -53,6 +61,8 @@ export interface MockRequest {
   query: URLSearchParams
   params: Record<string, string>
   body: unknown
+  /** the request headers, lower-cased names */
+  headers: Record<string, string>
 }
 
 export type Handler = (req: MockRequest) => unknown
@@ -64,6 +74,8 @@ export interface Call {
   path: string
   query: string
   body: unknown
+  /** the request headers, lower-cased names */
+  headers: Record<string, string>
 }
 
 export interface ApiMock {
@@ -72,8 +84,8 @@ export interface ApiMock {
   callsTo: (method: string, path: string) => Call[]
 }
 
-/** A reply with a status other than 200, or no body. */
-export const reply = (status: number, json?: unknown): Reply => ({ [REPLY]: true, status, json })
+/** A reply with a status other than 200, or no body; `headers` for what the client reads (Retry-After). */
+export const reply = (status: number, json?: unknown, headers?: Record<string, string>): Reply => ({ [REPLY]: true, status, json, headers })
 
 /** A server-sent event stream that tells the browser not to reconnect for ten minutes. */
 export const sse = (events: { event: string; data: unknown; id?: number }[]): Reply => ({
@@ -117,16 +129,17 @@ export async function mockApi(page: Page, routes: Routes = {}): Promise<ApiMock>
     } catch {
       body = request.postData()
     }
-    calls.push({ method, path, query: url.search, body })
+    const headers = request.headers()
+    calls.push({ method, path, query: url.search, body, headers })
     for (const entry of table) {
       if (entry.method !== method) continue
       const m = entry.regex.exec(path)
       if (!m) continue
       const params = Object.fromEntries(entry.names.map((n, i) => [n, decodeURIComponent(m[i + 1])]))
-      const value = typeof entry.value === 'function' ? await (entry.value as Handler)({ method, path, query: url.searchParams, params, body }) : entry.value
+      const value = typeof entry.value === 'function' ? await (entry.value as Handler)({ method, path, query: url.searchParams, params, body, headers }) : entry.value
       if (isReply(value)) {
-        if (value.body !== undefined) return route.fulfill({ status: value.status, contentType: value.contentType ?? 'application/json', body: value.body })
-        return value.json === undefined ? route.fulfill({ status: value.status, body: '' }) : route.fulfill({ status: value.status, json: value.json })
+        if (value.body !== undefined) return route.fulfill({ status: value.status, contentType: value.contentType ?? 'application/json', body: value.body, headers: value.headers })
+        return value.json === undefined ? route.fulfill({ status: value.status, body: '', headers: value.headers }) : route.fulfill({ status: value.status, json: value.json, headers: value.headers })
       }
       return route.fulfill({ status: 200, json: value })
     }
@@ -288,7 +301,7 @@ export const JOB: JobDetail = {
   ],
   approvals: [],
   preview: PREVIEW,
-  attention: { step: 'restart', error: 'vCenter did not answer in 30s', options: ['retry', 'edit-input', 'skip', 'abort'], since: ago(5), timeout: 'PT4H' },
+  attention: { step: 'restart', error: { class: 'timeout', message: 'vCenter did not answer in 30s', retryable: true }, options: ['retry', 'edit-input', 'skip', 'abort'], since: ago(5), timeout: 'PT4H' },
   traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
 }
 
@@ -338,7 +351,8 @@ export const PROVIDERS: ProviderSummary[] = [
 
 export const PROVIDER: ProviderDetail = {
   ...PROVIDERS[0],
-  endpoints: {},
+  endpoints: { dev: 'https://vsphere-dev.example.com/rest', test: 'https://vsphere-test.example.com/rest', prod: 'https://vsphere.example.com/rest' },
+  auth: { type: 'header', credential: 'vault:vsphere/token', header: 'X-Api-Key' },
   yaml: 'apiVersion: iaf.platform/v1\nkind: Provider\nmetadata:\n  name: vsphere\n  title: VMware vSphere\n  owner: team-compute\n  version: 1.3.0\nspec:\n  type: openapi\n',
   actions: [
     { id: 'vm.get', title: 'Get VM', operation: 'getVm', effect: 'read', retry: 'safe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } }, sample: { id: 'vm-1042', powerState: 'poweredOn' }, overridden: false },
@@ -357,6 +371,12 @@ export const PROVIDER: ProviderDetail = {
 }
 
 export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91' }]
+
+/** Two service accounts: a CI one with its scopes, and an older one the API reports no scopes for. */
+export const SERVICE_ACCOUNTS: ServiceAccount[] = [
+  { id: 'sa-ci', name: 'ci-deployer', roles: ['ops'], teams: ['team-platform'], createdAt: ago(60 * 24 * 5), scopes: ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write', 'providers:write'] },
+  { id: 'sa-bot', name: 'cost-bot', roles: ['sre'], createdAt: ago(60 * 24 * 40) },
+]
 
 export const CREDENTIALS: Credential[] = [
   { name: 'backup/api-key', type: 'api-key', path: 'vault:backup/api-key', updatedAt: ago(60 * 24 * 10) },
@@ -384,6 +404,33 @@ export const CONNECTION: TestConnectionResult = {
 
 export const TRY_RESULT: TryResult = { ok: true, status: 200, durationMs: 182, response: { items: [{ id: 'bk-9001', state: 'running', target: 'vm-1042' }], total: 1 }, mismatches: [] }
 
+/** A try the backend kept as review evidence, with the file (at the next patch) carrying the answer as the sample. */
+export const TRY_RESULT_RECORDED: TryResult = {
+  ...TRY_RESULT,
+  environment: 'dev',
+  at: ago(1),
+  yaml: [
+    'apiVersion: iaf.platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: vsphere',
+    '  title: VMware vSphere',
+    '  owner: team-compute',
+    '  version: 1.3.1',
+    'spec:',
+    '  type: openapi',
+    '  actions:',
+    '    - id: vm.get',
+    '      sample:',
+    '        id: vm-1042',
+    '        powerState: poweredOn',
+    '      recorded:',
+    '        environment: dev',
+    '        at: 2026-10-18T10:32:00Z',
+    '',
+  ].join('\n'),
+}
+
 export const VALIDATION: ProviderValidation = {
   checks: [
     { id: 'schema', label: 'The file follows the provider schema', status: 'passed' },
@@ -391,6 +438,17 @@ export const VALIDATION: ProviderValidation = {
     { id: 'reachable', label: 'Every environment answers', status: 'passed' },
   ],
   problems: [],
+  review: {
+    ready: true,
+    checks: [
+      { id: 'connection', label: 'The connection was tested against dev and test', status: 'passed', detail: 'the endpoints and the credential reference the file has now' },
+      { id: 'tried', label: 'Every action answered when tried', status: 'passed', detail: '3 of 3 actions tried in dev' },
+      { id: 'errors', label: 'Error classes match what was seen', status: 'warning', detail: 'No error classes: a tried error matches nothing' },
+      { id: 'preview', label: 'Destructive actions have a plan or an effect line', status: 'passed' },
+    ],
+    problems: [],
+    slo: { successRate: 99.5, p95Ms: 800, observedP95Ms: 410, calls: 128, detail: 'The p95 of the tried calls, doubled and rounded up' },
+  },
 }
 
 export const PROVIDER_CR: ChangeRequestDetail = {
@@ -633,3 +691,211 @@ export const DEPENDENCIES: Dependencies = {
   ],
   cycles: [['create-vm', 'web-environment', 'create-vm']],
 }
+
+/* ----------------------------------------------------------------------------
+   The inbox, the platform audit stream, a deprecated catalog entry and provider releases
+   ------------------------------------------------------------------------- */
+
+export const NOTIFICATIONS: Notification[] = [
+  { id: 'ntf-1', at: ago(4), kind: 'approval.requested', severity: 'warning', title: 'Approve the restart of web-1042', message: 'compute-approvers: a production restart waits for you', link: '/jobs/job-7f3a2c91', jobId: 'job-7f3a2c91', workflow: 'vm-restart', users: [], teams: ['compute-approvers'], read: false },
+  { id: 'ntf-2', at: ago(40), kind: 'provider.alert', severity: 'critical', title: 'vsphere is failing', message: '3 timeouts in 10 minutes', link: '/providers/vsphere', channel: '#compute-alerts', provider: 'vsphere', users: [], teams: ['team-compute'], read: false },
+  { id: 'ntf-3', at: ago(60 * 5), kind: 'notify', severity: 'info', title: 'Patch window done', message: '20 of 20 servers patched', link: '/jobs/job-5b10e7d2', jobId: 'job-5b10e7d2', workflow: 'patch-cve', users: ['gonzalo'], teams: [], read: true },
+]
+
+/** A mutable inbox: GET filters by `unread`, POST marks one read. */
+export function inboxRoutes(items: Notification[] = NOTIFICATIONS.map((n) => ({ ...n }))): Routes {
+  return {
+    'GET /notifications': (req) => {
+      const unread = req.query.get('unread')
+      const visible = unread === 'true' ? items.filter((n) => !n.read) : unread === 'false' ? items.filter((n) => n.read) : items
+      return { items: visible, unread: items.filter((n) => !n.read).length }
+    },
+    'POST /notifications/{id}:read': (req) => {
+      const n = items.find((x) => x.id === req.params.id)
+      if (!n) return reply(404, { error: `no notification ${req.params.id}` })
+      n.read = true
+      return n
+    },
+  }
+}
+
+export const PLATFORM_STREAM: PlatformStream = {
+  entries: [
+    { seq: 1, at: ago(60 * 30), kind: 'decision', actor: 'gonzalo', data: { event: 'change-request.opened', aggregate: 'change-request', aggregateId: 'cr-41', name: 'vm-restart', version: '1.2.0', strategy: 'canary' }, hash: hash('p1'), previous: hash('0') },
+    { seq: 2, at: ago(60 * 29), kind: 'decision', actor: 'maria', data: { event: 'change-request.merged', aggregate: 'change-request', aggregateId: 'cr-41', name: 'vm-restart', version: '1.2.0' }, hash: hash('p2'), previous: hash('p1') },
+    { seq: 3, at: ago(60 * 29), kind: 'decision', actor: 'maria', data: { event: 'workflow.published', aggregate: 'workflow', aggregateId: 'vm-restart', name: 'vm-restart', version: '1.2.0', contentHash: 'sha256:1' }, hash: hash('p3'), previous: hash('p2') },
+    { seq: 4, at: ago(60 * 3), kind: 'decision', actor: 'ana', data: { event: 'provider.change-requested', aggregate: 'provider', aggregateId: 'vsphere', version: '2.1.1', changeRequest: 'cr-42', reason: 'slo' }, hash: hash('p4'), previous: hash('p3') },
+    { seq: 5, at: ago(50), kind: 'decision', actor: 'gonzalo', data: { event: 'release.promoted', aggregate: 'release', aggregateId: 'rel-1', workflow: 'vm-restart', from: '1.1.0', to: '1.2.0' }, hash: hash('p5'), previous: hash('p4') },
+    { seq: 6, at: ago(10), kind: 'decision', actor: 'gonzalo', data: { event: 'service-account.created', aggregate: 'service-account', aggregateId: 'sa-ci', name: 'ci-deployer', scopes: ['registry:read', 'workflows:validate'] }, hash: hash('p6'), previous: hash('p5') },
+  ],
+  total: 6,
+  latestHash: hash('p6'),
+  verification: { valid: true, entries: 6, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 6, keyId: 'audit-2026-10', status: 'verified' }] },
+}
+
+/** vm-restart with a successor: the deprecation the catalog reports. */
+export const DEPRECATED_CATALOG: CatalogEntry[] = [
+  { ...CATALOG[0], deprecated: { since: '2026-10-01', sunset: '2027-01-31', replacement: '/api/v2/vms/{vmId}:restart', message: 'Use v2, which restarts through the maintenance window.' } },
+  { ...CATALOG[0], workflow: 'vm-restart-v2', title: 'VM restart (v2)', path: '/api/v2/vms/{vmId}:restart', batchPath: '/api/v2/vms:restart:batch', previewPath: '/api/v2/vms/{vmId}:restart:preview', mcpTool: 'restart_vm_v2', version: '2.0.0', description: 'Restart a virtual machine through its maintenance window.' },
+  CATALOG[1],
+]
+
+export const VM_RESTART_VERSIONS: WorkflowVersion[] = [
+  { version: '1.2.0', status: 'published', contentHash: 'sha256:12', publishedAt: ago(60 * 24 * 3), publishedBy: 'maria', releaseId: 'rel-1' },
+  { version: '1.1.0', status: 'retired', contentHash: 'sha256:11', publishedAt: ago(60 * 24 * 30), publishedBy: 'gonzalo' },
+  { version: '1.3.0', status: 'draft', contentHash: 'sha256:13' },
+]
+
+/** A canary of vsphere 2.1.0 → 2.2.0, judged over the provider's calls. */
+export const PROVIDER_RELEASE: Release = {
+  id: 'rel-p1',
+  provider: 'vsphere',
+  from: '2.1.0',
+  to: '2.2.0',
+  strategy: 'canary',
+  status: 'canary',
+  stageIndex: 1,
+  stages: [10, 50, 100],
+  stagePercent: 50,
+  startedAt: ago(60 * 6),
+  stageStartedAt: ago(60 * 2),
+  gates: [
+    { id: 'success-rate', label: 'Success rate', passed: true, value: 99.4, threshold: 98.9, detail: 'candidate 99.4% vs current 99.9% over 340 calls' },
+    { id: 'p95', label: 'p95 duration', passed: null, value: 410, threshold: 480, detail: 'needs 20 calls in the stage, has 12' },
+    { id: 'error-types', label: 'Error types', passed: true, value: 0, detail: 'no new error class on the candidate' },
+    { id: 'sample', label: 'Sample size', passed: null, value: 12, threshold: 20, detail: '12 candidate calls since the stage started' },
+  ],
+  jobs: { current: 328, candidate: 12 },
+  history: [
+    { at: ago(60 * 6), event: 'canary started at 10%', by: 'ana' },
+    { at: ago(60 * 2), event: 'advanced to 50%' },
+  ],
+}
+
+/** The Backup service spec read from Git: the same spec, pinned to the commit it came from. */
+export const SPEC_FROM_GIT: SpecImport = { ...SPEC, commit: '4f9e2a7c1d0b5e8a9c3f6b2d7e1a4c8f0b9d2e5a' }
+
+export const ANSIBLE_IMPORT: AnsibleImport = {
+  repo: 'https://github.com/acme/ops-playbooks',
+  ref: 'v3.1.0',
+  commit: 'a7c3e9f1b2d4068c5e7a9b1d3f5c7e9a1b3d5f7c',
+  playbooks: [
+    {
+      path: 'vm/restart.yml',
+      action: 'vm.restart',
+      title: 'Restart a VM',
+      effect: 'change',
+      roles: ['vmware.restart'],
+      vars: { type: 'object', required: ['vm_name'], properties: { vm_name: { type: 'string' }, graceful: { type: 'boolean', default: true } } },
+      sources: { vm_name: 'vars_prompt', graceful: 'vars' },
+      secrets: [],
+      notes: [],
+    },
+    {
+      path: 'vm/snapshot.yml',
+      action: 'vm.snapshot',
+      title: 'Snapshot a VM',
+      effect: 'create',
+      roles: ['vmware.snapshot'],
+      vars: { type: 'object', required: ['vm_name', 'label'], properties: { vm_name: { type: 'string' }, label: { type: 'string' } } },
+      sources: { vm_name: 'vars_prompt', label: 'vars_prompt' },
+      secrets: ['vcenter_password'],
+      notes: ['vcenter_password is given from Vault, not asked as input'],
+    },
+  ],
+  chosen: ['vm/restart.yml', 'vm/snapshot.yml'],
+  requirements: ['community.vmware>=4.0.0'],
+  skipped: ['site.yml: imports every play, not a single action'],
+  notes: ['2 playbooks become actions; 1 skipped.', 'The inventory is the runner’s: the file names no hosts.'],
+  yaml: [
+    'apiVersion: platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: ops-playbooks',
+    '  title: ops-playbooks',
+    '  owner: team-platform',
+    '  version: 0.1.0',
+    'spec:',
+    '  type: ansible',
+    '  repo: https://github.com/acme/ops-playbooks',
+    '  ref: v3.1.0',
+    '  commit: a7c3e9f1b2d4068c5e7a9b1d3f5c7e9a1b3d5f7c',
+    '  credential: vault:ops/ssh',
+    '  actions:',
+    '    - id: vm.restart',
+    '      playbook: vm/restart.yml',
+    '      effect: change',
+    '    - id: vm.snapshot',
+    '      playbook: vm/snapshot.yml',
+    '      effect: create',
+    '',
+  ].join('\n'),
+}
+
+export const TERRAFORM_IMPORT: TerraformImport = {
+  source: 'acme/lb/aws',
+  version: '2.3.0',
+  notes: ['3 variables; db_password is sensitive and comes from Vault.', 'plan and apply share the inputs; apply needs an approval.'],
+  yaml: [
+    'apiVersion: platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: lb',
+    '  title: lb',
+    '  owner: team-platform',
+    '  version: 0.1.0',
+    'spec:',
+    '  type: terraform',
+    '  source: acme/lb/aws',
+    '  version: 2.3.0',
+    '  credential: vault:aws/runner',
+    '  actions:',
+    '    - id: plan',
+    '      effect: read',
+    '    - id: apply',
+    '      effect: change',
+    '',
+  ].join('\n'),
+  variables: [
+    { name: 'name', type: 'string', required: true, sensitive: false, secret: false, description: 'The load balancer name', file: 'variables.tf' },
+    { name: 'listeners', type: 'list(object)', required: false, sensitive: false, secret: false, description: 'Ports to listen on', default: [{ port: 443 }], file: 'variables.tf' },
+    { name: 'db_password', type: 'string', required: true, sensitive: true, secret: true, description: 'Given from Vault', file: 'variables.tf' },
+  ],
+  outputs: [
+    { name: 'dns_name', description: 'The public name', sensitive: false, file: 'outputs.tf' },
+    { name: 'arn', sensitive: false, file: 'outputs.tf' },
+  ],
+}
+
+/* ----------------------------------------------------------------------------
+   The assistant: a session's draft, what the validation found, and the session's events
+   ------------------------------------------------------------------------- */
+
+/** The assistant's draft as the backend parses it (POST /workflows:parse): two provider calls, the second on a provider that does not exist. */
+export const ASSISTANT_DRAFT_DEFINITION = {
+  apiVersion: 'iaf.platform/v1',
+  kind: 'Workflow',
+  metadata: { name: 'vm-restart-safe', title: 'Safe VM restart', noun: 'vm', verb: 'restart-safely', owner: 'team-compute', version: '0.1.0' },
+  api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart-safely', input: { type: 'object', required: ['vmId'], properties: { vmId: { type: 'string' } } } },
+  workflow: {
+    do: [
+      { check: { name: 'Check the backups', call: 'provider', with: { provider: 'backup', action: 'listJobs', input: { target: '{{ $input.vmId }}' } } } },
+      { restart: { name: 'Restart the VM', call: 'provider', with: { provider: 'vcenter', action: 'vm.restart', input: { id: '{{ $input.vmId }}' } } } },
+    ],
+  },
+}
+
+export const ASSISTANT_DRAFT_YAML = 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart-safe\n  version: 0.1.0\nworkflow:\n  do:\n    - check: { call: provider }\n    - restart: { call: provider }\n'
+
+export const ASSISTANT_PROBLEMS: Problem[] = [
+  { level: 'error', code: 'step.unknownProvider', step: 'restart', field: 'with.provider', message: 'No provider called vcenter; vsphere is the closest' },
+  { level: 'warning', code: 'workflow.noApproval', message: 'A change step runs without an approval' },
+]
+
+/** The platform stream's entries for session as-77 (and one of another session, which its timeline leaves out). */
+export const ASSISTANT_SESSION_EVENTS: EvidenceEntry[] = [
+  { seq: 7, at: ago(3), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', user: 'gonzalo', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a1'), previous: hash('p6') },
+  { seq: 8, at: ago(2), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.message', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', role: 'user', text: 'Restart a VM after checking no backup is running.' }, hash: hash('a2'), previous: hash('a1') },
+  { seq: 9, at: ago(1), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.draft-updated', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', status: 'ready', contentHash: 'sha256:d1', valid: false, errors: 1 }, hash: hash('a3'), previous: hash('a2') },
+  { seq: 10, at: ago(1), kind: 'decision', actor: 'ana', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-78', draftId: 'as-78', user: 'ana', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a4'), previous: hash('a3') },
+]

@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.catalog.SampleCatalog;
 import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
@@ -102,16 +103,104 @@ class ResourceCommandHandlerTest {
     }
 
     @Test
-    void attributesAreValidatedAgainstTheTypeSchemaOnCreateOnly() {
+    void attributesAreValidatedAgainstTheTypeSchemaOnCreateAndOnUpdate() {
         // image needs templateId
         StepVerifier.create(handler.register(new RegisterResource("image", null, null, attrs("name", "no-template"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)))
                 .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("templateId"))
                 .verify();
         assertThat(published).isEmpty();
         handler.register(new RegisterResource("image", "image-ok", null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
-        // a partial update does not need the required fields again
+        // a partial update does not need the required fields again: the merged attributes are judged
         StepVerifier.create(handler.register(new RegisterResource("image", "image-ok", "failed", attrs("error", "boom"), null, "job_2", "build-vm-image", null, SampleCatalog.ADMIN)))
                 .assertNext(r -> assertThat(r.status()).isEqualTo("failed")).verifyComplete();
+        // but what they would become must still match the schema (sizeGb is an integer)
+        StepVerifier.create(handler.register(new RegisterResource("image", "image-ok", null, attrs("sizeGb", "forty"), null, "job_2", "build-vm-image", null, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("sizeGb").hasMessageContaining("image-ok"))
+                .verify();
+        StepVerifier.create(handler.register(new RegisterResource("image", "image-ok", null, F.textNode("nope"), null, "job_2", "build-vm-image", null, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("attributes is an object"))
+                .verify();
+        assertThat(store.resource("image-ok").orElseThrow().attributes().has("sizeGb")).isFalse();
+    }
+
+    @Test
+    void aNewResourceGetsTheTypesVisibility() {
+        Resource image = handler.register(new RegisterResource("image", null, null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
+        assertThat(image.visibility()).as("golden images are public in the sample content").isEqualTo("public");
+        Resource vm = handler.register(new RegisterResource("vm", null, null, attrs("name", "web"), null, "job_2", "create-vm", null, SampleCatalog.OPS)).block();
+        assertThat(vm.visibility()).isEqualTo("team");
+    }
+
+    @Test
+    void anExistingResourceIsUpdatedByItsOwnerTeamTheJobThatCreatedItOrAnAdmin() {
+        Resource vm = handler.register(new RegisterResource("vm", "vm-web", null, attrs("name", "web"), null, "job_1", "create-vm", null, SampleCatalog.OPS)).block();
+        assertThat(vm.owner()).isEqualTo("team-compute");
+        published.clear();
+        // another team, another job: refused, nothing changes
+        StepVerifier.create(handler.register(new RegisterResource("vm", "vm-web", "retired", attrs("name", "stolen"), null, "job_9", "delete-vm", null, SampleCatalog.DEVELOPER)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Dev may not update vm vm-web (owned by team-compute)"))
+                .verify();
+        assertThat(store.resource("vm-web").orElseThrow().name()).isEqualTo("web");
+        assertThat(published).isEmpty();
+        // the job that created it may finish its work, whoever runs it
+        StepVerifier.create(handler.register(new RegisterResource("vm", "vm-web", "building", attrs().put("cpu", 2), null, "job_1", "create-vm", null, SampleCatalog.DEVELOPER)))
+                .assertNext(r -> assertThat(r.status()).isEqualTo("building")).verifyComplete();
+        // the owner team from any job
+        StepVerifier.create(handler.register(new RegisterResource("vm", "vm-web", "ready", null, null, "job_2", "create-vm", null, SampleCatalog.OPS)))
+                .assertNext(r -> assertThat(r.status()).isEqualTo("ready")).verifyComplete();
+        // an admin, and the platform itself
+        StepVerifier.create(handler.register(new RegisterResource("vm", "vm-web", null, attrs("environment", "prod"), null, "job_3", "patch-cve", null, SampleCatalog.ADMIN)))
+                .assertNext(r -> assertThat(r.attributes().path("environment").asText()).isEqualTo("prod")).verifyComplete();
+        StepVerifier.create(handler.register(new RegisterResource("vm", "vm-web", "retired", null, null, "job_4", "delete-vm", null, null)))
+                .assertNext(r -> assertThat(r.status()).isEqualTo("retired")).verifyComplete();
+        assertThat(published).hasSize(4);
+    }
+
+    @Test
+    void retireIsTheOwnerTeamsOrAnAdmins() {
+        handler.register(new RegisterResource("vm", "vm-web", null, attrs("name", "web"), null, "job_1", "create-vm", null, SampleCatalog.OPS)).block();
+        published.clear();
+        StepVerifier.create(handler.retire("vm-web").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.DEVELOPER)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Dev may not retire vm vm-web (owned by team-compute)"))
+                .verify();
+        StepVerifier.create(handler.retire("vm-web").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.GUEST)))
+                .expectError(ForbiddenException.class).verify();
+        assertThat(store.resource("vm-web").orElseThrow().status()).isEqualTo("ready");
+        assertThat(published).isEmpty();
+        StepVerifier.create(handler.retire("vm-web").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.AGENT)))
+                .as("a service account of the owner team")
+                .assertNext(a -> assertThat(a.status()).isEqualTo("retired")).verifyComplete();
+        // an admin retires another team's resource; a resource without an owner is anyone's
+        handler.register(new RegisterResource("vm", "vm-other", null, attrs("name", "other"), null, "job_2", "create-vm", null, SampleCatalog.OPS)).block();
+        StepVerifier.create(handler.retire("vm-other").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.ADMIN))).expectNextCount(1).verifyComplete();
+        store.save(new Resource("vm-nobody", "vm", "nobody", "ready", attrs("name", "nobody"), null, "team", null, List.of(), CLOCK.instant(), CLOCK.instant()));
+        StepVerifier.create(handler.retire("vm-nobody").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.DEVELOPER))).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void retireListsEverythingBuiltFromTheResourceThroughOthersDepthFirst() {
+        handler.register(new RegisterResource("image", "image-base", null, attrs("templateId", "tpl"), null, "job_1", "build-vm-image", null, SampleCatalog.ADMIN)).block();
+        handler.register(new RegisterResource("vm", "vm-a", null, attrs("name", "a"), List.of("image-base"), "job_2", "create-vm", null, SampleCatalog.OPS)).block();
+        handler.register(new RegisterResource("vm", "vm-b", null, attrs("name", "b"), List.of("image-base"), "job_3", "create-vm", null, SampleCatalog.OPS)).block();
+        handler.register(new RegisterResource("volume", "volume-a1", null, attrs("name", "a1").put("sizeGb", 10), List.of("vm-a"), "job_4", "request-storage", null, SampleCatalog.ADMIN)).block();
+        handler.register(new RegisterResource("volume", "volume-a2", "retired", attrs("name", "a2").put("sizeGb", 10), List.of("vm-a"), "job_5", "request-storage", null, SampleCatalog.ADMIN)).block();
+        handler.register(new RegisterResource("environment", "environment-x", null, attrs("name", "x", "stage", "dev"), List.of("volume-a1", "vm-b", "vm-a"), "job_6", "web-environment", null, SampleCatalog.ADMIN)).block();
+        // a cycle through content someone wrote by hand ends where it started
+        store.save(new Resource("image-base", "image", "image-base", "ready", attrs("templateId", "tpl"), "team-compute", "public", null, List.of("environment-x"),
+                CLOCK.instant(), CLOCK.instant()));
+        published.clear();
+        StepVerifier.create(handler.retire("image-base").contextWrite(ctx -> CurrentIdentity.with(ctx, SampleCatalog.ADMIN)))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ConflictException.class).hasMessage("resource has dependents");
+                    @SuppressWarnings("unchecked")
+                    List<Resource> dependents = (List<Resource>) ((ConflictException) e).detail();
+                    assertThat(dependents).extracting(Resource::id).as("depth first in the registry's order (type, then age), the retired volume left out, each once")
+                            .containsExactly("vm-a", "environment-x", "volume-a1", "vm-b");
+                })
+                .verify();
+        assertThat(published).isEmpty();
     }
 
     @Test

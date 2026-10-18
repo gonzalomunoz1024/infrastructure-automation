@@ -1,6 +1,7 @@
 package com.iaf.platform.audit.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -8,6 +9,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,11 +20,17 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.ports.inbound.AuditCommands.SealResult;
+import com.iaf.platform.audit.ports.inbound.AuditCommands.ShareLink;
+import com.iaf.platform.audit.ports.outbound.RecordOwners;
+import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.identity.application.CurrentIdentity;
 
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 class AuditCommandHandlerTest {
@@ -35,7 +43,17 @@ class AuditCommandHandlerTest {
     final EventBus events = new EventBus(clock);
     final List<DomainEvent> published = new ArrayList<>();
     final AuditSigner signer = new AuditSigner(withKey("test-signing-key"));
-    final AuditCommandHandler handler = new AuditCommandHandler(store, signer, events, clock, mapper);
+    /** job_closed ran vm-restart for ana, owned by team-compute; nothing else is known to the runs index. */
+    final RecordOwners owners = jobId -> "job_closed".equals(jobId) ? Set.of("team-compute") : Set.of();
+    final AuditCommandHandler handler = new AuditCommandHandler(store, signer, events, clock, mapper, owners);
+
+    static final Identity ANA = new Identity("ana", "Ana", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity MATEO = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity DEV = new Identity("dev", "Dev", null, List.of("team-web"), List.of("developer"), false, Identity.Kind.USER);
+
+    static <T> Mono<T> as(Identity who, Mono<T> mono) {
+        return mono.contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+    }
 
     @BeforeEach
     void records() {
@@ -136,11 +154,28 @@ class AuditCommandHandlerTest {
         plain.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "platform", mapper.createObjectNode().put("status", "succeeded")));
         plain.append("job_b", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", mapper.createObjectNode().put("workflow", "w")));
 
-        SealResult result = new AuditCommandHandler(plain, signer, events, clock, mapper).sealAll("platform");
+        SealResult result = new AuditCommandHandler(plain, signer, events, clock, mapper, owners).sealAll("platform");
 
         assertThat(result.sealed()).isEqualTo(1);
         assertThat(result.checkpointed()).isZero();
         assertThat(plain.record("job_a").orElseThrow().sealed()).isNotNull();
+    }
+
+    @Test
+    void aSealingRunReadsOnlyTheRecordsStillTakingSignatures() {
+        InMemoryEvidenceStore guarded = new InMemoryEvidenceStore() {
+            @Override
+            public List<EvidenceRecord> records(com.iaf.platform.audit.domain.EvidenceFilter filter) {
+                throw new AssertionError("a sealing run lists no record with its entries");
+            }
+        };
+        guarded.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", mapper.createObjectNode().put("workflow", "w")));
+        guarded.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "platform", mapper.createObjectNode().put("status", "succeeded")));
+
+        SealResult result = new AuditCommandHandler(guarded, signer, events, clock, mapper, owners).sealAll("platform");
+
+        assertThat(result.sealed()).isEqualTo(1);
+        assertThat(guarded.unsealed()).isEmpty();
     }
 
     @Test
@@ -161,8 +196,44 @@ class AuditCommandHandlerTest {
                     assertThat(token).hasSizeGreaterThanOrEqualTo(32);
                     assertThat(store.findShareToken(token)).isPresent();
                     assertThat(store.findShareToken(token).orElseThrow().jobId()).isEqualTo("job_closed");
+                    // the link is on the record: who shared what until when, never the token
+                    DomainEvent shared = published.get(published.size() - 1);
+                    assertThat(shared.type()).isEqualTo("audit.shared");
+                    assertThat(shared.aggregate()).isEqualTo("audit");
+                    assertThat(shared.aggregateId()).isEqualTo("job_closed");
+                    assertThat(shared.actor()).isEqualTo("platform");
+                    assertThat(shared.data().get("recordId").asText()).isEqualTo("job_closed");
+                    assertThat(shared.data().get("by").asText()).isEqualTo("platform");
+                    assertThat(shared.data().get("expiresAt").asText()).isEqualTo(NOW.plus(Duration.ofDays(7)).toString());
+                    assertThat(shared.data().toString()).doesNotContain(token);
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    void aRecordIsSharedByItsRequesterItsTeamsOrAnAdminAndNobodyElse() {
+        StepVerifier.create(as(ANA, handler.share("job_closed"))).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(MATEO, handler.share("job_closed"))).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(DEV, handler.share("job_closed")))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Dev may not share the evidence of job_closed: only its requester (ana), a member of team-compute or an admin may"))
+                .verify();
+        // a record the runs index does not know: its requester or an admin
+        StepVerifier.create(as(DEV, handler.share("job_open"))).expectError(ForbiddenException.class).verify();
+        ShareLink byAdmin = as(Identity.SYSTEM, handler.share("job_open")).block();
+        assertThat(byAdmin).isNotNull();
+        assertThat(published).extracting(DomainEvent::type).containsExactly("audit.shared", "audit.shared", "audit.shared");
+        assertThat(published).extracting(e -> e.data().get("by").asText()).containsExactly("ana", "mateo", "platform");
+    }
+
+    @Test
+    void onlyAdminsSealOnDemand() {
+        assertThatThrownBy(() -> as(MATEO, handler.seal()).block())
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageStartingWith("Mateo may not seal evidence: only admins seal on demand");
+        assertThat(store.record("job_closed").orElseThrow().sealed()).isNull();
+        assertThat(published).isEmpty();
+        StepVerifier.create(as(Identity.SYSTEM, handler.seal())).assertNext(r -> assertThat(r.sealed()).isEqualTo(1)).verifyComplete();
     }
 
     @Test

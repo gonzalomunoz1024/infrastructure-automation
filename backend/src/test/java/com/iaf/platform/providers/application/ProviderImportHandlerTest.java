@@ -175,12 +175,14 @@ class ProviderImportHandlerTest {
                   target: { type: string }
                   graceful: { type: boolean, default: true }
                 """));
-        assertThat(ProviderChecks.check(result.yaml()).errors()).isEmpty();
+        assertThat(ProviderChecks.check(result.yaml()).errors()).as("the draft changes things: only the alert channel is still to set")
+                .extracting(p -> p.code()).containsExactly("alerts.channel");
         assertThat(result.notes()).contains(
                 "The playbooks are pinned to commit " + v1.substring(0, 12) + " of v1.0.0: a later push changes nothing until a new version of the provider is published.",
                 "Set metadata.owner to the team that owns the provider.",
                 "Set auth.credential to the Vault reference of the machine credential the playbooks connect with, like vault:ssh/automation.",
                 "Set executionEnvironment to the image that runs the playbooks: Ansible and the collections in their requirements.yml.",
+                "Set alerts.channel to where the owning team wants health alerts: a provider that creates, changes or deletes things is not published without one.",
                 "Variables a playbook uses without giving them a value became required string inputs: drop the ones your inventory sets and check their types.");
     }
 
@@ -341,9 +343,11 @@ class ProviderImportHandlerTest {
                   name: { type: string, description: What to call the load balancer }
                   targets: { type: array, items: { type: string }, default: [] }
                 """));
-        assertThat(ProviderChecks.check(result.yaml()).errors()).isEmpty();
+        assertThat(ProviderChecks.check(result.yaml()).errors()).as("the draft applies things: only the alert channel is still to set")
+                .extracting(p -> p.code()).containsExactly("alerts.channel");
         assertThat(result.notes()).containsExactly(
                 "The module is pinned to commit " + tfCommit.substring(0, 12) + " of v2.3.0: a later push changes nothing until a new version of the provider is published.",
+                "Set alerts.channel to where the owning team wants health alerts: a provider that creates, changes or deletes things is not published without one.",
                 "admin_password holds a secret, so it is not an input: the runner gives Terraform its value from Vault; Apply fails until it does.");
     }
 

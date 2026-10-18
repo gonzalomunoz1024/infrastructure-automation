@@ -12,7 +12,6 @@ import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
-import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -27,11 +26,11 @@ import com.iaf.platform.common.ports.CredentialsPort;
  * one {@code POST} per batch with one JSON event object per evidence entry, authenticated with
  * {@code Authorization: Splunk <token>}. The token is a Vault reference resolved at send time (the
  * credentials adapter caches it), so a rotated token is picked up without a restart; it is never
- * logged and never part of an error.
+ * logged and never part of an error. Not {@code @Primary}: every configured SIEM receives every
+ * batch ({@code SiemExporter} takes them all), so the profile and the destination select it.
  */
 @Component
 @Profile("siem")
-@Primary
 @ConditionalOnExpression("!'${platform.siem.hec.url:}'.isBlank()")
 public class SplunkHecSiem implements SiemPort {
 
