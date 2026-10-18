@@ -31,11 +31,21 @@ public final class PublishChecks {
     private PublishChecks() {
     }
 
-    /** The file parses and its API input is a JSON Schema of an object. */
+    /**
+     * The stored file matches the Workflow schema (packages/workflow-checks/schemas/workflow.schema.json),
+     * and its API input is a JSON Schema of an object that the validator compiles and that refers
+     * to nothing outside itself.
+     */
     public static Check schema(WorkflowDefinition def) {
+        List<String> failures = new ArrayList<>(WorkflowSchema.validate(WorkflowYaml.toJson(def)).stream().map(Problem::message).toList());
         JsonNode input = def.inputSchema();
         if (input != null && (!input.isObject() || (input.has("type") && !"object".equals(input.path("type").asText())))) {
-            return new Check("schema", "Schema", FAILED, "api.input is not a JSON Schema of type object");
+            failures.add("api.input is not a JSON Schema of type object");
+        } else if (input != null) {
+            WorkflowChecks.inputSchemaProblems(input).forEach(p -> failures.add(p.message()));
+        }
+        if (!failures.isEmpty()) {
+            return new Check("schema", "Schema", FAILED, String.join("; ", failures));
         }
         int fields = input == null ? 0 : input.path("properties").size();
         return new Check("schema", "Schema", PASSED, "kind Workflow, " + def.allSteps().size() + " steps, " + fields + " input fields");

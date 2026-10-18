@@ -140,8 +140,8 @@ workflow:
     expect(problems).toEqual([{ level: 'error', code: 'yaml.invalid', message: "Step 'a' has two step keys: call and run" }]);
   });
 
-  it('an empty document is missing its name', () => {
-    expect(checkYaml('', ctx)).toEqual([{ level: 'error', code: 'yaml.invalid', message: 'metadata.name is required' }]);
+  it('an empty document is missing its metadata', () => {
+    expect(checkYaml('', ctx)).toEqual([{ level: 'error', code: 'schema.invalid', message: "required property 'metadata' not found" }]);
     expect(check(null, ctx)).toEqual([{ level: 'error', code: 'yaml.invalid', message: 'A workflow file is a YAML mapping' }]);
   });
 });
@@ -204,7 +204,8 @@ describe('rules beyond the fixtures', () => {
       'error duration.format',
     ]);
     expect(codes(base([{ a: { set: { x: 1 } } }], { policy: { rbac: [] } }))).toEqual(['error policy.missing']);
-    expect(check(base([{ a: { set: { x: 1 } } }], { policy: null }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['policy.missing @policy']);
+    expect(check(base([{ a: { set: { x: 1 } } }], { policy: undefined }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['policy.missing @policy']);
+    expect(check(base([{ a: { set: { x: 1 } } }], { policy: null }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['schema.invalid @/policy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'big-bang' } }))).toEqual(['error rollout.strategy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 50] } }))).toEqual(['error rollout.stages']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 150] } }))).toEqual(['error rollout.stages']);

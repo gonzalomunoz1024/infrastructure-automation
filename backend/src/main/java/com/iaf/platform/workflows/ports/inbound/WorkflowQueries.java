@@ -122,6 +122,9 @@ public interface WorkflowQueries {
 
     Flux<Template> templates();
 
+    /** {@code GET /schemas/workflow.json}: the JSON Schema of a Workflow file, for editors. */
+    Mono<JsonNode> workflowSchema();
+
     Flux<StepTypeInfo> stepTypes();
 
     Flux<RegistryProvider> registryProviders();

@@ -37,6 +37,7 @@ import com.iaf.platform.workflows.domain.StepTypeSchemas;
 import com.iaf.platform.workflows.domain.WorkflowChecks;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
+import com.iaf.platform.workflows.domain.WorkflowSchema;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowTemplates;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -178,6 +179,11 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     @Override
     public Flux<Template> templates() {
         return Flux.fromIterable(WorkflowTemplates.all()).map(t -> new Template(t.id(), t.title(), t.description(), t.yaml()));
+    }
+
+    @Override
+    public Mono<JsonNode> workflowSchema() {
+        return Mono.fromSupplier(WorkflowSchema::document);
     }
 
     // ------------------------------------------------------------------ registry

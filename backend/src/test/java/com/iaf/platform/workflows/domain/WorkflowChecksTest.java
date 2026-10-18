@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -46,6 +47,19 @@ class WorkflowChecksTest {
             List<String> yamls = files.map(p -> p.getFileName().toString()).filter(n -> n.endsWith(".yaml")).sorted().toList();
             assertThat(expected.keySet()).containsExactlyInAnyOrderElementsOf(yamls);
         }
+    }
+
+    @Test
+    void aStoredDefinitionsApiInputIsMetaCheckedAndItsReferencesStayInside() throws IOException {
+        // save and publish judge the stored definition: the api.input checks run there as in the designer
+        WorkflowDefinition badInput = WorkflowYaml.parse(Files.readString(FIXTURES.resolve("bad-api-input.yaml")));
+        assertThat(WorkflowChecks.check(badInput, SampleContentTest.context()))
+                .extracting(Problem::code, Problem::field, Problem::message)
+                .containsExactly(tuple("api.input.invalid", "api.input.required", "api.input is not a valid JSON Schema: required: string found, array expected"));
+        WorkflowDefinition remote = WorkflowYaml.parse(Files.readString(FIXTURES.resolve("remote-ref.yaml")));
+        assertThat(WorkflowChecks.check(remote, SampleContentTest.context()))
+                .extracting(Problem::code, Problem::field)
+                .containsExactly(tuple("schema.remoteRef", "api.input.properties.vmId.$ref"));
     }
 
     @Test

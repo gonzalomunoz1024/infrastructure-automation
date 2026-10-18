@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -360,6 +361,19 @@ class WorkflowCommandHandlerTest {
                 .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).containsExactly("playbook.digest"))
                 .verify();
         verifyNoInteractions(artifacts);
+        assertThat(changeRequests.all()).isEmpty();
+    }
+
+    @Test
+    void anApiInputTheValidatorCannotCompileIsReportedAtSaveAndRefusedAtPublish() {
+        String badInput = vmRestart.replaceFirst("required: \\[([^]]*)\\]", "required: $1");
+        assertThat(badInput).isNotEqualTo(vmRestart);
+        DraftSaved saved = handler.saveDraft("vm-restart", WorkflowSource.ofYaml(badInput)).block();
+        assertThat(saved.problems()).extracting(Problem::code, Problem::field).containsExactly(tuple("api.input.invalid", "api.input.required"));
+
+        StepVerifier.create(handler.publish("vm-restart", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).containsExactly("api.input.invalid"))
+                .verify();
         assertThat(changeRequests.all()).isEmpty();
     }
 

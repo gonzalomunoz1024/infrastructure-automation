@@ -20,6 +20,37 @@ class PublishChecksTest {
     }
 
     @Test
+    void theSchemaCheckJudgesTheStoredFileAndCompilesApiInput() {
+        Check passed = PublishChecks.schema(WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml")));
+        assertThat(passed.status()).isEqualTo("passed");
+        assertThat(passed.detail()).startsWith("kind Workflow, ");
+
+        String badInput = """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+                api:
+                  input:
+                    type: object
+                    required: vmId
+                    properties:
+                      vmId: { type: string }
+                      image: IMAGE
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - say: { notify: { channel: "#ops", message: hi } }
+                """;
+        Check refused = PublishChecks.schema(WorkflowYaml.parse(badInput.replace("IMAGE", "{ $ref: \"https://169.254.169.254/latest/meta-data\" }")));
+        assertThat(refused.status()).isEqualTo("failed");
+        assertThat(refused.detail()).startsWith("api.input refers to https://169.254.169.254/latest/meta-data, outside itself");
+
+        Check notCompiled = PublishChecks.schema(WorkflowYaml.parse(badInput.replace("IMAGE", "{ type: string }")));
+        assertThat(notCompiled.status()).isEqualTo("failed");
+        assertThat(notCompiled.detail()).isEqualTo("api.input is not a valid JSON Schema: required: string found, array expected");
+    }
+
+    @Test
     void ansibleLintIsSkippedWithoutAnsibleSteps() {
         WorkflowDefinition d = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/create-vm.yaml"));
         assertThat(PublishChecks.ansibleLint(d, ctx()).status()).isEqualTo("skipped");

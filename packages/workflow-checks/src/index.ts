@@ -35,9 +35,26 @@ export type {
   WorkflowMetadata,
 } from './types.ts';
 
-export { buildContext, check, checkParsed, checkYaml, connectFix, contextSchemas, EMPTY_CONTEXT, hasErrors, insertApprovalFix, replaceFix, RESERVED_NOUNS, ROOTS } from './checks.ts';
+export {
+  buildContext,
+  check,
+  checkParsed,
+  checkYaml,
+  connectFix,
+  contextSchemas,
+  EMPTY_CONTEXT,
+  hasErrors,
+  inputSchemaProblems,
+  insertApprovalFix,
+  replaceFix,
+  RESERVED_NOUNS,
+  ROOTS,
+} from './checks.ts';
 
-export { isClosed, mergeSchema, sameJson, schemaPaths } from './schemas.ts';
+export { describeRemoteRef, dotted, escapePointer, isClosed, jsonTypeName, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
+export type { RemoteRef, Violation } from './schemas.ts';
+
+export { schemaViolations, stepOf, validateWorkflowDocument, VALIDATOR_KEYWORDS, WORKFLOW_SCHEMA } from './workflow-schema.ts';
 
 export {
   allSteps,

@@ -14,7 +14,8 @@ Everything a team builds (VM restart, MongoDB upgrade, Delete VM) is sample cont
 frontend/   React 19 · Vite · TypeScript · Tailwind v4 · @xyflow/react (canvas only)
 packages/
   ui/              the Atlas design system (tokens, ui/ kit, hooks)      -> used by frontend
-  workflow-checks/ the editor checks (also run in CI)                    -> used by frontend + CI
+  workflow-checks/ the editor checks (also run in CI) and schemas/workflow.schema.json,
+                   the Workflow file's JSON Schema both twins judge a file with first -> used by frontend + CI + backend
 backend/    Spring Boot 3.5 · Java 21 · WebFlux · Maven · Lombok · Temporal Java SDK · JGit
 workflows/  sample content: Workflow, Provider and ResourceType files (kind: ...)
 devin/      the Devin playbooks (workflow draft, provider draft) and their structured-output schemas

@@ -8,9 +8,10 @@
 import { parse as parseYaml } from 'yaml';
 import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
 import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';
-import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
+import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WORKFLOW_KIND, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
 import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
-import { isClosed, mergeSchema, sameJson, schemaPaths } from './schemas.ts';
+import { describeRemoteRef, dotted, isClosed, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
+import { validateWorkflowDocument } from './workflow-schema.ts';
 import { closest } from './suggest.ts';
 import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
 
@@ -113,7 +114,7 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
   return { workflowInputs, workflowOutputs, resourceTypeSchemas };
 }
 
-/** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
+/** Check YAML text: a syntax error is one `yaml.invalid` problem; otherwise the document is checked as {@link check} says. */
 export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
   let doc: unknown;
   try {
@@ -124,8 +125,19 @@ export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
   return check(doc, ctx);
 }
 
-/** Check a document (the YAML already read into plain values). A structure error is one `yaml.invalid` problem. */
+/**
+ * Check a document (the YAML already read into plain values) in three lines: the Workflow schema
+ * first (schemas/workflow.schema.json: one `schema.invalid` per violation, and nothing else when
+ * there is one), then the parser (a structure error is one `yaml.invalid`), then the rules. A file
+ * of another kind goes straight to the parser, which names its kind.
+ */
 export function check(doc: unknown, ctx: CheckContext): Problem[] {
+  if (isObject(doc) && !(typeof doc['kind'] === 'string' && doc['kind'] !== WORKFLOW_KIND)) {
+    const schema = validateWorkflowDocument(doc);
+    if (schema.length > 0) {
+      return schema;
+    }
+  }
   let def: ParsedWorkflow;
   try {
     def = parseDocument(doc);
@@ -138,7 +150,7 @@ export function check(doc: unknown, ctx: CheckContext): Problem[] {
   return checkParsed(def, ctx);
 }
 
-/** The rule set over an already parsed workflow. */
+/** The rule set over an already parsed workflow: the document's schema is not judged again. */
 export function checkParsed(def: ParsedWorkflow, ctx: CheckContext): Problem[] {
   const c = new Checker(def, ctx);
   c.run();
@@ -147,6 +159,29 @@ export function checkParsed(def: ParsedWorkflow, ctx: CheckContext): Problem[] {
 
 export function hasErrors(problems: readonly Problem[]): boolean {
   return problems.some((p) => p.level === 'error');
+}
+
+/**
+ * api.input as the gateway, the MCP server and the catalog form will use it: a schema that refers
+ * outside itself is `schema.remoteRef` (nothing is fetched, so the reference never resolves), else
+ * one the validator does not compile is `api.input.invalid`, one problem per location with the
+ * validator's message. Empty for a usable schema. Mirrors WorkflowChecks.inputSchemaProblems.
+ */
+export function inputSchemaProblems(input: unknown): Problem[] {
+  const remote = remoteRefProblem(input, 'api.input');
+  if (remote !== null) {
+    return [remote];
+  }
+  return metaViolations(input).map((v) => {
+    const where = dotted(v.pointer);
+    return problem('error', 'api.input.invalid', null, `api.input${where}`, `api.input is not a valid JSON Schema: ${where === '' ? '' : `${where.substring(1)}: `}${v.message}`);
+  });
+}
+
+/** A `$ref` out of a schema the file carries (`field`): `schema.remoteRef` at the reference. */
+function remoteRefProblem(schema: unknown, field: string): Problem | null {
+  const r = remoteRef(schema);
+  return r === null ? null : problem('error', 'schema.remoteRef', null, `${field}${dotted(r.pointer)}`, describeRemoteRef(r, field));
 }
 
 function firstLine(e: unknown): string {
@@ -322,6 +357,7 @@ class Checker {
       if (!isObject(input) || (has(input, 'type') && asText(get(input, 'type')) !== 'object')) {
         this.error('api.input', null, 'api.input', 'api.input is a JSON Schema of type object');
       } else {
+        this.problems.push(...inputSchemaProblems(input));
         const properties = get(input, 'properties');
         fieldNames(properties).forEach((f) => this.inputFields.add(f));
         for (const r of elements(get(input, 'required'))) {
@@ -404,6 +440,10 @@ class Checker {
     if (!isObject(body) || (has(body, 'type') && asText(get(body, 'type')) !== 'object')) {
       this.error('api.responseBody', null, 'api.response.body', "api.response.body is a JSON Schema of the job's output, of type object");
       return;
+    }
+    const remote = remoteRefProblem(body, 'api.response.body');
+    if (remote !== null) {
+      this.problems.push(remote);
     }
     const outputs = Object.keys(this.def.workflow.outputs ?? {});
     for (const name of fieldNames(get(body, 'properties'))) {

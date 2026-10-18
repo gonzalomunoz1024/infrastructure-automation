@@ -105,5 +105,14 @@
   ],
   "missing-policy.yaml": [
     "error policy.missing"
+  ],
+  "bad-step-key.yaml": [
+    "error schema.invalid"
+  ],
+  "bad-api-input.yaml": [
+    "error api.input.invalid"
+  ],
+  "remote-ref.yaml": [
+    "error schema.remoteRef"
   ]
 }

@@ -60,17 +60,44 @@ public final class WorkflowChecks {
     private WorkflowChecks() {
     }
 
-    /** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
+    /**
+     * Check YAML text: a syntax error is one {@code yaml.invalid} problem; otherwise the document
+     * is checked as {@link #check(JsonNode, CheckContext)} says.
+     */
     public static List<Problem> check(String yaml, CheckContext ctx) {
+        JsonNode doc;
+        try {
+            doc = WorkflowYaml.readTree(yaml);
+        } catch (IllegalArgumentException e) {
+            return List.of(Problem.error("yaml.invalid", null, null, e.getMessage()));
+        }
+        return check(doc, ctx);
+    }
+
+    /**
+     * Check a document (the YAML read into a tree, or the JSON the designer posts) in three lines:
+     * the Workflow schema first ({@link WorkflowSchema}: one {@code schema.invalid} per violation,
+     * and nothing else when there is one), then the parser (a structure error is one
+     * {@code yaml.invalid}), then the rules. A file of another kind goes straight to the parser,
+     * which names its kind.
+     */
+    public static List<Problem> check(JsonNode doc, CheckContext ctx) {
+        if (doc != null && doc.isObject() && !(doc.path("kind").isTextual() && !WorkflowDefinition.KIND.equals(doc.path("kind").asText()))) {
+            List<Problem> schema = WorkflowSchema.validate(doc);
+            if (!schema.isEmpty()) {
+                return schema;
+            }
+        }
         WorkflowDefinition def;
         try {
-            def = WorkflowYaml.parse(yaml);
+            def = WorkflowYaml.fromJson(doc);
         } catch (IllegalArgumentException e) {
             return List.of(Problem.error("yaml.invalid", null, null, e.getMessage()));
         }
         return check(def, ctx);
     }
 
+    /** The rules over a parsed definition (a stored version): the document's schema is not judged again. */
     public static List<Problem> check(WorkflowDefinition def, CheckContext ctx) {
         Checker c = new Checker(def, ctx);
         c.run();
@@ -79,6 +106,31 @@ public final class WorkflowChecks {
 
     public static boolean hasErrors(List<Problem> problems) {
         return problems.stream().anyMatch(Problem::isError);
+    }
+
+    /**
+     * api.input as the gateway, the MCP server and the catalog form will use it: a schema that
+     * refers outside itself is {@code schema.remoteRef} (nothing is fetched, so the reference
+     * never resolves), else one the validator does not compile is {@code api.input.invalid}, one
+     * problem per location with the validator's message. Empty for a usable schema.
+     */
+    public static List<Problem> inputSchemaProblems(JsonNode in) {
+        Optional<Problem> remote = remoteRefProblem(in, "api.input");
+        if (remote.isPresent()) {
+            return List.of(remote.get());
+        }
+        List<Problem> out = new ArrayList<>();
+        for (Schemas.Violation v : Schemas.metaViolations(in)) {
+            String where = Schemas.dotted(v.pointer());
+            out.add(Problem.error("api.input.invalid", null, "api.input" + where,
+                    "api.input is not a valid JSON Schema: " + (where.isEmpty() ? "" : where.substring(1) + ": ") + v.message()));
+        }
+        return out;
+    }
+
+    /** A {@code $ref} out of a schema the file carries ({@code field}): {@code schema.remoteRef} at the reference. */
+    static Optional<Problem> remoteRefProblem(JsonNode schema, String field) {
+        return Schemas.remoteRef(schema).map(r -> Problem.error("schema.remoteRef", null, field + Schemas.dotted(r.pointer()), r.describe(field)));
     }
 
     /** What an expression can see at one point of the flow. */
@@ -191,6 +243,7 @@ public final class WorkflowChecks {
                 if (!in.isObject() || (in.has("type") && !"object".equals(in.path("type").asText()))) {
                     error("api.input", null, "api.input", "api.input is a JSON Schema of type object");
                 } else {
+                    problems.addAll(inputSchemaProblems(in));
                     in.path("properties").fieldNames().forEachRemaining(inputFields::add);
                     for (JsonNode r : in.path("required")) {
                         if (!inputFields.contains(r.asText())) {
@@ -274,6 +327,7 @@ public final class WorkflowChecks {
                 error("api.responseBody", null, "api.response.body", "api.response.body is a JSON Schema of the job's output, of type object");
                 return;
             }
+            remoteRefProblem(body, "api.response.body").ifPresent(problems::add);
             Set<String> outputs = def.workflow() == null || def.workflow().outputs() == null ? Set.of() : def.workflow().outputs().keySet();
             body.path("properties").fieldNames().forEachRemaining(name -> {
                 if (!outputs.contains(name)) {

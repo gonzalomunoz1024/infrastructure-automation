@@ -254,4 +254,28 @@ class RestControllerWorkflowAdapterTest {
         client.post().uri("/api/v1/workflows:import").bodyValue(Map.of("source", "idp", "ref", "dns-record-request")).exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.notes").value(n -> assertThat((List<?>) n).isNotEmpty());
     }
+
+    @Test
+    void servesTheWorkflowSchemaAndJudgesTheDesignersDocumentAgainstIt() throws Exception {
+        client.get().uri("/api/v1/schemas/workflow.json").exchange().expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith("application/json")
+                .expectBody()
+                .jsonPath("$.title").isEqualTo("Workflow")
+                .jsonPath("$.properties.kind.const").isEqualTo("Workflow")
+                .jsonPath("$.$defs.step.additionalProperties").isEqualTo(false);
+        // the designer posts its document as JSON: an unknown step key is a schema problem, not a 400
+        JsonNode definition = JSON.readTree("""
+                {"apiVersion": "iaf.platform/v1", "kind": "Workflow",
+                 "metadata": {"name": "thing-refresh", "title": "Refresh a thing", "noun": "thing", "verb": "refresh", "owner": "team-compute"},
+                 "policy": {"rbac": ["ops"]},
+                 "workflow": {"do": [{"say": {"notify": {"channel": "#x", "message": "hi"}, "loop": 3}}]}}
+                """);
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("definition", definition)).exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.valid").isEqualTo(false)
+                .jsonPath("$.problems.length()").isEqualTo(1)
+                .jsonPath("$.problems[0].code").isEqualTo("schema.invalid")
+                .jsonPath("$.problems[0].step").isEqualTo("say")
+                .jsonPath("$.problems[0].field").isEqualTo("/workflow/do/0/say/loop");
+    }
 }

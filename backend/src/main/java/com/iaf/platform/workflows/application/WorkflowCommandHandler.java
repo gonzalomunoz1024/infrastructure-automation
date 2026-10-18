@@ -193,7 +193,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<Validation> validate(WorkflowSource source) {
         return Mono.zip(queries.checkContext(), resources.types().collectList()).flatMap(t -> blocking(() -> {
             List<Problem> problems = new ArrayList<>(problems(source, t.getT1()));
-            if (problems.stream().noneMatch(p -> "yaml.invalid".equals(p.code()))) {
+            if (problems.stream().noneMatch(WorkflowCommandHandler::structural)) {
                 problems.addAll(publishProblems(source.parse(), t.getT1(), t.getT2(), problems));
             }
             return new Validation(!WorkflowChecks.hasErrors(problems), problems);
@@ -246,13 +246,16 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             return Mono.error(new IllegalArgumentException("yaml is required"));
         }
         return queries.checkContext().map(ctx -> {
+            JsonNode doc;
             WorkflowDefinition def;
             try {
-                def = WorkflowYaml.parse(source.yaml());
+                doc = WorkflowYaml.readTree(source.yaml());
+                def = WorkflowYaml.fromJson(doc);
             } catch (IllegalArgumentException e) {
                 return new Parsed(null, List.of(Problem.error("yaml.invalid", null, null, e.getMessage())));
             }
-            return new Parsed(WorkflowYaml.toJson(def), WorkflowChecks.check(def, ctx));
+            // the file parses; the problems judge it as written, the schema first
+            return new Parsed(WorkflowYaml.toJson(def), WorkflowChecks.check(doc, ctx));
         });
     }
 
@@ -562,15 +565,20 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     // ------------------------------------------------------------------ helpers
 
+    /** The checks of the document as sent (YAML text or the designer's JSON), the Workflow schema first. */
     private List<Problem> problems(WorkflowSource source, CheckContext ctx) {
         if (source.hasYaml()) {
             return WorkflowChecks.check(source.yaml(), ctx);
         }
-        try {
-            return WorkflowChecks.check(source.parse(), ctx);
-        } catch (IllegalArgumentException e) {
-            return List.of(Problem.error("yaml.invalid", null, null, e.getMessage()));
+        if (source.definition() == null || source.definition().isNull()) {
+            return List.of(Problem.error("yaml.invalid", null, null, "yaml or definition is required"));
         }
+        return WorkflowChecks.check(source.definition(), ctx);
+    }
+
+    /** A problem that means the document has no structure to judge further: it does not parse or does not match the schema. */
+    private static boolean structural(Problem p) {
+        return "yaml.invalid".equals(p.code()) || "schema.invalid".equals(p.code());
     }
 
     private Optional<ChangeRequest> openChangeRequest(String name) {

@@ -262,10 +262,39 @@ or `{ create: <that workflow's input> }`. Only one level is offered: the produce
 
 The editor, `POST /workflows:validate`, `npm run check:workflows` (CI) and the publish run the same
 checks; `packages/workflow-checks` and `WorkflowChecks.java` are twins with shared fixtures. Each
-finding is a `Problem` (docs/api.md). Among them:
+finding is a `Problem` (docs/api.md).
+
+A file is judged in three lines. First the JSON Schema of the Workflow file,
+`packages/workflow-checks/schemas/workflow.schema.json` (draft 2020-12; the backend carries a
+byte-identical copy and serves it at `GET /api/v1/schemas/workflow.json`): every key, step shape
+and type of this page, so an unknown step key or a value of the wrong type is a `schema.invalid`
+problem located by a JSON pointer (`/workflow/do/0/getVm/loop`), with the step it is in. When the
+schema finds anything, nothing else is reported. Then the parser, which still refuses what the
+schema does not say (two step keys in one step) with one `yaml.invalid`; a file of another kind
+goes straight to it. Then the rules below. The schema keeps loose what the rules judge in detail:
+`api.input`, a call step's `with`, the values of `set`, `register.attributes` and `run.input`.
+Point an editor at the schema file for completion and the same first line while typing, for
+example with the YAML language server:
+`# yaml-language-server: $schema=../../packages/workflow-checks/schemas/workflow.schema.json` at the
+top of a file under `workflows/<team>/`. An empty YAML value (`notes:`) is an empty string to the
+backend's reader and null to the designer's, so the designer reports it where the backend does not;
+leave the key out instead.
+
+`api.input` is compiled as the gateway, the MCP server and the catalog form will use it: a schema
+the validator cannot use is `api.input.invalid` with the validator's message, at save, in the
+designer and at publish (the change request's `schema` check). Nothing a schema names is ever
+fetched: a `$ref` that is not a `#` pointer into the same schema (`https://...`, `other.json`) is
+`schema.remoteRef`, and the backend's validator loads only the meta-schemas it bundles, so such a
+reference in a resource type's schema or in an input published before this check fails instead of
+making the server request it.
+
+Among the codes:
 
 | Code                      | Level   | Finding                                                                 |
 |---------------------------|---------|-------------------------------------------------------------------------|
+| `schema.invalid`          | error   | the file does not match the Workflow schema: an unknown key, a value of the wrong type, no `metadata.name`; the field is the JSON pointer of the value |
+| `api.input.invalid`       | error   | `api.input` is not a JSON Schema the validator can use (`required: vmId` instead of a list, a type that does not exist, a pattern that does not compile, a `#` reference to nothing); one per location, with the validator's message. The TypeScript twin checks the vocabulary keywords; the backend checks against the full meta-schema and compiles the schema |
+| `schema.remoteRef`        | error   | `api.input` or `api.response.body` refers outside itself (`$ref: https://...`): only `#/...` references resolve, and nothing is fetched |
 | `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`): a duplicate would silently keep one value, so both twins and the designer refuse it |
 | `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
 | `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
