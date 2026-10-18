@@ -205,9 +205,9 @@ function HttpParams() {
     <>
       <P field="method" label="Method" options={METHODS} expression={false} />
       <P field="url" label="URL" required placeholder="https://api.example.com/things/{{ $input.id }}" mono />
+      <CredentialParam kinds={['token', 'basic', 'bearer']} />
       <KeyValueParam field="headers" label="Headers" addLabel="Add header" keyPlaceholder="Header" />
       <P field="body" label="Body" type="any" description="JSON, or an expression" />
-      <CredentialParam kinds={['token', 'basic', 'bearer']} />
     </>
   )
 }

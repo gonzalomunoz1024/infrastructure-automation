@@ -168,7 +168,7 @@ function AddCredentialForm({ onCreated, kinds }: { onCreated?: (ref: string, nam
 
   return (
     <form onSubmit={(e) => void submit(e)} className="flex min-h-0 flex-1 flex-col">
-      <OverlayHeader title="Add a credential" subtitle="Stored once in the credential store; providers refer to it by name." icon="key" />
+      <OverlayHeader title="Add a credential" subtitle="Stored once in the credential store; steps and providers refer to it by name." icon="key" />
       <OverlayBody className="space-y-4">
         <Field label="Name" htmlFor="cred-name" required hint="Its path in the store, like vsphere/token" error={name && !nameOk ? 'Letters, digits, slashes, dots, dashes and underscores' : undefined}>
           <Input id="cred-name" mono value={name} onChange={(e) => setName(e.target.value.trim())} invalid={!!name && !nameOk} autoFocus placeholder="team/system-token" />
