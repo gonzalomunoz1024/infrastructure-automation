@@ -791,6 +791,24 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+A provider step's node detail view brings the provider into the designer. Beside Test step, which
+stays a dry run, Try for real makes one real call (`POST /providers:try`) with the provider draft's
+file or the published one, starting in the environment the review counts, asking first when the
+action changes something and, for a delete whose input names a registry resource, picking its
+target with the registry picker. The Output pane shows the answer as the provider page does, with
+Save as sample and Fix schema into the provider's draft and, for a published provider, Use the real
+response (`POST /providers/{name}/overrides`); pinned data stays the designer's own mock. The
+Settings tab's "Action (shared by every workflow)" section edits the action's effect, retry policy,
+approval, plan step, what a delete removes, its own SLO and (for a draft written from the wizard's
+state) the error classes; the edits go into the provider's draft, the first one starting a draft of
+a published provider's next patch, and a draft that holds a file takes them as line edits of that
+action (`frontend/src/designer/ndv/providerFile.ts`), so the browser never parses YAML. The step's
+own retry, timeout and pause stay where they were. The Provider tab shows the provider page's
+health band, success rate and p95 against the SLO, the action's own band, its alerts, the release
+in flight and the open change requests, with Edit SLO, Refresh spec and links to the provider page
+and its audit; the canvas marks each provider step with its provider's health from one shared read
+of `GET /providers`.
+
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
 imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint
