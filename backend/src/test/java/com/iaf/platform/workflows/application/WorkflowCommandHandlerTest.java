@@ -341,6 +341,64 @@ class WorkflowCommandHandlerTest {
         assertThat(eventsOf("workflow.published")).isEmpty();
     }
 
+    static final Identity MAYA = new Identity("maya", "Maya", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity ROOT = new Identity("root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
+
+    @Test
+    void theAuthorOfAWorkflowChangeCannotMergeItButAnotherOwnerCan() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block();
+        String crId = handler.publish("vm-restart", new PublishWorkflow("all", null)).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().author()).isEqualTo("junior");
+
+        StepVerifier.create(handler.mergeChangeRequest(crId).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Junior opened change request " + crId + "; someone else must review and merge it"))
+                .verify();
+        assertThat(changeRequests.get(crId).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
+
+        StepVerifier.create(handler.mergeChangeRequest(crId).contextWrite(ctx -> CurrentIdentity.with(ctx, MAYA)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(changeRequests.get(crId).orElseThrow().mergedBy()).isEqualTo("maya");
+        assertThat(store.published("vm-restart").orElseThrow().publishedBy()).isEqualTo("maya");
+    }
+
+    @Test
+    void anAdminMayMergeTheirOwnChange() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).contextWrite(ctx -> CurrentIdentity.with(ctx, ROOT)).block();
+        String crId = handler.publish("vm-restart", null).contextWrite(ctx -> CurrentIdentity.with(ctx, ROOT)).block().id();
+        StepVerifier.create(handler.mergeChangeRequest(crId).contextWrite(ctx -> CurrentIdentity.with(ctx, ROOT)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+    }
+
+    @Test
+    void theAuthorOfAProviderChangeCannotMergeItEither() {
+        String providerYaml = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        changeRequests.save(new ChangeRequest("cr_prov", ChangeRequest.Kind.PROVIDER, "vsphere", "1.4.0", "change/vsphere-1.4.0", "Update vsphere", "maya",
+                ChangeRequest.Status.OPEN, List.of(new Check("schema", "Schema", "passed", null)), "all", providerYaml, "", NOW, null, null, null));
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, MAYA)))
+                .expectError(ForbiddenException.class)
+                .verify();
+        assertThat(eventsOf("change-request.merged")).isEmpty();
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(eventsOf("change-request.merged").get(0).data().path("by").asText()).isEqualTo("junior");
+    }
+
+    @Test
+    void theAuthorMayStillCloseTheirOwnChange() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block();
+        String crId = handler.publish("vm-restart", null).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block().id();
+        StepVerifier.create(handler.closeChangeRequest(crId).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+    }
+
     // ------------------------------------------------------------------ replay
 
     @Test

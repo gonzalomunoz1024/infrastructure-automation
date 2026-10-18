@@ -69,7 +69,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
-| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary) |
+| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests |
 | POST   | `/change-requests/{id}:close`                | → `CommandAccepted` |
 | POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200) |
 | GET    | `/templates`                                 | `{ id; title; description; yaml }[]` |

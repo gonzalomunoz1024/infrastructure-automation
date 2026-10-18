@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -292,6 +293,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             }
             if (!cr.checksPassed()) {
                 throw new ConflictException("checks failed", PublishChecks.failed(cr.checks()));
+            }
+            // the reviewer is not the author: nobody merges their own change, admins excepted
+            if (who.id().equals(cr.author()) && !who.admin()) {
+                throw new ForbiddenException(who.name() + " opened change request " + id + "; someone else must review and merge it");
             }
             Instant now = clock.instant();
             Map<String, String> links;
