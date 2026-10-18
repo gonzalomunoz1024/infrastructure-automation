@@ -85,7 +85,7 @@ export function LineageGraph({ lineage, onNavigate, className }: LineageGraphPro
       </g>
       {left.length === 0 && (
         <text x={colX[0] + NODE_W / 2} y={midY + 4} textAnchor="middle" className="fill-tertiary text-caption">
-          built from nothing registered
+          not built from another resource
         </text>
       )}
       {right.length === 0 && (

@@ -9,8 +9,8 @@ schema:
   type: object
   required: [sizeGb]
   properties:
-    sizeGb: { type: integer }
-    tier: { type: string }
+    sizeGb: { type: integer, examples: [200, 500] }
+    tier: { type: string, examples: [ssd, standard] }
     attachedTo: { type: string }
 states: [building, ready, deprecated, retired]
 producedBy: request-storage

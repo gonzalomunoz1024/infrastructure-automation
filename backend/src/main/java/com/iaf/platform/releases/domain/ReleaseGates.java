@@ -125,11 +125,16 @@ public final class ReleaseGates {
 
     static Gate sample(Stats c, Instant stageStartedAt, Instant now) {
         long millis = stageStartedAt == null || now == null ? 0 : Math.max(0, Duration.between(stageStartedAt, now).toMillis());
-        double hours = Math.floor(millis / 360_000.0) / 10.0;
-        boolean enough = c.jobs() >= MIN_JOBS && millis + 1 >= MIN_TIME.toMillis();
-        String detail = enough
-                ? c.jobs() + " jobs over " + hours1(hours) + "h in the stage"
-                : c.jobs() + " of " + MIN_JOBS + " jobs, " + hours1(hours) + " of " + MIN_TIME.toHours() + "h";
+        boolean jobsOk = c.jobs() >= MIN_JOBS;
+        boolean timeOk = millis + 1 >= MIN_TIME.toMillis();
+        boolean enough = jobsOk && timeOk;
+        // say what is still missing: jobs, time in the stage, or both
+        String spent = span(millis);
+        String minimum = " of the " + span(MIN_TIME.toMillis()) + " minimum";
+        String detail = enough ? c.jobs() + " jobs over " + spent + " in the stage"
+                : !jobsOk && !timeOk ? c.jobs() + " of " + MIN_JOBS + " jobs; " + spent + minimum
+                : !jobsOk ? c.jobs() + " of " + MIN_JOBS + " jobs, " + spent + " in the stage"
+                : c.jobs() + " jobs; " + spent + minimum;
         return new Gate("sample", "Sample size", enough ? Boolean.TRUE : null, (double) c.jobs(), (double) MIN_JOBS, detail);
     }
 
@@ -183,8 +188,12 @@ public final class ReleaseGates {
         return String.format(Locale.ROOT, "%.1f%%", v);
     }
 
-    private static String hours1(double h) {
-        return String.format(Locale.ROOT, "%.1f", h);
+    /** 0m, 52m, 2h, 1h 30m. */
+    static String span(long millis) {
+        long minutes = millis / 60_000;
+        long h = minutes / 60;
+        long m = minutes % 60;
+        return h == 0 ? m + "m" : m == 0 ? h + "h" : h + "h " + m + "m";
     }
 
     private static String ms(double v) {

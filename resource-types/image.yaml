@@ -9,11 +9,11 @@ schema:
   type: object
   required: [templateId]
   properties:
-    name: { type: string }
-    os: { type: string }
-    hardening: { type: string }
-    templateId: { type: string }
-    sizeGb: { type: integer }
-    scanned: { type: boolean }
+    name: { type: string, examples: [ubuntu-24.04-cis-l1-2026-10-01, rhel-9-cis-l1-2026-09-15] }
+    os: { type: string, examples: [ubuntu-24.04, rhel-9] }
+    hardening: { type: string, examples: [cis-l1, cis-l2] }
+    templateId: { type: string, examples: [tpl-ubuntu-2404-cis-l1, tpl-rhel9-cis-l1] }
+    sizeGb: { type: integer, examples: [40, 60] }
+    scanned: { type: boolean, examples: [true] }
 states: [building, ready, deprecated, retired, failed]
 producedBy: build-vm-image

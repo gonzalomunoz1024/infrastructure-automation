@@ -74,7 +74,7 @@ class ReleaseGatesTest {
         assertThat(sample.passed()).isNull();
         assertThat(sample.value()).isEqualTo(5.0);
         assertThat(sample.threshold()).isEqualTo(20.0);
-        assertThat(sample.detail()).isEqualTo("5 of 20 jobs, 3.0 of 2h");
+        assertThat(sample.detail()).isEqualTo("5 of 20 jobs, 3h in the stage");
     }
 
     @Test
@@ -84,7 +84,7 @@ class ReleaseGatesTest {
 
         assertThat(e.verdict()).isEqualTo(Verdict.WAIT);
         assertThat(gate(e, "sample").passed()).isNull();
-        assertThat(gate(e, "sample").detail()).isEqualTo("25 of 20 jobs, 1.5 of 2h");
+        assertThat(gate(e, "sample").detail()).isEqualTo("25 jobs; 1h 30m of the 2h minimum");
     }
 
     @Test
@@ -92,7 +92,7 @@ class ReleaseGatesTest {
         Evaluation e = ReleaseGates.evaluate(many(34, () -> ok("1.2.0", 1000)), many(30, () -> ok("1.1.0", 1000)), STAGE_START, THREE_HOURS_LATER);
 
         assertThat(gate(e, "sample").passed()).isTrue();
-        assertThat(gate(e, "sample").detail()).isEqualTo("34 jobs over 3.0h in the stage");
+        assertThat(gate(e, "sample").detail()).isEqualTo("34 jobs over 3h in the stage");
     }
 
     @Test
@@ -215,7 +215,7 @@ class ReleaseGatesTest {
         Evaluation e = ReleaseGates.evaluate(candidate, many(30, () -> ok("1.1.0", 1000)), STAGE_START, THREE_HOURS_LATER);
 
         assertThat(e.jobs().candidate()).isEqualTo(10);
-        assertThat(gate(e, "sample").detail()).isEqualTo("10 of 20 jobs, 3.0 of 2h");
+        assertThat(gate(e, "sample").detail()).isEqualTo("10 of 20 jobs, 3h in the stage");
         assertThat(gate(e, "success-rate").value()).isEqualTo(100.0);
     }
 
@@ -237,7 +237,7 @@ class ReleaseGatesTest {
 
         assertThat(fresh).hasSize(4);
         assertThat(fresh).allMatch(g -> g.passed() == null);
-        assertThat(fresh.get(3).detail()).isEqualTo("0 of 20 jobs, 0.0 of 2h");
+        assertThat(fresh.get(3).detail()).isEqualTo("0 of 20 jobs; 0m of the 2h minimum");
         assertThat(ReleaseGates.verdict(fresh)).isEqualTo(Verdict.WAIT);
     }
 }

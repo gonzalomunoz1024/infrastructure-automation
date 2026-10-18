@@ -62,7 +62,7 @@ public class DemoReleaseSeed {
                 new Gate("success-rate", "Success rate", true, 100.0, 92.3, "100.0% on the candidate vs 93.3% on the current version (may trail by 1 point)"),
                 new Gate("p95", "p95 duration", true, 38400.0, 43320.0, "38.4s on the candidate vs 36.1s on the current version (may be 20% slower)"),
                 new Gate("error-types", "Error types", true, 0.0, 0.0, "no failures on the candidate"),
-                new Gate("sample", "Sample size", null, 14.0, 20.0, "14 of 20 jobs, 0.8 of 2h"));
+                new Gate("sample", "Sample size", null, 14.0, 20.0, "14 of 20 jobs; 50m of the 2h minimum"));
         return new Release(CANARY_ID, "vm-restart", "1.1.0", "1.2.0", Release.STRATEGY_CANARY, ReleaseStatus.CANARY, 1, STAGES, 50,
                 started, stage, null, gates, new Jobs(15, 14), List.of(
                         new HistoryEntry(started, "canary started at 10%", "mateo"),
@@ -78,7 +78,7 @@ public class DemoReleaseSeed {
                 new Gate("success-rate", "Success rate", true, 98.1, 97.0, "98.1% on the candidate vs 98.0% on the current version (may trail by 1 point)"),
                 new Gate("p95", "p95 duration", true, 71300.0, 86400.0, "71.3s on the candidate vs 72.0s on the current version (may be 20% slower)"),
                 new Gate("error-types", "Error types", true, 0.0, 0.0, "every error class on the candidate (QuotaExceeded) also occurs on the current version"),
-                new Gate("sample", "Sample size", true, 41.0, 20.0, "41 jobs over 2.3h in the stage"));
+                new Gate("sample", "Sample size", true, 41.0, 20.0, "41 jobs over 2h 18m in the stage"));
         return new Release(PROMOTED_ID, "create-vm", "1.9.0", "2.0.1", Release.STRATEGY_CANARY, ReleaseStatus.PROMOTED, 2, STAGES, 100,
                 started, stage, ended, gates, new Jobs(58, 41), List.of(
                         new HistoryEntry(started, "canary started at 10%", "gonzalo"),
@@ -96,7 +96,7 @@ public class DemoReleaseSeed {
                 new Gate("success-rate", "Success rate", true, 97.2, 96.8, "97.2% on the candidate vs 97.8% on the current version (may trail by 1 point)"),
                 new Gate("p95", "p95 duration", true, 412000.0, 506400.0, "412.0s on the candidate vs 422.0s on the current version (may be 20% slower)"),
                 new Gate("error-types", "Error types", false, 1.0, 0.0, "new on the candidate: ReplicaSetNotReady"),
-                new Gate("sample", "Sample size", null, 36.0, 20.0, "36 of 20 jobs, 1.7 of 2h"));
+                new Gate("sample", "Sample size", null, 36.0, 20.0, "36 jobs; 1h 42m of the 2h minimum"));
         return new Release(ROLLED_BACK_ID, "mongodb-upgrade", "3.0.2", "3.1.0", Release.STRATEGY_CANARY, ReleaseStatus.ROLLED_BACK, 0, STAGES, 0,
                 started, started, ended, gates, new Jobs(44, 36), List.of(
                         new HistoryEntry(started, "canary started at 10%", "ana"),

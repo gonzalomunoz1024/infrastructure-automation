@@ -9,11 +9,11 @@ schema:
   type: object
   required: [name]
   properties:
-    name: { type: string }
+    name: { type: string, examples: [web-01, api-02] }
     image: { type: string }
-    cpu: { type: integer }
-    memoryGb: { type: integer }
-    environment: { type: string }
-    owner: { type: string }
+    cpu: { type: integer, examples: [4, 2] }
+    memoryGb: { type: integer, examples: [16, 8] }
+    environment: { type: string, examples: [prod, dev] }
+    owner: { type: string, examples: [team-compute] }
 states: [building, ready, deprecated, retired]
 producedBy: create-vm

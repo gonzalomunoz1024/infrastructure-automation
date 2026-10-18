@@ -250,7 +250,7 @@ describe('LineageGraph', () => {
 
   it('says when either side is empty', () => {
     const html = text(renderToString(<LineageGraph lineage={{ resource: res('vol-1', 'volume', 'data-1'), builtFrom: [], dependents: [] }} />))
-    expect(html).toContain('built from nothing registered')
+    expect(html).toContain('not built from another resource')
     expect(html).toContain('nothing depends on it')
   })
 })

@@ -246,6 +246,9 @@ public final class DemoResources {
         if (s.has("example")) {
             return s.get("example");
         }
+        if (s.path("examples").isArray() && s.get("examples").size() > 0) {
+            return s.get("examples").get((i - 1) % s.get("examples").size());
+        }
         if (s.has("enum") && s.get("enum").size() > 0) {
             return s.get("enum").get((i - 1) % s.get("enum").size());
         }

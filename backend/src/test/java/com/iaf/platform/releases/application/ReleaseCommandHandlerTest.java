@@ -233,7 +233,7 @@ class ReleaseCommandHandlerTest {
                     assertThat(r.status()).isEqualTo(ReleaseStatus.CANARY);
                     assertThat(r.stageIndex()).isZero();
                     assertThat(r.jobs()).isEqualTo(new Release.Jobs(30, 5));
-                    assertThat(r.gates().get(3).detail()).isEqualTo("5 of 20 jobs, 3.0 of 2h");
+                    assertThat(r.gates().get(3).detail()).isEqualTo("5 of 20 jobs, 3h in the stage");
                     assertThat(r.history()).hasSize(1);
                 })
                 .verifyComplete();
