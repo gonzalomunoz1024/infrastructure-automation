@@ -252,6 +252,8 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
 | GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
+| GET    | `/jobs/{id}/logs`                      | the job's log lines, one log `JobEvent` per line (`application/x-ndjson` only): its archive once the job has ended (below), else the lines of its events; for a job still running the response starts at once with the lines so far and then follows each new one until the job ends |
+| GET    | `/jobs/{id}/plan`                      | `Preview`: the blast-radius plan the job was started with (its archive once the job has ended); 404 when it had none |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
 | POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
@@ -270,6 +272,17 @@ Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`) is for its requester, a 
 workflow's owner team, anyone the workflow's `policy.rbac` roles or approver groups name, and
 admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
 (`policy.rbac`), and approvals by their group.
+
+When a job ends (succeeded, failed, cancelled, rolled back) its log lines are archived as
+`jobs/<id>/logs.ndjson` and its preview, if it had one, as `jobs/<id>/plan.json` in the artifact
+store (the bucket of the `s3` profile, else files under `platform.artifacts.dir`), with secrets
+redacted as the API serves them; a batch or a parent job is archived after its ended children, and
+a job that ends again (a batch after `:retry-failed-rows`) is archived again over its earlier
+archive. An archive that could not be written is written at the next start, which archives every
+ended job among the latest 1,000 of each status (with its children) that has none; archiving never
+fails a job. `logs` and `plan` need `jobs:read` and look the job up as
+`GET /jobs/{id}` does, so whoever may read the job may read them, and a job it does not know is a
+404.
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
