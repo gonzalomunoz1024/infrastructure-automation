@@ -739,3 +739,18 @@ test.describe('service accounts', () => {
     await expect(table.getByRole('row', { name: /release-bot/ }).getByLabel('Scopes')).toContainText('workflows:write')
   })
 })
+
+test.describe('settings', () => {
+  test('the identity card says production signs in through the auth proxy and links the README', async ({ page }) => {
+    await mockApi(page, { 'GET /service-accounts': SERVICE_ACCOUNTS })
+    await page.goto('/#/settings')
+    await expect(page.getByText('Who the API runs your requests as.')).toBeVisible()
+    await expect(page.getByText('An auth proxy in front of the app and the API signs you in and adds the bearer token the API verifies')).toBeVisible()
+    const readme = page.getByRole('link', { name: 'README: Identity and OIDC' })
+    await expect(readme).toHaveAttribute('href', 'https://github.com/gonzalomunoz1024/infrastructure-automation/blob/main/README.md#identity-and-oidc')
+    await expect(readme).toHaveAttribute('target', '_blank')
+    // the shell cannot tell the API's profile, so nothing claims one
+    await expect(page.getByText('Identity mode')).toHaveCount(0)
+    await expect(page.getByText(/SSO/)).toHaveCount(0)
+  })
+})

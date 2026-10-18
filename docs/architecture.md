@@ -389,7 +389,12 @@ events from the platform stream, and submits a ready draft as a change request. 
 message stream as the backend writes it (the SSE event name is the type, the data the payload
 alone) and keeps the session in its address (`?session=`), so a reload or a shared link goes on
 from `GET /assistant/sessions/{id}`, in the session's mode. The settings page creates service
-accounts with the presets and the grouped scopes of `docs/api.md`.
+accounts with the presets and the grouped scopes of `docs/api.md`. Its identity card sends the dev
+`X-User` header and says what production does instead: an auth proxy in front of the app and the
+API signs a person in and adds the bearer token the API verifies under the `oidc` profile, which
+ignores the header. The shell cannot tell which profile the API runs, so it claims none and links
+the README ("Identity and OIDC"); links to the repository's docs go to the GitHub repository's main
+branch, or to `VITE_DOCS_URL` when the build sets it.
 
 The job page's cancel says what both engines do: the job stops (a wait at once, a runner process
 or a worker's activity stopped) and nothing is compensated; only Abort, on a run a failed step

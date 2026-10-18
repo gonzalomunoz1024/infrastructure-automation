@@ -7,6 +7,7 @@ import {
   CodeBlock,
   CopyButton,
   Field,
+  Icon,
   Input,
   Modal,
   OverlayBody,
@@ -31,6 +32,8 @@ import { API_BASE, api, errorMessage, isApiError, setCurrentUser, useCurrentUser
 import { useMutation, useQuery } from '../lib/queries'
 import type { ActuatorHealth, CreateServiceAccount, Me, ServiceAccount, ServiceAccountCreated, ServiceAccountScope } from '../lib/types'
 import { ApiLinks } from '../components/ApiLinks'
+import { ExternalLink } from '../components/common'
+import { IDENTITY_DOC, docsUrl } from '../lib/docs'
 import { PRESETS, PRESET_INFO, SCOPE_GROUPS, fitsPreset, orderScopes, presetOf, scopesRequest, type PresetChoice } from '../components/service-account-scopes'
 
 const DEV_USERS = ['gonzalo', 'ana', 'mateo', 'junior'] as const
@@ -136,7 +139,7 @@ export default function SettingsPage({ route }: PageProps) {
         </Card>
 
         <div ref={identityRef}>
-          <Card title="Identity" subtitle="Development identity: the X-User header sent with every request. Production signs in through SSO.">
+          <Card title="Identity" subtitle="Who the API runs your requests as. Locally that is the person the X-User header names, and this shell sends it.">
             <CardRow label="Act as" description={user ? `Sending X-User: ${user}` : 'No header: the backend default applies'}>
               <Segmented
                 ariaLabel="Development user"
@@ -148,6 +151,7 @@ export default function SettingsPage({ route }: PageProps) {
             <CardRow label="Resolved identity" description="What GET /me says about that header.">
               {me.loading ? <Skeleton className="h-5 w-48" /> : me.error ? <ErrorTag error={me.error} /> : me.data ? <IdentityTags me={me.data} /> : null}
             </CardRow>
+            <SignInRow />
           </Card>
         </div>
 
@@ -177,7 +181,7 @@ export default function SettingsPage({ route }: PageProps) {
         </Card>
 
         <Card title="Environment" subtitle="Where the API lives and whether it answers.">
-          <CardRow label="Backend" description={`${API_BASE} → http://localhost:8080 through the dev proxy`}>
+          <CardRow label="Backend" description={`${API_BASE} → the API, through the dev server's proxy or the image's nginx`}>
             <BackendStatus health={health.data} error={health.error} loading={health.loading} />
             <Button size="sm" icon="refresh" loading={health.fetching && !health.loading} onClick={() => void health.refetch()}>
               Check
@@ -185,9 +189,6 @@ export default function SettingsPage({ route }: PageProps) {
           </CardRow>
           <CardRow label="Live streams" description="Job events, history replayed first">
             <span className="font-mono text-caption text-tertiary">/jobs/{'{id}'}/events · /ws/jobs/{'{id}'}</span>
-          </CardRow>
-          <CardRow label="Identity mode" description="dev reads X-User; oidc verifies a JWT">
-            <Tag mono>{me.data || me.error ? 'dev' : '—'}</Tag>
           </CardRow>
         </Card>
 
@@ -218,6 +219,30 @@ export default function SettingsPage({ route }: PageProps) {
       )}
       {created && <TokenModal created={created} onClose={() => setCreated(null)} />}
     </>
+  )
+}
+
+/**
+ * How a person signs in where the dev header does not count. The shell cannot tell which profile
+ * the API runs (GET /me does not say), so it describes both and links the README.
+ */
+export function SignInRow() {
+  return (
+    <CardRow
+      stacked
+      label="In production"
+      description={
+        <>
+          An auth proxy in front of the app and the API signs you in and adds the bearer token the API verifies under the{' '}
+          <code className="font-mono">oidc</code> profile. The API ignores X-User there, so Act as changes nothing.
+        </>
+      }
+    >
+      <ExternalLink href={docsUrl(IDENTITY_DOC)} className="inline-flex items-center gap-1 text-caption">
+        README: Identity and OIDC
+        <Icon name="external" size={12} />
+      </ExternalLink>
+    </CardRow>
   )
 }
 
