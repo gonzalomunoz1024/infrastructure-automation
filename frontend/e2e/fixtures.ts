@@ -5,6 +5,7 @@ import type {
   CatalogEntry,
   ChangeRequestDetail,
   Credential,
+  Dependencies,
   EvidenceRecord,
   JobDetail,
   JobSummary,
@@ -438,3 +439,48 @@ export const EVIDENCE: EvidenceRecord = {
 }
 
 export const VERIFIED: AuditVerification = { valid: true, entries: 5 }
+
+/* ----------------------------------------------------------------------------
+   Dependencies (GET /registry/dependencies)
+   ------------------------------------------------------------------------- */
+
+export const DEPENDENCIES: Dependencies = {
+  resourceTypes: [
+    {
+      type: 'image',
+      producers: [
+        { workflow: 'build-vm-image', via: 'producedBy' },
+        { workflow: 'build-vm-image', via: 'register', at: 'register-image' },
+      ],
+      consumers: [
+        { workflow: 'create-vm', via: 'input', at: 'image' },
+        { workflow: 'web-environment', via: 'orCreateWith', at: 'image' },
+      ],
+    },
+    { type: 'vm', producers: [{ workflow: 'create-vm', via: 'register', at: 'register-vm' }], consumers: [{ workflow: 'vm-restart', via: 'input', at: 'vmId' }] },
+  ],
+  workflows: [
+    { workflow: 'build-vm-image', version: '1.0.0', produces: ['image'], consumes: [], runs: [], consumers: [{ workflow: 'create-vm', via: 'orCreateWith', at: 'image' }] },
+    {
+      workflow: 'create-vm',
+      version: '2.0.0',
+      produces: ['vm'],
+      consumes: ['image'],
+      runs: [
+        { workflow: 'build-vm-image', via: 'orCreateWith', at: 'image' },
+        { workflow: 'web-environment', via: 'run', at: 'wire', range: '^1' },
+      ],
+      consumers: [{ workflow: 'web-environment', via: 'run', at: 'create', range: '^2' }],
+    },
+    { workflow: 'vm-restart', version: '1.2.0', produces: [], consumes: ['vm'], runs: [], consumers: [] },
+    {
+      workflow: 'web-environment',
+      version: '1.0.0',
+      produces: [],
+      consumes: ['image'],
+      runs: [{ workflow: 'create-vm', via: 'run', at: 'create', range: '^2' }],
+      consumers: [{ workflow: 'create-vm', via: 'run', at: 'wire', range: '^1' }],
+    },
+  ],
+  cycles: [['create-vm', 'web-environment', 'create-vm']],
+}

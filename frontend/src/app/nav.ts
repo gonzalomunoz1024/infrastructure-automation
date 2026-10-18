@@ -8,6 +8,7 @@ export const NAV_GROUPS: SidebarGroup[] = [
     label: 'Build',
     items: [
       { id: 'workflows', label: 'Workflows', icon: 'workflow', href: '#/workflows' },
+      { id: 'dependencies', label: 'Dependencies', icon: 'layers', href: '#/dependencies' },
       { id: 'templates', label: 'Templates', icon: 'grid', href: '#/templates' },
       { id: 'assistant', label: 'Assistant', icon: 'sparkles', href: '#/assistant' },
     ],
@@ -50,6 +51,7 @@ const NAV_BY_ROUTE: Partial<Record<RouteName, string>> = {
   'workflow-new': 'workflows',
   'workflow-versions': 'workflows',
   'change-request': 'workflows',
+  dependencies: 'dependencies',
   templates: 'templates',
   assistant: 'assistant',
   catalog: 'catalog',

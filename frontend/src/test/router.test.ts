@@ -35,6 +35,7 @@ describe('resolve', () => {
       ['/workflows/vm-restart', 'workflow'],
       ['/workflows/new', 'workflow-new'],
       ['/workflows/vm-restart/versions', 'workflow-versions'],
+      ['/dependencies', 'dependencies'],
       ['/catalog', 'catalog'],
       ['/catalog/vm-restart', 'catalog-run'],
       ['/jobs', 'jobs'],

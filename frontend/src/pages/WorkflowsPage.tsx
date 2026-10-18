@@ -149,9 +149,14 @@ export default function WorkflowsPage(_: PageProps) {
         title="Workflows"
         subtitle="Design, validate and publish config-as-code workflows."
         actions={
-          <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
-            New workflow
-          </Button>
+          <>
+            <Button icon="layers" onClick={() => navigate(pathFor('dependencies'))}>
+              Dependencies
+            </Button>
+            <Button variant="primary" icon="plus" onClick={() => setCreating(true)}>
+              New workflow
+            </Button>
+          </>
         }
       >
         <div className="flex flex-wrap items-center gap-2">

@@ -23,6 +23,7 @@ import type {
   CreateCredential,
   CreateServiceAccount,
   Credential,
+  Dependencies,
   DraftSaved,
   DryRunResult,
   EventPayload,
@@ -523,6 +524,8 @@ export const api = {
   registryResourceTypes: () => get<ResourceType[]>('/registry/resource-types'),
   registryPlaybooks: () => get<RegistryPlaybook[]>('/registry/playbooks'),
   registryCredentials: () => get<RegistryCredential[]>('/registry/credentials'),
+  /** who produces and consumes each resource type, which published workflows run which, and the cycles among runs */
+  registryDependencies: () => get<Dependencies>('/registry/dependencies'),
 
   /* catalog (generated surface) */
   catalog: () => get<CatalogEntry[]>('/catalog'),

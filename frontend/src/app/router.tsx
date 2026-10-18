@@ -11,6 +11,7 @@ export type RouteName =
   | 'workflow-new'
   | 'workflow'
   | 'workflow-versions'
+  | 'dependencies'
   | 'catalog'
   | 'catalog-run'
   | 'jobs'
@@ -47,6 +48,7 @@ export const ROUTES: RouteDef[] = [
   { name: 'workflow-new', pattern: '/workflows/new', title: 'New workflow', fullBleed: true },
   { name: 'workflow', pattern: '/workflows/:name', title: 'Designer', fullBleed: true },
   { name: 'workflow-versions', pattern: '/workflows/:name/versions', title: 'Versions' },
+  { name: 'dependencies', pattern: '/dependencies', title: 'Dependencies' },
   { name: 'catalog', pattern: '/catalog', title: 'Catalog' },
   { name: 'catalog-run', pattern: '/catalog/:workflow', title: 'Run' },
   { name: 'jobs', pattern: '/jobs', title: 'Jobs' },

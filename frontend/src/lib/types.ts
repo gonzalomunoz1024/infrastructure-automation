@@ -167,6 +167,21 @@ export type RegistryWorkflow = { name: string; title: string; version: string; i
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }
 
+/** How a workflow is tied to a resource type or to another workflow (GET /registry/dependencies). */
+export type DependencyVia = 'producedBy' | 'register' | 'input' | 'use' | 'run' | 'orCreateWith'
+export type DependencyLink = {
+  workflow: string
+  via: DependencyVia
+  /** the step id or the input field the link sits on */
+  at?: string
+  /** a run step's version range, e.g. ^2 */
+  range?: string
+}
+export type ResourceTypeDependencies = { type: string; producers: DependencyLink[]; consumers: DependencyLink[] }
+export type WorkflowDependencies = { workflow: string; version: string; produces: string[]; consumes: string[]; runs: DependencyLink[]; consumers: DependencyLink[] }
+/** `cycles` are closed walks among runs, e.g. ['a', 'b', 'a']: a runs b, b runs a. */
+export type Dependencies = { resourceTypes: ResourceTypeDependencies[]; workflows: WorkflowDependencies[]; cycles: string[][] }
+
 /* ----------------------------------------------------------------------------
    Catalog (generated)
    ------------------------------------------------------------------------- */
