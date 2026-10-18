@@ -183,6 +183,24 @@ class ProviderChecksTest {
     }
 
     @Test
+    void anActionsOwnSloHasTheSameRangesAndAFieldLeftOutTakesTheProviders() {
+        Result r = ProviderChecks.check(VALID.replace("retry: safe }", "retry: safe, slo: { successRate: 101, p95Ms: -5 } }"));
+        assertThat(codes(r)).containsExactly("error slo.p95Ms", "error slo.successRate");
+        assertThat(problem(r, "slo.p95Ms").orElseThrow().field()).isEqualTo("spec.actions[0].slo.p95Ms");
+        assertThat(problem(r, "slo.p95Ms").orElseThrow().step()).isEqualTo("vm.get");
+        assertThat(codes(ProviderChecks.check(VALID.replace("retry: safe }", "retry: safe, slo: 90 }")))).containsExactly("error slo.shape");
+
+        Result ok = ProviderChecks.check(VALID.replace("retry: safe }", "retry: safe, slo: { p95Ms: 300 } }"));
+        assertThat(ok.problems()).isEmpty();
+        assertThat(ok.checks()).filteredOn(c -> c.id().equals("slo")).extracting(Check::detail)
+                .containsExactly("99.5% success, p95 800 ms; 1 action with an SLO of its own");
+        ProviderDefinition def = ProviderYaml.parse(VALID.replace("retry: safe }", "retry: safe, slo: { p95Ms: 300 } }"));
+        assertThat(def.actions().get(0).slo()).isEqualTo(new ProviderDefinition.Slo(99.5, 300));
+        assertThat(def.sloOf(def.actions().get(1))).as("an action without one takes the provider's").isEqualTo(new ProviderDefinition.Slo(99.5, 800));
+        assertThat(ProviderYaml.parse(ProviderYaml.toYaml(def)).actions().get(0).slo()).as("the writer keeps it").isEqualTo(new ProviderDefinition.Slo(99.5, 300));
+    }
+
+    @Test
     void aMissingAlertChannelIsAWarning() {
         Result r = ProviderChecks.check(VALID.replace("alerts: { channel: \"#compute-alerts\" }", ""));
         assertThat(codes(r)).containsExactly("warning alerts.channel");

@@ -40,7 +40,7 @@ class ProviderHealthRuleTest {
         assertThat(h.calls()).isEqualTo(4);
         assertThat(h.reasons()).containsExactly("Only 4 calls in the last 24 hours; at least 5 are needed to judge health");
         assertThat(ProviderHealthRule.judge(List.of(), SLO, NOW).reasons()).containsExactly("No calls in the last 24 hours");
-        assertThat(ProviderHealthRule.judge(null, null, NOW).status()).isEqualTo(Status.UNKNOWN);
+        assertThat(ProviderHealthRule.judge(null, (Slo) null, NOW).status()).isEqualTo(Status.UNKNOWN);
     }
 
     @Test
@@ -103,11 +103,11 @@ class ProviderHealthRuleTest {
 
     @Test
     void theDefaultSloIsNinetyNinePercentAndOneSecond() {
-        Health h = ProviderHealthRule.judge(samples(99, 100, 1, 100), null, NOW);
+        Health h = ProviderHealthRule.judge(samples(99, 100, 1, 100), (Slo) null, NOW);
         assertThat(h.status()).isEqualTo(Status.HEALTHY);
-        Health d = ProviderHealthRule.judge(samples(98, 100, 2, 100), null, NOW);
+        Health d = ProviderHealthRule.judge(samples(98, 100, 2, 100), (Slo) null, NOW);
         assertThat(d.reasons()).containsExactly("Success rate 98% is below the 99% SLO");
-        Health slow = ProviderHealthRule.judge(samples(10, 1001, 0, 0), null, NOW);
+        Health slow = ProviderHealthRule.judge(samples(10, 1001, 0, 0), (Slo) null, NOW);
         assertThat(slow.status()).isEqualTo(Status.DEGRADED);
     }
 
@@ -143,6 +143,87 @@ class ProviderHealthRuleTest {
         assertThat(h.successRate()).isEqualTo(100.0);
         assertThat(h.errorTrend().get(11)).as("but the trend remembers it").isEqualTo(10);
         assertThat(h.errorTrend().get(13)).isZero();
+    }
+
+    static final ProviderDefinition FLEET = ProviderYaml.parse("""
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: fleet, owner: team-compute, version: 1.0.0 }
+            spec:
+              type: openapi
+              endpoints: { dev: https://fleet-dev.example.com }
+              actions:
+                - { id: vm.get, operation: getVm, effect: read }
+                - { id: vm.wait, operation: getVm, effect: read, slo: { successRate: 97, p95Ms: 2500 } }
+              slo: { successRate: 99.5, p95Ms: 800 }
+            """);
+
+    static List<CallSample> calls(String action, int ok, long okMs, int failed, long failedMs) {
+        List<CallSample> out = new ArrayList<>();
+        for (CallSample s : samples(ok, okMs, failed, failedMs)) {
+            out.add(new CallSample(s.at(), s.provider(), action, s.environment(), s.ok(), s.durationMs(), s.errorClass(), s.jobId(), null, null));
+        }
+        return out;
+    }
+
+    @Test
+    void anActionsOwnSloWinsOverTheProvidersForItsCalls() {
+        List<CallSample> samples = new ArrayList<>(calls("vm.get", 20, 100, 0, 0));
+        samples.addAll(calls("vm.wait", 20, 2000, 0, 0));
+
+        Health h = ProviderHealthRule.judge(samples, FLEET, NOW);
+        assertThat(h.status()).as("2000 ms is inside vm.wait's own 2500 ms").isEqualTo(Status.HEALTHY);
+        assertThat(h.reasons()).isEmpty();
+        assertThat(h.calls()).as("the metrics are over every call").isEqualTo(40);
+        assertThat(h.p95Ms()).isEqualTo(2000);
+        assertThat(ProviderHealthRule.judge(samples, FLEET.slo(), NOW).status()).as("against the provider's SLO alone it would be degraded")
+                .isEqualTo(Status.DEGRADED);
+        assertThat(ProviderHealthRule.band(calls("vm.wait", 20, 2000, 0, 0), FLEET.sloOf("vm.wait"), NOW)).isEqualTo(Status.HEALTHY);
+        assertThat(ProviderHealthRule.band(calls("vm.wait", 20, 2000, 0, 0), FLEET.sloOf("vm.get"), NOW)).isEqualTo(Status.DEGRADED);
+        assertThat(FLEET.sloOf("vm.get")).isEqualTo(FLEET.slo());
+        assertThat(FLEET.sloOf("gone")).as("an action the file no longer has takes the provider's").isEqualTo(FLEET.slo());
+    }
+
+    @Test
+    void theProvidersBandIsTheWorstOfItsPartsAndNamesTheActionInTheReason() {
+        List<CallSample> samples = new ArrayList<>(calls("vm.get", 19, 100, 1, 100));
+        samples.addAll(calls("vm.wait", 18, 2000, 2, 2000));
+
+        Health h = ProviderHealthRule.judge(samples, FLEET, NOW);
+        assertThat(h.status()).isEqualTo(Status.FAILING);
+        assertThat(h.reasons()).containsExactly("Success rate 95% is below the 99.5% SLO", "vm.wait: Success rate 90% is below the 95% floor");
+        assertThat(h.successRate()).as("the rate shown is over every call").isEqualTo(92.5);
+    }
+
+    @Test
+    void aPartWithTooFewCallsDoesNotCountAndTheWholeIsJudgedWhenNoPartHasEnough() {
+        List<CallSample> quiet = new ArrayList<>(calls("vm.get", 10, 100, 0, 0));
+        quiet.addAll(calls("vm.wait", 0, 0, 2, 100));
+        Health h = ProviderHealthRule.judge(quiet, FLEET, NOW);
+        assertThat(h.status()).as("two failed vm.wait calls are too few to judge that part").isEqualTo(Status.HEALTHY);
+        assertThat(h.calls()).isEqualTo(12);
+        assertThat(h.successRate()).isEqualTo(83.3);
+
+        List<CallSample> few = new ArrayList<>(calls("vm.get", 3, 100, 0, 0));
+        few.addAll(calls("vm.wait", 3, 2000, 0, 0));
+        Health whole = ProviderHealthRule.judge(few, FLEET, NOW);
+        assertThat(whole.status()).as("six calls, no part with five: the provider as a whole against its SLO").isEqualTo(Status.DEGRADED);
+        assertThat(whole.reasons()).containsExactly("p95 latency 2000 ms is above the 800 ms SLO");
+
+        assertThat(ProviderHealthRule.judge(calls("vm.get", 2, 100, 0, 0), FLEET, NOW).status()).isEqualTo(Status.UNKNOWN);
+        ProviderDefinition plain = ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: fleet, owner: team-compute, version: 1.0.0 }
+                spec:
+                  type: openapi
+                  actions:
+                    - { id: vm.get, operation: getVm, effect: read }
+                  slo: { successRate: 99.5, p95Ms: 800 }
+                """);
+        assertThat(plain.actions().get(0).slo()).isNull();
+        assertThat(ProviderHealthRule.judge(samples(98, 100, 2, 100), plain, NOW).reasons()).as("no action SLOs: the plain judgement")
+                .containsExactly("Success rate 98% is below the 99.5% SLO");
     }
 
     @Test

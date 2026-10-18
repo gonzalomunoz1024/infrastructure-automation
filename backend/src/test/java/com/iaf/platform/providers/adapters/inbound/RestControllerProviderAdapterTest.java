@@ -115,7 +115,8 @@ class RestControllerProviderAdapterTest {
     void showsADetailAndA404ForUnknownNames() {
         ProviderDetail detail = ProviderDetail.of(ProviderSummary.of(fleet, healthy), fleet, YAML, List.of(ActionInfo.of(fleet, fleet.actions().get(0))),
                 List.of(new ProviderDetail.Daily("2026-10-16T10:00:00Z", 3, 1, 100.0, 90L, 120L), new ProviderDetail.Daily("2026-10-17T10:00:00Z", 0, 0, null, null, null)),
-                List.of(new ProviderDetail.PerAction("vm.get", 3, 100.0, 90, 120, List.of(new ProviderDetail.ErrorCount("timeout", 1)))), List.of());
+                List.of(new ProviderDetail.PerAction("vm.get", 3, 100.0, 90, 120, List.of(new ProviderDetail.ErrorCount("timeout", 1)),
+                        new ProviderDefinition.Slo(99.5, 800), Health.Status.HEALTHY)), List.of());
         when(queries.detail("fleet")).thenReturn(Mono.just(detail));
         when(queries.detail("nope")).thenReturn(Mono.error(new NotFoundException("Provider", "nope")));
         client.get().uri("/api/v1/providers/fleet").exchange()
@@ -133,6 +134,8 @@ class RestControllerProviderAdapterTest {
                 .jsonPath("$.auth.type").isEqualTo("bearer")
                 .jsonPath("$.auth.credential").isEqualTo("vault:fleet/token")
                 .jsonPath("$.perAction[0].topErrors[0].class").isEqualTo("timeout")
+                .jsonPath("$.perAction[0].slo.p95Ms").isEqualTo(800)
+                .jsonPath("$.perAction[0].band").isEqualTo("healthy")
                 .jsonPath("$.health.status").isEqualTo("healthy");
         client.get().uri("/api/v1/providers/nope").exchange()
                 .expectStatus().isNotFound()

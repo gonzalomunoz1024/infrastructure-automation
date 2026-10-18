@@ -81,6 +81,9 @@ public final class ProviderYaml {
         s.path("endpoints").properties().forEach(e -> endpoints.put(e.getKey(), e.getValue().asText()));
         JsonNode au = s.get("auth");
         Auth auth = au != null && au.isObject() ? new Auth(au.path("type").asText("none"), text(au, "credential"), text(au, "header")) : new Auth("none", null, null);
+        JsonNode sl = s.get("slo");
+        Slo slo = sl != null && sl.isObject() ? new Slo(sl.path("successRate").asDouble(Slo.DEFAULT.successRate()), sl.path("p95Ms").asInt(Slo.DEFAULT.p95Ms())) : null;
+        Slo inherited = slo == null ? Slo.DEFAULT : slo;
         List<Action> actions = new ArrayList<>();
         for (JsonNode a : s.path("actions")) {
             String id = a.path("id").asText(null);
@@ -97,9 +100,14 @@ public final class ProviderYaml {
             JsonNode v = a.get("verify");
             Verify verify = v != null && v.isObject() ? new Verify(text(v, "action"), text(v, "expect")) : null;
             JsonNode recorded = a.get("recorded");
+            // an action's own SLO; a field it leaves out takes the provider's value
+            JsonNode asl = a.get("slo");
+            Slo own = asl != null && asl.isObject()
+                    ? new Slo(asl.path("successRate").asDouble(inherited.successRate()), asl.path("p95Ms").asInt(inherited.p95Ms()))
+                    : null;
             actions.add(new Action(id, text(a, "title"), operation, method, path, effect, retrySafe, approval, text(a, "plan"), verify,
                     a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description"),
-                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null));
+                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null, own));
         }
         Map<String, JsonNode> overrides = new LinkedHashMap<>();
         s.path("overrides").properties().forEach(e -> overrides.put(e.getKey(), e.getValue()));
@@ -107,8 +115,6 @@ public final class ProviderYaml {
         for (JsonNode e : s.path("errors")) {
             errors.add(new ErrorClass(e.get("match"), e.path("class").asText("error"), e.path("retry").asBoolean(false)));
         }
-        JsonNode sl = s.get("slo");
-        Slo slo = sl != null && sl.isObject() ? new Slo(sl.path("successRate").asDouble(Slo.DEFAULT.successRate()), sl.path("p95Ms").asInt(Slo.DEFAULT.p95Ms())) : null;
         JsonNode al = s.get("alerts");
         Alerts alerts = al != null && al.isObject() ? new Alerts(text(al, "channel")) : null;
         JsonNode wk = s.get("worker");
@@ -211,6 +217,11 @@ public final class ProviderYaml {
                 ObjectNode v = o.putObject("verify");
                 put(v, "action", a.verify().action());
                 put(v, "expect", a.verify().expect());
+            }
+            if (a.slo() != null) {
+                ObjectNode sl = o.putObject("slo");
+                sl.put("successRate", a.slo().successRate());
+                sl.put("p95Ms", a.slo().p95Ms());
             }
             if (a.input() != null) {
                 o.set("input", a.input());

@@ -4,10 +4,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.providers.domain.Health.Status;
+import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 
 /**
@@ -17,6 +20,14 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
  * success rate is under the SLO (default 99%) or the p95 is over the SLO; healthy otherwise. The
  * error trend beside the band is longer: the failed calls of each of the last {@value #TREND_DAYS}
  * days, as 24-hour windows ending now, oldest first.
+ *
+ * <p>An action may carry an SLO of its own ({@code actions[].slo}), which wins over the provider's
+ * for its calls. The provider's band is then the worst band of its parts: the calls of the actions
+ * without an SLO of their own, judged together against the provider's SLO, and the calls of each
+ * action with one, judged against it. A part with fewer than {@value #MIN_CALLS} calls is unknown
+ * and does not count; when no part has enough calls the provider is judged as a whole against its
+ * own SLO, as a provider without action SLOs is. The success rate, p50, p95 and calls shown beside
+ * the band are always those of all the calls of the last 24 hours.
  */
 public final class ProviderHealthRule {
 
@@ -35,17 +46,66 @@ public final class ProviderHealthRule {
      * hand over either span). {@code slo} null means the default SLO.
      */
     public static Health judge(List<CallSample> samples, Slo slo, Instant now) {
-        Slo target = slo == null ? Slo.DEFAULT : slo;
         List<CallSample> all = samples == null ? List.of() : samples;
-        Instant dayAgo = now.minus(WINDOW);
-        List<CallSample> window = all.stream().filter(s -> s.at() != null && !s.at().isBefore(dayAgo)).toList();
-        int calls = window.size();
+        return band(lastDay(all, now), slo, errorTrend(all, now), null);
+    }
+
+    /**
+     * Judge a provider by its file: against its own SLO, and against the SLO of each action that
+     * declares one for that action's calls, the worst part winning (see the class comment).
+     */
+    public static Health judge(List<CallSample> samples, ProviderDefinition def, Instant now) {
+        List<CallSample> all = samples == null ? List.of() : samples;
+        List<CallSample> window = lastDay(all, now);
         List<Integer> trend = errorTrend(all, now);
+        Map<String, Slo> own = new LinkedHashMap<>();
+        for (Action a : def.actions()) {
+            if (a.slo() != null) {
+                own.put(a.id(), a.slo());
+            }
+        }
+        if (own.isEmpty() || window.size() < MIN_CALLS) {
+            return band(window, def.slo(), trend, null);
+        }
+        List<Health> parts = new ArrayList<>();
+        parts.add(band(window.stream().filter(s -> !own.containsKey(s.action())).toList(), def.slo(), trend, null));
+        own.forEach((id, slo) -> parts.add(band(window.stream().filter(s -> id.equals(s.action())).toList(), slo, trend, id)));
+        List<Health> known = parts.stream().filter(Health::known).toList();
+        if (known.isEmpty()) {
+            return band(window, def.slo(), trend, null);
+        }
+        Status status = Status.HEALTHY;
+        List<String> reasons = new ArrayList<>();
+        for (Health part : known) {
+            if (part.status().rank() > status.rank()) {
+                status = part.status();
+            }
+            reasons.addAll(part.reasons());
+        }
+        return new Health(status, successRate(window), percentile(window, 50), percentile(window, 95), window.size(), trend, reasons);
+    }
+
+    /** The band of one action's calls of the last 24 hours against the SLO it is judged by. */
+    public static Status band(List<CallSample> samples, Slo slo, Instant now) {
+        return band(lastDay(samples == null ? List.of() : samples, now), slo, List.of(), null).status();
+    }
+
+    static List<CallSample> lastDay(List<CallSample> samples, Instant now) {
+        Instant dayAgo = now.minus(WINDOW);
+        return samples.stream().filter(s -> s.at() != null && !s.at().isBefore(dayAgo)).toList();
+    }
+
+    /** The judgement of one window against one SLO; {@code prefix} names the action when the SLO is an action's own. */
+    private static Health band(List<CallSample> window, Slo slo, List<Integer> trend, String prefix) {
+        Slo target = slo == null ? Slo.DEFAULT : slo;
+        int calls = window.size();
+        String about = prefix == null ? "" : prefix + ": ";
         if (calls < MIN_CALLS) {
             String reason = calls == 0
                     ? "No calls in the last 24 hours"
                     : "Only " + calls + (calls == 1 ? " call" : " calls") + " in the last 24 hours; at least " + MIN_CALLS + " are needed to judge health";
-            return new Health(Status.UNKNOWN, calls == 0 ? 0.0 : successRate(window), percentile(window, 50), percentile(window, 95), calls, trend, List.of(reason));
+            return new Health(Status.UNKNOWN, calls == 0 ? 0.0 : successRate(window), percentile(window, 50), percentile(window, 95), calls, trend,
+                    List.of(about + reason));
         }
         double rate = successRate(window);
         long p50 = percentile(window, 50);
@@ -54,19 +114,19 @@ public final class ProviderHealthRule {
         Status status = Status.HEALTHY;
         if (rate < FAILING_RATE) {
             status = Status.FAILING;
-            reasons.add("Success rate " + pct(rate) + " is below the " + pct(FAILING_RATE) + " floor");
+            reasons.add(about + "Success rate " + pct(rate) + " is below the " + pct(FAILING_RATE) + " floor");
         } else if (rate < target.successRate()) {
             status = Status.DEGRADED;
-            reasons.add("Success rate " + pct(rate) + " is below the " + pct(target.successRate()) + " SLO");
+            reasons.add(about + "Success rate " + pct(rate) + " is below the " + pct(target.successRate()) + " SLO");
         }
         if (p95 > (long) FAILING_P95_FACTOR * target.p95Ms()) {
             status = Status.FAILING;
-            reasons.add("p95 latency " + p95 + " ms is above three times the " + target.p95Ms() + " ms SLO");
+            reasons.add(about + "p95 latency " + p95 + " ms is above three times the " + target.p95Ms() + " ms SLO");
         } else if (p95 > target.p95Ms()) {
             if (status != Status.FAILING) {
                 status = Status.DEGRADED;
             }
-            reasons.add("p95 latency " + p95 + " ms is above the " + target.p95Ms() + " ms SLO");
+            reasons.add(about + "p95 latency " + p95 + " ms is above the " + target.p95Ms() + " ms SLO");
         }
         return new Health(status, rate, p50, p95, calls, trend, reasons);
     }

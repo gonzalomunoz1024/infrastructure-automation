@@ -74,6 +74,17 @@ class SampleProvidersTest {
     }
 
     @Test
+    void oneSampleActionCarriesAnSloOfItsOwnSoTheViewHasOneToShow() {
+        ProviderDefinition vsphere = ProviderYaml.parse(ContentFiles.ofKind(ROOT, "Provider").stream()
+                .filter(f -> f.yaml().contains("name: vsphere")).findFirst().orElseThrow().yaml());
+        var wait = vsphere.action("vm.waitForPowerState").orElseThrow();
+        assertThat(wait.slo()).as("a poll is allowed to be slower than a plain read").isEqualTo(new ProviderDefinition.Slo(97.0, 2500));
+        assertThat(vsphere.sloOf(wait)).isEqualTo(wait.slo());
+        assertThat(vsphere.sloOf(vsphere.action("vm.get").orElseThrow())).isEqualTo(vsphere.slo());
+        assertThat(vsphere.actions().stream().filter(a -> a.slo() != null).count()).isEqualTo(1);
+    }
+
+    @Test
     void theStoreSeedsEveryProviderFromTheContentDir() {
         InMemoryProviderStore store = new InMemoryProviderStore(props(), CLOCK);
         store.seed();

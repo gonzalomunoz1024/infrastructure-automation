@@ -81,7 +81,7 @@ public class ProviderAlertEvaluator {
         for (StoredProvider p : store.all()) {
             ProviderDefinition def = p.definition();
             List<CallSample> samples = byProvider.getOrDefault(def.name(), List.of());
-            Health health = ProviderHealthRule.judge(samples, def.slo(), now);
+            Health health = ProviderHealthRule.judge(samples, def, now);
             Health.Status previous = lastBand.put(def.name(), health.status());
             int before = previous == null ? Health.Status.HEALTHY.rank() : previous.rank();
             if (health.status().rank() > before) {

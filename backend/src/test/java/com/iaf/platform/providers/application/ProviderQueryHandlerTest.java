@@ -26,6 +26,7 @@ import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
+import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 import com.iaf.platform.providers.domain.ProviderDetail.PerAction;
 import com.iaf.platform.providers.domain.ProviderSummary;
 import com.iaf.platform.providers.domain.ProviderYaml;
@@ -67,6 +68,7 @@ class ProviderQueryHandlerTest {
                   effect: delete
                   retry: unsafe
                   approval: required
+                  slo: { successRate: 99.0, p95Ms: 1500 }
               overrides:
                 vm.get: { response: { properties: { powerState: { type: string } } } }
               slo: { successRate: 99.5, p95Ms: 800 }
@@ -224,6 +226,13 @@ class ProviderQueryHandlerTest {
                     assertThat(get24.topErrors()).hasSize(1);
                     assertThat(get24.topErrors().get(0).errorClass()).isEqualTo("unavailable");
                     assertThat(get24.topErrors().get(0).count()).isEqualTo(1);
+                    assertThat(get24.slo()).as("vm.get takes the provider's SLO").isEqualTo(new Slo(99.5, 800));
+                    assertThat(get24.band()).isEqualTo(Health.Status.FAILING);
+                    PerAction delete = d.perAction().get(0);
+                    assertThat(delete.slo()).as("vm.delete has its own").isEqualTo(new Slo(99.0, 1500));
+                    assertThat(delete.band()).as("its calls are three days old").isEqualTo(Health.Status.UNKNOWN);
+                    assertThat(d.actions().get(0).slo()).isNull();
+                    assertThat(d.actions().get(1).slo()).isEqualTo(new Slo(99.0, 1500));
                     assertThat(d.changeRequests()).extracting(ChangeRequest::id).containsExactly("cr_1", "cr_0");
                 })
                 .verifyComplete();

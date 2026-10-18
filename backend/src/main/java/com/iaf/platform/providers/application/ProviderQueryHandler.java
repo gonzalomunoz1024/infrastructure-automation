@@ -23,6 +23,7 @@ import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 import com.iaf.platform.providers.domain.ProviderDetail;
 import com.iaf.platform.providers.domain.ProviderDetail.Daily;
 import com.iaf.platform.providers.domain.ProviderDetail.ErrorCount;
@@ -101,7 +102,7 @@ public class ProviderQueryHandler implements ProviderQueries {
                     .filter(p -> AccessRules.canSeeProvider(who, p.definition().owner()))
                     .map(p -> {
                         ProviderDefinition def = p.definition();
-                        Health health = ProviderHealthRule.judge(byProvider.getOrDefault(def.name(), List.of()), def.slo(), now);
+                        Health health = ProviderHealthRule.judge(byProvider.getOrDefault(def.name(), List.of()), def, now);
                         return ProviderSummary.of(def, health);
                     });
         }));
@@ -113,13 +114,13 @@ public class ProviderQueryHandler implements ProviderQueries {
             ProviderDefinition def = p.definition();
             Instant now = clock.instant();
             List<CallSample> twoWeeks = telemetry.samples(name, now.minus(Duration.ofDays(DAILY_DAYS)));
-            Health health = ProviderHealthRule.judge(twoWeeks, def.slo(), now);
+            Health health = ProviderHealthRule.judge(twoWeeks, def, now);
             List<ActionInfo> actions = def.actions().stream().map(a -> ActionInfo.of(def, a)).toList();
             List<ChangeRequest> crs = changeRequests.all().stream()
                     .filter(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && name.equals(cr.name()))
                     .sorted(Comparator.comparing(ChangeRequest::createdAt, Comparator.nullsLast(Comparator.reverseOrder())))
                     .toList();
-            return ProviderDetail.of(ProviderSummary.of(def, health), def, p.yaml(), actions, daily(twoWeeks, now), perAction(twoWeeks), crs);
+            return ProviderDetail.of(ProviderSummary.of(def, health), def, p.yaml(), actions, daily(twoWeeks, now), perAction(twoWeeks, def, now), crs);
         }));
     }
 
@@ -158,13 +159,18 @@ public class ProviderQueryHandler implements ProviderQueries {
         return out;
     }
 
-    static List<PerAction> perAction(List<CallSample> samples) {
+    /**
+     * Every action with calls in the samples, by id: its calls over the whole span, the SLO it is
+     * judged by (its own or the provider's) and its band over the last 24 hours against that SLO.
+     */
+    static List<PerAction> perAction(List<CallSample> samples, ProviderDefinition def, Instant now) {
         Map<String, List<CallSample>> byAction = new TreeMap<>();
         for (CallSample s : samples) {
             byAction.computeIfAbsent(s.action() == null ? "?" : s.action(), k -> new ArrayList<>()).add(s);
         }
         List<PerAction> out = new ArrayList<>();
         byAction.forEach((action, list) -> {
+            Slo slo = def.sloOf(action);
             Map<String, Integer> errors = new HashMap<>();
             for (CallSample s : list) {
                 if (!s.ok()) {
@@ -177,7 +183,7 @@ public class ProviderQueryHandler implements ProviderQueries {
                     .map(e -> new ErrorCount(e.getKey(), e.getValue()))
                     .toList();
             out.add(new PerAction(action, list.size(), ProviderHealthRule.successRate(list), ProviderHealthRule.percentile(list, 50),
-                    ProviderHealthRule.percentile(list, 95), top));
+                    ProviderHealthRule.percentile(list, 95), top, slo, ProviderHealthRule.band(list, slo, now)));
         });
         return out;
     }

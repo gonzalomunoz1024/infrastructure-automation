@@ -513,20 +513,45 @@ public final class ProviderChecks {
             if (sl == null || sl.isNull()) {
                 details.put(SLO, "Defaults: " + ProviderHealthRule.pct(ProviderDefinition.Slo.DEFAULT.successRate()) + " success, p95 " + ProviderDefinition.Slo.DEFAULT.p95Ms() + " ms");
             } else {
-                double rate = sl.path("successRate").asDouble(ProviderDefinition.Slo.DEFAULT.successRate());
-                if (!sl.path("successRate").isNumber() && sl.has("successRate") || rate < 0 || rate > 100) {
-                    error(SLO, "slo.successRate", null, "spec.slo.successRate", "successRate is a percentage between 0 and 100");
-                }
-                int p95 = sl.path("p95Ms").asInt(ProviderDefinition.Slo.DEFAULT.p95Ms());
-                if (!sl.path("p95Ms").isNumber() && sl.has("p95Ms") || p95 <= 0) {
-                    error(SLO, "slo.p95Ms", null, "spec.slo.p95Ms", "p95Ms is a positive number of milliseconds");
-                }
+                sloRanges(sl, null, "spec.slo");
                 if (byCheck.get(SLO).isEmpty()) {
-                    details.put(SLO, ProviderHealthRule.pct(rate) + " success, p95 " + p95 + " ms");
+                    details.put(SLO, ProviderHealthRule.pct(sl.path("successRate").asDouble(ProviderDefinition.Slo.DEFAULT.successRate()))
+                            + " success, p95 " + sl.path("p95Ms").asInt(ProviderDefinition.Slo.DEFAULT.p95Ms()) + " ms");
                 }
+            }
+            // an action's own SLO has the provider's ranges
+            int own = 0;
+            int i = 0;
+            for (JsonNode a : spec.path("actions")) {
+                String field = "spec.actions[" + i++ + "].slo";
+                JsonNode asl = a.get("slo");
+                if (asl == null || asl.isNull()) {
+                    continue;
+                }
+                if (!asl.isObject()) {
+                    error(SLO, "slo.shape", a.path("id").asText(null), field, "An action's slo is { successRate, p95Ms }");
+                    continue;
+                }
+                own++;
+                sloRanges(asl, a.path("id").asText(null), field);
+            }
+            if (own > 0 && details.containsKey(SLO)) {
+                details.put(SLO, details.get(SLO) + "; " + own + (own == 1 ? " action with an SLO of its own" : " actions with SLOs of their own"));
             }
             if (spec.path("alerts").path("channel").asText("").isBlank()) {
                 warning(SLO, "alerts.channel", null, "spec.alerts.channel", "Set alerts.channel so health alerts reach the owning team");
+            }
+        }
+
+        /** successRate is a percentage, p95Ms a positive number of milliseconds; a field left out is fine. */
+        void sloRanges(JsonNode sl, String step, String field) {
+            double rate = sl.path("successRate").asDouble(ProviderDefinition.Slo.DEFAULT.successRate());
+            if (!sl.path("successRate").isNumber() && sl.has("successRate") || rate < 0 || rate > 100) {
+                error(SLO, "slo.successRate", step, field + ".successRate", "successRate is a percentage between 0 and 100");
+            }
+            int p95 = sl.path("p95Ms").asInt(ProviderDefinition.Slo.DEFAULT.p95Ms());
+            if (!sl.path("p95Ms").isNumber() && sl.has("p95Ms") || p95 <= 0) {
+                error(SLO, "slo.p95Ms", step, field + ".p95Ms", "p95Ms is a positive number of milliseconds");
             }
         }
 

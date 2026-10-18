@@ -265,16 +265,23 @@ action and class starts nothing more for ten minutes.
 type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successRate; p50Ms; p95Ms; calls; errorTrend: number[]; reasons: string[] }
 // status, successRate, p50Ms, p95Ms and calls are the last 24 hours; errorTrend is the failed calls of each of the
 // last 14 days (24-hour windows ending now, oldest first), the same windows as the detail's `daily`.
+// The band is judged against the provider's `slo`, except that an action with an `slo` of its own is judged against
+// it on its own calls: the provider's band is the worst band of its parts (the actions without one together, each
+// action with one alone); a part under 5 calls does not count, and with no part big enough the provider is judged
+// as a whole. The metrics beside the band are always over all the calls.
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
 type ProviderDetail = ProviderSummary & { endpoints: { [environment]: baseUrl }; auth?: { type; credential?: 'vault:…'; header? };
   yaml; actions: ActionInfo[]; daily: { date; calls; errors; successRate?; p50Ms?; p95Ms? }[];
-  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
+  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[]; slo: { successRate; p95Ms }; band }[];
+  changeRequests: ChangeRequest[] }
 // daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts, `errors`
 // how many of its calls failed; a window without calls has no rates.
 // The newest window covers the same calls as `health`. A window without calls has no rates.
+// perAction: the last 14 days per action; `slo` is the SLO the action is judged by (its own or the provider's) and
+// `band` its band over the last 24 hours against it ('unknown' under 5 calls).
 // auth.credential is the vault reference's name, never a value.
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;
-  effectDetail?; recorded?: { environment; at } }
+  effectDetail?; recorded?: { environment; at }; slo?: { successRate; p95Ms } }   // slo: the action's own; absent when it takes the provider's
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[];
   commit? }   // commit: the commit a spec read from Git came from; it goes in the file's spec.commit
