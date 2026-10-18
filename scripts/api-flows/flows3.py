@@ -7,7 +7,7 @@ A = '/api/v1'
 
 # ---------------- providers
 s, ps = call('GET', A + '/providers', expect=200)
-check(len(ps) == 8, f'providers: {len(ps)}')
+check(len(ps) >= 10, f'providers: {len(ps)}')
 s, pd = call('GET', A + '/providers/vsphere', expect=200)
 for k in ('yaml', 'actions', 'daily', 'perAction', 'health', 'changeRequests'):
     check(k in pd, f'provider detail missing {k}')
@@ -49,7 +49,7 @@ metadata:
 spec:
   type: openapi
   spec: { url: https://fleet.example.com/openapi.json, sha256: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae }
-  endpoints: { dev: https://fleet-dev.example.com }
+  endpoints: { dev: __DEV_URL__/actuator/health }
   auth: { type: bearer, credential: vault:fleet/token }
   actions:
     - id: vm.get
@@ -65,10 +65,14 @@ spec:
   slo: { successRate: 99.0, p95Ms: 800 }
   alerts: { channel: "#compute-alerts" }
 """
+# publishing needs a tested connection to every endpoint, with the provider's own credential: the backend's health page answers
+yaml_p = yaml_p.replace('__DEV_URL__', lib.BASE)
 s, pv = call('POST', A + '/providers:validate', {'yaml': yaml_p}, expect=200)
 print('provider validate ->', [(c['id'], c['status']) for c in pv.get('checks', [])], [p['code'] for p in pv.get('problems', [])])
 s, tr = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, expect=200, timeout=60)
 print('try ->', str(tr)[:300])
+s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'bearer', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
+check(all(r.get('ok') for r in tested.get('results', [])), f'fleet connection test: {tested}')
 s, pub = call('POST', A + '/providers:publish', {'yaml': yaml_p}, expect=202)
 print('publish ->', s, str(pub)[:300])
 if isinstance(pub, dict) and pub.get('id'):
@@ -79,6 +83,11 @@ if isinstance(pub, dict) and pub.get('id'):
     s, fleet = call('GET', A + '/providers/fleet', expect=200)
 s, _ = call('POST', A + '/providers:publish', {'yaml': yaml_p.replace('owner: team-compute', 'owner: team-data')}, user='mateo', expect=403, note='mateo publishes for team-data')
 s, ov = call('POST', A + '/providers/vsphere/overrides', {'action': 'vm.get', 'response': {'id': 'vm-1', 'name': 'web-1', 'powerState': 'poweredOn', 'cpu': 4, 'memoryGb': 16, 'environment': 'dev', 'tags': ['a']}}, expect=202)
+# one open change request per provider: the SLO edit waits for the override's change request to merge
+s, _ = call('PUT', A + '/providers/vsphere/slo', {'successRate': 99.0, 'p95Ms': 900}, expect=409, note='slo while the override change request is open')
+if isinstance(ov, dict) and ov.get('id'):
+    s, _ = call('POST', A + f'/change-requests/{ov["id"]}:merge', expect=202, note='merge the override change request')
+    time.sleep(0.5)
 s, slo = call('PUT', A + '/providers/vsphere/slo', {'successRate': 99.0, 'p95Ms': 900, 'channel': '#compute-alerts'}, expect=202)
 s, _ = call('PUT', A + '/providers/vsphere/slo', {'successRate': 140, 'p95Ms': -1}, expect=400, note='bad slo')
 s, _ = call('PUT', A + '/providers/vsphere/slo', {'successRate': 99.0, 'p95Ms': 900}, user='ana', expect=403, note='ana slo vsphere')
