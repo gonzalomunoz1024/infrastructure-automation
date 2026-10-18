@@ -169,6 +169,51 @@ test.describe('workflow designer', () => {
     await expect(ndv.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Restarted {{ $vm.name }} at last')
   })
 
+  test("a credential created from an HTTP step's credential field lands in its YAML as a vault: reference", async ({ page }) => {
+    const api = await openVmRestart(page)
+    await node(page, 'step:notifyDone').click()
+    await page.keyboard.press('Tab')
+    const creator = page.getByTestId('node-creator')
+    await expect(creator.getByRole('combobox', { name: 'Search steps' })).toBeFocused()
+    await page.keyboard.type('HTTP request')
+    await expect(creator.getByRole('option').first()).toContainText('HTTP request')
+    await page.keyboard.press('Enter')
+    const ndv = page.getByTestId('ndv')
+    await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('HTTP request')
+
+    // like n8n's credential select, the field's options end with the entry that creates one
+    const field = ndv.getByRole('button', { name: 'Credential', exact: true })
+    await field.click()
+    const entry = ndv.getByRole('listbox', { name: 'Credential' }).getByRole('option').last()
+    await expect(entry).toHaveText('New credential…')
+    await entry.click()
+    const dialog = page.getByRole('dialog', { name: 'Add credential' })
+    // on the first kind the field asks for (token, basic or bearer)
+    await expect(dialog.getByRole('button', { name: 'Credential type' })).toHaveText('Token')
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('example/api-token')
+    await dialog.getByRole('textbox', { name: 'Value', exact: true }).fill('example-token')
+    await dialog.getByRole('button', { name: 'Store credential' }).click()
+    await expect(dialog).toBeHidden()
+    expect(api.credentials).toEqual([{ name: 'example/api-token', type: 'token', value: 'example-token', owner: 'team-compute' }])
+    // the field takes the new credential at once, shown by its name
+    await expect(field).toHaveText('example/api-token')
+
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await page.getByRole('button', { name: 'YAML' }).click()
+    const editor = await yamlEditor(page)
+    // Monaco draws only the lines in view: find the step's credential the way a reader would
+    await editor.locator('.view-lines').click()
+    await page.keyboard.press('ControlOrMeta+F')
+    await page.keyboard.type('credential: vault:example')
+    await expect(editor.locator('.view-lines')).toContainText('credential: vault:example/api-token')
+    // the workflow file carries the reference, never the value
+    await page.keyboard.press('ControlOrMeta+s')
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const saved = JSON.stringify(api.drafts[0].definition)
+    expect(saved).toContain('"credential":"vault:example/api-token"')
+    expect(saved).not.toContain('example-token')
+  })
+
   test('a step that pauses on its failure says how long it waits for a decision, and saves it', async ({ page }) => {
     const api = await openVmRestart(page)
     await node(page, 'step:restart').dblclick()

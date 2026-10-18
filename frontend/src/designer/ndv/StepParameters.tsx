@@ -7,6 +7,7 @@
 import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react'
 import { Button, cx, Icon, Input, Segmented, Tag, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
+import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
@@ -118,9 +119,47 @@ export function credentialOptions(credentials: readonly RegistryCredential[], ki
   return [...credentials].sort((a, b) => rank(a.type) - rank(b.type) || a.name.localeCompare(b.name)).map((c) => ({ value: `vault:${c.name}`, label: c.name, hint: c.type }))
 }
 
+/** The value of the entry that ends a credential field's options, n8n's "Create new credential". */
+export const NEW_CREDENTIAL = '__new-credential__'
+
+/**
+ * A credential field's options: the credentials, then a reference the registry does not list, then
+ * "New credential…" last unless the step is read-only.
+ */
+export function credentialFieldOptions(credentials: readonly RegistryCredential[], kinds: readonly string[] | undefined, current: string, canCreate: boolean): SelectOption[] {
+  const options = credentialOptions(credentials, kinds)
+  if (current && !options.some((o) => o.value === current)) options.push({ value: current, label: current, hint: 'not in the list' })
+  if (canCreate) options.push({ value: NEW_CREDENTIAL, label: 'New credential…' })
+  return options
+}
+
+/**
+ * A credential, as a `vault:` reference: one of the registry's, or a new one stored on the spot.
+ * "New credential…" opens the Add a credential dialog on the kind the field asks for; once stored,
+ * the credential joins the options and the field takes its reference. The value goes to the
+ * credential store only, never to the step, the workflow file or the undo history.
+ */
 function CredentialParam({ field = 'credential', kinds, label = 'Credential', description = VAULT_NOTE }: { field?: string; kinds?: string[]; label?: string; description?: string }) {
-  const { registry } = useStepEdit()
-  return <P field={field} label={label} options={credentialOptions(registry?.credentials ?? [], kinds)} expression={false} mono description={description} />
+  const store = useDesignerStore()
+  const { registry, get, set, readOnly } = useStepEdit()
+  const [adding, setAdding] = useState(false)
+  const options = credentialFieldOptions(registry?.credentials ?? [], kinds, asString(get(field)), !readOnly)
+  return (
+    <>
+      <P field={field} label={label} options={options} onChange={(v) => (v === NEW_CREDENTIAL ? setAdding(true) : set(field, v))} expression={false} mono description={description} />
+      {adding && (
+        <AddCredentialModal
+          raised
+          kinds={kinds}
+          onClose={() => setAdding(false)}
+          onCreated={(ref, name, type) => {
+            store.addCredential({ name, type })
+            set(field, ref)
+          }}
+        />
+      )}
+    </>
+  )
 }
 
 const METHODS: SelectOption[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))
@@ -166,9 +205,9 @@ function HttpParams() {
     <>
       <P field="method" label="Method" options={METHODS} expression={false} />
       <P field="url" label="URL" required placeholder="https://api.example.com/things/{{ $input.id }}" mono />
+      <CredentialParam kinds={['token', 'basic', 'bearer']} />
       <KeyValueParam field="headers" label="Headers" addLabel="Add header" keyPlaceholder="Header" />
       <P field="body" label="Body" type="any" description="JSON, or an expression" />
-      <CredentialParam kinds={['token', 'basic', 'bearer']} />
     </>
   )
 }

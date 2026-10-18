@@ -8,7 +8,7 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import { check, type CheckContext, type JsonObject, type JsonValue, type Problem, type StepBody, type StepDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage, jobEvents, type Subscription } from '../../lib/api'
-import type { DraftSaved, DryRunResult, JobDetail, ValidationResult, WorkflowDetail } from '../../lib/types'
+import type { DraftSaved, DryRunResult, JobDetail, RegistryCredential, ValidationResult, WorkflowDetail } from '../../lib/types'
 import {
   addForkBranch,
   addSwitchCase,
@@ -38,7 +38,7 @@ import {
 import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
-import { contextOf, EMPTY_REGISTRY, loadRegistry, type Registry } from './registry'
+import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, type Registry } from './registry'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
 import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
@@ -737,6 +737,21 @@ export class DesignerStore {
   /** The workflow as the server knows it (versions, status), without touching the document. */
   setDetail(detail: WorkflowDetail | null): void {
     this.set({ detail })
+  }
+
+  /**
+   * A credential stored from a step's credential field: its name and type join the registry at
+   * once, and the next canvas of the session lists it too. Its value never reaches the designer.
+   */
+  addCredential(credential: RegistryCredential): void {
+    rememberCredential(credential)
+    const add = () => {
+      const { registry } = this.state
+      if (registry) this.set({ registry: withCredential(registry, credential) })
+    }
+    // a registry still loading takes it once it lands: by then the session's registry lists it
+    if (this.state.registryLoading) void loadRegistry().catch(() => undefined).then(add)
+    else add()
   }
 
   // ------------------------------------------------------------------ pins, stickies

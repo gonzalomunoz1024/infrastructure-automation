@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { Credential, Me } from '../lib/types'
-import { OTHER_TEAM, OwnerField, credentialRef, ownerOptions, typesOwner } from '../components/CredentialPicker'
+import { AddCredentialModal, OTHER_TEAM, OwnerField, credentialRef, defaultCredentialType, ownerOptions, typesOwner } from '../components/CredentialPicker'
 import { CredentialsTable, OwnerTag, filterCredentials } from '../pages/CredentialsPage'
 
 /*
@@ -86,5 +86,32 @@ describe('Owner of a new credential', () => {
     const html = text(renderToString(<OwnerField me={undefined} loading value="" other="" onChange={() => {}} onOtherChange={() => {}} />))
     expect(html).toContain('Loading your teams')
     expect(html).toContain('disabled')
+  })
+})
+
+/** The label the type select shows. */
+function typeShown(html: string): string | null {
+  const start = html.indexOf('aria-label="Credential type"')
+  if (start < 0) return null
+  return /<span[^>]*>([^<]+)<\/span>/.exec(html.slice(start, html.indexOf('</button>', start)))?.[1] ?? null
+}
+
+describe('Type of a new credential', () => {
+  it('is the first kind the field it opens from asks for that the store takes, else a token', () => {
+    expect(defaultCredentialType(['token', 'basic', 'bearer'])).toBe('token')
+    expect(defaultCredentialType(['ssh-key', 'ssh'])).toBe('ssh-key')
+    expect(defaultCredentialType(['bearer', 'basic'])).toBe('basic')
+    expect(defaultCredentialType(['cloud'])).toBe('token')
+    expect(defaultCredentialType()).toBe('token')
+  })
+
+  it('is what the form starts on: an SSH key is written as the multi-line key', () => {
+    const ssh = text(renderToString(<AddCredentialModal onClose={() => {}} kinds={['ssh-key', 'ssh']} />))
+    expect(typeShown(ssh)).toBe('SSH key')
+    expect(ssh).toContain('<textarea')
+    expect(ssh).not.toContain('type="password"')
+    const plain = text(renderToString(<AddCredentialModal onClose={() => {}} />))
+    expect(typeShown(plain)).toBe('Token')
+    expect(plain).toContain('type="password"')
   })
 })

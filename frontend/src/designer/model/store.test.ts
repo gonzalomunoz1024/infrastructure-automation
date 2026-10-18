@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { DesignerStore, isAutoLayout } from './store'
 import { API_TRIGGER_ID, findStepNode, stepIds } from './graph'
 import { sampleDocuments } from './graph.test'
+import { EMPTY_REGISTRY, loadRegistry, setRegistryForTests } from './registry'
 
 const vmRestart = (): WorkflowDocument => sampleDocuments().find((s) => s.file.endsWith('vm-restart.yaml'))!.doc
 
@@ -139,5 +140,33 @@ describe('DesignerStore', () => {
     s.deleteNodes(['step:a'])
     expect(s.getState().pins).toEqual({})
     expect(s.knownOutputs()).toEqual({})
+  })
+})
+
+/*
+ * A credential stored from a step's credential field (the dialog hands back its reference, name
+ * and type): the registry lists it at once, outside the document and its undo history.
+ */
+describe('a credential stored from a credential field', () => {
+  const VSPHERE = { name: 'vsphere/token', type: 'token' }
+  const TOKEN = { name: 'example/api-token', type: 'token' }
+
+  afterEach(() => setRegistryForTests(null))
+
+  it('joins the registry at once, in place of one of the same name, and leaves the document alone', () => {
+    const s = new DesignerStore({ name: 'x', doc: minimal([]), registry: { ...EMPTY_REGISTRY, credentials: [VSPHERE, { name: 'example/api-token', type: 'basic' }] } })
+    s.addCredential(TOKEN)
+    expect(s.getState().registry?.credentials).toEqual([VSPHERE, TOKEN])
+    expect(s.getState().canUndo).toBe(false)
+    expect(s.getState().dirty).toBe(false)
+  })
+
+  it('reaches a registry still loading, and the next canvas of the session lists it', async () => {
+    setRegistryForTests({ ...EMPTY_REGISTRY, credentials: [VSPHERE] })
+    const s = new DesignerStore({ name: 'x', doc: minimal([]) })
+    expect(s.getState().registryLoading).toBe(true)
+    s.addCredential(TOKEN)
+    await vi.waitFor(() => expect(s.getState().registry?.credentials).toEqual([VSPHERE, TOKEN]))
+    expect((await loadRegistry()).credentials).toEqual([VSPHERE, TOKEN])
   })
 })

@@ -53,7 +53,10 @@ exact path and the Swagger link), and one MCP tool, `vm_restart`, for an agent.
 2. The designer is the n8n-style canvas: add a step with the plus on the edge, pick a provider
    action, an approval, a wait, a switch, a loop, a fork, or a *run* step that calls another
    published workflow. The panel on the right is the step's parameters; expressions use the
-   `{{ $('step').json.field }}` syntax and show their value from the last test run.
+   `{{ $('step').json.field }}` syntax and show their value from the last test run. A credential
+   field lists the credentials as `vault:` references and ends with *New credential…*, which
+   stores one without leaving the canvas: the value goes to the credential store, and only its
+   reference goes into the step.
 3. **Issues** lists what the checks found as you edit (unknown action, missing approval on a
    destructive step, a literal secret, an expression that does not parse); most problems carry a
    one-click fix. **Validate** runs the full backend checks; **YAML** shows the file the canvas
