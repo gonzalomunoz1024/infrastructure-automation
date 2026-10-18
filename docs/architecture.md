@@ -370,7 +370,10 @@ backend's `Retry-After` wait) or a lost answer replays the same job; the header 
 (`/notifications`); the audit page has a tab on the platform stream; the releases, release and
 provider pages show provider releases judged over calls. Every provider edit (the SLO, "Use the
 real response", a spec refresh, the wizard's publish) is a change request the page names and
-links. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
+links. A workflow's change request opens on its candidate drawn on the designer's read-only
+canvas (its own chunk, loaded with the tab): the backend parses the YAML (`POST /workflows:parse`),
+the designer's model lays it out as the author saw it, and a double-click shows a step as written;
+the Diff and YAML tabs sit beside it, and a provider's change request has only those. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
 the commit read), imports an Ansible repository or a Terraform module through the backend's
 drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,

@@ -11,9 +11,11 @@ import {
   CREATE_VM_YAML,
   IMAGE,
   JOBS,
+  PROVIDER_CR,
   REPLAY,
   RESOURCE_TYPES,
   WORKFLOW_CR,
+  WORKFLOW_CR_DEFINITION,
   WORKFLOWS,
   mockApi,
   reply,
@@ -263,6 +265,59 @@ test.describe('change request: the publish checks', () => {
     await expect(replay).toContainText('replayed: 42')
     await expect(replay).not.toContainText('{"replayed"')
     await expect(page.getByRole('button', { name: 'Merge' })).toBeDisabled()
+  })
+})
+
+test.describe('change request: the candidate on the canvas', () => {
+  test("a workflow's change request opens on the canvas, the candidate as its author designed it", async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /change-requests/{id}': WORKFLOW_CR,
+      'GET /workflows': WORKFLOWS,
+      'POST /workflows:parse': { definition: WORKFLOW_CR_DEFINITION, problems: [] },
+      'GET /registry/providers': [],
+    })
+    await page.goto('/#/change-requests/cr-202')
+    const tabs = page.getByRole('tablist', { name: 'Content' })
+    await expect(tabs.getByRole('tab')).toHaveText(['Canvas', 'Diff', 'YAML'])
+    await expect(tabs.getByRole('tab', { name: 'Canvas' })).toHaveAttribute('aria-selected', 'true')
+
+    const canvas = page.getByTestId('candidate-canvas')
+    await expect(canvas.getByRole('region', { name: 'vm-restart 2.0.0 on the canvas' })).toBeVisible()
+    await expect(canvas.locator('.react-flow__node[data-id="step:lookup"]')).toContainText('Look up the VM')
+    await expect(canvas.locator('.react-flow__node[data-id="step:restart"]')).toContainText('Restart the VM')
+    expect(api.callsTo('POST', '/workflows:parse')[0].body).toEqual({ yaml: WORKFLOW_CR.yaml })
+    // read only: nothing to tidy, nothing to drag
+    await expect(canvas.getByRole('button', { name: /Tidy up/ })).toHaveCount(0)
+
+    // a step opens as written
+    await canvas.locator('.react-flow__node[data-id="step:restart"]').dblclick()
+    const step = page.getByRole('dialog', { name: 'Step restart' })
+    await expect(step).toContainText('Restart the VM')
+    await expect(step).toContainText('vm.restart')
+    await page.keyboard.press('Escape')
+    await expect(step).toBeHidden()
+
+    // the diff and the file are a tab away
+    await tabs.getByRole('tab', { name: 'Diff' }).click()
+    await expect(page.getByText('version: 2.0.0').first()).toBeVisible()
+    await tabs.getByRole('tab', { name: 'YAML' }).click()
+    await expect(page.locator('pre').first()).toContainText('name: vm-restart')
+  })
+
+  test('a candidate whose YAML does not parse says so, and a provider has no canvas', async ({ page }) => {
+    await mockApi(page, {
+      'GET /change-requests/{id}': (req) => (req.params.id === 'cr-101' ? PROVIDER_CR : WORKFLOW_CR),
+      'GET /workflows': WORKFLOWS,
+      'POST /workflows:parse': { definition: null, problems: [{ level: 'error', code: 'yaml.invalid', message: 'mapping values are not allowed here (line 4)' }] },
+    })
+    await page.goto('/#/change-requests/cr-202')
+    await expect(page.getByTestId('candidate-unparsed')).toContainText('The YAML does not parse, so there is no canvas to draw')
+    await expect(page.getByTestId('candidate-unparsed')).toContainText('mapping values are not allowed here (line 4)')
+
+    await page.goto('/#/change-requests/cr-101')
+    const tabs = page.getByRole('tablist', { name: 'Content' })
+    await expect(tabs.getByRole('tab')).toHaveText(['Diff', 'YAML'])
+    await expect(tabs.getByRole('tab', { name: 'Diff' })).toHaveAttribute('aria-selected', 'true')
   })
 })
 

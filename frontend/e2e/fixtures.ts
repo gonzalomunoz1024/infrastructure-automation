@@ -753,6 +753,20 @@ export const WORKFLOW_CR: ChangeRequestDetail = {
   yaml: 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart\n  version: 2.0.0\n',
 }
 
+/** The candidate of cr-202 as the backend parses its YAML (POST /workflows:parse): a lookup, the restart, a message. */
+export const WORKFLOW_CR_DEFINITION = {
+  apiVersion: 'iaf.platform/v1',
+  kind: 'Workflow',
+  metadata: { name: 'vm-restart', title: 'VM restart', noun: 'vm', verb: 'restart', owner: 'team-compute', version: '2.0.0' },
+  api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart', input: { type: 'object', required: ['vmId', 'reason'], properties: { vmId: { type: 'string' }, reason: { type: 'string' } } } },
+  workflow: {
+    do: [
+      { lookup: { name: 'Look up the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '{{ $input.vmId }}' } } } },
+      { restart: { name: 'Restart the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.restart', input: { id: '{{ $input.vmId }}', reason: '{{ $input.reason }}' } } } },
+    ],
+  },
+}
+
 /* ----------------------------------------------------------------------------
    The versions of create-vm (GET /workflows/create-vm/versions, …/versions/2.0.0)
    ------------------------------------------------------------------------- */
