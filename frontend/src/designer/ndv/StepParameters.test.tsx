@@ -6,7 +6,7 @@ import { documentToGraph, findStepNode, graphToDocument } from '../model/graph'
 import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
-import { credentialOptions, gitResolveQuery, StepParameters } from './StepParameters'
+import { credentialFieldOptions, credentialOptions, gitResolveQuery, NEW_CREDENTIAL, StepParameters } from './StepParameters'
 import { hostsValue, withGroupKey } from './inventory'
 
 /*
@@ -41,15 +41,19 @@ function field(html: string, name: string): string {
   return html.slice(start, next < 0 ? undefined : next)
 }
 
-function render(doc: WorkflowDocument, stepId = 'restart'): string {
-  const store = new DesignerStore({ name: 'vm-restart', doc, registry: REGISTRY })
+/** The Parameters form of a step as the store holds it, with the store's registry. */
+function renderStep(store: DesignerStore, stepId: string): string {
   const node = findStepNode(store.getState().graph, stepId)
   if (!node) throw new Error(`no ${stepId} step`)
   return renderToString(
     <DesignerContext.Provider value={store}>
-      <StepParameters stepId={stepId} body={node.data.body} step={node.data.step} registry={REGISTRY} doc={store.getState().doc} />
+      <StepParameters stepId={stepId} body={node.data.body} step={node.data.step} registry={store.getState().registry} doc={store.getState().doc} />
     </DesignerContext.Provider>,
   )
+}
+
+function render(doc: WorkflowDocument, stepId = 'restart'): string {
+  return renderStep(new DesignerStore({ name: 'vm-restart', doc, registry: REGISTRY }), stepId)
 }
 
 /** The checked option of a segmented control, by its aria-label. */
@@ -162,6 +166,48 @@ describe('the git credential of a playbook', () => {
     expect(open).toContain('Leave it empty for a public repository')
     expect(render(restartWith('ops/vm-restart'))).not.toContain('data-field="playbook.git.credential"')
     expect(render(restartWith({ upload: { file: 'playbooks/abc.tar.gz', sha256: 'abc' } }))).not.toContain('data-field="playbook.git.credential"')
+  })
+})
+
+/*
+ * Every credential field ends its options with "New credential…", as n8n's credential select ends
+ * with "Create new credential": the dialog stores the value, and the field takes the reference.
+ */
+const fetchThings = (credential?: string): WorkflowDocument =>
+  ({
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: { name: 'things-sync', noun: 'thing', verb: 'sync', owner: 'team-compute', version: '1.0.0' },
+    workflow: { do: [{ fetch: { name: 'Fetch the things', call: 'http', with: { method: 'GET', url: 'https://api.example.com/things', ...(credential ? { credential } : {}) } } }] },
+  }) as WorkflowDocument
+
+describe('a new credential from a credential field', () => {
+  const NEW = { value: NEW_CREDENTIAL, label: 'New credential…' }
+
+  it('is offered last, after a reference the registry does not list, and never on a read-only step', () => {
+    expect(credentialFieldOptions(CREDENTIALS, ['token', 'basic', 'bearer'], '', true).map((o) => o.value)).toEqual(['vault:github/read-token', 'vault:vsphere/token', 'vault:ssh/ops-automation', NEW_CREDENTIAL])
+    expect(credentialFieldOptions(CREDENTIALS, ['token'], '', true).at(-1)).toEqual(NEW)
+    expect(credentialFieldOptions(CREDENTIALS, ['ssh-key'], 'vault:gone/key', true).slice(-2)).toEqual([{ value: 'vault:gone/key', label: 'vault:gone/key', hint: 'not in the list' }, NEW])
+    expect(credentialFieldOptions(CREDENTIALS, ['ssh-key'], 'vault:ssh/ops-automation', true).filter((o) => o.value === 'vault:ssh/ops-automation')).toHaveLength(1)
+    expect(credentialFieldOptions(CREDENTIALS, ['token'], '', false).map((o) => o.value)).not.toContain(NEW_CREDENTIAL)
+    // with no credential in the registry yet it is the only choice
+    expect(credentialFieldOptions([], ['token'], '', true)).toEqual([NEW])
+  })
+
+  it('becomes the reference the field takes, shown by its name at once; one undo takes the field back', () => {
+    // a reference the registry does not list shows as it is written
+    expect(field(render(fetchThings('vault:example/api-token'), 'fetch'), 'credential')).toContain('>vault:example/api-token<')
+    // what storing it in the dialog does: the registry lists its name and type, the field takes the reference
+    const store = new DesignerStore({ name: 'things-sync', doc: fetchThings(), registry: REGISTRY })
+    store.addCredential({ name: 'example/api-token', type: 'token' })
+    store.updateStep('fetch', (b) => writeField(b, 'credential', 'vault:example/api-token'))
+    const credential = field(renderStep(store, 'fetch'), 'credential')
+    expect(credential).toContain('>example/api-token<')
+    expect(credential).not.toContain('vault:example/api-token')
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ fetch: { name: 'Fetch the things', call: 'http', with: { method: 'GET', url: 'https://api.example.com/things', credential: 'vault:example/api-token' } } })
+    store.undo()
+    expect(JSON.stringify(store.getState().doc)).not.toContain('credential')
+    expect(store.getState().registry?.credentials).toContainEqual({ name: 'example/api-token', type: 'token' })
   })
 })
 
