@@ -432,9 +432,4 @@ class AuditListenerTest {
     private ObjectNode node() {
         return mapper.createObjectNode();
     }
-
-    @SuppressWarnings("unused")
-    private static List<EvidenceKind> kinds(EvidenceRecord r) {
-        return r.entries().stream().map(EvidenceEntry::kind).toList();
-    }
 }

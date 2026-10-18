@@ -248,7 +248,8 @@ class RestControllerAuditAdapterTest {
                 .jsonPath("$.sealedAt").isEqualTo("2026-10-17T10:00:00Z")
                 .jsonPath("$.signature").isEqualTo("c2lnbmF0dXJl")
                 .jsonPath("$.keyId").isEqualTo("kabc123")
-                .jsonPath("$.sealed").isEqualTo(3);
-        assertThat(List.of()).isEmpty();
+                .jsonPath("$.sealed").isEqualTo(3)
+                .jsonPath("$.checkpointed").isEqualTo(0);
+        verify(commands).seal();
     }
 }
