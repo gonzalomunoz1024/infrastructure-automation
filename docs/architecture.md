@@ -185,7 +185,7 @@ runs on a non-blocking thread, and the wiring test expects none.
 | `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
 | `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
 | `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
-| `IdempotencyStore` (gateway)       | `InMemoryIdempotencyStore` (per instance) |
+| `IdempotencyStore` (gateway)       | `InMemoryIdempotencyStore` (per instance); the per-team quotas (`JobQuotas`) are per instance too, so several API replicas need sticky routing until a shared store backs both |
 
 - `AuditListener` folds job events into one hash chain per job, release decisions into
   `release:<id>` and every other recorded command into the platform stream. Each entry is
