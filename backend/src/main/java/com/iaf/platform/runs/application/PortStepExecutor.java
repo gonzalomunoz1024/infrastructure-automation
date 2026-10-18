@@ -187,8 +187,10 @@ public class PortStepExecutor implements StepExecutor {
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_action", "Provider " + provider + " has no action '" + action + "'", false));
         JsonNode in = input == null || input.isMissingNode() ? F.objectNode() : input;
         try {
+            // Mono.timeout: running out of time is a TimeoutException, which translate() classifies as the step's timeout
             JsonNode out = ports.calls().call(new ProviderCall(ctx.jobId(), ctx.nextSeq(), p, a, ctx.environment(), in, dryRun))
-                    .block(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout);
+                    .timeout(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout)
+                    .block();
             if (!dryRun && a.effect() != null && (a.effect() == Effect.CREATE || a.effect() == Effect.CHANGE || a.effect() == Effect.DELETE)) {
                 ports.events().changed(ctx.jobId(), step.id(), provider, a.id(), a.effect().json(), ChangeTargets.of(a.path(), in, out));
             }
@@ -454,9 +456,10 @@ public class PortStepExecutor implements StepExecutor {
 
     /**
      * Wait for a runner, looking every second whether the job was cancelled: a cancelled job or
-     * the limit cancels the run, which stops its process.
+     * the limit cancels the run, which stops its process. Running out of the limit throws a
+     * {@link TimeoutException} (wrapped), the step's {@code timeout}.
      */
-    private JsonNode await(Mono<JsonNode> run, Duration limit, JobContext ctx) {
+    JsonNode await(Mono<JsonNode> run, Duration limit, JobContext ctx) {
         CompletableFuture<JsonNode> future = run.toFuture();
         long deadline = System.nanoTime() + limit.toNanos();
         try {
@@ -464,7 +467,7 @@ public class PortStepExecutor implements StepExecutor {
                 long left = deadline - System.nanoTime();
                 if (left <= 0) {
                     future.cancel(true);
-                    throw new IllegalStateException("Timeout on blocking read for " + limit.toMillis() + " MILLISECONDS");
+                    throw Exceptions.propagate(new TimeoutException("The runner did not answer within " + Durations.format(limit)));
                 }
                 try {
                     return future.get(Math.min(left, CANCEL_POLL.toNanos()), TimeUnit.NANOSECONDS);

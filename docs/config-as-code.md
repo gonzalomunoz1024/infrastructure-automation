@@ -178,7 +178,8 @@ that is removed afterwards; a dry run still answers from the samples and never t
 Every executable, image and limit is a `platform.runners.*` setting; with
 `platform.runners.container-runtime: docker` (or `podman`) every step runs in a container with no
 new privileges and every kernel privilege dropped, and secrets reach it by variable name, never on
-a command line. A step's `timeout` (10 minutes when it names none) ends the process; cancelling the job
+a command line. A step's `timeout` (10 minutes when it names none) ends the process and fails the
+step as `timeout` (retryable), as it fails a provider call that outlives it; cancelling the job
 stops it too. Values read from the vault are masked in every log line and error message.
 
 - `call: ansible` runs `ansible-runner` (or `ansible-playbook` with the JSON callback when
