@@ -4,7 +4,9 @@ import java.util.List;
 
 /**
  * The replay check: the inputs of recent jobs of the previous published version, dry-run against
- * the new definition. A divergence is a job whose input the new version no longer handles.
+ * the new definition. A divergence is a job whose input the new version no longer handles, or
+ * would handle along another path than the job took ({@link ReplayPaths}); {@code step} is where
+ * they part.
  */
 public record ReplayResult(boolean passed, int replayed, List<Divergence> divergences) {
 

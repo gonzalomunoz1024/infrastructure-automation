@@ -1,0 +1,20 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-bounce, title: VM bounce, noun: vm, verb: restart, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId: { type: string }
+mcp:
+  expose: true
+  description: Restart a virtual machine without the safety checks.
+policy:
+  rbac: [ops]
+workflow:
+  do:
+    - getVm:
+        name: Get VM
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }

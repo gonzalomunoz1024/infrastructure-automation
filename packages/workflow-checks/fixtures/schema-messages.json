@@ -1,0 +1,328 @@
+{
+  "_": "Documents and the exact problems both check twins report for them: the Workflow schema (schema.invalid), the meta-check of api.input (api.input.invalid) and references out of a schema (schema.remoteRef). WorkflowSchemaTest and test/workflow-schema.test.ts read this file.",
+  "cases": [
+    {
+      "name": "a clean file",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": []
+    },
+    {
+      "name": "unknown step keys",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n        loop: 3\n        retries: 2\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/loop",
+          "message": "/workflow/do/0/getVm: property 'loop' is not defined in the schema and the schema does not allow additional properties"
+        },
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/retries",
+          "message": "/workflow/do/0/getVm: property 'retries' is not defined in the schema and the schema does not allow additional properties"
+        }
+      ]
+    },
+    {
+      "name": "no metadata",
+      "yaml": "{}\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "message": "required property 'metadata' not found"
+        }
+      ]
+    },
+    {
+      "name": "metadata without a name",
+      "yaml": "kind: Workflow\nmetadata: { title: VM info }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/metadata",
+          "message": "/metadata: required property 'name' not found"
+        }
+      ]
+    },
+    {
+      "name": "metadata of the wrong type",
+      "yaml": "metadata: x\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/metadata",
+          "message": "/metadata: string found, object expected"
+        }
+      ]
+    },
+    {
+      "name": "a constant and an unknown metadata key",
+      "yaml": "apiVersion: iaf.platform/v2\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0, foo: 1 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/apiVersion",
+          "message": "/apiVersion: must be the constant value 'iaf.platform/v1'"
+        },
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/metadata/foo",
+          "message": "/metadata: property 'foo' is not defined in the schema and the schema does not allow additional properties"
+        }
+      ]
+    },
+    {
+      "name": "an unknown call kind",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: nope\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/call",
+          "message": "/workflow/do/0/getVm/call: does not have a value in the enumeration [\"provider\", \"http\", \"ansible\", \"terraform\", \"idp\", \"activity\", \"approval\"]"
+        }
+      ]
+    },
+    {
+      "name": "a call kind that is not text",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: 5\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/call",
+          "message": "/workflow/do/0/getVm/call: does not have a value in the enumeration [\"provider\", \"http\", \"ansible\", \"terraform\", \"idp\", \"activity\", \"approval\"]"
+        },
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/call",
+          "message": "/workflow/do/0/getVm/call: integer found, string expected"
+        }
+      ]
+    },
+    {
+      "name": "two steps in one entry",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - { a: { set: { x: 1 } }, b: { set: { y: 2 } } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/workflow/do/0",
+          "message": "/workflow/do/0: must have at most 1 properties"
+        }
+      ]
+    },
+    {
+      "name": "a wait of the wrong type",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - pause:\n        wait: 5\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "pause",
+          "field": "/workflow/do/0/pause/wait",
+          "message": "/workflow/do/0/pause/wait: integer found, [string, object] expected"
+        }
+      ]
+    },
+    {
+      "name": "an empty trigger",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\ntriggers: [{}]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "field": "/triggers/0",
+          "message": "/triggers/0: must have at least 1 properties"
+        }
+      ]
+    },
+    {
+      "name": "a step inside a fork branch",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - both:\n        fork:\n          branches:\n            - - left: { set: { x: 1 }, bad: 1 }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "left",
+          "field": "/workflow/do/0/both/fork/branches/0/0/left/bad",
+          "message": "/workflow/do/0/both/fork/branches/0/0/left: property 'bad' is not defined in the schema and the schema does not allow additional properties"
+        }
+      ]
+    },
+    {
+      "name": "a fraction where an integer goes",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n        retry: { maxAttempts: 1.5 }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/retry/maxAttempts",
+          "message": "/workflow/do/0/getVm/retry/maxAttempts: number found, integer expected"
+        }
+      ]
+    },
+    {
+      "name": "a number where text goes",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n        notes: 5\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.invalid",
+          "step": "getVm",
+          "field": "/workflow/do/0/getVm/notes",
+          "message": "/workflow/do/0/getVm/notes: integer found, string expected"
+        }
+      ]
+    },
+    {
+      "name": "api.input.required that is not a list",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: vmId\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.required",
+          "message": "api.input is not a valid JSON Schema: required: string found, array expected"
+        }
+      ]
+    },
+    {
+      "name": "a property type that does not exist",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: { type: strin }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note.type",
+          "message": "api.input is not a valid JSON Schema: properties.note.type: does not have a value in the enumeration [\"array\", \"boolean\", \"integer\", \"null\", \"number\", \"object\", \"string\"]"
+        }
+      ]
+    },
+    {
+      "name": "a list of types with one that does not exist",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: { type: [string, foo] }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note.type",
+          "message": "api.input is not a valid JSON Schema: properties.note.type: does not have a value in the enumeration [\"array\", \"boolean\", \"integer\", \"null\", \"number\", \"object\", \"string\"]"
+        },
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note.type.1",
+          "message": "api.input is not a valid JSON Schema: properties.note.type.1: does not have a value in the enumeration [\"array\", \"boolean\", \"integer\", \"null\", \"number\", \"object\", \"string\"]"
+        }
+      ]
+    },
+    {
+      "name": "a property that is not a schema",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: 5\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note",
+          "message": "api.input is not a valid JSON Schema: properties.note: integer found, [object, boolean] expected"
+        }
+      ]
+    },
+    {
+      "name": "a negative length",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: { type: string, minLength: -1 }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note.minLength",
+          "message": "api.input is not a valid JSON Schema: properties.note.minLength: must have a minimum value of 0"
+        }
+      ]
+    },
+    {
+      "name": "a required name listed twice",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId, vmId]\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.required",
+          "message": "api.input is not a valid JSON Schema: required: must have only unique items in the array"
+        }
+      ]
+    },
+    {
+      "name": "an empty allOf",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    allOf: []\n    properties:\n      vmId: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.allOf",
+          "message": "api.input is not a valid JSON Schema: allOf: must have at least 1 items but found 0"
+        }
+      ]
+    },
+    {
+      "name": "a reference to nothing",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: { $ref: \"#/$defs/missing\" }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "api.input.invalid",
+          "field": "api.input.properties.note.$ref",
+          "message": "api.input is not a valid JSON Schema: properties.note.$ref: Reference #/$defs/missing cannot be resolved"
+        }
+      ]
+    },
+    {
+      "name": "references inside the schema",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    $defs: { id: { type: string, minLength: 1 } }\n    properties:\n      vmId: { type: string }\n      note: { $ref: \"#/$defs/id\" }\n      self: { $ref: \"#\" }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": []
+    },
+    {
+      "name": "a reference out of api.input",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { $ref: \"https://169.254.169.254/latest/meta-data\" }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.remoteRef",
+          "field": "api.input.properties.vmId.$ref",
+          "message": "api.input refers to https://169.254.169.254/latest/meta-data, outside itself: only references into the same schema (#/...) resolve, and nothing is fetched"
+        }
+      ]
+    },
+    {
+      "name": "a reference-shaped example is data",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n      note: { type: object, examples: [{ $ref: \"https://example.com/x.json\" }] }\n      $ref: { type: string }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": []
+    },
+    {
+      "name": "a reference out of the response body",
+      "yaml": "apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }\napi:\n  input:\n    type: object\n    required: [vmId]\n    properties:\n      vmId: { type: string }\n  response:\n    body: { type: object, $defs: { a: { $ref: \"https://example.com/s.json\" } } }\npolicy:\n  rbac: [ops]\nworkflow:\n  do:\n    - getVm:\n        name: Get VM\n        call: provider\n        with: { provider: vsphere, action: vm.get, input: { id: \"{{ $input.vmId }}\" } }\n",
+      "problems": [
+        {
+          "level": "error",
+          "code": "schema.remoteRef",
+          "field": "api.response.body.$defs.a.$ref",
+          "message": "api.response.body refers to https://example.com/s.json, outside itself: only references into the same schema (#/...) resolve, and nothing is fetched"
+        }
+      ]
+    }
+  ]
+}

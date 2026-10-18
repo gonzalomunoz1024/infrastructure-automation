@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -15,7 +16,9 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.workflows.SampleFixtures;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.StepType;
+import com.iaf.platform.workflows.domain.WorkflowMermaid;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -64,6 +67,28 @@ class WorkflowQueryHandlerTest {
         assertThat(queries.list("compute", null, null).collectList().block()).hasSize(3);
         assertThat(queries.list(null, "draft", null).collectList().block()).isEmpty();
         assertThat(queries.list(null, null, "mongo").map(WorkflowSummary::name).collectList().block()).containsExactly("create-database", "mongodb-upgrade");
+    }
+
+    @Test
+    void aWorkflowChangeRequestCarriesItsFlowchartAndAProviderChangeRequestNone() {
+        InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
+        String yaml = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+        changeRequests.save(new ChangeRequest("cr_w", ChangeRequest.Kind.WORKFLOW, "vm-restart", "1.2.1", "change/vm-restart-1.2.1", "t", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "canary", yaml, "", NOW, null, null, null));
+        changeRequests.save(new ChangeRequest("cr_p", ChangeRequest.Kind.PROVIDER, "vsphere", "1.1.0", "change/provider-vsphere-1.1.0", "t", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "canary", "apiVersion: iaf.platform/v1\nkind: Provider\n", "", NOW, null, null, null));
+        queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
+
+        StepVerifier.create(queries.changeRequest("cr_w"))
+                .assertNext(d -> {
+                    assertThat(d.changeRequest().yaml()).isEqualTo(yaml);
+                    assertThat(d.preview().mermaid()).isEqualTo(WorkflowMermaid.of(WorkflowYaml.parse(yaml)));
+                })
+                .verifyComplete();
+        StepVerifier.create(queries.changeRequest("cr_p"))
+                .assertNext(d -> assertThat(d.preview()).isNull())
+                .verifyComplete();
+        StepVerifier.create(queries.changeRequest("cr_nope")).expectError(NotFoundException.class).verify();
     }
 
     @Test
@@ -116,6 +141,46 @@ class WorkflowQueryHandlerTest {
         assertThat(queries.checkContext().block().providerNames()).contains("vsphere", "ops-playbooks");
         assertThat(queries.checkContext().block().workflowNames()).contains("create-vm").doesNotContain("nope");
         assertThat(queries.checkContext().block().resourceTypes()).contains("vm", "image");
+    }
+
+    @Test
+    void theCheckContextJudgesARunStepAgainstTheVersionItsRangeStarts() {
+        WorkflowRecord v2 = store.published("create-vm").orElseThrow();
+        // 1.9.0, retired, sized VMs by cores; 2.1.0 is only a draft and never starts
+        String cores = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml").replace("version: 2.0.1", "version: 1.9.0")
+                .replace("enum: [small, medium, large]", "enum: [2, 4, 8]");
+        assertThat(cores).contains("version: 1.9.0", "enum: [2, 4, 8]");
+        store.save(WorkflowRecord.of(WorkflowYaml.parse(cores), WorkflowStatus.RETIRED, v2.path(), NOW, "t"));
+        store.save(WorkflowRecord.of(v2.definition().withVersion("2.1.0"), WorkflowStatus.DRAFT, v2.path(), NOW, "t"));
+
+        var ctx = queries.checkContext().block();
+        assertThat(ctx.workflowInput("create-vm", "^1").orElseThrow().path("properties").path("size").path("enum").toString()).isEqualTo("[2,4,8]");
+        assertThat(ctx.workflowInput("create-vm", "^2")).isEqualTo(ctx.workflowInput("create-vm"));
+        assertThat(ctx.workflowInput("create-vm", "~2.1")).as("drafts never start").isEmpty();
+        assertThat(ctx.workflowNames()).contains("create-vm");
+    }
+
+    @Test
+    void aRolledBackVersionNeverResolvesAndStaysReadable() {
+        WorkflowRecord v2 = store.published("create-vm").orElseThrow();
+        // 1.9.0 sized VMs by cores; 1.9.1, which a release rollback took out, by name again
+        String cores = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml").replace("version: 2.0.1", "version: 1.9.0")
+                .replace("enum: [small, medium, large]", "enum: [2, 4, 8]");
+        store.save(WorkflowRecord.of(WorkflowYaml.parse(cores), WorkflowStatus.RETIRED, v2.path(), NOW, "t"));
+        store.save(WorkflowRecord.of(v2.definition().withVersion("1.9.1"), WorkflowStatus.PUBLISHED, v2.path(), NOW, "t").asRolledBack());
+
+        assertThat(queries.resolve("create-vm", "^1").block().version()).isEqualTo("1.9.0");
+        assertThat(queries.resolve("create-vm", "1.9.1").blockOptional()).isEmpty();
+        assertThat(queries.checkContext().block().workflowInput("create-vm", "^1").orElseThrow().path("properties").path("size").path("enum").toString())
+                .as("a run step on ^1 is judged against 1.9.0").isEqualTo("[2,4,8]");
+        WorkflowRecord rolledBack = queries.version("create-vm", "1.9.1").block();
+        assertThat(rolledBack.status()).isEqualTo(WorkflowStatus.RETIRED);
+        assertThat(rolledBack.isRunnable()).isFalse();
+        assertThat(queries.versions("create-vm").collectList().block()).extracting(v -> v.version(), v -> v.rolledBack())
+                .containsExactly(tuple("1.9.0", null), tuple("1.9.1", true), tuple("2.0.1", null));
+        // published again (a later rollback returning to it), it resolves again
+        store.save(rolledBack.withStatus(WorkflowStatus.PUBLISHED));
+        assertThat(queries.resolve("create-vm", "^1").block().version()).isEqualTo("1.9.1");
     }
 
     @Test

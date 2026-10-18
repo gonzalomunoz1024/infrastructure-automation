@@ -3,6 +3,7 @@ package com.iaf.platform.workflows.adapters.inbound;
 import java.util.List;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
@@ -32,7 +34,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
- * The Workflows, Registry, change-requests and templates sections of docs/api.md. POST maps to
+ * The Workflows, Registry, change-requests, templates and schemas sections of docs/api.md. POST maps to
  * a command, GET to a query; the in-process methods of {@link WorkflowQueries} that other slices
  * call have no HTTP mapping.
  */
@@ -144,7 +146,7 @@ public class RestControllerWorkflowAdapter implements WorkflowCommands, Workflow
 
     @Override
     @GetMapping("/change-requests/{id}")
-    public Mono<ChangeRequest> changeRequest(@PathVariable String id) {
+    public Mono<ChangeRequestDetail> changeRequest(@PathVariable String id) {
         return queries.changeRequest(id);
     }
 
@@ -166,6 +168,12 @@ public class RestControllerWorkflowAdapter implements WorkflowCommands, Workflow
     @GetMapping("/templates")
     public Flux<Template> templates() {
         return queries.templates();
+    }
+
+    @Override
+    @GetMapping(value = "/schemas/workflow.json", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Mono<JsonNode> workflowSchema() {
+        return queries.workflowSchema();
     }
 
     // ------------------------------------------------------------------ registry

@@ -35,6 +35,17 @@ class McpToolsTest {
     }
 
     @Test
+    void theToolNamesOfAWorkflowAreTheOnesTheListGivesIt() {
+        for (var w : SampleCatalog.workflows()) {
+            List<String> listed = TOOLS.stream().filter(t -> t.workflow() != null && t.workflow().name().equals(w.name())).map(Tool::name).toList();
+            assertThat(McpTools.toolNames(w.definition())).as(w.name()).isEqualTo(listed);
+        }
+        assertThat(McpTools.toolNames(SampleCatalog.workflows().stream().filter(w -> w.name().equals("vm-restart")).findFirst().orElseThrow().definition()))
+                .containsExactly("vm_restart", "vm_restart_batch");
+        assertThat(McpTools.toolNames(null)).isEmpty();
+    }
+
+    @Test
     void aToolInputThatCanBeBuiltFirstOffersTheCreateFormInOneCallAndInABatch() {
         Tool create = McpTools.find(TOOLS, "vm_create").orElseThrow();
         var image = create.inputSchema().path("properties").path("image");

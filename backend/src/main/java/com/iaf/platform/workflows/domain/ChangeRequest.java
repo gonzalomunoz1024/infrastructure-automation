@@ -45,7 +45,7 @@ public record ChangeRequest(
         }
     }
 
-    /** One CI check: schema, checks (lint), ansible-lint, policy, replay. {@code status} is passed, failed or skipped. */
+    /** One CI check: schema, checks (lint), playbooks, policy, replay, contracts, diff, routes, yaml. {@code status} is passed, failed or skipped. */
     public record Check(String id, String label, String status, String detail) {
         public boolean passed() {
             return !"failed".equals(status);

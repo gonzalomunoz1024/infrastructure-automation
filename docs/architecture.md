@@ -14,7 +14,8 @@ Everything a team builds (VM restart, MongoDB upgrade, Delete VM) is sample cont
 frontend/   React 19 · Vite · TypeScript · Tailwind v4 · @xyflow/react (canvas only)
 packages/
   ui/              the Atlas design system (tokens, ui/ kit, hooks)      -> used by frontend
-  workflow-checks/ the editor checks (also run in CI)                    -> used by frontend + CI
+  workflow-checks/ the editor checks (also run in CI) and schemas/workflow.schema.json,
+                   the Workflow file's JSON Schema both twins judge a file with first -> used by frontend + CI + backend
 backend/    Spring Boot 3.5 · Java 21 · WebFlux · Maven · Lombok · Temporal Java SDK · JGit
 workflows/  sample content: Workflow, Provider and ResourceType files (kind: ...)
 devin/      the Devin playbooks (workflow draft, provider draft) and their structured-output schemas
@@ -683,7 +684,15 @@ creates service accounts with the presets and the grouped scopes of `docs/api.md
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a
 resource type `resource-types/<name>.yaml`, all under the content repo (`workflows/` in this
 monorepo for the samples). Publishing writes the file on a branch `change/<name>-<version>` and
-opens a change request; merging it publishes the version and starts its canary. A provider
+opens a change request; merging it publishes the version and starts its canary. A workflow's
+change request carries the file as a Mermaid flowchart (`WorkflowMermaid`) for its page and its
+pull request. The Git store
+indexes a version on its change branch as the candidate while an open change request reviews it
+and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
+delete (which also asks the change requests before it deletes anything). A rolled-back workflow
+release republishes the version it replaced and marks its own version rolled back, which nothing
+resolves to: the JDBC store keeps the mark in the version's `doc`, the Git store as a commit on
+main that changes no file (`Rolled-back: <name> <version>`) and that it reads back at startup. A provider
 version rolls out the same way: the providers slice keeps the candidate beside the current version
 (`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
 asked by `ProviderQueries.provider` when the lookup carries the job's `ProviderQueries.Use` in its

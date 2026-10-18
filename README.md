@@ -51,7 +51,7 @@ The generated surface:
 backend/            Spring Boot 3.5 · Java 21 · WebFlux · CQRS · ports and adapters · Temporal SDK · JGit
 frontend/           React 19 · Vite · TypeScript · Tailwind v4 · the n8n-style designer on @xyflow/react
 packages/ui         the Atlas design system (tokens, kit, hooks) used by every page but the canvas
-packages/workflow-checks   the editor's checks in TypeScript; the same rules run in Java and in CI
+packages/workflow-checks   the editor's checks in TypeScript, and the Workflow file's JSON Schema; the same rules run in Java and in CI
 workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType | PriceList)
 sdk/                provider SDKs (Java, Go, Python) for custom-code providers on a team's own worker
 devin/              the natural-language builder playbooks and their structured-output schemas

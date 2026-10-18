@@ -4,6 +4,8 @@ metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-com
 api:
   batch: { max: 10, rollout: { waves: [25, 5, 100] } }
 rollout: { strategy: canary, stages: [50, 10] }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - getVm:

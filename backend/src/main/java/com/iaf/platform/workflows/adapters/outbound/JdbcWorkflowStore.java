@@ -103,7 +103,7 @@ public class JdbcWorkflowStore implements WorkflowStorePort {
             } else if (SEED_AUTHOR.equals(existing.get().updatedBy()) && !seeded.contentHash().equals(existing.get().contentHash())) {
                 WorkflowRecord s = existing.get();
                 writes.add(new WorkflowRecord(s.name(), s.version(), s.status(), seeded.yaml(), seeded.definition(), seeded.contentHash(), seeded.path(),
-                        s.updatedAt(), s.updatedBy(), s.publishedAt(), s.publishedBy(), s.releaseId(), s.notes()));
+                        s.updatedAt(), s.updatedBy(), s.publishedAt(), s.publishedBy(), s.releaseId(), s.notes(), s.rolledBack()));
             }
         }
         if (!writes.isEmpty()) {

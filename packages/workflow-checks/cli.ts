@@ -6,7 +6,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parse as parseYaml } from 'yaml';
 import {
   buildContext,
   check,
@@ -16,12 +15,14 @@ import {
   parseDocument,
   parseProvider,
   parseResourceType,
+  parseYamlText,
   PROVIDER_KIND,
   providerName,
   RESOURCE_TYPE_KIND,
   resourceTypeName,
   WORKFLOW_KIND,
   WorkflowParseError,
+  YamlSyntaxError,
   type CheckContext,
   type ParsedWorkflow,
   type Problem,
@@ -71,7 +72,10 @@ function listYaml(dir: string): string[] {
   return out;
 }
 
-/** Every YAML file under the content folders, read and parsed; the kind in the file decides, not the folder. */
+/**
+ * Every YAML file under the content folders, read and parsed; the kind in the file decides, not
+ * the folder. A key written twice is a syntax error, as it is for the backend.
+ */
 export function scan(root: string): ContentFile[] {
   const files: ContentFile[] = [];
   for (const folder of CONTENT_FOLDERS) {
@@ -88,11 +92,13 @@ export function scan(root: string): ContentFile[] {
     for (const full of listYaml(dir)) {
       const path = relative(root, full).split('\\').join('/');
       try {
-        const doc: unknown = parseYaml(readFileSync(full, 'utf8'), { uniqueKeys: false }) ?? {};
+        const doc = parseYamlText(readFileSync(full, 'utf8'));
         files.push({ path, kind: kindOf(doc), doc, error: null });
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        files.push({ path, kind: null, doc: null, error: `YAML syntax: ${message.split('\n')[0] ?? message}` });
+        if (!(e instanceof YamlSyntaxError)) {
+          throw e;
+        }
+        files.push({ path, kind: null, doc: null, error: e.message });
       }
     }
   }

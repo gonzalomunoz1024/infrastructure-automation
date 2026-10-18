@@ -6,6 +6,8 @@ api:
     type: object
     properties:
       name: { type: string }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - first:

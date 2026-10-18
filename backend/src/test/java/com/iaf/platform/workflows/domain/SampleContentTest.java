@@ -24,6 +24,11 @@ class SampleContentTest {
 
     /** The repo's content as the catalog: providers, every workflow as published, resource types with their schemas. */
     static CheckContext context() {
+        return context(null);
+    }
+
+    /** The same catalog and the vault's credential owners by name (null: the vault was not read). */
+    static CheckContext context(Map<String, String> credentialOwners) {
         Map<String, ProviderDefinition> providers = new HashMap<>();
         List<WorkflowDefinition> workflows = new ArrayList<>();
         Map<String, JsonNode> types = new HashMap<>();
@@ -42,7 +47,7 @@ class SampleContentTest {
                 }
             }
         }
-        return CheckContext.of(providers, workflows, types);
+        return CheckContext.of(providers, workflows, types, credentialOwners);
     }
 
     @Test

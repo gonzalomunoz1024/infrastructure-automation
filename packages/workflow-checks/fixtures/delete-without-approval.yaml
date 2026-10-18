@@ -1,6 +1,8 @@
 apiVersion: iaf.platform/v1
 kind: Workflow
 metadata: { name: vm-delete, title: Delete VM, noun: vm, verb: delete, owner: team-compute, version: 1.0.0 }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - delete:

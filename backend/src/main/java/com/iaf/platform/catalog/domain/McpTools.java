@@ -112,6 +112,23 @@ public final class McpTools {
         return List.copyOf(out);
     }
 
+    /**
+     * The tools this list gives a published workflow: {@code <noun>_<verb>} and its batch tool
+     * when the workflow sets {@code mcp.expose}, none otherwise. A name can be one tool only:
+     * {@link #of} keeps the first workflow by name and leaves the other out, so publishing
+     * refuses a workflow whose tools another published workflow already has ({@code mcp.toolName}).
+     */
+    public static List<String> toolNames(WorkflowDefinition d) {
+        if (d == null || !d.mcpExposed()) {
+            return List.of();
+        }
+        String name = d.mcpTool();
+        if (name.isBlank() || "_".equals(name)) {
+            return List.of();
+        }
+        return List.of(name, name + BATCH_SUFFIX);
+    }
+
     public static Optional<Tool> find(List<Tool> tools, String name) {
         if (name == null) {
             return Optional.empty();

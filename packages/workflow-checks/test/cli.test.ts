@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { checkRepo, formatProblem, formatReport, main } from '../cli.ts';
-import { REPO_ROOT } from './repo.ts';
+import { fixture, REPO_ROOT } from './repo.ts';
 
 const temp = mkdtempSync(join(tmpdir(), 'workflow-checks-'));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
@@ -28,7 +28,7 @@ describe('cli', () => {
     write('providers/team/syntax.yaml', 'kind: Provider\nmetadata: { name: syntax\n');
     write('resource-types/thing.yaml', 'kind: ResourceType\nmetadata: { name: thing }\n');
     write('resource-types/README.md', 'not yaml');
-    write('workflows/team/warn.yaml', 'kind: Workflow\nmetadata: { name: warn, title: W, noun: thing, verb: get, owner: team }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: p, action: thing.get, input: { id: "{{ $vars.nope }}" } }\n');
+    write('workflows/team/warn.yaml', 'kind: Workflow\nmetadata: { name: warn, title: W, noun: thing, verb: get, owner: team }\npolicy: { rbac: [ops] }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: p, action: thing.get, input: { id: "{{ $vars.nope }}" } }\n');
     write('workflows/team/notes.yaml', 'just: notes\n');
     const warningsOnly = checkRepo(temp);
     expect(warningsOnly.workflows).toBe(1);
@@ -49,10 +49,27 @@ describe('cli', () => {
     expect(main([temp], (l) => lines.push(l))).toBe(0);
     expect(lines[lines.length - 1]).toBe('Checked 1 workflow against 1 provider and 1 resource type: 0 errors, 1 warning.');
 
-    write('workflows/team/bad.yaml', 'kind: Workflow\nmetadata: { name: bad, title: B, noun: thing, verb: get, owner: team }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: q, action: thing.get }\n');
+    write('workflows/team/bad.yaml', 'kind: Workflow\nmetadata: { name: bad, title: B, noun: thing, verb: get, owner: team }\npolicy: { rbac: [ops] }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: q, action: thing.get }\n');
     const failing: string[] = [];
     expect(main([temp], (l) => failing.push(l))).toBe(1);
     expect(failing[0]).toBe("workflows/team/bad.yaml: error step.unknownProvider @a.provider - Unknown provider 'q' [Did you mean p?]");
+  });
+
+  it('reports a key written twice as a YAML syntax error naming the key, as the backend does', () => {
+    const root = mkdtempSync(join(tmpdir(), 'workflow-checks-duplicate-'));
+    try {
+      mkdirSync(join(root, 'workflows/team-compute'), { recursive: true });
+      writeFileSync(join(root, 'workflows/team-compute/vm-note.yaml'), fixture('duplicate-key.yaml'));
+      const lines: string[] = [];
+      expect(main([root], (l) => lines.push(l))).toBe(1);
+      expect(lines).toEqual([
+        "workflows/team-compute/vm-note.yaml: error yaml.invalid - YAML syntax: Duplicate field 'examples' at line 12, column 9",
+        '',
+        'Checked 0 workflows against 0 providers and 0 resource types: 1 error, 0 warnings.',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('formats a problem with its location', () => {

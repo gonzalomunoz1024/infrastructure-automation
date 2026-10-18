@@ -1,0 +1,19 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-restart, title: VM restart, noun: vm, verb: restart, owner: team-compute, version: 1.3.0 }
+api:
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId: { type: string }
+policy:
+  rbac: [ops]
+workflow:
+  do:
+    - patchFirst:
+        name: Patch first
+        run:
+          workflow: patch-cve
+          version: "^1"
+          input: { vmId: "{{ $input.vmId }}", cve: CVE-2026-1234 }

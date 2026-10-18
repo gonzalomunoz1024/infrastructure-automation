@@ -10,6 +10,8 @@ api:
         examples: [vm-1]
         pattern: "^vm-"
         examples: [vm-2]
+policy:
+  rbac: [ops]
 workflow:
   do:
     - getVm:

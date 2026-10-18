@@ -21,7 +21,7 @@ metadata:
 api:
   method: POST                # inferred from the verb when omitted: create POST, read GET,
   path: /api/v1/vms/{vmId}:restart   # update PUT, delete DELETE, anything else POST <noun>s:<verb>
-  input:                      # JSON Schema; also the MCP tool input schema and the catalog form
+  input:                      # JSON Schema; also the catalog form and the MCP tool input (plus its call arguments, docs/api.md)
     type: object
     required: [vmId]
     properties:
@@ -40,9 +40,9 @@ api:
 mcp:
   expose: true
   description: Restart a virtual machine after safety checks
-policy:
+policy:                     # required: every workflow says who may run it
   approval: { required: true, group: compute-approvers, timeout: 4h }
-  rbac: [ops, sre]            # roles or teams that may invoke (admins always may; empty: anyone)
+  rbac: [ops, sre]            # roles or teams that may invoke (at least one: policy.missing otherwise; admins always may)
   change: { required: true }  # a ServiceNow change is opened for every job
 triggers:                     # optional extra ways in besides the API and MCP
   - alert: { match: { source: grafana, labels: { severity: critical } } }
@@ -179,17 +179,26 @@ cancel that arrives while compensation or the `catch` runs stops them too.
   implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
   private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
   peeled to its commit) and writes the commit into the version before the change request's
-  checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
+  checks run, so the diff shows the pin; a ref that does not resolve fails the `playbooks`
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
+  With `platform.playbooks.lint-command` set (the linter uploads go through, for example
+  `ansible-lint --offline {playbook}`), publishing runs it on each pinned git playbook: the
+  repository at the commit, copied to a directory of its own, with `{playbook}` the path. A
+  non-zero exit, or a playbook that cannot be fetched or is not at that path, fails the
+  `playbooks` check with the linter's output. Blank (the default) lints nothing at publish; CI
+  (`npm run lint:playbooks`) runs ansible-lint over the same pins either way.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
-  artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+  artifact store under its SHA-256, `sha256` exactly as the upload answered it (64 lowercase hex
+  digits; anything else is `playbook.digest`); `path` names the playbook to run inside a `.zip`
+  or `.tar.gz`.
   An upload is unpacked and checked before it is kept: every text file is scanned for secrets (a
   private key block, a `password`/`token`/`secret`/`api_key` with a literal value instead of a
   `vault:` reference or an expression, AWS, GitHub and Slack token shapes) and refused naming the
   file and line, never the value; then `platform.playbooks.lint-command` (blank by default, which
   skips the lint and the answer says so) runs a linter such as `ansible-lint --offline {playbook}`
   in the unpacked upload and refuses it on a non-zero exit with the linter's output. The pin
-  checks at publish therefore skip uploads: they were checked when uploaded.
+  checks at publish therefore skip uploads, which were checked when uploaded; a publish only
+  checks the store still holds the upload (`playbook.missing`).
 - `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
   pinned by the provider's `source.commit`.
 
@@ -287,19 +296,55 @@ or `{ create: <that workflow's input> }`. Only one level is offered: the produce
 
 The editor, `POST /workflows:validate`, `npm run check:workflows` (CI) and the publish run the same
 checks; `packages/workflow-checks` and `WorkflowChecks.java` are twins with shared fixtures. Each
-finding is a `Problem` (docs/api.md). Among them:
+finding is a `Problem` (docs/api.md).
+
+A file is judged in three lines. First the JSON Schema of the Workflow file,
+`packages/workflow-checks/schemas/workflow.schema.json` (draft 2020-12; the backend carries a
+byte-identical copy and serves it at `GET /api/v1/schemas/workflow.json`): every key, step shape
+and type of this page, so an unknown step key or a value of the wrong type is a `schema.invalid`
+problem located by a JSON pointer (`/workflow/do/0/getVm/loop`), with the step it is in. When the
+schema finds anything, nothing else is reported. Then the parser, which still refuses what the
+schema does not say (two step keys in one step) with one `yaml.invalid`; a file of another kind
+goes straight to it. Then the rules below. The schema keeps loose what the rules judge in detail:
+`api.input`, a call step's `with`, the values of `set`, `register.attributes` and `run.input`.
+Point an editor at the schema file for completion and the same first line while typing, for
+example with the YAML language server:
+`# yaml-language-server: $schema=../../packages/workflow-checks/schemas/workflow.schema.json` at the
+top of a file under `workflows/<team>/`. An empty YAML value (`notes:`) is an empty string to the
+backend's reader and null to the designer's, so the designer reports it where the backend does not;
+leave the key out instead.
+
+`api.input` is compiled as the gateway, the MCP server and the catalog form will use it: a schema
+the validator cannot use is `api.input.invalid` with the validator's message, at save, in the
+designer and at publish (the change request's `schema` check). Nothing a schema names is ever
+fetched: a `$ref` that is not a `#` pointer into the same schema (`https://...`, `other.json`) is
+`schema.remoteRef`, and the backend's validator loads only the meta-schemas it bundles, so such a
+reference in a resource type's schema or in an input published before this check fails instead of
+making the server request it.
+
+Among the codes:
 
 | Code                      | Level   | Finding                                                                 |
 |---------------------------|---------|-------------------------------------------------------------------------|
-| `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`): a duplicate would silently keep one value, so both twins and the designer refuse it |
-| `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
+| `schema.invalid`          | error   | the file does not match the Workflow schema: an unknown key, a value of the wrong type, no `metadata.name`; the field is the JSON pointer of the value |
+| `api.input.invalid`       | error   | `api.input` is not a JSON Schema the validator can use (`required: vmId` instead of a list, a type that does not exist, a pattern that does not compile, a `#` reference to nothing); one per location, with the validator's message. The TypeScript twin checks the vocabulary keywords; the backend checks against the full meta-schema and compiles the schema |
+| `schema.remoteRef`        | error   | `api.input` or `api.response.body` refers outside itself (`$ref: https://...`): only `#/...` references resolve, and nothing is fetched |
+| `yaml.invalid`            | error   | the file does not parse, or a mapping writes the same key twice (`Duplicate field 'examples'`, the TypeScript twin adds the line and column): a duplicate would silently keep one value, so both twins, the designer and `npm run check:workflows` refuse it, in any content file |
+| `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for). The `contract.*` codes and the fields a later step reads from the run step's outputs are judged against the version the step's `version` range starts: the highest published or retired version inside it (a step pinned to `^1` while `2.x` is current is judged against the newest `1.x`), the current one for a step without a range, nothing when no version is in range. The TypeScript twin knows one version per workflow (`workflowVersions`) and leaves a step whose range excludes it to the platform |
 | `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
 | `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |
 | `run.onFailure`           | error   | `onFailure` is neither `fail` nor `continue`                            |
+| `run.cycle`               | error   | a run step (or an `orCreateWith` input) starts a workflow that, through the ones the published workflows start, ends up starting this one again: `vm-restart -> patch-cve -> vm-restart`, at the step or input that closes the loop. A job would wait for itself and never finish. Both twins judge it from the file plus what the context knows the published workflows start (CI: the repository's workflows); an `orCreateWith` of the workflow itself is one with no registry at all. The platform judges it again with the registry at publish, `:validate` and merge |
 | `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
 | `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
 | `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
-| `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
+| `policy.missing`          | error   | no `policy` block, or one without `rbac`: every workflow names the roles that may invoke it |
+| `trigger.schedule`        | error   | a `schedule` trigger: the platform runs no schedules; use an alert, an event or the API |
+| `playbook.digest`         | error   | an uploaded playbook's `sha256` is not a digest: 64 lowercase hex digits, as `POST /api/v1/playbooks:upload` answered it |
+| `playbook.missing`        | error   | only at publish, from the platform: the artifact store holds no upload with the digest the step pins; upload the file again. The TypeScript twin cannot see the store and leaves this to the backend |
+| `credential.owner`        | error   | from the platform only (save, `:validate`, publish): a step names a `vault:` credential another team owns (a field such as `credential` or `playbook.git.credential`, or a header `Bearer vault:...`); the message names the credential and its owner team, never a value. A workflow may use its owner team's credentials and unowned ones; a templated reference is resolved when the step runs. The TypeScript twin sees no vault and has no rule for it; a publish while the vault cannot list its credentials answers 503 `credential store unavailable, try again` |
+| `publish.playbooks`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
+| `mcp.toolName`            | warning | the workflow sets `mcp.expose` and another published workflow already has its MCP tool (`<noun>_<verb>`) or batch tool (`<noun>_<verb>_batch`): the MCP server lists one tool per name. A warning in both twins when the context knows the registry's tools (CI does, from the repository's workflows); the platform judges it with the registry at publish, `:validate` and merge, where it is an error and nothing is opened or merged |
 
 ### Versions and contracts
 
