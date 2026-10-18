@@ -19,6 +19,7 @@ import org.springframework.web.server.WebFilterChain;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
@@ -86,6 +87,44 @@ class IdentityWebFilterTest {
         Identity who = run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_secret").build()).who();
         assertThat(who).isEqualTo(account.identity());
         assertThat(who.kind()).isEqualTo(Identity.Kind.SERVICE);
+    }
+
+    @Test
+    void aServiceAccountsScopesGoAlongForTheScopeFilterAndTheCodeBehindIt() {
+        ServiceAccount account = new ServiceAccount("sa_devin", "devin", List.of(), List.of(), WorkflowYaml.sha256("iaf_devin"), Instant.now(),
+                List.of("registry:read", "workflows:validate", "workflows:dry-run"));
+        when(accounts.byTokenHash(WorkflowYaml.sha256("iaf_devin"))).thenReturn(Optional.of(account));
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
+        MockServerWebExchange exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer iaf_devin").build());
+        AtomicReference<Object> inContext = new AtomicReference<>();
+        filter.filter(exchange, ex -> reactor.core.publisher.Mono.deferContextual(ctx -> {
+            inContext.set(ctx.getOrDefault(ServiceScopes.ATTRIBUTE, null));
+            return reactor.core.publisher.Mono.<Void>empty();
+        })).block();
+        assertThat((Object) exchange.getAttribute(ServiceScopes.ATTRIBUTE)).isEqualTo(List.of("registry:read", "workflows:validate", "workflows:dry-run"));
+        assertThat(inContext.get()).isEqualTo(List.of("registry:read", "workflows:validate", "workflows:dry-run"));
+
+        MockServerWebExchange person = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/me").build());
+        filter.filter(person, ex -> reactor.core.publisher.Mono.empty()).block();
+        assertThat((Object) person.getAttribute(ServiceScopes.ATTRIBUTE)).isNull();
+    }
+
+    @Test
+    void aSignedWebhookComesInWithoutACredentialAsAnIdentityThatMayChangeNothing() {
+        props.getIdentity().setMode("oidc");
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
+        Outcome webhook = run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").build());
+        assertThat(webhook.who()).isEqualTo(IdentityWebFilter.WEBHOOK);
+        assertThat(webhook.who().admin()).isFalse();
+        assertThat(webhook.who().teams()).isEmpty();
+        assertThat(run(filter, MockServerHttpRequest.get("/api/v1/change-requests:github-webhook").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests/cr_1:merge").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").header("Authorization", "Bearer forged").build()).status())
+                .as("a presented credential is judged as usual").isEqualTo(HttpStatus.UNAUTHORIZED);
+
+        props.getIdentity().setMode("dev");
+        assertThat(run(filter, MockServerHttpRequest.post("/api/v1/change-requests:github-webhook").header("X-User", "gonzalo").build()).who())
+                .as("never the dev user either").isEqualTo(IdentityWebFilter.WEBHOOK);
     }
 
     @Test

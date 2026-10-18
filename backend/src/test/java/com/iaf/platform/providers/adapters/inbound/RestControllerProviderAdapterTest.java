@@ -33,9 +33,14 @@ import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDetail;
 import com.iaf.platform.providers.domain.ProviderSummary;
+import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.domain.ReviewEvidence;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TryResult;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands.ImportSpec;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands.RefreshSpec;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.SetSlo;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.ValidationResult;
 import com.iaf.platform.testing.TestWeb;
@@ -172,6 +177,38 @@ class RestControllerProviderAdapterTest {
     }
 
     @Test
+    void theWizardNamesTheProviderItProvesAndGetsTheReviewBack() {
+        when(commands.testConnection(any())).thenReturn(Mono.just(new ConnectionResult.Results(List.of(new ConnectionResult("dev", true, 12, "HEAD 200")))));
+        client.post().uri("/api/v1/providers:test-connection").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("endpoints", Map.of("dev", "https://fleet-dev.example.com"), "auth", Map.of("type", "none"), "provider", "fleet")).exchange()
+                .expectStatus().isOk();
+        ArgumentCaptor<ProviderCommands.TestConnection> sent = ArgumentCaptor.forClass(ProviderCommands.TestConnection.class);
+        verify(commands).testConnection(sent.capture());
+        Assertions.assertThat(sent.getValue().provider()).isEqualTo("fleet");
+
+        when(commands.tryAction(any())).thenReturn(Mono.just(new TryResult(true, 200, 33, JsonNodeFactory.instance.objectNode().put("id", "vm-1"), List.of(),
+                null, "dev", Instant.parse("2026-10-17T10:00:00Z"), YAML + "# with the sample\n")));
+        client.post().uri("/api/v1/providers:try").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("yaml", YAML, "action", "vm.get", "environment", "dev")).exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.environment").isEqualTo("dev")
+                .jsonPath("$.at").isEqualTo("2026-10-17T10:00:00Z")
+                .jsonPath("$.yaml").value(y -> Assertions.assertThat((String) y).endsWith("# with the sample\n"));
+
+        ProviderReview.Result review = ProviderReview.review(fleet, ReviewEvidence.NONE);
+        when(commands.validate(any())).thenReturn(Mono.just(new ValidationResult(List.of(new Check("schema", "Schema", "passed", null)), List.of(), review)));
+        client.post().uri("/api/v1/providers:validate").contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("yaml", YAML)).exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.review.ready").isEqualTo(false)
+                .jsonPath("$.review.checks[0].id").isEqualTo("connection")
+                .jsonPath("$.review.checks[0].status").isEqualTo("failed")
+                .jsonPath("$.review.problems[0].code").isEqualTo("connection.untested")
+                .jsonPath("$.review.slo").doesNotExist();
+    }
+
+    @Test
     void publishesWith202AndConflictsCarryTheirDetail() {
         when(commands.publish(any())).thenReturn(Mono.just(CommandAccepted.of("cr_1", "open", Map.of("changeRequest", "/api/v1/change-requests/cr_1"))));
         client.post().uri("/api/v1/providers:publish").contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("yaml", YAML, "strategy", "all")).exchange()
@@ -208,6 +245,44 @@ class RestControllerProviderAdapterTest {
         Assertions.assertThat(captor.getValue().successRate()).isEqualTo(99.9);
         Assertions.assertThat(captor.getValue().p95Ms()).isEqualTo(500);
         Assertions.assertThat(captor.getValue().channel()).isEqualTo("#x");
+    }
+
+    @Test
+    void aSpecFromGitComesBackWithItsCommit() {
+        SpecImport spec = new SpecImport("Machines", "1", "abc", new SpecImport.AuthInfo("bearer", null), List.of(), List.of(), "3f2a9c1d");
+        when(commands.importSpec(any())).thenReturn(Mono.just(spec));
+        client.post().uri("/api/v1/providers:import-spec").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of("type", "openapi", "git", Map.of("repo", "https://github.com/acme/machines-api", "ref", "v2.4.0", "path", "openapi.yaml",
+                        "credential", "vault:github/read-token")))
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.commit").isEqualTo("3f2a9c1d");
+        ArgumentCaptor<ImportSpec> captor = ArgumentCaptor.forClass(ImportSpec.class);
+        verify(commands).importSpec(captor.capture());
+        Assertions.assertThat(captor.getValue().git()).isEqualTo(new ProviderDefinition.GitRef("https://github.com/acme/machines-api", "v2.4.0", "openapi.yaml",
+                "vault:github/read-token"));
+    }
+
+    @Test
+    void refreshingASpecIs202WithOrWithoutABody() {
+        when(commands.refreshSpec(eq("fleet"), any())).thenReturn(Mono.just(CommandAccepted.of("cr-9", "open")));
+        client.post().uri("/api/v1/providers/fleet:refresh-spec").contentType(MediaType.APPLICATION_JSON).bodyValue(Map.of("ref", "v2.5.0")).exchange()
+                .expectStatus().isAccepted()
+                .expectBody().jsonPath("$.id").isEqualTo("cr-9").jsonPath("$.status").isEqualTo("open");
+        ArgumentCaptor<RefreshSpec> captor = ArgumentCaptor.forClass(RefreshSpec.class);
+        verify(commands).refreshSpec(eq("fleet"), captor.capture());
+        Assertions.assertThat(captor.getValue().ref()).isEqualTo("v2.5.0");
+
+        when(commands.refreshSpec(eq("machines"), any())).thenReturn(Mono.just(CommandAccepted.of("machines", "unchanged")));
+        client.post().uri("/api/v1/providers/machines:refresh-spec").exchange()
+                .expectStatus().isAccepted()
+                .expectBody().jsonPath("$.status").isEqualTo("unchanged");
+
+        when(commands.refreshSpec(eq("gone"), any())).thenReturn(Mono.error(new ConflictException("The new spec drops 1 operation",
+                List.of(Problem.error("refresh.operationGone", "vm.delete", "spec.actions[1].operation", "The new spec has no operation deleteVm")))));
+        client.post().uri("/api/v1/providers/gone:refresh-spec").exchange()
+                .expectStatus().isEqualTo(409)
+                .expectBody().jsonPath("$.error").isEqualTo("The new spec drops 1 operation");
     }
 
     @Test

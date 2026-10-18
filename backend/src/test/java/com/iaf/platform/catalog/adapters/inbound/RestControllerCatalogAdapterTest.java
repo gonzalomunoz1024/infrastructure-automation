@@ -27,6 +27,7 @@ import com.iaf.platform.catalog.SampleCatalog;
 import com.iaf.platform.catalog.application.CatalogQueryHandler;
 import com.iaf.platform.catalog.application.McpServer;
 import com.iaf.platform.catalog.application.WorkflowInvoker;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.ports.PolicyPort;
@@ -35,6 +36,7 @@ import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.config.GlobalExceptionHandler;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.Preview;
@@ -201,6 +203,32 @@ class RestControllerCatalogAdapterTest {
         JsonNode missing = rpcResult(SampleCatalog.AGENT, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"get_images\",\"arguments\":{}}}");
         assertThat(missing.path("error").path("code").asInt()).isEqualTo(-32602);
         assertThat(missing.path("error").path("data").path("problems").get(0).path("message").asText()).contains("id");
+    }
+
+    @Test
+    void aServiceAccountCallsOnlyTheToolsItsScopesAllow() {
+        WebFilter scoped = (exchange, chain) -> {
+            exchange.getAttributes().put(IdentityWebFilter.ATTRIBUTE, SampleCatalog.AGENT);
+            return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, SampleCatalog.AGENT), List.of("registry:read")));
+        };
+        WebTestClient reader = WebTestClient.bindToController(adapter).controllerAdvice(new GlobalExceptionHandler()).webFilter(scoped).build();
+        byte[] list = reader.post().uri("/api/v1/mcp").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}").exchange()
+                .expectStatus().isOk().expectBody().returnResult().getResponseBody();
+        byte[] call = reader.post().uri("/api/v1/mcp").contentType(MediaType.APPLICATION_JSON)
+                .bodyValue("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"vm_restart\",\"arguments\":{\"vmId\":\"vm-1\"}}}").exchange()
+                .expectStatus().isOk().expectBody().returnResult().getResponseBody();
+        try {
+            assertThat(JSON.readTree(list).path("result").path("tools")).isNotEmpty();
+            JsonNode refused = JSON.readTree(call);
+            assertThat(refused.path("error").path("data").path("forbidden").asBoolean()).isTrue();
+            assertThat(refused.path("error").path("message").asText()).contains("jobs:start");
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        verify(runs, never()).startJob(any());
+        assertThat(McpServer.scopeOf(McpTools.find(queries.tools().block(), "get_job_status").orElseThrow())).isEqualTo("jobs:read");
+        assertThat(McpServer.scopeOf(McpTools.find(queries.tools().block(), "draft_workflow").orElseThrow())).isEqualTo("workflows:write");
     }
 
     @Test

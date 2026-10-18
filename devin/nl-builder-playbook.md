@@ -20,7 +20,7 @@ The platform's chat API puts these in the session prompt. Ask for something only
 - `MODE`: `create`, or `edit` when changing an existing workflow.
 - `CURRENT_DRAFT`: the workflow YAML now on the canvas (edit mode only; `none` otherwise).
 - `CONTEXT`: owner team, folder, the requester's team, and `PLATFORM_API` (base URL).
-- The `PLATFORM_TOKEN` secret is attached to the session. It is read-only plus validate and dry-run.
+- The `PLATFORM_TOKEN` secret is attached to the session. It is a service account token with the `assistant` scopes (`registry:read`, `workflows:validate`, `workflows:dry-run`): it reads the registry, validates and dry-runs, and any other call is refused with 403.
 
 ## Procedure
 
@@ -69,11 +69,15 @@ The platform's chat API puts these in the session prompt. Ask for something only
     - Change only what was asked.
     - Validate again.
     - List what changed in `changes`.
+11. When a message starts with `PLATFORM_CHECKS (round <n> of <max>)`, the platform has checked the `workflowYaml` of your last structured output itself, against the live registry and with a dry run when validation passed, and found errors:
+    - Fix each finding listed (`<code> at step <id>: <message>`). Change nothing else.
+    - Validate and dry-run again, then update the structured output.
+    - Set `status: ready` only when none is left. After the last round, the platform hands a draft that still fails to a person.
 
 ## Specifications
 
 - The final structured output matches `workflow-draft.schema.json`.
-- `workflowYaml` passes `:validate` with no errors, and the dry run passes.
+- `workflowYaml` passes `:validate` with no errors, and the dry run passes. The platform checks every draft you write again and shows its own result on the canvas, in place of the `validation` and `dryRun` you report.
 - Step ids are camelCase and unique; `output.as` names are not `json`, `input`, `vars`, `job`, `env` or `error`.
 - Every step refers to a step type, provider action, workflow, resource type, playbook and credential that exists in the registry. Credentials appear only as `vault:<name>`.
 - The YAML holds no secrets, passwords, tokens, private hostnames, or IP addresses.

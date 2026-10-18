@@ -19,6 +19,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Alerts;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
 import com.iaf.platform.providers.domain.ProviderDefinition.ErrorClass;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
 import com.iaf.platform.providers.domain.ProviderDefinition.Metadata;
 import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 import com.iaf.platform.providers.domain.ProviderDefinition.Spec;
@@ -73,7 +74,9 @@ public final class ProviderYaml {
         }
         ProviderType type = ProviderType.of(s.path("type").asText("openapi"));
         JsonNode ss = s.get("spec");
-        SpecSource specSource = ss != null && ss.isObject() ? new SpecSource(text(ss, "url"), text(ss, "sha256"), text(ss, "content")) : null;
+        JsonNode gs = ss == null ? null : ss.get("git");
+        GitRef git = gs != null && gs.isObject() ? new GitRef(text(gs, "repo"), text(gs, "ref"), text(gs, "path"), text(gs, "credential")) : null;
+        SpecSource specSource = ss != null && ss.isObject() ? new SpecSource(text(ss, "url"), text(ss, "sha256"), text(ss, "content"), git, text(ss, "commit")) : null;
         Map<String, String> endpoints = new LinkedHashMap<>();
         s.path("endpoints").fields().forEachRemaining(e -> endpoints.put(e.getKey(), e.getValue().asText()));
         JsonNode au = s.get("auth");
@@ -93,8 +96,10 @@ public final class ProviderYaml {
             boolean approval = a.has("approval") ? !"none".equals(a.get("approval").asText()) && !"false".equals(a.get("approval").asText()) : effect.destructive();
             JsonNode v = a.get("verify");
             Verify verify = v != null && v.isObject() ? new Verify(text(v, "action"), text(v, "expect")) : null;
+            JsonNode recorded = a.get("recorded");
             actions.add(new Action(id, text(a, "title"), operation, method, path, effect, retrySafe, approval, text(a, "plan"), verify,
-                    a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description")));
+                    a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description"),
+                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null));
         }
         Map<String, JsonNode> overrides = new LinkedHashMap<>();
         s.path("overrides").fields().forEachRemaining(e -> overrides.put(e.getKey(), e.getValue()));
@@ -144,6 +149,14 @@ public final class ProviderYaml {
         if (sp.specSource() != null) {
             ObjectNode ss = s.putObject("spec");
             put(ss, "url", sp.specSource().url());
+            if (sp.specSource().git() != null) {
+                ObjectNode git = ss.putObject("git");
+                put(git, "repo", sp.specSource().git().repo());
+                put(git, "ref", sp.specSource().git().ref());
+                put(git, "path", sp.specSource().git().path());
+                put(git, "credential", sp.specSource().git().credential());
+            }
+            put(ss, "commit", sp.specSource().commit());
             put(ss, "sha256", sp.specSource().sha256());
             put(ss, "content", sp.specSource().content());
         }
@@ -188,6 +201,7 @@ public final class ProviderYaml {
             if (a.effect() != null) {
                 o.put("effect", a.effect().json());
             }
+            put(o, "effectDetail", a.effectDetail());
             o.put("retry", a.retrySafe() ? "safe" : "unsafe");
             if (a.approvalRequired()) {
                 o.put("approval", "required");
@@ -212,6 +226,9 @@ public final class ProviderYaml {
             }
             if (a.sample() != null) {
                 o.set("sample", a.sample());
+            }
+            if (a.recorded() != null) {
+                o.set("recorded", a.recorded());
             }
             put(o, "description", a.description());
         }

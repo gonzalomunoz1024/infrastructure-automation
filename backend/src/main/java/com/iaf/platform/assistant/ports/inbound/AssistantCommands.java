@@ -1,8 +1,11 @@
 package com.iaf.platform.assistant.ports.inbound;
 
+import java.util.List;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.assistant.domain.AssistantEvent;
 import com.iaf.platform.assistant.domain.ProviderDraft;
+import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -21,4 +24,7 @@ public interface AssistantCommands {
 
     /** "Ask Devin" in the Add provider wizard. */
     Mono<ProviderDraft> draftProvider(String description);
+
+    /** Admin: create or update the agent's playbooks from {@code devin/*.md} (403 for anyone else). */
+    Mono<List<PlaybookSync>> syncPlaybooks();
 }

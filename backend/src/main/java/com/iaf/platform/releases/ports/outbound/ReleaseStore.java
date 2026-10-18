@@ -12,7 +12,7 @@ public interface ReleaseStore {
 
     Optional<Release> find(String id);
 
-    /** Newest first; {@code workflow} null means every workflow. */
+    /** Newest first; {@code workflow} null means every release (provider releases included). */
     List<Release> list(String workflow);
 
     /** Every release that still owns traffic decisions (canary or paused), newest first. */
@@ -20,4 +20,14 @@ public interface ReleaseStore {
 
     /** The release that decides routing for a workflow, when one is active. */
     Optional<Release> active(String workflow);
+
+    /** The releases of one provider, newest first. */
+    default List<Release> listProvider(String provider) {
+        return list(null).stream().filter(r -> provider != null && provider.equals(r.provider())).toList();
+    }
+
+    /** The release that decides which version a provider's calls use, when one is active. */
+    default Optional<Release> activeProvider(String provider) {
+        return active().stream().filter(r -> provider != null && provider.equals(r.provider())).findFirst();
+    }
 }

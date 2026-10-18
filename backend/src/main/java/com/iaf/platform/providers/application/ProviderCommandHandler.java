@@ -1,10 +1,13 @@
 package com.iaf.platform.providers.application;
 
 import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -20,6 +23,7 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
@@ -33,18 +37,29 @@ import com.iaf.platform.providers.domain.ProviderChecks;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
+import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
+import com.iaf.platform.providers.domain.ProviderReview;
+import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
+import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TextDiff;
 import com.iaf.platform.providers.domain.TryResult;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.workflows.domain.ChangeRequest;
+import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
@@ -53,11 +68,17 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
- * The Add provider wizard's backend and the admin edits. Publishing opens a change request; the
- * provider is saved when the workflows slice merges it and publishes {@code change-request.merged},
- * which this handler listens to.
+ * The Add provider wizard's backend and the admin edits. Publishing, a spec refresh, an override
+ * and an SLO edit each open a change request (one open at a time per provider); the provider is
+ * saved when the workflows slice merges it and publishes {@code change-request.merged}, which this
+ * handler listens to.
+ *
+ * <p>A merged version with the {@code canary} strategy is kept beside the current one and rolled
+ * out by a provider release (the releases slice); it becomes current on {@code release.promoted}.
+ * Edits made while it rolls out build on it.
  */
 @Slf4j
 @Primary
@@ -67,8 +88,19 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     public static final String MERGED_EVENT = "change-request.merged";
     public static final String PUBLISHED_EVENT = "provider.published";
-    public static final String UPDATED_EVENT = "provider.updated";
     public static final String CHANGE_REQUESTED_EVENT = "provider.change-requested";
+
+    /** What a secret-looking field of a recorded sample becomes in the provider file. */
+    public static final String REDACTED = "vault:redacted";
+
+    /** The change-request check of a spec refresh: what was read and what changed. */
+    public static final String SPEC_REFRESH = "spec-refresh";
+
+    /** How a provider version rolls out when its change request does not say: like workflow versions, through a canary. */
+    static final String DEFAULT_STRATEGY = "canary";
+    /** Every call at once: overrides and SLO edits, which change no call, when no canary is running. */
+    static final String ALL = "all";
+    static final String RELEASE_PROMOTED = "release.promoted";
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final Set<String> STRATEGIES = Set.of("canary", "all");
@@ -80,6 +112,9 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final HttpProbePort http;
     private final EventBus events;
     private final Clock clock;
+    private final ReviewEvidencePort evidence;
+    private final GitSourcePort git;
+    private final ReleaseQueries releases;
 
     @PostConstruct
     void listen() {
@@ -100,8 +135,15 @@ public class ProviderCommandHandler implements ProviderCommands {
             }
             boolean hasUrl = command.url() != null && !command.url().isBlank();
             boolean hasContent = command.content() != null && !command.content().isBlank();
+            if (command.git() != null) {
+                if (hasUrl || hasContent) {
+                    throw new IllegalArgumentException("Give the spec's url, its content or its file in Git, one of them");
+                }
+                GitRef g = requireGitRef(command.git());
+                return readFromGit(g, g.ref()).map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()));
+            }
             if (!hasUrl && !hasContent) {
-                throw new IllegalArgumentException("Give the spec's url or paste its content");
+                throw new IllegalArgumentException("Give the spec's url, paste its content or name its file in Git");
             }
             if (hasContent) {
                 return Mono.fromCallable(() -> OpenApiImporter.parse(command.content()));
@@ -113,15 +155,228 @@ public class ProviderCommandHandler implements ProviderCommands {
         });
     }
 
+    /** A Git location names the repository and the file; a private repository's token is a Vault reference, never the token. */
+    static GitRef requireGitRef(GitRef g) {
+        if (g.repo() == null || g.repo().isBlank()) {
+            throw new IllegalArgumentException("git.repo is required: the repository's https URL, like https://github.com/acme/fleet-api");
+        }
+        if (g.path() == null || g.path().isBlank()) {
+            throw new IllegalArgumentException("git.path is required: the spec's file in the repository, like openapi.yaml");
+        }
+        if (g.credential() != null && !g.credential().isBlank() && !g.credential().trim().startsWith("vault:")) {
+            throw new IllegalArgumentException("git.credential is a Vault reference to a read token, like vault:github/read-token; the token itself never goes through the API");
+        }
+        return new GitRef(g.repo().trim(), g.ref() == null || g.ref().isBlank() ? null : g.ref().trim(), g.path().trim(),
+                g.credential() == null || g.credential().isBlank() ? null : g.credential().trim());
+    }
+
+    private Mono<GitSourcePort.GitFile> readFromGit(GitRef g, String ref) {
+        return git.file(g.repo(), ref, g.path(), g.credential())
+                .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not read " + g.path() + " from " + g.repo() + ": " + reason(e)));
+    }
+
+    // ---------------------------------------------------------------- refresh the spec
+
+    /** The document a refresh read, with the commit and ref of a spec read from Git. */
+    record LatestSpec(String raw, String commit, String ref) {
+    }
+
+    @Override
+    public Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command) {
+        RefreshSpec c = command == null ? new RefreshSpec(null, null) : command;
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
+            StoredProvider current = latest(name);
+            ProviderDefinition def = current.definition();
+            AccessRules.requireEdit(who, def.owner(), "provider " + name);
+            SpecSource source = def.spec().specSource();
+            boolean hasSpec = source != null && (source.fromGit() || !blank(source.url()) || !blank(source.content()));
+            if (def.type() != ProviderType.OPENAPI || !hasSpec) {
+                throw new IllegalArgumentException("Provider " + name + " has no OpenAPI spec to refresh");
+            }
+            if (source.fromGit()) {
+                requireGitRef(source.git());
+            }
+            if (!blank(c.ref()) && !source.fromGit()) {
+                throw new IllegalArgumentException("ref only applies to a spec read from Git; provider " + name + " reads its spec from " + where(source));
+            }
+            if (!blank(c.content()) && !source.pasted()) {
+                throw new IllegalArgumentException("content only replaces a pasted spec; provider " + name + " reads its spec from " + where(source));
+            }
+            if (source.pasted() && blank(c.content())) {
+                throw new IllegalArgumentException("The spec of provider " + name + " was pasted; paste the new document as content");
+            }
+            requireNoOpenChange(name);
+            return current;
+        }).flatMap(current -> latestSpec(current.definition().spec().specSource(), c)
+                .flatMap(latest -> blocking(() -> refreshed(who, current, latest, c)))));
+    }
+
+    private Mono<LatestSpec> latestSpec(SpecSource source, RefreshSpec c) {
+        if (source.fromGit()) {
+            GitRef g = requireGitRef(source.git());
+            String ref = blank(c.ref()) ? g.ref() : c.ref().trim();
+            return readFromGit(g, ref).map(f -> new LatestSpec(f.content(), f.commit(), ref));
+        }
+        if (source.pasted()) {
+            return Mono.just(new LatestSpec(c.content(), null, null));
+        }
+        String url = source.url().trim();
+        return http.fetch(url)
+                .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not fetch " + url + ": " + reason(e)))
+                .map(raw -> new LatestSpec(raw, null, null));
+    }
+
+    /**
+     * The provider file moved to the new document: the schemas of the actions that call its
+     * operations, the overrides the new spec no longer needs dropped (it agrees with the real
+     * response), the pin, and the next minor version. Refused when an operation an action calls is gone.
+     */
+    private CommandAccepted refreshed(Identity who, StoredProvider current, LatestSpec latest, RefreshSpec c) {
+        ProviderDefinition def = current.definition();
+        SpecSource source = def.spec().specSource();
+        String sha = WorkflowYaml.sha256(latest.raw());
+        if (sha.equalsIgnoreCase(source.sha256() == null ? "" : source.sha256())) {
+            return CommandAccepted.of(def.name(), "unchanged", Map.of("provider", "/api/v1/providers/" + def.name()));
+        }
+        SpecImport imported = OpenApiImporter.parse(latest.raw());
+        ObjectNode tree = tree(current.yaml());
+        ObjectNode spec = child(tree, "spec");
+        JsonNode actionNodes = spec.path("actions");
+        List<Problem> gone = new ArrayList<>();
+        List<String> changed = new ArrayList<>();
+        List<String> dropped = new ArrayList<>();
+        List<String> kept = new ArrayList<>();
+        int compared = 0;
+        List<Action> actions = def.actions();
+        for (int i = 0; i < actions.size(); i++) {
+            Action a = actions.get(i);
+            if (blank(a.operation()) || (a.method() != null && a.path() != null)) {
+                continue;
+            }
+            compared++;
+            Optional<SpecImport.Operation> op = imported.operation(a.operation());
+            if (op.isEmpty()) {
+                gone.add(Problem.error("refresh.operationGone", a.id(), "spec.actions[" + i + "].operation", "The new spec has no operation " + a.operation()
+                        + ", which " + a.id() + " calls; publish the provider without that action first, or refresh to a ref that still has it"));
+                continue;
+            }
+            ObjectNode node = (ObjectNode) actionNodes.get(i);
+            boolean updated = false;
+            if (op.get().input() != null && !op.get().input().equals(a.input())) {
+                node.set("input", op.get().input());
+                updated = true;
+            }
+            JsonNode output = op.get().output() != null ? op.get().output() : a.output();
+            if (op.get().output() != null && !op.get().output().equals(a.output())) {
+                node.set("output", output);
+                updated = true;
+            }
+            if (updated) {
+                changed.add(a.id());
+            }
+            JsonNode override = def.override(a.id());
+            if (override != null && override.has("response")) {
+                JsonNode real = realResponse(def, a);
+                if (real != null && Schemas.mismatches(output, real).isEmpty()) {
+                    // a newer spec keeps the override unless it now agrees with the real response
+                    dropOverride(spec, a.id());
+                    dropped.add(a.id());
+                } else {
+                    kept.add(a.id());
+                }
+            }
+        }
+        if (!gone.isEmpty()) {
+            throw new ConflictException("The new spec drops " + gone.size() + (gone.size() == 1 ? " operation" : " operations")
+                    + " that provider " + def.name() + "'s actions call", gone);
+        }
+        String version = Semver.parse(def.metadata().version()).bumpMinor().toString();
+        child(tree, "metadata").put("version", version);
+        ObjectNode pin = child(spec, "spec");
+        pin.put("sha256", sha);
+        if (source.fromGit()) {
+            pin.put("commit", latest.commit());
+            if (!blank(c.ref())) {
+                child(pin, "git").put("ref", latest.ref());
+            }
+        } else if (pin.has("content")) {
+            pin.put("content", latest.raw());
+        }
+        String yaml = ProviderYaml.toYaml(tree);
+        String detail = "Read " + where(source) + (latest.commit() == null ? "" : " at " + shortCommit(latest.commit()))
+                + (imported.version() == null ? "" : " (spec version " + imported.version() + ")") + ": "
+                + changed.size() + " of " + compared + (compared == 1 ? " action's schemas changed" : " actions' schemas changed")
+                + (dropped.isEmpty() ? "" : "; override dropped for " + String.join(", ", dropped) + " (the spec now agrees with the real response)")
+                + (kept.isEmpty() ? "" : "; override kept for " + String.join(", ", kept));
+        List<Check> extra = new ArrayList<>();
+        extra.add(new Check(SPEC_REFRESH, "Spec refreshed", "passed", detail));
+        // the real responses judged against the new schemas: a refresh that breaks one cannot merge
+        extra.addAll(reviewChecks(yaml, ProviderReview.RESPONSES));
+        return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": spec refreshed", SPEC_REFRESH, DEFAULT_STRATEGY, extra);
+    }
+
+    /** The newest real answer of an action: a Try it call the platform recorded, else a sample the wizard recorded. */
+    private JsonNode realResponse(ProviderDefinition def, Action a) {
+        Optional<ActionTry> answer = evidence.evidence(def.name()).lastAnswer(a.id(), ProviderReview.sandbox(def));
+        if (answer.isPresent()) {
+            return answer.get().response();
+        }
+        return a.sample() != null && a.recorded() != null ? a.sample() : null;
+    }
+
+    private static void dropOverride(ObjectNode spec, String action) {
+        JsonNode overrides = spec.get("overrides");
+        if (overrides == null || !overrides.isObject()) {
+            return;
+        }
+        JsonNode block = overrides.get(action);
+        if (block != null && block.isObject()) {
+            ((ObjectNode) block).remove("response");
+            if (block.isEmpty()) {
+                ((ObjectNode) overrides).remove(action);
+            }
+        }
+        if (overrides.isEmpty()) {
+            spec.remove("overrides");
+        }
+    }
+
+    private static String where(SpecSource source) {
+        if (source.fromGit()) {
+            return source.git().path() + " in " + source.git().repo();
+        }
+        return source.pasted() ? "the pasted document" : source.url().trim();
+    }
+
+    private static String shortCommit(String commit) {
+        return commit.length() > 12 ? commit.substring(0, 12) : commit;
+    }
+
+    private static boolean blank(String s) {
+        return s == null || s.isBlank();
+    }
+
     @Override
     public Mono<ConnectionResult.Results> testConnection(TestConnection command) {
-        return Flux.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Flux.defer(() -> {
             if (command == null || command.endpoints() == null || command.endpoints().isEmpty()) {
                 throw new IllegalArgumentException("endpoints is required: one URL per environment");
             }
+            String provider = command.provider() == null || command.provider().isBlank() ? null : command.provider().trim();
+            if (provider != null) {
+                ContentFiles.requireSlug("The provider name", provider);
+            }
             Auth auth = authOf(command.auth());
-            return Flux.fromIterable(command.endpoints().entrySet()).flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth));
-        }).collectList().map(ConnectionResult.Results::new);
+            // probed at once, recorded in the order of the environments
+            return Flux.fromIterable(command.endpoints().entrySet())
+                    .flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth).map(r -> Map.entry(e.getValue() == null ? "" : e.getValue().trim(), r)))
+                    .concatMap(t -> provider == null ? Mono.just(t.getValue()) : blocking(() -> {
+                        ConnectionResult r = t.getValue();
+                        evidence.recordConnection(provider, new ConnectionTest(r.environment(), t.getKey().isEmpty() ? null : t.getKey(),
+                                auth.credential(), r.ok(), r.durationMs(), r.message(), clock.instant(), who.id()));
+                        return r;
+                    }));
+        }).collectList().map(ConnectionResult.Results::new));
     }
 
     private Mono<ConnectionResult> probe(String environment, String url, Auth auth) {
@@ -135,7 +390,7 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<TryResult> tryAction(TryAction command) {
-        return Mono.defer(() -> {
+        return CurrentIdentity.current().flatMap(who -> Mono.defer(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
@@ -152,13 +407,69 @@ public class ProviderCommandHandler implements ProviderCommands {
             return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false))
                     .flatMap(response -> {
                         long ms = elapsedMs(started);
-                        List<Mismatch> mismatches = Schemas.mismatches(effectiveOutput(def, action), response);
-                        return verify(def, action, environment, input)
-                                .map(v -> new TryResult(true, 200, ms, response, mismatches, v.orElse(null)));
+                        List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
+                        return verify(def, action, environment, input).map(v -> {
+                            Instant at = clock.instant();
+                            return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
+                                    withSample(command.yaml(), action.id(), response, environment, at));
+                        });
                     })
-                    .onErrorResume(ProviderCallException.class, e -> Mono.just(
-                            new TryResult(false, e.status() > 0 ? e.status() : 502, elapsedMs(started), errorBody(e), List.of(), null)));
-        });
+                    .onErrorResume(ProviderCallException.class, e -> Mono.just(new TryResult(false, e.status() > 0 ? e.status() : 502,
+                            elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
+                    .flatMap(result -> blocking(() -> {
+                        evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
+                                result.ok() ? null : result.response().path("error").path("class").asText(null),
+                                result.ok() ? result.response() : null, result.verified(), result.at(), who.id()));
+                        return result;
+                    }));
+        }));
+    }
+
+    /**
+     * The provider draft with a real response saved as the action's sample (the answer dry runs
+     * give), where it came from in {@code recorded}, and secret-looking fields kept out of the file.
+     * Null when the draft is not a provider mapping with that action.
+     */
+    static String withSample(String yaml, String actionId, JsonNode response, String environment, Instant at) {
+        JsonNode root;
+        try {
+            root = WorkflowYaml.readTree(yaml);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (root == null || !root.isObject() || response == null) {
+            return null;
+        }
+        for (JsonNode a : root.path("spec").path("actions")) {
+            if (a.isObject() && actionId.equals(a.path("id").asText(null))) {
+                ObjectNode action = (ObjectNode) a;
+                action.set("sample", redacted(response));
+                ObjectNode recorded = action.putObject("recorded");
+                recorded.put("environment", environment);
+                recorded.put("at", at.toString());
+                return ProviderYaml.toYaml(root);
+            }
+        }
+        return null;
+    }
+
+    /** A copy with the values of secret-looking fields (token, password, api key...) replaced by {@value #REDACTED}. */
+    static JsonNode redacted(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        if (node.isObject()) {
+            ObjectNode out = F.objectNode();
+            node.fields().forEachRemaining(e -> out.set(e.getKey(), ProviderChecks.secretKey(e.getKey()) && e.getValue().isValueNode() && !e.getValue().isNull()
+                    ? F.textNode(REDACTED) : redacted(e.getValue())));
+            return out;
+        }
+        if (node.isArray()) {
+            com.fasterxml.jackson.databind.node.ArrayNode out = F.arrayNode();
+            node.forEach(v -> out.add(redacted(v)));
+            return out;
+        }
+        return node.deepCopy();
     }
 
     /** After a destructive try, the verify action proves the effect: {@code expect: notFound} means the thing is gone. */
@@ -186,22 +497,33 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     @Override
     public Mono<ValidationResult> validate(Validate command) {
-        return Mono.fromCallable(() -> {
+        return blocking(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
             ProviderChecks.Result r = ProviderChecks.check(command.yaml());
-            return new ValidationResult(r.checks(), r.problems());
+            return new ValidationResult(r.checks(), r.problems(), reviewOf(command.yaml()));
         });
+    }
+
+    /** The review of a provider file against what was proved for its name; null when the file cannot be read as a provider. */
+    ProviderReview.Result reviewOf(String yaml) {
+        ProviderDefinition def;
+        try {
+            def = ProviderYaml.parse(yaml);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        return ProviderReview.review(def, evidence.evidence(def.name()));
     }
 
     @Override
     public Mono<CommandAccepted> publish(Publish command) {
-        return CurrentIdentity.current().map(who -> {
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
-            String strategy = command.strategy() == null || command.strategy().isBlank() ? "all" : command.strategy().trim();
+            String strategy = command.strategy() == null || command.strategy().isBlank() ? DEFAULT_STRATEGY : command.strategy().trim();
             if (!STRATEGIES.contains(strategy)) {
                 throw new IllegalArgumentException("strategy is canary or all");
             }
@@ -215,20 +537,31 @@ public class ProviderCommandHandler implements ProviderCommands {
             ContentFiles.requireSlug("The owner team", def.owner());
             AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
             String version = def.metadata().version();
-            Optional<StoredProvider> current = store.get(def.name());
-            if (current.isPresent() && version.equals(current.get().definition().metadata().version())) {
+            Optional<StoredProvider> stored = store.get(def.name());
+            if (stored.filter(c -> version.equals(c.definition().metadata().version())).isPresent() || store.version(def.name(), version).isPresent()) {
                 throw new ConflictException("Version " + version + " of provider " + def.name() + " is already published; bump metadata.version");
             }
+            Optional<StoredProvider> current = stored.map(c -> latest(def.name()));
             boolean open = changeRequests.all().stream().anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN
                     && def.name().equals(cr.name()) && version.equals(cr.version()));
             if (open) {
                 throw new ConflictException("A change request for provider " + def.name() + " " + version + " is already open");
             }
+            requireNoOpenChange(def.name());
+            // the review step: what the wizard proved, judged by the platform (credentials work, every action tried...)
+            ProviderReview.Result review = ProviderReview.review(def, evidence.evidence(def.name()));
+            if (!review.ready()) {
+                int n = review.errors().size();
+                throw new ConflictException("The provider's review has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published",
+                        review.errors());
+            }
+            List<Check> all = new ArrayList<>(checks.checks());
+            all.addAll(review.checks());
             String path = pathOf(def);
             String diff = TextDiff.unified(current.map(StoredProvider::yaml).orElse(null), command.yaml(), path);
             String id = Ids.next("cr");
             ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
-                    "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, checks.checks(), strategy, command.yaml(), diff,
+                    "Provider " + def.title() + " " + version, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, command.yaml(), diff,
                     clock.instant(), null, null, null);
             changeRequests.save(cr);
             ObjectNode data = F.objectNode();
@@ -238,7 +571,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             data.put("by", who.id());
             events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
             return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id));
-        });
+        }));
     }
 
     @Override
@@ -251,12 +584,16 @@ public class ProviderCommandHandler implements ProviderCommands {
         });
     }
 
-    // ---------------------------------------------------------------- admin edits
+    // ---------------------------------------------------------------- admin edits (through change requests)
 
+    /**
+     * "Use the real response": the schema inferred from the response is merged over the action's
+     * output in {@code overrides}, as a change request for the next patch version.
+     */
     @Override
     public Mono<CommandAccepted> overrides(String name, SetOverride command) {
-        return CurrentIdentity.current().map(who -> {
-            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
+            StoredProvider current = latest(name);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || command.action() == null || command.action().isBlank()) {
@@ -266,23 +603,24 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (command.response() == null || command.response().isNull() || command.response().isMissingNode()) {
                 throw new IllegalArgumentException("response is required: the real response the schema is inferred from");
             }
-            JsonNode base = action.output();
-            JsonNode existing = def.override(action.id());
-            if (existing != null && existing.has("response")) {
-                base = Schemas.merge(base, existing.get("response"));
-            }
-            ObjectNode response = Schemas.merge(base, Schemas.infer(command.response()));
+            requireNoOpenChange(name);
+            ObjectNode response = Schemas.merge(def.effectiveOutput(action), Schemas.infer(command.response()));
             ObjectNode tree = tree(current.yaml());
             child(child(child(tree, "spec"), "overrides"), action.id()).set("response", response);
-            saveEdited(current, tree, who, "overrides");
-            return CommandAccepted.of(name, "updated", Map.of("provider", "/api/v1/providers/" + name));
-        });
+            if (tree.equals(tree(current.yaml()))) {
+                return CommandAccepted.of(name, "unchanged", Map.of("provider", "/api/v1/providers/" + name));
+            }
+            String version = nextPatch(tree, def);
+            String yaml = ProviderYaml.toYaml(tree);
+            return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": " + action.id() + " uses the real response", "overrides",
+                    editStrategy(name), reviewChecks(yaml, ProviderReview.RESPONSES));
+        }));
     }
 
     @Override
     public Mono<CommandAccepted> slo(String name, SetSlo command) {
-        return CurrentIdentity.current().map(who -> {
-            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
+            StoredProvider current = latest(name);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || (command.successRate() == null && command.p95Ms() == null && command.channel() == null)) {
@@ -294,6 +632,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (command.p95Ms() != null && command.p95Ms() <= 0) {
                 throw new IllegalArgumentException("p95Ms is a positive number of milliseconds");
             }
+            requireNoOpenChange(name);
             ObjectNode tree = tree(current.yaml());
             ObjectNode spec = child(tree, "spec");
             ObjectNode slo = child(spec, "slo");
@@ -316,27 +655,115 @@ public class ProviderCommandHandler implements ProviderCommands {
                     child(spec, "alerts").put("channel", command.channel().trim());
                 }
             }
-            saveEdited(current, tree, who, "slo");
-            return CommandAccepted.of(name, "updated", Map.of("provider", "/api/v1/providers/" + name));
-        });
+            if (sameSlo(tree, tree(current.yaml()))) {
+                return CommandAccepted.of(name, "unchanged", Map.of("provider", "/api/v1/providers/" + name));
+            }
+            String version = nextPatch(tree, def);
+            String yaml = ProviderYaml.toYaml(tree);
+            return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": SLO and alerts", "slo",
+                    editStrategy(name), reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
+        }));
     }
 
-    private void saveEdited(StoredProvider current, ObjectNode tree, Identity who, String change) {
-        String yaml = ProviderYaml.toYaml(tree);
+    /** The same SLO and alert channel once the defaults the edit wrote in are counted as what the file meant. */
+    private static boolean sameSlo(ObjectNode edited, ObjectNode original) {
+        JsonNode a = edited.path("spec");
+        JsonNode b = original.path("spec");
+        ProviderDefinition.Slo before = ProviderYaml.fromJson(original).slo();
+        ProviderDefinition.Slo after = ProviderYaml.fromJson(edited).slo();
+        return before.equals(after) && a.path("alerts").equals(b.path("alerts"));
+    }
+
+    /** The provider's next patch version, written into the edited file. */
+    private static String nextPatch(ObjectNode tree, ProviderDefinition def) {
+        String version = Semver.parse(def.metadata().version()).bumpPatch().toString();
+        child(tree, "metadata").put("version", version);
+        return version;
+    }
+
+    /** The review checks named, judged on the edited file with what the platform saw of the provider. */
+    private List<Check> reviewChecks(String yaml, String... ids) {
+        List<String> wanted = List.of(ids);
         ProviderDefinition def = ProviderYaml.parse(yaml);
-        store.save(new StoredProvider(def, yaml, current.path() == null ? pathOf(def) : current.path(), clock.instant(), who.id()));
+        return ProviderReview.review(def, evidence.evidence(def.name())).checks().stream()
+                .filter(c -> wanted.contains(c.id()))
+                .toList();
+    }
+
+    /**
+     * The version an edit builds on: the candidate of a provider release still rolling out (so the
+     * edit keeps what the canary carries), else the current version.
+     */
+    private StoredProvider latest(String name) {
+        StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+        return rollingOut(name).flatMap(v -> store.version(name, v)).orElse(current);
+    }
+
+    /** The candidate version of the provider's running release, if one is running. */
+    private Optional<String> rollingOut(String name) {
+        return releases.providerCandidate(name).blockOptional();
+    }
+
+    /** Overrides and SLO edits change no call: they reach every call at once, unless they build on a candidate still rolling out. */
+    private String editStrategy(String name) {
+        return rollingOut(name).isPresent() ? DEFAULT_STRATEGY : ALL;
+    }
+
+    /** One change at a time per provider: two open change requests would publish over each other. */
+    private void requireNoOpenChange(String name) {
+        changeRequests.all().stream()
+                .filter(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN && name.equals(cr.name()))
+                .findFirst()
+                .ifPresent(cr -> {
+                    throw new ConflictException("Change request " + cr.id() + " for provider " + name + " " + cr.version() + " is still open; merge or close it first");
+                });
+    }
+
+    /**
+     * Opens a change request that publishes {@code yaml} as the provider's next version, rolled out
+     * by {@code strategy}, with the file checks and {@code extra} checks; refused while the file
+     * has errors.
+     */
+    private CommandAccepted openChange(Identity who, StoredProvider current, String yaml, String title, String change, String strategy,
+            List<Check> extra) {
+        ProviderChecks.Result checks = ProviderChecks.check(yaml);
+        if (checks.hasErrors()) {
+            int n = checks.errors().size();
+            throw new ConflictException("The changed provider has " + n + (n == 1 ? " problem" : " problems") + " to fix", checks.problems());
+        }
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        String version = def.metadata().version();
+        List<Check> all = new ArrayList<>(checks.checks());
+        all.addAll(extra);
+        String path = current.path() == null ? pathOf(def) : current.path();
+        String diff = TextDiff.unified(current.yaml(), yaml, path);
+        String id = Ids.next("cr");
+        ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
+                title, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, yaml, diff, clock.instant(), null, null, null);
+        changeRequests.save(cr);
         ObjectNode data = F.objectNode();
         data.put("name", def.name());
-        data.put("version", def.metadata().version());
+        data.put("version", version);
+        data.put("changeRequestId", id);
         data.put("by", who.id());
         data.put("change", change);
-        events.publish(UPDATED_EVENT, "provider", def.name(), who.id(), data);
+        data.put("strategy", strategy);
+        events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
+        return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id, "provider", "/api/v1/providers/" + def.name()));
     }
 
     // ---------------------------------------------------------------- merged change requests
 
-    /** The workflows slice merges change requests; a merged provider change request publishes the provider. */
+    /**
+     * The workflows slice merges change requests; a merged provider change request publishes the
+     * provider: as the current version, or, rolled out by a canary, beside it until the release
+     * is promoted.
+     */
     void on(DomainEvent event) {
+        if (RELEASE_PROMOTED.equals(event.type()) && event.data() != null && event.data().hasNonNull("provider")) {
+            promoted(event.data());
+            return;
+        }
         if (!MERGED_EVENT.equals(event.type()) || event.data() == null) {
             return;
         }
@@ -358,13 +785,50 @@ public class ProviderCommandHandler implements ProviderCommands {
         if (by == null || by.isBlank()) {
             by = event.actor() == null ? Identity.SYSTEM.id() : event.actor();
         }
-        store.save(new StoredProvider(def, yaml, pathOf(def), clock.instant(), by));
+        String version = def.metadata().version();
+        String previous = store.get(def.name()).map(p -> p.definition().metadata().version()).orElse(null);
+        String strategy = changeRequests.get(id).map(ChangeRequest::strategy).filter(st -> !st.isBlank()).orElse(DEFAULT_STRATEGY);
+        StoredProvider merged = new StoredProvider(def, yaml, pathOf(def), clock.instant(), by);
+        boolean canary = previous != null && !previous.equals(version) && !ALL.equals(strategy);
+        if (canary) {
+            store.saveVersion(merged); // the release routes calls to it; the current version keeps the rest
+        } else {
+            store.save(merged);
+        }
         ObjectNode data = F.objectNode();
         data.put("name", def.name());
-        data.put("version", def.metadata().version());
+        data.put("version", version);
         data.put("by", by);
+        data.put("previous", previous);
+        data.put("strategy", strategy);
         events.publish(PUBLISHED_EVENT, "provider", def.name(), by, data);
-        log.info("provider {} {} published by {} from change request {}", def.name(), def.metadata().version(), by, id);
+        log.info("provider {} {} published by {} from change request {} ({})", def.name(), version, by, id,
+                canary ? "canary from " + previous : "current");
+    }
+
+    /**
+     * A provider release was promoted: its candidate becomes the current version, unless another
+     * version was made current since the release started.
+     */
+    private void promoted(JsonNode d) {
+        String name = d.path("provider").asText(null);
+        String from = d.path("from").asText(null);
+        String to = d.path("to").asText(null);
+        if (name == null || to == null) {
+            return;
+        }
+        String current = store.get(name).map(p -> p.definition().metadata().version()).orElse(null);
+        if (to.equals(current)) {
+            return;
+        }
+        if (from != null && !from.equals(current)) {
+            log.info("provider {} {} promoted, but {} is current now, not {}; nothing changed", name, to, current, from);
+            return;
+        }
+        store.version(name, to).ifPresentOrElse(candidate -> {
+            store.save(candidate);
+            log.info("provider {} {} promoted to current (was {})", name, to, current);
+        }, () -> log.warn("provider {} {} promoted, but that version is not kept", name, to));
     }
 
     // ---------------------------------------------------------------- helpers
@@ -398,12 +862,9 @@ public class ProviderCommandHandler implements ProviderCommands {
         return environment;
     }
 
-    static JsonNode effectiveOutput(ProviderDefinition def, Action action) {
-        JsonNode override = def.override(action.id());
-        if (override != null && override.has("response")) {
-            return Schemas.merge(action.output(), override.get("response"));
-        }
-        return action.output();
+    /** Work that may block (stores, change requests, the GitHub API) runs on the bounded elastic scheduler. */
+    static <T> Mono<T> blocking(Callable<T> work) {
+        return Mono.fromCallable(work).subscribeOn(Schedulers.boundedElastic());
     }
 
     static ObjectNode errorBody(ProviderCallException e) {

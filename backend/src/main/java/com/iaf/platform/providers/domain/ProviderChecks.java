@@ -94,6 +94,11 @@ public final class ProviderChecks {
         return problems.stream().anyMatch(Problem::isError);
     }
 
+    /** A field name that holds a secret (password, token, api key...): its value never goes in a provider file. */
+    public static boolean secretKey(String key) {
+        return key != null && SECRET_KEY.matcher(key).find();
+    }
+
     private static final class Checker {
         final JsonNode root;
         final List<Problem> problems = new ArrayList<>();
@@ -275,19 +280,52 @@ public final class ProviderChecks {
                 return;
             }
             ProviderDefinition.SpecSource source = def.spec().specSource();
-            boolean hasDoc = source != null && ((source.url() != null && !source.url().isBlank()) || (source.content() != null && !source.content().isBlank()));
+            boolean hasUrl = source != null && source.url() != null && !source.url().isBlank();
+            boolean hasDoc = source != null && (hasUrl || (source.content() != null && !source.content().isBlank()) || source.fromGit());
             if (!hasDoc) {
-                error(SPEC_PINNED, "spec.missing", null, "spec.spec", "An OpenAPI provider needs spec: { url, sha256 }; the wizard fills it from Import spec");
+                error(SPEC_PINNED, "spec.missing", null, "spec.spec", "An OpenAPI provider needs spec: { url, sha256 } or spec: { git: { repo, ref, path }, commit, sha256 }; "
+                        + "the wizard fills it from Import spec");
                 return;
             }
+            boolean gitPinned = source.fromGit() && gitSource(source, hasUrl);
             String sha = source.sha256();
             if (sha == null || sha.isBlank()) {
                 error(SPEC_PINNED, "spec.unpinned", null, "spec.spec.sha256", "Pin the spec with its sha256 so operations cannot drift under a published provider");
             } else if (!SHA256.matcher(sha).matches()) {
                 error(SPEC_PINNED, "spec.sha256", null, "spec.spec.sha256", "sha256 is 64 hex characters, was " + sha);
-            } else {
+            } else if (gitPinned) {
+                details.put(SPEC_PINNED, "Pinned to " + source.git().path() + " at " + source.commit().substring(0, Math.min(12, source.commit().length())) + " ("
+                        + sha.substring(0, 12) + "…)");
+            } else if (!source.fromGit()) {
                 details.put(SPEC_PINNED, "Pinned to " + sha.substring(0, 12) + "…");
             }
+        }
+
+        /** A spec read from Git names the repository and the file, and is pinned to the commit it was read from. True when it is. */
+        boolean gitSource(ProviderDefinition.SpecSource source, boolean hasUrl) {
+            ProviderDefinition.GitRef git = source.git();
+            boolean ok = true;
+            if (hasUrl || (source.content() != null && !source.content().isBlank())) {
+                error(SPEC_PINNED, "spec.source", null, "spec.spec", "Read the spec from its url or from Git, not both");
+                ok = false;
+            }
+            if (git.repo() == null || git.repo().isBlank()) {
+                error(SPEC_PINNED, "spec.git", null, "spec.spec.git.repo", "Name the repository the spec lives in, like https://github.com/acme/fleet-api");
+                ok = false;
+            }
+            if (git.path() == null || git.path().isBlank()) {
+                error(SPEC_PINNED, "spec.git", null, "spec.spec.git.path", "Name the spec's file in the repository, like openapi.yaml");
+                ok = false;
+            }
+            String commit = source.commit();
+            if (commit == null || commit.isBlank()) {
+                error(SPEC_PINNED, "spec.unpinned", null, "spec.spec.commit", "Pin the spec to the commit it was read from; Import spec and Refresh spec fill it in");
+                ok = false;
+            } else if (!COMMIT.matcher(commit).matches()) {
+                error(SPEC_PINNED, "spec.commit", null, "spec.spec.commit", "commit is a Git commit hash, was " + commit);
+                ok = false;
+            }
+            return ok;
         }
 
         // ------------------------------------------------------------ credentials

@@ -36,6 +36,8 @@ import com.iaf.platform.common.tracing.TraceIds;
 import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.gateway.application.IdempotencyHandler;
 import com.iaf.platform.gateway.domain.IdempotencyKeys;
+import com.iaf.platform.identity.application.ServiceScopes;
+import com.iaf.platform.identity.domain.Scopes;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
@@ -148,7 +150,7 @@ public class McpServer {
         Mono<JsonNode> result = switch (method) {
             case "initialize" -> Mono.just(initialize());
             case "ping" -> Mono.just(F.objectNode());
-            case "tools/list" -> catalog.tools().map(tools -> {
+            case "tools/list" -> ServiceScopes.require(Scopes.REGISTRY_READ, "list the tools").then(catalog.tools()).map(tools -> {
                 ObjectNode r = F.objectNode();
                 r.set("tools", McpTools.toJson(tools));
                 return r;
@@ -205,53 +207,68 @@ public class McpServer {
         }
         return catalog.tools().flatMap(tools -> {
             Tool tool = McpTools.find(tools, name).orElseThrow(() -> new IllegalArgumentException("Unknown tool '" + name + "'"));
-            return switch (tool.kind()) {
-                case INVOKE -> {
-                    ObjectNode input = args.deepCopy();
-                    String key = McpTools.takeCallArgument(tool, input, McpTools.IDEMPOTENCY_KEY);
-                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, input, McpTools.VERSION), McpTools.VERSION);
-                    yield keyed(who, tool, key, version, input,
-                            () -> invoker.invoke(tool.workflow(), input, who, CHANNEL, traceId, version).map(this::ok));
-                }
-                case BATCH -> {
-                    ObjectNode body = args.deepCopy();
-                    String key = McpTools.takeCallArgument(tool, body, McpTools.IDEMPOTENCY_KEY);
-                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, body, McpTools.VERSION), McpTools.VERSION);
-                    yield keyed(who, tool, key, version, body, () -> invoker.batch(tool.workflow(), body, Map.of(), who, CHANNEL, version, traceId).map(this::ok));
-                }
-                case LIST_RESOURCES -> {
-                    check(tool, args);
-                    yield resources.list(tool.type().name(), text(args, "owner"), text(args, "status")).collectList().map(list -> {
-                        ObjectNode r = F.objectNode();
-                        r.put("type", tool.type().name());
-                        r.put("count", list.size());
-                        r.set("items", json.valueToTree(list));
-                        return ok(r);
-                    });
-                }
-                case GET_RESOURCE -> {
-                    check(tool, args);
-                    String rid = text(args, "id");
-                    yield resources.get(rid)
-                            .filter(r -> r.type().equals(tool.type().name()))
-                            .map(this::ok)
-                            .defaultIfEmpty(toolError("No " + tool.type().name() + " with id " + rid));
-                }
-                case JOB_STATUS -> {
-                    check(tool, args);
-                    String jobId = text(args, "jobId");
-                    yield runsQueries.job(jobId).map(this::ok).defaultIfEmpty(toolError("No job with id " + jobId));
-                }
-                case CANCEL_JOB -> {
-                    check(tool, args);
-                    yield runs.cancel(text(args, "jobId")).map(this::ok);
-                }
-                case DRAFT_WORKFLOW -> {
-                    check(tool, args);
-                    yield assistant.draftWorkflow(text(args, "description")).map(this::ok);
-                }
-            };
+            return ServiceScopes.require(scopeOf(tool), "call " + tool.name()).then(Mono.defer(() -> callTool(tool, args, who, traceId)));
         });
+    }
+
+    /** What a service account needs for a tool: starting or steering jobs, following them, reading the registry, drafting. */
+    public static String scopeOf(Tool tool) {
+        return switch (tool.kind()) {
+            case INVOKE, BATCH, CANCEL_JOB -> Scopes.JOBS_START;
+            case JOB_STATUS -> Scopes.JOBS_READ;
+            case LIST_RESOURCES, GET_RESOURCE -> Scopes.REGISTRY_READ;
+            case DRAFT_WORKFLOW -> Scopes.WORKFLOWS_WRITE;
+        };
+    }
+
+    private Mono<JsonNode> callTool(Tool tool, ObjectNode args, Identity who, String traceId) {
+        Mono<? extends JsonNode> result = switch (tool.kind()) {
+            case INVOKE -> {
+                ObjectNode input = args.deepCopy();
+                String key = McpTools.takeCallArgument(tool, input, McpTools.IDEMPOTENCY_KEY);
+                String version = VersionPin.clean(McpTools.takeCallArgument(tool, input, McpTools.VERSION), McpTools.VERSION);
+                yield keyed(who, tool, key, version, input,
+                        () -> invoker.invoke(tool.workflow(), input, who, CHANNEL, traceId, version).map(this::ok));
+            }
+            case BATCH -> {
+                ObjectNode body = args.deepCopy();
+                String key = McpTools.takeCallArgument(tool, body, McpTools.IDEMPOTENCY_KEY);
+                String version = VersionPin.clean(McpTools.takeCallArgument(tool, body, McpTools.VERSION), McpTools.VERSION);
+                yield keyed(who, tool, key, version, body, () -> invoker.batch(tool.workflow(), body, Map.of(), who, CHANNEL, version, traceId).map(this::ok));
+            }
+            case LIST_RESOURCES -> {
+                check(tool, args);
+                yield resources.list(tool.type().name(), text(args, "owner"), text(args, "status")).collectList().map(list -> {
+                    ObjectNode r = F.objectNode();
+                    r.put("type", tool.type().name());
+                    r.put("count", list.size());
+                    r.set("items", json.valueToTree(list));
+                    return ok(r);
+                });
+            }
+            case GET_RESOURCE -> {
+                check(tool, args);
+                String rid = text(args, "id");
+                yield resources.get(rid)
+                        .filter(r -> r.type().equals(tool.type().name()))
+                        .map(this::ok)
+                        .defaultIfEmpty(toolError("No " + tool.type().name() + " with id " + rid));
+            }
+            case JOB_STATUS -> {
+                check(tool, args);
+                String jobId = text(args, "jobId");
+                yield runsQueries.job(jobId).map(this::ok).defaultIfEmpty(toolError("No job with id " + jobId));
+            }
+            case CANCEL_JOB -> {
+                check(tool, args);
+                yield runs.cancel(text(args, "jobId")).map(this::ok);
+            }
+            case DRAFT_WORKFLOW -> {
+                check(tool, args);
+                yield assistant.draftWorkflow(text(args, "description")).map(this::ok);
+            }
+        };
+        return result.map(JsonNode.class::cast);
     }
 
     /**

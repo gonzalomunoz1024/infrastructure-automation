@@ -78,6 +78,26 @@ platform:
     devin-playbook-id: ""              # the !workflow-draft playbook (devin/nl-builder-playbook.md)
     devin-provider-playbook-id: ""     # the !provider-draft playbook (devin/provider-draft-playbook.md)
     platform-token-secret-id: ""       # the Devin secret holding PLATFORM_TOKEN, attached to every session
+    devin-repos: []                    # repositories attached as read-only context, e.g. [acme/platform-content]
+    devin-max-acu-limit: 10            # ACU ceiling per session; 0 sends none
+    devin-poll-every: PT15S            # kept within 10 to 30 seconds
+    devin-timeout: PT30M
+    devin-dir: ""                      # the playbooks and schemas; blank = <content.dir>/devin
+    sync-playbooks-on-startup: false   # create or update the Devin playbooks from devin/*.md at startup
+    platform-api-url: ""               # what the agent calls back; blank = http://localhost:<server.port>
+    max-rounds: 3                      # times the platform sends its own check results back to the agent
+  providers:
+    git-allow-local: false             # read file: repositories (tests and local demos only)
+    git-timeout: PT60S                 # one fetch of a spec, playbook or module repository
+    terraform-registry-url: https://registry.terraform.io
+  github:                              # the github profile: change requests are pull requests on the content repo
+    api-url: https://api.github.com    # GitHub Enterprise Server: https://<host>/api/v3
+    repo: ""                           # owner/name of the content repository
+    base-branch: main
+    token: vault:github/platform-token         # opens, merges and closes the pull requests
+    webhook-secret: vault:github/webhook-secret  # signs POST /api/v1/change-requests:github-webhook
+    merge-method: squash               # merge | squash | rebase
+    timeout: PT20S
   audit:
     retention-years: 7
     seal-every: PT1H

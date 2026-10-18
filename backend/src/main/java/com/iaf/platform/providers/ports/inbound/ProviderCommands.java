@@ -8,6 +8,8 @@ import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.providers.domain.ConnectionResult;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
+import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TryResult;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
@@ -16,16 +18,37 @@ import reactor.core.publisher.Mono;
 
 /**
  * Write side of the providers slice: the Add provider wizard's steps (import a spec, test the
- * connection, try an action, validate, publish) and the admin edits (overrides, SLO).
+ * connection, try an action, validate, publish) and the admin edits (refresh the spec, overrides,
+ * SLO), which change a published provider through a change request like a publish does.
  */
 public interface ProviderCommands {
 
-    /** {@code type} is openapi; one of {@code url} or {@code content} carries the document. */
-    record ImportSpec(String type, String url, String content) {
+    /**
+     * {@code type} is openapi; one of {@code url}, {@code content} or {@code git} (a file in a
+     * repository at a branch, tag or commit; a private one names a {@code vault:} token) carries the document.
+     */
+    record ImportSpec(String type, String url, String content, GitRef git) {
+        public ImportSpec(String type, String url, String content) {
+            this(type, url, content, null);
+        }
     }
 
-    /** {@code auth} is the provider file's auth block: {@code { type, credential, header }}. */
-    record TestConnection(Map<String, String> endpoints, JsonNode auth) {
+    /**
+     * Read the provider's spec again from where its file says it is. {@code ref} reads a Git spec
+     * at another branch, tag or commit (default: the file's ref); {@code content} is the new
+     * document of a pasted spec.
+     */
+    record RefreshSpec(String ref, String content) {
+    }
+
+    /**
+     * {@code auth} is the provider file's auth block: {@code { type, credential, header }}. With
+     * {@code provider} (the provider's name) the results are recorded as review evidence.
+     */
+    record TestConnection(Map<String, String> endpoints, JsonNode auth, String provider) {
+        public TestConnection(Map<String, String> endpoints, JsonNode auth) {
+            this(endpoints, auth, null);
+        }
     }
 
     record TryAction(String yaml, String action, String environment, JsonNode input) {
@@ -34,13 +57,24 @@ public interface ProviderCommands {
     record Validate(String yaml) {
     }
 
-    record ValidationResult(List<Check> checks, List<Problem> problems) {
+    /**
+     * {@code checks} and {@code problems} judge the file ({@code valid} is about them alone);
+     * {@code review} judges it against what the wizard proved and gates the publish.
+     */
+    record ValidationResult(List<Check> checks, List<Problem> problems, ProviderReview.Result review) {
+        public ValidationResult(List<Check> checks, List<Problem> problems) {
+            this(checks, problems, null);
+        }
+
         public boolean valid() {
             return problems.stream().noneMatch(Problem::isError);
         }
     }
 
-    /** {@code strategy} is canary or all (default all: a provider has no traffic to split). */
+    /**
+     * {@code strategy} is canary or all (default canary: a new version takes a share of the jobs'
+     * calls until the release's gates promote it; the first version of a provider takes them all).
+     */
     record Publish(String yaml, String strategy) {
     }
 
@@ -68,7 +102,15 @@ public interface ProviderCommands {
     /** "Ask Devin" in the wizard. */
     Mono<ProviderDraft> draft(Draft command);
 
+    /**
+     * Opens a change request that moves the provider to its spec's newest content (status
+     * {@code open}), or answers {@code unchanged} when the document is the one already pinned.
+     */
+    Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command);
+
+    /** Opens a change request for the next patch version with the override ({@code unchanged} when it adds nothing). */
     Mono<CommandAccepted> overrides(String name, SetOverride command);
 
+    /** Opens a change request for the next patch version with the SLO and alert channel ({@code unchanged} when they are the same). */
     Mono<CommandAccepted> slo(String name, SetSlo command);
 }

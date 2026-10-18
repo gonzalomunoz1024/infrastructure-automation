@@ -102,7 +102,8 @@ public class InMemoryTelemetry implements TelemetryPort {
     }
 
     private CallSample withNow(CallSample s) {
-        return new CallSample(clock.instant(), s.provider(), s.action(), s.environment(), s.ok(), s.durationMs(), s.errorClass(), s.jobId(), s.workflow(), s.version());
+        return new CallSample(clock.instant(), s.provider(), s.action(), s.environment(), s.ok(), s.durationMs(), s.errorClass(), s.jobId(), s.workflow(), s.version(),
+                s.providerVersion());
     }
 
     private static String tag(String value) {

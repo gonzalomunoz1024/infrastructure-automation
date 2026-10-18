@@ -84,6 +84,66 @@ class ReleaseQueryHandlerTest {
     }
 
     @Test
+    void aProviderReleaseRoutesSandboxUseToTheCandidateAndAStableShareOfJobs() {
+        store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, NOW, "ana").forProvider("fleet"));
+
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "dev", false)).expectNext("1.2.0").verifyComplete();
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "prod", true)).expectNext("1.2.0").verifyComplete();
+        StepVerifier.create(handler.routeProvider("other", "job_1", "dev", false)).verifyComplete();
+        StepVerifier.create(handler.routeProvider("vm-restart", "job_1", "dev", false)).as("a workflow release routes no provider").verifyComplete();
+        StepVerifier.create(handler.providerCandidate("fleet")).expectNext("1.2.0").verifyComplete();
+
+        List<String> routed = new ArrayList<>();
+        for (int i = 0; i < 1000; i++) {
+            String job = "job_" + i;
+            String version = handler.routeProvider("fleet", job, "prod", false).block();
+            assertThat(handler.routeProvider("fleet", job, "prod", false).block()).as("every call of a job uses one version").isEqualTo(version);
+            routed.add(version);
+        }
+        assertThat(routed).filteredOn("1.2.0"::equals).hasSizeBetween(70, 130);
+        StepVerifier.create(handler.routeProvider("fleet", null, "prod", false)).as("a call outside a job").expectNext("1.1.0").verifyComplete();
+    }
+
+    @Test
+    void aPausedProviderReleaseSendsEveryJobBackAndAFirstVersionTakesEverything() {
+        Release canary = store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", List.of(100), NOW, "ana").forProvider("fleet"));
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "prod", false)).expectNext("1.2.0").verifyComplete();
+        store.save(canary.paused(NOW, "ana"));
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "prod", false)).expectNext("1.1.0").verifyComplete();
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "dev", false)).as("the sandbox keeps the candidate").expectNext("1.2.0").verifyComplete();
+        store.save(canary.rolledBack(NOW, "rolled back", "ana"));
+        StepVerifier.create(handler.routeProvider("fleet", "job_1", "dev", false)).verifyComplete();
+        StepVerifier.create(handler.providerCandidate("fleet")).verifyComplete();
+    }
+
+    @Test
+    void theJobShareFollowsTheStagePercent() {
+        for (int percent : List.of(0, 10, 50, 100)) {
+            int candidates = 0;
+            for (int i = 0; i < 2000; i++) {
+                if (ReleaseQueryHandler.candidateJob("rel_p", "job_" + i, percent)) {
+                    candidates++;
+                }
+            }
+            assertThat(candidates / 20.0).as("percent of 2000 jobs at " + percent + "%").isCloseTo(percent, org.assertj.core.data.Offset.offset(3.0));
+        }
+        assertThat(ReleaseQueryHandler.candidateJob("rel_p", " ", 100)).isFalse();
+    }
+
+    @Test
+    void workflowReleasesAreListedUnlessProviderReleasesAreAskedFor() {
+        store.save(Release.canary("rel_w", "vm-restart", "1.1.0", "1.2.0", STAGES, NOW, "ana"));
+        store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, NOW.minusSeconds(60), "ana").forProvider("fleet"));
+
+        StepVerifier.create(handler.list(null, null, null).map(Release::id)).expectNext("rel_w").verifyComplete();
+        StepVerifier.create(handler.list(null, null, "provider").map(Release::id)).expectNext("rel_p").verifyComplete();
+        StepVerifier.create(handler.list(null, null, "all").map(Release::id)).expectNext("rel_w", "rel_p").verifyComplete();
+        StepVerifier.create(handler.list(null, "fleet", null).map(Release::provider)).expectNext("fleet").verifyComplete();
+        StepVerifier.create(handler.list("vm-restart", null, null).map(Release::id)).expectNext("rel_w").verifyComplete();
+        StepVerifier.create(handler.list(null, null, "everything")).expectError(IllegalArgumentException.class).verify();
+    }
+
+    @Test
     void getIsNotFoundForAnUnknownId() {
         StepVerifier.create(handler.get("rel_missing")).expectError(NotFoundException.class).verify();
     }

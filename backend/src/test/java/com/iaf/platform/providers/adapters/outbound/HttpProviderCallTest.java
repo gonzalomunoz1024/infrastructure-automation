@@ -33,6 +33,7 @@ import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.providers.adapters.outbound.HttpProviderCall.Operation;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.testing.LocalHttp;
@@ -279,6 +280,43 @@ class HttpProviderCallTest {
         ProviderCall nope = new ProviderCall(null, 1, machines, machines.action("machine.nope").orElseThrow(), "dev", json("{}"), false);
         StepVerifier.create(call.call(nope))
                 .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("misconfigured"))
+                .verify();
+    }
+
+    @Test
+    void aSpecFromGitIsReadAtThePinnedCommitNotTheMovingRef() {
+        String spec = spec();
+        String commit = "3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c";
+        GitSourcePort git = mock(GitSourcePort.class);
+        when(git.file("https://github.com/acme/machines-api", commit, "openapi.yaml", "vault:github/read-token"))
+                .thenReturn(Mono.just(new GitSourcePort.GitFile("openapi.yaml", spec, commit)));
+        String yaml = """
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: machines, title: Machines, owner: team-compute, version: 1.0.0 }
+                spec:
+                  type: openapi
+                  spec:
+                    git: { repo: https://github.com/acme/machines-api, ref: main, path: openapi.yaml, credential: vault:github/read-token }
+                    commit: %s
+                    sha256: %s
+                  endpoints: { dev: %s/api }
+                  auth: { type: none }
+                  actions:
+                    - { id: machine.get, operation: getMachine, effect: read, retry: safe }
+                """.formatted(commit, WorkflowYaml.sha256(spec), LocalHttp.url(server));
+        ProviderDefinition machines = ProviderYaml.parse(yaml);
+        ProviderCall get = new ProviderCall(null, 1, machines, machines.action("machine.get").orElseThrow(), "dev", json("{\"machineId\":\"m-1\"}"), false);
+        HttpProviderCall withGit = new HttpProviderCall(WebClient.builder(), credentials, telemetry, Clock.fixed(NOW, ZoneOffset.UTC), git);
+
+        StepVerifier.create(withGit.call(get)).assertNext(r -> assertThat(r.path("name").asText()).isEqualTo("one")).verifyComplete();
+        StepVerifier.create(withGit.call(get)).expectNextCount(1).verifyComplete();
+        verify(git, org.mockito.Mockito.times(1)).file(any(), any(), any(), any());
+
+        // a platform without a Git reader says so instead of guessing
+        ProviderDefinition other = ProviderYaml.parse(yaml.replace(WorkflowYaml.sha256(spec), "0".repeat(64)));
+        StepVerifier.create(call.call(new ProviderCall(null, 1, other, other.action("machine.get").orElseThrow(), "dev", json("{\"machineId\":\"m-1\"}"), false)))
+                .expectErrorSatisfies(e -> assertThat(((ProviderCallException) e).errorClass()).isEqualTo("spec_unavailable"))
                 .verify();
     }
 

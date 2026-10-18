@@ -326,6 +326,8 @@ spec:
       operation: getVm        # operationId in the spec (openapi); or { method, path } (http)
       effect: read            # read | create | change | delete
       retry: safe             # safe | unsafe
+      sample: { id: vm-1, name: web, powerState: poweredOn }   # what dry runs answer; Try it saves the real response here
+      recorded: { environment: dev, at: "2026-10-17T10:00:00Z" } # where and when that response came from
     - id: vm.delete
       title: Delete VM
       operation: deleteVm
@@ -333,8 +335,9 @@ spec:
       retry: unsafe
       approval: required      # delete defaults to required
       plan: vm.get            # preview via another action
+      effectDetail: Deletes the VM and its disks   # or one plain line the preview shows instead of a plan
       verify: { action: vm.get, expect: notFound }   # after a destructive try, prove it worked
-  overrides:                  # fixes from real responses; the vendor spec is never edited
+  overrides:                  # fixes from real responses, through a change request; the vendor spec is never edited
     vm.get:
       response: { properties: { powerState: { type: string } } }
   errors:
@@ -344,11 +347,43 @@ spec:
   alerts: { channel: "#compute-alerts" }
 ```
 
+Before a new version is published, the wizard's review checks the file against what the platform
+saw: the connection to dev and test passed with these endpoints and this credential, every action
+answered when tried against dev, every error class has a match rule, every delete has a `plan`
+or an `effectDetail`, and no real response still disagrees with its schema after the
+`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
+
+The spec can also live in a Git repository. The file then names the repository, the ref and the
+path, and pins the commit it was read from; calls look operations up in that commit, never in
+whatever the ref points at today:
+
+```yaml
+  spec:
+    git: { repo: https://github.com/acme/vcenter-api, ref: v8.0.2, path: openapi/vcenter.yaml, credential: vault:github/read-token }
+    commit: 3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c   # filled by Import spec and Refresh spec
+    sha256: "9f2c…"
+```
+
+Only https repositories are read; a private one names a Vault reference to a read token. Refresh
+spec (`POST /providers/{name}:refresh-spec`) reads the spec again (from the URL, from Git at the
+file's ref or at a new one) and opens a change request for the next minor version with the new
+pin and schemas. A newer spec keeps an override unless it now agrees with the action's real response.
+
+A new version of a provider reaches production through the same canary as a workflow version:
+merging keeps it beside the current version, sandbox use (`dev` and dry runs) gets it at once,
+and the release gives it 10%, 50%, then 100% of the jobs that call the provider while the gates
+hold on its calls. The first version, and a publish with `strategy: all`, take every call at once
+(docs/api.md, Releases).
+
 Type-specific `spec` blocks:
 
-- `ansible`: `source: { git: { repo, ref, path }, commit }` or `upload: { file, sha256 }` or
-  `library`; `actions[].playbook`, `actions[].vars` become inputs.
-- `terraform`: `module: { source, version }`; actions `plan`, `apply`, `destroy` with `vars`.
+- `ansible`: `source: { git: { repo, ref, path, credential }, commit }` or `upload: { file, sha256 }` or
+  `library`; `executionEnvironment` is the image that runs the playbooks; `actions[].playbook`,
+  `actions[].vars` become inputs; `auth.credential` is the machine credential the playbooks
+  connect with.
+- `terraform`: `module: { source, version, commit }` (`commit` pins a module read from Git);
+  actions `plan`, `apply`, `destroy` with `vars`; `auth.credential` is what the runner gives
+  Terraform (the cloud credentials).
 - `idp`: `tile: { id }`; mock catalog until the IDP tiles API is wired.
 - `sdk`: `worker: { taskQueue, heartbeatTimeout }`, both optional (the queue defaults to
   `provider-<name>`; a call is lost after `heartbeatTimeout` without a heartbeat); actions are
@@ -363,6 +398,36 @@ reads as a delete, else any add as a create, else any change as a change, else a
 may price it with `monthlyCost` and `currency`. A plain read answer names what a change or a
 delete acts on (`name (id)`), and a `not_found` leaves it nothing to do (effect `none`); a create
 keeps its effect. A failed plan is noted in the step's detail and changes nothing.
+
+An `ansible` or `terraform` file can be drafted from a repository instead of written by hand
+(docs/api.md, Providers): `POST /providers:import-ansible` reads a repository at a ref, pins its
+commit and offers one action per playbook, its `vars` taken from the roles' argument specs and
+defaults, the play vars and prompts, and what the playbook uses without a value;
+`POST /providers:import-terraform` reads a module's variables and outputs from Git or from the
+module registry into a `plan` and an `apply` action. A variable that holds a secret is never an
+input: the runner gives it from Vault.
+
+```yaml
+spec:
+  type: ansible
+  source:
+    git: { repo: https://github.com/acme/ops-playbooks, ref: v3.1.0, credential: vault:github/read-token }
+    commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d   # filled by the import; a push changes nothing until the next version
+  executionEnvironment: registry.example.com/ee-platform:2.17
+  auth: { type: none, credential: vault:ssh/automation }
+  actions:
+    - id: vm.restart                  # from vm/restart.yml
+      title: Restart a VM             # the first play's name
+      playbook: vm/restart.yml
+      effect: change
+      retry: unsafe
+      vars:
+        type: object
+        required: [vm_id]
+        properties:
+          vm_id: { type: string, description: The VM to act on }   # the role's argument spec
+          graceful: { type: boolean, default: true }                # play vars
+```
 
 ## kind: ResourceType
 

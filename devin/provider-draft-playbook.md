@@ -18,7 +18,7 @@ The platform's wizard puts these in the session prompt. Ask for something only i
 
 - `DESCRIPTION`: what the system is, where it runs (a base URL or an OpenAPI URL), and which operations workflows need.
 - `CONTEXT`: the owner team and the requester's team.
-- The `PLATFORM_TOKEN` secret is attached to the session. It is read-only plus validate.
+- The `PLATFORM_TOKEN` secret is attached to the session. It is a service account token with the `assistant` scopes (`registry:read`, `workflows:validate`, `workflows:dry-run`): it reads the registry and validates, and any other call is refused with 403.
 
 ## Procedure
 
@@ -27,7 +27,7 @@ The platform's wizard puts these in the session prompt. Ask for something only i
    - `GET {PLATFORM_API}/api/v1/registry/providers` returns the providers that exist, so you do not draft a duplicate and so you copy the house style (naming, effects, retry, approval, SLO, alerts).
    - `GET .../registry/credentials` returns credential names only. These are the only credential names you may use.
    - `GET .../registry/playbooks` returns shared Ansible playbooks, for `type: ansible` providers.
-3. Choose the provider type from the description: `openapi` when an OpenAPI or Swagger URL is given, `ansible` for playbooks, `terraform` for modules, `idp` for developer-portal tiles, `sdk` for an activity worker, else `http`.
+3. Choose the provider type from the description: `openapi` when an OpenAPI or Swagger URL is given, `ansible` for playbooks, `terraform` for modules, `idp` for developer-portal tiles, `sdk` for an activity worker, else `http`. For `ansible` and `terraform`, the wizard can also import the repository, which reads every playbook's or the module's variables from Git: draft the actions the description names, and say in `assumptions` that the import fills their `vars`.
 4. When an OpenAPI URL is given, fetch the document with a plain GET (no credentials) and read it. Put the URL under `spec.specSource.url` and copy its operations as actions, one per operationId the description asks for. Do not invent operations that are not in the document.
 5. Write the file:
    - `metadata`: `name` (a slug of the system's name), `title`, `owner` from the context, `version: 0.1.0`, a one-line `description`.
@@ -35,7 +35,7 @@ The platform's wizard puts these in the session prompt. Ask for something only i
    - `spec.auth`: `type` (`bearer`, `basic`, `header` with its header name, or `none`) and `credential: vault:<name>` where `<name>` is a credential from the registry. If none fits, use `vault:<provider name>/token` and ask which credential to use in `questions`. Never write a secret value.
    - `spec.actions`: one entry per operation the description asks for: `id` (`<noun>.<verb>`), `title`, the `operation` (openapi), `method` and `path` (http), `playbook` (ansible) or module action (terraform), `effect` (`read`, `create`, `change`, `delete`), `retry` (safe for reads only), `approval` (required for `delete`), `input` and `output` JSON Schemas, and a `sample` response for the dry run.
    - `spec.slo` (`successRate`, `p95Ms`) and `spec.alerts.channel` in the house style.
-6. Validate the draft: send the YAML to `POST {PLATFORM_API}/api/v1/providers:validate` as `{ yaml }`, fix every error, and validate again, for at most 5 rounds.
+6. Validate the draft: send the YAML to `POST {PLATFORM_API}/api/v1/providers:validate` as `{ yaml }`, fix every error in `problems`, and validate again, for at most 5 rounds. Ignore `review`: it judges the file against the wizard's Test connection and Try it, which the reviewer runs after you hand the draft over, so it is never ready for a draft.
 7. Finish by updating the structured output:
    - `status: ready` when validation passes.
    - `status: needs_input` when only the user can unblock it (which credential, which environment, which operations), with at most 3 short questions.

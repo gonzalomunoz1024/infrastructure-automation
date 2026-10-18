@@ -21,7 +21,9 @@ public record ActionInfo(
         JsonNode output,
         JsonNode sample,
         boolean overridden,
-        String description) {
+        String description,
+        String effectDetail,
+        JsonNode recorded) {
 
     public static ActionInfo of(ProviderDefinition def, Action a) {
         JsonNode override = def.override(a.id());
@@ -39,6 +41,7 @@ public record ActionInfo(
         }
         JsonNode input = a.input() != null ? a.input() : a.vars();
         return new ActionInfo(a.id(), a.title() == null ? a.id() : a.title(), operation, a.effect(), a.retrySafe() ? "safe" : "unsafe",
-                a.approvalRequired() ? "required" : "none", a.plan(), input, output, a.sample(), overridden, a.description());
+                a.approvalRequired() ? "required" : "none", a.plan(), input, output, a.sample(), overridden, a.description(),
+                a.effectDetail(), a.recorded());
     }
 }

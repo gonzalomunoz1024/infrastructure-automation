@@ -147,8 +147,11 @@ public final class PreviewRules {
             case PROVIDER -> {
                 String p = s.withText("provider");
                 String a = s.withText("action");
-                boolean destructive = catalog.provider(p == null ? "" : p).flatMap(x -> x.action(a == null ? "" : a)).map(Action::destructive).orElse(false);
-                yield p + " " + a + (destructive ? " (destructive)" : "");
+                Optional<Action> action = catalog.provider(p == null ? "" : p).flatMap(x -> x.action(a == null ? "" : a));
+                // an action without a plan may declare what it does in one line
+                String declared = action.map(Action::effectDetail).filter(d -> !d.isBlank()).orElse(null);
+                boolean destructive = action.map(Action::destructive).orElse(false);
+                yield p + " " + a + (destructive ? " (destructive)" : "") + (declared == null ? "" : ": " + declared);
             }
             case TERRAFORM -> "terraform " + s.withText("action") + " " + (s.withNode("module") == null ? "" : s.withNode("module").path("source").asText(""));
             case ANSIBLE -> {

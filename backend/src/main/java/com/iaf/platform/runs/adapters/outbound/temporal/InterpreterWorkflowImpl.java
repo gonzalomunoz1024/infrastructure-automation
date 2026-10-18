@@ -241,7 +241,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         StepCall call = call(step, timeout, true);
         JsonNode in = node(input);
         if (teamWorkers()) {
-            WorkerRoute route = invoke(step, () -> lookups.providerRoute(step.id(), provider, action));
+            WorkerRoute route = invoke(step, () -> lookups.providerRoute(ref, step.id(), provider, action));
             if (route != null) {
                 return onWorker(step, call, action, route, in);
             }

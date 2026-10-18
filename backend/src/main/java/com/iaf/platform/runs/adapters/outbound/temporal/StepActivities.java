@@ -54,7 +54,7 @@ public interface StepActivities {
      * provider is an sdk provider, null when the platform calls it ({@link #callProvider}, which
      * also classifies an unknown provider). An sdk provider without the action fails the step.
      */
-    WorkerRoute providerRoute(String stepId, String provider, String action);
+    WorkerRoute providerRoute(JobRef job, String stepId, String provider, String action);
 
     // ---------------------------------------------------------------- records and ids
 

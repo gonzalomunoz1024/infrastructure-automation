@@ -51,8 +51,21 @@ class RestControllerReleaseAdapterTest {
     final Release canary = Release.canary("rel_1", "vm-restart", "1.1.0", "1.2.0", List.of(10, 50, 100), NOW, "ana");
 
     @Test
+    void listsTheReleasesOfAProviderWithTheProviderInsteadOfAWorkflow() {
+        Release fleet = Release.canary("rel_2", null, "1.1.0", "1.2.0", List.of(10, 50, 100), NOW, "ana").forProvider("fleet");
+        when(queries.list(null, "fleet", null)).thenReturn(Flux.just(fleet));
+
+        client.get().uri("/api/v1/releases?provider=fleet").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$[0].provider").isEqualTo("fleet")
+                .jsonPath("$[0].workflow").doesNotExist()
+                .jsonPath("$[0].gates[3].detail").isEqualTo("0 of 20 calls; 0m of the 2h minimum");
+    }
+
+    @Test
     void listsReleasesOfAWorkflowWithUndecidedGatesSerialisedAsNull() {
-        when(queries.list("vm-restart")).thenReturn(Flux.just(canary));
+        when(queries.list("vm-restart", null, null)).thenReturn(Flux.just(canary));
 
         client.get().uri("/api/v1/releases?workflow=vm-restart").exchange()
                 .expectStatus().isOk()

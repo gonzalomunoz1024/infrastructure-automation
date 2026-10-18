@@ -10,8 +10,18 @@ import java.util.List;
  */
 public interface TelemetryPort {
 
+    /**
+     * One call. {@code version} is the calling workflow's version; {@code providerVersion} the
+     * provider version that served the call (null when unknown), which a provider canary judges.
+     */
     record CallSample(Instant at, String provider, String action, String environment, boolean ok, long durationMs,
-            String errorClass, String jobId, String workflow, String version) {
+            String errorClass, String jobId, String workflow, String version, String providerVersion) {
+
+        /** A call whose provider version is not known. */
+        public CallSample(Instant at, String provider, String action, String environment, boolean ok, long durationMs,
+                String errorClass, String jobId, String workflow, String version) {
+            this(at, provider, action, environment, ok, durationMs, errorClass, jobId, workflow, version, null);
+        }
     }
 
     void record(CallSample sample);

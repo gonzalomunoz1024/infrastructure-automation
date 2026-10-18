@@ -24,7 +24,7 @@ public final class PlatformEvents {
             "provider.change-requested", "provider.published", "provider.updated",
             "credential.stored", "service-account.created",
             "release.promoted", "release.paused", "release.resumed", "release.rolled-back",
-            "assistant.session-started", "resource.retired");
+            "assistant.started", "resource.retired");
 
     public static final String WORKFLOW_PUBLISHED = "workflow.published";
     public static final String CHANGE_REQUEST_MERGED = "change-request.merged";

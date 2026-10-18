@@ -22,6 +22,7 @@ import com.iaf.platform.assistant.domain.AssistantSession;
 import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.assistant.ports.inbound.AssistantCommands;
 import com.iaf.platform.assistant.ports.inbound.AssistantQueries;
+import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 import com.iaf.platform.common.domain.NotFoundException;
 
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,8 @@ import reactor.core.publisher.Mono;
 /**
  * The natural-language builder's HTTP surface: {@code POST /assistant/sessions},
  * {@code POST /assistant/sessions/{id}/messages} (an SSE stream whose event name is the event type
- * and whose data is the payload) and {@code GET /assistant/sessions/{id}}.
+ * and whose data is the payload), {@code GET /assistant/sessions/{id}} and the admin's
+ * {@code POST /assistant/playbooks:sync}.
  */
 @RestController
 @RequiredArgsConstructor
@@ -48,6 +50,10 @@ public class RestControllerAssistantAdapter implements AssistantCommands, Assist
     }
 
     public record Description(String description) {
+    }
+
+    /** What {@code POST /assistant/playbooks:sync} returns. */
+    public record PlaybooksSynced(List<PlaybookSync> playbooks) {
     }
 
     /** What {@code GET /assistant/sessions/{id}} returns. */
@@ -83,6 +89,11 @@ public class RestControllerAssistantAdapter implements AssistantCommands, Assist
         return draftWorkflow(body == null ? null : body.description());
     }
 
+    @PostMapping("/playbooks:sync")
+    public Mono<PlaybooksSynced> sync() {
+        return syncPlaybooks().map(PlaybooksSynced::new);
+    }
+
     // ---------------------------------------------------------------- the ports
 
     @Override
@@ -103,6 +114,11 @@ public class RestControllerAssistantAdapter implements AssistantCommands, Assist
     @Override
     public Mono<ProviderDraft> draftProvider(String description) {
         return commands.draftProvider(description);
+    }
+
+    @Override
+    public Mono<List<PlaybookSync>> syncPlaybooks() {
+        return commands.syncPlaybooks();
     }
 
     @Override

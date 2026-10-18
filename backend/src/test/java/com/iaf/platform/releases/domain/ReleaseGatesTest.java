@@ -240,4 +240,16 @@ class ReleaseGatesTest {
         assertThat(fresh.get(3).detail()).isEqualTo("0 of 20 jobs; 0m of the 2h minimum");
         assertThat(ReleaseGates.verdict(fresh)).isEqualTo(Verdict.WAIT);
     }
+
+    @Test
+    void aProviderReleaseIsJudgedByTheSameGatesWordedForCalls() {
+        List<Gate> fresh = ReleaseGates.fresh(STAGE_START, ReleaseGates.Unit.CALLS);
+        assertThat(fresh.get(0).detail()).isEqualTo("no finished calls on the candidate yet");
+        assertThat(fresh.get(3).detail()).isEqualTo("0 of 20 calls; 0m of the 2h minimum");
+
+        Evaluation e = ReleaseGates.evaluate(many(25, () -> ok("1.2.0", 200)), many(30, () -> ok("1.1.0", 200)), STAGE_START, THREE_HOURS_LATER,
+                ReleaseGates.Unit.CALLS);
+        assertThat(e.verdict()).isEqualTo(Verdict.ADVANCE);
+        assertThat(gate(e, "sample").detail()).isEqualTo("25 calls over 3h in the stage");
+    }
 }

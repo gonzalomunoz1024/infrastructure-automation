@@ -27,7 +27,11 @@ import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.adapters.telemetry.InMemoryTelemetry;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.releases.adapters.outbound.InMemoryReleaseStore;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.domain.ReleaseStatus;
@@ -38,6 +42,7 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -56,7 +61,9 @@ class ReleaseCommandHandlerTest {
     final EventBus events = new EventBus(clock);
     final List<DomainEvent> published = new ArrayList<>();
     final ObjectMapper mapper = new ObjectMapper();
-    final ReleaseCommandHandler handler = new ReleaseCommandHandler(store, workflows, runs, events, clock, mapper);
+    final ProviderQueries providers = mock(ProviderQueries.class);
+    final InMemoryTelemetry telemetry = new InMemoryTelemetry(new SimpleMeterRegistry(), clock);
+    final ReleaseCommandHandler handler = new ReleaseCommandHandler(store, workflows, runs, events, clock, mapper, providers, telemetry);
 
     @BeforeEach
     void wire() {
@@ -390,7 +397,159 @@ class ReleaseCommandHandlerTest {
         StepVerifier.create(handler.promote("rel_missing")).expectError(NotFoundException.class).verify();
     }
 
+    // ---- provider releases -------------------------------------------------------------------
+
+    @Test
+    void aCanaryProviderVersionStartsAReleaseOverTheProvidersCalls() {
+        publishProvider("fleet", "1.2.0", "1.1.0", "canary");
+
+        Release r = store.activeProvider("fleet").orElseThrow();
+        assertThat(r.provider()).isEqualTo("fleet");
+        assertThat(r.workflow()).isNull();
+        assertThat(r.subject()).isEqualTo("fleet");
+        assertThat(r.from()).isEqualTo("1.1.0");
+        assertThat(r.to()).isEqualTo("1.2.0");
+        assertThat(r.stages()).containsExactly(10, 50, 100);
+        assertThat(r.stagePercent()).isEqualTo(10);
+        assertThat(r.gates()).extracting(Release.Gate::detail).contains("0 of 20 calls; 0m of the 2h minimum");
+        assertThat(store.active("fleet")).as("no workflow release").isEmpty();
+        DomainEvent started = only("release.started");
+        assertThat(started.data().get("provider").asText()).isEqualTo("fleet");
+        assertThat(started.data().has("workflow")).isFalse();
+        assertThat(started.data().get("stagePercent").asInt()).isEqualTo(10);
+    }
+
+    @Test
+    void aFirstProviderVersionOrAnAllPublishTakesEveryCallAtOnce() {
+        publishProvider("fleet", "1.0.0", null, "canary");
+        publishProvider("disks", "2.0.0", "1.4.0", "all");
+
+        Release first = store.listProvider("fleet").get(0);
+        assertThat(first.status()).isEqualTo(ReleaseStatus.PROMOTED);
+        assertThat(first.history()).extracting(Release.HistoryEntry::event).containsExactly("first version takes every call");
+        Release all = store.listProvider("disks").get(0);
+        assertThat(all.status()).isEqualTo(ReleaseStatus.PROMOTED);
+        assertThat(all.strategy()).isEqualTo("all");
+        assertThat(all.history()).extracting(Release.HistoryEntry::event).containsExactly("published to every call");
+        assertThat(store.active()).isEmpty();
+        assertThat(published).filteredOn(e -> e.type().equals("release.promoted")).extracting(e -> e.data().get("provider").asText())
+                .containsExactly("fleet", "disks");
+    }
+
+    @Test
+    void aNewProviderVersionEndsTheCanaryStillRunningAndLeavesWorkflowsAlone() {
+        Release old = store.save(Release.canary("rel_old", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        Release workflow = store.save(Release.canary("rel_wf", "fleet", "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana"));
+
+        publishProvider("fleet", "1.3.0", "1.1.0", "canary");
+
+        Release ended = store.find(old.id()).orElseThrow();
+        assertThat(ended.status()).isEqualTo(ReleaseStatus.ROLLED_BACK);
+        assertThat(ended.history().get(1).event()).isEqualTo("superseded by 1.3.0");
+        Release fresh = store.activeProvider("fleet").orElseThrow();
+        assertThat(fresh.from()).isEqualTo("1.1.0");
+        assertThat(fresh.to()).isEqualTo("1.3.0");
+        assertThat(store.find(workflow.id()).orElseThrow().status()).isEqualTo(ReleaseStatus.CANARY);
+        assertThat(only("release.rolled-back").data().get("provider").asText()).isEqualTo("fleet");
+    }
+
+    @Test
+    void providerGatesJudgeTheCallsOfEachVersionLeavingSandboxCallsOut() {
+        Release canary = store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        calls(25, "prod", "1.2.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(30, "prod", "1.1.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(10, "dev", "1.2.0", false, "boom", NOW.minus(Duration.ofHours(1)));
+        calls(5, "prod", "1.2.0", true, null, NOW.minus(Duration.ofHours(4)));
+
+        StepVerifier.create(handler.judge(canary, "platform"))
+                .assertNext(r -> {
+                    assertThat(r.stagePercent()).isEqualTo(50);
+                    assertThat(r.provider()).isEqualTo("fleet");
+                    assertThat(r.gates()).extracting(Release.Gate::detail).contains("0 of 20 calls; 0m of the 2h minimum");
+                })
+                .verifyComplete();
+        Release judged = store.find("rel_p").orElseThrow();
+        assertThat(judged.history()).extracting(Release.HistoryEntry::event).containsExactly("canary started at 10%", "advanced to 50%");
+        assertThat(only("release.stage").data().get("provider").asText()).isEqualTo("fleet");
+    }
+
+    @Test
+    void aNewErrorClassOnTheCandidatesCallsRollsTheProviderBack() {
+        Release canary = store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        calls(24, "prod", "1.2.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(1, "prod", "1.2.0", false, "schema_mismatch", NOW.minus(Duration.ofHours(1)));
+        calls(30, "prod", "1.1.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(1, "prod", "1.1.0", false, "timeout", NOW.minus(Duration.ofHours(1)));
+
+        StepVerifier.create(handler.judge(canary, "platform"))
+                .assertNext(r -> {
+                    assertThat(r.status()).isEqualTo(ReleaseStatus.ROLLED_BACK);
+                    assertThat(r.jobs()).isEqualTo(new Release.Jobs(31, 25));
+                    assertThat(r.history().get(1).event()).isEqualTo("rolled back: error-types gate failed (new on the candidate: schema_mismatch)");
+                })
+                .verifyComplete();
+        DomainEvent rolledBack = only("release.rolled-back");
+        assertThat(rolledBack.data().get("provider").asText()).isEqualTo("fleet");
+        assertThat(rolledBack.data().get("to").asText()).isEqualTo("1.2.0");
+    }
+
+    @Test
+    void aProviderBaselineFallsBackToTheCallsBeforeTheReleaseEvenWithoutAVersion() {
+        Release last = store.save(new Release("rel_p", null, "1.1.0", "1.2.0", "canary", ReleaseStatus.CANARY, 2, STAGES, 100,
+                NOW.minus(Duration.ofHours(9)), THREE_HOURS_AGO, null, List.of(), Release.Jobs.NONE, List.of(), "fleet"));
+        calls(25, "prod", "1.2.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(30, "prod", null, true, null, NOW.minus(Duration.ofHours(10)));
+        calls(7, "prod", null, false, "timeout", NOW.minus(Duration.ofHours(1)));
+
+        StepVerifier.create(handler.judge(last, "platform"))
+                .assertNext(r -> {
+                    assertThat(r.status()).isEqualTo(ReleaseStatus.PROMOTED);
+                    assertThat(r.jobs()).as("calls without a version after the release started are left out").isEqualTo(new Release.Jobs(30, 25));
+                })
+                .verifyComplete();
+        assertThat(only("release.promoted").data().get("provider").asText()).isEqualTo("fleet");
+    }
+
+    @Test
+    void commandsOnAProviderReleaseNeedEditRightsOnTheProvider() {
+        store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        when(providers.provider("fleet")).thenReturn(Mono.just(new ProviderDefinition("iaf.platform/v1",
+                new ProviderDefinition.Metadata("fleet", "Fleet API", "team-compute", "1.1.0", null), null)));
+
+        StepVerifier.create(handler.pause("rel_p").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("release rel_p of fleet"))
+                .verify();
+        StepVerifier.create(handler.promote("rel_p").contextWrite(ctx -> CurrentIdentity.with(ctx, MATEO)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("promoted"))
+                .verifyComplete();
+        DomainEvent promoted = only("release.promoted");
+        assertThat(promoted.data().get("provider").asText()).isEqualTo("fleet");
+        assertThat(promoted.data().get("from").asText()).isEqualTo("1.1.0");
+    }
+
+    @Test
+    void theScheduledEvaluatorJudgesProviderCanariesToo() {
+        store.save(Release.canary("rel_p", null, "1.1.0", "1.2.0", STAGES, THREE_HOURS_AGO, "ana").forProvider("fleet"));
+        calls(25, "prod", "1.2.0", true, null, NOW.minus(Duration.ofHours(1)));
+        calls(30, "prod", "1.1.0", true, null, NOW.minus(Duration.ofHours(1)));
+
+        handler.evaluateActiveCanaries();
+
+        assertThat(store.find("rel_p").orElseThrow().stagePercent()).isEqualTo(50);
+    }
+
     // ---- helpers -----------------------------------------------------------------------------
+
+    private void publishProvider(String name, String version, String previous, String strategy) {
+        events.publish("provider.published", "provider", name, "mateo", mapper.createObjectNode()
+                .put("name", name).put("version", version).put("previous", previous).put("strategy", strategy).put("by", "mateo"));
+    }
+
+    private void calls(int n, String environment, String providerVersion, boolean ok, String errorClass, Instant at) {
+        for (int i = 0; i < n; i++) {
+            telemetry.record(new CallSample(at, "fleet", "vm.get", environment, ok, 200, errorClass, "job_" + i, null, null, providerVersion));
+        }
+    }
 
     private void publishWorkflow(String name, String version, String previous, String strategy) {
         events.publish("workflow.published", "workflow", name, "ana", mapper.createObjectNode()

@@ -2,6 +2,7 @@ package com.iaf.platform.identity.adapters.inbound;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -17,6 +18,7 @@ import org.springframework.web.server.WebFilterChain;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
 import com.iaf.platform.identity.ports.outbound.UserDirectory;
@@ -31,8 +33,11 @@ import reactor.core.publisher.Mono;
  * dev header {@code X-User}, the configured default user. A bearer token that cannot be verified
  * is always a 401, in every mode: a caller who presents a credential never falls back to the dev
  * identity. In oidc mode a request without a token is a 401 too; in dev mode it is the
- * {@code X-User} header or the default user. The Swagger UI page and its assets, which hold no
- * data, load without a caller.
+ * {@code X-User} header or the default user. A service account's scopes go along with it
+ * ({@link ServiceScopes}) for the scope filter and the code behind it. A signed webhook (POST on
+ * one of {@link #SIGNED_WEBHOOKS}, without a credential) runs as {@link #WEBHOOK}, an identity
+ * that may change nothing; its controller checks the signature and decides as whom it acts. The
+ * Swagger UI page and its assets, which hold no data, load without a caller.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -42,6 +47,9 @@ public class IdentityWebFilter implements WebFilter {
     public static final String ATTRIBUTE = "platform.identity";
     static final String PUBLIC_PAGE = "/swagger-ui";
     static final String PUBLIC_ASSETS = "/webjars/swagger-ui/";
+    /** Endpoints whose callers prove themselves with a signature over the body instead of a credential. */
+    public static final Set<String> SIGNED_WEBHOOKS = Set.of("/api/v1/change-requests:github-webhook");
+    public static final Identity WEBHOOK = new Identity("webhook", "Webhook", null, List.of(), List.of(), false, Identity.Kind.SERVICE);
 
     private final PlatformProperties props;
     private final ServiceAccountStore serviceAccounts;
@@ -60,7 +68,8 @@ public class IdentityWebFilter implements WebFilter {
         }
         Identity who = resolved.get();
         exchange.getAttributes().put(ATTRIBUTE, who);
-        return chain.filter(exchange).contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+        List<String> scopes = exchange.getAttribute(ServiceScopes.ATTRIBUTE);
+        return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, who), scopes));
     }
 
     /**
@@ -81,10 +90,17 @@ public class IdentityWebFilter implements WebFilter {
 
     private Optional<Identity> resolve(ServerWebExchange exchange) {
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        if (auth == null && "POST".equals(exchange.getRequest().getMethod().name())
+                && SIGNED_WEBHOOKS.contains(exchange.getRequest().getPath().pathWithinApplication().value())) {
+            return Optional.of(WEBHOOK);
+        }
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7).trim();
             if (token.startsWith("iaf_")) {
-                return serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> a.identity());
+                return serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> {
+                    exchange.getAttributes().put(ServiceScopes.ATTRIBUTE, a.grantedScopes());
+                    return a.identity();
+                });
             }
             // an OIDC token when a verifier is configured; anything else presented as a bearer is rejected
             return tokens.isPresent() && !token.isEmpty() ? tokens.get().verify(token) : Optional.empty();

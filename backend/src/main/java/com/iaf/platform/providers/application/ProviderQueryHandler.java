@@ -27,8 +27,10 @@ import com.iaf.platform.providers.domain.ProviderDetail.PerAction;
 import com.iaf.platform.providers.domain.ProviderHealthRule;
 import com.iaf.platform.providers.domain.ProviderSummary;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries.Use;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
@@ -39,7 +41,9 @@ import reactor.core.publisher.Mono;
 /**
  * Read side: the definitions for the checks, the interpreter and the registry, plus the admin
  * view (list, detail with two weeks of telemetry, alerts). Health is judged by
- * {@link ProviderHealthRule} over the last 24 hours of {@link TelemetryPort} samples.
+ * {@link ProviderHealthRule} over the last 24 hours of {@link TelemetryPort} samples. A lookup
+ * made for a job ({@link Use} in the context) gets the version an active provider release routes
+ * the job to; every other read sees the current version.
  */
 @Primary
 @Service
@@ -54,10 +58,21 @@ public class ProviderQueryHandler implements ProviderQueries {
     private final ChangeRequestPort changeRequests;
     private final ProviderAlertEvaluator alerts;
     private final Clock clock;
+    private final ReleaseQueries releases;
 
     @Override
     public Mono<ProviderDefinition> provider(String name) {
-        return Mono.defer(() -> Mono.justOrEmpty(store.get(name).map(StoredProvider::definition)));
+        return Mono.deferContextual(context -> {
+            Mono<StoredProvider> current = Mono.defer(() -> Mono.justOrEmpty(store.get(name)));
+            Use use = Use.of(context);
+            if (use == null) {
+                return current.map(StoredProvider::definition);
+            }
+            return releases.routeProvider(name, use.jobId(), use.environment(), use.dryRun())
+                    .flatMap(version -> Mono.justOrEmpty(store.version(name, version)))
+                    .switchIfEmpty(current)
+                    .map(StoredProvider::definition);
+        });
     }
 
     @Override

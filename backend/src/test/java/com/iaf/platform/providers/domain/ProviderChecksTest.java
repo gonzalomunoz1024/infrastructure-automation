@@ -186,6 +186,44 @@ class ProviderChecksTest {
                 .containsExactly("error spec.sha256");
     }
 
+    static final String FROM_GIT = "spec: { git: { repo: https://github.com/acme/fleet-api, ref: v2.4.0, path: api/openapi.yaml, credential: vault:github/read-token }, "
+            + "commit: 3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c, sha256: 9f2c1b7e0a4d5c6b8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d }";
+
+    static String fromGit(String block) {
+        return VALID.replace("spec: { url: https://fleet.example.com/openapi.json, sha256: 9f2c1b7e0a4d5c6b8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d }", block);
+    }
+
+    @Test
+    void aSpecReadFromGitIsPinnedToTheCommitItCameFrom() {
+        Result r = ProviderChecks.check(fromGit(FROM_GIT));
+        assertThat(r.problems()).isEmpty();
+        assertThat(r.checks().get(1).detail()).isEqualTo("Pinned to api/openapi.yaml at 3f2a9c1d0e4b (9f2c1b7e0a4d…)");
+
+        ProviderDefinition.SpecSource source = ProviderYaml.parse(fromGit(FROM_GIT)).spec().specSource();
+        assertThat(source.git()).isEqualTo(new ProviderDefinition.GitRef("https://github.com/acme/fleet-api", "v2.4.0", "api/openapi.yaml", "vault:github/read-token"));
+        assertThat(source.commit()).isEqualTo("3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c");
+        assertThat(ProviderYaml.parse(ProviderYaml.toYaml(ProviderYaml.parse(fromGit(FROM_GIT)))).spec().specSource()).isEqualTo(source);
+    }
+
+    @Test
+    void aGitSpecWithoutItsCommitFileOrRepoIsNotPinned() {
+        assertThat(codes(ProviderChecks.check(fromGit(FROM_GIT.replace("commit: 3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c, ", "")))))
+                .containsExactly("error spec.unpinned");
+        assertThat(codes(ProviderChecks.check(fromGit(FROM_GIT.replace("commit: 3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c", "commit: v2.4.0")))))
+                .containsExactly("error spec.commit");
+        assertThat(codes(ProviderChecks.check(fromGit(FROM_GIT.replace(", path: api/openapi.yaml", "").replace("repo: https://github.com/acme/fleet-api, ", "")))))
+                .containsExactly("error spec.git", "error spec.git");
+        assertThat(codes(ProviderChecks.check(fromGit(FROM_GIT.replace("spec: { git:", "spec: { url: https://fleet.example.com/openapi.json, git:")))))
+                .containsExactly("error spec.source");
+    }
+
+    @Test
+    void theTokenOfAPrivateSpecRepositoryIsAVaultReference() {
+        Result r = ProviderChecks.check(fromGit(FROM_GIT.replace("credential: vault:github/read-token", "credential: ghp_s3cr3t")));
+        assertThat(codes(r)).containsExactly("error credential.plain");
+        assertThat(problem(r, "credential.plain").orElseThrow().field()).isEqualTo("spec.spec.git.credential");
+    }
+
     @Test
     void openapiActionsNameTheirOperation() {
         Result r = ProviderChecks.check(VALID.replace("operation: getVm, ", ""));

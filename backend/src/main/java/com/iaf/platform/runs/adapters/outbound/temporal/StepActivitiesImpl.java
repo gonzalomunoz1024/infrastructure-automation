@@ -16,6 +16,7 @@ import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderType;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
@@ -147,12 +148,16 @@ public class StepActivitiesImpl implements StepActivities {
     }
 
     @Override
-    public WorkerRoute providerRoute(String stepId, String provider, String action) {
+    public WorkerRoute providerRoute(JobRef job, String stepId, String provider, String action) {
         if (provider == null || provider.isBlank()) {
             return null;
         }
-        // a lookup that fails is retried by the local activity's own policy, then fails the step as an error
-        ProviderDefinition p = executors.ports().providers().provider(provider).blockOptional(PortStepExecutor.LOOKUP_TIMEOUT).orElse(null);
+        // a lookup that fails is retried by the local activity's own policy, then fails the step as an error;
+        // the job's identity lets an active provider release route it to the candidate version's worker
+        ProviderQueries.Use use = job == null ? null : new ProviderQueries.Use(job.id(), job.environment(), false);
+        ProviderDefinition p = executors.ports().providers().provider(provider)
+                .contextWrite(c -> ProviderQueries.Use.with(c, use))
+                .blockOptional(PortStepExecutor.LOOKUP_TIMEOUT).orElse(null);
         if (p == null || p.type() != ProviderType.SDK) {
             return null;
         }

@@ -276,7 +276,7 @@ class AuditListenerTest {
                 .put("value", "should-never-be-here").put("by", "ana"));
         events.publish("service-account.created", "service-account", "sa_1", "ana", null);
         events.publish("release.paused", "release", "rel_9", "mateo", node().put("releaseId", "rel_9").put("workflow", "vm-restart").put("to", "1.3.0"));
-        events.publish("assistant.session-started", "assistant-session", "asst_1", "ana", node().put("sessionId", "asst_1").put("mode", "create"));
+        events.publish("assistant.started", "assistant-session", "asst_1", "ana", node().put("sessionId", "asst_1").put("mode", "create"));
         events.publish("provider.alert", "provider", "vsphere", "platform", node().put("message", "slow"));
 
         EvidenceRecord stream = store.record(EvidenceRecord.PLATFORM).orElseThrow();
@@ -284,7 +284,7 @@ class AuditListenerTest {
         assertThat(stream.workflow()).isNull();
         assertThat(stream.entries()).extracting(e -> e.data().get("event").asText()).containsExactly(
                 "workflow.draft-saved", "change-request.merged", "credential.stored", "service-account.created", "release.paused",
-                "assistant.session-started");
+                "assistant.started");
         assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana");
         JsonNode merged = stream.entries().get(1).data();
         assertThat(merged.has("yaml")).isFalse();

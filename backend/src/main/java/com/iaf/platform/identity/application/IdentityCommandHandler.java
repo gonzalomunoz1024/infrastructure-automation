@@ -6,9 +6,13 @@ import java.util.List;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.identity.domain.Scopes;
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.inbound.IdentityCommands;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
@@ -35,12 +39,17 @@ public class IdentityCommandHandler implements IdentityCommands {
             if (command.name() == null || command.name().isBlank()) {
                 throw new IllegalArgumentException("name is required");
             }
+            List<String> scopes = Scopes.resolve(command.scopes(), command.preset());
             String id = Ids.next("sa");
             String token = "iaf_" + Ids.next("tok").substring(4) + Ids.next("x").substring(2);
             store.save(new ServiceAccount(id, command.name(), command.roles() == null ? List.of() : command.roles(),
-                    command.teams() == null ? List.of() : command.teams(), WorkflowYaml.sha256(token), clock.instant()));
-            events.publish("service-account.created", "service-account", id, who.id(), null);
-            return new ServiceAccountCreated(id, token);
+                    command.teams() == null ? List.of() : command.teams(), WorkflowYaml.sha256(token), clock.instant(), scopes));
+            ObjectNode data = JsonNodeFactory.instance.objectNode();
+            data.put("name", command.name());
+            ArrayNode granted = data.putArray("scopes");
+            scopes.forEach(granted::add);
+            events.publish("service-account.created", "service-account", id, who.id(), data);
+            return new ServiceAccountCreated(id, token, scopes);
         });
     }
 }
