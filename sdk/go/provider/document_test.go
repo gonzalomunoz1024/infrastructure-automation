@@ -120,6 +120,24 @@ func TestARefusedPublishSaysWhyWithoutRepeatingTheToken(t *testing.T) {
 	assert.NotContains(t, err.Error(), token)
 }
 
+func TestAnAnswerThatBreaksOffIsAnError(t *testing.T) {
+	// The platform declares 100 bytes and the connection ends after 5: the read error is the answer.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"err`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := SubmitTo(context.Background(), newInventory().builder().MustBuild(), srv.URL, token)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	assert.Contains(t, err.Error(), "read the answer to POST /api/v1/providers:validate (403)")
+	assert.NotContains(t, err.Error(), token)
+}
+
 func TestSubmittingNeedsAServiceAccountTokenFromTheEnvironment(t *testing.T) {
 	_, err := submitEnv(context.Background(), newInventory().builder().MustBuild(), envMap{"IAF_PLATFORM_URL": "http://127.0.0.1:1"}.get)
 
