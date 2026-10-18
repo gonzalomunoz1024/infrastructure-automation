@@ -79,7 +79,7 @@ A handler is `func(ctx context.Context, call *provider.Call, in I) (O, error)`:
 | | |
 |---|---|
 | `call.IdempotencyKey` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `call.Job`, `call.Step`, `call.Environment`, `call.Attempt` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `call.Job`, `call.Step`, `call.Environment`, `call.Attempt`, `call.TraceParent` | the job (id, workflow, version, trace id), the step id, the environment, the step's attempt and the platform's W3C `traceparent` |
 | `call.Heartbeat(details...)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work, and watch `ctx.Done()`: a cancelled step cancels the context |
 | `provider.Retryable("pool_busy", "...")` | a failure the step's retry policy may retry |
 | `provider.Fatal("pool_exhausted", "...")` | a failure no retry fixes: the step fails at once |
@@ -92,6 +92,29 @@ contract fails for good with `invalid_input`, `invalid_output`, `invalid_request
 An action can name another one as its preview with `Plan("address.preview")`, and give the answer
 the platform's demo mode returns for it with `Sample(...)`. `Input(schema)` and `Output(schema)`
 replace a derived schema.
+
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`call.TraceParent`). The SDK
+depends on no tracing library: give the provider a `SpanStarter` and each call that carries a valid
+traceparent runs in the span it starts, which the handler's `ctx` carries. With OpenTelemetry:
+
+```go
+p = p.WithTracing(func(ctx context.Context, name string, call *provider.Call) (context.Context, func(error)) {
+	ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": call.TraceParent})
+	ctx, span := otel.Tracer("ip-pool").Start(ctx, name, trace.WithSpanKind(trace.SpanKindServer))
+	return ctx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}
+})
+```
+
+`name` is `run <provider>.<action>`. Without a starter the worker writes the traceparent to the
+activity's debug log.
 
 ## Configuration
 

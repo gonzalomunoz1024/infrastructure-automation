@@ -51,6 +51,10 @@ type Call struct {
 	Environment string
 	// Attempt is the step's attempt, from 1; a retry by the step's retry policy counts up.
 	Attempt int
+	// TraceParent is the W3C trace context of the platform's step span
+	// (00-<trace id>-<span id>-<flags>), empty when the platform sent none. With a SpanStarter
+	// (Provider.WithTracing) the handler's ctx carries the span that continues it.
+	TraceParent string
 
 	heartbeat func(details ...any)
 }

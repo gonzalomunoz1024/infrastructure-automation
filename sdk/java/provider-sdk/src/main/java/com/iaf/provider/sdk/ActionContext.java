@@ -15,7 +15,7 @@ public interface ActionContext {
      */
     String idempotencyKey();
 
-    /** The job the call belongs to. */
+    /** The job the call belongs to, with the trace context of the platform's step ({@link JobInfo#traceparent()}). */
     JobInfo job();
 
     /** The id of the workflow step that made the call. */

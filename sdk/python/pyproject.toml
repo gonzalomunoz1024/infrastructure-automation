@@ -16,9 +16,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# with it, each call continues the platform's trace in a span of its own
+otel = [
+    "opentelemetry-api>=1.20,<2",
+]
 test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "opentelemetry-api>=1.20,<2",
 ]
 
 [tool.setuptools.packages.find]

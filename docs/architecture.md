@@ -340,7 +340,11 @@ stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by
 worker reaches Temporal Cloud or a TLS frontend with `IAF_TEMPORAL_TLS_CA` (the frontend's CA),
 `IAF_TEMPORAL_TLS_CERT` and `IAF_TEMPORAL_TLS_KEY` (its client certificate, for mutual TLS) and
 `IAF_TEMPORAL_API_KEY` (a bearer token over TLS), the same in the three SDKs; the chart sets them
-from `temporal.tls` and `temporal.apiKeySecret`.
+from `temporal.tls` and `temporal.apiKeySecret`. The SDKs hand the call's W3C `traceparent` (in
+`job`, next to `traceId`, or at the top of the payload) to the handler and continue the platform's
+trace from it: a span `run <provider>.<action>`, child of the step span, in Java and Python when
+the OpenTelemetry API is on the worker's classpath (an optional dependency), in Go through the
+`SpanStarter` the program passes to `WithTracing`.
 
 ### Verified against a real Temporal server
 

@@ -90,7 +90,7 @@ the worker's event loop.
 | | |
 |---|---|
 | `call.idempotency_key` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `call.job`, `call.step`, `call.environment`, `call.attempt` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `call.job`, `call.step`, `call.environment`, `call.attempt`, `call.traceparent` | the job (id, workflow, version, trace id), the step id, the environment, the step's attempt and the platform's W3C `traceparent` |
 | `call.heartbeat(*details)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work. The worker learns through heartbeats that the step was cancelled; it then cancels a coroutine (`asyncio.CancelledError`) or raises `temporalio.exceptions.CancelledError` in a thread: let both propagate. |
 | `raise retryable("dns_busy", "...")` | a failure the step's retry policy may retry |
 | `raise fatal("record_conflict", "...")` | a failure no retry fixes: the step fails at once |
@@ -103,6 +103,15 @@ output after it; a call that breaks the contract fails for good with `invalid_in
 An action can name another one as its preview with `plan="record.preview"`, and give the answer
 the platform's demo mode returns for it with `sample=` (text in it may use expressions like
 `{{ $input.name }}`). `input=` and `output=` replace a derived schema.
+
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`call.traceparent`). With the
+OpenTelemetry API installed (`pip install 'iaf-provider-sdk[otel]'`, an optional dependency) the
+handler runs in a span `run <provider>.<action>`, child of the platform's step span and current, so
+the clients it calls carry the trace on; the span is recorded once your program configures the
+OpenTelemetry SDK and an exporter. Without the API the worker writes the traceparent to the
+`iaf_provider` logger at debug level.
 
 ## Configuration
 

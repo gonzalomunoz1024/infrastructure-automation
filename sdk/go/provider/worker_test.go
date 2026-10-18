@@ -395,3 +395,113 @@ func TestTLSSettingsThatCannotWorkNameTheirVariable(t *testing.T) {
 		assert.Contains(t, err.Error(), c.want)
 	}
 }
+
+const (
+	testTraceID     = "0af7651916cd43dd8448eb211c80319c"
+	testStepSpan    = "b7ad6b7169203331"
+	testTraceParent = "00-" + testTraceID + "-" + testStepSpan + "-01"
+)
+
+type spanKey struct{}
+
+// spans is a SpanStarter that records what it was asked to start and how each span ended.
+type spans struct {
+	started []string
+	calls   []*Call
+	ended   []error
+}
+
+func (s *spans) start(ctx context.Context, name string, call *Call) (context.Context, func(error)) {
+	s.started = append(s.started, name)
+	s.calls = append(s.calls, call)
+	return context.WithValue(ctx, spanKey{}, name), func(err error) { s.ended = append(s.ended, err) }
+}
+
+func tracedProbe(t *testing.T, fail bool, seen *[]any) *Provider {
+	t.Helper()
+	return New("probe").Owner("team-platform").Version("1.4.0").
+		Error("quota_exceeded", false, "No room left").
+		Action(NewAction("probe.run", func(ctx context.Context, call *Call, in map[string]any) (map[string]any, error) {
+			*seen = append(*seen, call.TraceParent, ctx.Value(spanKey{}))
+			if fail {
+				return nil, Fatal("quota_exceeded", "No room left for team-x")
+			}
+			return in, nil
+		}).Effect(Read)).
+		MustBuild()
+}
+
+func TestACallWithATraceparentRunsInTheSpanTheStarterStarts(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, false, &seen).WithTracing(rec.start)
+	payload := `{"input":{"a":"b"},"idempotencyKey":"job-7:run:1","job":{"id":"job-7","workflow":"w","version":"1.0.0","traceId":"` +
+		testTraceID + `","traceparent":"` + testTraceParent + `"},"step":"run","environment":"dev","attempt":2}`
+
+	out, err := p.dispatch(context.Background(), p.byID["probe.run"], json.RawMessage(payload), nil)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":"b"}`, string(out))
+	assert.Equal(t, []string{"run probe.probe.run"}, rec.started)
+	assert.Equal(t, testTraceParent, rec.calls[0].TraceParent)
+	assert.Equal(t, "job-7", rec.calls[0].Job.ID)
+	assert.Equal(t, 2, rec.calls[0].Attempt)
+	assert.Equal(t, []any{testTraceParent, "run probe.probe.run"}, seen, "the handler sees the traceparent and runs with the span's context")
+	assert.Equal(t, []error{nil}, rec.ended)
+}
+
+func TestAFailedCallEndsItsSpanWithTheError(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, true, &seen).WithTracing(rec.start)
+	env := TestEnvelope(map[string]any{"a": "b"})
+	env.TraceParent = testTraceParent
+	payload, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	_, err = p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+	require.Error(t, err)
+	require.Len(t, rec.ended, 1)
+	var pe *Error
+	require.ErrorAs(t, rec.ended[0], &pe)
+	assert.Equal(t, "quota_exceeded", pe.Class)
+}
+
+func TestWithoutAValidTraceparentNoSpanStarts(t *testing.T) {
+	var seen []any
+	rec := &spans{}
+	p := tracedProbe(t, false, &seen).WithTracing(rec.start)
+
+	for _, tp := range []string{"", "not-a-traceparent", "00-" + strings.Repeat("0", 32) + "-" + testStepSpan + "-01",
+		"ff-" + testTraceID + "-" + testStepSpan + "-01", "00-" + strings.ToUpper(testTraceID) + "-" + testStepSpan + "-01"} {
+		env := TestEnvelope(map[string]any{})
+		env.TraceParent = tp
+		payload, err := json.Marshal(env)
+		require.NoError(t, err)
+
+		_, err = p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+		require.NoError(t, err, tp)
+	}
+	assert.Empty(t, rec.started)
+	assert.Equal(t, "", seen[0], "no traceparent")
+	assert.Equal(t, "not-a-traceparent", seen[2], "what the platform sent reaches the handler")
+	assert.Nil(t, seen[3], "no span context")
+}
+
+func TestWithoutAStarterTheCallRunsAsBefore(t *testing.T) {
+	var seen []any
+	p := tracedProbe(t, false, &seen)
+	env := TestEnvelope(map[string]any{"a": "b"})
+	env.TraceParent = testTraceParent
+	payload, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	out, err := p.dispatch(context.Background(), p.byID["probe.run"], payload, nil)
+
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"a":"b"}`, string(out))
+	assert.Equal(t, []any{testTraceParent, nil}, seen)
+	assert.Nil(t, p.tracing, "WithTracing returns a copy")
+}

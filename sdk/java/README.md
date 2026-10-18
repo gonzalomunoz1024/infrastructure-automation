@@ -77,7 +77,7 @@ A handler gets the validated input and an `ActionContext`:
 | | |
 |---|---|
 | `ctx.idempotencyKey()` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `ctx.job()`, `ctx.step()`, `ctx.environment()`, `ctx.attempt()` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `ctx.job()`, `ctx.step()`, `ctx.environment()`, `ctx.attempt()` | the job (id, workflow, version, trace id, `traceparent`), the step id, the environment and the step's attempt |
 | `ctx.heartbeat(details)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work. It throws when the step was cancelled: let that propagate. |
 | `throw ctx.retryable("store_busy", "...")` | a failure the step's retry policy may retry |
 | `throw ctx.fatal("not_found", "...")` | a failure no retry fixes: the step fails at once |
@@ -90,6 +90,15 @@ the contract fails for good with `invalid_input`, `invalid_output`, `invalid_req
 An action can name another one as its preview with `.plan("item.preview")`, and give the answer
 the platform's demo mode returns for it with `.sample(...)`. `Action.json(id, handler)` works on
 plain `JsonNode` with schemas you give with `.input(...)` and `.output(...)`.
+
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`ctx.job().traceparent()`).
+While the handler runs, the traceparent and the trace id are in the logging MDC (`%X{traceparent}`,
+`%X{traceId}` in a logback pattern). With the OpenTelemetry API on the worker's classpath
+(`io.opentelemetry:opentelemetry-api`, an optional dependency of the SDK) the handler also runs in a
+span `run <provider>.<action>`, child of the platform's step span and current, so the clients it
+calls carry the trace on; the OpenTelemetry Java agent or an SDK you register exports it.
 
 ## Configuration
 
