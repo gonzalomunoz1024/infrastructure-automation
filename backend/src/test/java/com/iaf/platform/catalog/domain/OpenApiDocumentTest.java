@@ -113,6 +113,90 @@ class OpenApiDocumentTest {
     }
 
     @Test
+    void aDeclaredResponseBodyIsTheSchemaOfTheJobsOutput() {
+        JsonNode schemas = DOC.path("components").path("schemas");
+        JsonNode body = SampleCatalog.workflow("vm-restart").definition().responseBody();
+        assertThat(body.path("properties").has("powerState")).isTrue();
+        assertThat(schemas.path("vm_restart_output")).isEqualTo(body);
+        JsonNode job = schemas.path("vm_restart_job");
+        assertThat(job.path("allOf").get(0).path("$ref").asText()).isEqualTo("#/components/schemas/JobDetail");
+        assertThat(job.path("allOf").get(1).path("properties").path("output").path("$ref").asText()).isEqualTo("#/components/schemas/vm_restart_output");
+
+        // the call still answers 202 with the job id; the response names the job and the output it ends with
+        JsonNode accepted = DOC.path("paths").path("/api/v1/vms/{vmId}:restart").path("post").path("responses").path("202");
+        assertThat(accepted.path("content").path("application/json").path("schema").path("$ref").asText()).isEqualTo("#/components/schemas/JobAccepted");
+        assertThat(accepted.path("description").asText()).contains("vm_restart_job", "vm_restart_output");
+        JsonNode link = accepted.path("links").path("job");
+        assertThat(link.path("operationId").asText()).isEqualTo("get_job");
+        assertThat(link.path("parameters").path("id").asText()).isEqualTo("$response.body#/jobId");
+        assertThat(link.path("description").asText()).contains("vm_restart_job");
+    }
+
+    @Test
+    void withoutAResponseBodyTheJobIsLinkedButUntyped() {
+        JsonNode schemas = DOC.path("components").path("schemas");
+        assertThat(schemas.has("vm_create_output")).isFalse();
+        assertThat(schemas.has("vm_create_job")).isFalse();
+        JsonNode accepted = DOC.path("paths").path("/api/v1/vms").path("post").path("responses").path("202");
+        assertThat(accepted.path("description").asText()).isEqualTo("Job accepted");
+        assertThat(accepted.path("links").path("job").path("operationId").asText()).isEqualTo("get_job");
+
+        // a body that is not a schema (the checks refuse it) is left out rather than published
+        String yaml = """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: cluster-info, title: Cluster info, noun: cluster, verb: inspect, owner: team-data, version: 1.0.0 }
+                api:
+                  path: /api/v1/clusters/{clusterId}:inspect
+                  input: { type: object, properties: { clusterId: { type: string } } }
+                  response: { status: 202, body: a cluster }
+                workflow:
+                  do:
+                    - noop:
+                        set: { x: 1 }
+                """;
+        var record = com.iaf.platform.workflows.domain.WorkflowRecord.of(com.iaf.platform.workflows.domain.WorkflowYaml.parse(yaml),
+                com.iaf.platform.workflows.domain.WorkflowStatus.PUBLISHED, "x", java.time.Instant.EPOCH, "test");
+        ObjectNode doc = OpenApiDocument.build(List.of(record), List.of());
+        assertThat(doc.path("components").path("schemas").has("cluster_inspect_output")).isFalse();
+        assertThat(doc.path("components").path("schemas").has("cluster_inspect_job")).isFalse();
+        assertThat(doc.path("paths").path("/api/v1/clusters/{clusterId}:inspect").path("post").path("responses").path("202").path("description").asText())
+                .isEqualTo("Job accepted");
+    }
+
+    @Test
+    void everyReferenceAndLinkPointsIntoTheDocument() {
+        List<String> refs = new ArrayList<>();
+        references(DOC, refs);
+        assertThat(refs).contains("#/components/schemas/vm_restart_output", "#/components/schemas/JobDetail");
+        for (String ref : refs) {
+            assertThat(ref).startsWith("#/components/schemas/");
+            assertThat(DOC.path("components").path("schemas").has(ref.substring("#/components/schemas/".length()))).as(ref).isTrue();
+        }
+        List<String> operationIds = new ArrayList<>();
+        List<String> linked = new ArrayList<>();
+        DOC.path("paths").forEach(item -> item.forEach(op -> {
+            operationIds.add(op.path("operationId").asText());
+            op.path("responses").forEach(r -> r.path("links").forEach(l -> linked.add(l.path("operationId").asText())));
+        }));
+        assertThat(linked).isNotEmpty().allSatisfy(id -> assertThat(operationIds).contains(id));
+    }
+
+    /** Every {@code $ref} under a node. */
+    static void references(JsonNode node, List<String> refs) {
+        if (node.isObject()) {
+            node.fields().forEachRemaining(e -> {
+                if (e.getKey().equals("$ref") && e.getValue().isTextual()) {
+                    refs.add(e.getValue().asText());
+                }
+                references(e.getValue(), refs);
+            });
+        } else if (node.isArray()) {
+            node.forEach(n -> references(n, refs));
+        }
+    }
+
+    @Test
     void aReadWorkflowTakesItsInputFromTheQueryString() {
         String yaml = """
                 apiVersion: iaf.platform/v1

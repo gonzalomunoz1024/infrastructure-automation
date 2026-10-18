@@ -104,7 +104,7 @@ public final class WorkflowYaml {
                 batch = new BatchPolicy(b.path("max").asInt(BatchPolicy.DEFAULT.max()), rp);
             }
             api = new Api(text(a, "method"), text(a, "path"), a.get("input"), a.path("response").path("status").asInt(202),
-                    a.path("preview").asBoolean(false), batch, deprecation(a.get("deprecated")));
+                    a.path("preview").asBoolean(false), batch, deprecation(a.get("deprecated")), a.path("response").get("body"));
         }
 
         JsonNode m = root.path("mcp");
@@ -340,7 +340,11 @@ public final class WorkflowYaml {
             if (d.api().input() != null) {
                 a.set("input", d.api().input());
             }
-            a.putObject("response").put("status", d.api().responseStatus());
+            ObjectNode response = a.putObject("response");
+            response.put("status", d.api().responseStatus());
+            if (d.api().responseBody() != null) {
+                response.set("body", d.api().responseBody());
+            }
             if (d.api().preview()) {
                 a.put("preview", true);
             }

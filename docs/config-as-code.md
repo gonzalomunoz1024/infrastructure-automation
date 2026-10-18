@@ -28,7 +28,11 @@ api:
       vmId: { type: string, title: VM id }
       reason: { type: string }
       image: { type: string, x-resource: { type: image, orCreateWith: build-vm-image } }
-  response: { status: 202 }   # always 202 with { jobId }
+  response:
+    status: 202               # always 202 with { jobId }
+    body:                     # optional JSON Schema of the job's output (the keys of workflow.outputs);
+      type: object            # OpenAPI publishes it as <tool>_output and the job read as <tool>_job
+      properties: { powerState: { type: string } }
   preview: true               # publish a :preview operation (blast radius before a run)
   batch:                      # bulk runs (always available; this block sets the owner's defaults)
     max: 500

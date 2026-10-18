@@ -208,6 +208,7 @@ class Checker {
     this.metadata();
     this.api();
     this.deprecation();
+    this.responseBody();
     this.policy();
     this.rollout();
     this.steps();
@@ -332,6 +333,34 @@ class Checker {
         this.error('deprecated.replacement', null, 'api.deprecated.replacement', "replacement is the successor's path, like /api/v2/vms/{vmId}:restart, or a URL");
       } else if (this.def.api !== null && r === this.def.api.path) {
         this.error('deprecated.replacement', null, 'api.deprecated.replacement', 'replacement names this operation itself');
+      }
+    }
+  }
+
+  /**
+   * `api.response.body`: the JSON Schema of the job's output, of type object. The output holds
+   * exactly the keys of `workflow.outputs`, so a property the outputs never set is a warning.
+   */
+  responseBody(): void {
+    const body = this.def.api?.responseBody;
+    if (body === undefined) {
+      return;
+    }
+    if (!isObject(body) || (has(body, 'type') && asText(get(body, 'type')) !== 'object')) {
+      this.error('api.responseBody', null, 'api.response.body', "api.response.body is a JSON Schema of the job's output, of type object");
+      return;
+    }
+    const outputs = Object.keys(this.def.workflow.outputs ?? {});
+    for (const name of fieldNames(get(body, 'properties'))) {
+      if (!outputs.includes(name)) {
+        this.warning(
+          'api.responseOutput',
+          null,
+          `api.response.body.${name}`,
+          outputs.length === 0
+            ? `The job has no output: workflow.outputs sets nothing, so '${name}' never comes back`
+            : `workflow.outputs does not set '${name}' (it sets ${outputs.join(', ')})`,
+        );
       }
     }
   }

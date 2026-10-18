@@ -114,7 +114,7 @@ public final class OpenApiDocument {
         }
         callHeaders(params, !read);
         ObjectNode responses = op.putObject("responses");
-        responses.set("202", response("Job accepted", ref("JobAccepted")));
+        responses.set("202", accepted(schemas, operationId, d));
         responses.set("400", response("Input problems", ref("ProblemResponse")));
         responses.set("403", response("Not allowed: RBAC or policy", ref("ErrorResponse")));
         startAnswers(responses);
@@ -183,6 +183,36 @@ public final class OpenApiDocument {
             key.put("description", "The same key with the same request gives back the first answer for 24 hours (Idempotent-Replay: true); with another request it is 409.");
             key.putObject("schema").put("type", "string").put("maxLength", IdempotencyKeys.MAX_LENGTH);
         }
+    }
+
+    /**
+     * The 202 of an operation that starts a job, linked to the job read. A workflow that declares
+     * {@code api.response.body} has its job's output typed: {@code <operationId>_output} is the body
+     * as written, {@code <operationId>_job} the job ({@code GET /api/v1/jobs/{id}}) whose output
+     * follows it, and the response and its link name them.
+     */
+    private static ObjectNode accepted(ObjectNode schemas, String operationId, WorkflowDefinition d) {
+        ObjectNode accepted = response("Job accepted", ref("JobAccepted"));
+        ObjectNode link = accepted.putObject("links").putObject("job");
+        link.put("operationId", "get_job");
+        link.putObject("parameters").put("id", "$response.body#/jobId");
+        link.put("description", "The job this call started: its steps, approvals and, once it succeeds, its output");
+        JsonNode body = d.responseBody();
+        if (body == null || !body.isObject()) {
+            return accepted;
+        }
+        String output = operationId + "_output";
+        String job = operationId + "_job";
+        schemas.set(output, body.deepCopy());
+        ObjectNode typed = F.objectNode();
+        typed.put("description", "A job of " + d.title() + ": once it succeeds, its output follows " + output);
+        ArrayNode allOf = typed.putArray("allOf");
+        allOf.add(ref("JobDetail"));
+        allOf.add(object(Map.of("output", ref(output)), List.of()));
+        schemas.set(job, typed);
+        accepted.put("description", "Job accepted. The job (links.job) answers " + job + ": once it succeeds, its output follows " + output);
+        link.put("description", "The job this call started, as " + job);
+        return accepted;
     }
 
     /** What any job start may also answer: a conflict (a reused idempotency key, a pinned version that cannot run) and the team quota. */

@@ -106,6 +106,8 @@ export interface ParsedApi {
   batch: ParsedBatch | null;
   /** `api.deprecated`; left out when absent or false. */
   deprecated?: ParsedDeprecation;
+  /** `api.response.body` as written: the JSON Schema of the job's output; undefined when absent. */
+  responseBody?: Maybe;
 }
 
 /** `api.deprecated: { since, sunset, replacement?, message? }`, dates as written. */
@@ -221,6 +223,7 @@ export function parseDocument(doc: unknown): ParsedWorkflow {
       preview: asBoolean(get(a, 'preview'), false),
       batch,
       deprecated: parseDeprecation(get(a, 'deprecated')),
+      responseBody: get(get(a, 'response'), 'body'),
     };
   }
 

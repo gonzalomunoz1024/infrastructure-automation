@@ -32,9 +32,19 @@ public record WorkflowDefinition(
             String folder, List<String> tags, String version, String description) {
     }
 
-    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated) {
+    /**
+     * {@code api}: the generated operation. {@code responseBody} is {@code api.response.body} as
+     * written, the JSON Schema of a succeeded job's output (the object {@code workflow.outputs}
+     * builds); the OpenAPI document publishes it as the operation's response schema.
+     */
+    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated,
+            JsonNode responseBody) {
         public Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch) {
-            this(method, path, input, responseStatus, preview, batch, null);
+            this(method, path, input, responseStatus, preview, batch, null, null);
+        }
+
+        public Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated) {
+            this(method, path, input, responseStatus, preview, batch, deprecated, null);
         }
     }
 
@@ -166,6 +176,11 @@ public record WorkflowDefinition(
     /** {@code api.deprecated}, or null when the operation is not deprecated. */
     public Deprecation deprecation() {
         return api == null ? null : api.deprecated();
+    }
+
+    /** {@code api.response.body}: the JSON Schema of a succeeded job's output, or null when the file declares none. */
+    public JsonNode responseBody() {
+        return api == null ? null : api.responseBody();
     }
 
     public List<Step> steps() {

@@ -121,6 +121,7 @@ public final class WorkflowChecks {
             metadata();
             api();
             deprecation();
+            responseBody();
             policy();
             rollout();
             steps();
@@ -246,6 +247,30 @@ public final class WorkflowChecks {
                     error("deprecated.replacement", null, "api.deprecated.replacement", "replacement names this operation itself");
                 }
             }
+        }
+
+        /**
+         * {@code api.response.body}: the JSON Schema of the job's output, of type object. The output
+         * holds exactly the keys of {@code workflow.outputs}, so a property the outputs never set is
+         * a warning.
+         */
+        void responseBody() {
+            JsonNode body = def.responseBody();
+            if (body == null) {
+                return;
+            }
+            if (!body.isObject() || (body.has("type") && !"object".equals(body.path("type").asText()))) {
+                error("api.responseBody", null, "api.response.body", "api.response.body is a JSON Schema of the job's output, of type object");
+                return;
+            }
+            Set<String> outputs = def.workflow() == null || def.workflow().outputs() == null ? Set.of() : def.workflow().outputs().keySet();
+            body.path("properties").fieldNames().forEachRemaining(name -> {
+                if (!outputs.contains(name)) {
+                    warning("api.responseOutput", null, "api.response.body." + name, outputs.isEmpty()
+                            ? "The job has no output: workflow.outputs sets nothing, so '" + name + "' never comes back"
+                            : "workflow.outputs does not set '" + name + "' (it sets " + String.join(", ", outputs) + ")");
+                }
+            });
         }
 
         /** A {@code YYYY-MM-DD} date (midnight UTC) or an ISO date-time with its offset, in epoch seconds; null when it is neither. */

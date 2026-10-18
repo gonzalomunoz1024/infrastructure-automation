@@ -31,7 +31,13 @@ api:
         title: Environment
         enum: [dev, test, prod]
         default: dev
-  response: { status: 202 }
+  response:
+    status: 202
+    body:
+      type: object
+      properties:
+        vmName: { type: string, description: "The VM's name in vSphere" }
+        powerState: { type: string, description: "Its power state after the restart, like poweredOn" }
   preview: true
   batch:
     max: 500

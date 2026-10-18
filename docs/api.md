@@ -112,6 +112,11 @@ type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'chang
   policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules: { id; result; message }[]; engine: 'mock' | 'opa' } }
 ```
 
+In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
+`$response.body#/jobId`), and its input schema is `<noun>_<verb>_input`. A workflow that declares
+`api.response.body` also gets `<noun>_<verb>_output` (the body as written: what the job's `output`
+holds once it succeeds) and `<noun>_<verb>_job` (`JobDetail` with that output), which the 202 names.
+
 MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `api.input`), one
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
 `get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).

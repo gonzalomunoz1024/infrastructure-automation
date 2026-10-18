@@ -14,6 +14,7 @@
   "bad-metadata.yaml": ["error api.reservedPath", "error metadata.owner", "error name.format", "error version.semver"],
   "rollout-stages.yaml": ["error batch.waves", "error rollout.stages"],
   "deprecated-api.yaml": ["error deprecated.replacement", "error deprecated.sunset"],
+  "response-body.yaml": ["warning api.responseOutput"],
   "unknown-input-and-var.yaml": ["warning expr.errorOutsideCatch", "warning expr.unknownInput", "warning expr.unknownVar"],
   "duplicate-ids.yaml": ["error step.duplicateId"],
   "missing-required-input.yaml": ["error run.unknownWorkflow", "error step.missingInput", "warning step.unknownInput"],
