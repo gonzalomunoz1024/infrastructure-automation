@@ -3,10 +3,10 @@ import { Button, CodeBlock, Field, Icon, Modal, OverlayBody, OverlayFooter, Over
 import { api, errorMessage } from '../../lib/api'
 import type { ProviderDraft } from '../../lib/types'
 
-/** Ask Devin: a description in words becomes a provider file to review, which `onUse` takes. */
-export function DraftModal({ initial, onUse, onClose }: { initial: string; onUse: (d: ProviderDraft) => void; onClose: () => void }) {
+/** Ask Devin: a description in words becomes a provider file to review, which `onUse` takes. `raised` stacks it above a drawer it opens with. */
+export function DraftModal({ initial, onUse, onClose, raised }: { initial: string; onUse: (d: ProviderDraft) => void; onClose: () => void; raised?: boolean }) {
   return (
-    <Modal onClose={onClose} width="max-w-3xl" label="Ask Devin to draft the provider">
+    <Modal onClose={onClose} width="max-w-3xl" label="Ask Devin to draft the provider" raised={raised}>
       <DraftForm initial={initial} onUse={onUse} />
     </Modal>
   )

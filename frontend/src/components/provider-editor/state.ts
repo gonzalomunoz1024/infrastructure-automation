@@ -289,6 +289,69 @@ export function metadataOf(yaml: string): Partial<Record<MetadataField, string>>
   return out
 }
 
+/** One action of a provider file as `yamlActions` reads it. */
+export interface FileAction {
+  id: string
+  title: string
+  effect: string
+}
+
+const unquote = (raw: string): string => {
+  const m = /^\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(?:#.*)?$/.exec(raw)
+  return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim()
+}
+
+/**
+ * The actions of a file's `spec.actions` list (their id, title and effect), read line by line
+ * like `metadataOf`: what a file the wizard took instead of its own document (Devin's, an
+ * import's) offers to call. An entry without a plain `id:` is left out.
+ */
+export function yamlActions(yaml: string): FileAction[] {
+  const lines = yaml.split('\n')
+  const spec = lines.findIndex((l) => /^spec:\s*(#.*)?$/.test(l))
+  if (spec < 0) return []
+  const lead = (l: string) => l.length - l.trimStart().length
+  let list = -1
+  for (let i = spec + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    if (lead(l) === 0) break
+    if (/^\s+actions:\s*(#.*)?$/.test(l)) {
+      list = i
+      break
+    }
+  }
+  if (list < 0) return []
+  const base = lead(lines[list])
+  const out: FileAction[] = []
+  let item: Partial<FileAction> | null = null
+  let keys = -1
+  const flush = () => {
+    if (item?.id) out.push({ id: item.id, title: item.title ?? '', effect: item.effect ?? '' })
+  }
+  for (let i = list + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    const at = lead(l)
+    const dash = /^(\s*)-(\s+|$)(.*)$/.exec(l)
+    // the list ends at the next key of spec (an item may sit at the key's own indentation)
+    if (at < base || (at === base && !dash)) break
+    let rest: string | null = null
+    if (dash && (keys < 0 || at < keys)) {
+      flush()
+      item = {}
+      keys = at + 1 + dash[2].length
+      rest = dash[3]
+    } else if (item && at === keys) rest = l.trim()
+    if (item && rest !== null) {
+      const m = /^(id|title|effect):(.*)$/.exec(rest)
+      if (m) item[m[1] as keyof FileAction] = unquote(m[2])
+    }
+  }
+  flush()
+  return out
+}
+
 /** A draft names the provider: the wizard takes its name, title, owner and version, so the path and the change request say what is published. */
 export function draftNames(yaml: string): Partial<WizardState> {
   const m = metadataOf(yaml)

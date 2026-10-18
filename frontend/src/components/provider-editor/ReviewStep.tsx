@@ -11,8 +11,22 @@ import type { StepProps } from './state'
 
 /* ---- 5 · Review ---------------------------------------------------------- */
 
-/** Checks, the review of the evidence, the strategy and Publish; `onPublished` takes the change request it opened (the wizard page opens it). */
-export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProps & { yaml: string; onAsk: () => void; onPublished: (accepted: CommandAccepted) => void }) {
+export interface ReviewStepProps extends StepProps {
+  yaml: string
+  onAsk: () => void
+  /** takes the change request it opened (the wizard page opens it) */
+  onPublished: (accepted: CommandAccepted) => void
+  /** the publish button's label and the line under it, where the page says it otherwise (the designer's "Publish provider only") */
+  publishLabel?: string
+  publishHint?: string
+  /** what the toast's "Open change request" does; the wizard navigates to it */
+  openChangeRequest?: (id: string) => void
+}
+
+const navigateToChangeRequest = (id: string) => navigate(pathFor('change-request', { id }))
+
+/** Checks, the review of the evidence, the strategy and Publish. */
+export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLabel = 'Publish as change request', publishHint = 'Opens a change request on a branch; the checks run again there, and merging publishes.', openChangeRequest = navigateToChangeRequest }: ReviewStepProps) {
   const toast = useToast()
   const [judged, setJudged] = useState<{ yaml: string; result: ProviderValidation } | null>(null)
   const validation = judged?.yaml === yaml ? judged.result : null
@@ -57,7 +71,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
         message: `${state.name} ${state.version} goes through review${state.strategy === 'canary' ? ', then a canary' : ', then every call moves at once'}.`,
         tone: 'healthy',
         duration: 8000,
-        action: { label: 'Open change request', onClick: () => navigate(pathFor('change-request', { id: accepted.id })) },
+        action: { label: 'Open change request', onClick: () => openChangeRequest(accepted.id) },
       })
       onPublished(accepted)
     } catch (e) {
@@ -205,9 +219,9 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
               </>
             )}
             <Button variant="primary" icon="git-branch" className="w-full" loading={busy === 'publish'} disabled={busy === 'validate' || (!!validation && (failed(validation) || reviewBlocks(validation)))} onClick={() => void publish()}>
-              Publish as change request
+              {publishLabel}
             </Button>
-            <p className="text-caption text-tertiary">Opens a change request on a branch; the checks run again there, and merging publishes.</p>
+            <p className="text-caption text-tertiary">{publishHint}</p>
           </div>
         </Card>
       </aside>

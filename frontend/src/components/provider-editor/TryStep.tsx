@@ -7,11 +7,12 @@ import { endpointsOf, inferSchema, parseSchema, resourceFields, sandboxEnvironme
 
 /* ---- 4 · Try it ---------------------------------------------------------- */
 
-export function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
+/** `initialAction`: the action it opens on, when it is one of the selected ones (the designer's Provider sheet passes the one picked to use). */
+export function TryStep({ state, update, yaml, initialAction }: StepProps & { yaml: string; initialAction?: string }) {
   const toast = useToast()
   const selected = state.actions.filter((a) => a.selected && a.id)
   const envs = Object.keys(endpointsOf(state))
-  const [actionId, setActionId] = useState(selected[0]?.id ?? '')
+  const [actionId, setActionId] = useState(() => (initialAction && selected.some((a) => a.id === initialAction) ? initialAction : (selected[0]?.id ?? '')))
   const action = selected.find((a) => a.id === actionId) ?? selected[0]
   // the review counts the tries in the sandbox (dev), so a try starts there
   const sandbox = sandboxEnvironment(envs)
