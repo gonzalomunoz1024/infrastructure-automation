@@ -223,13 +223,13 @@ export interface Flow {
   edges: FlowEdge[]
 }
 
-/** A provider step's subtitle, tagged when the workflow has not published its provider yet (a draft, or in review). */
+/** A provider step's subtitle, led by a tag when the workflow calls a provider not published yet (draft, or in review), so a truncated subtitle still shows it. */
 function tagged(subtitle: string, step: Pick<ParsedStep, 'type' | 'with'>, providers: readonly RegistryProvider[]): string {
   if (step.type !== 'provider' || !providers.some((p) => p.unpublished)) return subtitle
   const w = step.with
   const name = w && typeof w === 'object' && !Array.isArray(w) ? w.provider : undefined
   const p = providers.find((x) => x.name === name)
-  return p?.unpublished ? `${subtitle} · ${p.unpublished}` : subtitle
+  return p?.unpublished ? `${p.unpublished} · ${subtitle}` : subtitle
 }
 
 function stepNodeData(n: GraphNode & { data: { kind: 'step' } }, edgesFrom: ReadonlyMap<string, Set<string>>, issues: Issues | undefined, run: RunInfo | undefined, input: FlowInput): StepNodeData {
