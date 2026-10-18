@@ -203,12 +203,46 @@ hold on its calls. The first version, and a publish with `strategy: all`, take e
 
 Type-specific `spec` blocks:
 
-- `ansible`: `source: { git: { repo, ref, path }, commit }` or `upload: { file, sha256 }` or
-  `library`; `actions[].playbook`, `actions[].vars` become inputs.
-- `terraform`: `module: { source, version }`; actions `plan`, `apply`, `destroy` with `vars`.
+- `ansible`: `source: { git: { repo, ref, path, credential }, commit }` or `upload: { file, sha256 }` or
+  `library`; `executionEnvironment` is the image that runs the playbooks; `actions[].playbook`,
+  `actions[].vars` become inputs; `auth.credential` is the machine credential the playbooks
+  connect with.
+- `terraform`: `module: { source, version, commit }` (`commit` pins a module read from Git);
+  actions `plan`, `apply`, `destroy` with `vars`; `auth.credential` is what the runner gives
+  Terraform (the cloud credentials).
 - `idp`: `tile: { id }`; mock catalog until the IDP tiles API is wired.
 - `sdk`: `taskQueue`; actions are activities a team-owned worker registers.
 - `http`: `endpoints` plus per action `{ method, path, example }`; schemas are inferred from the example.
+
+An `ansible` or `terraform` file can be drafted from a repository instead of written by hand
+(docs/api.md, Providers): `POST /providers:import-ansible` reads a repository at a ref, pins its
+commit and offers one action per playbook, its `vars` taken from the roles' argument specs and
+defaults, the play vars and prompts, and what the playbook uses without a value;
+`POST /providers:import-terraform` reads a module's variables and outputs from Git or from the
+module registry into a `plan` and an `apply` action. A variable that holds a secret is never an
+input: the runner gives it from Vault.
+
+```yaml
+spec:
+  type: ansible
+  source:
+    git: { repo: https://github.com/acme/ops-playbooks, ref: v3.1.0, credential: vault:github/read-token }
+    commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d   # filled by the import; a push changes nothing until the next version
+  executionEnvironment: registry.example.com/ee-platform:2.17
+  auth: { type: none, credential: vault:ssh/automation }
+  actions:
+    - id: vm.restart                  # from vm/restart.yml
+      title: Restart a VM             # the first play's name
+      playbook: vm/restart.yml
+      effect: change
+      retry: unsafe
+      vars:
+        type: object
+        required: [vm_id]
+        properties:
+          vm_id: { type: string, description: The VM to act on }   # the role's argument spec
+          graceful: { type: boolean, default: true }                # play vars
+```
 
 ## kind: ResourceType
 

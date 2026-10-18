@@ -65,7 +65,7 @@ The demo adapters are plain Spring components. Each production adapter sits behi
 replaces its demo twin when the profile is on: `temporal` (the interpreter as a Temporal
 workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
-provider calls). `docker-compose.yml` starts a Temporal dev server and the stack on it.
+provider calls), `github` (change requests as pull requests on the content repo). `docker-compose.yml` starts a Temporal dev server and the stack on it.
 
 ## Checks
 

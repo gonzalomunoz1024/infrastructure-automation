@@ -17,7 +17,7 @@ packages/
   workflow-checks/ the editor checks (also run in CI)                    -> used by frontend + CI
 backend/    Spring Boot 3.5 · Java 21 · WebFlux · Maven · Lombok · Temporal Java SDK · JGit
 workflows/  sample content: Workflow, Provider and ResourceType files (kind: ...)
-devin/      the natural-language builder playbook and its structured-output schema
+devin/      the Devin playbooks (workflow draft, provider draft) and their structured-output schemas
 scripts/    dev.sh (backend + frontend), check-workflows.mjs (CI checks over workflows/)
 ```
 
@@ -38,14 +38,14 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | Slice       | Owns                                                                  |
 |-------------|-----------------------------------------------------------------------|
 | `workflows` | definitions, drafts, validation, versions, publish, change requests, registry, templates, import |
-| `providers` | provider files, OpenAPI import, test connection, try action, overrides, checks, health, alerts |
+| `providers` | provider files, OpenAPI import, Ansible and Terraform imports, test connection, try action, review, overrides, checks, health, alerts |
 | `runs`      | jobs, the interpreter, bulk runs, approvals, time travel, previews, job events |
 | `releases`  | canary releases, gates, version routing                               |
 | `audit`     | evidence records, hash chain, sealing, export, share links           |
 | `catalog`   | the generated surface: REST routes, `:batch`, `:preview`, OpenAPI, MCP tools, resource read endpoints |
 | `resources` | resource types, registry, lineage, retire                             |
-| `assistant` | natural-language builder sessions (Devin), SSE stream                 |
-| `identity`  | who is calling: dev identity, OIDC, service accounts, RBAC checks     |
+| `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
+| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks |
 | `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock |
 | `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
 
@@ -75,10 +75,11 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
 | `ProjectionStore`       | `PostgresProjectionStore` (planned)    | `InMemoryProjectionStore`       |
 | `EvidenceStore`         | write-once object store (planned)      | `InMemoryEvidenceStore`         |
-| `AssistantPort`         | `DevinAssistant` (v3 API)              | `MockAssistant` (deterministic drafts) |
+| `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `ReviewEvidencePort`    | a persistent store (planned)           | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
+| `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
 Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
 profile guard so that the production adapter replaces it when its profile is active.

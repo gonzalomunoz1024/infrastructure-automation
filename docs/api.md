@@ -23,8 +23,8 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | Method | Path                      | Returns |
 |--------|---------------------------|---------|
 | GET    | `/me`                     | `{ id, name, email, teams: string[], roles: string[], admin: boolean }` |
-| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt }[]` |
-| POST   | `/service-accounts`       | body `{ name, roles, teams? }` → 201 `{ id, token }` (token shown once; admin only) |
+| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` |
+| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes }` (token shown once; admin only) |
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
@@ -32,6 +32,27 @@ Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A be
 does not verify is always 401; it never falls back to the dev identity. Signed webhooks
 (`POST /change-requests:github-webhook`) carry no credential: they come in as an identity that may
 change nothing, and their controller checks the signature before acting.
+
+A service account is held to scopes besides its roles and teams: every call needs the scope of its
+endpoint, and one outside the account's scopes is a 403 that names the scope it needs. `preset`
+names a set: `invoker` (`registry:read`, `jobs:start`, `jobs:read`, also what an account created
+without scopes gets), `assistant` (`registry:read`, `workflows:validate`, `workflows:dry-run`: the
+builder agent's token, which can change nothing) and `ci` (`registry:read`, `workflows:validate`,
+`workflows:dry-run`, `workflows:write`, `providers:write`); `scopes` given with a preset must fit
+in it. An unknown scope or preset is a 400. People are judged by roles and teams alone.
+
+| Scope | Allows |
+|-------|--------|
+| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; generated resource reads; MCP `tools/list` and the resource tools |
+| `workflows:validate` | `/workflows:validate`, `:parse`, `:render`, `:replay-check` and `/providers:validate` |
+| `workflows:dry-run` | `/workflows:dry-run` |
+| `workflows:write` | creating, importing, editing, deleting and publishing workflows; merging and closing change requests; assistant sessions and drafts; the MCP draft tool |
+| `jobs:start` | starting jobs (`/jobs`, `/jobs:batch`, generated routes, the MCP invoke, batch and cancel tools), steering them (cancel, retry, skip, abort, rerun) and `/triggers/*` |
+| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails; the job WebSocket; the MCP job status tool |
+| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and `/credentials` |
+| `admin` | everything, and makes the account an admin; an endpoint the table does not name needs it |
+
+`/me`, `/mcp` (each tool is judged on its own) and GET `/actuator/*` need no scope.
 
 ## Workflows
 
@@ -180,6 +201,12 @@ type SpecImport = { title; version; sha256; auth: { type; where? }; servers: str
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[];
   commit? }   // commit: the commit a spec read from Git came from; it goes in the file's spec.commit
 type GitRef = { repo; ref?; path; credential? }   // repo: https URL; ref: branch, tag or commit (default main); credential: vault:<path> of a read token
+type AnsibleImport = { repo; ref; commit; playbooks: Playbook[]; chosen: string[]; requirements: string[]; skipped: string[]; notes: string[]; yaml }
+type Playbook = { path; action; title; effect; roles: string[]; vars: Schema; sources: { [variable: string]: string }; secrets: string[];
+  description?; notes: string[] }   // sources: where each input came from; secrets: variables kept out of vars
+type TerraformImport = { source; version; commit?; notes: string[]; yaml;
+  variables: { name; type; required; sensitive; secret; description?; default?; file }[];   // secret: never an input
+  outputs: { name; description?; sensitive; file }[] }
 type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean;
   environment; at; yaml? }   // yaml: the draft with the response saved as the action's sample, when the call went through
 type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
@@ -205,6 +232,8 @@ come after the file's own checks on the change request:
 | GET    | `/providers/{name}`                       | `ProviderDetail` |
 | GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? ; git?: GitRef }` → `SpecImport` (200). With `git` the file is read from the repository at the ref and `commit` says which commit that was; a `credential` that is not a `vault:` reference is a 400 (the token never goes through the API). Only https repositories are read, ssh URLs and credentials in the URL are refused |
+| POST   | `/providers:import-ansible`               | `{ git: { repo; ref?; path?; credential? }; playbooks?: string[]; name?; owner?; credential?; executionEnvironment? }` → `AnsibleImport` (200). Reads the playbooks of the repository at the ref (under `git.path`; the whole repository when it is blank) and drafts an `ansible` provider with one action per playbook, pinned to the commit read. `playbooks` picks some by path or action id (default: all); `credential` is the Vault reference of the machine credential the playbooks connect with. 400 when there is no playbook, a playbook named is not one, or a credential is not a `vault:` reference |
+| POST   | `/providers:import-terraform`             | `{ git?: { repo; ref?; path?; credential? }; registry?: { module; version?; credential? }; name?; owner?; credential? }` → `TerraformImport` (200). One of `git` (the module's folder at a ref) or `registry` (`namespace/name/provider` in the configured module registry; `version` is an exact version, default its newest release; `credential` a `vault:` registry token for a private module). Drafts a `terraform` provider with a `plan` and an `apply` action whose inputs are the module's variables. `credential` is the Vault reference of what the runner gives Terraform. 400 when the folder has no `.tf` files (the message names the module folders under it), the version or the module does not exist, or the registry serves an archive it does not describe |
 | POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
 | POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted` |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
@@ -222,6 +251,33 @@ is kept beside the current one and a provider release rolls it out (see Releases
 rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
 is still running, in which case they build on its candidate and roll out as a canary too.
 `provider.published` carries `{ name; version; previous?; strategy; by }`.
+
+The two imports draft a provider file from what a repository holds and save nothing: the draft
+goes through Validate and Publish like a file written by hand, and `notes` says what is left to do
+(the credentials, the execution environment, what the import could not read). They read Git like
+Import spec does (https only, a private repository names a `vault:` read token, at most 2000 files
+of up to 1 MB and 32 MB in all) and pin the commit they read, so a later push changes nothing
+until a new version is published. When a provider of that name exists, the draft is its next
+minor version, which only its owner team may publish.
+
+- Ansible: a playbook is a YAML list of plays, each with `hosts` or `import_playbook`, outside the
+  folders of roles, variables and tests. Its action id is `<noun>.<verb>` from its path
+  (`vm/restart.yml` is `vm.restart`), its title the name of its first play (else its file's), its
+  effect read from its name (`decommission-vm.yml` is a delete, with `approval: required` and an
+  `effectDetail`; a playbook whose plays all run in `check_mode` is a read). Its `vars` come from
+  the roles' `meta/argument_specs.yml`, the play `vars` and `vars_prompt`, the roles' `defaults`
+  and what the playbook uses in Jinja without giving it a value: a required string, unless
+  `default(...)` or `is defined` guards it. What `group_vars` and `host_vars` set is not an input.
+  Roles are found in the playbook's `roles` folder, the `roles_path` of `ansible.cfg` and the
+  repository's `roles`; one from a collection or from requirements.yml is only noted.
+- Terraform: every variable of the `.tf` and `.tf.json` files becomes an input of both actions
+  (required ones first, a `validation` with `contains([...], var.x)` as an enum); Apply returns
+  the non-sensitive outputs. A registry module is read from the Git repository the registry
+  downloads it from, without a credential, else from the registry's description of it; the
+  registry token only goes to the registry.
+
+A variable that is sensitive, or named like a secret (password, token, api key...), is never an
+input: `secrets` (Ansible) and `secret` (Terraform) list it, and the runner gives it from Vault.
 
 ## Releases
 
@@ -292,7 +348,28 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | POST `/assistant/sessions/{id}/messages` | `{ text }` → SSE events `{ type: 'status' \| 'draft' \| 'message' \| 'validation' \| 'done'; data }` |
 | GET `/assistant/sessions/{id}` | `{ sessionId; status; draft; history }` |
 | POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
+| POST `/assistant/playbooks:sync` | → `{ playbooks: { file; macro; playbookId; action: 'created' \| 'updated' \| 'unchanged' }[] }`. Creates the Devin playbooks of `devin/*.md` that Devin does not have (by macro) and updates the ones whose title, body or schema changed; also at startup with `platform.assistant.sync-playbooks-on-startup`. Admins only |
 
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
 `validation`, `dryRun`).
+
+With Devin (profile `devin`) the platform checks every draft Devin writes itself: the workflow
+checks against the live catalog, then a dry run on sample input when they pass. The `draft` event
+carries the platform's `validation: { valid; rounds; errors }` (each error `code @step: message`)
+and `dryRun: { passed; path; error? }` in place of Devin's, and the `validation` event that follows
+lists the problems on their steps. When Devin calls a draft ready and the platform still finds
+errors, they go back on Devin's session as a `PLATFORM_CHECKS` message, for up to
+`platform.assistant.max-rounds` rounds (default 3): the draft stays `working` meanwhile, and one
+that still fails after the last round is `failed`, with a message that it needs a person.
+
+Builder sessions and provider drafts publish events (aggregate `assistant-session`, id the session
+or the provider draft) that carry hashes and counts, never the YAML:
+
+| Event | Data |
+|-------|------|
+| `assistant.started` | `{ draftId; user; kind: 'workflow-draft' \| 'provider-draft'; agent; workflow?; externalId?; mode }` (provider drafts: `description`); `externalId` is Devin's session |
+| `assistant.message` | the same ids and `{ role: 'user' \| 'assistant'; text }`, the text clipped to 2000 characters |
+| `assistant.draft-updated` | the same ids and `{ status; contentHash; valid; errors }` (provider drafts: `contentHash; questions`), on every draft |
+| `assistant.ready` | the same, once a session ends on a ready draft (a provider draft with YAML and no questions) |
+| `assistant.playbooks-synced` | `{ agent; playbooks }`, after `POST /assistant/playbooks:sync` |
