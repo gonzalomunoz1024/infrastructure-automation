@@ -81,7 +81,7 @@ app.kubernetes.io/component: {{ .component }}
 - name: temporal-tls
   secret:
     secretName: {{ .secretName | quote }}
-    defaultMode: 292  # 0444 on a read-only mount: the container's non-root user reads it, whatever its uid
+    defaultMode: 292  # 0444 on a read-only mount: a provider worker's pod has no fsGroup, and its image any non-root uid
     items:
       {{- if .caKey }}
       - { key: {{ .caKey | quote }}, path: ca.crt }

@@ -162,9 +162,9 @@ audit:
   worm:
     mode: ""
     files:
-      # an existing PersistentVolumeClaim mounted at dir on the API and the worker pods; the
-      # backend runs as uid 10001, so the volume must be writable by it (podSecurityContext.fsGroup:
-      # 10001 does that on most storage)
+      # an existing PersistentVolumeClaim mounted at dir on the API and the worker pods; their
+      # pods run as uid 10001 with fsGroup 10001, which makes the volume writable on storage that
+      # honours fsGroup (on other storage make it writable by uid 10001 yourself)
       # (ReadWriteMany when there are several)
       existingClaim: ""
       dir: /var/lib/platform/evidence
