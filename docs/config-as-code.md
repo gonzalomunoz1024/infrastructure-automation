@@ -137,8 +137,8 @@ interpreter). With the `live` profile they run for real, each in a working direc
 that is removed afterwards; a dry run still answers from the samples and never touches a system.
 Every executable, image and limit is a `platform.runners.*` setting; with
 `platform.runners.container-runtime: docker` (or `podman`) every step runs in a container with no
-new privileges and no capabilities, and secrets reach it by variable name, never on a command
-line. A step's `timeout` (10 minutes when it names none) ends the process; cancelling the job
+new privileges and every kernel privilege dropped, and secrets reach it by variable name, never on
+a command line. A step's `timeout` (10 minutes when it names none) ends the process; cancelling the job
 stops it too. Values read from the vault are masked in every log line and error message.
 
 - `call: ansible` runs `ansible-runner` (or `ansible-playbook` with the JSON callback when

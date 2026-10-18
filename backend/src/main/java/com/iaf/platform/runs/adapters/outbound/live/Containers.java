@@ -13,10 +13,10 @@ import java.util.UUID;
 /**
  * One step in a container ({@code docker} or {@code podman}): {@code run --rm} with the step's
  * directories mounted, the process user of the platform (so it can write what the step leaves
- * behind), no new privileges and no capabilities. Plain settings go on the command line
- * ({@code -e NAME=value}); secrets are handed over by name ({@code -e NAME}) so no secret ever
- * shows on a command line: the CLI gets their values in its own environment, next to what it
- * needs to reach its daemon.
+ * behind), no new privileges and every kernel privilege dropped ({@code --cap-drop ALL}). Plain
+ * settings go on the command line ({@code -e NAME=value}); secrets are handed over by name
+ * ({@code -e NAME}) so no secret ever shows on a command line: the CLI gets their values in its
+ * own environment, next to what it needs to reach its daemon.
  */
 final class Containers {
 
