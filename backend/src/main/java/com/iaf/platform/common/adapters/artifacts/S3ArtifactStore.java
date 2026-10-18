@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -60,6 +61,7 @@ public class S3ArtifactStore implements ArtifactStorePort {
     private final String bucket;
     private final String prefix;
 
+    @Autowired
     public S3ArtifactStore(ArtifactsProperties props, CredentialsPort credentials) {
         this(client(props.getS3(), credentials), props.getS3().getBucket(), props.getS3().getPrefix());
     }

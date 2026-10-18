@@ -13,6 +13,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.ports.ArtifactStorePort;
@@ -34,6 +35,7 @@ public class FilesystemArtifactStore implements ArtifactStorePort {
 
     private final Path root;
 
+    @Autowired
     public FilesystemArtifactStore(ArtifactsProperties props) {
         this(Path.of(props.getDir()));
     }
