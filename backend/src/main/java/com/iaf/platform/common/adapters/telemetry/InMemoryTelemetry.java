@@ -23,8 +23,10 @@ import io.micrometer.core.instrument.Timer;
  * at most {@value #MAX_SAMPLES} samples) plus Micrometer meters so {@code /actuator/prometheus}
  * shows {@code provider_call} (timer, tags provider/action/outcome) and {@code provider_errors}
  * (counter, tags provider/action/class). Production keeps the meters and adds an OTel exporter.
+ * With the {@code mongo} profile, {@link MongoTelemetry} keeps the samples instead, with the same
+ * meters.
  */
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryTelemetry implements TelemetryPort {
 
