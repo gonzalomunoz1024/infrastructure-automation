@@ -82,9 +82,9 @@ export function Stepper({ steps, current, onStepClick, orientation = 'horizontal
         }
         return (
           <li key={s.id} aria-current={state === 'current' ? 'step' : undefined} className="flex gap-0">
-            <div className="flex flex-col items-center">
+            <div className="flex w-6 shrink-0 flex-col items-center">
               <div className="h-6" />
-              {!last && <div className={cx('w-px flex-1 translate-x-3', state === 'done' ? 'bg-accent' : 'bg-stroke-light')} aria-hidden="true" />}
+              {!last && <div className={cx('w-px flex-1', state === 'done' ? 'bg-accent' : 'bg-stroke-light')} aria-hidden="true" />}
             </div>
             <div className={cx('-ml-6', !last && 'pb-5')}>{content}</div>
           </li>

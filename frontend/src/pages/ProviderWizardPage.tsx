@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, Spinner, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
+import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, Spinner, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useMediaQuery, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage, useCurrentUser } from '../lib/api'
@@ -467,6 +467,8 @@ export default function ProviderWizardPage({ route }: PageProps) {
   const editingName = route.params.name ?? null
   const detail = useQuery(['provider', editingName ?? ''], () => api.provider(editingName ?? ''), { enabled: editingName !== null })
   const steps = editingName ? EDIT_STEPS : STEPS
+  // a phone stacks the steps: five labels do not fit side by side
+  const narrow = useMediaQuery('(max-width: 639px)')
   const [state, setState] = useState<WizardState>(initialState)
   const [stepId, setStepId] = useState<StepId>(steps[0].id)
   const [furthest, setFurthest] = useState(0)
@@ -520,7 +522,7 @@ export default function ProviderWizardPage({ route }: PageProps) {
   return (
     <>
       <PageHeader eyebrow="Providers" title={title} subtitle={subtitle} back={back} />
-      <Stepper steps={steps} current={stepPos} onStepClick={(i) => i <= furthest && setStepId(steps[i].id)} className="mb-6" />
+      <Stepper steps={steps} current={stepPos} onStepClick={(i) => i <= furthest && setStepId(steps[i].id)} orientation={narrow ? 'vertical' : 'horizontal'} className="mb-6" />
 
       {importing && importKind ? (
         <ImportStep
