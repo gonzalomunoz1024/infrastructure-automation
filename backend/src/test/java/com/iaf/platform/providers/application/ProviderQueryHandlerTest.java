@@ -157,13 +157,19 @@ class ProviderQueryHandlerTest {
                     assertThat(d.actions().get(1).title()).isEqualTo("vm.delete");
                     assertThat(d.health().status()).isEqualTo(Health.Status.FAILING);
                     assertThat(d.health().calls()).isEqualTo(6);
+                    assertThat(d.endpoints()).containsEntry("dev", "https://fleet-dev.example.com").containsEntry("prod", "https://fleet.example.com");
+                    assertThat(d.auth().type()).isEqualTo("bearer");
+                    assertThat(d.auth().credential()).isEqualTo("vault:fleet/token");
+                    // 24-hour windows ending now: the newest holds the same six calls as the health judgement
                     assertThat(d.daily()).hasSize(14);
-                    assertThat(d.daily().get(13).date()).isEqualTo("2026-10-17");
+                    assertThat(d.daily().get(13).date()).isEqualTo("2026-10-16T10:00:00Z");
                     assertThat(d.daily().get(13).calls()).isEqualTo(6);
                     assertThat(d.daily().get(13).successRate()).isEqualTo(83.3);
-                    assertThat(d.daily().get(10).date()).isEqualTo("2026-10-14");
-                    assertThat(d.daily().get(10).calls()).isEqualTo(2);
+                    assertThat(d.daily().get(11).date()).isEqualTo("2026-10-14T10:00:00Z");
+                    assertThat(d.daily().get(11).calls()).isEqualTo(2);
                     assertThat(d.daily().get(0).calls()).isZero();
+                    assertThat(d.daily().get(0).successRate()).isNull();
+                    assertThat(d.daily().get(0).p95Ms()).isNull();
                     assertThat(d.perAction()).extracting(PerAction::action).containsExactly("vm.delete", "vm.get");
                     PerAction get24 = d.perAction().get(1);
                     assertThat(get24.calls()).isEqualTo(6);

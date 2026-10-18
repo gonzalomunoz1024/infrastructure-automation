@@ -8,6 +8,7 @@ export {
   percent,
   bytes,
   shortDate,
+  dayLabel,
   longDate,
   isoDate,
   truncateMiddle,

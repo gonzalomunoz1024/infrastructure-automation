@@ -405,7 +405,8 @@ export type ActionInfo = {
   sample?: unknown
   overridden: boolean
 }
-export type ProviderDaily = { date: string; calls: number; successRate: number; p50Ms: number; p95Ms: number }
+/** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
+export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
 export type ProviderActionStats = {
   action: string
   calls: number
@@ -415,6 +416,10 @@ export type ProviderActionStats = {
   topErrors: { class: string; count: number }[]
 }
 export type ProviderDetail = ProviderSummary & {
+  /** base URL per environment */
+  endpoints: Record<string, string>
+  /** how it signs in; the credential is a vault: name, never a value */
+  auth?: ProviderAuth
   yaml: string
   actions: ActionInfo[]
   daily: ProviderDaily[]

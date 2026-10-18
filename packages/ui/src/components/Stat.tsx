@@ -35,13 +35,15 @@ export function Stat({ label, value, delta, hint, icon, sparkline, className }: 
     const tone = dir === 'flat' ? 'text-tertiary' : good ? 'text-healthy' : 'text-critical'
     const sign = delta.value > 0 ? '+' : ''
     deltaNode = (
-      <span className={cx('inline-flex items-center gap-0.5 text-caption font-medium tabular-nums', tone)}>
-        {dir !== 'flat' && <Icon name={dir === 'up' ? 'chevron-up' : 'chevron-down'} size={11} strokeWidth={2.2} />}
-        {sign}
-        {formatNumber(delta.value)}
-        {delta.suffix ?? ''}
-        {delta.label && <span className="ml-1 font-normal text-tertiary">{delta.label}</span>}
-      </span>
+      <>
+        <span className={cx('inline-flex items-center gap-0.5 whitespace-nowrap text-caption font-medium tabular-nums', tone)}>
+          {dir !== 'flat' && <Icon name={dir === 'up' ? 'chevron-up' : 'chevron-down'} size={11} strokeWidth={2.2} />}
+          {sign}
+          {formatNumber(delta.value)}
+          {delta.suffix ?? ''}
+        </span>
+        {delta.label && <span className="text-caption text-tertiary">{delta.label}</span>}
+      </>
     )
   }
   return (
@@ -52,7 +54,7 @@ export function Stat({ label, value, delta, hint, icon, sparkline, className }: 
           {label}
         </div>
         <div className="mt-0.5 truncate text-title3 font-semibold tabular-nums text-primary">{value}</div>
-        {(deltaNode || hint) && <div className="mt-0.5 flex items-center gap-2 text-caption text-tertiary">{deltaNode ?? hint}</div>}
+        {(deltaNode || hint) && <div className="mt-0.5 flex flex-wrap items-center gap-x-1 text-caption text-tertiary">{deltaNode ?? hint}</div>}
       </div>
       {sparkline && sparkline.length > 1 && <Sparkline values={sparkline} width={88} height={30} className="mt-1 shrink-0" />}
     </div>

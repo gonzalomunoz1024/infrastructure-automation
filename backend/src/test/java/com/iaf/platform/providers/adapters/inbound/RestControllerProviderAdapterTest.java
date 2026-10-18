@@ -94,8 +94,8 @@ class RestControllerProviderAdapterTest {
 
     @Test
     void showsADetailAndA404ForUnknownNames() {
-        ProviderDetail detail = ProviderDetail.of(ProviderSummary.of(fleet, healthy), YAML, List.of(ActionInfo.of(fleet, fleet.actions().get(0))),
-                List.of(new ProviderDetail.Daily("2026-10-17", 3, 100.0, 90, 120)),
+        ProviderDetail detail = ProviderDetail.of(ProviderSummary.of(fleet, healthy), fleet, YAML, List.of(ActionInfo.of(fleet, fleet.actions().get(0))),
+                List.of(new ProviderDetail.Daily("2026-10-16T10:00:00Z", 3, 100.0, 90L, 120L), new ProviderDetail.Daily("2026-10-17T10:00:00Z", 0, null, null, null)),
                 List.of(new ProviderDetail.PerAction("vm.get", 3, 100.0, 90, 120, List.of(new ProviderDetail.ErrorCount("timeout", 1)))), List.of());
         when(queries.detail("fleet")).thenReturn(Mono.just(detail));
         when(queries.detail("nope")).thenReturn(Mono.error(new NotFoundException("Provider", "nope")));
@@ -106,7 +106,12 @@ class RestControllerProviderAdapterTest {
                 .jsonPath("$.actions[0].id").isEqualTo("vm.get")
                 .jsonPath("$.actions[0].effect").isEqualTo("read")
                 .jsonPath("$.actions[0].overridden").isEqualTo(false)
-                .jsonPath("$.daily[0].date").isEqualTo("2026-10-17")
+                .jsonPath("$.daily[0].date").isEqualTo("2026-10-16T10:00:00Z")
+                .jsonPath("$.daily[1].calls").isEqualTo(0)
+                .jsonPath("$.daily[1].successRate").doesNotExist()
+                .jsonPath("$.endpoints.dev").isEqualTo("https://fleet-dev.example.com")
+                .jsonPath("$.auth.type").isEqualTo("bearer")
+                .jsonPath("$.auth.credential").isEqualTo("vault:fleet/token")
                 .jsonPath("$.perAction[0].topErrors[0].class").isEqualTo("timeout")
                 .jsonPath("$.health.status").isEqualTo("healthy");
         client.get().uri("/api/v1/providers/nope").exchange()

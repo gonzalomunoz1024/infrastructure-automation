@@ -76,12 +76,12 @@ function About({ entry }: { entry: CatalogEntry }) {
   return (
     <div className="space-y-4">
       <Card title="About">
-        <CardRow label="Endpoint">
-          <span className="inline-flex items-center gap-1.5">
+        <CardRow label="Endpoint" stacked>
+          <span className="inline-flex min-w-0 items-center gap-1.5">
             <Tag size="sm" mono outline>
               {entry.method.toUpperCase()}
             </Tag>
-            <Mono className="text-primary">{entry.path}</Mono>
+            <Mono className="break-all text-primary">{entry.path}</Mono>
           </span>
         </CardRow>
         <CardRow label="Version">
@@ -101,12 +101,12 @@ function About({ entry }: { entry: CatalogEntry }) {
           <span>up to {entry.batch.max}</span>
         </CardRow>
         {entry.batchPath && (
-          <CardRow label="Batch endpoint">
-            <span className="inline-flex items-center gap-1.5">
+          <CardRow label="Batch endpoint" stacked>
+            <span className="inline-flex min-w-0 items-center gap-1.5">
               <Tag size="sm" mono outline>
                 POST
               </Tag>
-              <Mono className="text-primary">{entry.batchPath}</Mono>
+              <Mono className="break-all text-primary">{entry.batchPath}</Mono>
             </span>
           </CardRow>
         )}

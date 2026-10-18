@@ -45,6 +45,7 @@ import {
   Tooltip,
   UserMenu,
   jobState,
+  niceTicks,
   parseUnifiedDiff,
   stateTone,
 } from '@iaf/ui'
@@ -199,6 +200,17 @@ describe('charts', () => {
     const bar = renderToString(<BarChart values={[3, 5]} labels={['a', 'b']} showValues />)
     expect(bar).toContain('fill-accent')
     expect(renderToString(<BarChart values={[]} />)).toContain('No data')
+  })
+  it('niceTicks reach past the largest value, so no point is drawn off the plot', () => {
+    expect(niceTicks(0, 98.4, 4)).toEqual([0, 25, 50, 75, 100])
+    expect(niceTicks(0, 60, 4)).toEqual([0, 20, 40, 60])
+    const t = niceTicks(-3, 7, 4)
+    expect(t[0]).toBeLessThanOrEqual(-3)
+    expect(t[t.length - 1]).toBeGreaterThanOrEqual(7)
+  })
+  it('LineChart leaves a gap for a missing value instead of drawing zero', () => {
+    const line = renderToString(<LineChart values={[98, Number.NaN, 97]} labels={['a', 'b', 'c']} />)
+    expect((line.match(/ M/g) ?? []).length + (line.match(/d="M/g) ?? []).length).toBe(2)
   })
 })
 

@@ -3,7 +3,7 @@
  * types.ts merge cleanly with the designer's changes; fold them into `api` once both land.
  */
 import { qs, request } from './api'
-import type { JobReplay, Problem, ProviderAuth, ProviderDetail } from './types'
+import type { JobReplay, Problem } from './types'
 
 /** A workflow document as JSON: the backend's reading of the YAML. Pages touch only `metadata`. */
 export type WorkflowJson = Record<string, unknown> & { metadata?: Record<string, unknown> }
@@ -17,14 +17,6 @@ export const apiExtra = {
   /** POST /workflows:render : the document back as YAML. */
   renderWorkflow: (definition: WorkflowJson) => request<{ yaml: string }>('POST', '/workflows:render', { definition }),
 }
-
-/**
- * Where a provider lives and how it signs in. `GET /providers/{name}` does not send these today
- * (they are only inside its YAML, which the browser does not read); the provider page shows them
- * as soon as the backend adds them to ProviderDetail.
- */
-export type ProviderConnection = { endpoints?: Record<string, string>; auth?: ProviderAuth }
-export type ProviderDetailWithConnection = ProviderDetail & ProviderConnection
 
 /** A template's YAML under a new name and title, through the backend's parse and render. */
 export async function renamedWorkflowYaml(yaml: string, name: string, title?: string): Promise<string> {

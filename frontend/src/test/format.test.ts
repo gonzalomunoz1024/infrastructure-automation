@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, duration, formatNumber, isoDate, percent, plural, relativeTime, shortDate, truncateMiddle } from '@iaf/ui'
+import { bytes, dayLabel, duration, formatNumber, isoDate, percent, plural, relativeTime, shortDate, truncateMiddle } from '@iaf/ui'
 
 const NOW = Date.UTC(2026, 9, 17, 14, 5, 0) // 2026-10-17T14:05:00Z
 
@@ -72,6 +72,11 @@ describe('shortDate', () => {
 })
 
 describe('small helpers', () => {
+  it('dayLabel names the day, with the year only when it is not this one', () => {
+    expect(dayLabel('2026-10-16T10:00:00Z', { now: NOW, timeZone: 'UTC' })).toBe('16 Oct')
+    expect(dayLabel('2025-10-16T10:00:00Z', { now: NOW, timeZone: 'UTC' })).toBe('16 Oct 2025')
+    expect(dayLabel('nope')).toBe('—')
+  })
   it('isoDate', () => {
     expect(isoDate(NOW)).toBe('2026-10-17')
   })

@@ -118,6 +118,17 @@ export function shortDate(input: DateInput, opts: ShortDateOptions = {}): string
   return fmt(d, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
+/** A day on an axis: this year → "17 Oct"; otherwise "17 Oct 2025". */
+export function dayLabel(input: DateInput, opts: ShortDateOptions = {}): string {
+  const t = toMs(input)
+  if (Number.isNaN(t)) return '—'
+  const locale = opts.locale ?? 'en-GB'
+  const fmt = (date: Date, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, { ...o, timeZone: opts.timeZone }).format(date)
+  const d = new Date(t)
+  const sameYear = fmt(d, { year: 'numeric' }) === fmt(new Date(toMs(opts.now ?? Date.now())), { year: 'numeric' })
+  return fmt(d, sameYear ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 /** Full date and time: "17 Oct 2026, 14:05:33". */
 export function longDate(input: DateInput, opts: Omit<ShortDateOptions, 'now'> = {}): string {
   const t = toMs(input)

@@ -1,11 +1,10 @@
 import { useMemo, useState } from 'react'
-import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, duration, formatNumber, percent, shortDate, useOverlayClose, useToast, type DotKind, type TableColumn } from '@iaf/ui'
+import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
 import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, TryResult } from '../lib/types'
-import type { ProviderDetailWithConnection } from '../lib/api-extra'
 import { HealthBand } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { EffectTag, ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
@@ -15,6 +14,8 @@ type Tab = 'overview' | 'actions' | 'alerts' | 'changes' | 'yaml'
 const TYPE_LABEL: Record<string, string> = { openapi: 'OpenAPI', http: 'HTTP', ansible: 'Ansible', terraform: 'Terraform', idp: 'IDP tile', sdk: 'SDK' }
 const operationText = (op: ActionInfo['operation']): string => (typeof op === 'string' ? op : `${op.method.toUpperCase()} ${op.path}`)
 const severityDot = (s: string): DotKind => (/crit|error|fail|page/i.test(s) ? 'critical' : /warn/i.test(s) ? 'warning' : 'neutral')
+const rateDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: Math.round(v * 10) / 10, suffix: ' pts', label: 'vs the day before' })
+const msDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: v, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' })
 const approvalText = (a: ActionInfo['approval']): string => (a === true || a === 'required' ? 'required' : a === false || !a ? 'no' : String(a))
 
 export default function ProviderPage({ route }: PageProps) {
@@ -23,14 +24,17 @@ export default function ProviderPage({ route }: PageProps) {
   const [editSlo, setEditSlo] = useState(false)
   const [trying, setTrying] = useState<{ action?: string } | null>(null)
   const [openAction, setOpenAction] = useState<ActionInfo | null>(null)
-  const provider = useQuery(['provider', name], (): Promise<ProviderDetailWithConnection> => api.provider(name), { refetchInterval: 60_000 })
+  const provider = useQuery(['provider', name], () => api.provider(name), { refetchInterval: 60_000 })
   const alerts = useQuery(['provider-alerts', name], () => api.providerAlerts(name), { enabled: !!provider.data })
   const data = provider.data
 
   const daily = useMemo(() => (data?.daily ?? []).slice().sort((a, b) => a.date.localeCompare(b.date)), [data])
-  const labels = daily.map((d) => shortDate(d.date))
+  // each point is a whole 24-hour window, labelled by the day it starts
+  const labels = daily.map((d) => dayLabel(d.date))
   const last = daily[daily.length - 1]
   const prev = daily[daily.length - 2]
+  // a window without calls has no rates: compare only two windows that both have them
+  const change = (now: number | null | undefined, before: number | null | undefined) => (now == null || before == null ? undefined : now - before)
   const stats = useMemo(() => new Map((data?.perAction ?? []).map((p) => [p.action, p])), [data])
   const openChanges = (data?.changeRequests ?? []).filter((c) => c.status === 'open')
 
@@ -182,15 +186,15 @@ export default function ProviderPage({ route }: PageProps) {
                 value={percent(data.health.successRate, { digits: 1 })}
                 icon="check"
                 hint={data.slo ? `target ${percent(data.slo.successRate, { digits: 1 })}` : undefined}
-                delta={last && prev ? { value: Math.round((last.successRate - prev.successRate) * 10) / 10, suffix: ' pts', label: 'vs the day before' } : undefined}
+                delta={rateDelta(change(last?.successRate, prev?.successRate))}
               />
-              <Stat label="p50" value={duration(data.health.p50Ms)} icon="clock" delta={last && prev ? { value: last.p50Ms - prev.p50Ms, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' } : undefined} />
+              <Stat label="p50" value={duration(data.health.p50Ms)} icon="clock" delta={msDelta(change(last?.p50Ms, prev?.p50Ms))} />
               <Stat
                 label="p95"
                 value={duration(data.health.p95Ms)}
                 icon="clock"
                 hint={data.slo ? `target ${duration(data.slo.p95Ms)}` : undefined}
-                delta={last && prev ? { value: last.p95Ms - prev.p95Ms, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' } : undefined}
+                delta={msDelta(change(last?.p95Ms, prev?.p95Ms))}
               />
             </div>
 
@@ -205,13 +209,13 @@ export default function ProviderPage({ route }: PageProps) {
                 </Card>
                 <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
                   <Card title="Success rate" subtitle={data.slo ? `SLO ${percent(data.slo.successRate, { digits: 1 })}` : undefined}>
-                    <LineChart values={daily.map((d) => d.successRate)} labels={labels} height={150} yFormat={(v) => percent(v, { digits: 0 })} ariaLabel="Success rate per day" />
+                    <LineChart values={daily.map((d) => d.successRate ?? Number.NaN)} labels={labels} height={150} yFormat={(v) => percent(v, { digits: 0 })} ariaLabel="Success rate per day" />
                   </Card>
                   <Card title="Latency" subtitle={data.slo ? `SLO p95 ${duration(data.slo.p95Ms)}` : undefined}>
                     <LineChart
                       series={[
-                        { id: 'p50', label: 'p50', values: daily.map((d) => d.p50Ms) },
-                        { id: 'p95', label: 'p95', values: daily.map((d) => d.p95Ms) },
+                        { id: 'p50', label: 'p50', values: daily.map((d) => d.p50Ms ?? Number.NaN) },
+                        { id: 'p95', label: 'p95', values: daily.map((d) => d.p95Ms ?? Number.NaN) },
                       ]}
                       labels={labels}
                       height={150}
@@ -360,8 +364,8 @@ export default function ProviderPage({ route }: PageProps) {
   )
 }
 
-function Endpoints({ provider, onShowYaml }: { provider: ProviderDetailWithConnection; onShowYaml: () => void }) {
-  // structured fields only: the browser does not read the YAML (see lib/api-extra.ts)
+function Endpoints({ provider, onShowYaml }: { provider: ProviderDetail; onShowYaml: () => void }) {
+  // structured fields from the API: the browser does not read the YAML
   const endpoints = Object.entries(provider.endpoints ?? {})
   const auth = provider.auth
   return (
@@ -374,11 +378,17 @@ function Endpoints({ provider, onShowYaml }: { provider: ProviderDetailWithConne
               </Mono>
             </CardRow>
           ))
-        : provider.environments.map((env) => (
-            <CardRow key={env} label={env}>
-              <span className="text-caption text-tertiary">URL in the file</span>
+        : provider.environments.length > 0 && (
+            <CardRow label="Environments" description="no base URLs: the platform does not call it over HTTP">
+              <span className="inline-flex flex-wrap justify-end gap-1">
+                {provider.environments.map((env) => (
+                  <Tag key={env} size="sm" mono outline>
+                    {env}
+                  </Tag>
+                ))}
+              </span>
             </CardRow>
-          ))}
+          )}
       <CardRow label="Authentication" description={auth?.header ? `header ${auth.header}` : undefined}>
         {auth ? (
           <span className="inline-flex items-center gap-2">

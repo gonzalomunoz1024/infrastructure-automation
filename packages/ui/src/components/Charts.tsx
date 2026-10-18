@@ -61,9 +61,11 @@ export function niceTicks(min: number, max: number, count = 4): number[] {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return []
   if (max === min) return [min]
   const step = niceStep(max - min, count)
+  // the first tick at or below min and the last at or above max, so every value is on the plot
   const start = Math.floor(min / step) * step
+  const end = Math.ceil(max / step) * step
   const out: number[] = []
-  for (let v = start; v <= max + step * 1e-6; v += step) out.push(Number(v.toFixed(10)))
+  for (let v = start; v <= end + step * 1e-6; v += step) out.push(Number(v.toFixed(10)))
   return out
 }
 
@@ -257,8 +259,11 @@ export function LineChart({
   }
 
   const showLegend = legend ?? all.length > 1
-  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(geom.plotW / 72))))
-  const showLabel = (i: number) => i === n - 1 || (i % every === 0 && n - 1 - i >= every / 2)
+  const labelText = (i: number) => (labels ? (xFormat ? xFormat(labels[i] ?? '', i) : (labels[i] ?? '')) : '')
+  // caption2 is ~6.5px a character; keep a gap of 16px between labels
+  const labelPx = labels ? Math.max(...labels.slice(0, n).map((_, i) => labelText(i).length)) * 6.5 + 16 : 72
+  const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(geom.plotW / labelPx))))
+  const showLabel = (i: number) => i === n - 1 || (i % every === 0 && n - 1 - i >= every)
 
   return (
     <div ref={ref} className={className}>
@@ -278,8 +283,8 @@ export function LineChart({
               (l, i) =>
                 i < n &&
                 showLabel(i) && (
-                  <text key={i} x={geom.x(i)} y={height - 6} textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'} className="fill-tertiary text-caption2">
-                    {xFormat ? xFormat(l, i) : l}
+                  <text key={l + i} x={geom.x(i)} y={height - 6} textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'} className="fill-tertiary text-caption2">
+                    {labelText(i)}
                   </text>
                 ),
             )}

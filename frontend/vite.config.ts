@@ -5,6 +5,8 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+// where `npm run dev` sends /api, /ws and /actuator (IAF_BACKEND=http://localhost:18080 npm run dev)
+const backend = process.env.IAF_BACKEND ?? 'http://localhost:8080'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -16,15 +18,15 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/ws': {
-        target: 'ws://localhost:8080',
+        target: backend.replace(/^http/, 'ws'),
         ws: true,
       },
       '/api': {
-        target: 'http://localhost:8080',
+        target: backend,
         changeOrigin: true,
       },
       '/actuator': {
-        target: 'http://localhost:8080',
+        target: backend,
         changeOrigin: true,
       },
     },

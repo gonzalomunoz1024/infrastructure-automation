@@ -3,8 +3,6 @@ package com.iaf.platform.providers.application;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -96,7 +94,7 @@ public class ProviderQueryHandler implements ProviderQueries {
                     .filter(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && name.equals(cr.name()))
                     .sorted(Comparator.comparing(ChangeRequest::createdAt, Comparator.nullsLast(Comparator.reverseOrder())))
                     .toList();
-            return ProviderDetail.of(ProviderSummary.of(def, health), p.yaml(), actions, daily(twoWeeks, now), perAction(twoWeeks), crs);
+            return ProviderDetail.of(ProviderSummary.of(def, health), def, p.yaml(), actions, daily(twoWeeks, now), perAction(twoWeeks), crs);
         });
     }
 
@@ -109,21 +107,31 @@ public class ProviderQueryHandler implements ProviderQueries {
         });
     }
 
-    /** The last {@value #DAILY_DAYS} days (UTC), oldest first, days without calls included. */
+    /**
+     * The last {@value #DAILY_DAYS} days as 24-hour windows ending now, oldest first, windows
+     * without calls included. The newest window is a whole day like the others, so it compares
+     * with the one before it (a calendar day just past midnight would read as an outage), and it
+     * covers the same calls as the health judgement.
+     */
     static List<Daily> daily(List<CallSample> samples, Instant now) {
-        Map<LocalDate, List<CallSample>> byDate = new HashMap<>();
-        for (CallSample s : samples) {
-            if (s.at() != null) {
-                byDate.computeIfAbsent(s.at().atZone(ZoneOffset.UTC).toLocalDate(), k -> new ArrayList<>()).add(s);
-            }
+        Instant from = now.minus(Duration.ofDays(DAILY_DAYS));
+        List<List<CallSample>> windows = new ArrayList<>();
+        for (int i = 0; i < DAILY_DAYS; i++) {
+            windows.add(new ArrayList<>());
         }
-        LocalDate today = now.atZone(ZoneOffset.UTC).toLocalDate();
+        for (CallSample s : samples) {
+            if (s.at() == null || s.at().isBefore(from) || s.at().isAfter(now)) {
+                continue;
+            }
+            windows.get((int) Math.min(DAILY_DAYS - 1, Duration.between(from, s.at()).toDays())).add(s);
+        }
         List<Daily> out = new ArrayList<>();
-        for (int d = DAILY_DAYS - 1; d >= 0; d--) {
-            LocalDate date = today.minusDays(d);
-            List<CallSample> day = byDate.getOrDefault(date, List.of());
-            out.add(new Daily(date.toString(), day.size(), ProviderHealthRule.successRate(day), ProviderHealthRule.percentile(day, 50),
-                    ProviderHealthRule.percentile(day, 95)));
+        for (int i = 0; i < DAILY_DAYS; i++) {
+            List<CallSample> w = windows.get(i);
+            String start = from.plus(Duration.ofDays(i)).toString();
+            out.add(w.isEmpty()
+                    ? new Daily(start, 0, null, null, null)
+                    : new Daily(start, w.size(), ProviderHealthRule.successRate(w), ProviderHealthRule.percentile(w, 50), ProviderHealthRule.percentile(w, 95)));
         }
         return out;
     }

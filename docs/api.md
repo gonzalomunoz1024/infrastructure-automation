@@ -159,8 +159,12 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 ```ts
 type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successRate; p50Ms; p95Ms; calls; errorTrend: number[]; reasons: string[] }
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
-type ProviderDetail = ProviderSummary & { yaml; actions: ActionInfo[]; daily: { date; calls; successRate; p50Ms; p95Ms }[];
+type ProviderDetail = ProviderSummary & { endpoints: { [environment]: baseUrl }; auth?: { type; credential?: 'vault:…'; header? };
+  yaml; actions: ActionInfo[]; daily: { date; calls; successRate?; p50Ms?; p95Ms? }[];
   perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
+// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts.
+// The newest window covers the same calls as `health`. A window without calls has no rates.
+// auth.credential is the vault reference's name, never a value.
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean }
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[] }

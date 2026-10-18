@@ -44,7 +44,7 @@ function eventLine(ev: JobEvent): string {
 export default function JobPage({ route }: PageProps) {
   const id = route.params.id
   const toast = useToast()
-  const [tab, setTab] = useState<Tab>('steps')
+  const [chosenTab, setTab] = useState<Tab | null>(null)
   const [confirmCancel, setConfirmCancel] = useState(false)
   const [polling, setPolling] = useState(true)
   // the clock ticks every second only while the job runs (durations, countdowns)
@@ -103,6 +103,8 @@ export default function JobPage({ route }: PageProps) {
   const highlight = data?.attention?.step ?? pendingApprovals[0]?.step ?? failedStep?.id
   const elapsed = data ? (data.durationMs ?? (data.endedAt ? Date.parse(data.endedAt) - Date.parse(data.startedAt) : now - Date.parse(data.startedAt))) : undefined
   const isBatch = !!data?.batch || data?.kind === 'batch'
+  // a batch's own work is its rows, so it opens on them
+  const tab: Tab = chosenTab ?? (data?.batch ? 'batch' : 'steps')
 
   if (job.error && !data) {
     return (
@@ -147,7 +149,7 @@ export default function JobPage({ route }: PageProps) {
                 Evidence
               </Button>
               <Button icon="workflow" onClick={() => navigate(pathFor('workflow', { name: data.workflow }, { job: id }))}>
-                Open designer executions
+                Open in designer
               </Button>
               {active && (
                 <Button variant="warning-outline" icon="stop" onClick={() => setConfirmCancel(true)}>
@@ -202,7 +204,7 @@ export default function JobPage({ route }: PageProps) {
               {tab === 'steps' && (
                 <Card flush>
                   {data.steps.length === 0 ? (
-                    <EmptyState compact icon="list" title="No steps yet" message={active ? 'The first step starts in a moment.' : 'This job recorded no steps.'} />
+                    <EmptyState compact icon="list" title="No steps yet" message={isBatch ? 'A batch runs each row as its own job; the Batch tab lists them.' : active ? 'The first step starts in a moment.' : 'This job recorded no steps.'} />
                   ) : (
                     <StepTimeline steps={data.steps} children={data.children} highlight={highlight} defaultOpen={failedStep ? [failedStep.id] : undefined} className="p-4" />
                   )}
