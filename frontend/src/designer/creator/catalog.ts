@@ -4,7 +4,7 @@
  * deeper list, plus a fuzzy search over every leaf. Product names come from the registry only.
  */
 import { fuzzyMatch, type Tone } from '@iaf/ui'
-import { STEP_TYPES, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
+import { STEP_TYPES, type JsonObject, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import type { RegistryAction, RegistryProvider } from '../../lib/types'
 import type { NewStepParams, TriggerKind } from '../model/edits'
 import type { Registry } from '../model/registry'
@@ -210,7 +210,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     ],
   })
 
-  // terraform
+  // terraform: a provider's actions run its own module (spec.module), so the step passes the terraform.module check as inserted
   const tf = providersOf(registry, ['terraform'])
   add({
     id: 'terraform',
@@ -221,14 +221,15 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
         title: p.title,
         items: p.actions.map((a): CreatorItem => {
           const terraformAction = a.id === 'apply' || a.id === 'destroy' ? a.id : 'plan'
+          const module: JsonObject = p.module ? { ...p.module } : { source: '', version: '' }
           return {
             id: `terraform:${p.name}:${a.id}`,
             title: a.title || a.id,
-            description: `${p.title} · ${a.id}`,
+            description: p.module ? `${p.title} · ${a.id} · ${[p.module.source, p.module.version].filter(Boolean).join(' @ ')}` : `${p.title} · ${a.id}`,
             glyph: providerGlyph('terraform'),
             tags: effectTags(a),
             keywords: `terraform module ${p.name} ${a.id}`,
-            action: { kind: 'step', type: 'terraform', params: { name: `${p.title}: ${a.title || a.id}`, module: { source: '', version: '' }, terraformAction } },
+            action: { kind: 'step', type: 'terraform', params: { name: `${p.title}: ${a.title || a.id}`, module, terraformAction } },
           }
         }),
       })),

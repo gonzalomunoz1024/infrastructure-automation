@@ -379,6 +379,11 @@ assistant page shows the validation's problems as the designer's Issues list, th
 events from the platform stream, and submits a ready draft as a change request. The settings page
 creates service accounts with the presets and the grouped scopes of `docs/api.md`.
 
+The designer works from the registry. Its node creator inserts a terraform provider's action with
+the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
+`GET /registry/providers` carries no spec, so the designer's registry reads the module from the
+plan step `POST /workflows:import` drafts for the provider, parsed by `POST /workflows:parse`.
+
 ## Where things are in Git
 
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a

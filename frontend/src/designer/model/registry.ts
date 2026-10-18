@@ -3,9 +3,9 @@
  * workflows, resource types, playbooks and credential names. Loaded once per session; every
  * part fails independently so the canvas works with whatever answered.
  */
-import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType } from '@iaf/workflow-checks'
+import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
-import type { RegistryAction, RegistryCredential, RegistryPlaybook, RegistryProvider, RegistryWorkflow, ResourceType, Schema, StepTypeInfo } from '../../lib/types'
+import type { RegistryAction, RegistryCredential, RegistryPlaybook, RegistryProvider, RegistryWorkflow, ResourceType, Schema, StepTypeInfo, TerraformModuleRef } from '../../lib/types'
 import { FALLBACK_STEP_SCHEMAS } from './stepSchemas'
 
 export interface Registry {
@@ -45,9 +45,55 @@ export function loadRegistry(force = false): Promise<Registry> {
       part('playbooks', () => api.registryPlaybooks(), failed, [] as RegistryPlaybook[]),
       part('credentials', () => api.registryCredentials(), failed, [] as RegistryCredential[]),
     ])
-    return { stepTypes, providers, workflows, resourceTypes, playbooks, credentials, failed }
+    return { stepTypes, providers: await withTerraformModules(providers), workflows, resourceTypes, playbooks, credentials, failed }
   })()
   return cached
+}
+
+/** The source the backend's import writes when a terraform provider has no module block. */
+const PLACEHOLDER_MODULE_SOURCE = 'your-module-source'
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** The module of the first `call: terraform` step of a parsed workflow; null when there is none, or only the import's placeholder. */
+export function terraformModuleIn(doc: WorkflowDocument | null | undefined): TerraformModuleRef | null {
+  for (const entry of doc?.workflow?.do ?? []) {
+    for (const body of Object.values(entry ?? {})) {
+      if (!isObj(body) || body.call !== 'terraform' || !isObj(body.with)) continue
+      const module = body.with.module
+      if (!isObj(module) || typeof module.source !== 'string' || !module.source.trim() || module.source === PLACEHOLDER_MODULE_SOURCE) return null
+      const out: TerraformModuleRef = { source: module.source }
+      for (const key of ['version', 'ref', 'commit', 'credential'] as const) if (typeof module[key] === 'string') out[key] = module[key] as string
+      return out
+    }
+  }
+  return null
+}
+
+/**
+ * A terraform provider's `spec.module`, read through the backend: GET /registry/providers carries
+ * no spec, POST /workflows:import drafts the provider's plan and apply steps with its module, and
+ * POST /workflows:parse gives them back as JSON (the browser parses no YAML).
+ */
+export async function terraformModuleOf(provider: string): Promise<TerraformModuleRef | null> {
+  const imported = await api.importWorkflow('terraform', provider)
+  const parsed = await api.parseWorkflow({ yaml: imported.yaml })
+  return terraformModuleIn(parsed.definition)
+}
+
+/** The providers with each terraform provider's module filled in when the registry did not carry it; one that cannot be read stays as it was. */
+export async function withTerraformModules(providers: RegistryProvider[], resolve: (provider: string) => Promise<TerraformModuleRef | null> = terraformModuleOf): Promise<RegistryProvider[]> {
+  return Promise.all(
+    providers.map(async (p) => {
+      if (p.type !== 'terraform' || p.module) return p
+      try {
+        const module = await resolve(p.name)
+        return module ? { ...p, module } : p
+      } catch {
+        return p
+      }
+    }),
+  )
 }
 
 /** For tests and the executions view: a registry without the network. */

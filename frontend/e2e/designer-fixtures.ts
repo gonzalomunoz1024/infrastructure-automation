@@ -80,6 +80,35 @@ export function registryPlaybooks(): Obj[] {
   })
 }
 
+/**
+ * POST /workflows:import for a terraform provider, as the backend drafts it: plan, approval and
+ * apply steps that run the provider's own `spec.module` (the placeholder when it has none).
+ */
+export function terraformImport(ref: string): { yaml: string; notes: string[] } | null {
+  for (const file of yamlFiles('providers')) {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const spec = asObj(doc.spec)
+    if (spec.type !== 'terraform' || meta.name !== ref) continue
+    const module = asObj(spec.module).source ? asObj(spec.module) : { source: 'your-module-source', version: '1.0.0' }
+    const credential = String(asObj(spec.auth).credential ?? 'vault:your-credential')
+    const draft = {
+      apiVersion: 'iaf.platform/v1',
+      kind: 'Workflow',
+      metadata: { name: `${ref}-apply`, title: `Apply ${String(meta.title ?? ref)}`, owner: String(meta.owner ?? '') },
+      workflow: {
+        do: [
+          { plan: { name: 'Plan', call: 'terraform', with: { module, action: 'plan', vars: {}, credential }, output: { as: 'plan' } } },
+          { approval: { name: 'Approve the plan', approval: { group: 'your-approvers', message: 'Apply the plan?', timeout: '4h' } } },
+          { apply: { name: 'Apply', call: 'terraform', with: { module, action: 'apply', vars: {}, credential }, output: { as: 'apply' } } },
+        ],
+      },
+    }
+    return { yaml: stringify(draft), notes: ['Set the approver group of the approval step and of policy.approval.'] }
+  }
+  return null
+}
+
 export function registryResourceTypes(): Obj[] {
   return yamlFiles('resource-types').map((file) => {
     const doc = load(file)
@@ -321,6 +350,11 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
           { type: 'done', data: {} },
         ]),
       })
+    }
+    if (method === 'POST' && path === '/workflows:import') {
+      const body = bodyOf(req)
+      const imported = body.source === 'terraform' ? terraformImport(String(body.ref ?? '')) : null
+      return imported ? json(route, imported) : json(route, { error: `No terraform provider '${String(body.ref ?? '')}'` }, 400)
     }
     if (method === 'POST' && path === '/workflows:render') return json(route, { yaml: stringify(bodyOf(req).definition ?? {}) })
     if (method === 'POST' && path === '/workflows:parse') {

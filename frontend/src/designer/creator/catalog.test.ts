@@ -1,14 +1,26 @@
 import { describe, expect, it } from 'vitest'
+import { check, EMPTY_CONTEXT } from '@iaf/workflow-checks'
 import type { Registry } from '../model/registry'
 import { buildCatalog, leavesOf, ROOT_VIEW, searchCatalog } from './catalog'
 import { placementOf } from './NodeCreator'
 import { documentToGraph } from '../model/graph'
+import { bodyFor } from '../model/edits'
 
 const registry: Registry = {
   stepTypes: [],
   providers: [
     { name: 'vsphere', title: 'VMware vSphere', type: 'openapi', owner: 'team-compute', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }, { id: 'vm.delete', title: 'Delete VM', effect: 'delete', retry: 'unsafe', approval: 'required' }] },
-    { name: 'tf', title: 'Terraform modules', type: 'terraform', actions: [{ id: 'apply', title: 'Apply', effect: 'change', retry: 'unsafe' }] },
+    {
+      name: 'tf',
+      title: 'Terraform modules',
+      type: 'terraform',
+      module: { source: 'git::https://github.com/acme/tf-modules//lb', version: '2.3.0' },
+      actions: [
+        { id: 'apply', title: 'Apply', effect: 'change', retry: 'unsafe' },
+        { id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' },
+      ],
+    },
+    { name: 'tf-bare', title: 'Bare modules', type: 'terraform', actions: [{ id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' }] },
     { name: 'portal', title: 'Portal', type: 'idp', actions: [{ id: 'db.request', title: 'Request a database', effect: 'create', retry: 'unsafe' }] },
   ],
   workflows: [
@@ -45,10 +57,30 @@ describe('node creator catalog', () => {
   })
 
   it('maps terraform actions and IDP tiles to their steps', () => {
-    const apply = catalog.get('terraform')?.sections[0].items[0]
+    const apply = catalog.get('terraform')?.sections.find((s) => s.title === 'Terraform modules')?.items[0]
     expect(apply?.action).toMatchObject({ type: 'terraform', params: { terraformAction: 'apply' } })
     const tile = catalog.get('idp')?.sections[0].items[0]
     expect(tile?.action).toMatchObject({ type: 'idp', params: { tile: 'db.request' } })
+  })
+
+  it("inserts a terraform provider's action with the provider's own module, so the step passes the module check", () => {
+    const tf = catalog.get('terraform')?.sections.find((s) => s.title === 'Terraform modules')
+    const plan = tf?.items.find((i) => i.title === 'Plan')
+    expect(plan?.action).toEqual({
+      kind: 'step',
+      type: 'terraform',
+      params: { name: 'Terraform modules: Plan', module: { source: 'git::https://github.com/acme/tf-modules//lb', version: '2.3.0' }, terraformAction: 'plan' },
+    })
+    expect(plan?.description).toBe('Terraform modules · plan · git::https://github.com/acme/tf-modules//lb @ 2.3.0')
+    // the step body the store adds carries the module; the checks find nothing to say about it
+    const params = plan?.action?.kind === 'step' ? plan.action.params : undefined
+    const body = bodyFor('terraform', params)
+    expect(body.with).toEqual({ module: { source: 'git::https://github.com/acme/tf-modules//lb', version: '2.3.0' }, action: 'plan', vars: {} })
+    const problems = check({ apiVersion: 'iaf.platform/v1', kind: 'Workflow', metadata: { name: 'x', title: 'X', owner: 't', version: '0.1.0' }, workflow: { do: [{ plan: body }] } }, EMPTY_CONTEXT)
+    expect(problems.filter((p) => p.code.startsWith('terraform.'))).toEqual([])
+    // a provider whose module is not known yet still inserts a step to fill in
+    const bare = catalog.get('terraform')?.sections.find((s) => s.title === 'Bare modules')?.items[0]
+    expect(bare?.action).toMatchObject({ params: { module: { source: '', version: '' } } })
   })
 
   it('finds steps by fuzzy search, best match first', () => {
