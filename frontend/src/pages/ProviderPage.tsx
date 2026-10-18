@@ -5,6 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
 import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
+import { useChangeRequestToast } from '../components/ChangeRequestToast'
 import { HealthBand } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { EffectTag, ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
@@ -23,6 +24,7 @@ export default function ProviderPage({ route }: PageProps) {
   const name = route.params.name
   const [tab, setTab] = useState<Tab>('overview')
   const [editSlo, setEditSlo] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [trying, setTrying] = useState<{ action?: string } | null>(null)
   const [openAction, setOpenAction] = useState<ActionInfo | null>(null)
   const provider = useQuery(['provider', name], () => api.provider(name), { refetchInterval: 60_000 })
@@ -160,6 +162,11 @@ export default function ProviderPage({ route }: PageProps) {
         actions={
           data && (
             <>
+              {data.type === 'openapi' && (
+                <Button icon="refresh" onClick={() => setRefreshing(true)}>
+                  Refresh spec
+                </Button>
+              )}
               <Button icon="settings" onClick={() => setEditSlo(true)}>
                 SLO
               </Button>
@@ -254,6 +261,21 @@ export default function ProviderPage({ route }: PageProps) {
           </div>
 
           <aside className="min-w-0 space-y-4">
+            {openChanges.length > 0 && (
+              <Card title="Pending change requests" subtitle="Edits waiting for review; merging publishes the next version." data-testid="pending-change-requests">
+                <ul className="space-y-2">
+                  {openChanges.map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                      <TextLink to={pathFor('change-request', { id: c.id })} mono>
+                        {c.id}
+                      </TextLink>
+                      <span className="min-w-0 flex-1 truncate text-primary">{c.title}</span>
+                      <Mono className="text-tertiary">{c.version}</Mono>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            )}
             {release && <ReleaseCard release={release} />}
             <Card title="Health">
               <HealthBand health={data.health} showReasons />
@@ -359,6 +381,7 @@ export default function ProviderPage({ route }: PageProps) {
       )}
 
       {editSlo && data && <SloModal provider={data} onClose={() => setEditSlo(false)} />}
+      {refreshing && data && <RefreshSpecModal provider={data} onClose={() => setRefreshing(false)} />}
       {trying && data && <TryActionDrawer provider={data} preset={trying.action} onClose={() => setTrying(null)} />}
       {openAction && data && (
         <ActionDrawer
@@ -476,6 +499,7 @@ function SloModal({ provider, onClose }: { provider: ProviderDetail; onClose: ()
 function SloForm({ provider }: { provider: ProviderDetail }) {
   const close = useOverlayClose()
   const toast = useToast()
+  const notify = useChangeRequestToast()
   const [successRate, setSuccessRate] = useState(String(provider.slo?.successRate ?? 99))
   const [p95Ms, setP95Ms] = useState(String(provider.slo?.p95Ms ?? 1000))
   const [channel, setChannel] = useState(provider.slo?.channel ?? (typeof provider.alerts?.channel === 'string' ? provider.alerts.channel : ''))
@@ -484,13 +508,14 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
   const p95 = Number(p95Ms)
   const ok = Number.isFinite(rate) && rate > 0 && rate <= 100 && Number.isFinite(p95) && p95 > 0
 
+  // the SLO changes through a change request for the next patch version; a blank channel removes it
   const save = async () => {
     if (!ok) return
     setBusy(true)
     try {
-      await api.setProviderSlo(provider.name, { successRate: rate, p95Ms: p95, channel: channel.trim() || undefined })
+      const accepted = await api.setProviderSlo(provider.name, { successRate: rate, p95Ms: p95, channel: channel.trim() || undefined })
       invalidate('provider')
-      toast.success('SLO saved', `${provider.title} is judged against ${percent(rate, { digits: 1 })} and ${duration(p95)}.`)
+      notify(accepted, `The SLO of ${provider.title} (${percent(rate, { digits: 1 })}, ${duration(p95)})`)
       close()
     } catch (e) {
       toast.error('Could not save the SLO', errorMessage(e))
@@ -507,7 +532,7 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
       }}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <OverlayHeader title="Service level objective" subtitle="The health band turns amber, then red, when the provider falls below these." icon="settings" />
+      <OverlayHeader title="Service level objective" subtitle="The health band turns amber, then red, when the provider falls below these. Saving opens a change request." icon="settings" />
       <OverlayBody className="space-y-4">
         <Field label="Success rate (%)" htmlFor="slo-rate" required>
           <Input id="slo-rate" type="number" min={1} max={100} step={0.1} value={successRate} onChange={(e) => setSuccessRate(e.target.value)} autoFocus />
@@ -525,6 +550,65 @@ function SloForm({ provider }: { provider: ProviderDetail }) {
         </Button>
         <Button type="submit" variant="primary" loading={busy} disabled={!ok}>
           Save SLO
+        </Button>
+      </OverlayFooter>
+    </form>
+  )
+}
+
+/* ----------------------------------------------------------------------------
+   Refresh the spec: read it again and open a change request for the next minor version
+   ------------------------------------------------------------------------- */
+
+function RefreshSpecModal({ provider, onClose }: { provider: ProviderDetail; onClose: () => void }) {
+  return (
+    <Modal onClose={onClose} width="max-w-md" label="Refresh spec">
+      <RefreshSpecForm provider={provider} />
+    </Modal>
+  )
+}
+
+function RefreshSpecForm({ provider }: { provider: ProviderDetail }) {
+  const close = useOverlayClose()
+  const toast = useToast()
+  const notify = useChangeRequestToast()
+  const [ref, setRef] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refresh = async () => {
+    setBusy(true)
+    try {
+      const accepted = await api.refreshSpec(provider.name, ref.trim() ? { ref: ref.trim() } : {})
+      invalidate('provider')
+      notify(accepted, `The spec of ${provider.title}`)
+      close()
+    } catch (e) {
+      toast.error('Could not refresh the spec', errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        void refresh()
+      }}
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      <OverlayHeader title="Refresh the spec" subtitle="Reads the spec again from where the file says: its URL, or Git at the file's ref. A changed spec opens a change request for the next minor version; the same document changes nothing." icon="refresh" />
+      <OverlayBody className="space-y-4">
+        <Field label="Ref" htmlFor="refresh-ref" hint="For a spec in Git: a tag, branch or commit to read instead of the file's ref; it is then written to the file. Leave empty to keep it.">
+          <Input id="refresh-ref" mono value={ref} onChange={(e) => setRef(e.target.value)} placeholder="v8.0.3" autoFocus />
+        </Field>
+      </OverlayBody>
+      <OverlayFooter>
+        <Button type="button" variant="ghost" onClick={close} disabled={busy}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" icon="refresh" loading={busy}>
+          Refresh spec
         </Button>
       </OverlayFooter>
     </form>
@@ -603,6 +687,7 @@ function ActionDrawer({ action, stats, onTry, onClose }: { action: ActionInfo; s
 
 function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDetail; preset?: string; onClose: () => void }) {
   const toast = useToast()
+  const notify = useChangeRequestToast()
   const [actionId, setActionId] = useState(preset ?? provider.actions[0]?.id ?? '')
   const action = provider.actions.find((a) => a.id === actionId)
   const [environment, setEnvironment] = useState(provider.environments[0] ?? 'dev')
@@ -628,13 +713,14 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
     }
   }
 
+  // "Use the real response": the schema inferred from the answer goes into the file's overrides through a change request
   const fix = async () => {
     if (!result || !result.response || typeof result.response !== 'object') return
     setBusy('fix')
     try {
-      await api.overrideAction(provider.name, { action: actionId, response: result.response as Record<string, unknown> })
+      const accepted = await api.overrideAction(provider.name, { action: actionId, response: result.response as Record<string, unknown> })
       invalidate('provider')
-      toast.success('Override recorded', `${actionId} now expects what the real API answered. The vendor spec stays untouched.`)
+      notify(accepted, `The override of ${actionId}, from the real answer,`)
     } catch (e) {
       toast.error('Could not record the override', errorMessage(e))
     } finally {
@@ -707,9 +793,10 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
               />
             )}
             {result.mismatches.length > 0 && (
-              <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <span className="text-caption text-tertiary">Opens a change request with the schema of this answer as the action's override.</span>
                 <Button icon="edit" loading={busy === 'fix'} onClick={() => void fix()}>
-                  Fix schema from response
+                  Use the real response
                 </Button>
               </div>
             )}

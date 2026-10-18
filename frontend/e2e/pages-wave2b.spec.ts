@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { CATALOG, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { CATALOG, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, TRY_RESULT, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -328,5 +328,63 @@ test.describe('provider releases', () => {
     await expect(card).toContainText('2/4 gates')
     await expect(card.getByRole('link', { name: 'Follow the release' })).toHaveAttribute('href', '#/releases/rel-p1')
     await expect(page.getByText('canary 2.2.0 at 50%')).toBeVisible()
+  })
+})
+
+test.describe('provider: every edit is a change request', () => {
+  test('the SLO, the real response and a spec refresh open change requests the page names and links', async ({ page }) => {
+    const refreshes: unknown[] = []
+    const api = await mockApi(page, {
+      'GET /providers/{name}': PROVIDER,
+      'GET /providers/{name}/alerts': PROVIDER_ALERTS,
+      'GET /releases': [],
+      'PUT /providers/{name}/slo': reply(202, { id: 'cr-90', status: 'open' }),
+      'POST /providers:try': { ...TRY_RESULT, mismatches: [{ field: 'items[0].state', expected: 'number', actual: 'running' }] },
+      'POST /providers/{name}/overrides': reply(202, { id: 'cr-91', status: 'open' }),
+      'POST /providers/{name}:refresh-spec': (req: { body: unknown }) => {
+        refreshes.push(req.body)
+        return refreshes.length === 1 ? reply(202, { id: 'vsphere', status: 'unchanged' }) : reply(202, { id: 'cr-92', status: 'open' })
+      },
+      'GET /change-requests/{id}': (req: { params: Record<string, string> }) => ({ ...PROVIDER_CR, id: req.params.id, name: 'vsphere', title: `vsphere: ${req.params.id}` }),
+    })
+    await page.goto('/#/providers/vsphere')
+
+    // what is already waiting for review
+    const pending = page.getByTestId('pending-change-requests')
+    await expect(pending).toContainText('vsphere: add vm.snapshot')
+    await expect(pending.getByRole('link', { name: 'cr-88' })).toHaveAttribute('href', '#/change-requests/cr-88')
+
+    // the SLO
+    await page.getByRole('button', { name: 'SLO' }).click()
+    await page.getByLabel('Success rate (%)').fill('99.7')
+    await page.getByRole('button', { name: 'Save SLO' }).click()
+    const sloToast = page.getByRole('status').filter({ hasText: 'Opened change request cr-90' })
+    await expect(sloToast).toBeVisible()
+    expect(api.callsTo('PUT', '/providers/vsphere/slo')[0].body).toEqual({ successRate: 99.7, p95Ms: 800, channel: '#compute-alerts' })
+
+    // the real response of a tried action
+    await page.getByRole('button', { name: 'Try action' }).click()
+    await page.getByRole('button', { name: 'Try it', exact: true }).click()
+    await page.getByRole('button', { name: 'Use the real response' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Opened change request cr-91' })).toBeVisible()
+    expect(api.callsTo('POST', '/providers/vsphere/overrides')[0].body).toEqual({ action: 'vm.get', response: TRY_RESULT.response })
+    await page.keyboard.press('Escape')
+
+    // the spec, read again: first unchanged, then at a new ref
+    const dialog = page.getByRole('dialog', { name: 'Refresh spec' })
+    await page.getByRole('button', { name: 'Refresh spec' }).first().click()
+    await dialog.getByRole('button', { name: 'Refresh spec' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Nothing to change' })).toBeVisible()
+    await expect(dialog).toBeHidden()
+    await page.getByRole('button', { name: 'Refresh spec' }).first().click()
+    await dialog.getByLabel('Ref').fill('v8.0.3')
+    await dialog.getByRole('button', { name: 'Refresh spec' }).click()
+    const refreshToast = page.getByRole('status').filter({ hasText: 'Opened change request cr-92' })
+    await expect(refreshToast).toBeVisible()
+    expect(refreshes).toEqual([{}, { ref: 'v8.0.3' }])
+
+    // the toast's button opens the change request
+    await refreshToast.getByRole('button', { name: 'Open change request' }).click()
+    await expect(page).toHaveURL(/#\/change-requests\/cr-92$/)
   })
 })

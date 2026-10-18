@@ -1040,7 +1040,13 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
         return
       }
       const accepted = await api.publishProvider(yaml, state.strategy)
-      toast.success('Change request opened', `${state.name} ${state.version} goes through review${state.strategy === 'canary' ? ', then a canary' : ''}.`)
+      toast.toast({
+        title: `Opened change request ${accepted.id}`,
+        message: `${state.name} ${state.version} goes through review${state.strategy === 'canary' ? ', then a canary' : ', then every call moves at once'}.`,
+        tone: 'healthy',
+        duration: 8000,
+        action: { label: 'Open change request', onClick: () => navigate(pathFor('change-request', { id: accepted.id })) },
+      })
       navigate(pathFor('change-request', { id: accepted.id }))
     } catch (e) {
       toast.error('Could not publish', errorMessage(e))
