@@ -81,21 +81,21 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine; its resource-access rule: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always) |
-| `TelemetryPort`         | `JdbcTelemetry` (profile `postgres`, the samples in `telemetry_samples`) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
-| `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
-| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
+| `TelemetryPort`         | `MongoTelemetry` (profile `mongo`, the samples in `telemetry_samples`, deleted by a TTL index once the retention has passed) | `InMemoryTelemetry` (the samples of the last 30 days, bounded); both also record the `provider.call` timer and the `provider.errors` counter |
+| `ProjectionStore`       | `MongoProjectionStore` (profile `mongo`) | `InMemoryProjectionStore`   |
+| `EvidenceStore`         | `MongoEvidenceStore` (profile `mongo` without a `worm` profile, entries only ever inserted); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
-| `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
+| `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with the `mongo` profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
-| `ReviewEvidencePort`    | `JdbcReviewEvidence` (profile `postgres`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
-| `ProviderAlertStatePort` | `JdbcProviderAlertState` (profile `postgres`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
+| `ReviewEvidencePort`    | `MongoReviewEvidence` (profile `mongo`, the same bounds) | `InMemoryReviewEvidence` (Test connection and Try it results per provider, bounded, with a count of the older ones dropped) |
+| `ProviderAlertStatePort` | `MongoProviderAlertState` (profile `mongo`) | `InMemoryProviderAlertState` (when the alert evaluator last ran, so a restart only judges the calls that failed since) |
 | `GitSourcePort`         | `JGitSource` (https fetch into a throw-away bare repository, files read from the pinned commit) | same |
 | `ModuleRegistryPort`    | `HttpModuleRegistry` (the Terraform module registry protocol at `platform.providers.terraform-registry-url`: versions, download location, inputs) | same |
 
 Every adapter is a `@Component`. A production adapter carries its profile and `@Primary`
 (`@Profile("opa") @Primary` on `OpaPolicy`), so it wins over its demo twin, a plain component,
 when the profile is on; a twin that must not exist beside it carries the opposite guard (the
-in-memory stores are `@Profile("!postgres")`). The Git workflow store is switched by the property
+in-memory stores are `@Profile("!mongo")`). The Git workflow store is switched by the property
 `platform.content.git`, not by a profile. No adapter uses `@ConditionalOnMissingBean`.
 
 A credential belongs to a team: `CredentialInfo.owner`, chosen when it is stored (one of the
