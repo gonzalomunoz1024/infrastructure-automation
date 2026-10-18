@@ -146,7 +146,11 @@ class RestControllerWorkflowAdapterTest {
                 .jsonPath("$.checks[?(@.id == 'contracts')].status").isEqualTo(List.of("passed"))
                 .jsonPath("$.diff").value(d -> assertThat((String) d).contains("+  description: Restart a virtual machine after safety checks (edited)."))
                 .jsonPath("$.yaml").value(y -> assertThat((String) y).contains("(edited)"))
-                .jsonPath("$.createdAt").isEqualTo("2026-10-17T10:00:00Z");
+                .jsonPath("$.createdAt").isEqualTo("2026-10-17T10:00:00Z")
+                .jsonPath("$.changeRequest").doesNotExist()
+                .jsonPath("$.preview.mermaid").value(m -> assertThat((String) m).startsWith("flowchart LR\n")
+                        .contains("s1[\"Check VM exists<br/>provider: vsphere vm.get\"]").contains("main -.->|\"on error\"| onError"));
+        client.get().uri("/api/v1/change-requests").exchange().expectStatus().isOk().expectBody().jsonPath("$[0].preview").doesNotExist();
         client.get().uri("/api/v1/workflows/vm-restart").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.versions[1].status").isEqualTo("candidate").jsonPath("$.changeRequests[0].id").isEqualTo(crId);
 

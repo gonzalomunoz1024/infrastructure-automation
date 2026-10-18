@@ -146,7 +146,7 @@ public class RestControllerWorkflowAdapter implements WorkflowCommands, Workflow
 
     @Override
     @GetMapping("/change-requests/{id}")
-    public Mono<ChangeRequest> changeRequest(@PathVariable String id) {
+    public Mono<ChangeRequestDetail> changeRequest(@PathVariable String id) {
         return queries.changeRequest(id);
     }
 

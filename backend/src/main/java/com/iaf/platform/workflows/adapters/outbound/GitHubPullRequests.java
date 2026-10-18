@@ -24,6 +24,7 @@ import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.domain.WorkflowMermaid;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -42,6 +43,8 @@ public class GitHubPullRequests {
     /** GitHub cuts a commit status description at 140 characters. */
     static final int STATUS_DESCRIPTION = 140;
     static final String STATUS_CONTEXT = "iaf/";
+    /** Mermaid draws no diagram longer than this (its default {@code maxTextSize}). */
+    static final int MERMAID_TEXT = 50_000;
 
     /** The pull request a change request opened. */
     public record PullRequest(int number, String url, String commit) {
@@ -161,6 +164,9 @@ public class GitHubPullRequests {
             sb.append("| ").append(cell(c.label() == null ? c.id() : c.label())).append(" | ").append(cell(c.status())).append(" | ")
                     .append(cell(c.detail())).append(" |\n");
         }
+        WorkflowMermaid.preview(cr).ifPresent(chart -> sb.append(chart.length() <= MERMAID_TEXT
+                ? "\nThe workflow, step by step:\n\n```mermaid\n" + chart + "```\n"
+                : "\nThe workflow is too large to draw here.\n"));
         sb.append("\nMerging here publishes the version on the platform; closing it closes the change request.\n");
         return sb.toString();
     }

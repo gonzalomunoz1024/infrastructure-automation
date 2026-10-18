@@ -36,6 +36,7 @@ import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.StepTypeSchemas;
 import com.iaf.platform.workflows.domain.WorkflowChecks;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
+import com.iaf.platform.workflows.domain.WorkflowMermaid;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowSchema;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
@@ -184,9 +185,10 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     }
 
     @Override
-    public Mono<ChangeRequest> changeRequest(String id) {
+    public Mono<ChangeRequestDetail> changeRequest(String id) {
         return optional(() -> changeRequests.get(id))
-                .switchIfEmpty(Mono.error(() -> new NotFoundException("change request", id)));
+                .switchIfEmpty(Mono.error(() -> new NotFoundException("change request", id)))
+                .map(cr -> new ChangeRequestDetail(cr, WorkflowMermaid.preview(cr).map(Preview::new).orElse(null)));
     }
 
     @Override

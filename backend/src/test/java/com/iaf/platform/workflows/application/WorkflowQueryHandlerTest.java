@@ -16,7 +16,9 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.workflows.SampleFixtures;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.StepType;
+import com.iaf.platform.workflows.domain.WorkflowMermaid;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -65,6 +67,28 @@ class WorkflowQueryHandlerTest {
         assertThat(queries.list("compute", null, null).collectList().block()).hasSize(3);
         assertThat(queries.list(null, "draft", null).collectList().block()).isEmpty();
         assertThat(queries.list(null, null, "mongo").map(WorkflowSummary::name).collectList().block()).containsExactly("create-database", "mongodb-upgrade");
+    }
+
+    @Test
+    void aWorkflowChangeRequestCarriesItsFlowchartAndAProviderChangeRequestNone() {
+        InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
+        String yaml = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+        changeRequests.save(new ChangeRequest("cr_w", ChangeRequest.Kind.WORKFLOW, "vm-restart", "1.2.1", "change/vm-restart-1.2.1", "t", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "canary", yaml, "", NOW, null, null, null));
+        changeRequests.save(new ChangeRequest("cr_p", ChangeRequest.Kind.PROVIDER, "vsphere", "1.1.0", "change/provider-vsphere-1.1.0", "t", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "canary", "apiVersion: iaf.platform/v1\nkind: Provider\n", "", NOW, null, null, null));
+        queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
+
+        StepVerifier.create(queries.changeRequest("cr_w"))
+                .assertNext(d -> {
+                    assertThat(d.changeRequest().yaml()).isEqualTo(yaml);
+                    assertThat(d.preview().mermaid()).isEqualTo(WorkflowMermaid.of(WorkflowYaml.parse(yaml)));
+                })
+                .verifyComplete();
+        StepVerifier.create(queries.changeRequest("cr_p"))
+                .assertNext(d -> assertThat(d.preview()).isNull())
+                .verifyComplete();
+        StepVerifier.create(queries.changeRequest("cr_nope")).expectError(NotFoundException.class).verify();
     }
 
     @Test

@@ -28,8 +28,11 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.testing.LocalHttp;
+import com.iaf.platform.workflows.SampleFixtures;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.domain.WorkflowMermaid;
+import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.sun.net.httpserver.HttpServer;
 
 import reactor.core.publisher.Mono;
@@ -223,6 +226,38 @@ class GitHubPullRequestsTest {
         assertThat(GitHubPullRequests.number("https://github.com/acme/content/pull/42")).isEqualTo(42);
         assertThat(GitHubPullRequests.number("https://github.com/acme/content/pull/")).isEqualTo(-1);
         assertThat(GitHubPullRequests.number(null)).isEqualTo(-1);
+    }
+
+    static ChangeRequest writing(String yaml) {
+        ChangeRequest cr = changeRequest();
+        return new ChangeRequest(cr.id(), cr.kind(), cr.name(), cr.version(), cr.branch(), cr.title(), cr.author(), cr.status(), cr.checks(), cr.strategy(),
+                yaml, cr.diff(), NOW, null, null, null);
+    }
+
+    @Test
+    void theBodyDrawsTheWorkflowAsAMermaidFlowchartAfterTheChecks() {
+        String yaml = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+
+        String body = GitHubPullRequests.body(writing(yaml), "workflows/team-compute/vm-restart.yaml");
+
+        assertThat(body).contains("\n```mermaid\n" + WorkflowMermaid.of(WorkflowYaml.parse(yaml)) + "```\n")
+                .contains("\n    s1[\"Check VM exists<br/>provider: vsphere vm.get\"]\n")
+                .endsWith("```\n\nMerging here publishes the version on the platform; closing it closes the change request.\n");
+        assertThat(body.indexOf("| Policy | failed | change freeze |")).isLessThan(body.indexOf("```mermaid"));
+
+        ChangeRequest provider = new ChangeRequest("cr_p", ChangeRequest.Kind.PROVIDER, "fleet", "1.1.0", "change/provider-fleet-1.1.0", "t", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "canary", "apiVersion: iaf.platform/v1\nkind: Provider\n", "", NOW, null, null, null);
+        assertThat(GitHubPullRequests.body(provider, "providers/fleet.yaml")).doesNotContain("mermaid");
+        assertThat(GitHubPullRequests.body(writing("metadata: ["), "workflows/x.yaml")).as("a file that does not parse").doesNotContain("mermaid");
+
+        StringBuilder huge = new StringBuilder("apiVersion: iaf.platform/v1\nkind: Workflow\n"
+                + "metadata: { name: huge, title: Huge, noun: huge, verb: run, owner: team-platform, version: 1.0.0 }\nworkflow:\n  do:\n");
+        for (int i = 0; i < 1200; i++) {
+            huge.append("    - wait").append(i).append(": { name: Wait a little while number ").append(i).append(", wait: PT1S }\n");
+        }
+        assertThat(WorkflowMermaid.of(WorkflowYaml.parse(huge.toString()))).hasSizeGreaterThan(GitHubPullRequests.MERMAID_TEXT);
+        assertThat(GitHubPullRequests.body(writing(huge.toString()), "workflows/huge.yaml")).doesNotContain("mermaid")
+                .contains("The workflow is too large to draw here.");
     }
 
     @Test

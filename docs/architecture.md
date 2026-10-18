@@ -368,7 +368,9 @@ router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/ap
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a
 resource type `resource-types/<name>.yaml`, all under the content repo (`workflows/` in this
 monorepo for the samples). Publishing writes the file on a branch `change/<name>-<version>` and
-opens a change request; merging it publishes the version and starts its canary. The Git store
+opens a change request; merging it publishes the version and starts its canary. A workflow's
+change request carries the file as a Mermaid flowchart (`WorkflowMermaid`) for its page and its
+pull request. The Git store
 indexes a version on its change branch as the candidate while an open change request reviews it
 and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
 delete (which also asks the change requests before it deletes anything). A rolled-back workflow
