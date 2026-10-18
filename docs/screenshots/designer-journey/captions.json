@@ -1,0 +1,82 @@
+[
+  {
+    "name": "01-workflows",
+    "caption": "The junior engineer opens Workflows: everything the platform can run. New workflow starts one."
+  },
+  {
+    "name": "02-new-blank",
+    "caption": "New workflow, Blank: a title, the name the file and the URL use, a noun and a verb that name its endpoint, and the owner team."
+  },
+  {
+    "name": "03-canvas",
+    "caption": "The designer opens on the n8n-style canvas: the API trigger every workflow has, and a button for the first step."
+  },
+  {
+    "name": "04-inputs",
+    "caption": "Settings, Input: the fields the person running it fills in. They become the run form, the API body and the MCP tool’s arguments."
+  },
+  {
+    "name": "05-node-creator",
+    "caption": "Add first step opens the step list. HTTP request calls any API: no provider is needed."
+  },
+  {
+    "name": "06-http-step",
+    "caption": "The step’s parameters: POST to the VM API, with the JSON body mapped from the input with {{ }} expressions. The input’s fields on the left can be dragged onto a parameter."
+  },
+  {
+    "name": "07-credential-field",
+    "caption": "The step’s credential field lists the credentials already stored, by name and kind. None is for the VM API yet; the list ends with New credential."
+  },
+  {
+    "name": "08-credential-dialog",
+    "caption": "New credential opens over the canvas: a token for the VM API, stored once under a name. Nobody can read the value back."
+  },
+  {
+    "name": "09-credential-set",
+    "caption": "The field now names the credential: the step keeps only the reference vault:acme-cloud/api-token, and the token goes as a bearer header on each call."
+  },
+  {
+    "name": "10-get-step",
+    "caption": "A second HTTP step reads the VM back: GET with the id the create step answered with ($json is the previous step’s output), and the same credential, now picked from the list."
+  },
+  {
+    "name": "11-outputs",
+    "caption": "Settings, Outputs: what a finished job answers with, as expressions over the steps: the VM’s id, its address and its state, read back by Get VM."
+  },
+  {
+    "name": "12-validated",
+    "caption": "The canvas with both steps. The live checks run as you edit and Validate runs the server’s: no issues."
+  },
+  {
+    "name": "13-test-run",
+    "caption": "Test workflow: a dry run with the values a person would type. Nothing is called; each step shows what it would send."
+  },
+  {
+    "name": "14-yaml",
+    "caption": "The YAML drawer: the file the designer has been writing all along, the input schema and then the steps. It is what the change request will hold."
+  },
+  {
+    "name": "15-publish",
+    "caption": "Publish opens a change request with the workflow’s checks, right in the designer. The author waits for a teammate to merge it."
+  },
+  {
+    "name": "16-cr-review",
+    "caption": "A reviewer opens the change request: the workflow file, what changed and the checks. Then Merge."
+  },
+  {
+    "name": "17-merged",
+    "caption": "Merged: version 0.1.0 of Create VM is published, with its endpoint, its MCP tool and a run form in the catalog."
+  },
+  {
+    "name": "18-run-form",
+    "caption": "The run form, generated from the input defined in the designer. The junior engineer asks for web-07."
+  },
+  {
+    "name": "19-job",
+    "caption": "The job: both steps succeeded. Create VM called the VM API and Get VM read the VM back; the output is its id, address and state."
+  },
+  {
+    "name": "20-executions",
+    "caption": "Back in the designer, Executions shows the job on the canvas: each step green, and its input and output a click away."
+  }
+]
