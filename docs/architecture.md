@@ -155,17 +155,16 @@ audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index
 and their events), the gateway's quotas and idempotency keys, the inbox, and the other stores the
 table below lists. Temporal keeps its own database: the dev server's SQLite file in
 `docker-compose.yml`, or a PostgreSQL of its own with `docker-compose.temporal-postgres.yml`. The
-platform reaches Temporal through its API only and never reads that database. Git is the source
-of truth for workflows and providers: every start seeds them from the content repository in
+platform reaches Temporal through its API only and never reads that database. Git is the source of
+truth for workflows and providers: every start seeds them from the content repository in
 `platform.content.dir`, and with `platform.content.git` on that repository is the workflow store
 itself (`GitWorkflowStore`, below, which commits every draft and publish) and a provider saved
 through the platform is written back to its file there, uncommitted. Object storage, through
-`ArtifactStorePort` (a bucket under the
-`s3` profile, else files under `platform.artifacts.dir`), holds playbook uploads and Terraform's
-saved plans by SHA-256, and each ended job's archive: its log lines (`jobs/<id>/logs.ndjson`) and
-the plan it was started with (`jobs/<id>/plan.json`). WORM evidence goes to object storage under
-its own profile, `worm-s3`: S3 Object Lock objects in `platform.audit.worm.s3.bucket` (or, under
-`worm`, read-only files in `platform.audit.worm.dir`).
+`ArtifactStorePort` (a bucket under the `s3` profile, else files under `platform.artifacts.dir`),
+holds playbook uploads and Terraform's saved plans by SHA-256, and each ended job's archive: its
+log lines (`jobs/<id>/logs.ndjson`) and the plan it was started with (`jobs/<id>/plan.json`). WORM
+evidence goes to object storage under its own profile, `worm-s3`: S3 Object Lock objects in
+`platform.audit.worm.s3.bucket` (or, under `worm`, read-only files in `platform.audit.worm.dir`).
 
 ### Persistence
 
@@ -432,10 +431,10 @@ wiring test expects none.
   date; the WORM stores skip every record named in their `sealed/` index (one write-once object per
   sealed record, written with the seal; a record sealed before the index existed is indexed the
   first time a run finds it). On demand (`POST /audit:seal`) only an admin seals. A record is
-  shared by the job's requester, a member of the teams it ran for (`RecordOwners`: the
-  requester's teams as the runs index kept them, the workflow's owner team) or an admin, and each
-  link is published as `audit.shared` (record, who, expiry; never the token). An evidence pack
-  is written to a temporary file as it
+  shared by the job's requester, a member of the teams it ran for (`RecordOwners`: the requester's
+  teams as the runs index kept them, the workflow's owner team) or an admin, and each link is
+  published as `audit.shared`
+  (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
   is built (the store lists the matching ids; each record is read, serialised straight into the
   zip with its sha256 taken on the way, and let go, so one record is in memory at a time), streamed in
   64 KiB chunks and deleted once sent, failed or abandoned; a pack whose client left before its
