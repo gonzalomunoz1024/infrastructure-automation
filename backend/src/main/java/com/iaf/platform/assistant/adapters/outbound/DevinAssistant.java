@@ -31,6 +31,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.assistant.adapters.outbound.PlaybookFiles.PlaybookFile;
 import com.iaf.platform.assistant.domain.AssistantEvent;
 import com.iaf.platform.assistant.domain.AssistantSession;
+import com.iaf.platform.assistant.domain.DraftExplainer;
 import com.iaf.platform.assistant.domain.Events;
 import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.assistant.domain.WorkflowDraft;
@@ -76,6 +77,8 @@ public class DevinAssistant implements AssistantPort {
     static final String PROVIDER_KIND = "provider-draft";
     static final String WORKFLOW_SCHEMA = "workflow-draft.schema.json";
     static final String PROVIDER_SCHEMA = "provider-draft.schema.json";
+    /** The prompt's MODE when the user asks what the draft does (the playbook's explain mode). */
+    static final String EXPLAIN_MODE = "explain";
     static final Duration MIN_POLL = Duration.ofSeconds(10);
     static final Duration MAX_POLL = Duration.ofSeconds(30);
     static final Duration DEFAULT_POLL = Duration.ofSeconds(15);
@@ -678,7 +681,11 @@ public class DevinAssistant implements AssistantPort {
 
     // ---------------------------------------------------------------- prompts
 
-    /** The macro line and the DESCRIPTION, MODE, CURRENT_DRAFT and CONTEXT blocks the playbook reads. */
+    /**
+     * The macro line and the DESCRIPTION, MODE, CURRENT_DRAFT and CONTEXT blocks the playbook reads.
+     * MODE is {@code explain} when the user asks what the draft on the canvas does: the playbook then
+     * answers in prose and leaves the draft as it is.
+     */
     static String prompt(AssistantRequest request) {
         return WORKFLOW_MACRO + "\n\n" + blocks(request);
     }
@@ -691,8 +698,11 @@ public class DevinAssistant implements AssistantPort {
     static String blocks(AssistantRequest request) {
         StringBuilder sb = new StringBuilder();
         sb.append("DESCRIPTION:\n").append(request.text() == null ? "" : request.text().trim()).append("\n\n");
-        boolean edit = (request.session() != null && request.session().isEdit()) || (request.currentDraft() != null && !request.currentDraft().isBlank());
-        sb.append("MODE: ").append(edit ? AssistantSession.EDIT : AssistantSession.CREATE).append("\n\n");
+        boolean hasDraft = request.currentDraft() != null && !request.currentDraft().isBlank();
+        boolean edit = (request.session() != null && request.session().isEdit()) || hasDraft;
+        String mode = hasDraft && !request.fromPlatform() && DraftExplainer.asks(request.text()) ? EXPLAIN_MODE
+                : edit ? AssistantSession.EDIT : AssistantSession.CREATE;
+        sb.append("MODE: ").append(mode).append("\n\n");
         sb.append("CURRENT_DRAFT:\n");
         if (request.currentDraft() == null || request.currentDraft().isBlank()) {
             sb.append("none\n\n");

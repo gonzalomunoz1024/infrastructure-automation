@@ -642,6 +642,13 @@ class DevinAssistantTest {
     }
 
     @Test
+    void askingWhatTheDraftDoesSendsTheExplainMode() {
+        assertThat(DevinAssistant.followUp(request("Explain what this workflow does", "devin-1", "kind: Workflow\n")))
+                .startsWith("DESCRIPTION:\nExplain what this workflow does\n\nMODE: explain\n\nCURRENT_DRAFT:\n```yaml\nkind: Workflow\n```\n");
+        assertThat(DevinAssistant.prompt(request("Explain what this workflow does", null, null))).as("nothing to explain yet").contains("MODE: create\n");
+    }
+
+    @Test
     void modeIsDevinAndItWantsThePlatformsChecks() {
         DevinAssistant agent = agent(Duration.ofSeconds(1));
         assertThat(agent.mode()).isEqualTo("devin");

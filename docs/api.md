@@ -533,6 +533,11 @@ started it. A service account, admin or not, only uses the sessions it started i
 nothing happened on for `platform.assistant.session-retention` (default 30 days) is deleted, and
 then answers 404.
 
+A message that asks what the workflow does ("Explain what this workflow does", "describe it",
+"summarise the flow") changes nothing: the answer is a `message` event describing the draft on the
+canvas (what starts it, each step in order with what it calls, the approvals, the outputs) and no
+`draft` event follows. Devin gets it as `MODE: explain`.
+
 Closing the stream before its `done` (the panel closed, the page left) ends the agent's own session:
 with Devin, the platform ends and archives it (`DELETE /sessions/{id}?archive=true`) so it stops
 spending ACUs, and so it does when `platform.assistant.devin-timeout` passes without a draft (the
