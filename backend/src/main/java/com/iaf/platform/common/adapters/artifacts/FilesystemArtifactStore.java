@@ -25,9 +25,10 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * The default {@link ArtifactStorePort}: files under {@code platform.artifacts.dir}, at
- * {@code sha256/<first two digits>/<digest>}. A put hashes into a staging file, then links it
- * into place, which fails rather than overwrites when the digest is already there; stored files
- * are read-only.
+ * {@code sha256/<first two digits>/<digest>}, and a named object at its name
+ * ({@code jobs/<id>/logs.ndjson}). A put writes a staging file, then links it into place, which
+ * fails rather than overwrites when the digest or the name is already there; stored files are
+ * read-only.
  */
 @Slf4j
 @Component
@@ -75,6 +76,52 @@ public class FilesystemArtifactStore implements ArtifactStorePort {
     @Override
     public Mono<Boolean> exists(String sha256) {
         return blocking(() -> Files.isRegularFile(pathOf(ArtifactStorePort.digest(sha256))));
+    }
+
+    @Override
+    public Mono<Boolean> putNamed(String name, byte[] content) {
+        return blocking(() -> {
+            Path target = root.resolve(ArtifactStorePort.name(name));
+            if (Files.exists(target)) {
+                return false;
+            }
+            Path staging = root.resolve("staging");
+            Files.createDirectories(staging);
+            Path part = Files.createTempFile(staging, "put-", ".part");
+            try {
+                Files.write(part, content == null ? new byte[0] : content);
+                Files.createDirectories(target.getParent());
+                readOnly(part);
+                try {
+                    Files.createLink(target, part);
+                } catch (FileAlreadyExistsException e) {
+                    return false;
+                } catch (UnsupportedOperationException | FileSystemException e) {
+                    try {
+                        Files.move(part, target);
+                    } catch (FileAlreadyExistsException taken) {
+                        return false;
+                    }
+                }
+                log.debug("stored {} ({} bytes)", name, content == null ? 0 : content.length);
+                return true;
+            } finally {
+                Files.deleteIfExists(part);
+            }
+        });
+    }
+
+    @Override
+    public Mono<byte[]> getNamed(String name) {
+        return blocking(() -> {
+            Path file = root.resolve(ArtifactStorePort.name(name));
+            return Files.isRegularFile(file) ? Optional.of(Files.readAllBytes(file)) : Optional.<byte[]>empty();
+        }).flatMap(Mono::justOrEmpty);
+    }
+
+    @Override
+    public Mono<Boolean> existsNamed(String name) {
+        return blocking(() -> Files.isRegularFile(root.resolve(ArtifactStorePort.name(name))));
     }
 
     Path pathOf(String digest) {

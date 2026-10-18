@@ -45,6 +45,7 @@ class S3ArtifactStoreTest {
     }
 
     final Map<String, byte[]> objects = new ConcurrentHashMap<>();
+    final Map<String, String> digests = new ConcurrentHashMap<>();
     final List<Seen> seen = new CopyOnWriteArrayList<>();
     volatile boolean answer412 = false;
     volatile byte[] corruptGet = null;
@@ -83,6 +84,10 @@ class S3ArtifactStoreTest {
                     return;
                 }
                 objects.put(path, body);
+                String digest = ex.getRequestHeaders().getFirst("x-amz-meta-sha256");
+                if (digest != null) {
+                    digests.put(path, digest);
+                }
                 ex.getResponseHeaders().add("ETag", "\"etag\"");
                 LocalHttp.respond(ex, 200, null);
             }
@@ -93,6 +98,9 @@ class S3ArtifactStoreTest {
                     return;
                 }
                 ex.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                if (digests.containsKey(path)) {
+                    ex.getResponseHeaders().add("x-amz-meta-sha256", digests.get(path));
+                }
                 ex.sendResponseHeaders(200, body.length);
                 try (OutputStream out = ex.getResponseBody()) {
                     out.write(body);
@@ -186,6 +194,55 @@ class S3ArtifactStoreTest {
                 .expectErrorSatisfies(e -> assertThat(e).hasMessageContaining("corrupt"))
                 .verify();
         assertThat(target).doesNotExist();
+    }
+
+    @Test
+    void aNamedObjectIsWrittenOnceUnderThePrefixAndReadBack() {
+        S3ArtifactStore store = store(vault());
+        byte[] logs = "{\"seq\":1}\n".getBytes(StandardCharsets.UTF_8);
+        String key = "/plans/artifacts/jobs/j1/logs.ndjson";
+
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", logs)).expectNext(true).verifyComplete();
+        StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", "again".getBytes(StandardCharsets.UTF_8))).expectNext(false).verifyComplete();
+
+        assertThat(objects).containsOnlyKeys(key);
+        assertThat(objects.get(key)).isEqualTo(logs);
+        assertThat(seen).filteredOn(s -> s.method().equals("PUT")).as("the second write stops at the HEAD").hasSize(1);
+        Seen put = seen.stream().filter(s -> s.method().equals("PUT")).findFirst().orElseThrow();
+        assertThat(put.path()).isEqualTo(key);
+        assertThat(put.header("If-None-Match")).isEqualTo("*");
+        assertThat(put.header("Content-Type")).isEqualTo("application/x-ndjson");
+        assertThat(put.header("x-amz-meta-sha256")).isEqualTo("40fe96e5dc9e9822902a3f343389fa3cd531c145a19eb55881b0be5e9b0962e7");
+        StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(logs)).verifyComplete();
+        StepVerifier.create(store.existsNamed("jobs/j1/logs.ndjson")).expectNext(true).verifyComplete();
+        StepVerifier.create(store.existsNamed("jobs/j1/plan.json")).expectNext(false).verifyComplete();
+        StepVerifier.create(store.getNamed("jobs/j1/plan.json")).verifyComplete();
+    }
+
+    @Test
+    void aNamedWriteThatLosesTheRaceDidNotStoreIt() {
+        answer412 = true;
+        StepVerifier.create(store(vault()).putNamed("jobs/j1/plan.json", "{}".getBytes(StandardCharsets.UTF_8))).expectNext(false).verifyComplete();
+        assertThat(objects).isEmpty();
+    }
+
+    @Test
+    void aNamedObjectWhoseBytesNoLongerMatchItsDigestIsRefused() {
+        S3ArtifactStore store = store(vault());
+        store.putNamed("jobs/j1/plan.json", "{}".getBytes(StandardCharsets.UTF_8)).block();
+        assertThat(digests).containsEntry("/plans/artifacts/jobs/j1/plan.json", "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+        corruptGet = "{\"tampered\":true}".getBytes(StandardCharsets.UTF_8);
+
+        StepVerifier.create(store.getNamed("jobs/j1/plan.json"))
+                .expectErrorSatisfies(e -> assertThat(e).hasMessageContaining("corrupt"))
+                .verify();
+    }
+
+    @Test
+    void aNamedObjectGetsTheContentTypeOfItsName() {
+        assertThat(S3ArtifactStore.contentType("jobs/j1/logs.ndjson")).isEqualTo("application/x-ndjson");
+        assertThat(S3ArtifactStore.contentType("jobs/j1/plan.json")).isEqualTo("application/json");
+        assertThat(S3ArtifactStore.contentType("jobs/j1/plan.tfplan")).isEqualTo("application/octet-stream");
     }
 
     @Test

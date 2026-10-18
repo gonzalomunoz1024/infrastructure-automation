@@ -47,7 +47,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
  * The {@link ArtifactStorePort} on an S3-compatible bucket (profile {@code s3}): objects at
  * {@code <prefix>sha256/<first two digits>/<digest>}, written once with {@code If-None-Match: *}
  * (a 412 means the digest is already stored) and with the SHA-256 checksum the store verifies;
- * reads check the digest again. Credentials come from a Vault reference, or the AWS default chain.
+ * reads check the digest again. A named object is at {@code <prefix><name>}, written once the
+ * same way, its digest kept in its metadata and checked on every read. Credentials come from a
+ * Vault reference, or the AWS default chain.
  */
 @Slf4j
 @Component
@@ -160,6 +162,71 @@ public class S3ArtifactStore implements ArtifactStorePort {
     @Override
     public Mono<Boolean> exists(String sha256) {
         return blocking(() -> head(keyOf(ArtifactStorePort.digest(sha256))));
+    }
+
+    @Override
+    public Mono<Boolean> putNamed(String name, byte[] content) {
+        return blocking(() -> {
+            String key = prefix + ArtifactStorePort.name(name);
+            if (head(key)) {
+                return false;
+            }
+            byte[] bytes = content == null ? new byte[0] : content;
+            byte[] digest = ArtifactFiles.sha256().digest(bytes);
+            try {
+                s3.putObject(PutObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(key)
+                        .ifNoneMatch("*")
+                        .contentLength((long) bytes.length)
+                        .contentType(contentType(name))
+                        .checksumSHA256(Base64.getEncoder().encodeToString(digest))
+                        .metadata(Map.of("sha256", HexFormat.of().formatHex(digest)))
+                        .build(), RequestBody.fromBytes(bytes));
+            } catch (S3Exception e) {
+                if (e.statusCode() != 412) {
+                    throw e;
+                }
+                return false; // stored meanwhile; write-once keeps the first copy
+            }
+            log.debug("stored {} ({} bytes) in s3://{}/{}", name, bytes.length, bucket, key);
+            return true;
+        });
+    }
+
+    @Override
+    public Mono<byte[]> getNamed(String name) {
+        return blocking(() -> {
+            String key = prefix + ArtifactStorePort.name(name);
+            try (ResponseInputStream<GetObjectResponse> in = s3.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build())) {
+                byte[] bytes = in.readAllBytes();
+                String expected = in.response().metadata() == null ? null : in.response().metadata().get("sha256");
+                String got = HexFormat.of().formatHex(ArtifactFiles.sha256().digest(bytes));
+                if (expected != null && !expected.equalsIgnoreCase(got)) {
+                    throw new IllegalStateException("artifact " + name + " is corrupt: its content hashes to " + got + ", not " + expected);
+                }
+                return Optional.of(bytes);
+            } catch (NoSuchKeyException e) {
+                return Optional.<byte[]>empty();
+            } catch (S3Exception e) {
+                if (e.statusCode() == 404) {
+                    return Optional.<byte[]>empty();
+                }
+                throw e;
+            }
+        }).flatMap(Mono::justOrEmpty);
+    }
+
+    @Override
+    public Mono<Boolean> existsNamed(String name) {
+        return blocking(() -> head(prefix + ArtifactStorePort.name(name)));
+    }
+
+    static String contentType(String name) {
+        if (name.endsWith(".ndjson")) {
+            return "application/x-ndjson";
+        }
+        return name.endsWith(".json") ? "application/json" : "application/octet-stream";
     }
 
     String keyOf(String digest) {
