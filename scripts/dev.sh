@@ -3,6 +3,7 @@
 #
 #   scripts/dev.sh              backend on :8080, frontend on :3000
 #   scripts/dev.sh --temporal   also runs the interpreter on a local Temporal dev server (:7233, UI :8233)
+#   scripts/dev.sh --postgres   keeps the platform's state in PostgreSQL (docker compose's on :5432, or SPRING_DATASOURCE_URL)
 #   scripts/dev.sh --no-frontend
 #
 # Stops both when you press Ctrl-C.
@@ -10,12 +11,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMPORAL=false
+POSTGRES=false
 FRONTEND=true
 for arg in "$@"; do
   case "$arg" in
     --temporal) TEMPORAL=true ;;
+    --postgres) POSTGRES=true ;;
     --no-frontend) FRONTEND=false ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -47,6 +50,18 @@ if $TEMPORAL; then
   SPRING_PROFILES="demo,temporal"
 else
   SPRING_PROFILES="demo"
+fi
+
+if $POSTGRES; then
+  if [ -n "${SPRING_DATASOURCE_URL:-}" ]; then
+    echo "▸ postgres from SPRING_DATASOURCE_URL"
+  elif command -v docker >/dev/null; then
+    echo "▸ postgres on :5432 through docker compose"
+    (cd "$ROOT" && docker compose up -d --wait postgres)
+  else
+    echo "--postgres needs docker, or SPRING_DATASOURCE_URL naming a PostgreSQL 16 database" >&2; exit 1
+  fi
+  SPRING_PROFILES="$SPRING_PROFILES,postgres"
 fi
 
 echo "▸ backend on :8080 (profiles: $SPRING_PROFILES)"
