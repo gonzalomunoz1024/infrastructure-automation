@@ -81,7 +81,9 @@ credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `
 provider calls, and Ansible, Terraform, script and http steps run for real, see
 [How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `postgres` (the
 stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DATASOURCE_URL`,
-`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3), `github`
+`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3:
+playbook uploads, saved plans and each ended job's log lines and plan, see
+[Data](docs/architecture.md#data)), `github`
 (change requests as pull requests on the content repo). The Git workflow store (JGit over the
 content repo, a branch per change request) is not a profile but the property
 `platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`); it commits to its own clone only, so

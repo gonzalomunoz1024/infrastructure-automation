@@ -146,6 +146,23 @@ credential, each as an identity that holds nothing: a signed webhook (its contro
 signature) and the read of a shared evidence link, `GET /api/v1/audit/shared/{token}`, whose
 token is the secret (the audit slice keeps only its SHA-256 and refuses an expired one).
 
+### Data
+
+PostgreSQL (the `postgres` profile, below) holds the registry (workflow versions while the Git
+store is off, change requests, providers and their versions, releases, resource types and
+resources), the audit evidence (unless the `worm` or `worm-s3` profile keeps it), the runs index
+(jobs, approvals and their events), the gateway's quotas and idempotency keys, the inbox, and the
+other stores the table below lists. Git is the source of truth for workflows and providers: every
+start seeds them from the content repository in `platform.content.dir`, and with
+`platform.content.git` on that repository is the workflow store itself (`GitWorkflowStore`, below,
+which commits every draft and publish) and a provider saved through the platform is written back
+to its file there, uncommitted. Object storage, through `ArtifactStorePort` (a bucket under the
+`s3` profile, else files under `platform.artifacts.dir`), holds playbook uploads and Terraform's
+saved plans by SHA-256, and each ended job's archive: its log lines (`jobs/<id>/logs.ndjson`) and
+the plan it was started with (`jobs/<id>/plan.json`). WORM evidence goes to object storage under
+its own profile, `worm-s3`: S3 Object Lock objects in `platform.audit.worm.s3.bucket` (or, under
+`worm`, read-only files in `platform.audit.worm.dir`).
+
 ### Persistence
 
 Without a profile every store is in memory and a restart starts over. The `postgres` profile
