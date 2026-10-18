@@ -33,6 +33,7 @@ import com.iaf.platform.common.ports.GitRemotePort.Resolved;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
@@ -610,6 +611,97 @@ class WorkflowCommandHandlerTest {
                 .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
                 .verifyComplete();
         assertThat(eventsOf("change-request.merged").get(0).data().path("by").asText()).isEqualTo("junior");
+    }
+
+    static ChangeRequest providerChange(String id, String name, String author, String yaml) {
+        return new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, name, "1.4.0", "change/" + name + "-1.4.0", "Update " + name, author,
+                ChangeRequest.Status.OPEN, List.of(new Check("schema", "Schema", "passed", null)), "all", yaml, "", NOW, null, null, null);
+    }
+
+    @Test
+    void aProviderChangeIsJudgedByTheStoredProvidersOwnerNotByTheOwnerItsFileNames() {
+        // a team-data change to team-compute's vsphere that names team-data as the owner
+        String taken = SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("owner: team-compute", "owner: team-data");
+        assertThat(taken).contains("owner: team-data");
+        changeRequests.save(providerChange("cr_take", "vsphere", "mateo", taken));
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessage("Ana may not change provider vsphere (owned by team-compute)"))
+                .verify();
+        StepVerifier.create(handler.closeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectError(ForbiddenException.class)
+                .verify();
+        assertThat(changeRequests.get("cr_take").orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(eventsOf("change-request.merged")).isEmpty();
+
+        StepVerifier.create(handler.closeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aNewProviderIsJudgedByTheOwnerItsFileNames() {
+        String lab = SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("name: vsphere\n", "name: vsphere-lab\n").replace("owner: team-compute", "owner: team-data");
+        assertThat(lab).contains("name: vsphere-lab");
+        changeRequests.save(providerChange("cr_lab", "vsphere-lab", "mateo", lab));
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_lab").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessage("Junior may not change provider vsphere-lab (owned by team-data)"))
+                .verify();
+        StepVerifier.create(handler.mergeChangeRequest("cr_lab").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aMergedProviderChangeIsPublishedThroughTheProvidersSliceBeforeTheMergeIsAnnounced() {
+        changeRequests.save(providerChange("cr_prov", "vsphere", "mateo", SampleFixtures.yaml("providers/team-compute/vsphere.yaml")));
+        ProviderCommands providerCommands = mock(ProviderCommands.class);
+        List<String> seen = new ArrayList<>();
+        when(providerCommands.publishMerged("cr_prov")).thenAnswer(inv -> Mono.fromRunnable(() -> {
+            seen.add(changeRequests.get("cr_prov").orElseThrow().status().json());
+            seen.add("announced: " + eventsOf("change-request.merged").size());
+        }));
+        handler.setProviderCommands(providerCommands);
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(seen).as("published once the change request is merged, before anyone hears of it").containsExactly("merged", "announced: 0");
+        assertThat(eventsOf("change-request.merged")).hasSize(1);
+        assertThat(changeRequests.get("cr_prov").orElseThrow().mergedBy()).isEqualTo("junior");
+    }
+
+    @Test
+    void aProviderThatCannotBePublishedLeavesItsChangeRequestOpen() {
+        changeRequests.save(providerChange("cr_prov", "vsphere", "mateo", SampleFixtures.yaml("providers/team-compute/vsphere.yaml")));
+        ProviderCommands providerCommands = mock(ProviderCommands.class);
+        when(providerCommands.publishMerged("cr_prov")).thenReturn(Mono.error(new ConflictException("change request cr_prov carries no provider file to publish")));
+        handler.setProviderCommands(providerCommands);
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalStateException.class)
+                        .hasMessage("change request cr_prov stays open: publishing provider vsphere failed: change request cr_prov carries no provider file to publish"))
+                .verify();
+        ChangeRequest cr = changeRequests.get("cr_prov").orElseThrow();
+        assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(cr.mergedBy()).isNull();
+        assertThat(eventsOf("change-request.merged")).isEmpty();
+    }
+
+    @Test
+    void aChangeRequestWhoseOwnerCannotBeNamedIsDecidedByAnAdminOnly() {
+        // a workflow change request whose version is no longer in the store
+        changeRequests.save(new ChangeRequest("cr_gone", ChangeRequest.Kind.WORKFLOW, "gone", "1.0.0", "change/gone-1.0.0", "Publish gone", "mateo",
+                ChangeRequest.Status.OPEN, List.of(new Check("schema", "Schema", "passed", null)), "all", "", "", NOW, null, null, null));
+        StepVerifier.create(handler.closeChangeRequest("cr_gone").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Junior may not decide on workflow gone: no owner team can be named for it, so only an admin may"))
+                .verify();
+        assertThat(changeRequests.get("cr_gone").orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        StepVerifier.create(handler.closeChangeRequest("cr_gone").contextWrite(ctx -> CurrentIdentity.with(ctx, ROOT)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
     }
 
     @Test

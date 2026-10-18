@@ -113,4 +113,16 @@ public interface ProviderCommands {
 
     /** Opens a change request for the next patch version with the SLO and alert channel ({@code unchanged} when they are the same). */
     Mono<CommandAccepted> slo(String name, SetSlo command);
+
+    /**
+     * Publishes the provider file of a merged provider change request: the current version, or a
+     * version kept beside it for a canary to roll out, and the {@code provider.published} event.
+     * Call it after saving the change request as merged and fail the merge when it errors.
+     * Idempotent: once the version is published a second call completes without changing anything.
+     * The workflows slice calls it from its merge; until the providers slice implements it, it does
+     * nothing and the providers slice's change-request.merged listener publishes.
+     */
+    default Mono<Void> publishMerged(String changeRequestId) {
+        return Mono.empty();
+    }
 }

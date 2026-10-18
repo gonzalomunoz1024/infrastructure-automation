@@ -13,6 +13,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +36,7 @@ import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -117,6 +119,18 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     @Autowired(required = false)
     void setArtifacts(ArtifactStorePort artifacts) {
         this.artifacts = artifacts;
+    }
+
+    /**
+     * Publishes the provider of a merged provider change request. Set by Spring, lazily (the
+     * providers slice reads change requests too); in handlers built by hand nothing is called and
+     * the change-request.merged listener of the providers slice publishes, as it did before.
+     */
+    private ProviderCommands providerCommands;
+
+    @Autowired(required = false)
+    void setProviderCommands(@Lazy ProviderCommands providerCommands) {
+        this.providerCommands = providerCommands;
     }
 
     @PostConstruct
@@ -388,46 +402,97 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     @Override
     public Mono<CommandAccepted> mergeChangeRequest(String id) {
-        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            ChangeRequest cr = changeRequests.get(id).orElseThrow(() -> new NotFoundException("change request", id));
-            if (cr.status() != ChangeRequest.Status.OPEN) {
-                throw new ConflictException("change request " + id + " is " + cr.status().json());
-            }
-            if (!cr.checksPassed()) {
-                throw new ConflictException("checks failed", PublishChecks.failed(cr.checks()));
-            }
-            // the reviewer is not the author: nobody merges their own change, admins excepted
-            if (who.id().equals(cr.author()) && !who.admin()) {
-                throw new ForbiddenException(who.name() + " opened change request " + id + "; someone else must review and merge it");
-            }
-            Instant now = clock.instant();
-            Map<String, String> links;
-            if (cr.kind() == ChangeRequest.Kind.WORKFLOW) {
-                WorkflowRecord rec = store.get(cr.name(), cr.version())
-                        .orElseThrow(() -> new NotFoundException("workflow version", cr.name() + "@" + cr.version()));
-                AccessRules.requireEdit(who, rec.definition().metadata().owner(), "workflow " + cr.name());
-                Check routes = PublishChecks.routes(rec.definition(), publishedDefinitions());
-                if (PublishChecks.FAILED.equals(routes.status())) {
-                    throw new ConflictException("another workflow was published on the same route: " + routes.detail());
-                }
-                Optional<WorkflowRecord> previous = store.published(cr.name()).filter(p -> !p.version().equals(cr.version()));
-                // the change request first: its pull request may refuse the merge, and then nothing is published
-                changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, now, who.id()));
-                previous.ifPresent(p -> store.save(p.withStatus(WorkflowStatus.RETIRED)));
-                store.save(rec.published(now, who.id(), null));
-                events.publish(CR_MERGED, "change-request", id, who.id(), crData(cr).put("yaml", rec.yaml()).put("by", who.id()));
-                ObjectNode published = data().put("name", cr.name()).put("version", cr.version()).put("strategy", cr.strategy()).put("by", who.id());
-                published.put("previous", previous.map(WorkflowRecord::version).orElse(null));
-                events.publish(PUBLISHED, "workflow", cr.name(), who.id(), published);
-                links = Map.of("workflow", "/api/v1/workflows/" + cr.name());
-            } else {
-                AccessRules.requireEdit(who, providerOwner(cr.yaml()), "provider " + cr.name());
-                changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, now, who.id()));
-                events.publish(CR_MERGED, "change-request", id, who.id(), crData(cr).put("yaml", cr.yaml()).put("by", who.id()));
-                links = Map.of("provider", "/api/v1/providers/" + cr.name());
-            }
-            return CommandAccepted.of(id, "merged", links);
-        }));
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> mergeable(id, who))
+                .flatMap(cr -> cr.kind() == ChangeRequest.Kind.WORKFLOW ? blocking(() -> mergeWorkflow(cr, who)) : mergeProvider(cr, who)));
+    }
+
+    /** An open change request whose checks passed, merged by someone other than its author (admins excepted). */
+    private ChangeRequest mergeable(String id, Identity who) {
+        ChangeRequest cr = changeRequests.get(id).orElseThrow(() -> new NotFoundException("change request", id));
+        if (cr.status() != ChangeRequest.Status.OPEN) {
+            throw new ConflictException("change request " + id + " is " + cr.status().json());
+        }
+        if (!cr.checksPassed()) {
+            throw new ConflictException("checks failed", PublishChecks.failed(cr.checks()));
+        }
+        // the reviewer is not the author: nobody merges their own change, admins excepted
+        if (who.id().equals(cr.author()) && !who.admin()) {
+            throw new ForbiddenException(who.name() + " opened change request " + id + "; someone else must review and merge it");
+        }
+        return cr;
+    }
+
+    private CommandAccepted mergeWorkflow(ChangeRequest cr, Identity who) {
+        String id = cr.id();
+        Instant now = clock.instant();
+        WorkflowRecord rec = store.get(cr.name(), cr.version())
+                .orElseThrow(() -> new NotFoundException("workflow version", cr.name() + "@" + cr.version()));
+        requireChangeOwner(who, rec.definition().metadata().owner(), "workflow " + cr.name());
+        Check routes = PublishChecks.routes(rec.definition(), publishedDefinitions());
+        if (PublishChecks.FAILED.equals(routes.status())) {
+            throw new ConflictException("another workflow was published on the same route: " + routes.detail());
+        }
+        Optional<WorkflowRecord> previous = store.published(cr.name()).filter(p -> !p.version().equals(cr.version()));
+        // the change request first: its pull request may refuse the merge, and then nothing is published
+        changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, now, who.id()));
+        previous.ifPresent(p -> store.save(p.withStatus(WorkflowStatus.RETIRED)));
+        store.save(rec.published(now, who.id(), null));
+        events.publish(CR_MERGED, "change-request", id, who.id(), crData(cr).put("yaml", rec.yaml()).put("by", who.id()));
+        ObjectNode published = data().put("name", cr.name()).put("version", cr.version()).put("strategy", cr.strategy()).put("by", who.id());
+        published.put("previous", previous.map(WorkflowRecord::version).orElse(null));
+        events.publish(PUBLISHED, "workflow", cr.name(), who.id(), published);
+        return CommandAccepted.of(id, "merged", Map.of("workflow", "/api/v1/workflows/" + cr.name()));
+    }
+
+    /**
+     * Judged against the stored provider's owner (the file's when the provider is new, never the
+     * file's for one that exists), saved merged (the providers slice publishes only a merged change
+     * request), then published through the providers slice before anyone hears of the merge: when
+     * publishing fails the change request is open again and the merge answers 500 with the reason.
+     */
+    private Mono<CommandAccepted> mergeProvider(ChangeRequest cr, Identity who) {
+        return changeOwner(cr)
+                .flatMap(owner -> blocking(() -> {
+                    requireChangeOwner(who, owner.orElse(null), "provider " + cr.name());
+                    changeRequests.save(cr.withStatus(ChangeRequest.Status.MERGED, clock.instant(), who.id()));
+                    return cr;
+                }))
+                .flatMap(merged -> publishProvider(merged)
+                        .onErrorResume(e -> blocking(() -> {
+                            changeRequests.save(cr);
+                            return cr;
+                        }).then(Mono.error(new IllegalStateException("change request " + cr.id() + " stays open: publishing provider " + cr.name()
+                                + " failed: " + e.getMessage(), e))))
+                        .then(blocking(() -> {
+                            events.publish(CR_MERGED, "change-request", cr.id(), who.id(), crData(cr).put("yaml", cr.yaml()).put("by", who.id()));
+                            return CommandAccepted.of(cr.id(), "merged", Map.of("provider", "/api/v1/providers/" + cr.name()));
+                        })));
+    }
+
+    private Mono<Void> publishProvider(ChangeRequest merged) {
+        return providerCommands == null ? Mono.empty() : providerCommands.publishMerged(merged.id());
+    }
+
+    /**
+     * The team that may merge or close a change request: the workflow version's owner; for a
+     * provider, the stored provider's owner, or the file's when no provider has that name yet.
+     * Empty when nobody can be named, and then only an admin decides ({@link #requireChangeOwner}).
+     */
+    private Mono<Optional<String>> changeOwner(ChangeRequest cr) {
+        if (cr.kind() == ChangeRequest.Kind.WORKFLOW) {
+            return blocking(() -> store.get(cr.name(), cr.version()).map(r -> r.definition().metadata().owner()).filter(o -> !o.isBlank()));
+        }
+        return providers.provider(cr.name())
+                .map(p -> Optional.ofNullable(p.owner()).filter(o -> !o.isBlank()))
+                .switchIfEmpty(Mono.fromSupplier(() -> Optional.ofNullable(providerOwner(cr.yaml())).filter(o -> !o.isBlank())));
+    }
+
+    /** {@link AccessRules#requireEdit} for a change request, where an owner nobody can name leaves the decision to an admin. */
+    private static void requireChangeOwner(Identity who, String owner, String what) {
+        if ((owner == null || owner.isBlank()) && !who.admin()) {
+            throw new ForbiddenException(who.name() + " may not decide on " + what + ": no owner team can be named for it, so only an admin may");
+        }
+        AccessRules.requireEdit(who, owner, what);
     }
 
     private List<WorkflowDefinition> publishedDefinitions() {
@@ -441,17 +506,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             if (cr.status() != ChangeRequest.Status.OPEN) {
                 throw new ConflictException("change request " + id + " is " + cr.status().json());
             }
+            return cr;
+        }).flatMap(cr -> changeOwner(cr).flatMap(owner -> blocking(() -> {
+            requireChangeOwner(who, owner.orElse(null), (cr.kind() == ChangeRequest.Kind.WORKFLOW ? "workflow " : "provider ") + cr.name());
             Optional<WorkflowRecord> rec = cr.kind() == ChangeRequest.Kind.WORKFLOW ? store.get(cr.name(), cr.version()) : Optional.empty();
-            if (cr.kind() == ChangeRequest.Kind.WORKFLOW) {
-                AccessRules.requireEdit(who, rec.map(r -> r.definition().metadata().owner()).orElse(null), "workflow " + cr.name());
-            } else {
-                AccessRules.requireEdit(who, providerOwner(cr.yaml()), "provider " + cr.name());
-            }
             changeRequests.save(cr.withStatus(ChangeRequest.Status.CLOSED, clock.instant(), who.id()));
             rec.filter(r -> r.status() == WorkflowStatus.CANDIDATE).ifPresent(r -> store.save(r.withStatus(WorkflowStatus.DRAFT)));
             events.publish(CR_CLOSED, "change-request", id, who.id(), crData(cr).put("by", who.id()));
             return CommandAccepted.of(id, "closed", null);
-        }));
+        }))));
     }
 
     // ------------------------------------------------------------------ replay
