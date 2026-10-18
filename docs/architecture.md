@@ -116,6 +116,11 @@ result through `ChildResults`, which carries those registrations. The same class
   child workflows, `Workflow.await` for approvals and pause-on-failure, and `Workflow.sleep` for
   waits. The definition snapshot travels in the workflow input.
 
+A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
+in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
+bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
+signal a registry listener sends to the waiting workflow.
+
 Expressions are n8n-style: `{{ $input.vmId }}`, `{{ $json.vm.id }}` (previous step's output),
 `{{ $('Check VM exists').json.vm.name }}`, `{{ $job.id }}`, `{{ $env.name }}`. See
 `docs/config-as-code.md`.

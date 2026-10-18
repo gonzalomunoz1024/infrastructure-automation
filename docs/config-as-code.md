@@ -105,7 +105,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource               |
+| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic                                               |

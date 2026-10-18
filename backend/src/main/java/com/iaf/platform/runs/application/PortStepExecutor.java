@@ -79,6 +79,20 @@ public class PortStepExecutor implements StepExecutor {
 
         boolean cancelled(JobContext ctx);
 
+        /**
+         * The {@code use} step's wait: until resource {@code id} reaches {@code state}, at most
+         * {@code timeout}. True when it may have (the step reads it again), false when the time
+         * ran out; cancelling the job ends the wait with a {@link JobCancelled}. The in-process
+         * engine is woken by the registry's events on the EventBus ({@code ResourceQueries.awaitState});
+         * on Temporal this is {@code Workflow.await(timeout, ...)} over a signal a registry listener
+         * sends to the waiting workflow. The default, for an engine with neither, looks again every
+         * {@link PortStepExecutor#USE_POLL}.
+         */
+        default boolean awaitResource(JobContext ctx, String type, String id, String state, Duration timeout) {
+            sleep(ctx, timeout.compareTo(USE_POLL) < 0 ? timeout : USE_POLL);
+            return true;
+        }
+
         /** Run a child job to its end and return {@code { jobId, status, outputs }}; a failed child is a {@link ChildFailure}. */
         JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout);
 
@@ -319,14 +333,15 @@ public class PortStepExecutor implements StepExecutor {
             if (!request.waitUntilReady() || "ready".equals(r.status()) || dryRun) {
                 return JobViews.MAPPER.valueToTree(r);
             }
-            if (!now().isBefore(deadline)) {
+            // woken when the registry says the resource changed, within the step's timeout
+            Duration left = Duration.between(now(), deadline);
+            if (left.isNegative() || left.isZero() || !engine.awaitResource(ctx, request.type(), request.id(), "ready", left)) {
                 throw new StepFailure(step.id(), "timeout", request.type() + " " + request.id() + " was not ready within " + Durations.format(limit)
                         + " (status " + r.status() + ")", true);
             }
             if (engine.cancelled(ctx)) {
                 throw new JobCancelled(ctx.jobId());
             }
-            engine.sleep(ctx, USE_POLL);
         }
     }
 

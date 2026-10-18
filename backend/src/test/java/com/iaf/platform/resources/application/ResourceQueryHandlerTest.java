@@ -24,6 +24,7 @@ import com.iaf.platform.catalog.SampleCatalog;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
@@ -42,6 +43,7 @@ class ResourceQueryHandlerTest {
 
     InMemoryResourceStore store;
     PolicyPort policy = mock(PolicyPort.class);
+    EventBus bus = new EventBus(CLOCK);
     ResourceQueryHandler handler;
 
     @BeforeEach
@@ -52,7 +54,7 @@ class ResourceQueryHandlerTest {
         SampleCatalog.types().forEach(store::saveType);
         when(policy.engine()).thenReturn("mock");
         when(policy.evaluate(any())).thenReturn(Mono.just(PolicyDecision.allow("mock")));
-        handler = new ResourceQueryHandler(store, policy, Duration.ofMillis(20), Duration.ofMillis(400));
+        handler = new ResourceQueryHandler(store, policy, bus, Duration.ofMillis(400));
         store.save(resource("image-base", "image", "ready", "team-platform", List.of()));
         store.save(resource("image-old", "image", "deprecated", "team-platform", List.of()));
         store.save(resource("vm-web1", "vm", "ready", "team-compute", List.of("image-base")));
@@ -105,15 +107,42 @@ class ResourceQueryHandlerTest {
         verify(policy, never()).evaluate(any());
     }
 
+    /** What the command handler does: save, then tell the bus. */
+    void registerReady(String id) {
+        store.save(store.resource(id).orElseThrow().withStatus("ready", CLOCK.instant()));
+        bus.publish("resource.registered", "resource", id, "gonzalo", F.objectNode().put("id", id).put("state", "ready"));
+    }
+
     @Test
     void useWaitsUntilTheResourceIsReady() {
-        CompletableFuture.delayedExecutor(80, TimeUnit.MILLISECONDS)
-                .execute(() -> store.save(store.resource("vm-web2").orElseThrow().withStatus("ready", CLOCK.instant())));
+        CompletableFuture.delayedExecutor(80, TimeUnit.MILLISECONDS).execute(() -> registerReady("vm-web2"));
         StepVerifier.create(handler.use("vm", "vm-web2", SampleCatalog.OPS, false, "ready"))
                 .assertNext(r -> assertThat(r.status()).isEqualTo("ready"))
                 .verifyComplete();
         // already there: no wait at all
         StepVerifier.create(handler.use("vm", "vm-web1", SampleCatalog.OPS, false, "ready")).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void aWaitIsWokenByTheRegistryEventNotByPolling() {
+        // the store changes without an event: nothing looks again, so the wait runs out
+        CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS)
+                .execute(() -> store.save(store.resource("vm-web2").orElseThrow().withStatus("ready", CLOCK.instant())));
+        StepVerifier.create(handler.awaitState("vm", "vm-web2", "ready", Duration.ofMillis(300))).verifyComplete();
+
+        store.save(store.resource("vm-web2").orElseThrow().withStatus("building", CLOCK.instant()));
+        CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> registerReady("vm-web2"));
+        StepVerifier.create(handler.awaitState("vm", "vm-web2", "ready", Duration.ofSeconds(5)))
+                .assertNext(r -> assertThat(r.status()).isEqualTo("ready"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aWaitAnswersAtOnceWhenTheResourceIsAlreadyThereAndIgnoresOtherResources() {
+        StepVerifier.create(handler.awaitState("vm", "vm-web1", "ready", Duration.ofSeconds(5))).expectNextCount(1).verifyComplete();
+        StepVerifier.create(handler.awaitState("image", "vm-web1", "ready", Duration.ofMillis(100))).as("another type").verifyComplete();
+        CompletableFuture.delayedExecutor(50, TimeUnit.MILLISECONDS).execute(() -> registerReady("vm-web1"));
+        StepVerifier.create(handler.awaitState("vm", "vm-web2", "ready", Duration.ofMillis(300))).as("an event about another id").verifyComplete();
     }
 
     @Test

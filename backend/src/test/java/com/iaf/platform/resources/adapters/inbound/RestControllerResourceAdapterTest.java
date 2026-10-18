@@ -49,8 +49,9 @@ class RestControllerResourceAdapterTest {
         store.save(resource("image-base", "image", "ready", List.of()));
         store.save(resource("vm-web1", "vm", "ready", List.of("image-base")));
         store.save(resource("vm-web2", "vm", "building", List.of("image-base")));
+        EventBus bus = new EventBus(CLOCK);
         RestControllerResourceAdapter adapter = new RestControllerResourceAdapter(
-                new ResourceCommandHandler(store, new EventBus(CLOCK), CLOCK), new ResourceQueryHandler(store, policy));
+                new ResourceCommandHandler(store, bus, CLOCK), new ResourceQueryHandler(store, policy, bus));
         client = WebTestClient.bindToController(adapter)
                 .controllerAdvice(new GlobalExceptionHandler())
                 .httpMessageCodecs(codecs -> codecs.defaultCodecs().jackson2JsonEncoder(new Jackson2JsonEncoder(SampleCatalog.json())))

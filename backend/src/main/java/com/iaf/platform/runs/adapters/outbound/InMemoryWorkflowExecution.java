@@ -27,6 +27,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
@@ -94,6 +95,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         final AtomicReference<CompletableFuture<AttentionDecision>> attention = new AtomicReference<>();
         final AtomicReference<AttentionDecision> earlyAttention = new AtomicReference<>();
         final Set<String> children = ConcurrentHashMap.newKeySet();
+        /** use steps waiting for a resource; a cancel ends them */
+        final Set<CompletableFuture<?>> resourceWaits = ConcurrentHashMap.newKeySet();
         volatile String cancelledBy;
         /** the interpreter's context, kept so a parent sees what this child registered */
         volatile JobContext context;
@@ -184,6 +187,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         if (a != null) {
             a.completeExceptionally(cause);
         }
+        exec.resourceWaits.forEach(f -> f.completeExceptionally(cause));
         for (String child : exec.children) {
             Execution c = executions.get(child);
             if (c != null) {
@@ -315,6 +319,27 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
     public boolean cancelled(JobContext ctx) {
         Execution exec = executions.get(ctx.jobId());
         return exec != null && exec.cancelled.get();
+    }
+
+    /** Woken by the registry's events (ResourceQueries.awaitState listens on the EventBus); nothing polls. */
+    @Override
+    public boolean awaitResource(JobContext ctx, String type, String id, String state, Duration timeout) {
+        Execution exec = executions.get(ctx.jobId());
+        CompletableFuture<Resource> f = executors.ports().resources().awaitState(type, id, state, timeout).toFuture();
+        if (exec != null) {
+            exec.resourceWaits.add(f);
+        }
+        try {
+            if (exec != null && exec.cancelled.get()) {
+                throw new JobCancelled(ctx.jobId());
+            }
+            return await(ctx, f, timeout).isPresent();
+        } finally {
+            if (exec != null) {
+                exec.resourceWaits.remove(f);
+            }
+            f.cancel(true);
+        }
     }
 
     @Override
