@@ -58,12 +58,31 @@ class WorkerCallsTest {
         ActivityOptions o = WorkerCalls.options(ROUTE, Duration.ofMinutes(3));
         assertThat(o.getTaskQueue()).isEqualTo("provider-ip-pool");
         assertThat(o.getStartToCloseTimeout()).isEqualTo(Duration.ofMinutes(3));
+        assertThat(o.getScheduleToCloseTimeout()).as("the wait in the queue counts too").isEqualTo(Duration.ofMinutes(3));
         assertThat(o.getHeartbeatTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(o.getRetryOptions().getMaximumAttempts()).isEqualTo(1);
 
         ActivityOptions defaults = WorkerCalls.options(new WorkerRoute("q", null), null);
         assertThat(defaults.getStartToCloseTimeout()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(defaults.getScheduleToCloseTimeout()).isEqualTo(Duration.ofMinutes(10));
         assertThat(defaults.getHeartbeatTimeout()).isNull();
+    }
+
+    @Test
+    void aCallNoWorkerStartedTimesOutNamingTheQueueNobodyPolls() {
+        ActivityFailure neverStarted = new ActivityFailure("activity timed out", 5, 0, "address.reserve", "7",
+                RetryState.RETRY_STATE_TIMEOUT, "", new TimeoutFailure("timeout", null, TimeoutType.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE));
+
+        StepFailure f = WorkerCalls.failure("reserve", ROUTE, Duration.ofMinutes(2), neverStarted);
+
+        assertThat(f.errorClass()).isEqualTo("timeout");
+        assertThat(f.getMessage()).isEqualTo("Step reserve timed out after 2m: no worker on task queue provider-ip-pool picked up the call");
+        assertThat(f.retryable()).isTrue();
+        // once a worker had it, running out of time is the plain timeout
+        StepFailure late = WorkerCalls.failure("reserve", ROUTE, Duration.ofMinutes(2),
+                failed(new TimeoutFailure("timeout", null, TimeoutType.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE)));
+        assertThat(late.errorClass()).isEqualTo("timeout");
+        assertThat(late.getMessage()).doesNotContain("no worker");
     }
 
     @Test

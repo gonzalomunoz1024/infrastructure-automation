@@ -169,12 +169,14 @@ and write the provider file, so the code and the file cannot drift.
   key is `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
   of the step and when a restarted worker picks the call up again, new for a new run of the step.
   The result is the action's output, a JSON object.
-- The activity runs once. Its start-to-close timeout is the step's `timeout` (10m by default),
-  its heartbeat timeout the provider's `worker.heartbeatTimeout` (none when absent), and Temporal
-  does not retry it: the step's `retry` policy does, with the same key.
+- The activity runs once. The step's `timeout` (10m by default) is both its schedule-to-close and
+  its start-to-close timeout, so a call that no worker picks up fails the step instead of waiting
+  in the queue for good; its heartbeat timeout is the provider's `worker.heartbeatTimeout` (none
+  when absent), and Temporal does not retry it: the step's `retry` policy does, with the same key.
 - A failure is an `ApplicationFailure` whose type is the error class (`spec.errors[].class`);
-  non-retryable means no retry fixes it, and the step fails at once. A start-to-close timeout fails
-  the step as `timeout` and a heartbeat timeout as `worker-lost`, both retryable. The SDKs report
+  non-retryable means no retry fixes it, and the step fails at once. Running out of the step's
+  timeout fails the step as `timeout` (saying so when no worker on the queue picked the call up)
+  and a heartbeat timeout as `worker-lost`, both retryable. The SDKs report
   a call that breaks the contract as `invalid_request`, `invalid_input`, `invalid_output` or
   `unknown_action` (never retried) and any other exception as the retryable class `error`.
 - Cancelling the job cancels the activity; the worker learns of it through its heartbeats.
@@ -184,6 +186,28 @@ The in-memory demo answers an `sdk` action from its `sample`, as it does for eve
 Each worker is a deployment of its own, which the team that owns it scales and releases (the
 Helm chart's `providerWorkers`, the example workers in `docker-compose.yml`); a stopping worker
 stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default).
+
+### Verified against a real Temporal server
+
+Besides the test server of the backend's suite, these ran against a Temporal dev server
+(`temporal server start-dev`, Server 1.29.1, UI 2.42.1), with the backend jar on the `demo` and
+`temporal` profiles and the example workers of the three SDKs on their own queues:
+
+- The `vm-restart` sample through its generated route: two provider steps, the approval decided
+  through `POST /api/v1/approvals/{id}:approve` (a signal), an automation step, a provider step
+  and a notification, to `succeeded`; `links.temporal` opened the execution in the UI. A cancel
+  through `POST /jobs/{id}:cancel` ended a job waiting for its approval, which expired.
+- Restarts: a backend stopped while a team's worker ran a call, and started again only after the
+  call had finished, replayed the history and finished the job by itself. A job waiting for an
+  approval outlived a restart too; its approval went in as the `approve` signal through the
+  Temporal CLI, since the new instance's in-memory projection does not know the job (a shared job
+  store fills that gap).
+- `reserve-ip-address` through `POST /api/v1/addresses` on the Go (`ip-pool`) and Python
+  (`dns-records`) example workers, alone and as a three-row batch whose rows ran as child
+  workflows; a scratch workflow added the Java example (`cmdb`) as a third step.
+- Failures: a worker killed mid-call failed its step as `worker-lost` after the heartbeat timeout,
+  and the step's retry ran it again on a fresh worker with the same idempotency key; a call to a
+  queue with no worker failed its step as `timeout` after the step's timeout, naming the queue.
 
 ## Frontend
 

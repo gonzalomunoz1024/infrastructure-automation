@@ -174,6 +174,7 @@ class TeamWorkerStepsTest {
         assertThat(report.getTaskQueue().getName()).isEqualTo(QUEUE);
         assertThat(report.getHeartbeatTimeout().getSeconds()).isEqualTo(2);
         assertThat(report.getStartToCloseTimeout().getSeconds()).isEqualTo(Duration.ofMinutes(10).toSeconds());
+        assertThat(report.getScheduleToCloseTimeout().getSeconds()).isEqualTo(Duration.ofMinutes(10).toSeconds());
         assertThat(report.getRetryPolicy().getMaximumAttempts()).isEqualTo(1);
         // the openapi provider's step still runs on the platform's activities, the sdk one never does
         assertThat(scheduled(job.id(), "CallProvider").getTaskQueue().getName()).isEqualTo(TemporalTestEngine.QUEUE);
@@ -241,6 +242,34 @@ class TeamWorkerStepsTest {
         assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
         assertThat(outcome.errorClass()).isEqualTo("timeout");
         assertThat(scheduled(job.id(), "report.slow").getStartToCloseTimeout().getSeconds()).isEqualTo(3);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aCallNoWorkerPicksUpFailsTheStepAfterItsTimeoutNamingTheQueue() {
+        when(t.w.providers.provider(eq("nobody"))).thenReturn(Mono.just(ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: nobody, title: Nobody home, owner: team-x, version: 1.0.0 }
+                spec:
+                  type: sdk
+                  worker: { taskQueue: provider-nobody }
+                  actions:
+                    - { id: thing.make, title: Make a thing, effect: create }
+                """)));
+        // the test server keeps its clock while an activity waits for a worker, so this one waits in real time
+        Job job = run(oneStep("report.create", "timeout: 3s").replace("provider: reports, action: report.create", "provider: nobody, action: thing.make"));
+
+        Outcome outcome = t.result(job.id());
+
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("timeout");
+        assertThat(outcome.message()).contains("no worker on task queue provider-nobody picked up the call");
+        assertThat(t.job(job.id()).step("call").error().retryable()).isTrue();
+        ActivityTaskScheduledEventAttributes call = scheduled(job.id(), "thing.make");
+        assertThat(call.getScheduleToCloseTimeout().getSeconds()).isEqualTo(3);
+        assertThat(call.getStartToCloseTimeout().getSeconds()).isEqualTo(3);
+        assertThat(team.calls).isEmpty();
         t.replay(job.id());
     }
 

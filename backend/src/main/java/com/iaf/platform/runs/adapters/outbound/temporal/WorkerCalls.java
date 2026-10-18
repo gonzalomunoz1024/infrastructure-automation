@@ -26,10 +26,11 @@ import io.temporal.failure.TimeoutFailure;
  *   "job": { "id", "workflow", "version", "traceId" }, "step": "reserve", "environment": "prod", "attempt": 1 }
  * </pre>
  *
- * <p>The result is the action's output, a JSON object. The activity runs once: its start-to-close
- * is the step's timeout, its heartbeat timeout the provider's, and the interpreter does the
- * retrying. A failure comes back classified: an {@code ApplicationFailure}'s type is the error
- * class and non-retryable means the interpreter must not retry it, a start-to-close timeout is
+ * <p>The result is the action's output, a JSON object. The activity runs once: the step's timeout
+ * is its start-to-close and its schedule-to-close (a call no worker picks up fails instead of
+ * waiting in the queue for good), its heartbeat timeout is the provider's, and the interpreter
+ * does the retrying. A failure comes back classified: an {@code ApplicationFailure}'s type is the
+ * error class and non-retryable means the interpreter must not retry it, a timeout is
  * {@value #TIMEOUT} and a heartbeat timeout {@value #WORKER_LOST}.</p>
  *
  * <p>Pure functions of their arguments: they run inside the workflow.</p>
@@ -69,11 +70,17 @@ final class WorkerCalls {
         return p;
     }
 
-    /** One attempt on the worker's queue, as long as the step may take; the heartbeat timeout only when the provider sets one. */
+    /**
+     * One attempt on the worker's queue, as long as the step may take from the moment it is asked
+     * (schedule-to-close, so a queue nobody polls fails the step) and once a worker has it
+     * (start-to-close); the heartbeat timeout only when the provider sets one.
+     */
     static ActivityOptions options(WorkerRoute route, Duration stepTimeout) {
+        Duration limit = stepTimeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : stepTimeout;
         ActivityOptions.Builder b = ActivityOptions.newBuilder()
                 .setTaskQueue(route.taskQueue())
-                .setStartToCloseTimeout(stepTimeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : stepTimeout)
+                .setScheduleToCloseTimeout(limit)
+                .setStartToCloseTimeout(limit)
                 .setRetryOptions(ONCE);
         if (route.heartbeatTimeout() != null && route.heartbeatTimeout().isPositive()) {
             b.setHeartbeatTimeout(route.heartbeatTimeout());
@@ -89,8 +96,13 @@ final class WorkerCalls {
             return new StepFailure(stepId, type, af.getOriginalMessage(), !af.isNonRetryable());
         }
         if (cause instanceof TimeoutFailure t) {
-            return timeout(stepId, t, "the worker on task queue " + route.taskQueue(),
-                    stepTimeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : stepTimeout, route.heartbeatTimeout());
+            Duration limit = stepTimeout == null ? PortStepExecutor.DEFAULT_CALL_TIMEOUT : stepTimeout;
+            if (f.getStartedEventId() <= 0 && t.getTimeoutType() != TimeoutType.TIMEOUT_TYPE_HEARTBEAT) {
+                // never started: nothing polled the queue for the whole step timeout
+                return new StepFailure(stepId, TIMEOUT, "Step " + stepId + " timed out after " + Durations.format(limit)
+                        + ": no worker on task queue " + route.taskQueue() + " picked up the call", true);
+            }
+            return timeout(stepId, t, "the worker on task queue " + route.taskQueue(), limit, route.heartbeatTimeout());
         }
         String message = cause == null ? f.getOriginalMessage() : cause.getMessage() == null ? cause.toString() : cause.getMessage();
         return new StepFailure(stepId, "error", message, true);

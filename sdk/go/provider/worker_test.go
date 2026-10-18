@@ -251,6 +251,12 @@ func TestCancellingTheStepCancelsTheHandlersContext(t *testing.T) {
 	assert.Eventually(t, sawCancel.Load, 5*time.Second, 10*time.Millisecond)
 }
 
+func TestRunServesActivitiesOnlyAndDrainsForTheDrainTimeout(t *testing.T) {
+	o := runOptions(Options{Address: "127.0.0.1:7233", Namespace: "default", DrainTimeout: 45 * time.Second})
+	assert.True(t, o.DisableWorkflowWorker, "a provider's worker never polls for workflow tasks")
+	assert.Equal(t, 45*time.Second, o.WorkerStopTimeout)
+}
+
 func TestOptionsComeFromTheEnvironment(t *testing.T) {
 	assert.Equal(t, Options{Address: "127.0.0.1:7233", Namespace: "default", DrainTimeout: 30 * time.Second},
 		optionsFrom(func(string) string { return "" }))

@@ -93,6 +93,12 @@ func NewWorker(c client.Client, p *Provider, opts worker.Options) worker.Worker 
 	return w
 }
 
+// runOptions is the worker Run starts: activities only (it registers no workflow, so it does not
+// poll the queue for workflow tasks) and the drain timeout as its stop timeout.
+func runOptions(opts Options) worker.Options {
+	return worker.Options{WorkerStopTimeout: opts.DrainTimeout, DisableWorkflowWorker: true}
+}
+
 // Run connects to Temporal, serves the provider until ctx is done or the process gets SIGINT or
 // SIGTERM, then stops polling and lets the calls in flight finish for the drain timeout.
 func Run(ctx context.Context, p *Provider, opts Options) error {
@@ -101,7 +107,7 @@ func Run(ctx context.Context, p *Provider, opts Options) error {
 		return fmt.Errorf("connect to Temporal at %s: %w", opts.Address, err)
 	}
 	defer c.Close()
-	w := NewWorker(c, p, worker.Options{WorkerStopTimeout: opts.DrainTimeout})
+	w := NewWorker(c, p, runOptions(opts))
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := w.Start(); err != nil {
