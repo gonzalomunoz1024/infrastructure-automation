@@ -14,6 +14,14 @@ const DECISION: Record<PolicyDecision, { tone: Tone; dot: DotKind; label: string
   deny: { tone: 'critical', dot: 'critical', label: 'Denied', detail: 'Policy will refuse this run.' },
 }
 
+/** The note under a step the dry run did not take. */
+export const SKIPPED_NOTE = 'not taken in the dry run'
+
+/** `input.image` and `step get-vm` read "via …"; `built from img-77` already says how. */
+export function viaLabel(via: string): string {
+  return via.startsWith('built from') ? via : `via ${via}`
+}
+
 function ruleDot(result: string): DotKind {
   const r = result.toLowerCase()
   if (r === 'allow' || r === 'pass' || r === 'passed' || r === 'ok' || r === 'true') return 'healthy'
@@ -61,11 +69,12 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
             ) : (
               <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
                 {preview.steps.map((s) => (
-                  <li key={s.id} className="flex items-start gap-3 px-3 py-2">
+                  <li key={s.id} className={cx('flex items-start gap-3 px-3 py-2', s.skipped && 'opacity-60')} data-skipped={s.skipped ? 'true' : undefined}>
                     <EffectTag effect={s.effect} />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-primary">{s.name}</div>
+                      <div className={cx('truncate text-sm', s.skipped ? 'text-secondary' : 'text-primary')}>{s.name}</div>
                       {s.detail && <div className="text-caption text-secondary">{s.detail}</div>}
+                      {s.skipped && <div className="text-caption italic text-tertiary">{SKIPPED_NOTE}</div>}
                     </div>
                   </li>
                 ))}
@@ -85,7 +94,7 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
                       <Icon name="resource" size={11} />
                       <span className="text-primary">{r.name || r.id}</span>
                       <span className="text-tertiary">{r.type}</span>
-                      {r.via && <span className="text-tertiary">· via {r.via}</span>}
+                      {r.via && <span className="text-tertiary">· {viaLabel(r.via)}</span>}
                     </TextLink>
                   </li>
                 ))}
@@ -101,7 +110,12 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
               <div className="mt-0.5 text-title3 font-semibold tabular-nums text-primary">
                 {formatNumber(preview.cost.monthly, { digits: 2 })} <span className="text-footnote font-normal text-secondary">{preview.cost.currency}</span>
               </div>
-              {preview.cost.detail && <div className="mt-0.5 text-caption text-secondary">{preview.cost.detail}</div>}
+              {preview.cost.detail && (
+                <div className="mt-1 text-caption text-secondary" title="Where the number comes from">
+                  <span className="text-tertiary">Priced from: </span>
+                  {preview.cost.detail}
+                </div>
+              )}
             </div>
           )}
 
