@@ -170,7 +170,7 @@ public class RunsCommandHandler implements RunsCommands {
                 rows.add(merged);
             }
             if (!invalid.isEmpty()) {
-                throw new InvalidInputException(def.name(), invalid, true);
+                throw InvalidInputException.rows(def.name(), invalid);
             }
             RolloutPolicy rollout = rollout(cmd.rollout(), def);
             List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
@@ -503,7 +503,6 @@ public class RunsCommandHandler implements RunsCommands {
                         .flatMap(v -> v == null || v.equals(pub.version()) ? Mono.just(pub) : workflows.version(workflow, v).defaultIfEmpty(pub)));
     }
 
-    /** Defaults filled in, then the schema: a 400 with every problem when it does not fit. */
     /** The inventory check: an error naming every row whose x-resource ids the registry does not know. */
     private Mono<Void> requireKnownResources(WorkflowDefinition def, List<JsonNode> rows, boolean batch) {
         List<Inventory.Field> fields = Inventory.fields(def);
@@ -524,7 +523,7 @@ public class RunsCommandHandler implements RunsCommands {
                     if (invalid.isEmpty()) {
                         return Mono.<Void>empty();
                     }
-                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                    return Mono.error(batch ? InvalidInputException.rows(def.name(), invalid)
                             : new InvalidInputException(def.name(), invalid.get(0).problems()));
                 });
     }
@@ -554,7 +553,7 @@ public class RunsCommandHandler implements RunsCommands {
                     if (invalid.isEmpty()) {
                         return Mono.<Void>empty();
                     }
-                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                    return Mono.error(batch ? InvalidInputException.rows(def.name(), invalid)
                             : new InvalidInputException(def.name(), invalid.get(0).problems()));
                 });
     }

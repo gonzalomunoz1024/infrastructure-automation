@@ -16,7 +16,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 import org.springframework.context.annotation.Profile;
@@ -86,13 +85,17 @@ public class AnsibleRunnerAutomation implements AutomationRunnerPort {
     private final ArtifactStorePort artifacts;
     private final CredentialsPort credentials;
     private final ProviderQueries providers;
-    private final Map<String, Object> locks = new ConcurrentHashMap<>();
+    /** Installs of the same requirements wait for each other: a fixed set of locks, one picked by the content's hash. */
+    private final Object[] installs = new Object[16];
 
     public AnsibleRunnerAutomation(RunnersProperties props, PlaybooksProperties playbooks, GitRemotePort git, ArtifactStorePort artifacts,
             CredentialsPort credentials, ProviderQueries providers) {
         this.props = props;
         this.playbooks = playbooks;
         this.git = git;
+        for (int i = 0; i < installs.length; i++) {
+            installs[i] = new Object();
+        }
         this.artifacts = artifacts;
         this.credentials = credentials;
         this.providers = providers;
@@ -509,7 +512,7 @@ public class AnsibleRunnerAutomation implements AutomationRunnerPort {
             log.line("requirements: installed before (" + key.substring(0, 12) + ")");
             return cache;
         }
-        synchronized (locks.computeIfAbsent(key, k -> new Object())) {
+        synchronized (installs[Math.floorMod(key.hashCode(), installs.length)]) {
             if (Files.isDirectory(cache)) {
                 return cache;
             }

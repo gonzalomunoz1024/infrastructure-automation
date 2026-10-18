@@ -12,7 +12,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Stream;
 
 import org.eclipse.jgit.api.Git;
@@ -276,6 +280,29 @@ class AnsibleRunnerAutomationTest {
         assertThat(Files.readAllLines(record.resolve("env")))
                 .contains("ANSIBLE_COLLECTIONS_PATH=" + cache.resolve("collections") + ":/usr/share/ansible/collections");
         assertThat(logged).anyMatch(l -> l.startsWith("requirements: installed before"));
+    }
+
+    @Test
+    void twoStepsThatNeedTheSameRequirementsAtOnceInstallThemOnce() throws Exception {
+        fake("ansible-galaxy", """
+                echo "$*" >> "$R/galaxy-calls"
+                sleep 0.3
+                prev=""
+                for a in "$@"; do if [ "$prev" = "-p" ]; then mkdir -p "$a/installed"; fi; prev="$a"; done
+                """);
+        Path project = Files.createDirectories(tmp.resolve("project"));
+        Files.writeString(project.resolve("requirements.yml"), "roles:\n  - name: acme.base\n");
+        Callable<Path> install = () -> runner.requirements(project, null, new LiveSteps.Log(logged::add, null), logged::add, Duration.ofSeconds(30));
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Path>> both = pool.invokeAll(List.of(install, install));
+            assertThat(both.get(0).get()).isEqualTo(both.get(1).get());
+            assertThat(both.get(0).get().resolve("roles/installed")).exists();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(Files.readAllLines(record.resolve("galaxy-calls"))).as("the second waited for the first and used its install").hasSize(1);
     }
 
     @Test
