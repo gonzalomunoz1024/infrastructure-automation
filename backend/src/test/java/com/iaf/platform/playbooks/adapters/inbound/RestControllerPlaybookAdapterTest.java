@@ -39,7 +39,7 @@ import reactor.core.publisher.Mono;
 
 class RestControllerPlaybookAdapterTest {
 
-    static final ObjectMapper JSON = JsonMapper.builder().serializationInclusion(JsonInclude.Include.NON_NULL).build();
+    static final ObjectMapper JSON = JsonMapper.builder().defaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL)).build();
     static final String SHA = "b".repeat(64);
     static final String COMMIT = "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d";
 

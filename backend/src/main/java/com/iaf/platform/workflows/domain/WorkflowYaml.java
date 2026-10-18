@@ -172,7 +172,7 @@ public final class WorkflowYaml {
         JsonNode o = w.get("outputs");
         if (o != null && o.isObject()) {
             Map<String, String> map = new LinkedHashMap<>();
-            o.fields().forEachRemaining(e -> map.put(e.getKey(), e.getValue().asText()));
+            o.properties().forEach(e -> map.put(e.getKey(), e.getValue().asText()));
             outputs = map;
         }
         return new Flow(steps, catchFlow, outputs);

@@ -78,7 +78,7 @@ public final class ProviderYaml {
         GitRef git = gs != null && gs.isObject() ? new GitRef(text(gs, "repo"), text(gs, "ref"), text(gs, "path"), text(gs, "credential")) : null;
         SpecSource specSource = ss != null && ss.isObject() ? new SpecSource(text(ss, "url"), text(ss, "sha256"), text(ss, "content"), git, text(ss, "commit")) : null;
         Map<String, String> endpoints = new LinkedHashMap<>();
-        s.path("endpoints").fields().forEachRemaining(e -> endpoints.put(e.getKey(), e.getValue().asText()));
+        s.path("endpoints").properties().forEach(e -> endpoints.put(e.getKey(), e.getValue().asText()));
         JsonNode au = s.get("auth");
         Auth auth = au != null && au.isObject() ? new Auth(au.path("type").asText("none"), text(au, "credential"), text(au, "header")) : new Auth("none", null, null);
         List<Action> actions = new ArrayList<>();
@@ -102,7 +102,7 @@ public final class ProviderYaml {
                     text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null));
         }
         Map<String, JsonNode> overrides = new LinkedHashMap<>();
-        s.path("overrides").fields().forEachRemaining(e -> overrides.put(e.getKey(), e.getValue()));
+        s.path("overrides").properties().forEach(e -> overrides.put(e.getKey(), e.getValue()));
         List<ErrorClass> errors = new ArrayList<>();
         for (JsonNode e : s.path("errors")) {
             errors.add(new ErrorClass(e.get("match"), e.path("class").asText("error"), e.path("retry").asBoolean(false)));

@@ -36,7 +36,7 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @Primary
 @Profile("postgres")
-public class JdbcTelemetry implements TelemetryPort {
+public final class JdbcTelemetry implements TelemetryPort {
 
     static final int BATCH = 500;
     static final long FLUSH_EVERY_MS = 250;

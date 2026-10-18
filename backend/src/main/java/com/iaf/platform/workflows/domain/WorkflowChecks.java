@@ -199,7 +199,7 @@ public final class WorkflowChecks {
                             error("api.inputRequired", null, "api.input.required", "Required field '" + r.asText() + "' is not among the properties");
                         }
                     }
-                    in.path("properties").fields().forEachRemaining(e -> {
+                    in.path("properties").properties().forEach(e -> {
                         JsonNode xr = e.getValue().get("x-resource");
                         if (xr != null && xr.isObject()) {
                             String type = xr.path("type").asText(null);
@@ -571,7 +571,7 @@ public final class WorkflowChecks {
                 return;
             }
             if (node.isObject()) {
-                node.fields().forEachRemaining(e -> {
+                node.properties().forEach(e -> {
                     String p = path.isEmpty() ? e.getKey() : path + "." + e.getKey();
                     JsonNode v = e.getValue();
                     if (v.isTextual() && SECRET_KEY.matcher(e.getKey()).find() && !v.asText().startsWith("vault:") && !ExpressionEngine.isTemplate(v.asText()) && !v.asText().isBlank()) {
@@ -797,7 +797,7 @@ public final class WorkflowChecks {
             }
             List<String> known = new ArrayList<>();
             props.fieldNames().forEachRemaining(known::add);
-            input.fields().forEachRemaining(e -> {
+            input.properties().forEach(e -> {
                 JsonNode p = props.get(e.getKey());
                 if (p == null) {
                     warning("contract.unknownInput", s.id(), "input." + e.getKey(), "Workflow " + wf + " does not take '" + e.getKey() + "'", suggest(e.getKey(), known));
@@ -927,7 +927,7 @@ public final class WorkflowChecks {
             if (node.isTextual()) {
                 template(node.asText(), step, path, scope);
             } else if (node.isObject()) {
-                node.fields().forEachRemaining(e -> expressions(e.getValue(), step, path == null ? e.getKey() : path + "." + e.getKey(), scope));
+                node.properties().forEach(e -> expressions(e.getValue(), step, path == null ? e.getKey() : path + "." + e.getKey(), scope));
             } else if (node.isArray()) {
                 int i = 0;
                 for (JsonNode v : node) {

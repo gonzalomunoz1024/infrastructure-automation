@@ -223,9 +223,9 @@ public final class TerraformModule {
     private static List<Map.Entry<String, JsonNode>> entries(JsonNode node) {
         List<Map.Entry<String, JsonNode>> out = new ArrayList<>();
         if (node.isObject()) {
-            node.fields().forEachRemaining(out::add);
+            node.properties().forEach(out::add);
         } else if (node.isArray()) {
-            node.forEach(n -> n.fields().forEachRemaining(out::add));
+            node.forEach(n -> n.properties().forEach(out::add));
         }
         return out;
     }

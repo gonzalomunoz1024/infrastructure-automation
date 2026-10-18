@@ -9,7 +9,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -318,14 +317,12 @@ public class HttpProviderCall implements ProviderCallPort {
             }
         }
         if (!BODY_METHODS.contains(op.method())) {
-            Iterator<Map.Entry<String, JsonNode>> it = remaining.fields();
-            while (it.hasNext()) {
-                Map.Entry<String, JsonNode> e = it.next();
+            for (Map.Entry<String, JsonNode> e : remaining.properties()) {
                 if (!e.getValue().isNull()) {
                     pairs.add(encode(e.getKey()) + "=" + encode(text(e.getValue())));
                 }
-                it.remove();
             }
+            remaining.removeAll();
         }
         String full = base + (path.startsWith("/") || path.isEmpty() ? path : "/" + path);
         return pairs.isEmpty() ? full : full + "?" + String.join("&", pairs);

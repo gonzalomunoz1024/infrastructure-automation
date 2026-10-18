@@ -1,6 +1,5 @@
 package com.iaf.platform.common.redaction;
 
-import java.util.Iterator;
 import java.util.Map;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
@@ -105,9 +104,7 @@ public final class Redactor {
     private static JsonNode walk(JsonNode node, Predicate<String> known) {
         if (node.isObject()) {
             ObjectNode out = F.objectNode();
-            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> f = fields.next();
+            for (Map.Entry<String, JsonNode> f : node.properties()) {
                 JsonNode v = f.getValue();
                 if (secretKey(f.getKey()) && v != null && !v.isNull() && !v.isContainerNode() && !reference(v)) {
                     out.put(f.getKey(), MASK);

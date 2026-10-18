@@ -3,7 +3,6 @@ package com.iaf.platform.runs.application;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -82,9 +81,7 @@ class SampleWorkflowsDryRunTest {
         if (schema == null || !schema.path("properties").isObject()) {
             return out;
         }
-        Iterator<Map.Entry<String, JsonNode>> it = schema.path("properties").fields();
-        while (it.hasNext()) {
-            Map.Entry<String, JsonNode> e = it.next();
+        for (Map.Entry<String, JsonNode> e : schema.path("properties").properties()) {
             out.set(e.getKey(), valueFor(e.getKey(), e.getValue()));
         }
         return out;

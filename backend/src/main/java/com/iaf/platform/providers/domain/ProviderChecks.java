@@ -357,7 +357,7 @@ public final class ProviderChecks {
                 error(CREDENTIALS, "credential.missing", null, "spec.auth.credential", "The Vault reference needs a path, like " + suggested,
                         Fix.replace("Use a Vault reference", suggested));
             }
-            spec.fields().forEachRemaining(e -> {
+            spec.properties().forEach(e -> {
                 if ("auth".equals(e.getKey())) {
                     return;
                 }
@@ -383,7 +383,7 @@ public final class ProviderChecks {
                 return;
             }
             if (node.isObject()) {
-                node.fields().forEachRemaining(e -> {
+                node.properties().forEach(e -> {
                     String p = path + "." + e.getKey();
                     JsonNode v = e.getValue();
                     if (v.isTextual() && SECRET_KEY.matcher(e.getKey()).find() && !v.asText().startsWith("vault:")

@@ -1,7 +1,6 @@
 package com.iaf.platform.audit.domain;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
@@ -54,9 +53,7 @@ public final class PlatformEvents {
             return out;
         }
         boolean credential = type.startsWith("credential.");
-        Iterator<Map.Entry<String, JsonNode>> fields = data.fields();
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> f = fields.next();
+        for (Map.Entry<String, JsonNode> f : data.properties()) {
             String key = f.getKey();
             if (out.has(key) || (credential && !CREDENTIAL_FIELDS.contains(key))) {
                 continue;

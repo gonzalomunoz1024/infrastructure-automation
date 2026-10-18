@@ -1,7 +1,6 @@
 package com.iaf.platform.runs.domain;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -50,9 +49,7 @@ public final class ChangeTargets {
                 return v;
             }
         }
-        Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> f = fields.next();
+        for (Map.Entry<String, JsonNode> f : node.properties()) {
             if (f.getKey().endsWith("Id") || f.getKey().endsWith("Name")) {
                 String v = scalar(f.getValue());
                 if (v != null) {

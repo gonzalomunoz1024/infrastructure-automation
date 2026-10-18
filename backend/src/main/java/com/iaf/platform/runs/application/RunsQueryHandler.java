@@ -205,7 +205,7 @@ public class RunsQueryHandler implements RunsQueries {
     @Override
     public Mono<List<JsonNode>> steps(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> j.steps().stream().map(s -> (JsonNode) secrets.redact(JobViews.step(s))).toList())
+                .map(j -> j.steps().stream().map(s -> secrets.redact(JobViews.step(s))).toList())
                 .subscribeOn(Schedulers.boundedElastic());
     }
 }

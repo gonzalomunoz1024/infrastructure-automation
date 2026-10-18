@@ -2,7 +2,6 @@ package com.iaf.platform.catalog.domain;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -266,9 +265,7 @@ public final class OpenApiDocument {
     private static void queryParameters(ArrayNode params, ObjectNode body) {
         Set<String> required = new LinkedHashSet<>();
         body.path("required").forEach(r -> required.add(r.asText()));
-        Iterator<Map.Entry<String, JsonNode>> it = body.path("properties").fields();
-        while (it.hasNext()) {
-            Map.Entry<String, JsonNode> e = it.next();
+        for (Map.Entry<String, JsonNode> e : body.path("properties").properties()) {
             ObjectNode p = params.addObject();
             p.put("name", e.getKey());
             p.put("in", "query");
@@ -477,7 +474,7 @@ public final class OpenApiDocument {
         s.set("JobEvent", object(Map.of(
                 "seq", integer(null), "at", dateTime(), "jobId", str(null),
                 "type", enumeration("job", "step", "approval", "attention", "batch", "log"), "data", freeObject()), List.of("seq", "at", "jobId", "type", "data")));
-        perWorkflow.fields().forEachRemaining(e -> s.set(e.getKey(), e.getValue()));
+        perWorkflow.properties().forEach(e -> s.set(e.getKey(), e.getValue()));
         return s;
     }
 

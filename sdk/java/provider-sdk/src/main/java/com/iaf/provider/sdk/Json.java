@@ -15,7 +15,7 @@ final class Json {
     static final ObjectMapper MAPPER = JsonMapper.builder()
             .addModule(new Jdk8Module())
             .addModule(new JavaTimeModule())
-            .serializationInclusion(JsonInclude.Include.NON_ABSENT)
+            .defaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_ABSENT, JsonInclude.Include.NON_ABSENT))
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
             .build();

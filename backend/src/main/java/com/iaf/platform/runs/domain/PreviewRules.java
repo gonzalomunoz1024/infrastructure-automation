@@ -228,7 +228,7 @@ public final class PreviewRules {
         JsonNode in = input == null ? ExpressionEngine.json(java.util.Map.of()) : input;
         JsonNode schema = def.inputSchema();
         if (schema != null) {
-            schema.path("properties").fields().forEachRemaining(e -> {
+            schema.path("properties").properties().forEach(e -> {
                 JsonNode xr = e.getValue().get("x-resource");
                 JsonNode v = in.get(e.getKey());
                 if (xr != null && xr.isObject() && v != null && v.isTextual() && !v.asText().isBlank()) {

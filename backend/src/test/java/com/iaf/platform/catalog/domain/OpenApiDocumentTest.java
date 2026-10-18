@@ -200,7 +200,7 @@ class OpenApiDocumentTest {
     /** Every {@code $ref} under a node. */
     static void references(JsonNode node, List<String> refs) {
         if (node.isObject()) {
-            node.fields().forEachRemaining(e -> {
+            node.properties().forEach(e -> {
                 if (e.getKey().equals("$ref") && e.getValue().isTextual()) {
                     refs.add(e.getValue().asText());
                 }

@@ -460,7 +460,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         }
         if (node.isObject()) {
             ObjectNode out = F.objectNode();
-            node.fields().forEachRemaining(e -> out.set(e.getKey(), ProviderChecks.secretKey(e.getKey()) && e.getValue().isValueNode() && !e.getValue().isNull()
+            node.properties().forEach(e -> out.set(e.getKey(), ProviderChecks.secretKey(e.getKey()) && e.getValue().isValueNode() && !e.getValue().isNull()
                     ? F.textNode(REDACTED) : redacted(e.getValue())));
             return out;
         }

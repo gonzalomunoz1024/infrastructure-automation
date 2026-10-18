@@ -101,12 +101,14 @@ class IdentityWebFilterTest {
             inContext.set(ctx.getOrDefault(ServiceScopes.ATTRIBUTE, null));
             return reactor.core.publisher.Mono.<Void>empty();
         })).block();
-        assertThat((Object) exchange.getAttribute(ServiceScopes.ATTRIBUTE)).isEqualTo(List.of("registry:read", "workflows:validate", "workflows:dry-run"));
+        List<String> scopes = exchange.getAttribute(ServiceScopes.ATTRIBUTE);
+        assertThat(scopes).isEqualTo(List.of("registry:read", "workflows:validate", "workflows:dry-run"));
         assertThat(inContext.get()).isEqualTo(List.of("registry:read", "workflows:validate", "workflows:dry-run"));
 
         MockServerWebExchange person = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/me").build());
         filter.filter(person, ex -> reactor.core.publisher.Mono.empty()).block();
-        assertThat((Object) person.getAttribute(ServiceScopes.ATTRIBUTE)).isNull();
+        Object none = person.getAttribute(ServiceScopes.ATTRIBUTE);
+        assertThat(none).isNull();
     }
 
     @Test

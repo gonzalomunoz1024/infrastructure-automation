@@ -514,7 +514,7 @@ public final class AnsiblePlaybooks {
             }
             JsonNode vars = play.get("vars");
             if (vars != null && vars.isObject()) {
-                vars.fields().forEachRemaining(e -> playVar(e.getKey(), e.getValue()));
+                vars.properties().forEach(e -> playVar(e.getKey(), e.getValue()));
             }
             for (JsonNode p : play.path("vars_prompt")) {
                 prompt(p);
@@ -530,7 +530,7 @@ public final class AnsiblePlaybooks {
             for (JsonNode r : play.path("roles")) {
                 roleEntry(r, base);
             }
-            play.fields().forEachRemaining(e -> {
+            play.properties().forEach(e -> {
                 String k = e.getKey();
                 if (PLAY_TASKS.contains(k)) {
                     tasks(e.getValue(), base, null);
@@ -609,7 +609,7 @@ public final class AnsiblePlaybooks {
                 return;
             }
             Set<String> params = new HashSet<>();
-            r.fields().forEachRemaining(e -> {
+            r.properties().forEach(e -> {
                 String k = e.getKey();
                 if (k.equals("vars") && e.getValue().isObject()) {
                     e.getValue().fieldNames().forEachRemaining(params::add);
@@ -653,7 +653,7 @@ public final class AnsiblePlaybooks {
                 JsonNode t = repo.tree(file);
                 if (t != null && t.isObject()) {
                     String from = file;
-                    t.fields().forEachRemaining(e -> roleDefault(e.getKey(), e.getValue(), from));
+                    t.properties().forEach(e -> roleDefault(e.getKey(), e.getValue(), from));
                 }
             }
             for (String file : yamlFiles(dir + "/vars/main")) {
@@ -700,7 +700,7 @@ public final class AnsiblePlaybooks {
                 if (options == null || !options.isObject()) {
                     continue;
                 }
-                options.fields().forEachRemaining(e -> {
+                options.properties().forEach(e -> {
                     Facts f = fact(e.getKey());
                     if (f.spec != null) {
                         return;
@@ -761,7 +761,7 @@ public final class AnsiblePlaybooks {
             if (task.path("vars").isObject()) {
                 task.path("vars").fieldNames().forEachRemaining(defined::add);
             }
-            task.fields().forEachRemaining(e -> {
+            task.properties().forEach(e -> {
                 String k = e.getKey();
                 JsonNode v = e.getValue();
                 String module = k.startsWith("ansible.builtin.") ? k.substring("ansible.builtin.".length()) : k;
@@ -778,7 +778,7 @@ public final class AnsiblePlaybooks {
                     scan(null, v, false, false);
                 } else if (module.equals("assert") && v.isObject()) {
                     conditional(v.get("that"), true, false);
-                    v.fields().forEachRemaining(x -> {
+                    v.properties().forEach(x -> {
                         if (!x.getKey().equals("that")) {
                             scan(x.getKey(), x.getValue(), false, false);
                         }
@@ -881,7 +881,7 @@ public final class AnsiblePlaybooks {
                 repo.spend(s.length());
                 templates(s);
             } else if (node.isObject()) {
-                node.fields().forEachRemaining(e -> scan(e.getKey(), e.getValue(), assertion, failWhen));
+                node.properties().forEach(e -> scan(e.getKey(), e.getValue(), assertion, failWhen));
             } else if (node.isArray()) {
                 node.forEach(n -> scan(null, n, assertion, failWhen));
             }
@@ -1137,7 +1137,7 @@ public final class AnsiblePlaybooks {
                 if (o.path("options").isObject()) {
                     ObjectNode props = s.putObject("properties");
                     ArrayNode required = F.arrayNode();
-                    o.path("options").fields().forEachRemaining(e -> {
+                    o.path("options").properties().forEach(e -> {
                         props.set(e.getKey(), optionSchema(e.getValue()));
                         if (e.getValue().path("required").asBoolean(false)) {
                             required.add(e.getKey());

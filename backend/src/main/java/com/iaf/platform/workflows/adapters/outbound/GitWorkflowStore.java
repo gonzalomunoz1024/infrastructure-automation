@@ -92,9 +92,8 @@ public class GitWorkflowStore implements WorkflowStorePort {
     public synchronized void init() {
         try {
             if (!Files.exists(dir.resolve(".git"))) {
-                try (Git g = Git.init().setDirectory(dir.toFile()).setInitialBranch("main").call()) {
-                    log.info("initialised a git repository in {}", dir);
-                }
+                Git.init().setDirectory(dir.toFile()).setInitialBranch("main").call().close();
+                log.info("initialised a git repository in {}", dir);
             }
             repo = Git.open(dir.toFile()).getRepository();
             String full = repo.getFullBranch();

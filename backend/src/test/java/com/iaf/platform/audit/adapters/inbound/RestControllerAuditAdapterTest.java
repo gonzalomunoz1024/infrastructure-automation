@@ -47,7 +47,7 @@ class RestControllerAuditAdapterTest {
     static final ObjectMapper JSON = JsonMapper.builder()
             .addModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-            .serializationInclusion(JsonInclude.Include.NON_NULL)
+            .defaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL))
             .build();
 
     final AuditCommandHandler commands = mock(AuditCommandHandler.class);
