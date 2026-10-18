@@ -49,13 +49,17 @@ dns = Provider(
 dns.error("record_conflict", retryable=False, description="The name already has a different record")
 dns.error("dns_busy", retryable=True, description="The zone is taking another change")
 
-@dns.action("record.create", title="Create a record", effect=Effect.CREATE)  # READ, CREATE, UPDATE or DELETE
+@dns.action("record.create", title="Create a record", effect=Effect.CREATE)  # READ, CREATE, CHANGE or DELETE
 async def create(call: Call, new: NewRecord) -> Record:
     # call.idempotency_key, call.job, call.step, call.environment, call.attempt
     if taken:
         raise fatal("record_conflict", f"{new.name} already points elsewhere")
     ...
 ```
+
+An action that changes something in place says `Effect.CHANGE`, written `change` in the provider
+file as the platform spells it; `update`, the spelling of earlier SDK versions, still reads as
+`change` (`effect="update"`, the deprecated `Effect.UPDATE`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you pass
 `task_queue=`) and stops gracefully on SIGINT or SIGTERM, letting calls in flight finish:

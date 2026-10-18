@@ -303,7 +303,7 @@ public final class Provider {
                     problems.add("Action ids read as <noun>.<verb>, like address.reserve; was " + a.id());
                 }
                 if (a.effect() == null) {
-                    problems.add("Action " + a.id() + " says what it does: effect read, create, update or delete");
+                    problems.add("Action " + a.id() + " says what it does: effect read, create, change or delete");
                 }
                 for (String which : List.of("input", "output")) {
                     ObjectNode schema = which.equals("input") ? a.inputSchema() : a.outputSchema();

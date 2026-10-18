@@ -49,9 +49,13 @@ p := provider.New("ip-pool").                      // providers/<owner>/ip-pool.
 	Error("pool_exhausted", false, "The pool has no free address").
 	Action(provider.NewAction("address.reserve", reserve).
 		Title("Reserve an address").
-		Effect(provider.Create)).                  // Read, Create, Update or Delete
+		Effect(provider.Create)).                  // Read, Create, Change or Delete
 	MustBuild()                                    // checks it like the platform's provider checks
 ```
+
+An action that changes something in place says `provider.Change`, written `change` in the
+provider file as the platform spells it; `update`, the spelling of earlier SDK versions, still
+reads as `change` (`Effect("update")`, the deprecated `provider.Update`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you name one
 with `TaskQueue(...)`) and stops gracefully on SIGINT or SIGTERM, letting calls in flight finish:

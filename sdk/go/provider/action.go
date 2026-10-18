@@ -16,9 +16,16 @@ type Effect string
 const (
 	Read   Effect = "read"
 	Create Effect = "create"
-	Update Effect = "update"
+	Change Effect = "change"
 	Delete Effect = "delete"
+
+	// Deprecated: Update is the old name of Change and writes change; it goes away in the next
+	// version.
+	Update = Change
 )
+
+// oldChange is how earlier versions of the SDKs spelled Change; it still reads as Change.
+const oldChange Effect = "update"
 
 // Job is the platform job a call belongs to.
 type Job struct {
@@ -119,8 +126,15 @@ func (a *Action) OutputSchema() json.RawMessage { return append(json.RawMessage(
 // Title is the action's display name; the id when left out.
 func (a *Action) Title(t string) *Action { a.title = t; return a }
 
-// Effect says what the action does: Read, Create, Update or Delete.
-func (a *Action) Effect(e Effect) *Action { a.effect = e; return a }
+// Effect says what the action does: Read, Create, Change or Delete. Effect("update"), the
+// spelling of earlier versions, still reads as Change.
+func (a *Action) Effect(e Effect) *Action {
+	if e == oldChange {
+		e = Change
+	}
+	a.effect = e
+	return a
+}
 
 // Description says more about the action.
 func (a *Action) Description(d string) *Action { a.description = d; return a }

@@ -45,9 +45,13 @@ Provider provider = Provider.named("cmdb")                 // the provider's nam
         .error("not_found", false, "No item has that id")  // error classes, retryable or not
         .action(Action.of("item.get", Lookup.class, Item.class, (ctx, in) -> store.get(ctx, in))
                 .title("Get an item")
-                .effect(Effect.READ))                      // read, create, update or delete
+                .effect(Effect.READ))                      // READ, CREATE, CHANGE or DELETE
         .build();                                          // checks it like the platform's provider checks
 ```
+
+An action that changes something in place says `Effect.CHANGE`, written `change` in the provider
+file as the platform spells it; `update`, the spelling of earlier SDK versions, still reads as
+`change` (`Effect.of("update")`, the deprecated `Effect.UPDATE`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you name one
 with `.taskQueue(...)`) and stops gracefully on SIGTERM, letting calls in flight finish:

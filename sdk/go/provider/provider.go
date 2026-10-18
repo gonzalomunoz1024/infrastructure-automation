@@ -180,9 +180,9 @@ func (b *Builder) Build() (*Provider, error) {
 			problems = append(problems, fmt.Sprintf("Action ids read as <noun>.<verb>, like address.reserve; was %q", a.id))
 		}
 		if a.effect == "" {
-			problems = append(problems, fmt.Sprintf("Action %s says what it does: Effect(Read), Create, Update or Delete", a.id))
+			problems = append(problems, fmt.Sprintf("Action %s says what it does: Effect(Read), Create, Change or Delete", a.id))
 		} else if !validEffect(a.effect) {
-			problems = append(problems, fmt.Sprintf("Action %s has effect %q; one of read, create, update, delete", a.id, a.effect))
+			problems = append(problems, fmt.Sprintf("Action %s has effect %q; one of read, create, change, delete", a.id, a.effect))
 		}
 		for _, s := range []struct {
 			which  string
@@ -237,7 +237,7 @@ func (b *Builder) MustBuild() *Provider {
 
 func validEffect(e Effect) bool {
 	switch e {
-	case Read, Create, Update, Delete:
+	case Read, Create, Change, Delete:
 		return true
 	}
 	return false
