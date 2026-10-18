@@ -237,7 +237,9 @@ finishes what a stop in between left.
   content; one changed through the platform is never reset. Resource types are rewritten from
   their files at every start. Reads come from a copy of the collection (`Revisioned`) that is
   reloaded when the store's number in `store_revisions` shows a write from any instance; a write
-  moves that number once it is done.
+  moves that number once it is done. A copy older than 30 seconds is reloaded even when the number
+  stayed, so a write whose move was lost (the instance died in between) reaches every instance
+  within that time.
 - A provider's current version is its `providers` document (keyed by name); every version saved
   since the database was made, the current one among them, is also a `provider_versions` document
   (keyed `<name>@<version>`), so a canary candidate (`ProviderStorePort.saveVersion`) is kept beside
