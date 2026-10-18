@@ -30,8 +30,9 @@ Two rules.
   `EmptyState`, `Skeleton`, `Icon` (inline SVG, line style), `Toast`, `Tabs`, `Segmented`,
   `Field`/`Input`/`Textarea`, `Table`, `Card`, `Tag`, `Kbd`, `CommandPalette`, `AppHeader`,
   `Sidebar`; hooks `useTheme`, `useDismiss`, `useHotkey`; `cx`.
-- Conventions: no component, icon or motion library (React Flow is the one exception, confined to
-  `frontend/src/designer`). Colour through semantic utilities (`bg-surface`, `text-secondary`,
+- Conventions: no component, icon or motion library, with two exceptions: React Flow, confined to
+  `frontend/src/designer`, and the Monaco code editor, confined to
+  `frontend/src/components/code-editor`, whose themes take their colours from `atlasColors`. Colour through semantic utilities (`bg-surface`, `text-secondary`,
   `border-stroke-light`), never raw hex in components. Every list has an empty state. The server
   judges facts (health bands, thresholds, lint); the UI renders them.
 

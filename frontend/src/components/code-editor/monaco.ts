@@ -6,6 +6,7 @@
  * pointed at this instance with `loader.config({ monaco })`. Only MonacoEditor imports this
  * module, and the shell loads that lazily, so the first paint never carries Monaco.
  */
+import { atlasColors } from '@iaf/ui'
 import { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/editor/browser/coreCommands'
@@ -57,25 +58,21 @@ monaco.languages.setMonarchTokensProvider(EXPRESSION_LANGUAGE, {
   },
 })
 
-// the Atlas surfaces: an input's grey in light, its dark grey in dark
-monaco.editor.defineTheme('iaf-light', {
-  base: 'vs',
-  inherit: true,
-  rules: [
-    { token: 'delimiter.expression', foreground: '007aff', fontStyle: 'bold' },
-    { token: 'variable', foreground: 'af52de' },
-  ],
-  colors: { 'editor.background': '#f5f5f7', 'editorGutter.background': '#f5f5f7', 'editor.lineHighlightBackground': '#00000008' },
-})
-monaco.editor.defineTheme('iaf-dark', {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: 'delimiter.expression', foreground: '0a84ff', fontStyle: 'bold' },
-    { token: 'variable', foreground: 'bf5af2' },
-  ],
-  colors: { 'editor.background': '#1c1c1e', 'editorGutter.background': '#1c1c1e', 'editor.lineHighlightBackground': '#ffffff0a' },
-})
+// the Atlas surfaces: an input's grey in light, its dark grey in dark; expressions in the one accent
+for (const [name, base, c] of [
+  ['iaf-light', 'vs', atlasColors.light],
+  ['iaf-dark', 'vs-dark', atlasColors.dark],
+] as const) {
+  monaco.editor.defineTheme(name, {
+    base,
+    inherit: true,
+    rules: [
+      { token: 'delimiter.expression', foreground: c.accent.slice(1), fontStyle: 'bold' },
+      { token: 'variable', foreground: c.accent.slice(1) },
+    ],
+    colors: { 'editor.background': c.surfaceSecondary, 'editorGutter.background': c.surfaceSecondary, 'editor.lineHighlightBackground': c.surfaceTertiary },
+  })
+}
 
 loader.config({ monaco })
 

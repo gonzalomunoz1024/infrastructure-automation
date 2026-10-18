@@ -83,17 +83,20 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   /** accessible name; also the tooltip */
   label: string
   size?: 'sm' | 'md'
+  /** pressed: the toggle's panel is open */
+  active?: boolean
 }
 
 /** Round icon-only button (header actions, close buttons). */
-export function IconButton({ className, label, size = 'md', type = 'button', ...rest }: IconButtonProps) {
+export function IconButton({ className, label, size = 'md', active = false, type = 'button', ...rest }: IconButtonProps) {
   return (
     <button
       type={type}
       aria-label={label}
       title={label}
       className={cx(
-        'flex shrink-0 items-center justify-center rounded-full text-tertiary',
+        'flex shrink-0 items-center justify-center rounded-full',
+        active ? 'bg-surface-secondary text-primary' : 'text-tertiary',
         size === 'sm' ? 'h-7 w-7' : 'h-9 w-9',
         'transition-all duration-150 hover:bg-surface-secondary hover:text-primary active:scale-[0.94]',
         className,

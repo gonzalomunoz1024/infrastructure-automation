@@ -6,7 +6,7 @@
  * canvas changed since the last one, so the assistant always works from what is on screen.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Button, cx, DiffView, diffStats, Icon, parseUnifiedDiff, Spinner, Tag, Textarea, useToast } from '@iaf/ui'
+import { Button, cx, DiffView, diffStats, Icon, IconButton, parseUnifiedDiff, Spinner, Tag, Textarea, useToast } from '@iaf/ui'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
 import type { AssistantDraft, AssistantEvent } from '../../lib/types'
@@ -164,9 +164,9 @@ function DraftCard({ draft, applied, canvasYaml, echoed, onApply, onAnswer, busy
               {q.options && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {q.options.map((o) => (
-                    <button key={o} type="button" disabled={busy} onClick={() => onAnswer(o)} className="rounded-full border border-stroke-light px-2 py-0.5 text-caption text-secondary hover:border-accent hover:text-accent">
+                    <Button key={o} size="sm" variant="capsule" disabled={busy} onClick={() => onAnswer(o)}>
                       {o}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
@@ -292,9 +292,9 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
       <div className="flex items-center gap-2 border-b border-stroke-light px-4 py-3">
         <Icon name="sparkles" size={16} className="text-accent" />
         <h2 className="flex-1 text-subheadline font-semibold text-primary">Assistant</h2>
-        <button type="button" onClick={onClose} aria-label="Close the assistant" className="flex h-7 w-7 items-center justify-center rounded-full text-tertiary hover:bg-surface-secondary hover:text-primary">
+        <IconButton label="Close the assistant" size="sm" onClick={onClose}>
           <Icon name="close" size={15} />
-        </button>
+        </IconButton>
       </div>
       <div ref={listRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4" aria-live="polite">
         {entries.length === 0 && (
@@ -302,9 +302,9 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
             <p className="text-footnote text-secondary">Describe a change and the assistant drafts it against the registry: real providers, real actions, checked before you see it.</p>
             <div className="flex flex-col gap-1.5">
               {SUGGESTIONS.map((s) => (
-                <button key={s} type="button" onClick={() => void send(s)} className="rounded-md border border-stroke-light px-3 py-2 text-left text-caption text-secondary transition-colors hover:border-accent hover:text-primary">
+                <Button key={s} size="sm" variant="capsule" onClick={() => void send(s)} className="justify-start whitespace-normal text-left">
                   {s}
-                </button>
+                </Button>
               ))}
             </div>
           </div>

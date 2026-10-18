@@ -5,7 +5,7 @@
  * "Mark all read" goes through the unread ones. The count is polled every 30 s.
  */
 import { useCallback, useRef, useState } from 'react'
-import { Badge, Button, EmptyState, Icon, PopoverPanel, Spinner, StatusDot, Tooltip, cx, relativeTime, useDismiss, type DotKind } from '@iaf/ui'
+import { Badge, Button, EmptyState, Icon, IconButton, PopoverPanel, Spinner, StatusDot, Tooltip, cx, relativeTime, useDismiss, type DotKind } from '@iaf/ui'
 import { Link, pathFor, resolve } from './router'
 import { api, errorMessage, useCurrentUser } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
@@ -82,9 +82,9 @@ export function NotificationList({ items, onRead, onOpen }: NotificationListProp
                 </p>
               </div>
               {!n.read && (
-                <button type="button" onClick={() => onRead(n)} aria-label={`Mark read: ${n.title}`} title="Mark read" className="mt-0.5 shrink-0 rounded-sm p-1 text-tertiary transition-colors hover:bg-surface-secondary hover:text-primary">
+                <IconButton label={`Mark read: ${n.title}`} size="sm" onClick={() => onRead(n)} className="-mt-0.5">
                   <Icon name="check" size={14} />
-                </button>
+                </IconButton>
               )}
             </div>
           </li>
@@ -137,18 +137,20 @@ export function NotificationsBell() {
   return (
     <div ref={ref} className="relative">
       <Tooltip label={count > 0 ? `${count} unread` : 'Notifications'} side="bottom">
-        <button
-          type="button"
+        {/* the Tooltip says what the native title would */}
+        <IconButton
+          label={count > 0 ? `Notifications: ${count} unread` : 'Notifications'}
+          title={undefined}
+          active={open}
           onClick={() => setOpen((o) => !o)}
-          aria-label={count > 0 ? `Notifications: ${count} unread` : 'Notifications'}
           aria-expanded={open}
           aria-haspopup="dialog"
           data-testid="notifications-bell"
-          className={cx('relative flex h-9 w-9 items-center justify-center rounded-full transition-all duration-150 hover:bg-surface-secondary active:scale-[0.94]', open ? 'bg-surface-secondary text-primary' : 'text-tertiary hover:text-primary')}
+          className="relative"
         >
           <Icon name="bell" size={17} />
           {count > 0 && <Badge count={count} tone="critical" className="absolute -right-0.5 -top-0.5" />}
-        </button>
+        </IconButton>
       </Tooltip>
       {open && (
         <PopoverPanel role="dialog" ariaLabel="Notifications" className="absolute right-0 top-full mt-2 w-[min(24rem,calc(100vw-2rem))] origin-top-right">

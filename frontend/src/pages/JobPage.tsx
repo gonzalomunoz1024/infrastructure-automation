@@ -420,29 +420,33 @@ function TimeTravel({ jobId, workflow, steps, input, rerunBlocked }: { jobId: st
         {replay && (
           <div className="mt-4 animate-fade-in space-y-3">
             <ReplayComparison replay={replay} />
-            <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
-              {replay.steps.map((s) => (
-                <li key={s.id} className={cx('px-4 py-3', s.diff?.length && 'bg-warning-tint/40')}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusDot kind={STEP_DOT[s.status] ?? 'neutral'} label={s.status} />
-                    <span className="font-medium text-primary">{s.name}</span>
-                    <Mono className="text-caption text-tertiary">{s.id}</Mono>
-                    <StateTag status={s.status} size="sm" />
-                    {s.durationMs !== undefined && <span className="text-caption tabular-nums text-tertiary">{duration(s.durationMs)}</span>}
-                    {s.diff && s.diff.length > 0 && (
-                      <Tag size="sm" tone="warning" className="ml-auto">
-                        {s.diff.length} differ
-                      </Tag>
-                    )}
-                  </div>
-                  {s.diff && s.diff.length > 0 && (
-                    <div className="mt-2">
-                      <StepDiffTable diff={s.diff} caption={`Differences at ${s.id}`} />
+            {replay.steps.length === 0 ? (
+              <EmptyState icon="history" title="No steps to replay" message="The job ended before any step ran, so there is nothing to step through." compact className="rounded-md border border-stroke-light" />
+            ) : (
+              <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
+                {replay.steps.map((s) => (
+                  <li key={s.id} className={cx('px-4 py-3', s.diff?.length && 'bg-warning-tint/40')}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusDot kind={STEP_DOT[s.status] ?? 'neutral'} label={s.status} />
+                      <span className="font-medium text-primary">{s.name}</span>
+                      <Mono className="text-caption text-tertiary">{s.id}</Mono>
+                      <StateTag status={s.status} size="sm" />
+                      {s.durationMs !== undefined && <span className="text-caption tabular-nums text-tertiary">{duration(s.durationMs)}</span>}
+                      {s.diff && s.diff.length > 0 && (
+                        <Tag size="sm" tone="warning" className="ml-auto">
+                          {s.diff.length} differ
+                        </Tag>
+                      )}
                     </div>
-                  )}
-                </li>
-              ))}
-            </ol>
+                    {s.diff && s.diff.length > 0 && (
+                      <div className="mt-2">
+                        <StepDiffTable diff={s.diff} caption={`Differences at ${s.id}`} />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         )}
       </Card>

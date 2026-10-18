@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, ProgressBar, StateTag, Stepper, Table, Tag, cx, percent, plural, type TableColumn } from '@iaf/ui'
+import { Button, ProgressBar, Segmented, StateTag, Stepper, Table, cx, percent, plural, type TableColumn } from '@iaf/ui'
 import { pathFor } from '../app/router'
 import type { Batch, BatchRow } from '../lib/types'
 import { TextLink, When, summarize } from './common'
@@ -138,16 +138,16 @@ export function BatchPanel({ batch, onRetryFailed, ended, className }: BatchPane
         <div className="mb-2 flex items-center justify-between gap-3">
           <h3 className="text-subheadline font-semibold text-primary">Rows</h3>
           <div className="flex items-center gap-1.5">
-            <Tag size="sm" tone={filter === 'all' ? 'accent' : 'neutral'} className="cursor-pointer" title="Show every row">
-              <button type="button" onClick={() => setFilter('all')}>
-                all {total}
-              </button>
-            </Tag>
-            <Tag size="sm" tone={filter === 'failed' ? 'critical' : 'neutral'} title="Show only failed rows">
-              <button type="button" onClick={() => setFilter('failed')}>
-                failed {failed}
-              </button>
-            </Tag>
+            <Segmented
+              ariaLabel="Rows to show"
+              size="sm"
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: 'all', label: `All ${total}` },
+                { value: 'failed', label: `Failed ${failed}` },
+              ]}
+            />
           </div>
         </div>
         <Table columns={columns} rows={rows} rowKey={(r) => String(r.index)} dense emptyIcon="list" emptyTitle={filter === 'failed' ? 'No failed rows' : 'No rows'} caption="Batch rows" maxHeight="max-h-[32rem]" />
