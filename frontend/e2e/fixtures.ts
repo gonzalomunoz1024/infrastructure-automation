@@ -12,6 +12,8 @@ import type {
   JobSummary,
   Lineage,
   Me,
+  Notification,
+  PlatformStream,
   Preview,
   ProviderAlert,
   ProviderDetail,
@@ -632,4 +634,83 @@ export const DEPENDENCIES: Dependencies = {
     },
   ],
   cycles: [['create-vm', 'web-environment', 'create-vm']],
+}
+
+/* ----------------------------------------------------------------------------
+   The inbox, the platform audit stream, a deprecated catalog entry and provider releases
+   ------------------------------------------------------------------------- */
+
+export const NOTIFICATIONS: Notification[] = [
+  { id: 'ntf-1', at: ago(4), kind: 'approval.requested', severity: 'warning', title: 'Approve the restart of web-1042', message: 'compute-approvers: a production restart waits for you', link: '/jobs/job-7f3a2c91', jobId: 'job-7f3a2c91', workflow: 'vm-restart', users: [], teams: ['compute-approvers'], read: false },
+  { id: 'ntf-2', at: ago(40), kind: 'provider.alert', severity: 'critical', title: 'vsphere is failing', message: '3 timeouts in 10 minutes', link: '/providers/vsphere', channel: '#compute-alerts', provider: 'vsphere', users: [], teams: ['team-compute'], read: false },
+  { id: 'ntf-3', at: ago(60 * 5), kind: 'notify', severity: 'info', title: 'Patch window done', message: '20 of 20 servers patched', link: '/jobs/job-5b10e7d2', jobId: 'job-5b10e7d2', workflow: 'patch-cve', users: ['gonzalo'], teams: [], read: true },
+]
+
+/** A mutable inbox: GET filters by `unread`, POST marks one read. */
+export function inboxRoutes(items: Notification[] = NOTIFICATIONS.map((n) => ({ ...n }))): Routes {
+  return {
+    'GET /notifications': (req) => {
+      const unread = req.query.get('unread')
+      const visible = unread === 'true' ? items.filter((n) => !n.read) : unread === 'false' ? items.filter((n) => n.read) : items
+      return { items: visible, unread: items.filter((n) => !n.read).length }
+    },
+    'POST /notifications/{id}:read': (req) => {
+      const n = items.find((x) => x.id === req.params.id)
+      if (!n) return reply(404, { error: `no notification ${req.params.id}` })
+      n.read = true
+      return n
+    },
+  }
+}
+
+export const PLATFORM_STREAM: PlatformStream = {
+  entries: [
+    { seq: 1, at: ago(60 * 30), kind: 'decision', actor: 'gonzalo', data: { event: 'change-request.opened', aggregate: 'change-request', aggregateId: 'cr-41', name: 'vm-restart', version: '1.2.0', strategy: 'canary' }, hash: hash('p1'), previous: hash('0') },
+    { seq: 2, at: ago(60 * 29), kind: 'decision', actor: 'maria', data: { event: 'change-request.merged', aggregate: 'change-request', aggregateId: 'cr-41', name: 'vm-restart', version: '1.2.0' }, hash: hash('p2'), previous: hash('p1') },
+    { seq: 3, at: ago(60 * 29), kind: 'decision', actor: 'maria', data: { event: 'workflow.published', aggregate: 'workflow', aggregateId: 'vm-restart', name: 'vm-restart', version: '1.2.0', contentHash: 'sha256:1' }, hash: hash('p3'), previous: hash('p2') },
+    { seq: 4, at: ago(60 * 3), kind: 'decision', actor: 'ana', data: { event: 'provider.change-requested', aggregate: 'provider', aggregateId: 'vsphere', version: '2.1.1', changeRequest: 'cr-42', reason: 'slo' }, hash: hash('p4'), previous: hash('p3') },
+    { seq: 5, at: ago(50), kind: 'decision', actor: 'gonzalo', data: { event: 'release.promoted', aggregate: 'release', aggregateId: 'rel-1', workflow: 'vm-restart', from: '1.1.0', to: '1.2.0' }, hash: hash('p5'), previous: hash('p4') },
+    { seq: 6, at: ago(10), kind: 'decision', actor: 'gonzalo', data: { event: 'service-account.created', aggregate: 'service-account', aggregateId: 'sa-ci', name: 'ci-deployer', scopes: ['registry:read', 'workflows:validate'] }, hash: hash('p6'), previous: hash('p5') },
+  ],
+  total: 6,
+  latestHash: hash('p6'),
+  verification: { valid: true, entries: 6, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 6, keyId: 'audit-2026-10', status: 'verified' }] },
+}
+
+/** vm-restart with a successor: the deprecation the catalog reports. */
+export const DEPRECATED_CATALOG: CatalogEntry[] = [
+  { ...CATALOG[0], deprecated: { since: '2026-10-01', sunset: '2027-01-31', replacement: '/api/v2/vms/{vmId}:restart', message: 'Use v2, which restarts through the maintenance window.' } },
+  CATALOG[1],
+]
+
+export const VM_RESTART_VERSIONS: WorkflowVersion[] = [
+  { version: '1.2.0', status: 'published', contentHash: 'sha256:12', publishedAt: ago(60 * 24 * 3), publishedBy: 'maria', releaseId: 'rel-1' },
+  { version: '1.1.0', status: 'retired', contentHash: 'sha256:11', publishedAt: ago(60 * 24 * 30), publishedBy: 'gonzalo' },
+  { version: '1.3.0', status: 'draft', contentHash: 'sha256:13' },
+]
+
+/** A canary of vsphere 2.1.0 → 2.2.0, judged over the provider's calls. */
+export const PROVIDER_RELEASE: Release = {
+  id: 'rel-p1',
+  provider: 'vsphere',
+  from: '2.1.0',
+  to: '2.2.0',
+  strategy: 'canary',
+  status: 'canary',
+  stageIndex: 1,
+  stages: [10, 50, 100],
+  stagePercent: 50,
+  startedAt: ago(60 * 6),
+  stageStartedAt: ago(60 * 2),
+  gates: [
+    { id: 'success-rate', label: 'Success rate', passed: true, value: 99.4, threshold: 98.9, detail: 'candidate 99.4% vs current 99.9% over 340 calls' },
+    { id: 'p95', label: 'p95 duration', passed: null, value: 410, threshold: 480, detail: 'needs 20 calls in the stage, has 12' },
+    { id: 'error-types', label: 'Error types', passed: true, value: 0, detail: 'no new error class on the candidate' },
+    { id: 'sample', label: 'Sample size', passed: null, value: 12, threshold: 20, detail: '12 candidate calls since the stage started' },
+  ],
+  jobs: { current: 328, candidate: 12 },
+  history: [
+    { at: ago(60 * 6), event: 'canary started at 10%', by: 'ana' },
+    { at: ago(60 * 2), event: 'advanced to 50%' },
+  ],
 }
