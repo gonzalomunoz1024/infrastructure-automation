@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.function.Predicate;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -28,6 +29,8 @@ import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.redaction.Redactor;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.common.schema.Schemas.Mismatch;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -83,6 +86,9 @@ import reactor.core.scheduler.Schedulers;
  *
  * <p>A {@code vault:} reference only goes outward (to an endpoint, to a repository) once the
  * caller may use the credential ({@link CredentialUse}); the secret is never resolved before that.
+ * What the wizard keeps (the review evidence, the sample written into the draft) is redacted
+ * through {@link Redactor} with the secrets the platform resolved ({@link SecretValues}); only the
+ * live answer of a Try it goes back to the caller as it came.
  */
 @Slf4j
 @Primary
@@ -120,6 +126,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final GitSourcePort git;
     private final ReleaseQueries releases;
     private final CredentialsPort credentials;
+    private final SecretValues secrets;
 
     @PostConstruct
     void listen() {
@@ -380,7 +387,7 @@ public class ProviderCommandHandler implements ProviderCommands {
                     .concatMap(t -> provider == null ? Mono.just(t.getValue()) : blocking(() -> {
                         ConnectionResult r = t.getValue();
                         evidence.recordConnection(provider, new ConnectionTest(r.environment(), t.getKey().isEmpty() ? null : t.getKey(),
-                                auth.credential(), r.ok(), r.durationMs(), r.message(), clock.instant(), who.id()));
+                                auth.credential(), r.ok(), r.durationMs(), Redactor.redact(r.message(), secrets::known, REDACTED), clock.instant(), who.id()));
                         return r;
                     }));
             // the credential goes to every endpoint named: only once the caller may use it
@@ -422,15 +429,16 @@ public class ProviderCommandHandler implements ProviderCommands {
                             return verify(def, action, environment, input).map(v -> {
                                 Instant at = clock.instant();
                                 return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
-                                        withSample(command.yaml(), action.id(), response, environment, at));
+                                        withSample(command.yaml(), action.id(), response, environment, at, secrets::known));
                             });
                         })
                         .onErrorResume(ProviderCallException.class, e -> Mono.just(new TryResult(false, e.status() > 0 ? e.status() : 502,
                                 elapsedMs(started), errorBody(e), List.of(), null, environment, clock.instant(), null)))
                         .flatMap(result -> blocking(() -> {
+                            // the evidence copy is redacted; the live answer goes back to the caller as it came
                             evidence.recordTry(def.name(), new ActionTry(action.id(), environment, result.ok(), result.status(), result.durationMs(),
                                     result.ok() ? null : result.response().path("error").path("class").asText(null),
-                                    result.ok() ? result.response() : null, result.verified(), result.at(), who.id()));
+                                    result.ok() ? redacted(result.response(), secrets::known) : null, result.verified(), result.at(), who.id()));
                             return result;
                         }));
             }, credentialsOf(def).toArray(String[]::new));
@@ -458,10 +466,10 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     /**
      * The provider draft with a real response saved as the action's sample (the answer dry runs
-     * give), where it came from in {@code recorded}, and secret-looking fields kept out of the file.
-     * Null when the draft is not a provider mapping with that action.
+     * give), where it came from in {@code recorded}, and secrets kept out of the file
+     * ({@link #redacted}). Null when the draft is not a provider mapping with that action.
      */
-    static String withSample(String yaml, String actionId, JsonNode response, String environment, Instant at) {
+    static String withSample(String yaml, String actionId, JsonNode response, String environment, Instant at, Predicate<String> knownSecret) {
         JsonNode root;
         try {
             root = WorkflowYaml.readTree(yaml);
@@ -474,7 +482,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         for (JsonNode a : root.path("spec").path("actions")) {
             if (a.isObject() && actionId.equals(a.path("id").asText(null))) {
                 ObjectNode action = (ObjectNode) a;
-                action.set("sample", redacted(response));
+                action.set("sample", redacted(response, knownSecret));
                 ObjectNode recorded = action.putObject("recorded");
                 recorded.put("environment", environment);
                 recorded.put("at", at.toString());
@@ -484,23 +492,13 @@ public class ProviderCommandHandler implements ProviderCommands {
         return null;
     }
 
-    /** A copy with the values of secret-looking fields (token, password, api key...) replaced by {@value #REDACTED}. */
-    static JsonNode redacted(JsonNode node) {
-        if (node == null) {
-            return null;
-        }
-        if (node.isObject()) {
-            ObjectNode out = F.objectNode();
-            node.properties().forEach(e -> out.set(e.getKey(), ProviderChecks.secretKey(e.getKey()) && e.getValue().isValueNode() && !e.getValue().isNull()
-                    ? F.textNode(REDACTED) : redacted(e.getValue())));
-            return out;
-        }
-        if (node.isArray()) {
-            com.fasterxml.jackson.databind.node.ArrayNode out = F.arrayNode();
-            node.forEach(v -> out.add(redacted(v)));
-            return out;
-        }
-        return node.deepCopy();
+    /**
+     * A copy with secret-looking fields (token, password, api key...), the secrets the platform
+     * resolved wherever they appear, and token-shaped words replaced by {@value #REDACTED}; a
+     * {@code vault:} reference stays.
+     */
+    static JsonNode redacted(JsonNode node, Predicate<String> knownSecret) {
+        return Redactor.redact(node, knownSecret, REDACTED);
     }
 
     /** After a destructive try, the verify action proves the effect: {@code expect: notFound} means the thing is gone. */

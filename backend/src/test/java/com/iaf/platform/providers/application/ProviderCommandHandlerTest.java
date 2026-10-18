@@ -40,6 +40,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -139,6 +140,7 @@ class ProviderCommandHandlerTest {
     GitSourcePort gitSource;
     ReleaseQueries releases;
     CredentialsPort credentials;
+    SecretValues secrets;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -157,7 +159,8 @@ class ProviderCommandHandlerTest {
         when(releases.providerCandidate(anyString())).thenReturn(Mono.empty());
         credentials = mock(CredentialsPort.class);
         when(credentials.info(any())).thenReturn(Mono.empty());
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases, credentials);
+        secrets = new SecretValues();
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases, credentials, secrets);
         handler.listen();
     }
 
@@ -349,7 +352,30 @@ class ProviderCommandHandlerTest {
         assertThat(t.environment()).isEqualTo("dev");
         assertThat(t.ok()).isTrue();
         assertThat(t.response().path("name").asText()).isEqualTo("web");
+        assertThat(t.response().path("apiToken").asText()).as("the evidence copy is redacted too").isEqualTo("vault:redacted");
+        assertThat(t.response().toString()).doesNotContain("s3cr3t");
         assertThat(t.by()).isEqualTo("mateo");
+    }
+
+    @Test
+    void aSecretThePlatformResolvedIsRedactedFromTheEvidenceWhereverTheAnswerEchoesIt() {
+        secrets.remember("tok-3n-value");
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"note\":\"Bearer tok-3n-value\",\"credential\":\"vault:fleet/token\","
+                + "\"session\":\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbmEifQ.c2lnbmF0dXJlLXBhcnQ\"}")));
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", json("{\"id\":\"vm-1\"}"))), OWNER))
+                .assertNext(r -> {
+                    assertThat(r.response().path("note").asText()).as("the caller still sees the real answer").isEqualTo("Bearer tok-3n-value");
+                    var sample = ProviderYaml.parse(r.yaml()).action("vm.get").orElseThrow().sample();
+                    assertThat(sample.path("note").asText()).isEqualTo("Bearer vault:redacted");
+                    assertThat(sample.path("session").asText()).as("token shapes are masked too").isEqualTo("vault:redacted");
+                    assertThat(sample.path("credential").asText()).as("a reference names a secret without holding it").isEqualTo("vault:fleet/token");
+                })
+                .verifyComplete();
+        ActionTry t = evidence.evidence("fleet").tries().get(0);
+        assertThat(t.response().path("note").asText()).isEqualTo("Bearer vault:redacted");
+        assertThat(t.response().path("session").asText()).isEqualTo("vault:redacted");
+        assertThat(t.response().path("credential").asText()).isEqualTo("vault:fleet/token");
+        assertThat(t.response().toString()).doesNotContain("tok-3n-value");
     }
 
     @Test
