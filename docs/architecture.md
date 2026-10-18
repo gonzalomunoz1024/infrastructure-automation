@@ -112,6 +112,22 @@ their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode
 others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
 platform code.
 
+### Identity
+
+`IdentityWebFilter` resolves the caller of every request before anything else runs and puts it
+in the Reactor context (`CurrentIdentity`): a service account token (`iaf_…`, looked up by its
+SHA-256), an OIDC JWT under the `oidc` profile, the dev `X-User` header, the default user. Under
+`oidc`, `JwtTokenVerifier` checks the signature against the issuer's JWKS (asymmetric algorithms
+only, the RSA, RSA-PSS and EC families, the key chosen by the token's algorithm and key id), the
+issuer, the audience, `sub` and `exp`, and maps the claims: `name`, `email`, the teams claim
+(`platform.identity.oidc-teams-claim`, default `groups`), the roles claim (`oidc-roles-claim`,
+`roles`), and admin when the roles hold `oidc-admin-role` (`platform-admin`; no other role makes
+an admin). The issuer, the audience and the JWKS URI are required: a blank one fails the start
+with a message that names the property, so no token of the issuer for another audience ever
+verifies. The JWKS is cached and refreshed ahead of its expiry on a schedule, rate limited and
+outage tolerant, and a token is verified on `boundedElastic` (`TokenVerifier` answers a `Mono`),
+since a key the cache lacks is fetched over HTTP.
+
 ### Persistence
 
 Without a profile every store is in memory and a restart starts over. The `postgres` profile

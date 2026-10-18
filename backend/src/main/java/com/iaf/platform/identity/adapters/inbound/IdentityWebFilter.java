@@ -29,15 +29,16 @@ import reactor.core.publisher.Mono;
 
 /**
  * Resolves who is calling and puts it in the Reactor context. Order of precedence: a service
- * account token ({@code Authorization: Bearer iaf_…}), an OIDC bearer token (profile oidc), the
- * dev header {@code X-User}, the configured default user. A bearer token that cannot be verified
- * is always a 401, in every mode: a caller who presents a credential never falls back to the dev
- * identity. In oidc mode a request without a token is a 401 too; in dev mode it is the
- * {@code X-User} header or the default user. A service account's scopes go along with it
- * ({@link ServiceScopes}) for the scope filter and the code behind it. A signed webhook (POST on
- * one of {@link #SIGNED_WEBHOOKS}, without a credential) runs as {@link #WEBHOOK}, an identity
- * that may change nothing; its controller checks the signature and decides as whom it acts. The
- * Swagger UI page and its assets, which hold no data, load without a caller.
+ * account token ({@code Authorization: Bearer iaf_…}), an OIDC bearer token (profile oidc,
+ * verified off the event loop), the dev header {@code X-User}, the configured default user. A
+ * bearer token that cannot be verified is always a 401, in every mode: a caller who presents a
+ * credential never falls back to the dev identity. In oidc mode a request without a token is a
+ * 401 too; in dev mode it is the {@code X-User} header or the default user. A service account's
+ * scopes go along with it ({@link ServiceScopes}) for the scope filter and the code behind it. A
+ * signed webhook (POST on one of {@link #SIGNED_WEBHOOKS}, without a credential) runs as
+ * {@link #WEBHOOK}, an identity that may change nothing; its controller checks the signature and
+ * decides as whom it acts. The Swagger UI page and its assets, which hold no data, load without a
+ * caller.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -58,18 +59,19 @@ public class IdentityWebFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        Optional<Identity> resolved = resolve(exchange);
-        if (resolved.isEmpty() && isPublicPage(exchange.getRequest())) {
-            return chain.filter(exchange);
-        }
-        if (resolved.isEmpty()) {
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
-        }
-        Identity who = resolved.get();
-        exchange.getAttributes().put(ATTRIBUTE, who);
-        List<String> scopes = exchange.getAttribute(ServiceScopes.ATTRIBUTE);
-        return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, who), scopes));
+        return resolve(exchange).flatMap(resolved -> {
+            if (resolved.isEmpty() && isPublicPage(exchange.getRequest())) {
+                return chain.filter(exchange);
+            }
+            if (resolved.isEmpty()) {
+                exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+                return exchange.getResponse().setComplete();
+            }
+            Identity who = resolved.get();
+            exchange.getAttributes().put(ATTRIBUTE, who);
+            List<String> scopes = exchange.getAttribute(ServiceScopes.ATTRIBUTE);
+            return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, who), scopes));
+        });
     }
 
     /**
@@ -88,29 +90,32 @@ public class IdentityWebFilter implements WebFilter {
         return path.equals(PUBLIC_PAGE) || path.startsWith(PUBLIC_PAGE + "/") || path.startsWith(PUBLIC_ASSETS);
     }
 
-    private Optional<Identity> resolve(ServerWebExchange exchange) {
+    private Mono<Optional<Identity>> resolve(ServerWebExchange exchange) {
         String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (auth == null && "POST".equals(exchange.getRequest().getMethod().name())
                 && SIGNED_WEBHOOKS.contains(exchange.getRequest().getPath().pathWithinApplication().value())) {
-            return Optional.of(WEBHOOK);
+            return Mono.just(Optional.of(WEBHOOK));
         }
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7).trim();
             if (token.startsWith("iaf_")) {
-                return serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> {
+                return Mono.just(serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> {
                     exchange.getAttributes().put(ServiceScopes.ATTRIBUTE, a.grantedScopes());
                     return a.identity();
-                });
+                }));
             }
             // an OIDC token when a verifier is configured; anything else presented as a bearer is rejected
-            return tokens.isPresent() && !token.isEmpty() ? tokens.get().verify(token) : Optional.empty();
+            if (tokens.isEmpty() || token.isEmpty()) {
+                return Mono.just(Optional.empty());
+            }
+            return tokens.get().verify(token).map(Optional::of).defaultIfEmpty(Optional.empty());
         }
         boolean oidc = "oidc".equals(props.getIdentity().getMode());
         if (oidc) {
-            return Optional.empty();
+            return Mono.just(Optional.empty());
         }
         String header = exchange.getRequest().getHeaders().getFirst("X-User");
         String id = header == null || header.isBlank() ? props.getIdentity().getDefaultUser() : header.trim();
-        return Optional.of(users.byId(id).orElseGet(() -> new Identity(id, id, null, List.of(), List.of("user"), false, Identity.Kind.USER)));
+        return Mono.just(Optional.of(users.byId(id).orElseGet(() -> new Identity(id, id, null, List.of(), List.of("user"), false, Identity.Kind.USER))));
     }
 }

@@ -132,7 +132,7 @@ class IdentityWebFilterTest {
     @Test
     void oidcModeNeedsAVerifiedTokenAndIgnoresTheDevHeader() {
         props.getIdentity().setMode("oidc");
-        TokenVerifier verifier = token -> "good".equals(token) ? Optional.of(ANA) : Optional.empty();
+        TokenVerifier verifier = token -> "good".equals(token) ? Mono.just(ANA) : Mono.empty();
         IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.of(verifier));
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer good").build()).who()).isEqualTo(ANA);
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer bad").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);

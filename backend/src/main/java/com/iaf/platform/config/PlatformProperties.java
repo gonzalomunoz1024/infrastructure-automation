@@ -37,9 +37,18 @@ public class PlatformProperties {
     public static class IdentityProps {
         private String mode = "dev";
         private String defaultUser = "gonzalo";
+        /** The {@code iss} the tokens carry; required under the oidc profile. */
         private String oidcIssuer = "";
+        /** The issuer's JWKS endpoint; required under the oidc profile. */
         private String oidcJwksUri = "";
+        /** The {@code aud} the tokens carry for this platform; required under the oidc profile. */
         private String oidcAudience = "";
+        /** The claim that lists the caller's teams. */
+        private String oidcTeamsClaim = "groups";
+        /** The claim that lists the caller's roles. */
+        private String oidcRolesClaim = "roles";
+        /** The role (in the roles claim) that makes the caller a platform admin. */
+        private String oidcAdminRole = "platform-admin";
     }
 
     @Data

@@ -29,7 +29,8 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
-Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A bearer token that
+Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT of the configured issuer
+and audience (README, [Identity and OIDC](../README.md#identity-and-oidc)). A bearer token that
 does not verify is always 401; it never falls back to the dev identity. Signed webhooks
 (`POST /change-requests:github-webhook`) carry no credential: they come in as an identity that may
 change nothing, and their controller checks the signature before acting.

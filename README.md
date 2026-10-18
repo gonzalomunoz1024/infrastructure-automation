@@ -83,6 +83,33 @@ stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DAT
 (change requests as pull requests on the content repo).
 `docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
 
+## Identity and OIDC
+
+Locally every request runs as the person the `X-User` header names, or as
+`platform.identity.default-user` (`gonzalo`) without one; service accounts call with
+`Authorization: Bearer iaf_<token>` in every mode. Under the `oidc` profile, with
+`platform.identity.mode: oidc`, a person calls with the identity provider's JWT, a request
+without one is a 401 and the dev header is ignored. The properties (under `platform.identity.`,
+or as environment variables such as `PLATFORM_IDENTITY_OIDC_AUDIENCE`):
+
+| Property | Default | What it is |
+|----------|---------|------------|
+| `oidc-issuer` | required | the `iss` the tokens carry |
+| `oidc-audience` | required | the `aud` the tokens carry for the platform; a token for another audience is refused |
+| `oidc-jwks-uri` | required | the issuer's JWKS endpoint (https; plain http only for a local provider) |
+| `oidc-teams-claim` | `groups` | the claim that lists the caller's teams |
+| `oidc-roles-claim` | `roles` | the claim that lists the caller's roles |
+| `oidc-admin-role` | `platform-admin` | the role in that claim that makes the caller a platform admin |
+
+The three required properties are checked at startup: a blank one stops the API with a message
+that names it (`platform.identity.oidc-audience is required under the oidc profile: ...`). A token
+must be signed by a key of the JWKS with an asymmetric algorithm (RS256/384/512, PS256/384/512,
+ES256/384/512; never an HMAC), carry `sub` and `exp`, and match the issuer and the audience; the
+teams and roles claims may be lists or space- or comma-separated strings, and `name` falls back to
+`sub`. The keys are cached for ten minutes, refreshed a minute before they expire, fetched at most
+twice in 30 seconds when tokens name a key the cache lacks, and kept for an hour while the endpoint
+is down; tokens are verified on a worker thread, never on the request's event loop.
+
 ## Deployment
 
 `backend/Dockerfile` and `frontend/Dockerfile` (nginx serving the build and proxying `/api` and

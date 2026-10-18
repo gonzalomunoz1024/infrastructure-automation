@@ -35,6 +35,14 @@ platform:
   identity:
     mode: dev             # dev | oidc
     default-user: gonzalo
+    # Under the oidc profile (mode: oidc) the issuer, the audience and the JWKS endpoint are
+    # required and the start fails with a message naming a blank one, for example:
+    # oidc-issuer: https://login.example.com/realms/platform
+    # oidc-audience: platform
+    # oidc-jwks-uri: https://login.example.com/realms/platform/protocol/openid-connect/certs
+    oidc-teams-claim: groups          # the token claim that lists the caller's teams
+    oidc-roles-claim: roles           # the token claim that lists the caller's roles
+    oidc-admin-role: platform-admin   # the role in that claim that makes the caller a platform admin
   execution:
     mode: in-memory       # in-memory | temporal; the temporal profile (end of this file) sets temporal
   roles: api, worker      # api (the API) and/or worker (the interpreter's Temporal worker); one alone needs the temporal profile
