@@ -18,7 +18,8 @@ import reactor.core.publisher.Mono;
 
 /**
  * Write side of the providers slice: the Add provider wizard's steps (import a spec, test the
- * connection, try an action, validate, publish) and the admin edits (overrides, SLO).
+ * connection, try an action, validate, publish) and the admin edits (refresh the spec, overrides,
+ * SLO), which change a published provider through a change request like a publish does.
  */
 public interface ProviderCommands {
 
@@ -104,7 +105,9 @@ public interface ProviderCommands {
      */
     Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command);
 
+    /** Opens a change request for the next patch version with the override ({@code unchanged} when it adds nothing). */
     Mono<CommandAccepted> overrides(String name, SetOverride command);
 
+    /** Opens a change request for the next patch version with the SLO and alert channel ({@code unchanged} when they are the same). */
     Mono<CommandAccepted> slo(String name, SetSlo command);
 }

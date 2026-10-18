@@ -70,9 +70,10 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * The Add provider wizard's backend and the admin edits. Publishing opens a change request; the
- * provider is saved when the workflows slice merges it and publishes {@code change-request.merged},
- * which this handler listens to.
+ * The Add provider wizard's backend and the admin edits. Publishing, a spec refresh, an override
+ * and an SLO edit each open a change request (one open at a time per provider); the provider is
+ * saved when the workflows slice merges it and publishes {@code change-request.merged}, which this
+ * handler listens to.
  */
 @Slf4j
 @Primary
@@ -82,7 +83,6 @@ public class ProviderCommandHandler implements ProviderCommands {
 
     public static final String MERGED_EVENT = "change-request.merged";
     public static final String PUBLISHED_EVENT = "provider.published";
-    public static final String UPDATED_EVENT = "provider.updated";
     public static final String CHANGE_REQUESTED_EVENT = "provider.change-requested";
 
     /** What a secret-looking field of a recorded sample becomes in the provider file. */
@@ -302,9 +302,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         List<Check> extra = new ArrayList<>();
         extra.add(new Check(SPEC_REFRESH, "Spec refreshed", "passed", detail));
         // the real responses judged against the new schemas: a refresh that breaks one cannot merge
-        ProviderReview.review(ProviderYaml.parse(yaml), evidence.evidence(def.name())).checks().stream()
-                .filter(k -> ProviderReview.RESPONSES.equals(k.id()))
-                .forEach(extra::add);
+        extra.addAll(reviewChecks(yaml, ProviderReview.RESPONSES));
         return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": spec refreshed", SPEC_REFRESH, extra);
     }
 
@@ -539,6 +537,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (open) {
                 throw new ConflictException("A change request for provider " + def.name() + " " + version + " is already open");
             }
+            requireNoOpenChange(def.name());
             // the review step: what the wizard proved, judged by the platform (credentials work, every action tried...)
             ProviderReview.Result review = ProviderReview.review(def, evidence.evidence(def.name()));
             if (!review.ready()) {
@@ -575,11 +574,15 @@ public class ProviderCommandHandler implements ProviderCommands {
         });
     }
 
-    // ---------------------------------------------------------------- admin edits
+    // ---------------------------------------------------------------- admin edits (through change requests)
 
+    /**
+     * "Use the real response": the schema inferred from the response is merged over the action's
+     * output in {@code overrides}, as a change request for the next patch version.
+     */
     @Override
     public Mono<CommandAccepted> overrides(String name, SetOverride command) {
-        return CurrentIdentity.current().map(who -> {
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
@@ -590,22 +593,23 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (command.response() == null || command.response().isNull() || command.response().isMissingNode()) {
                 throw new IllegalArgumentException("response is required: the real response the schema is inferred from");
             }
-            JsonNode base = action.output();
-            JsonNode existing = def.override(action.id());
-            if (existing != null && existing.has("response")) {
-                base = Schemas.merge(base, existing.get("response"));
-            }
-            ObjectNode response = Schemas.merge(base, Schemas.infer(command.response()));
+            requireNoOpenChange(name);
+            ObjectNode response = Schemas.merge(def.effectiveOutput(action), Schemas.infer(command.response()));
             ObjectNode tree = tree(current.yaml());
             child(child(child(tree, "spec"), "overrides"), action.id()).set("response", response);
-            saveEdited(current, tree, who, "overrides");
-            return CommandAccepted.of(name, "updated", Map.of("provider", "/api/v1/providers/" + name));
-        });
+            if (tree.equals(tree(current.yaml()))) {
+                return CommandAccepted.of(name, "unchanged", Map.of("provider", "/api/v1/providers/" + name));
+            }
+            String version = nextPatch(tree, def);
+            String yaml = ProviderYaml.toYaml(tree);
+            return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": " + action.id() + " uses the real response", "overrides",
+                    reviewChecks(yaml, ProviderReview.RESPONSES));
+        }));
     }
 
     @Override
     public Mono<CommandAccepted> slo(String name, SetSlo command) {
-        return CurrentIdentity.current().map(who -> {
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
@@ -618,6 +622,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (command.p95Ms() != null && command.p95Ms() <= 0) {
                 throw new IllegalArgumentException("p95Ms is a positive number of milliseconds");
             }
+            requireNoOpenChange(name);
             ObjectNode tree = tree(current.yaml());
             ObjectNode spec = child(tree, "spec");
             ObjectNode slo = child(spec, "slo");
@@ -640,9 +645,39 @@ public class ProviderCommandHandler implements ProviderCommands {
                     child(spec, "alerts").put("channel", command.channel().trim());
                 }
             }
-            saveEdited(current, tree, who, "slo");
-            return CommandAccepted.of(name, "updated", Map.of("provider", "/api/v1/providers/" + name));
-        });
+            if (sameSlo(tree, tree(current.yaml()))) {
+                return CommandAccepted.of(name, "unchanged", Map.of("provider", "/api/v1/providers/" + name));
+            }
+            String version = nextPatch(tree, def);
+            String yaml = ProviderYaml.toYaml(tree);
+            return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": SLO and alerts", "slo",
+                    reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
+        }));
+    }
+
+    /** The same SLO and alert channel once the defaults the edit wrote in are counted as what the file meant. */
+    private static boolean sameSlo(ObjectNode edited, ObjectNode original) {
+        JsonNode a = edited.path("spec");
+        JsonNode b = original.path("spec");
+        ProviderDefinition.Slo before = ProviderYaml.fromJson(original).slo();
+        ProviderDefinition.Slo after = ProviderYaml.fromJson(edited).slo();
+        return before.equals(after) && a.path("alerts").equals(b.path("alerts"));
+    }
+
+    /** The provider's next patch version, written into the edited file. */
+    private static String nextPatch(ObjectNode tree, ProviderDefinition def) {
+        String version = Semver.parse(def.metadata().version()).bumpPatch().toString();
+        child(tree, "metadata").put("version", version);
+        return version;
+    }
+
+    /** The review checks named, judged on the edited file with what the platform saw of the provider. */
+    private List<Check> reviewChecks(String yaml, String... ids) {
+        List<String> wanted = List.of(ids);
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        return ProviderReview.review(def, evidence.evidence(def.name())).checks().stream()
+                .filter(c -> wanted.contains(c.id()))
+                .toList();
     }
 
     /** One change at a time per provider: two open change requests would publish over each other. */
@@ -683,18 +718,6 @@ public class ProviderCommandHandler implements ProviderCommands {
         data.put("change", change);
         events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
         return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id, "provider", "/api/v1/providers/" + def.name()));
-    }
-
-    private void saveEdited(StoredProvider current, ObjectNode tree, Identity who, String change) {
-        String yaml = ProviderYaml.toYaml(tree);
-        ProviderDefinition def = ProviderYaml.parse(yaml);
-        store.save(new StoredProvider(def, yaml, current.path() == null ? pathOf(def) : current.path(), clock.instant(), who.id()));
-        ObjectNode data = F.objectNode();
-        data.put("name", def.name());
-        data.put("version", def.metadata().version());
-        data.put("by", who.id());
-        data.put("change", change);
-        events.publish(UPDATED_EVENT, "provider", def.name(), who.id(), data);
     }
 
     // ---------------------------------------------------------------- merged change requests

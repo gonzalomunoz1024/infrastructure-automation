@@ -163,7 +163,7 @@ spec:
       plan: vm.get            # preview via another action
       effectDetail: Deletes the VM and its disks   # or one plain line the preview shows instead of a plan
       verify: { action: vm.get, expect: notFound }   # after a destructive try, prove it worked
-  overrides:                  # fixes from real responses; the vendor spec is never edited
+  overrides:                  # fixes from real responses, through a change request; the vendor spec is never edited
     vm.get:
       response: { properties: { powerState: { type: string } } }
   errors:

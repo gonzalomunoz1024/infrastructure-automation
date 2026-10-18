@@ -39,6 +39,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
@@ -604,25 +605,51 @@ class ProviderCommandHandlerTest {
 
     // ---------------------------------------------------------------- overrides and slo
 
+    ChangeRequest opened() {
+        ArgumentCaptor<ChangeRequest> cr = ArgumentCaptor.forClass(ChangeRequest.class);
+        verify(changeRequests).save(cr.capture());
+        return cr.getValue();
+    }
+
+    static ChangeRequest openProviderChange(String version) {
+        return new ChangeRequest("cr_open", ChangeRequest.Kind.PROVIDER, "fleet", version, "b", "t", "ana", ChangeRequest.Status.OPEN, List.of(), "all", YAML, "",
+                NOW, null, null, null);
+    }
+
     @Test
-    void anOverrideMergesTheInferredSchemaOverTheOutput() {
+    void anOverrideOpensAChangeRequestForTheNextPatchVersion() {
         when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
         StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{\"id\":\"vm-1\",\"powerState\":\"poweredOn\",\"cpu\":4}"))), OWNER))
                 .assertNext(a -> {
-                    assertThat(a.id()).isEqualTo("fleet");
-                    assertThat(a.status()).isEqualTo("updated");
+                    assertThat(a.status()).isEqualTo("open");
+                    assertThat(a.links()).containsEntry("changeRequest", "/api/v1/change-requests/" + a.id()).containsEntry("provider", "/api/v1/providers/fleet");
                 })
                 .verifyComplete();
-        ArgumentCaptor<StoredProvider> saved = ArgumentCaptor.forClass(StoredProvider.class);
-        verify(store).save(saved.capture());
-        JsonNode response = saved.getValue().definition().override("vm.get").get("response");
+        verify(store, never()).save(any());
+        ChangeRequest cr = opened();
+        assertThat(cr.kind()).isEqualTo(ChangeRequest.Kind.PROVIDER);
+        assertThat(cr.version()).isEqualTo("1.1.1");
+        assertThat(cr.title()).isEqualTo("Provider Fleet API 1.1.1: vm.get uses the real response");
+        assertThat(cr.author()).isEqualTo("mateo");
+        assertThat(cr.diff()).contains("--- a/providers/team-compute/fleet.yaml").contains("overrides:");
+        JsonNode response = ProviderYaml.parse(cr.yaml()).override("vm.get").get("response");
         assertThat(response.path("type").asText()).isEqualTo("object");
         assertThat(response.path("properties").path("cpu").path("type").asText()).isEqualTo("integer");
         assertThat(response.path("properties").path("name").path("type").asText()).isEqualTo("string");
         assertThat(response.path("properties").path("powerState").path("enum")).hasSize(2);
-        assertThat(saved.getValue().yaml()).contains("overrides:");
-        assertThat(saved.getValue().updatedBy()).isEqualTo("mateo");
-        assertThat(event("provider.updated").orElseThrow().data().path("change").asText()).isEqualTo("overrides");
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "spec-pinned", "credentials", "actions", "slo", "responses");
+        assertThat(event("provider.change-requested").orElseThrow().data().path("change").asText()).isEqualTo("overrides");
+    }
+
+    @Test
+    void anOverrideThatCoversTheRealResponsePassesTheResponsesCheck() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
+        JsonNode real = json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\",\"monthlyCost\":3.5}");
+        evidence.recordTry("fleet", new ActionTry("vm.get", "dev", true, 200, 120, null, real, null, NOW, "mateo"));
+        StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", real)), OWNER)).expectNextCount(1).verifyComplete();
+        Check responses = opened().checks().stream().filter(c -> c.id().equals("responses")).findFirst().orElseThrow();
+        assertThat(responses.status()).isEqualTo("passed");
+        assertThat(responses.detail()).isEqualTo("1 of 1 response matches");
     }
 
     @Test
@@ -633,19 +660,44 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{}"))), OUTSIDER)).expectError(ForbiddenException.class).verify();
         StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.nope", json("{}"))), OWNER)).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", null)), OWNER)).expectError(IllegalArgumentException.class).verify();
+        when(changeRequests.all()).thenReturn(List.of(openProviderChange("1.2.0")));
+        StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{\"cpu\":4}"))), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class)
+                        .hasMessage("Change request cr_open for provider fleet 1.2.0 is still open; merge or close it first"))
+                .verify();
         verify(store, never()).save(any());
+        verify(changeRequests, never()).save(any());
     }
 
     @Test
-    void theSloAndTheAlertChannelCanBeChanged() {
+    void anOverrideTheSchemaAlreadyHasChangesNothing() {
+        String withOverride = YAML.replace("\n  errors:", "\n  overrides:\n    vm.get: { response: { type: object, properties: { id: { type: string }, "
+                + "name: { type: string }, powerState: { type: string, enum: [poweredOn, poweredOff] } } } }\n  errors:");
+        assertThat(withOverride).contains("overrides:");
+        when(store.get("fleet")).thenReturn(Optional.of(stored(withOverride)));
+        StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{\"id\":\"vm-1\",\"name\":\"web\"}"))), OWNER))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("unchanged"))
+                .verifyComplete();
+        verify(changeRequests, never()).save(any());
+    }
+
+    @Test
+    void theSloAndTheAlertChannelChangeThroughAChangeRequest() {
         when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
-        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, 500, "#fleet-alerts")), OWNER)).expectNextCount(1).verifyComplete();
-        ArgumentCaptor<StoredProvider> saved = ArgumentCaptor.forClass(StoredProvider.class);
-        verify(store).save(saved.capture());
-        assertThat(saved.getValue().definition().slo().successRate()).isEqualTo(99.9);
-        assertThat(saved.getValue().definition().slo().p95Ms()).isEqualTo(500);
-        assertThat(saved.getValue().definition().spec().alerts().channel()).isEqualTo("#fleet-alerts");
-        assertThat(saved.getValue().definition().actions()).hasSize(2);
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, 500, "#fleet-alerts")), OWNER))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("open"))
+                .verifyComplete();
+        verify(store, never()).save(any());
+        ChangeRequest cr = opened();
+        assertThat(cr.version()).isEqualTo("1.1.1");
+        assertThat(cr.title()).isEqualTo("Provider Fleet API 1.1.1: SLO and alerts");
+        ProviderDefinition next = ProviderYaml.parse(cr.yaml());
+        assertThat(next.slo().successRate()).isEqualTo(99.9);
+        assertThat(next.slo().p95Ms()).isEqualTo(500);
+        assertThat(next.spec().alerts().channel()).isEqualTo("#fleet-alerts");
+        assertThat(next.actions()).hasSize(2);
+        assertThat(cr.checks()).extracting(Check::id).endsWith("slo-suggested");
+        assertThat(event("provider.change-requested").orElseThrow().data().path("change").asText()).isEqualTo("slo");
         StepVerifier.create(as(handler.slo("fleet", new SetSlo(120.0, null, null)), OWNER)).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(as(handler.slo("fleet", new SetSlo(null, 0, null)), OWNER)).expectError(IllegalArgumentException.class).verify();
     }
@@ -654,11 +706,31 @@ class ProviderCommandHandlerTest {
     void aPartialSloKeepsTheOtherValues() {
         when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
         StepVerifier.create(as(handler.slo("fleet", new SetSlo(null, 650, null)), OWNER)).expectNextCount(1).verifyComplete();
-        ArgumentCaptor<StoredProvider> saved = ArgumentCaptor.forClass(StoredProvider.class);
-        verify(store).save(saved.capture());
-        assertThat(saved.getValue().definition().slo().successRate()).isEqualTo(99.5);
-        assertThat(saved.getValue().definition().slo().p95Ms()).isEqualTo(650);
-        assertThat(saved.getValue().definition().spec().alerts().channel()).isEqualTo("#compute-alerts");
+        ProviderDefinition next = ProviderYaml.parse(opened().yaml());
+        assertThat(next.slo().successRate()).isEqualTo(99.5);
+        assertThat(next.slo().p95Ms()).isEqualTo(650);
+        assertThat(next.spec().alerts().channel()).isEqualTo("#compute-alerts");
+    }
+
+    @Test
+    void theSameSloChangesNothingAndAnOpenChangeRequestWaits() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.5, 800, "#compute-alerts")), OWNER))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("unchanged"))
+                .verifyComplete();
+        when(changeRequests.all()).thenReturn(List.of(openProviderChange("1.1.1")));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.0, null, null)), OWNER)).expectError(ConflictException.class).verify();
+        verify(changeRequests, never()).save(any());
+    }
+
+    @Test
+    void aPublishWaitsForAnotherOpenChangeOfTheProvider() {
+        proven();
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.all()).thenReturn(List.of(openProviderChange("1.0.1")));
+        StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("cr_open"))
+                .verify();
     }
 
     // ---------------------------------------------------------------- draft
