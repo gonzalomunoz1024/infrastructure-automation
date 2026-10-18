@@ -74,6 +74,28 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- end -}}
 
+{{/* The volume of the Temporal client TLS Secret (temporal.tls), mounted at /etc/temporal-tls; nothing without one */}}
+{{- define "platform.temporalTlsVolume" -}}
+{{- with .Values.temporal.tls -}}
+{{- if .secretName -}}
+- name: temporal-tls
+  secret:
+    secretName: {{ .secretName | quote }}
+    defaultMode: 292  # 0444 on a read-only mount: the container's non-root user reads it, whatever its uid
+    items:
+      {{- if .caKey }}
+      - { key: {{ .caKey | quote }}, path: ca.crt }
+      {{- end }}
+      {{- if .certKey }}
+      - { key: {{ .certKey | quote }}, path: tls.crt }
+      {{- end }}
+      {{- if .keyKey }}
+      - { key: {{ .keyKey | quote }}, path: tls.key }
+      {{- end }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* The pod spec of a backend instance: (dict "ctx" $ "roles" "api" "component" "api" "settings" .Values.api) */}}
 {{- define "platform.backendPod" -}}
 {{- $ctx := .ctx -}}
@@ -225,23 +247,8 @@ spec:
       emptyDir: {}
     - name: tmp
       emptyDir: {}
-    {{- with $v.temporal.tls }}
-    {{- if .secretName }}
-    - name: temporal-tls
-      secret:
-        secretName: {{ .secretName | quote }}
-        defaultMode: 288  # 0440: the pod's group (fsGroup) reads the key, nobody else
-        items:
-          {{- if .caKey }}
-          - { key: {{ .caKey | quote }}, path: ca.crt }
-          {{- end }}
-          {{- if .certKey }}
-          - { key: {{ .certKey | quote }}, path: tls.crt }
-          {{- end }}
-          {{- if .keyKey }}
-          - { key: {{ .keyKey | quote }}, path: tls.key }
-          {{- end }}
-    {{- end }}
+    {{- with include "platform.temporalTlsVolume" $ctx }}
+    {{- . | nindent 4 }}
     {{- end }}
     {{- if eq (toString $v.audit.worm.mode) "files" }}
     - name: evidence
