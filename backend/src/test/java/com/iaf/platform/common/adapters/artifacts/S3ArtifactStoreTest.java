@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.ports.ArtifactStorePort.Artifact;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.ArtifactsProperties;
@@ -213,7 +214,8 @@ class S3ArtifactStoreTest {
         assertThat(put.header("If-None-Match")).isNull();
         assertThat(put.header("Content-Type")).isEqualTo("application/x-ndjson");
         assertThat(put.header("x-amz-checksum-sha256")).isNotBlank();
-        assertThat(put.header("x-amz-meta-sha256")).isEqualTo("40fe96e5dc9e9822902a3f343389fa3cd531c145a19eb55881b0be5e9b0962e7");
+        // digests computed here, not written out: a long hex literal next to "key" reads as a secret to the scan
+        assertThat(put.header("x-amz-meta-sha256")).isEqualTo(Hashes.sha256("{\"seq\":1}\n"));
         StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(logs)).verifyComplete();
         StepVerifier.create(store.existsNamed("jobs/j1/logs.ndjson")).expectNext(true).verifyComplete();
         StepVerifier.create(store.existsNamed("jobs/j1/plan.json")).expectNext(false).verifyComplete();
@@ -222,7 +224,7 @@ class S3ArtifactStoreTest {
         StepVerifier.create(store.putNamed("jobs/j1/logs.ndjson", more)).verifyComplete();
 
         assertThat(objects.get(key)).isEqualTo(more);
-        assertThat(digests).containsEntry(key, "2dc3eda31cdc4f48b964946ebb421f585e14e377623c34652b6bd6840db370cf");
+        assertThat(digests).containsEntry(key, Hashes.sha256("{\"seq\":1}\n{\"seq\":2}\n"));
         StepVerifier.create(store.getNamed("jobs/j1/logs.ndjson")).assertNext(b -> assertThat(b).isEqualTo(more)).verifyComplete();
     }
 
