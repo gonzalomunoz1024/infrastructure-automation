@@ -11,7 +11,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * What a run step returns when its child job succeeded:
  * {@code { jobId, status, outputs, resources: [{ id, type }] }}, where {@code resources} are the
  * resources the child's register steps recorded. Every engine builds the result here, so a
- * parent finds the resource an {@code orCreateWith} child built the same way everywhere.
+ * parent finds the resource an {@code orCreateWith} child built the same way everywhere: from
+ * the child's context when the engine walked it in process, else from what the child's
+ * {@link Outcome} carries back (a Temporal child workflow).
  */
 public final class ChildResults {
 
@@ -20,16 +22,14 @@ public final class ChildResults {
     private ChildResults() {
     }
 
-    /** @param child the child's context after its run, null when the engine has none */
+    /** @param child the child's context after its run, null when the engine has none (the outcome's registrations are used then) */
     public static ObjectNode of(String jobId, Outcome outcome, JobContext child) {
         ObjectNode out = F.objectNode();
         out.put("jobId", jobId);
         out.put("status", outcome.status().json());
         out.set("outputs", outcome.output() == null ? F.objectNode() : outcome.output());
         ArrayNode resources = out.putArray("resources");
-        if (child != null) {
-            child.registered().forEach(r -> resources.addObject().put("id", r.id()).put("type", r.type()));
-        }
+        (child != null ? child.registered() : outcome.registered()).forEach(r -> resources.addObject().put("id", r.id()).put("type", r.type()));
         return out;
     }
 

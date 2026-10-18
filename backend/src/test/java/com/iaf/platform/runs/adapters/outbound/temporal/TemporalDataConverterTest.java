@@ -26,6 +26,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.ChangeTicket;
 import com.iaf.platform.runs.domain.Job;
+import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepError;
@@ -206,6 +207,7 @@ class TemporalDataConverterTest {
                 AttentionDecision.abort("ana"),
                 Outcome.succeeded(SampleContent.json(Map.of("vmName", "web-1042"))),
                 new Outcome(JobStatus.ROLLED_BACK, null, "timeout", "waitReady", "guest tools never came up"),
+                Outcome.succeeded(SampleContent.json(Map.of("imageId", "img-9"))).withRegistered(List.of(new JobContext.Registered("img-9", "image"))),
                 StepFailureData.of(new StepFailure("restart", "unreachable", "host down", true)),
                 ref,
                 new StepCall(ref, step, 7, Duration.ofMinutes(30)),

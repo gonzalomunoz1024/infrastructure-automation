@@ -28,6 +28,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
@@ -159,6 +160,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             log.error("job {} crashed: {}", job.id(), e.toString(), e);
             outcome = new Outcome(JobStatus.FAILED, null, "engine_error", null, e.getMessage());
         }
+        outcome = outcome.withRegistered(ctx.registered()); // a parent's run step reads them from the child workflow's result
         finish(outcome);
         return outcome;
     }
@@ -386,11 +388,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
                     "Child job " + child.id() + " (" + child.workflow() + ") " + outcome.status().json()
                             + (outcome.message() == null ? "" : ": " + outcome.message()), false);
         }
-        ObjectNode out = F.objectNode();
-        out.put("jobId", child.id());
-        out.put("status", outcome.status().json());
-        out.set("outputs", outcome.output() == null ? F.objectNode() : outcome.output());
-        return out;
+        return ChildResults.of(child.id(), outcome, null);
     }
 
     /**

@@ -29,6 +29,7 @@ import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Job;
+import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
@@ -401,6 +402,30 @@ class InterpreterWorkflowImplTest {
         assertThat(failed.status()).isEqualTo(JobStatus.FAILED);
         assertThat(failed.attention()).isNull();
         assertThat(failed.step("after")).isNull();
+        t.replay(job.id());
+    }
+
+    @Test
+    void aChildWorkflowHandsItsRegistrationsBackSoAnInputAskingForANewResourceIsBuiltFirst() {
+        t = new TemporalTestEngine();
+        Job job = t.start(SampleContent.workflow("create-vm"), Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9")), "size", "small"));
+
+        assertThat(t.result(job.id()).status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(t.w.projection.children(job.id())).singleElement().satisfies(child -> {
+            assertThat(child.workflow()).isEqualTo("build-vm-image");
+            assertThat(child.status()).isEqualTo(JobStatus.SUCCEEDED);
+            assertThat(child.traceId()).isEqualTo(job.traceId());
+            assertThat(t.result(child.id()).registered()).as("the child workflow's result carries what it registered (building, then ready)")
+                    .isNotEmpty().allSatisfy(r -> assertThat(r.type()).isEqualTo("image"))
+                    .extracting(JobContext.Registered::id).containsOnly(t.result(child.id()).registered().get(0).id());
+        });
+        Job done = t.job(job.id());
+        JobStep build = done.step("image.create");
+        assertThat(build.status()).isEqualTo(StepStatus.SUCCEEDED);
+        String imageId = build.output().path("resources").get(0).path("id").asText();
+        assertThat(imageId).isNotBlank();
+        assertThat(build.output().path("resources").get(0).path("type").asText()).isEqualTo("image");
+        assertThat(done.step("useImage").input().path("id").asText()).as("the job goes on with the new id").isEqualTo(imageId);
         t.replay(job.id());
     }
 
