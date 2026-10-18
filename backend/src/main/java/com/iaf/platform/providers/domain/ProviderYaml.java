@@ -11,7 +11,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.yaml.snakeyaml.LoaderOptions;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.iaf.platform.common.domain.Effect;
@@ -31,8 +30,8 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
 /** Reads and writes {@code kind: Provider} files, canonically. */
 public final class ProviderYaml {
 
+    /** Writes only: files are read through {@link WorkflowYaml#readTree}, which refuses a key written twice. */
     private static final ObjectMapper YAML = new ObjectMapper(YAMLFactory.builder()
-            .loaderOptions(strictKeys())
             .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
             .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
             .enable(YAMLGenerator.Feature.INDENT_ARRAYS_WITH_INDICATOR)
@@ -41,13 +40,6 @@ public final class ProviderYaml {
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private ProviderYaml() {
-    }
-
-    /** A key written twice would silently keep one value, so the parser refuses it like the designer does. */
-    private static LoaderOptions strictKeys() {
-        LoaderOptions options = new LoaderOptions();
-        options.setAllowDuplicateKeys(false);
-        return options;
     }
 
     public static ProviderDefinition parse(String yaml) {
@@ -81,6 +73,9 @@ public final class ProviderYaml {
         s.path("endpoints").properties().forEach(e -> endpoints.put(e.getKey(), e.getValue().asText()));
         JsonNode au = s.get("auth");
         Auth auth = au != null && au.isObject() ? new Auth(au.path("type").asText("none"), text(au, "credential"), text(au, "header")) : new Auth("none", null, null);
+        JsonNode sl = s.get("slo");
+        Slo slo = sl != null && sl.isObject() ? new Slo(sl.path("successRate").asDouble(Slo.DEFAULT.successRate()), sl.path("p95Ms").asInt(Slo.DEFAULT.p95Ms())) : null;
+        Slo inherited = slo == null ? Slo.DEFAULT : slo;
         List<Action> actions = new ArrayList<>();
         for (JsonNode a : s.path("actions")) {
             String id = a.path("id").asText(null);
@@ -97,9 +92,14 @@ public final class ProviderYaml {
             JsonNode v = a.get("verify");
             Verify verify = v != null && v.isObject() ? new Verify(text(v, "action"), text(v, "expect")) : null;
             JsonNode recorded = a.get("recorded");
+            // an action's own SLO; a field it leaves out takes the provider's value
+            JsonNode asl = a.get("slo");
+            Slo own = asl != null && asl.isObject()
+                    ? new Slo(asl.path("successRate").asDouble(inherited.successRate()), asl.path("p95Ms").asInt(inherited.p95Ms()))
+                    : null;
             actions.add(new Action(id, text(a, "title"), operation, method, path, effect, retrySafe, approval, text(a, "plan"), verify,
                     a.get("input"), a.get("output"), a.get("sample"), a.get("example"), text(a, "playbook"), a.get("vars"), text(a, "description"),
-                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null));
+                    text(a, "effectDetail"), recorded != null && recorded.isObject() ? recorded : null, own));
         }
         Map<String, JsonNode> overrides = new LinkedHashMap<>();
         s.path("overrides").properties().forEach(e -> overrides.put(e.getKey(), e.getValue()));
@@ -107,8 +107,6 @@ public final class ProviderYaml {
         for (JsonNode e : s.path("errors")) {
             errors.add(new ErrorClass(e.get("match"), e.path("class").asText("error"), e.path("retry").asBoolean(false)));
         }
-        JsonNode sl = s.get("slo");
-        Slo slo = sl != null && sl.isObject() ? new Slo(sl.path("successRate").asDouble(Slo.DEFAULT.successRate()), sl.path("p95Ms").asInt(Slo.DEFAULT.p95Ms())) : null;
         JsonNode al = s.get("alerts");
         Alerts alerts = al != null && al.isObject() ? new Alerts(text(al, "channel")) : null;
         JsonNode wk = s.get("worker");
@@ -211,6 +209,11 @@ public final class ProviderYaml {
                 ObjectNode v = o.putObject("verify");
                 put(v, "action", a.verify().action());
                 put(v, "expect", a.verify().expect());
+            }
+            if (a.slo() != null) {
+                ObjectNode sl = o.putObject("slo");
+                sl.put("successRate", a.slo().successRate());
+                sl.put("p95Ms", a.slo().p95Ms());
             }
             if (a.input() != null) {
                 o.set("input", a.input());

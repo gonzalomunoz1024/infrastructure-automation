@@ -14,6 +14,13 @@ for k in ('yaml', 'actions', 'daily', 'perAction', 'health', 'changeRequests'):
 check(len(pd.get('daily', [])) == 14, f'daily points: {len(pd.get("daily", []))}')
 s, _ = call('GET', A + '/providers/nope', expect=404)
 s, al = call('GET', A + '/providers/backup/alerts', expect=200)
+# the admin view is scoped: ana (team-data) sees her team's providers, not team-compute's, and a hidden one is a 404
+s, ps_ana = call('GET', A + '/providers', user='ana', expect=200)
+names_ana = {p['name'] for p in ps_ana}
+check('mongodb' in names_ana and 'vsphere' not in names_ana, f'ana sees {sorted(names_ana)}')
+s, _ = call('GET', A + '/providers/vsphere', user='ana', expect=404, note='ana opens a team-compute provider')
+s, _ = call('GET', A + '/providers/vsphere/alerts', user='ana', expect=404, note='ana reads its alerts')
+s, _ = call('GET', A + '/providers/mongodb', user='ana', expect=200, note='ana opens her own')
 spec = {
   'openapi': '3.0.3', 'info': {'title': 'Fleet API', 'version': '2.1.0'},
   'servers': [{'url': 'https://fleet.example.com'}],
@@ -50,7 +57,7 @@ spec:
   type: openapi
   spec: { url: https://fleet.example.com/openapi.json, sha256: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae }
   endpoints: { dev: __DEV_URL__/actuator/health }
-  auth: { type: bearer, credential: vault:fleet/token }
+  auth: { type: header, header: X-Fleet-Token, credential: vault:fleet/token }
   actions:
     - id: vm.get
       title: Get VM
@@ -66,12 +73,18 @@ spec:
   alerts: { channel: "#compute-alerts" }
 """
 # publishing needs a tested connection to every endpoint, with the provider's own credential: the backend's health page answers
+# (fleet sends its key in a header the platform ignores; a bearer token the platform did not issue would get a 401)
 yaml_p = yaml_p.replace('__DEV_URL__', lib.BASE)
 s, pv = call('POST', A + '/providers:validate', {'yaml': yaml_p}, expect=200)
 print('provider validate ->', [(c['id'], c['status']) for c in pv.get('checks', [])], [p['code'] for p in pv.get('problems', [])])
 s, tr = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, expect=200, timeout=60)
 print('try ->', str(tr)[:300])
-s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'bearer', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
+# a try is evidence for the provider's review: only its team (or an admin) adds to it
+s, _ = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, user='ana', expect=403, note='ana tries a team-compute provider')
+s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'none'}, 'provider': 'vsphere'}, user='ana', expect=403, note='ana adds a connection test to vsphere')
+# the connection test resolves the provider's credential as a real call would: a reference that is not in the vault fails it
+s, _ = call('POST', A + '/credentials', {'name': 'fleet/token', 'type': 'token', 'value': 'e2e-fleet-token', 'owner': 'team-compute'}, expect=202, note='store the fleet token the provider names')
+s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'header', 'header': 'X-Fleet-Token', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
 check(all(r.get('ok') for r in tested.get('results', [])), f'fleet connection test: {tested}')
 s, pub = call('POST', A + '/providers:publish', {'yaml': yaml_p}, expect=202)
 print('publish ->', s, str(pub)[:300])
@@ -193,7 +206,8 @@ s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://g
 s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://github.com/acme/ops-playbooks'}, 'credential': 'vault:e2e/data-token'}, user='mateo', expect=403, note='mateo drafts with a team-data machine credential')
 s, _ = call('POST', A + '/providers:import-terraform', {'registry': {'module': 'acme/lb/aws', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports with a team-data registry token')
 s, _ = call('POST', A + '/providers:import-spec', {'type': 'openapi', 'git': {'repo': 'https://github.com/acme/fleet-api', 'path': 'openapi.yaml', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports a spec with a team-data read token')
-s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/nope'}}, user='mateo', expect=200, timeout=60, note='unknown credential is judged where it is resolved')
+s, nope = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/nope'}}, user='mateo', expect=200, timeout=60, note='unknown credential is judged where it is resolved')
+check(isinstance(nope, dict) and all(not r.get('ok') and 'vault:e2e/nope' in r.get('message', '') for r in nope.get('results', [])), f'an unknown reference fails the test naming it: {nope}')
 seeded = (pd.get('auth') or {}).get('credential') if isinstance(pd, dict) else None
 if seeded:
     s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': seeded}}, user='mateo', expect=200, timeout=60, note='a seeded credential is any team\'s')

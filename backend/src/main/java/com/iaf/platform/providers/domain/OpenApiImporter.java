@@ -11,13 +11,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.providers.domain.SpecImport.AuthInfo;
 import com.iaf.platform.providers.domain.SpecImport.Operation;
@@ -34,7 +31,6 @@ import com.iaf.platform.workflows.domain.WorkflowYaml;
  */
 public final class OpenApiImporter {
 
-    private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final List<String> METHODS = List.of("get", "put", "post", "delete", "patch", "head", "options");
     private static final Set<String> READ_WORDS = Set.of("get", "list", "search", "find", "describe", "read", "fetch", "query", "lookup");
@@ -59,12 +55,8 @@ public final class OpenApiImporter {
         if (raw == null || raw.isBlank()) {
             throw new IllegalArgumentException("The OpenAPI document is empty");
         }
-        JsonNode doc;
-        try {
-            doc = YAML.readTree(raw);
-        } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException("Not a JSON or YAML document: " + e.getOriginalMessage());
-        }
+        // the strict reader every loader uses: a key written twice is refused, never silently kept once
+        JsonNode doc = WorkflowYaml.readTree(raw);
         if (doc == null || !doc.isObject()) {
             throw new IllegalArgumentException("Not an OpenAPI document: expected a mapping with openapi, info and paths");
         }
@@ -431,7 +423,8 @@ public final class OpenApiImporter {
             if (current == null) {
                 return null;
             }
-            current = current.isArray() && key.matches("\\d+") ? current.get(Integer.parseInt(key)) : current.get(key);
+            // an index has at most 9 digits, so a crafted segment never overflows: a longer one points nowhere
+            current = current.isArray() && key.length() <= 9 && key.matches("\\d+") ? current.get(Integer.parseInt(key)) : current.get(key);
         }
         return current;
     }

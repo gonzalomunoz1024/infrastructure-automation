@@ -71,6 +71,41 @@ class RedactorTest {
     }
 
     @Test
+    void tokenShapedWordsAndPrivateKeysAreMaskedEvenWhenNothingIsKnown() throws Exception {
+        JsonNode in = json.readTree("""
+                {"jwt":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbmEifQ.c2lnbmF0dXJlLXBhcnQ","note":"use ghp_abcdefghijklmnopqrstuvwxyz0123 for github",
+                 "aws":"AKIAIOSFODNN7EXAMPLE","key":"-----BEGIN RSA PRIVATE KEY-----\\nMIIE...\\n-----END RSA PRIVATE KEY-----",
+                 "api-key":"k-1","plain":"eyJ is how a jwt starts","id":"vm-1"}""");
+
+        JsonNode out = Redactor.redact(in, null);
+
+        assertThat(out.get("jwt").asText()).isEqualTo("***");
+        assertThat(out.get("note").asText()).isEqualTo("use *** for github");
+        assertThat(out.get("aws").asText()).isEqualTo("***");
+        assertThat(out.get("key").asText()).isEqualTo("***");
+        assertThat(out.get("api-key").asText()).as("api-key is a secret-looking name too").isEqualTo("***");
+        assertThat(out.get("plain").asText()).isEqualTo("eyJ is how a jwt starts");
+        assertThat(out.get("id").asText()).isEqualTo("vm-1");
+        assertThat(Redactor.tokenShape("xoxb-123456789012-abc")).isTrue();
+        assertThat(Redactor.tokenShape("hvs.CAESIJ1234567890abcdefghijklmnop")).isTrue();
+        assertThat(Redactor.tokenShape("vm-1")).isFalse();
+    }
+
+    @Test
+    void anotherMaskCanBeAsked() throws Exception {
+        JsonNode in = json.readTree("""
+                {"apiToken":"s3cr3t","echo":"Bearer s3cr3t","credential":"vault:fleet/token","name":"web"}""");
+
+        JsonNode out = Redactor.redact(in, Set.of("s3cr3t")::contains, "vault:redacted");
+
+        assertThat(out.get("apiToken").asText()).isEqualTo("vault:redacted");
+        assertThat(out.get("echo").asText()).isEqualTo("Bearer vault:redacted");
+        assertThat(out.get("credential").asText()).isEqualTo("vault:fleet/token");
+        assertThat(out.get("name").asText()).isEqualTo("web");
+        assertThat(Redactor.redact("HTTP 401 for s3cr3t", Set.of("s3cr3t")::contains, "vault:redacted")).isEqualTo("HTTP 401 for vault:redacted");
+    }
+
+    @Test
     void theTreePassedInIsNeverChanged() throws Exception {
         JsonNode in = json.readTree("""
                 {"password":"p","nested":{"token":"t"},"echo":"known"}""");

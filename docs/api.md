@@ -263,15 +263,25 @@ action and class starts nothing more for ten minutes.
 
 ```ts
 type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successRate; p50Ms; p95Ms; calls; errorTrend: number[]; reasons: string[] }
+// status, successRate, p50Ms, p95Ms and calls are the last 24 hours; errorTrend is the failed calls of each of the
+// last 14 days (24-hour windows ending now, oldest first), the same windows as the detail's `daily`.
+// The band is judged against the provider's `slo`, except that an action with an `slo` of its own is judged against
+// it on its own calls: the provider's band is the worst band of its parts (the actions without one together, each
+// action with one alone); a part under 5 calls does not count, and with no part big enough the provider is judged
+// as a whole. The metrics beside the band are always over all the calls.
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
 type ProviderDetail = ProviderSummary & { endpoints: { [environment]: baseUrl }; auth?: { type; credential?: 'vault:…'; header? };
-  yaml; actions: ActionInfo[]; daily: { date; calls; successRate?; p50Ms?; p95Ms? }[];
-  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
-// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts.
+  yaml; actions: ActionInfo[]; daily: { date; calls; errors; successRate?; p50Ms?; p95Ms? }[];
+  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[]; slo: { successRate; p95Ms }; band }[];
+  changeRequests: ChangeRequest[] }
+// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts, `errors`
+// how many of its calls failed; a window without calls has no rates.
 // The newest window covers the same calls as `health`. A window without calls has no rates.
+// perAction: the last 14 days per action; `slo` is the SLO the action is judged by (its own or the provider's) and
+// `band` its band over the last 24 hours against it ('unknown' under 5 calls).
 // auth.credential is the vault reference's name, never a value.
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;
-  effectDetail?; recorded?: { environment; at } }
+  effectDetail?; recorded?: { environment; at }; slo?: { successRate; p95Ms } }   // slo: the action's own; absent when it takes the provider's
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[];
   commit? }   // commit: the commit a spec read from Git came from; it goes in the file's spec.commit
@@ -284,35 +294,43 @@ type TerraformImport = { source; version; commit?; notes: string[]; yaml;
   outputs: { name; description?; sensitive; file }[] }
 type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean;
   environment; at; yaml? }   // yaml: the draft with the response saved as the action's sample, when the call went through
+// response is the live answer as the system gave it, for the caller alone. The two copies the platform keeps, the review
+// evidence and the sample in yaml, are redacted: secret-named fields (token, password, api key...), any value resolved
+// from Vault during the call and token-shaped words become vault:redacted; vault: references stay.
 type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
   slo?: { successRate; p95Ms; observedP95Ms; calls; detail } }   // slo is a suggestion, never enforced
 ```
 
 The review judges a provider file against what the platform itself saw in the wizard, kept per
-provider name: the Test connection results sent with `provider`, and every Try it call. Its checks
-come after the file's own checks on the change request:
+provider name: the Test connection results sent with `provider`, and every Try it call with the
+endpoint and credential reference it used. Only the provider's team adds to it: the published
+provider's owner team, else the owner team the draft names, else any member of a team (an admin
+always); anyone else gets a 403 before anything is probed or called. A store keeps the newest 50
+connection tests and 500 tries of a provider and counts the older ones it drops; the review warns
+(`evidence.dropped`) when it judges what is left. Its checks come after the file's own checks on
+the change request:
 
 | Check | Fails when |
 |-------|------------|
 | `connection` | the last Test connection to `dev` or to `test` (the ones the provider declares; its first environment when it has neither) is missing, failed, or used another endpoint or credential reference than the file has now. A missing `test` endpoint is a warning. openapi and http providers only |
-| `tried` | an action never answered when tried against `dev` (its first environment without one). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
-| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it. A tried error that no class matches, or no error classes at all, is a warning |
+| `tried` | an action never answered when tried against `dev` (its first environment without one), or was only tried at another endpoint or with another credential reference than the file has now (`action.staleTry`). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
+| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it, or (openapi, http) there are no error classes at all while an action creates, changes or deletes something. A tried error that no class matches is a warning, and so are no error classes on a provider that only reads. The file's own checks hold a provider that changes things to `alerts.channel` the same way (`alerts.channel`, a warning for a read-only one) |
 | `preview` | a destructive action has neither a `plan` action nor an `effectDetail` line |
 | `responses` | an action's last real response still disagrees with its schema after the `overrides` |
 | `slo-suggested` | never: it suggests `p95Ms` as 1.5 times the tried calls' p95, rounded up to 50 ms (at least 100), and warns when the file's p95 is below what the tries took |
 
 | Method | Path                                      | Body / Returns |
 |--------|-------------------------------------------|----------------|
-| GET    | `/providers`                              | `ProviderSummary[]` |
-| GET    | `/providers/{name}`                       | `ProviderDetail` |
-| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
+| GET    | `/providers`                              | `ProviderSummary[]`: the providers the caller may see (an admin all of them; anyone else those of their teams and the unowned ones) |
+| GET    | `/providers/{name}`                       | `ProviderDetail`; 404 when the provider does not exist or the caller may not see it (never a 403: the name is not revealed) |
+| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]`, scoped like the detail |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? ; git?: GitRef }` → `SpecImport` (200). With `git` the file is read from the repository at the ref and `commit` says which commit that was; a `credential` that is not a `vault:` reference is a 400 (the token never goes through the API). Only https repositories are read, ssh URLs and credentials in the URL are refused. 403 when the caller may not use that credential (see Credentials) |
 | POST   | `/providers:import-ansible`               | `{ git: { repo; ref?; path?; credential? }; playbooks?: string[]; name?; owner?; credential?; executionEnvironment? }` → `AnsibleImport` (200). Reads the playbooks of the repository at the ref (under `git.path`; the whole repository when it is blank) and drafts an `ansible` provider with one action per playbook, pinned to the commit read. `playbooks` picks some by path or action id (default: all); `credential` is the Vault reference of the machine credential the playbooks connect with. 400 when there is no playbook, a playbook named is not one, or a credential is not a `vault:` reference; 403 when the caller may not use `git.credential` or `credential` (see Credentials) |
 | POST   | `/providers:import-terraform`             | `{ git?: { repo; ref?; path?; credential? }; registry?: { module; version?; credential? }; name?; owner?; credential? }` → `TerraformImport` (200). One of `git` (the module's folder at a ref) or `registry` (`namespace/name/provider` in the configured module registry; `version` is an exact version, default its newest release; `credential` a `vault:` registry token for a private module). Drafts a `terraform` provider with a `plan` and an `apply` action whose inputs are the module's variables. `credential` is the Vault reference of what the runner gives Terraform. 400 when the folder has no `.tf` files (the message names the module folders under it), the version or the module does not exist, or the registry serves an archive it does not describe; 403 when the caller may not use a credential named (see Credentials) |
-| POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS. 403 when the caller may not use `auth.credential` (see Credentials) |
-| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted`. 403 when the caller may not use a credential the draft names (see Credentials) |
+| POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS. 403 when the caller may not use `auth.credential` (see Credentials); a reference that is not in the vault fails every environment with a message naming it, as every real call would fail `credential_missing` |
+| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. The evidence and the sample are redacted (fields named like secrets, values resolved from Vault and token-shaped words become `vault:redacted`); `response` is the live answer. A try (and its verify call) is not a run's call: it records no telemetry sample, so it never counts towards the health or the alerts of a provider of that name. 403 when the caller may not use a credential the draft names (see Credentials) |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
-| POST   | `/providers:publish`                      | `{ yaml; strategy?: 'canary' \| 'all' }` → `CommandAccepted` (change request id). `strategy` defaults to `canary`, like a workflow version. 409 with the problems when the file has errors or the review is not ready, when the version is already published (or kept for a canary), and while another change request for the provider is open; the change request carries both sets of checks |
+| POST   | `/providers:publish`                      | `{ yaml; strategy?: 'canary' \| 'all' }` → `CommandAccepted` (change request id). `strategy` defaults to `canary`, like a workflow version. 409 with the problems when the file has errors or the review is not ready, when the version is already published (or kept for a canary), and while another change request for the provider is open; the change request carries both sets of checks. 403 unless the caller may edit for the owner team the file names and, when the provider is already published, for the owner of the published provider (re-posting a provider under another owner is an edit its owner makes; an admin may do both) |
 | POST   | `/providers:draft`                        | `{ description }` → `{ yaml; summary; assumptions[] }` (Ask Devin, `!provider-draft`) |
 | POST   | `/providers/{name}:refresh-spec`          | `{ ref? ; content? }` (optional) → `CommandAccepted` (202). Reads the spec again from where the file says: the URL, Git at the file's ref (or at `ref`, which is then written to the file), or `content` for a pasted spec. The same document answers `status: 'unchanged'`. Otherwise it opens a change request for the next minor version: new `sha256` (and `commit`), the input and output schemas of the actions that call its operations, and each override dropped only when the new spec agrees with the action's real response (its last Try it answer, else a recorded sample). Checks: the file's, `spec-refresh` (what was read and what changed) and the review's `responses`. 409 when an operation an action calls is gone (problems `refresh.operationGone`) or another change request for the provider is open; 400 when `ref` or `content` do not fit the spec's source; owner team or admin, who must also be allowed to use the file's `git.credential` (403 otherwise, see Credentials) |
 | POST   | `/providers/{name}/overrides`             | `{ action; response }` → `CommandAccepted` (202). "Use the real response": opens a change request for the next patch version whose file has the schema inferred from `response` merged into `overrides.<action>.response`, with the file's checks and the review's `responses`; `status: 'unchanged'` when the override would add nothing |
@@ -322,14 +340,24 @@ Publish, refresh spec, overrides and the SLO all change a provider through a cha
 open at a time per provider: a second one is a 409 that names the open change request, so merging
 one can never publish over another. Merging publishes the provider: a first version, or one whose
 change request says `strategy: 'all'`, becomes the current version at once; otherwise the version
-is kept beside the current one and a provider release rolls it out (see Releases). A spec refresh
+is kept beside the current one and a provider release rolls it out (see Releases). The publish is
+the providers slice's `publishMerged(changeRequestId)`, called once the change request is saved
+as merged; it is idempotent (a version already kept is left alone and no second
+`provider.published` goes out), so the `change-request.merged` listener that also calls it
+changes nothing the second time. A spec refresh
 rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
 is still running, in which case they build on its candidate and roll out as a canary too.
-`provider.published` carries `{ name; version; previous?; strategy; by }`.
+`provider.change-requested` carries `{ name; version; changeRequestId; by; owner; change?; strategy? }` (`owner` is the
+team a reviewer is notified in); `provider.published` carries `{ name; version; previous?; strategy; by }`.
+The wizard's steps are audited too, without the document, the secret or the answer:
+`provider.spec-imported` `{ source: 'url' | 'content' | 'git'; url?; repo?; ref?; path?; credential?; commit?; sha256; title?; operations; by }`,
+`provider.connection-tested` `{ provider?; environments; ok: { [environment]: boolean }; credential?; by }` and
+`provider.tried` `{ provider; action; environment; ok; status; errorClass?; durationMs; by }` (a `credential` is always the `vault:` reference).
 
 The two imports draft a provider file from what a repository holds and save nothing: the draft
 goes through Validate and Publish like a file written by hand, and `notes` says what is left to do
-(the credentials, the execution environment, what the import could not read). They read Git like
+(the credentials, the execution environment, the alert channel the file checks hold a provider
+that changes things to, what the import could not read). They read Git like
 Import spec does (https only, a private repository names a `vault:` read token, at most 2000 files
 of up to 1 MB and 32 MB in all) and pin the commit they read, so a later push changes nothing
 until a new version is published. When a provider of that name exists, the draft is its next
@@ -372,9 +400,11 @@ of the other jobs on the candidate (every call of one job uses one version), and
 outside a job and every job while the release is paused use the current version. Promotion makes
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
-The commands need edit rights on the provider's owner team. Release events (`release.started`,
-`release.stage`, `release.promoted`, `release.paused`, `release.resumed`, `release.rolled-back`)
-carry `{ releaseId; workflow | provider; from; to }`.
+The commands need edit rights on the owner team of the release's workflow or provider; when it
+has none (the workflow or provider is gone, or names no owner) only an admin may. A rollback by
+hand says who, in the history and in the event's `reason` alike ("rolled back by Ana"). Release
+events (`release.started`, `release.stage`, `release.promoted`, `release.paused`,
+`release.resumed`, `release.rolled-back`) carry `{ releaseId; workflow | provider; from; to }`.
 
 | GET `/releases?workflow=&provider=&kind=` | `Release[]`, newest first: a workflow's or a provider's releases, else every release of `kind` (`workflow`, the default, `provider` or `all`; anything else is a 400) |
 | GET `/releases/{id}` | `Release` |
@@ -408,8 +438,9 @@ published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, 
 `approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
 provider, action, effect, target), `decision` (on a job that needed attention, with the edited
 input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
-requests, publishes, provider changes, credentials by name and type, service accounts, release
-decisions, builder sessions, retired resources) go on the platform stream, a chain of its own
+requests, publishes, provider changes and the wizard's imports, connection tests and tries,
+credentials by name and type, service accounts, release decisions, builder sessions, retired
+resources, seals, uploaded playbooks) go on the platform stream, a chain of its own
 whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the
 file. Every entry is redacted before it is chained: secret-looking fields and values resolved from
 Vault during the run become `***`, `vault:` references stay; job views are redacted the same way.

@@ -29,9 +29,10 @@ import reactor.netty.http.client.HttpClient;
 /**
  * The wizard's network adapter. Fetches an OpenAPI document (redirects followed, 10 s) and probes
  * an endpoint (HEAD, then GET when HEAD is refused, 5 s each) with the provider's auth resolved
- * through the {@link CredentialsPort}. Link-local and cloud metadata addresses are refused
- * (see {@link OutboundAddresses}). In the demo profile there is no network: hosts under
- * {@code example.com} are simulated as reachable with a small latency; anything else is tried for real.
+ * through the {@link CredentialsPort}; a credential reference the vault lacks fails the probe.
+ * Link-local and cloud metadata addresses are refused (see {@link OutboundAddresses}). In the demo
+ * profile there is no network: hosts under {@code example.com} are simulated as reachable with a
+ * small latency once the credential resolves; anything else is tried for real.
  */
 @Slf4j
 @Component
@@ -82,14 +83,17 @@ public class WebClientHttpProbe implements HttpProbePort {
         return Mono.defer(() -> {
             URI uri = uri(url);
             String host = uri.getHost();
-            if (simulateExampleHosts && isSimulated(host)) {
-                long latency = 20 + Math.floorMod(host.hashCode(), 60);
-                return Mono.delay(Duration.ofMillis(latency))
-                        .map(t -> new ProbeResult(true, latency, "Simulated in the demo profile: " + host + " answered in " + latency + " ms (no network)"));
-            }
-            return headers(auth).flatMap(h -> attempt(HttpMethod.HEAD, uri, h)
-                    .flatMap(head -> head.retryWithGet() ? attempt(HttpMethod.GET, uri, h) : Mono.just(head))
-                    .map(a -> new ProbeResult(a.ok(), a.durationMs(), a.message())));
+            // the credential is resolved first, for a simulated host too: a reference the vault lacks fails the test everywhere
+            return headers(auth).flatMap(h -> {
+                if (simulateExampleHosts && isSimulated(host)) {
+                    long latency = 20 + Math.floorMod(host.hashCode(), 60);
+                    return Mono.delay(Duration.ofMillis(latency))
+                            .map(t -> new ProbeResult(true, latency, "Simulated in the demo profile: " + host + " answered in " + latency + " ms (no network)"));
+                }
+                return attempt(HttpMethod.HEAD, uri, h)
+                        .flatMap(head -> head.retryWithGet() ? attempt(HttpMethod.GET, uri, h) : Mono.just(head))
+                        .map(a -> new ProbeResult(a.ok(), a.durationMs(), a.message()));
+            });
         }).onErrorResume(e -> Mono.just(new ProbeResult(false, 0, reason(e))));
     }
 
@@ -134,12 +138,18 @@ public class WebClientHttpProbe implements HttpProbePort {
         return new Attempt(false, ms, prefix, method == HttpMethod.HEAD);
     }
 
+    /**
+     * The probe's auth headers. A reference that is not in the vault fails the probe naming it, as
+     * every real call would fail {@code credential_missing}: it never probes unauthenticated instead.
+     */
     private Mono<HttpHeaders> headers(Auth auth) {
         HttpHeaders headers = new HttpHeaders();
         if (auth == null || auth.type() == null || "none".equals(auth.type()) || auth.credential() == null || auth.credential().isBlank()) {
             return Mono.just(headers);
         }
         return credentials.resolve(auth.credential())
+                .switchIfEmpty(Mono.error(new IllegalArgumentException("Credential " + auth.credential()
+                        + " is not in the vault: store it (POST /credentials) before testing the connection")))
                 .map(secret -> {
                     switch (auth.type()) {
                         case "bearer" -> headers.setBearerAuth(secret);
@@ -149,8 +159,7 @@ public class WebClientHttpProbe implements HttpProbePort {
                         }
                     }
                     return headers;
-                })
-                .defaultIfEmpty(headers);
+                });
     }
 
     static URI uri(String url) {

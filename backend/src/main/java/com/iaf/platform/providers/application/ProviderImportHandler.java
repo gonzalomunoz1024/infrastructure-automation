@@ -129,6 +129,7 @@ public class ProviderImportHandler implements ProviderImports {
         if (environment == null) {
             notes.add("Set executionEnvironment to the image that runs the playbooks: Ansible and the collections in their requirements.yml.");
         }
+        notes.add(ALERT_CHANNEL_NOTE);
         if (chosen.stream().anyMatch(p -> p.sources().containsValue(USED_WITHOUT_VALUE))) {
             notes.add("Variables a playbook uses without giving them a value became required string inputs: drop the ones your inventory sets and check their types.");
         }
@@ -274,6 +275,7 @@ public class ProviderImportHandler implements ProviderImports {
         if (credential == null) {
             notes.add("Set auth.credential to the Vault reference of what the runner gives Terraform (the cloud credentials), like vault:terraform/platform.");
         }
+        notes.add(ALERT_CHANNEL_NOTE);
         List<String> secrets = module.variables().stream().filter(TerraformModule.Variable::secret).map(TerraformModule.Variable::name).toList();
         if (!secrets.isEmpty()) {
             boolean required = module.variables().stream().anyMatch(v -> v.secret() && v.required());
@@ -403,6 +405,10 @@ public class ProviderImportHandler implements ProviderImports {
         }
         return o;
     }
+
+    /** Both drafts change things (an apply, a playbook), so the file checks hold them to an alert channel before they publish. */
+    static final String ALERT_CHANNEL_NOTE = "Set alerts.channel to where the owning team wants health alerts: "
+            + "a provider that creates, changes or deletes things is not published without one.";
 
     /** The caller's team when they are in exactly one; otherwise a placeholder to fill in. */
     static String team(Identity who, List<String> notes) {

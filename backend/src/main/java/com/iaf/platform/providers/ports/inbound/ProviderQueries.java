@@ -1,5 +1,7 @@
 package com.iaf.platform.providers.ports.inbound;
 
+import java.util.Optional;
+
 import com.iaf.platform.providers.domain.ProviderDefinition;
 
 import reactor.core.publisher.Flux;
@@ -30,4 +32,11 @@ public interface ProviderQueries {
     Mono<ProviderDefinition> provider(String name);
 
     Flux<ProviderDefinition> all();
+
+    /**
+     * The owner team of the published provider (its current stored version), which decides who may
+     * change it; empty when no provider has that name or it names no owner. A store read: call it
+     * where blocking is allowed, as a command handler's bounded elastic section is.
+     */
+    Optional<String> ownerOf(String name);
 }

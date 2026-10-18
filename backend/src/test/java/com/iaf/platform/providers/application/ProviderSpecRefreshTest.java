@@ -31,6 +31,7 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.OpenApiImporter;
@@ -92,7 +93,7 @@ class ProviderSpecRefreshTest {
         credentials = mock(CredentialsPort.class);
         when(credentials.info(any())).thenReturn(Mono.empty());
         handler = new ProviderCommandHandler(store, changeRequests, mock(ProviderCallPort.class), mock(AssistantCommands.class), http, events, CLOCK,
-                evidence, git, new ReleaseQueryHandler(new InMemoryReleaseStore()), credentials);
+                evidence, git, new ReleaseQueryHandler(new InMemoryReleaseStore()), credentials, new SecretValues());
     }
 
     static String toJson(JsonNode node) {

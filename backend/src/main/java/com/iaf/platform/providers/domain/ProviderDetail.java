@@ -34,13 +34,20 @@ public record ProviderDetail(
         List<ChangeRequest> changeRequests) {
 
     /**
-     * One 24-hour window of calls, oldest first; {@code date} is the instant the window starts. A
-     * window without calls has no rates (null), not a 0% success rate.
+     * One 24-hour window of calls, oldest first; {@code date} is the instant the window starts and
+     * {@code errors} how many of its calls failed. A window without calls has no rates (null), not
+     * a 0% success rate.
      */
-    public record Daily(String date, int calls, Double successRate, Long p50Ms, Long p95Ms) {
+    public record Daily(String date, int calls, int errors, Double successRate, Long p50Ms, Long p95Ms) {
     }
 
-    public record PerAction(String action, int calls, double successRate, long p50Ms, long p95Ms, List<ErrorCount> topErrors) {
+    /**
+     * One action's calls of the last two weeks; {@code slo} is the SLO the action is judged by (its
+     * own or the provider's) and {@code band} its band over the last 24 hours against that SLO
+     * (unknown under {@value ProviderHealthRule#MIN_CALLS} calls).
+     */
+    public record PerAction(String action, int calls, double successRate, long p50Ms, long p95Ms, List<ErrorCount> topErrors, Slo slo,
+            Health.Status band) {
     }
 
     /** Serialises as {@code { class, count }}, the shape the API promises. */

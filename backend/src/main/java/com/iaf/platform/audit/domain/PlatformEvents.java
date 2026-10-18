@@ -16,14 +16,20 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  */
 public final class PlatformEvents {
 
-    /** Drafts, change requests, publishes, provider changes, credentials, service accounts, release decisions, builder sessions. */
+    /**
+     * Drafts, change requests, publishes, provider changes and the wizard's steps (a spec
+     * imported, a connection tested, an action tried), credentials, service accounts, release
+     * decisions, builder sessions, seals and shares of the evidence, uploaded playbooks.
+     */
     public static final Set<String> RECORDED = Set.of(
             "workflow.draft-saved", "workflow.deleted", "workflow.published",
             "change-request.opened", "change-request.merged", "change-request.closed",
             "provider.change-requested", "provider.published", "provider.updated",
+            "provider.spec-imported", "provider.connection-tested", "provider.tried",
             "credential.stored", "service-account.created",
             "release.promoted", "release.paused", "release.resumed", "release.rolled-back",
-            "assistant.started", "resource.retired");
+            "assistant.started", "resource.retired",
+            "audit.sealed", "audit.shared", "playbook.uploaded");
 
     public static final String WORKFLOW_PUBLISHED = "workflow.published";
     public static final String CHANGE_REQUEST_MERGED = "change-request.merged";

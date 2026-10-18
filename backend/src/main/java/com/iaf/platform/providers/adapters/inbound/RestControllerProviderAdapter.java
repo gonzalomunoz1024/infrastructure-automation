@@ -107,4 +107,10 @@ public class RestControllerProviderAdapter implements ProviderCommands {
     public Mono<CommandAccepted> slo(@PathVariable String name, @RequestBody SetSlo command) {
         return commands.slo(name, command);
     }
+
+    /** Not an endpoint: merging the change request (the workflows slice) publishes the provider. */
+    @Override
+    public Mono<Void> publishMerged(String changeRequestId) {
+        return commands.publishMerged(changeRequestId);
+    }
 }

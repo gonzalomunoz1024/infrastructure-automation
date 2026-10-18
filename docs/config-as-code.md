@@ -326,6 +326,7 @@ spec:
       operation: getVm        # operationId in the spec (openapi); or { method, path } (http)
       effect: read            # read | create | change | delete
       retry: safe             # safe | unsafe
+      slo: { successRate: 99.9, p95Ms: 300 }   # optional: this action's own SLO; a field left out takes the provider's value
       sample: { id: vm-1, name: web, powerState: poweredOn }   # what dry runs answer; Try it saves the real response here
       recorded: { environment: dev, at: "2026-10-17T10:00:00Z" } # where and when that response came from
     - id: vm.delete
@@ -351,11 +352,34 @@ Before a new version is published, the wizard's review checks the file against w
 saw: the connection to dev and test passed with these endpoints and this credential, every action
 answered when tried against dev, every error class has a match rule, every delete has a `plan`
 or an `effectDetail`, and no real response still disagrees with its schema after the
-`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
+`overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers). A
+provider with an action that creates, changes or deletes something is held to two more gates: its
+`errors` classified (openapi and http providers) and `alerts.channel` set; a provider that only
+reads gets a warning for each instead.
+
+Health is judged over the last 24 hours against `spec.slo` (default 99% success, p95 1000 ms;
+`PUT /providers/{name}/slo` changes it). An action may carry an `slo` of its own, which wins over
+the provider's for its calls: the provider's band is then the worst band of its parts, the calls
+of the actions without one judged together against the provider's SLO and each action with one
+judged against its own. A part with fewer than 5 calls is unknown and does not count; when no part
+has enough calls the provider is judged as a whole against its own SLO. The success rate and the
+latencies shown beside the band are always those of all the calls.
 
 Endpoints are https URLs. The one exception is plain http to a loopback host (`localhost`,
 `127.x.x.x`, `::1`) for a provider under development on the same machine: the file checks let it
 through with a warning (`endpoints.https`) instead of an error.
+
+A call fills each `{name}` in the operation's path from the input field of that name, and the
+value fills that one segment: a `/` in it is sent encoded (`%2F`), and a value with a `.` or `..`
+segment fails the call with `invalid_input` before anything is sent. The declared query parameters
+come next, and the rest of the input is the JSON body (query parameters for a method without one).
+
+An error rule matches a failed call by its `status`, narrowed by a `body` text when several classes
+share a status (`match: { status: 400, body: quota }`). The rules are tried in order and the first
+that matches names the class; a call no rule matches falls back to its status (401 and 403
+`unauthorized`, 404 `not_found`, 409 `conflict`, 429 `rate_limited`, 408, 502, 503 and 504
+`unavailable`, any other 5xx `server_error`, any other 4xx `client_error`). A rule without a status
+never matches, and the review refuses it.
 
 The spec can also live in a Git repository. The file then names the repository, the ref and the
 path, and pins the commit it was read from; calls look operations up in that commit, never in

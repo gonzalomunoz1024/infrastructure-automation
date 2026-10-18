@@ -278,14 +278,31 @@ class AuditListenerTest {
         events.publish("release.paused", "release", "rel_9", "mateo", node().put("releaseId", "rel_9").put("workflow", "vm-restart").put("to", "1.3.0"));
         events.publish("assistant.started", "assistant-session", "asst_1", "ana", node().put("sessionId", "asst_1").put("mode", "create"));
         events.publish("provider.alert", "provider", "vsphere", "platform", node().put("message", "slow"));
+        events.publish("provider.spec-imported", "spec", "9f86d081", "mateo", node().put("source", "url")
+                .put("url", "https://fleet.example.com/openapi.yaml").put("sha256", "9f86d081").put("operations", 8).put("by", "mateo"));
+        events.publish("provider.connection-tested", "provider", "fleet", "mateo", node().put("provider", "fleet")
+                .put("credential", "vault:fleet/token").put("by", "mateo"));
+        events.publish("provider.tried", "provider", "fleet", "ana", node().put("provider", "fleet").put("action", "vm.get")
+                .put("environment", "dev").put("ok", true).put("status", 200).put("by", "ana"));
+        events.publish("audit.sealed", "audit", "job_1", "platform", node().put("jobId", "job_1").put("keyId", "k-2026"));
+        events.publish("playbook.uploaded", "playbook", "ab12", "mateo", node().put("file", "restart.yml").put("sha256", "ab12")
+                .put("content", "- hosts: all\n"));
 
         EvidenceRecord stream = store.record(EvidenceRecord.PLATFORM).orElseThrow();
         assertThat(stream.channel()).isEqualTo("platform");
         assertThat(stream.workflow()).isNull();
         assertThat(stream.entries()).extracting(e -> e.data().get("event").asText()).containsExactly(
                 "workflow.draft-saved", "change-request.merged", "credential.stored", "service-account.created", "release.paused",
-                "assistant.started");
-        assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana");
+                "assistant.started", "provider.spec-imported", "provider.connection-tested", "provider.tried", "audit.sealed",
+                "playbook.uploaded");
+        assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana",
+                "mateo", "mateo", "ana", "platform", "mateo");
+        assertThat(stream.entries().get(6).data().get("sha256").asText()).isEqualTo("9f86d081");
+        assertThat(stream.entries().get(8).data().get("action").asText()).isEqualTo("vm.get");
+        assertThat(stream.entries().get(9).data().get("keyId").asText()).isEqualTo("k-2026");
+        JsonNode uploaded = stream.entries().get(10).data();
+        assertThat(uploaded.has("content")).as("a playbook is a file: its hash goes on the trail").isFalse();
+        assertThat(uploaded.get("contentSha256").asText()).hasSize(64);
         JsonNode merged = stream.entries().get(1).data();
         assertThat(merged.has("yaml")).isFalse();
         assertThat(merged.get("yamlSha256").asText()).hasSize(64);
