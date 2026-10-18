@@ -447,7 +447,7 @@ is a reserved noun.
 ## Resources
 
 ```ts
-type ResourceType = { name; plural; owner; schema; states; producedBy? }
+type ResourceType = { name; plural; owner; visibility: 'team' | 'public'; schema; states; producedBy? }
 type Resource = { id; type; name?; status; attributes; owner; visibility; createdBy: { jobId; workflow }; builtFrom: string[]; createdAt }
 ```
 
@@ -455,8 +455,15 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | GET `/resource-types/{name}` | `ResourceType` |
 | GET `/resources?type=&owner=&status=` | `Resource[]` |
 | GET `/resources/{id}` | `Resource` |
-| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[] }` |
-| POST `/resources/{id}:retire` | → 409 with dependents list when something is built from it, else `CommandAccepted` |
+| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[]; nodes: Resource[]; edges: { from; to; via? }[] }`. `builtFrom` and `dependents` are the direct neighbours; `nodes` and `edges` are the whole graph around the resource in both directions, each resource once, at most 32 hops away and 1000 resources in all, the resource itself first. An edge `from → to` says `to` was built from `from`, `via` the workflow that registered `to` when it is known |
+| POST `/resources/{id}:retire` | → 403 unless the caller is in the resource's owner team or an admin (a resource without an owner is anyone's); 409 `resource has dependents` with `detail: Resource[]`, everything still built from it, directly or through other resources, depth-first; else `CommandAccepted` |
+
+A `register` step creates a resource owned by the requester's first team (the type's `owner` when
+they have none), with the type's `visibility`, and its attributes must match the type's schema
+when the type declares one (400 otherwise). Registering an id that exists updates it: only the
+resource's owner team, the job that created it (so a workflow that registers `building` and later
+`ready` finishes its own work) or an admin may (403 to anyone else), and the attributes the
+resource would then hold must still match the schema.
 
 ## Credentials
 

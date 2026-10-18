@@ -17,3 +17,4 @@ schema:
     scanned: { type: boolean, examples: [true] }
 states: [building, ready, deprecated, retired, failed]
 producedBy: build-vm-image
+visibility: public   # golden images are built by team-platform for every team's VMs

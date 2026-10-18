@@ -19,7 +19,9 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.resources.domain.ResourceGraph;
 import com.iaf.platform.resources.domain.ResourceIds;
+import com.iaf.platform.resources.domain.ResourceRules;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.outbound.ResourceStorePort;
@@ -29,8 +31,12 @@ import reactor.core.publisher.Mono;
 
 /**
  * Write side of the registry. {@code register} comes from a running job (the interpreter's
- * register step): a new id is minted when none is given, an existing id is updated. {@code retire}
- * refuses while something is still built from the resource.
+ * register step): a new id is minted when none is given and the resource belongs to the
+ * requester's first team (the type's owner when they have none) with the type's visibility; an
+ * existing id is updated by its owner team, the job that created it or an admin
+ * ({@link ResourceRules}), and the merged attributes must still match the type's schema.
+ * {@code retire} is the owner team's or an admin's, and refuses while something is still built
+ * from the resource, directly or through others ({@link ResourceGraph}).
  */
 @Service
 @Primary
@@ -39,7 +45,7 @@ public class ResourceCommandHandler implements ResourceCommands {
 
     public static final String DEFAULT_STATE = "ready";
     public static final String RETIRED = "retired";
-    public static final String VISIBILITY_TEAM = "team";
+    public static final String VISIBILITY_TEAM = ResourceTypeDefinition.VISIBILITY_TEAM;
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final ResourceStorePort store;
@@ -65,12 +71,17 @@ public class ResourceCommandHandler implements ResourceCommands {
             if (!existing.type().equals(type.name())) {
                 throw new ConflictException("Resource " + c.id() + " is a " + existing.type() + ", not a " + type.name());
             }
+            ResourceRules.requireUpdate(requester, existing, c.jobId(), "update");
             String state = c.state() == null || c.state().isBlank() ? existing.status() : c.state();
             requireState(type, state);
             ObjectNode attributes = existing.attributes() != null && existing.attributes().isObject() ? existing.attributes().deepCopy() : F.objectNode();
-            if (c.attributes() != null && c.attributes().isObject()) {
+            if (c.attributes() != null && !c.attributes().isNull()) {
+                if (!c.attributes().isObject()) {
+                    throw new IllegalArgumentException("attributes is an object");
+                }
                 attributes.setAll((ObjectNode) c.attributes());
             }
+            requireAttributes(type, existing.id(), attributes);
             List<String> builtFrom = c.builtFrom() == null || c.builtFrom().isEmpty() ? existing.builtFrom() : c.builtFrom();
             saved = new Resource(existing.id(), existing.type(), nameOf(attributes, existing.id()), state, attributes, existing.owner(),
                     existing.visibility(), existing.createdBy(), builtFrom == null ? List.of() : builtFrom, existing.createdAt(), now);
@@ -82,13 +93,9 @@ public class ResourceCommandHandler implements ResourceCommands {
             if (!attributes.isObject()) {
                 throw new IllegalArgumentException("attributes is an object");
             }
-            List<Problem> problems = Schemas.validate(type.schema(), attributes);
-            if (!problems.isEmpty()) {
-                throw new IllegalArgumentException("attributes of " + type.name() + " " + id + " do not match the type's schema: "
-                        + String.join("; ", problems.stream().map(p -> (p.field() == null ? "" : p.field() + " ") + p.message()).toList()));
-            }
+            requireAttributes(type, id, attributes);
             String owner = requester.teams() == null || requester.teams().isEmpty() ? type.owner() : requester.teams().get(0);
-            saved = new Resource(id, type.name(), nameOf(attributes, id), state, attributes, owner, VISIBILITY_TEAM,
+            saved = new Resource(id, type.name(), nameOf(attributes, id), state, attributes, owner, type.defaultVisibility(),
                     new Resource.Origin(c.jobId(), c.workflow(), c.version()),
                     c.builtFrom() == null ? List.of() : List.copyOf(c.builtFrom()), now, now);
         }
@@ -112,8 +119,9 @@ public class ResourceCommandHandler implements ResourceCommands {
 
     private CommandAccepted doRetire(String id, Identity who) {
         Resource r = store.resource(id).orElseThrow(() -> new NotFoundException("resource", id));
-        List<Resource> dependents = store.resources().stream()
-                .filter(x -> x.builtFrom() != null && x.builtFrom().contains(id) && !RETIRED.equals(x.status()))
+        ResourceRules.requireChange(who, r, "retire");
+        List<Resource> dependents = ResourceGraph.descendants(r, store::builtFrom).nodes().stream()
+                .filter(x -> !RETIRED.equals(x.status()))
                 .toList();
         if (!dependents.isEmpty()) {
             throw new ConflictException("resource has dependents", dependents);
@@ -133,6 +141,15 @@ public class ResourceCommandHandler implements ResourceCommands {
     private static void requireState(ResourceTypeDefinition type, String state) {
         if (type.states() != null && !type.states().isEmpty() && !type.states().contains(state)) {
             throw new IllegalArgumentException("'" + state + "' is not a state of " + type.name() + " (one of " + type.states() + ")");
+        }
+    }
+
+    /** The attributes the registry would keep, against the type's schema when it declares one. */
+    private static void requireAttributes(ResourceTypeDefinition type, String id, JsonNode attributes) {
+        List<Problem> problems = Schemas.validate(type.schema(), attributes);
+        if (!problems.isEmpty()) {
+            throw new IllegalArgumentException("attributes of " + type.name() + " " + id + " do not match the type's schema: "
+                    + String.join("; ", problems.stream().map(p -> (p.field() == null ? "" : p.field() + " ") + p.message()).toList()));
         }
     }
 
