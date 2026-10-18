@@ -105,7 +105,15 @@ export default function ResourcesPage({ route }: PageProps) {
 
   return (
     <>
-      <PageHeader title="Resources" subtitle={current ? `${current.plural}: owned by ${current.owner}${current.producedBy ? `, created by ${current.producedBy}` : ''}.` : 'What workflows created, by type, with where each one came from.'}>
+      <PageHeader
+        title="Resources"
+        subtitle={current ? `${current.plural}: owned by ${current.owner}${current.producedBy ? `, created by ${current.producedBy}` : ''}.` : 'What workflows created, by type, with where each one came from.'}
+        actions={
+          <Button icon="layers" onClick={() => navigate(pathFor('dependencies'))}>
+            Dependencies
+          </Button>
+        }
+      >
         <div className="space-y-3">
           {types.loading && !types.data ? (
             <Skeleton className="h-8 w-80" />

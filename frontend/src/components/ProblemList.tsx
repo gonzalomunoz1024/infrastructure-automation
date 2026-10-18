@@ -16,17 +16,25 @@ export function normalizeField(field: string | undefined): string | undefined {
     .replace(/^(?:(?:input|body|properties)\.)+/, '')
 }
 
-/** The problems that sit on one form field. */
-export function problemsFor(problems: Problem[] | undefined, field: string): Problem[] {
-  if (!problems) return []
-  return problems.filter((p) => normalizeField(p.field) === field)
+/** The form field a problem belongs to: the first segment of its path (`image.create.os` → `image`). */
+export function fieldRoot(field: string | undefined): string | undefined {
+  const f = normalizeField(field)
+  if (!f) return undefined
+  const dot = f.indexOf('.')
+  return dot < 0 ? f : f.slice(0, dot)
 }
 
-/** The problems that name no field (shown above the form). */
+/** The problems that sit on one form field, including those inside it (`image.create.os` sits on `image`). */
+export function problemsFor(problems: Problem[] | undefined, field: string): Problem[] {
+  if (!problems) return []
+  return problems.filter((p) => fieldRoot(p.field) === field)
+}
+
+/** The problems that name no field of the form (shown above it). */
 export function unfieldedProblems(problems: Problem[] | undefined, fields: string[]): Problem[] {
   if (!problems) return []
   return problems.filter((p) => {
-    const f = normalizeField(p.field)
+    const f = fieldRoot(p.field)
     return !f || !fields.includes(f)
   })
 }

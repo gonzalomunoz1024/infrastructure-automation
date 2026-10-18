@@ -167,6 +167,26 @@ export type RegistryWorkflow = { name: string; title: string; version: string; i
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }
 
+/** POST /playbooks:upload: the stored archive a step refers to as `playbook.upload`. */
+export type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+/** GET /playbooks:resolve: the commit a git ref names right now. */
+export type ResolvedRef = { repo: string; ref: string; commit: string }
+
+/** How a workflow is tied to a resource type or to another workflow (GET /registry/dependencies). */
+export type DependencyVia = 'producedBy' | 'register' | 'input' | 'use' | 'run' | 'orCreateWith'
+export type DependencyLink = {
+  workflow: string
+  via: DependencyVia
+  /** the step id or the input field the link sits on */
+  at?: string
+  /** a run step's version range, e.g. ^2 */
+  range?: string
+}
+export type ResourceTypeDependencies = { type: string; producers: DependencyLink[]; consumers: DependencyLink[] }
+export type WorkflowDependencies = { workflow: string; version: string; produces: string[]; consumes: string[]; runs: DependencyLink[]; consumers: DependencyLink[] }
+/** `cycles` are closed walks among runs, e.g. ['a', 'b', 'a']: a runs b, b runs a. */
+export type Dependencies = { resourceTypes: ResourceTypeDependencies[]; workflows: WorkflowDependencies[]; cycles: string[][] }
+
 /* ----------------------------------------------------------------------------
    Catalog (generated)
    ------------------------------------------------------------------------- */
@@ -298,8 +318,21 @@ export type JobDetail = JobSummary & {
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'
 export type JobEvent = { seq: number; at: string; jobId: string; type: JobEventType; data: Record<string, unknown> }
+/** One field that differs: `before` is the compared run's value, `after` this run's. */
 export type StepDiff = { field: string; before: unknown; after: unknown }
-export type JobReplay = { steps: (JobStep & { diff?: StepDiff[] })[]; comparedTo?: string }
+export type JobReplay = {
+  jobId?: string
+  workflow?: string
+  version?: string
+  status?: JobStatus
+  steps: (JobStep & { diff?: StepDiff[] })[]
+  /** the run compared with: the last successful one of the workflow, or the one asked for */
+  comparedTo?: string
+  comparedVersion?: string
+  comparedStatus?: JobStatus
+  /** fields of the input that differ, `input.<field>` */
+  inputDiff?: StepDiff[]
+}
 export type RetryRequest = { step?: string; input?: Record<string, unknown> }
 export type RerunRequest = { fromStep: string; input?: Record<string, unknown> }
 

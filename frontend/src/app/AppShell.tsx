@@ -27,6 +27,7 @@ import type { JobSummary } from '../lib/types'
 import WorkflowsPage from '../pages/WorkflowsPage'
 import WorkflowDesignerPage from '../pages/WorkflowDesignerPage'
 import WorkflowVersionsPage from '../pages/WorkflowVersionsPage'
+import DependenciesPage from '../pages/DependenciesPage'
 import CatalogPage from '../pages/CatalogPage'
 import CatalogRunPage from '../pages/CatalogRunPage'
 import JobsPage from '../pages/JobsPage'
@@ -54,6 +55,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   workflow: WorkflowDesignerPage,
   'workflow-new': WorkflowDesignerPage,
   'workflow-versions': WorkflowVersionsPage,
+  dependencies: DependenciesPage,
   catalog: CatalogPage,
   'catalog-run': CatalogRunPage,
   jobs: JobsPage,

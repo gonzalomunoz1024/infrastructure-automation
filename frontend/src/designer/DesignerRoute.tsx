@@ -1,8 +1,9 @@
 /**
  * What the designer page opens: `#/workflows/new` (the New workflow dialog, optionally
  * `?template=<id>`), `#/workflows/:name` (the saved draft, or the document of a workflow just
- * created when the backend has not caught up), and `#/workflows/:name?template=<id>` for a
- * name not taken yet, which starts that workflow from the template.
+ * created when the backend has not caught up), `#/workflows/:name?template=<id>` for a
+ * name not taken yet, which starts that workflow from the template, and
+ * `#/workflows/:name?job=<id>` (the job page's "Open in designer"), which opens on that run.
  */
 import { useEffect, useState } from 'react'
 import { Button, EmptyState } from '@iaf/ui'
@@ -70,7 +71,7 @@ function NewWorkflow({ template, presetName }: { template: string | null; preset
   )
 }
 
-function ExistingWorkflow({ name, template }: { name: string; template: string | null }) {
+function ExistingWorkflow({ name, template, job }: { name: string; template: string | null; job: string | null }) {
   // always open the draft as the server has it now, never a cached copy
   const [handoff] = useState(() => {
     clearQueryCache(keyOf(['workflow', name]))
@@ -88,7 +89,7 @@ function ExistingWorkflow({ name, template }: { name: string; template: string |
     if (q.data) forgetDocument(name)
   }, [q.data, name])
 
-  if (opened) return <Designer name={name} doc={opened.doc} detail={q.data ?? opened.detail} isNew={false} />
+  if (opened) return <Designer name={name} doc={opened.doc} detail={q.data ?? opened.detail} isNew={false} job={job} />
   if (q.error) {
     if (isApiError(q.error) && q.error.status === 404 && template) return <NewWorkflow template={template} presetName={name} />
     const missing = isApiError(q.error) && q.error.status === 404
@@ -117,5 +118,5 @@ function ExistingWorkflow({ name, template }: { name: string; template: string |
 
 export default function DesignerRoute({ route }: { route: Route }) {
   if (route.name === 'workflow-new') return <NewWorkflow template={route.query.template ?? null} />
-  return <ExistingWorkflow name={route.params.name ?? ''} template={route.query.template ?? null} />
+  return <ExistingWorkflow name={route.params.name ?? ''} template={route.query.template ?? null} job={route.query.job ?? null} />
 }

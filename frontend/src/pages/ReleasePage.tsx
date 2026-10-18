@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Button, Card, ConfirmDialog, EmptyState, PageHeader, ProgressBar, SkeletonRows, StateTag, StatusDot, Stepper, Table, Tag, duration, useToast, type TableColumn } from '@iaf/ui'
+import { useState, type ReactNode } from 'react'
+import { Button, Card, ConfirmDialog, EmptyState, PageHeader, ProgressBar, SkeletonRows, StateTag, StatusDot, Stepper, Table, Tag, duration, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
@@ -39,7 +39,70 @@ const COMMANDS: Record<Command, { title: (r: Release) => string; message: (r: Re
   },
 }
 
-const fmt = (v: number | string | undefined) => (v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v)
+/** A span in words: "340 ms", "2.2 s", "36 min 40 s", "2 h 5 min". */
+export function spanOf(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+  const abs = Math.abs(ms)
+  if (abs < 1000) return `${Math.round(ms)} ms`
+  if (abs < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')} s`
+  const totalSeconds = Math.round(ms / 1000)
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = totalSeconds % 60
+  if (h === 0) return s === 0 ? `${m} min` : `${m} min ${s} s`
+  return m === 0 ? `${h} h` : `${h} h ${m} min`
+}
+
+/** How a gate's figure reads: its value and threshold in the gate's own unit, and the error types as a list. */
+export function gateFigures(g: ReleaseGate): { value: ReactNode; threshold: ReactNode; detail: ReactNode } {
+  const num = (v: number | string | undefined): number | null => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
+  const raw = (v: number | string | undefined) => (v === undefined ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : v)
+  const id = g.id.toLowerCase()
+  const label = g.label.toLowerCase()
+  const dash = <span className="text-tertiary">—</span>
+  if (id === 'p95' || id.includes('duration') || id.includes('latency') || /\bp\d{2}\b/.test(label) || label.includes('duration')) {
+    const v = num(g.value)
+    const t = num(g.threshold)
+    return { value: v === null ? dash : spanOf(v), threshold: t === null ? dash : `at most ${spanOf(t)}`, detail: g.detail || dash }
+  }
+  if (id.includes('rate') || label.includes('rate')) {
+    const v = num(g.value)
+    const t = num(g.threshold)
+    return { value: v === null ? dash : `${v.toFixed(1)}%`, threshold: t === null ? dash : `at least ${t.toFixed(1)}%`, detail: g.detail || dash }
+  }
+  if (id.includes('error-type') || id.includes('error_type') || label.includes('error type')) {
+    const v = num(g.value)
+    const m = /^(?:new on the candidate: )(.+)$/.exec(g.detail ?? '')
+    const classes = m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : []
+    const lead = g.detail && classes.length > 0 ? 'New on the candidate' : g.detail
+    return {
+      value: v === null ? dash : `${v} new`,
+      threshold: 'none new',
+      detail: classes.length > 0 ? (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <span>{lead}:</span>
+          <ul className="inline-flex flex-wrap gap-1" aria-label="Error types new on the candidate">
+            {classes.map((c) => (
+              <li key={c}>
+                <Tag size="sm" tone="critical" mono>
+                  {c}
+                </Tag>
+              </li>
+            ))}
+          </ul>
+        </span>
+      ) : (
+        g.detail || dash
+      ),
+    }
+  }
+  if (id === 'sample' || label.includes('sample')) {
+    const v = num(g.value)
+    const t = num(g.threshold)
+    return { value: v === null ? dash : plural(v, 'job'), threshold: t === null ? dash : `at least ${plural(t, 'job')}`, detail: g.detail || dash }
+  }
+  return { value: raw(g.value), threshold: raw(g.threshold), detail: g.detail || dash }
+}
 
 export default function ReleasePage({ route }: PageProps) {
   const id = route.params.id
@@ -95,9 +158,9 @@ export default function ReleasePage({ route }: PageProps) {
       render: (g) => <StatusDot kind={gateDot(g)} label={g.passed === null ? 'pending' : g.passed ? 'passed' : 'failed'} />,
     },
     { key: 'label', header: 'Gate', render: (g) => <span className="text-primary">{g.label}</span> },
-    { key: 'value', header: 'Value', width: '7rem', numeric: true, render: (g) => <span className="tabular-nums text-primary">{fmt(g.value)}</span> },
-    { key: 'threshold', header: 'Threshold', width: '7rem', numeric: true, render: (g) => <span className="tabular-nums text-secondary">{fmt(g.threshold)}</span> },
-    { key: 'detail', header: 'Detail', render: (g) => <span className="text-secondary">{g.detail || '—'}</span> },
+    { key: 'value', header: 'Value', width: '8rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-primary">{gateFigures(g).value}</span> },
+    { key: 'threshold', header: 'Threshold', width: '9rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-secondary">{gateFigures(g).threshold}</span> },
+    { key: 'detail', header: 'Detail', render: (g) => <span className="block min-w-56 text-secondary">{gateFigures(g).detail}</span> },
   ]
 
   const current = data ? (data.status === 'promoted' ? data.stages.length : data.stageIndex) : 0

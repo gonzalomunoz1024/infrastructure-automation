@@ -7,6 +7,7 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
 import { Button, cx, Icon, Segmented, Tag, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
+import { api, errorMessage } from '../../lib/api'
 import type { Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
 import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
@@ -168,9 +169,11 @@ function HttpParams() {
 
 type PlaybookSource = 'library' | 'git' | 'upload'
 
-async function sha256Of(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
+/** The first seven characters of a commit sha, as git shows it. */
+export function shortSha(commit: string | null | undefined): string | null {
+  if (typeof commit !== 'string') return null
+  const c = commit.trim()
+  return c ? c.slice(0, 7) : null
 }
 
 function AnsibleParams() {
@@ -181,76 +184,137 @@ function AnsibleParams() {
   const source: PlaybookSource = typeof pb === 'string' ? 'library' : obj ? (obj.git !== undefined ? 'git' : obj.upload !== undefined ? 'upload' : obj.library !== undefined ? 'library' : 'git') : 'git'
   const playbooks = registry?.playbooks ?? []
   const libraryField = typeof pb === 'string' || !obj ? 'playbook' : 'playbook.library'
-  const [hashing, setHashing] = useState(false)
+  const git = obj && obj.git && typeof obj.git === 'object' && !Array.isArray(obj.git) ? obj.git : null
+  const upload = obj && obj.upload && typeof obj.upload === 'object' && !Array.isArray(obj.upload) ? obj.upload : null
+  const pinned = shortSha(asString(get('playbook.commit')))
+  const [pinning, setPinning] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [note, setNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const setSource = (s: PlaybookSource) => {
     if (s === source) return
+    setNote(null)
     if (s === 'library') set('playbook', playbooks[0]?.name ?? '')
     else if (s === 'git') set('playbook', { git: { repo: '', ref: 'main', path: '' }, commit: '' })
     else set('playbook', { upload: { file: '', sha256: '' } })
   }
-  const fromFile = async (file: File | undefined) => {
-    if (!file) return
-    setHashing(true)
+  // GET /playbooks:resolve: the commit the ref names right now, written into playbook.commit
+  const pin = async () => {
+    const repo = asString(git?.repo)
+    const ref = asString(git?.ref)
+    if (!repo || !ref) {
+      setNote({ tone: 'error', text: 'Fill in the repository and the ref first.' })
+      return
+    }
+    setPinning(true)
+    setNote(null)
     try {
-      const hash = await sha256Of(file)
-      set('playbook', { ...(obj ?? {}), upload: { file: file.name, sha256: hash } })
+      // the step's credential as it stands: the backend wants the vault:<path> reference itself
+      const credential = asString(get('credential'))
+      const resolved = await api.resolvePlaybook({ repo, ref, credential: credential || undefined })
+      set('playbook.commit', resolved.commit)
+      setNote({ tone: 'ok', text: `Pinned to ${shortSha(resolved.commit) ?? resolved.commit} (${resolved.ref} of ${resolved.repo} right now).` })
+    } catch (e) {
+      setNote({ tone: 'error', text: errorMessage(e) })
     } finally {
-      setHashing(false)
+      setPinning(false)
+    }
+  }
+  // POST /playbooks:upload: the stored archive's reference goes into playbook.upload
+  const uploadArchive = async (file: File | undefined) => {
+    if (!file) return
+    setUploading(true)
+    setNote(null)
+    try {
+      const stored = await api.uploadPlaybook(file, asString(upload?.path) || undefined)
+      set('playbook', { ...(obj ?? {}), upload: { ...(upload ?? {}), file: stored.file, sha256: stored.sha256 } })
+      const n = stored.entries?.length
+      setNote({ tone: 'ok', text: `Uploaded ${file.name} (${Math.max(1, Math.round(stored.size / 1024))} KB${n ? `, ${n} ${n === 1 ? 'file' : 'files'}` : ''}); the step now refers to ${stored.file}.` })
+    } catch (e) {
+      setNote({ tone: 'error', text: errorMessage(e) })
+    } finally {
+      setUploading(false)
     }
   }
   return (
     <>
-      <div>
-        <FieldLabel label="Playbook source" required />
-        <Segmented<PlaybookSource>
-          value={source}
-          onChange={setSource}
-          ariaLabel="Playbook source"
-          size="sm"
-          options={[
-            { value: 'library', label: 'Library' },
-            { value: 'git', label: 'Git' },
-            { value: 'upload', label: 'Upload' },
-          ]}
-          className="mt-1"
-        />
-        <ProblemList problems={problems.filter((p) => p.field === 'playbook' && source !== 'library')} className="mt-1" />
-      </div>
-      {source === 'library' && (
-        <P
-          field={libraryField}
-          label="Playbook"
-          required
-          expression={false}
-          mono
-          problemsExact={['playbook']}
-          options={playbooks.map((x) => ({ value: x.name, label: x.name, hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
-          description="A playbook of the library: <provider>/<playbook>"
-        />
-      )}
-      {source === 'git' && (
-        <>
-          <P field="playbook.git.repo" label="Repository" required mono placeholder="github.com/acme/ops-playbooks" expression={false} />
-          <div className="grid grid-cols-2 gap-3">
-            <P field="playbook.git.ref" label="Ref" required mono placeholder="v1.0.0" expression={false} />
-            <P field="playbook.git.path" label="Path" required mono placeholder="vm/restart.yml" expression={false} />
-          </div>
-          <P field="playbook.commit" label="Commit" mono placeholder="the commit every run uses" expression={false} description="Pin the playbook to a commit so every run uses the same code" />
-        </>
-      )}
-      {source === 'upload' && (
-        <>
-          <P field="playbook.upload.file" label="File" required mono expression={false} />
-          <P field="playbook.upload.sha256" label="SHA-256" required mono expression={false} />
-          {!readOnly && (
-            <label className={cx('inline-flex cursor-pointer items-center gap-1.5 text-caption font-medium text-accent hover:underline', hashing && 'opacity-60')}>
-              <Icon name="upload" size={12} />
-              {hashing ? 'Hashing…' : 'Fill in from a local file'}
-              <input type="file" accept=".yml,.yaml" className="sr-only" onChange={(e) => void fromFile(e.target.files?.[0])} />
-            </label>
-          )}
-        </>
-      )}
+      <ParamSection
+        title="Playbook"
+        actions={
+          pinned && (
+            <span data-testid="playbook-pinned">
+              <Tag size="sm" tone="healthy" mono title={`Pinned to commit ${asString(get('playbook.commit')) ?? ''}`}>
+                pinned {pinned}
+              </Tag>
+            </span>
+          )
+        }
+      >
+        <div>
+          <FieldLabel label="Source" required description="A playbook of the library, a path in a git repository, or an archive uploaded to the platform" />
+          <Segmented<PlaybookSource>
+            value={source}
+            onChange={setSource}
+            ariaLabel="Playbook source"
+            size="sm"
+            options={[
+              { value: 'library', label: 'Library' },
+              { value: 'git', label: 'Git repository' },
+              { value: 'upload', label: 'Upload' },
+            ]}
+            className="mt-1"
+          />
+          <ProblemList problems={problems.filter((p) => p.field === 'playbook' && source !== 'library')} className="mt-1" />
+        </div>
+        {source === 'library' && (
+          <P
+            field={libraryField}
+            label="Playbook"
+            required
+            expression={false}
+            mono
+            problemsExact={['playbook']}
+            options={playbooks.map((x) => ({ value: x.name, label: x.name, hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
+            description="A playbook of the library: <provider>/<playbook>"
+          />
+        )}
+        {source === 'git' && (
+          <>
+            <P field="playbook.git.repo" label="Repository" required mono placeholder="github.com/acme/ops-playbooks" expression={false} />
+            <div className="grid grid-cols-2 gap-3">
+              <P field="playbook.git.ref" label="Ref" required mono placeholder="v1.0.0" expression={false} />
+              <P field="playbook.git.path" label="Path" required mono placeholder="vm/restart.yml" expression={false} />
+            </div>
+            <P field="playbook.commit" label="Commit" mono placeholder="the commit every run uses" expression={false} description="Pin the playbook to a commit so every run uses the same code" />
+            {!readOnly && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="secondary" icon="git-branch" loading={pinning} onClick={() => void pin()} data-testid="pin-playbook">
+                  Pin to latest commit
+                </Button>
+                <span className="text-caption text-tertiary">{pinned ? 'Replaces the pinned commit with what the ref names now' : 'Looks the ref up and writes its commit into the step'}</span>
+              </div>
+            )}
+          </>
+        )}
+        {source === 'upload' && (
+          <>
+            <P field="playbook.upload.file" label="File" required mono expression={false} description="The stored archive, as the upload answered it" />
+            <P field="playbook.upload.sha256" label="SHA-256" required mono expression={false} />
+            <P field="playbook.upload.path" label="Playbook path" mono placeholder="site.yml" expression={false} description="The playbook inside the archive, when it is not the only one" />
+            {!readOnly && (
+              <label className={cx('inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-stroke-light bg-surface px-2.5 py-1.5 text-caption font-medium text-primary hover:bg-surface-secondary', uploading && 'pointer-events-none opacity-60')}>
+                <Icon name="upload" size={13} />
+                {uploading ? 'Uploading…' : 'Upload playbook archive'}
+                <input type="file" accept=".tar.gz,.tgz,.zip,.yml,.yaml,application/gzip,application/zip" className="sr-only" data-testid="playbook-archive" onChange={(e) => void uploadArchive(e.target.files?.[0])} />
+              </label>
+            )}
+          </>
+        )}
+        {note && (
+          <p role={note.tone === 'error' ? 'alert' : 'status'} className={cx('text-caption', note.tone === 'error' ? 'text-critical' : 'text-healthy')} data-testid="playbook-note">
+            {note.text}
+          </p>
+        )}
+      </ParamSection>
       <div className="grid grid-cols-2 gap-3">
         <P field="inventory" label="Inventory" suggestions={['dynamic']} placeholder="dynamic" />
         <P field="limit" label="Limit" placeholder="{{ $vm.name }}" />

@@ -7,6 +7,7 @@
 import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { cx, Icon, Input, Select, Switch, Textarea, Tooltip, type SelectOption } from '@iaf/ui'
 import type { ExpressionContext, JsonObject, JsonValue, Problem } from '@iaf/workflow-checks'
+import { fixOf } from '../model/fixes'
 import type { FieldType } from '../model/schema'
 import { ExpressionInput } from './ExpressionInput'
 import { MAPPING_MIME, useNdv } from './context'
@@ -41,19 +42,22 @@ export function ProblemList({ problems, className }: { problems: readonly Proble
   if (problems.length === 0) return null
   return (
     <ul className={cx('space-y-0.5', className)}>
-      {problems.map((p, i) => (
-        <li key={`${p.code}-${i}`} className={cx('flex items-start gap-1.5 text-caption', p.level === 'error' ? 'text-critical' : 'text-warning')} role={p.level === 'error' ? 'alert' : undefined}>
-          <Icon name={p.level === 'error' ? 'alert-triangle' : 'warning'} size={12} className="mt-0.5 shrink-0" />
-          <span className="min-w-0">
-            {p.message}
-            {p.fix && p.fix.kind !== 'connect' && (
-              <button type="button" onClick={() => applyFix(p)} className="ml-1.5 font-medium text-accent hover:underline">
-                {p.fix.label}
-              </button>
-            )}
-          </span>
-        </li>
-      ))}
+      {problems.map((p, i) => {
+        const fix = fixOf(p)
+        return (
+          <li key={`${p.code}-${i}`} className={cx('flex items-start gap-1.5 text-caption', p.level === 'error' ? 'text-critical' : 'text-warning')} role={p.level === 'error' ? 'alert' : undefined}>
+            <Icon name={p.level === 'error' ? 'alert-triangle' : 'warning'} size={12} className="mt-0.5 shrink-0" />
+            <span className="min-w-0">
+              {p.message}
+              {fix && fix.kind !== 'connect' && (
+                <button type="button" onClick={() => applyFix(p)} className="ml-1.5 font-medium text-accent hover:underline">
+                  {fix.label}
+                </button>
+              )}
+            </span>
+          </li>
+        )
+      })}
     </ul>
   )
 }

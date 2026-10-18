@@ -8,7 +8,7 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import { check, type CheckContext, type JsonObject, type JsonValue, type Problem, type StepBody, type StepDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage, jobEvents, type Subscription } from '../../lib/api'
-import type { DraftSaved, DryRunResult, JobDetail, WorkflowDetail } from '../../lib/types'
+import type { DraftSaved, DryRunResult, JobDetail, ValidationResult, WorkflowDetail } from '../../lib/types'
 import {
   addForkBranch,
   addSwitchCase,
@@ -35,7 +35,7 @@ import {
   type NewStepParams,
   type TriggerKind,
 } from './edits'
-import { applyFix, clone } from './fixes'
+import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, type Registry } from './registry'
@@ -207,6 +207,8 @@ export class DesignerStore {
   private overlay = new Map<string, Position>()
   private lastCoalesce: { key: string; at: number } | null = null
   private checkTimer: ReturnType<typeof setTimeout> | null = null
+  /** the backend's problems for one version of the document (Validate) */
+  private validated: { version: number; problems: Problem[] } | null = null
   private revealTimer: ReturnType<typeof setTimeout> | null = null
   private eventSub: Subscription | null = null
   private refetchTimer: ReturnType<typeof setTimeout> | null = null
@@ -289,12 +291,33 @@ export class DesignerStore {
 
   private computeProblems(): Problem[] {
     const { doc, ctx, graph } = this.state
+    // the backend's verdict on this very document (Validate) stands until the next edit
+    if (this.validated && this.validated.version === this.state.version) return this.validated.problems
     if (graph.problems.length > 0) return graph.problems
     try {
       return check(doc, ctx)
     } catch (e) {
       return [{ level: 'error', code: 'yaml.invalid', message: errorMessage(e) }]
     }
+  }
+
+  /**
+   * Every check as the backend runs them on this document (POST /workflows:validate): the same
+   * checks as the editor's, with its view of providers and credentials, plus the publish checks
+   * (`publish.*`: an unpinned playbook, a route another workflow answers, a breaking change
+   * without a new major). The answer replaces the live problems until the document changes.
+   */
+  async validate(): Promise<ValidationResult> {
+    const version = this.state.version
+    const result = await api.validateWorkflow({ definition: this.state.doc })
+    if (this.state.version !== version) return result // edited meanwhile: the answer is about an older document
+    this.validated = { version, problems: result.problems }
+    if (this.checkTimer) {
+      clearTimeout(this.checkTimer)
+      this.checkTimer = null
+    }
+    this.set({ problems: result.problems })
+    return result
   }
 
   /** Problems right now, without the debounce (tests, the save toast). */
@@ -643,11 +666,20 @@ export class DesignerStore {
     this.commit(setTrigger(this.state.doc, index, spec), { coalesce: `trigger:${index}` })
   }
 
-  /** A one-click fix; `connect` fixes open the creator in front of the step. */
+  /** A one-click fix; `connect` fixes open the creator in front of the step, `remove-step` deletes the step. */
   applyFix(problem: Problem): boolean {
-    if (problem.fix?.kind === 'connect') {
+    const fix = fixOf(problem)
+    if (!fix) return false
+    if (fix.kind === 'connect') {
       if (!problem.step) return false
       this.openCreator({ kind: 'before', step: problem.step })
+      return true
+    }
+    if (fix.kind === 'remove-step') {
+      const node = problem.step ? this.nodeOf(problem.step) : null
+      if (!node) return false
+      if (this.state.ndv === node) this.closeNdv()
+      this.deleteNodes([node])
       return true
     }
     const next = applyFix(this.state.doc, problem)

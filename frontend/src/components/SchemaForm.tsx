@@ -1,9 +1,9 @@
 import { useMemo, type ReactNode } from 'react'
-import { Checkbox, Field, Input, Select, Switch, Textarea, cx } from '@iaf/ui'
+import { Checkbox, Field, Input, Segmented, Select, Switch, Textarea, cx } from '@iaf/ui'
 import type { Problem, Schema } from '../lib/types'
 import { JsonEditor, parseJsonText } from './JsonEditor'
 import { ResourcePicker } from './ResourcePicker'
-import { normalizeField, problemsFor } from './ProblemList'
+import { fieldRoot, normalizeField, problemsFor } from './ProblemList'
 
 /*
  * A form generated from a JSON Schema: the catalog run form, the provider "Try action" drawer,
@@ -23,6 +23,45 @@ export function schemaType(s: Schema): string {
   if (s.properties) return 'object'
   if (s.items) return 'array'
   return 'string'
+}
+
+/**
+ * The two forms of an `x-resource` input with `orCreateWith`, as the catalog describes them:
+ * `anyOf` the id of an existing resource, or `{ create: <the producing workflow's input> }` to
+ * have one built first. Null for any other field.
+ */
+export interface CreateForm {
+  /** the resource type (x-resource.type) */
+  type: string
+  /** the workflow that builds one */
+  producer?: string
+  /** the id branch: a string, with whatever pattern or enum the field had */
+  idSchema: Schema
+  /** the producer's input schema, the value of `create` */
+  createSchema: Schema
+  /** what the build branch says about itself */
+  description?: string
+}
+
+export function createFormOf(prop: Schema | undefined): CreateForm | null {
+  if (!prop || !Array.isArray(prop.anyOf)) return null
+  const branches = prop.anyOf.filter((b): b is Schema => !!b && typeof b === 'object')
+  const build = branches.find((b) => b.properties?.create && typeof b.properties.create === 'object')
+  const createSchema = build?.properties?.create
+  if (!build || !createSchema) return null
+  const xr = prop['x-resource']
+  return {
+    type: xr?.type ?? 'resource',
+    producer: xr?.orCreateWith,
+    idSchema: branches.find((b) => b !== build) ?? { type: 'string' },
+    createSchema,
+    description: typeof build.description === 'string' ? build.description : undefined,
+  }
+}
+
+/** True for `{ create: {...} }`: the requester asks for the resource to be built first. */
+export function isCreateRequest(v: unknown): v is { create: SchemaValue } {
+  return !!v && typeof v === 'object' && !Array.isArray(v) && 'create' in v
 }
 
 /** The values a fresh form starts with: every property's `default`. */
@@ -91,10 +130,19 @@ export function validateAgainst(schema: Schema | undefined, value: SchemaValue):
   for (const [name, prop] of Object.entries(props)) {
     const v = value[name]
     if (isEmpty(v)) continue
-    const type = schemaType(prop)
+    const createForm = createFormOf(prop)
+    if (createForm && isCreateRequest(v)) {
+      // the build request is judged against the producer's input, like the start does
+      const inner = v.create && typeof v.create === 'object' && !Array.isArray(v.create) ? v.create : {}
+      for (const p of validateAgainst(createForm.createSchema, inner)) problems.push({ ...p, field: `${name}.create${p.field ? `.${p.field}` : ''}` })
+      continue
+    }
+    // an input with two forms is judged by its id branch when it holds an id
+    const spec = createForm ? createForm.idSchema : prop
+    const type = schemaType(spec)
     const label = prop.title ?? name
-    if (prop.enum && !prop.enum.some((e) => e === v || String(e) === String(v))) {
-      problems.push({ level: 'error', code: 'enum', field: name, message: `${label} must be one of ${prop.enum.map(String).join(', ')}` })
+    if (spec.enum && !spec.enum.some((e) => e === v || String(e) === String(v))) {
+      problems.push({ level: 'error', code: 'enum', field: name, message: `${label} must be one of ${spec.enum.map(String).join(', ')}` })
       continue
     }
     if ((type === 'integer' || type === 'number') && typeof v !== 'number') {
@@ -102,19 +150,19 @@ export function validateAgainst(schema: Schema | undefined, value: SchemaValue):
       continue
     }
     if (type === 'integer' && typeof v === 'number' && !Number.isInteger(v)) problems.push({ level: 'error', code: 'type', field: name, message: `${label} must be a whole number` })
-    if (typeof v === 'number' && prop.minimum !== undefined && v < prop.minimum) problems.push({ level: 'error', code: 'minimum', field: name, message: `${label} must be at least ${prop.minimum}` })
-    if (typeof v === 'number' && prop.maximum !== undefined && v > prop.maximum) problems.push({ level: 'error', code: 'maximum', field: name, message: `${label} must be at most ${prop.maximum}` })
+    if (typeof v === 'number' && spec.minimum !== undefined && v < spec.minimum) problems.push({ level: 'error', code: 'minimum', field: name, message: `${label} must be at least ${spec.minimum}` })
+    if (typeof v === 'number' && spec.maximum !== undefined && v > spec.maximum) problems.push({ level: 'error', code: 'maximum', field: name, message: `${label} must be at most ${spec.maximum}` })
     if (type === 'boolean' && typeof v !== 'boolean') problems.push({ level: 'error', code: 'type', field: name, message: `${label} must be true or false` })
     if (type === 'string' && typeof v === 'string') {
-      if (prop.pattern) {
+      if (spec.pattern) {
         try {
-          if (!new RegExp(prop.pattern).test(v)) problems.push({ level: 'error', code: 'pattern', field: name, message: `${label} must match ${prop.pattern}` })
+          if (!new RegExp(spec.pattern).test(v)) problems.push({ level: 'error', code: 'pattern', field: name, message: `${label} must match ${spec.pattern}` })
         } catch {
           /* an unreadable pattern is the server's to judge */
         }
       }
-      const minLength = typeof prop.minLength === 'number' ? prop.minLength : undefined
-      const maxLength = typeof prop.maxLength === 'number' ? prop.maxLength : undefined
+      const minLength = typeof spec.minLength === 'number' ? spec.minLength : undefined
+      const maxLength = typeof spec.maxLength === 'number' ? spec.maxLength : undefined
       if (minLength !== undefined && v.length < minLength) problems.push({ level: 'error', code: 'minLength', field: name, message: `${label} must be at least ${minLength} characters` })
       if (maxLength !== undefined && v.length > maxLength) problems.push({ level: 'error', code: 'maxLength', field: name, message: `${label} must be at most ${maxLength} characters` })
     }
@@ -171,7 +219,11 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
         const prop = props[name]
         const id = `${idPrefix}-${name}`
         const fieldProblems = problemsFor(problems, name)
-        const error = fieldProblems.find((p) => p.level === 'error')?.message ?? fieldProblems[0]?.message
+        const createForm = pickers ? createFormOf(prop) : null
+        // a problem inside a build request (`image.create.os`) belongs to the inner form
+        const createKey = `${name}.create`
+        const own = createForm ? fieldProblems.filter((p) => normalizeField(p.field) === name || normalizeField(p.field) === createKey) : fieldProblems
+        const error = own.find((p) => p.level === 'error')?.message ?? own[0]?.message
         const label = prop.title ?? name
         const type = schemaType(prop)
         const isReq = required.has(name)
@@ -182,7 +234,43 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
         let control: ReactNode
         // a listbox or a group names itself (aria-label); the label points only at real inputs
         let labelFor: string | undefined = id
-        if (prop['x-resource'] && pickers) {
+        if (createForm) {
+          labelFor = undefined
+          const building = isCreateRequest(v)
+          const inner = building && v.create && typeof v.create === 'object' && !Array.isArray(v.create) ? v.create : {}
+          const nested = fieldProblems
+            .filter((p) => !own.includes(p))
+            .map((p) => {
+              const f = normalizeField(p.field) ?? ''
+              return { ...p, field: f.startsWith(`${createKey}.`) ? f.slice(createKey.length + 1) : f }
+            })
+          control = (
+            <div className="space-y-2" data-testid={`${id}-forms`}>
+              <Segmented<'existing' | 'create'>
+                ariaLabel={label}
+                size="sm"
+                value={building ? 'create' : 'existing'}
+                onChange={(mode) => {
+                  if ((mode === 'create') === building) return
+                  set(name, mode === 'create' ? { create: defaultsFor(createForm.createSchema) } : undefined)
+                }}
+                options={[
+                  { value: 'existing', label: `Use an existing ${createForm.type}` },
+                  { value: 'create', label: 'Build one first' },
+                ]}
+                className="max-w-full"
+              />
+              {building ? (
+                <div className="space-y-3 rounded-md border border-stroke-light bg-surface-secondary/40 p-3">
+                  <p className="text-caption text-secondary">{createForm.description ?? `A new ${createForm.type} is built${createForm.producer ? ` with ${createForm.producer}` : ''} first; the job continues with its id.`}</p>
+                  <SchemaForm schema={createForm.createSchema} value={inner} onChange={(next) => set(name, { create: next })} problems={nested} idPrefix={`${id}-create`} disabled={disabled} columns={columns} />
+                </div>
+              ) : (
+                <ResourcePicker id={id} type={createForm.type} value={typeof v === 'string' ? v : ''} onChange={(s) => set(name, s || undefined)} ariaLabel={`${label} id`} required={isReq} disabled={disabled} />
+              )}
+            </div>
+          )
+        } else if (prop['x-resource'] && pickers) {
           labelFor = undefined
           const xr = prop['x-resource'] as { type: string; orCreateWith?: string; createWith?: string }
           control = <ResourcePicker id={id} type={xr.type} value={typeof v === 'string' ? v : ''} onChange={(s) => set(name, s || undefined)} createWith={xr.orCreateWith ?? xr.createWith} ariaLabel={label} required={isReq} disabled={disabled} />
@@ -322,13 +410,13 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
   )
 }
 
-/** The problems a 400 carried, keyed for the form (those with a field) and the rest. */
+/** The problems a 400 carried, keyed for the form (those on a field, or inside one like `image.create.os`) and the rest. */
 export function splitProblems(problems: Problem[] | undefined, schema: Schema | undefined): { fielded: Problem[]; general: Problem[] } {
   const names = fieldNames(schema)
   const fielded: Problem[] = []
   const general: Problem[] = []
   for (const p of problems ?? []) {
-    const f = normalizeField(p.field)
+    const f = fieldRoot(p.field)
     if (f && names.includes(f)) fielded.push(p)
     else general.push(p)
   }

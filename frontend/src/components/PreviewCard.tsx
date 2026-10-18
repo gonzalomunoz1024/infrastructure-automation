@@ -14,6 +14,22 @@ const DECISION: Record<PolicyDecision, { tone: Tone; dot: DotKind; label: string
   deny: { tone: 'critical', dot: 'critical', label: 'Denied', detail: 'Policy will refuse this run.' },
 }
 
+/** The note under a step the dry run did not take. */
+export const SKIPPED_NOTE = 'not taken in the dry run'
+
+const NOTE_AT_THE_END = new RegExp(`(?:\\s*·\\s*)?${SKIPPED_NOTE}\\s*$`, 'i')
+
+/** A skipped step's detail without the note the backend appends to it ("set · not taken in the dry run" → "set"), so the note shows once. */
+export function withoutSkippedNote(detail: string | undefined): string | undefined {
+  const rest = detail?.replace(NOTE_AT_THE_END, '').trim()
+  return rest || undefined
+}
+
+/** `input.image` and `step get-vm` read "via …"; `built from img-77` already says how. */
+export function viaLabel(via: string): string {
+  return via.startsWith('built from') ? via : `via ${via}`
+}
+
 function ruleDot(result: string): DotKind {
   const r = result.toLowerCase()
   if (r === 'allow' || r === 'pass' || r === 'passed' || r === 'ok' || r === 'true') return 'healthy'
@@ -60,15 +76,19 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
               <p className="text-caption text-tertiary">No steps touch anything.</p>
             ) : (
               <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
-                {preview.steps.map((s) => (
-                  <li key={s.id} className="flex items-start gap-3 px-3 py-2">
-                    <EffectTag effect={s.effect} />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-primary">{s.name}</div>
-                      {s.detail && <div className="text-caption text-secondary">{s.detail}</div>}
-                    </div>
-                  </li>
-                ))}
+                {preview.steps.map((s) => {
+                  const detail = s.skipped ? withoutSkippedNote(s.detail) : s.detail
+                  return (
+                    <li key={s.id} className={cx('flex items-start gap-3 px-3 py-2', s.skipped && 'opacity-60')} data-skipped={s.skipped ? 'true' : undefined}>
+                      <EffectTag effect={s.effect} />
+                      <div className="min-w-0 flex-1">
+                        <div className={cx('truncate text-sm', s.skipped ? 'text-secondary' : 'text-primary')}>{s.name}</div>
+                        {detail && <div className="text-caption text-secondary">{detail}</div>}
+                        {s.skipped && <div className="text-caption italic text-tertiary">{SKIPPED_NOTE}</div>}
+                      </div>
+                    </li>
+                  )
+                })}
               </ol>
             )}
           </div>
@@ -85,7 +105,7 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
                       <Icon name="resource" size={11} />
                       <span className="text-primary">{r.name || r.id}</span>
                       <span className="text-tertiary">{r.type}</span>
-                      {r.via && <span className="text-tertiary">· via {r.via}</span>}
+                      {r.via && <span className="text-tertiary">· {viaLabel(r.via)}</span>}
                     </TextLink>
                   </li>
                 ))}
@@ -101,7 +121,12 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
               <div className="mt-0.5 text-title3 font-semibold tabular-nums text-primary">
                 {formatNumber(preview.cost.monthly, { digits: 2 })} <span className="text-footnote font-normal text-secondary">{preview.cost.currency}</span>
               </div>
-              {preview.cost.detail && <div className="mt-0.5 text-caption text-secondary">{preview.cost.detail}</div>}
+              {preview.cost.detail && (
+                <div className="mt-1 text-caption text-secondary" title="Where the number comes from">
+                  <span className="text-tertiary">Priced from: </span>
+                  {preview.cost.detail}
+                </div>
+              )}
             </div>
           )}
 
