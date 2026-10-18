@@ -760,7 +760,12 @@ for `mcp.toolName`; when either of the last two does not answer, that check is l
 An ansible step with a git playbook has two credential pickers fed by `GET /registry/credentials`:
 the Git credential (`playbook.git.credential`, the read token of a private repository) and the
 machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
-credential to `GET /playbooks:resolve`, never the machine credential. The step's Hosts section
+credential to `GET /playbooks:resolve`, never the machine credential. Every credential field, those
+two and the http and terraform steps' `credential`, ends with "New credential…", as n8n's ends
+with "Create new credential": it opens the Add a credential dialog on the first kind the field
+asks for that the store takes, `POST /credentials` stores the value, and the field takes the
+`vault:` reference while the name and type join the registry the session loaded, so the options
+show it at once without loading the registry again. The step's Hosts section
 writes the inventory in the shapes the ansible runner reads (`frontend/src/designer/ndv/inventory.ts`):
 Dynamic writes `dynamic`, Path a file or directory in the playbook's source, Hosts a list, Group
 `{ hosts, group, vars }` and None no key, so the playbook runs on ansible's implicit localhost; a
