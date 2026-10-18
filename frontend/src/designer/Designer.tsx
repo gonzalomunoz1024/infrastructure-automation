@@ -16,7 +16,11 @@ import { TopBar } from './chrome/TopBar'
 import { IssuesDrawer } from './chrome/IssuesDrawer'
 import { YamlDrawer } from './chrome/YamlDrawer'
 import { TestRunSheet } from './chrome/TestRun'
+import { ChangeRequestDrawer, PublishSheet } from './chrome/Publish'
+import { AssistantPanel } from './chrome/AssistantPanel'
 import { EditorView } from './views/EditorView'
+import { ExecutionsView } from './views/ExecutionsView'
+import { SettingsView } from './views/SettingsView'
 
 export interface DesignerProps {
   /** null until a new workflow is first saved */
@@ -34,9 +38,11 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
   const store = useDesignerStore()
   const toast = useToast()
   const tab = useDesignerSelector((s) => s.tab)
+  const name = useDesignerSelector((s) => s.name)
   const [panel, setPanel] = useState<Panel>(null)
   const [assistant, setAssistant] = useState(false)
   const [leaving, setLeaving] = useState(false)
+  const [changeRequest, setChangeRequest] = useState<string | null>(null)
 
   const save = useCallback(async () => {
     const st = store.getState()
@@ -98,11 +104,18 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
         assistantOpen={assistant}
       />
       <div className="relative flex min-h-0 flex-1">
-        <div className="relative min-w-0 flex-1">{tab === 'editor' && <EditorView onTest={() => setPanel('test')} />}</div>
+        <div className="relative min-w-0 flex-1">
+          {tab === 'editor' && <EditorView onTest={() => setPanel('test')} />}
+          {tab === 'executions' && <ExecutionsView />}
+          {tab === 'settings' && <SettingsView />}
+        </div>
+        {assistant && <AssistantPanel onClose={() => setAssistant(false)} />}
       </div>
       {panel === 'issues' && <IssuesDrawer onClose={() => setPanel(null)} />}
       {panel === 'yaml' && <YamlDrawer onClose={() => setPanel(null)} />}
       {panel === 'test' && <TestRunSheet onClose={() => setPanel(null)} />}
+      {panel === 'publish' && <PublishSheet onClose={() => setPanel(null)} onOpened={(id) => setChangeRequest(id)} />}
+      {changeRequest && name && <ChangeRequestDrawer id={changeRequest} workflow={name} onClose={() => setChangeRequest(null)} />}
       {leaving && (
         <ConfirmDialog
           title="Leave without saving?"

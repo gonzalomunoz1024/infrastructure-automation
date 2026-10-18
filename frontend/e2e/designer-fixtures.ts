@@ -127,6 +127,69 @@ export interface MockApi {
   dryRuns: Obj[]
   /** bodies of POST /workflows */
   created: Obj[]
+  /** bodies of POST /workflows/{name}:publish */
+  publishes: Obj[]
+  /** ids of merged change requests */
+  merged: string[]
+  /** messages sent to the assistant */
+  assistant: string[]
+}
+
+/** Two jobs of vm-restart: one failed at the playbook, one that went through. */
+export function vmRestartJobs(): { summaries: Obj[]; details: Record<string, Obj> } {
+  const base = { workflow: 'vm-restart', title: 'VM restart', version: '1.2.0', requester: 'gonzalo', kind: 'single', approvals: [], traceId: 'trace-1' }
+  const ok = (id: string, name: string, type: string, input: Json, output: Json, ms: number) => ({ id, name, type, status: 'succeeded', attempt: 1, durationMs: ms, startedAt: '2026-10-16T09:00:00Z', input, output })
+  const failed: Obj = {
+    ...base,
+    id: 'job_1042',
+    status: 'failed',
+    channel: 'catalog',
+    startedAt: '2026-10-16T09:00:00Z',
+    endedAt: '2026-10-16T09:01:24Z',
+    durationMs: 84000,
+    input: { vmId: 'vm-1042', reason: 'unresponsive', environment: 'prod' },
+    steps: [
+      ok('checkVmExists', 'Check VM exists', 'provider', { id: 'vm-1042' }, { id: 'vm-1042', name: 'web-1042', powerState: 'poweredOn', cpu: 4, memoryGb: 16, environment: 'prod' }, 420),
+      ok('noBackupRunning', 'No backup running', 'provider', { target: 'vm-1042', state: 'running' }, { items: [], total: 0 }, 310),
+      ok('approval', 'Approve restart', 'approval', { group: 'compute-approvers' }, { approved: true, by: 'alice', group: 'compute-approvers' }, 61000),
+      { id: 'restart', name: 'Restart with Ansible', type: 'ansible', status: 'failed', attempt: 1, durationMs: 21000, input: { limit: 'web-1042' }, error: { class: 'AnsibleFailed', message: 'web-1042: host unreachable', retryable: true } },
+      ok('notifyOwner', 'Tell the on-call', 'notify', { channel: '#compute-alerts' }, { sent: true }, 200),
+    ],
+  }
+  const passed: Obj = {
+    ...base,
+    id: 'job_1041',
+    status: 'succeeded',
+    channel: 'mcp',
+    startedAt: '2026-10-15T14:00:00Z',
+    endedAt: '2026-10-15T14:03:00Z',
+    durationMs: 180000,
+    input: { vmId: 'vm-0007', reason: 'patching', environment: 'dev' },
+    steps: [
+      ok('checkVmExists', 'Check VM exists', 'provider', { id: 'vm-0007' }, { id: 'vm-0007', name: 'db-0007', powerState: 'poweredOn' }, 400),
+      ok('noBackupRunning', 'No backup running', 'provider', {}, { items: [], total: 0 }, 300),
+      ok('approval', 'Approve restart', 'approval', {}, { approved: true, by: 'bob' }, 9000),
+      ok('restart', 'Restart with Ansible', 'ansible', {}, { ok: 4, changed: 2, failed: 0 }, 90000),
+      ok('validate', 'Wait for power on', 'provider', {}, { id: 'vm-0007', powerState: 'poweredOn' }, 60000),
+      ok('notifyDone', 'Tell the channel', 'notify', {}, { sent: true }, 150),
+    ],
+  }
+  const summary = (j: Obj): Obj => Object.fromEntries(Object.entries(j).filter(([k]) => !['input', 'steps', 'approvals', 'traceId'].includes(k)))
+  return { summaries: [summary(failed), summary(passed)], details: { job_1042: failed, job_1041: passed } }
+}
+
+const DIFF = `--- a/workflows/team-compute/vm-restart.yaml
++++ b/workflows/team-compute/vm-restart.yaml
+@@ -9,7 +9,7 @@ metadata:
+   folder: Compute
+   tags: [vsphere, ops]
+-  version: 1.2.0
++  version: 1.3.0
+   description: Restart a virtual machine after safety checks, with an approval for production.
+`
+
+function sse(events: Obj[]): string {
+  return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
 }
 
 const ME = { id: 'gonzalo', name: 'Gonzalo', email: 'gonzalo@example.com', teams: ['team-compute', 'team-platform'], roles: ['ops', 'admin'], admin: true, kind: 'user' }
@@ -145,7 +208,8 @@ function bodyOf(req: Request): Obj {
 
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
-  const calls: MockApi = { drafts: [], dryRuns: [], created: [] }
+  const calls: MockApi = { drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
+  const jobs = vmRestartJobs()
   const providers = registryProviders()
   const resourceTypes = registryResourceTypes()
   const workflows = registryWorkflows()
@@ -192,8 +256,66 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
         { name: 'vsphere/token', type: 'token' },
       ])
     if (method === 'GET' && path === '/templates') return json(route, [])
-    if (method === 'GET' && path === '/jobs') return json(route, [])
-    if (method === 'GET' && path === '/releases') return json(route, [])
+    if (method === 'GET' && path === '/jobs') return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries : [])
+    const jobMatch = /^\/jobs\/([^/]+)$/.exec(path)
+    if (method === 'GET' && jobMatch) return jobs.details[jobMatch[1]] ? json(route, jobs.details[jobMatch[1]]) : json(route, { error: 'no such job' }, 404)
+    if (method === 'GET' && /^\/jobs\/[^/]+\/events$/.test(path)) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
+    if (method === 'GET' && path === '/workflows/vm-restart/versions/1.2.0') return json(route, { version: '1.2.0', yaml: vmRestartYaml(), definition })
+    if (method === 'POST' && path === '/workflows/vm-restart:publish') {
+      calls.publishes.push(bodyOf(req))
+      return json(route, { id: 'cr_7', status: 'accepted' }, 202)
+    }
+    if (method === 'GET' && path === '/change-requests/cr_7') {
+      const merged = calls.merged.includes('cr_7')
+      return json(route, {
+        id: 'cr_7',
+        kind: 'workflow',
+        name: 'vm-restart',
+        version: '1.3.0',
+        branch: 'workflow/vm-restart-1.3.0',
+        title: 'Publish vm-restart 1.3.0',
+        author: 'gonzalo',
+        status: merged ? 'merged' : 'open',
+        strategy: 'canary',
+        createdAt: '2026-10-17T10:00:00Z',
+        checks: [
+          { id: 'checks', label: 'Workflow checks', status: 'passed' },
+          { id: 'dry-run', label: 'Dry run', status: 'passed', detail: '7 steps' },
+          { id: 'replay', label: 'Replay of recent jobs', status: 'passed', detail: '42 jobs, no divergence' },
+        ],
+        diff: DIFF,
+        yaml: vmRestartYaml(),
+      })
+    }
+    if (method === 'POST' && path === '/change-requests/cr_7:merge') {
+      calls.merged.push('cr_7')
+      return json(route, { id: 'cr_7', status: 'accepted' }, 202)
+    }
+    if (method === 'GET' && path === '/releases')
+      return json(
+        route,
+        calls.merged.includes('cr_7')
+          ? [{ id: 'rel_9', workflow: 'vm-restart', from: '1.2.0', to: '1.3.0', strategy: 'canary', status: 'canary', stageIndex: 0, stages: [10, 50, 100], stagePercent: 10, startedAt: '2026-10-17T10:05:00Z', stageStartedAt: '2026-10-17T10:05:00Z', gates: [], jobs: { current: 0, candidate: 0 }, history: [] }]
+          : [],
+      )
+    if (method === 'POST' && path === '/assistant/sessions') return json(route, { sessionId: 'as_1' })
+    if (method === 'POST' && path === '/assistant/sessions/as_1/messages') {
+      calls.assistant.push(String(bodyOf(req).text ?? ''))
+      const draft = vmRestart()
+      const flow = asObj(draft.workflow)
+      const steps = Array.isArray(flow.do) ? flow.do : []
+      flow.do = [{ announce: { name: 'Announce the restart', notify: { channel: '#compute-ops', message: 'Restarting {{ $input.vmId }}' } } }, ...steps]
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: sse([
+          { type: 'status', data: { text: 'Reading the workflow and the registry' } },
+          { type: 'message', data: { text: 'I added a step that tells #compute-ops before anything happens.' } },
+          { type: 'draft', data: { status: 'ready', summary: 'Announce the restart in #compute-ops first.', workflowYaml: stringify(draft), changes: ['Added "Announce the restart" before "Check VM exists"'], validation: { valid: true }, dryRun: { passed: true } } },
+          { type: 'done', data: {} },
+        ]),
+      })
+    }
     if (method === 'POST' && path === '/workflows:render') return json(route, { yaml: stringify(bodyOf(req).definition ?? {}) })
     if (method === 'POST' && path === '/workflows:parse') {
       try {
