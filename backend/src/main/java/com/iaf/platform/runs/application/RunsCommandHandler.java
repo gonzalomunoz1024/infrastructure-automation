@@ -3,12 +3,12 @@ package com.iaf.platform.runs.application;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -26,10 +26,8 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
-import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
-import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -53,11 +51,6 @@ import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Outcome;
 import com.iaf.platform.runs.domain.Preview;
-import com.iaf.platform.runs.domain.Preview.AffectedResource;
-import com.iaf.platform.runs.domain.Preview.Cost;
-import com.iaf.platform.runs.domain.Preview.PreviewStep;
-import com.iaf.platform.runs.domain.PreviewRules;
-import com.iaf.platform.runs.domain.PreviewRules.ResourceRef;
 import com.iaf.platform.runs.domain.StepEvent;
 import com.iaf.platform.runs.domain.TriggerMatching;
 import com.iaf.platform.runs.domain.TriggerMatching.Match;
@@ -66,8 +59,9 @@ import com.iaf.platform.runs.domain.WorkflowInterpreter;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort.OpenChange;
+import com.iaf.platform.runs.ports.outbound.PriceListPort;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
-import com.iaf.platform.workflows.domain.Semver;
+import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
@@ -102,11 +96,12 @@ public class RunsCommandHandler implements RunsCommands {
     private final JobProjection projection;
     private final JobEvents events;
     private final StepExecutors executors;
+    private final Previews previews;
     private final Clock clock;
 
     public RunsCommandHandler(WorkflowQueries workflows, com.iaf.platform.providers.ports.inbound.ProviderQueries providers,
             ResourceQueries resources, ReleaseQueries releases, PolicyPort policy, ChangeTicketPort changes, WorkflowExecutionPort execution,
-            JobProjection projection, JobEvents events, StepExecutors executors, Clock clock) {
+            JobProjection projection, JobEvents events, StepExecutors executors, PriceListPort prices, Clock clock) {
         this.workflows = workflows;
         this.providers = providers;
         this.resources = resources;
@@ -117,6 +112,7 @@ public class RunsCommandHandler implements RunsCommands {
         this.projection = projection;
         this.events = events;
         this.executors = executors;
+        this.previews = new Previews(providers, workflows, resources, executors, prices, clock);
         this.clock = clock;
     }
 
@@ -133,8 +129,9 @@ public class RunsCommandHandler implements RunsCommands {
             JsonNode input = validate(def, cmd.input());
             String channel = cmd.channel() == null ? "rest" : cmd.channel();
             return requireKnownResources(def, List.of(input), false)
+                    .then(requireBuildable(def, List.of(input), false))
                     .then(evaluatePolicy(who, def, rec.version(), input, channel, cmd.parentId()))
-                    .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, cmd.parentId() == null)
+                    .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, cmd.parentId() == null, who)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newJob(def, rec.version(), input, who, channel, cmd.parentId(), cmd.traceId(),
                                         preview.orElse(null), decision, null, now());
@@ -163,7 +160,7 @@ public class RunsCommandHandler implements RunsCommands {
             List<RowProblems> invalid = new ArrayList<>();
             for (int i = 0; i < cmd.items().size(); i++) {
                 JsonNode merged = InputDefaults.apply(def.inputSchema(), InputDefaults.merge(cmd.defaults(), cmd.items().get(i)));
-                List<Problem> problems = Schemas.validate(def.inputSchema(), merged);
+                List<Problem> problems = CreateRequests.inputProblems(def, merged);
                 if (!problems.isEmpty()) {
                     invalid.add(new RowProblems(i, problems));
                 }
@@ -176,8 +173,9 @@ public class RunsCommandHandler implements RunsCommands {
             List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
             String channel = cmd.channel() == null ? "batch" : cmd.channel();
             return requireKnownResources(def, rows, true)
+                    .then(requireBuildable(def, rows, true))
                     .then(evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null))
-                    .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true)
+                    .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true, who)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
                                         preview.orElse(null), decision, null, now());
@@ -404,7 +402,7 @@ public class RunsCommandHandler implements RunsCommands {
         return identity(who).flatMap(w -> {
             JsonNode in = InputDefaults.apply(definition.inputSchema(), input);
             return evaluatePolicy(w, definition, definition.version(), in, "preview", null)
-                    .flatMap(decision -> buildPreview(definition, List.of(in), decision));
+                    .flatMap(decision -> buildPreview(definition, List.of(in), decision, w));
         });
     }
 
@@ -515,9 +513,40 @@ public class RunsCommandHandler implements RunsCommands {
                 });
     }
 
+    /**
+     * Each request to build a resource first ({@code { create: {...} }} on an {@code orCreateWith}
+     * input) against the published input of the workflow that builds it: a 400 naming every
+     * problem under {@code <input>.create}.
+     */
+    private Mono<Void> requireBuildable(WorkflowDefinition def, List<JsonNode> rows, boolean batch) {
+        Set<String> producers = new TreeSet<>();
+        rows.forEach(row -> CreateRequests.of(def, row).forEach(r -> producers.add(r.orCreateWith())));
+        if (producers.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(producers)
+                .flatMap(name -> workflows.published(name))
+                .collectMap(r -> r.definition().name(), WorkflowRecord::definition)
+                .flatMap(found -> {
+                    List<RowProblems> invalid = new ArrayList<>();
+                    for (int i = 0; i < rows.size(); i++) {
+                        List<Problem> problems = CreateRequests.problems(def, rows.get(i), name -> Optional.ofNullable(found.get(name)));
+                        if (!problems.isEmpty()) {
+                            invalid.add(new RowProblems(i, problems));
+                        }
+                    }
+                    if (invalid.isEmpty()) {
+                        return Mono.<Void>empty();
+                    }
+                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                            : new InvalidInputException(def.name(), invalid.get(0).problems()));
+                });
+    }
+
+    /** Defaults filled in, then the schema, with requests to build a resource first let through (judged by requireBuildable). */
     static JsonNode validate(WorkflowDefinition def, JsonNode input) {
         JsonNode in = InputDefaults.apply(def.inputSchema(), input);
-        List<Problem> problems = Schemas.validate(def.inputSchema(), in);
+        List<Problem> problems = CreateRequests.inputProblems(def, in);
         if (!problems.isEmpty()) {
             throw new InvalidInputException(def.name(), problems);
         }
@@ -552,60 +581,24 @@ public class RunsCommandHandler implements RunsCommands {
                 });
     }
 
-    private Mono<Optional<Preview>> previewFor(Preview given, WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision, boolean topLevel) {
+    private Mono<Optional<Preview>> previewFor(Preview given, WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision, boolean topLevel,
+            Identity who) {
         if (given != null) {
             return Mono.just(Optional.of(given));
         }
         if (!topLevel || !def.previewEnabled()) {
             return Mono.just(Optional.empty());
         }
-        return buildPreview(def, inputs, decision).map(Optional::of)
+        return buildPreview(def, inputs, decision, who).map(Optional::of)
                 .onErrorResume(e -> {
                     log.warn("preview of {} failed: {}", def.name(), e.toString());
                     return Mono.just(Optional.empty());
                 });
     }
 
-    /** The static walk of a definition against the provider files and the registry; every row of a batch adds its resources. */
-    Mono<Preview> buildPreview(WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision) {
-        Mono<List<ProviderDefinition>> provs = providers.all().collectList().defaultIfEmpty(List.of());
-        Mono<List<WorkflowDefinition>> pubs = published().defaultIfEmpty(List.of());
-        return Mono.zip(provs, pubs).flatMap(t -> {
-            PreviewRules.Catalog catalog = PreviewRules.catalog(t.getT1(), (name, range) -> highest(t.getT2(), name, range));
-            List<PreviewStep> steps = PreviewRules.steps(def, catalog);
-            Cost cost = PreviewRules.cost(def, catalog);
-            if (cost != null && inputs.size() > 1) {
-                cost = new Cost(Math.round(cost.monthly() * inputs.size() * 100.0) / 100.0, cost.currency(), cost.detail() + " x " + inputs.size() + " rows");
-            }
-            Map<String, ResourceRef> refs = new LinkedHashMap<>();
-            for (JsonNode in : inputs) {
-                for (ResourceRef r : PreviewRules.resourceRefs(def, in)) {
-                    refs.putIfAbsent(r.type() + ":" + r.id(), r);
-                }
-            }
-            Cost finalCost = cost;
-            return Flux.fromIterable(refs.values())
-                    .concatMap(ref -> resources.get(ref.id())
-                            .map(r -> new AffectedResource(r.id(), r.type() == null ? ref.type() : r.type(), r.name() == null ? r.id() : r.name(), ref.via()))
-                            .onErrorResume(e -> Mono.empty())
-                            .defaultIfEmpty(new AffectedResource(ref.id(), ref.type(), ref.id(), ref.via())))
-                    .collectList()
-                    .map(affected -> new Preview(def.name(), def.version(), steps, affected, finalCost, decision));
-        });
-    }
-
-    private static Optional<WorkflowDefinition> highest(List<WorkflowDefinition> published, String name, String range) {
-        String r = range == null || range.isBlank() ? "*" : range;
-        return published.stream()
-                .filter(d -> name.equals(d.name()))
-                .filter(d -> {
-                    try {
-                        return Semver.parse(d.version()).satisfies(r);
-                    } catch (RuntimeException e) {
-                        return false;
-                    }
-                })
-                .max(Comparator.comparing(d -> Semver.parse(d.version())));
+    /** The preview of a run: the flow judged by a dry run on the first row, the plans, the registry and the price lists ({@link Previews}). */
+    Mono<Preview> buildPreview(WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision, Identity who) {
+        return previews.build(def, inputs, decision, who);
     }
 
     private Mono<Job> openChange(Job job, WorkflowDefinition def, String changeId) {

@@ -1,21 +1,28 @@
 package com.iaf.platform.workflows.domain;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.expressions.Reference;
+import com.iaf.platform.common.schema.Schemas;
+import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.workflows.domain.Step.SwitchCase;
@@ -41,6 +48,8 @@ public final class WorkflowChecks {
             "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> ROOTS = Set.of("json", "input", "vars", "job", "env", "error");
+    private static final List<String> ON_FAILURE = List.of("fail", "continue");
+    private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private WorkflowChecks() {
     }
@@ -74,6 +83,7 @@ public final class WorkflowChecks {
         boolean hasPredecessor;
         boolean inCatch;
         boolean approved;                                       // an approval step ran before
+        JsonNode previous;                                      // the schema of $json, null when unknown
 
         Scope copy() {
             Scope s = new Scope();
@@ -83,6 +93,7 @@ public final class WorkflowChecks {
             s.hasPredecessor = hasPredecessor;
             s.inCatch = inCatch;
             s.approved = approved;
+            s.previous = previous;
             return s;
         }
 
@@ -101,6 +112,8 @@ public final class WorkflowChecks {
         final Map<String, Step> byId = new LinkedHashMap<>();
         final Set<String> allNames = new HashSet<>();
         final Set<String> inputFields = new LinkedHashSet<>();
+        final Map<String, JsonNode> stepOutputs = new HashMap<>();   // step id and name -> output schema (null: unknown)
+        final Map<String, JsonNode> aliasOutputs = new HashMap<>();  // output.as -> output schema (null: unknown)
         final boolean policyApproval;
 
         Checker(WorkflowDefinition def, CheckContext ctx) {
@@ -303,6 +316,7 @@ public final class WorkflowChecks {
                     allNames.add(s.name());
                 }
             }
+            outputs(all);
             Scope scope = new Scope();
             scope = walk(def.steps(), scope, null);
             Flow flow = def.workflow();
@@ -310,6 +324,7 @@ public final class WorkflowChecks {
                 Scope c = scope.copy();
                 c.inCatch = true;
                 c.hasPredecessor = true;
+                c.previous = null;
                 walk(flow.catchFlow().steps(), c, null);
             }
             if (flow != null && flow.outputs() != null) {
@@ -323,8 +338,13 @@ public final class WorkflowChecks {
         Scope walk(List<Step> steps, Scope start, String parentId) {
             Scope scope = start.copy();
             List<String> siblings = steps.stream().map(Step::id).toList();
+            unreachable(steps);
+            Set<String> targets = jumpTargets(steps);
             for (int i = 0; i < steps.size(); i++) {
                 Step s = steps.get(i);
+                if (targets.contains(s.id())) {
+                    scope.previous = null; // reached from a switch too: $json is not one step's output
+                }
                 step(s, scope, siblings.subList(i + 1, siblings.size()));
                 // after the step
                 scope.stepNames.add(s.id());
@@ -347,6 +367,9 @@ public final class WorkflowChecks {
                 }
                 if (s.type() != StepType.SWITCH && s.type() != StepType.FORK && s.type() != StepType.FOR && s.type() != StepType.TRY) {
                     scope.hasPredecessor = true;
+                    scope.previous = stepOutputs.get(s.id());
+                } else {
+                    scope.previous = null;
                 }
             }
             return scope;
@@ -424,6 +447,7 @@ public final class WorkflowChecks {
                 } else {
                     Scope after = scope.copy();
                     after.hasPredecessor = true; // $json in assert is this step's own output
+                    after.previous = stepOutputs.get(s.id());
                     template(s.assertion(), s.id(), "assert", after);
                 }
             }
@@ -432,6 +456,7 @@ public final class WorkflowChecks {
                 // and may delete what the step created without a fresh approval
                 Scope c = scope.copy();
                 c.hasPredecessor = true;
+                c.previous = stepOutputs.get(s.id());
                 c.approved = true;
                 c.stepNames.add(s.id());
                 if (s.name() != null) {
@@ -556,8 +581,8 @@ public final class WorkflowChecks {
                 error("step.missingInput", s.id(), "input", "Action " + action + " needs " + schema.path("required"));
             }
             if ((a.get().destructive() || a.get().approvalRequired()) && !policyApproval && !scope.approved) {
-                error("policy.approvalRequired", s.id(), null, "Action " + action + " " + (a.get().destructive() ? "is destructive" : "requires an approval")
-                        + "; add an approval step before it or require one in policy", Fix.insertApproval("Insert an approval before this step"));
+                warning("policy.approvalRequired", s.id(), null, "Action " + action + " " + (a.get().destructive() ? "is destructive" : "requires an approval")
+                        + "; add an approval step before it or require one in policy", Optional.of(Fix.insertApproval("Insert an approval before this step")));
             }
         }
 
@@ -572,8 +597,8 @@ public final class WorkflowChecks {
                 error("http.url", s.id(), "url", "url starts with https://");
             }
             if ("DELETE".equalsIgnoreCase(method) && !policyApproval && !scope.approved) {
-                error("policy.approvalRequired", s.id(), null, "An HTTP DELETE is destructive; add an approval step before it or require one in policy",
-                        Fix.insertApproval("Insert an approval before this step"));
+                warning("policy.approvalRequired", s.id(), null, "An HTTP DELETE is destructive; add an approval step before it or require one in policy",
+                        Optional.of(Fix.insertApproval("Insert an approval before this step")));
             }
         }
 
@@ -634,8 +659,8 @@ public final class WorkflowChecks {
                 error("terraform.action", s.id(), "action", "action is plan, apply or destroy");
             }
             if ("destroy".equals(action) && !policyApproval && !scope.approved) {
-                error("policy.approvalRequired", s.id(), null, "terraform destroy is destructive; add an approval step before it or require one in policy",
-                        Fix.insertApproval("Insert an approval before this step"));
+                warning("policy.approvalRequired", s.id(), null, "terraform destroy is destructive; add an approval step before it or require one in policy",
+                        Optional.of(Fix.insertApproval("Insert an approval before this step")));
             }
         }
 
@@ -658,6 +683,54 @@ public final class WorkflowChecks {
             if (input != null && !input.isObject()) {
                 error("step.invalidJson", s.id(), "input", "input is a JSON object");
             }
+            String onFailure = s.withText("onFailure");
+            if (onFailure != null && !ON_FAILURE.contains(onFailure)) {
+                error("run.onFailure", s.id(), "onFailure", "onFailure is fail (the default) or continue", suggest(onFailure, ON_FAILURE));
+            }
+            contract(s, wf);
+        }
+
+        /**
+         * The contract of a run step: its input against the published input schema of the
+         * workflow it runs. A required field without a default must be given, a field the
+         * workflow does not take is reported, and a literal must have the declared type.
+         */
+        void contract(Step s, String wf) {
+            Optional<JsonNode> schema = ctx.workflowInput(wf);
+            JsonNode input = s.withNode("input");
+            if (schema.isEmpty() || schema.get() == null || !schema.get().isObject() || (input != null && !input.isNull() && !input.isObject())) {
+                return;
+            }
+            JsonNode props = schema.get().path("properties");
+            for (JsonNode r : schema.get().path("required")) {
+                String f = r.asText();
+                if ((input == null || !input.has(f)) && !props.path(f).has("default")) {
+                    error("contract.missingInput", s.id(), "input." + f, "Workflow " + wf + " needs '" + f + "'");
+                }
+            }
+            if (input == null || input.isNull() || !props.isObject() || props.isEmpty()) {
+                return;
+            }
+            List<String> known = new ArrayList<>();
+            props.fieldNames().forEachRemaining(known::add);
+            input.fields().forEachRemaining(e -> {
+                JsonNode p = props.get(e.getKey());
+                if (p == null) {
+                    warning("contract.unknownInput", s.id(), "input." + e.getKey(), "Workflow " + wf + " does not take '" + e.getKey() + "'", suggest(e.getKey(), known));
+                    return;
+                }
+                String actual = literalType(e.getValue());
+                if (actual == null || (orCreateWith(p) && e.getValue().isObject() && e.getValue().has("create"))) {
+                    return;
+                }
+                JsonNode type = p.get("type");
+                if (type != null && !accepts(type, actual)) {
+                    error("contract.type", s.id(), "input." + e.getKey(), "'" + e.getKey() + "' is " + typeText(type) + " in workflow " + wf + ", not " + actual);
+                } else if (p.path("enum").isArray() && e.getValue().isValueNode() && !ExpressionEngine.isTemplate(e.getValue().asText())
+                        && !contains(p.get("enum"), e.getValue())) {
+                    error("contract.type", s.id(), "input." + e.getKey(), "'" + e.getValue().asText() + "' is not one of " + p.get("enum") + " in workflow " + wf);
+                }
+            });
         }
 
         void switchStep(Step s, Scope scope, List<String> later) {
@@ -750,6 +823,7 @@ public final class WorkflowChecks {
                 Scope c = after.copy();
                 c.inCatch = true;
                 c.hasPredecessor = true;
+                c.previous = scope.previous; // the catch starts from what the try started from
                 if (s.catchBlock().as() != null) {
                     c.aliases.add(s.catchBlock().as());
                 }
@@ -793,6 +867,8 @@ public final class WorkflowChecks {
                         if (!scope.hasPredecessor) {
                             error("expr.noPredecessor", step, field, "$json is the previous step's output, and this is the first step; use $input or connect a step before it",
                                     Fix.connect("Connect a step before this one"));
+                        } else {
+                            returned(r, scope.previous, "The previous step's output", step, field);
                         }
                     }
                     case STEP -> {
@@ -802,6 +878,8 @@ public final class WorkflowChecks {
                             } else {
                                 error("expr.unknownStep", step, field, "No step named '" + r.step() + "'", suggest(r.step(), scope.stepNames));
                             }
+                        } else {
+                            returned(r, stepOutputs.get(r.step()), "The output of '" + r.step() + "'", step, field);
                         }
                     }
                     case ALIAS -> {
@@ -810,6 +888,8 @@ public final class WorkflowChecks {
                             candidates.addAll(ROOTS);
                             error("expr.unknownReference", step, field, "Unknown reference $" + r.step() + "; save a step's output with output: { as: " + r.step() + " } or use $json, $input, $vars",
                                     suggest(r.step(), candidates).map(f -> Fix.replace(f.label(), "$" + f.value())).orElse(null));
+                        } else {
+                            returned(r, aliasOutputs.get(r.step()), "$" + r.step(), step, field);
                         }
                     }
                     case INPUT -> {
@@ -833,6 +913,292 @@ public final class WorkflowChecks {
                     }
                 }
             }
+        }
+
+        // ------------------------------------------------------------ what steps return
+
+        /** The output schema of every step and alias, known before the walk; null where unknown. */
+        void outputs(List<Step> all) {
+            for (Step s : all) {
+                JsonNode schema = outputSchema(s);
+                stepOutputs.put(s.id(), schema);
+                if (s.name() != null) {
+                    stepOutputs.putIfAbsent(s.name(), schema);
+                }
+                String as = s.output() == null ? null : s.output().as();
+                if (as != null) {
+                    // two steps saving under one alias with different shapes: unknown
+                    aliasOutputs.put(as, aliasOutputs.containsKey(as) && !Objects.equals(aliasOutputs.get(as), schema) ? null : schema);
+                }
+            }
+        }
+
+        /** What a step returns, when its declaration says: a provider action's output, a resource, a child job. */
+        JsonNode outputSchema(Step s) {
+            return switch (s.type()) {
+                case PROVIDER -> {
+                    String provider = s.withText("provider");
+                    String action = s.withText("action");
+                    if (provider == null || action == null) {
+                        yield null;
+                    }
+                    yield ctx.provider(provider)
+                            .flatMap(p -> p.action(action).filter(a -> a.output() != null && a.output().isObject()).map(a -> ActionInfo.of(p, a).output()))
+                            .orElse(null);
+                }
+                case USE, REGISTER -> {
+                    Optional<JsonNode> type = ctx.resourceTypeSchema(s.withText("type"));
+                    if (type.isEmpty()) {
+                        yield null;
+                    }
+                    ObjectNode attributes = closed(type.get()) ? type.get().deepCopy() : F.objectNode();
+                    JsonNode written = s.type() == StepType.REGISTER ? s.withNode("attributes") : null;
+                    if (written != null && written.isObject() && attributes.has("properties")) {
+                        ObjectNode props = (ObjectNode) attributes.get("properties");
+                        written.fieldNames().forEachRemaining(k -> {
+                            if (!props.has(k)) {
+                                props.putObject(k);
+                            }
+                        });
+                    }
+                    yield resourceShape(attributes);
+                }
+                case RUN -> {
+                    String wf = s.withText("workflow");
+                    Optional<List<String>> outs = wf == null ? Optional.empty() : ctx.workflowOutputs(wf);
+                    if (outs.isEmpty()) {
+                        yield null;
+                    }
+                    ObjectNode o = F.objectNode();
+                    o.put("type", "object");
+                    ObjectNode props = o.putObject("properties");
+                    props.putObject("jobId").put("type", "string");
+                    props.putObject("status").put("type", "string");
+                    ObjectNode outputs = props.putObject("outputs");
+                    outputs.put("type", "object");
+                    ObjectNode outProps = outputs.putObject("properties");
+                    outs.get().forEach(outProps::putObject);
+                    // the resources the child's register steps recorded
+                    ObjectNode resources = props.putObject("resources");
+                    resources.put("type", "array");
+                    ObjectNode resource = resources.putObject("items");
+                    resource.put("type", "object");
+                    ObjectNode resourceProps = resource.putObject("properties");
+                    List.of("id", "type").forEach(k -> resourceProps.putObject(k).put("type", "string"));
+                    ObjectNode error = props.putObject("error");
+                    error.put("type", "object");
+                    ObjectNode errorProps = error.putObject("properties");
+                    List.of("step", "message", "class").forEach(k -> errorProps.putObject(k).put("type", "string"));
+                    yield o;
+                }
+                default -> null;
+            };
+        }
+
+        /** A registry resource as use and register steps return it, with the type's attributes. */
+        static ObjectNode resourceShape(JsonNode attributes) {
+            ObjectNode o = F.objectNode();
+            o.put("type", "object");
+            ObjectNode props = o.putObject("properties");
+            for (String k : List.of("id", "type", "name", "status")) {
+                props.putObject(k).put("type", "string");
+            }
+            props.set("attributes", attributes == null ? F.objectNode() : attributes);
+            for (String k : List.of("owner", "visibility")) {
+                props.putObject(k).put("type", "string");
+            }
+            ObjectNode createdBy = props.putObject("createdBy");
+            createdBy.put("type", "object");
+            ObjectNode by = createdBy.putObject("properties");
+            for (String k : List.of("jobId", "workflow", "version")) {
+                by.putObject(k).put("type", "string");
+            }
+            ObjectNode builtFrom = props.putObject("builtFrom");
+            builtFrom.put("type", "array");
+            builtFrom.putObject("items").put("type", "string");
+            for (String k : List.of("createdAt", "updatedAt")) {
+                props.putObject(k).put("type", "string");
+            }
+            return o;
+        }
+
+        /** A schema that lists every field: an object with properties and no additional ones. */
+        static boolean closed(JsonNode schema) {
+            if (schema == null || !schema.isObject()) {
+                return false;
+            }
+            if (schema.has("type") && !"object".equals(schema.path("type").asText())) {
+                return false;
+            }
+            JsonNode extra = schema.get("additionalProperties");
+            if (extra != null && (extra.isObject() || extra.asBoolean(false))) {
+                return false;
+            }
+            return schema.path("properties").isObject() && !schema.path("properties").isEmpty();
+        }
+
+        /**
+         * An expression reads a field the producing step does not return: the first segment of
+         * the path its declared output lacks, with the closest declared path as the fix
+         * ({@code vmId} reads as {@code vm.id}).
+         */
+        void returned(Reference r, JsonNode schema, String what, String step, String field) {
+            if (schema == null || r.path() == null || r.path().isEmpty()) {
+                return;
+            }
+            String[] segments = r.path().split("\\.");
+            JsonNode node = schema;
+            for (int i = 0; i < segments.length; i++) {
+                if (!closed(node)) {
+                    return;
+                }
+                JsonNode next = node.get("properties").get(segments[i]);
+                if (next == null) {
+                    String known = String.join(".", Arrays.copyOfRange(segments, 0, i));
+                    String wrong = known.isEmpty() ? segments[i] : known + "." + segments[i];
+                    String rest = String.join(".", Arrays.copyOfRange(segments, i + 1, segments.length));
+                    Optional<Fix> fix = closestPath(wrong, schema).map(p -> rest.isEmpty() ? p : p + "." + rest).map(p -> Fix.replace("Did you mean " + p + "?", p));
+                    warning("expr.unknownField", step, field, what + " has no field '" + wrong + "'", fix);
+                    return;
+                }
+                node = next;
+            }
+        }
+
+        /** The declared path that spells the same once case and dots are ignored, else the closest one. */
+        static Optional<String> closestPath(String wrong, JsonNode schema) {
+            List<String> paths = Schemas.paths(schema).stream().filter(p -> !p.contains("[]")).toList();
+            String flat = flat(wrong);
+            for (String p : paths) {
+                if (flat(p).equals(flat)) {
+                    return Optional.of(p);
+                }
+            }
+            return Suggest.closest(wrong, paths);
+        }
+
+        private static String flat(String path) {
+            return path.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        }
+
+        // ------------------------------------------------------------ steps that never run
+
+        /** Steps a switch in the same list always jumps past (every case has then and there is a default). */
+        void unreachable(List<Step> steps) {
+            boolean[] reachable = new boolean[steps.size()];
+            if (!steps.isEmpty()) {
+                reachable[0] = true;
+            }
+            String blocker = null;
+            for (int i = 0; i < steps.size(); i++) {
+                Step s = steps.get(i);
+                if (!reachable[i]) {
+                    if (blocker != null) {
+                        warning("step.unreachable", s.id(), null, "'" + s.displayName() + "' never runs: every case of " + blocker + " jumps past it");
+                    }
+                    continue;
+                }
+                boolean next = true;
+                if (s.type() == StepType.SWITCH && s.cases() != null && !s.cases().isEmpty()) {
+                    boolean hasDefault = false;
+                    boolean falls = false;
+                    for (SwitchCase c : s.cases()) {
+                        hasDefault |= c.isDefault();
+                        if (c.steps() != null || c.then() == null) {
+                            falls = true;
+                        } else if (!"end".equals(c.then())) {
+                            int target = -1;
+                            for (int k = i + 1; k < steps.size() && target < 0; k++) {
+                                if (steps.get(k).id().equals(c.then())) {
+                                    target = k;
+                                }
+                            }
+                            if (target < 0) {
+                                falls = true; // a target that is not a later step is reported by the switch itself
+                            } else {
+                                reachable[target] = true;
+                            }
+                        }
+                    }
+                    next = falls || !hasDefault;
+                    if (!next) {
+                        blocker = s.id();
+                    }
+                }
+                if (next && i + 1 < steps.size()) {
+                    reachable[i + 1] = true;
+                }
+            }
+        }
+
+        /** The steps of a list a switch in it jumps to. */
+        static Set<String> jumpTargets(List<Step> steps) {
+            Set<String> out = new HashSet<>();
+            for (Step s : steps) {
+                if (s.type() == StepType.SWITCH && s.cases() != null) {
+                    s.cases().stream().filter(c -> c.steps() == null && c.then() != null).forEach(c -> out.add(c.then()));
+                }
+            }
+            return out;
+        }
+
+        // ------------------------------------------------------------ literals
+
+        /** The JSON type a literal has, or null for an expression whose type shows only at run time. */
+        static String literalType(JsonNode v) {
+            if (v == null || v.isNull()) {
+                return "null";
+            }
+            if (v.isTextual()) {
+                String t = v.asText().trim();
+                if (!ExpressionEngine.isTemplate(t)) {
+                    return "string";
+                }
+                // one expression alone yields its own type; text around expressions makes a string
+                return t.startsWith("{{") && t.endsWith("}}") && t.indexOf("{{", 2) < 0 ? null : "string";
+            }
+            if (v.isNumber()) {
+                return v.isIntegralNumber() || v.asDouble() == Math.rint(v.asDouble()) ? "integer" : "number";
+            }
+            if (v.isBoolean()) {
+                return "boolean";
+            }
+            return v.isArray() ? "array" : "object";
+        }
+
+        static boolean accepts(JsonNode type, String actual) {
+            if (type.isArray()) {
+                for (JsonNode t : type) {
+                    if (accepts(t, actual)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            String expected = type.asText();
+            return expected.equals(actual) || ("number".equals(expected) && "integer".equals(actual));
+        }
+
+        static String typeText(JsonNode type) {
+            if (!type.isArray()) {
+                return type.asText();
+            }
+            List<String> out = new ArrayList<>();
+            type.forEach(t -> out.add(t.asText()));
+            return String.join(" or ", out);
+        }
+
+        static boolean orCreateWith(JsonNode property) {
+            return property.path("x-resource").path("orCreateWith").isTextual();
+        }
+
+        static boolean contains(JsonNode values, JsonNode v) {
+            for (JsonNode e : values) {
+                if (e.equals(v) || (e.isNumber() && v.isNumber() && e.asDouble() == v.asDouble())) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         // ------------------------------------------------------------ helpers

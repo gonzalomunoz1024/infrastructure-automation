@@ -72,6 +72,11 @@ public class RestControllerResourceAdapter implements ResourceCommands, Resource
     }
 
     @Override
+    public Mono<Resource> awaitState(String type, String id, String state, java.time.Duration timeout) {
+        return queries.awaitState(type, id, state, timeout);
+    }
+
+    @Override
     @GetMapping("/resources/{id}/lineage")
     public Mono<Lineage> lineage(@PathVariable String id) {
         return queries.lineage(id);

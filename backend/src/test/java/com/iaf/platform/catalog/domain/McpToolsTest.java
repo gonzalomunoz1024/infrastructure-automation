@@ -35,6 +35,18 @@ class McpToolsTest {
     }
 
     @Test
+    void aToolInputThatCanBeBuiltFirstOffersTheCreateFormInOneCallAndInABatch() {
+        Tool create = McpTools.find(TOOLS, "vm_create").orElseThrow();
+        var image = create.inputSchema().path("properties").path("image");
+        assertThat(image.path("anyOf")).hasSize(2);
+        assertThat(image.path("anyOf").get(1).path("properties").path("create").path("properties").has("os")).isTrue();
+        Tool batch = McpTools.find(TOOLS, "vm_create_batch").orElseThrow();
+        assertThat(batch.inputSchema().path("properties").path("items").path("items").path("properties").path("image").path("anyOf")).hasSize(2);
+        Tool restart = McpTools.find(TOOLS, "vm_restart").orElseThrow();
+        assertThat(restart.inputSchema().path("properties").path("vmId").has("anyOf")).as("vmId cannot be built").isFalse();
+    }
+
+    @Test
     void readToolsPerResourceTypeAndTheFixedOnes() {
         List<String> names = TOOLS.stream().map(Tool::name).toList();
         assertThat(names).contains("list_images", "get_images", "list_vms", "get_vms", "list_databases", "list_environments", "list_volumes",

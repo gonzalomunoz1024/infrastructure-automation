@@ -22,12 +22,12 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
-import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.runs.domain.Preview;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartBatch;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartJob;
+import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -152,7 +152,7 @@ public class WorkflowInvoker {
                 rows.add(F.objectNode());
             } else {
                 ObjectNode row = Inputs.of(Inputs.merge(dflt, item), params, schema);
-                List<Problem> problems = Schemas.validate(schema, row);
+                List<Problem> problems = CreateRequests.inputProblems(d, row);
                 if (!problems.isEmpty()) {
                     invalid.add(new RowProblems(i, problems));
                 }
@@ -198,8 +198,9 @@ public class WorkflowInvoker {
 
     // ---------------------------------------------------------------- the gates
 
+    /** The input schema; a request to build a resource first is judged against its producer when the job starts. */
     public static void validate(WorkflowDefinition d, JsonNode input) {
-        List<Problem> problems = Schemas.validate(d.inputSchema(), input);
+        List<Problem> problems = CreateRequests.inputProblems(d, input);
         if (!problems.isEmpty()) {
             throw new InputProblemsException("The input of " + d.name() + " has " + problems.size() + " problem" + (problems.size() == 1 ? "" : "s"), problems);
         }

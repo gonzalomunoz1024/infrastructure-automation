@@ -4,6 +4,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
@@ -15,6 +17,8 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
@@ -25,36 +29,38 @@ import com.iaf.platform.resources.ports.outbound.ResourceStorePort;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 /**
  * Read side of the registry. {@code use} is what the interpreter calls for a {@code use} step:
- * it can wait for a state (polling the store) and ask the policy engine whether the requester may
- * touch the resource. Lineage is computed from {@code builtFrom} in both directions.
+ * it asks the policy engine whether the requester may touch the resource. {@code awaitState}
+ * waits for a resource to reach a state; the registry's {@code resource.*} events on the
+ * {@link EventBus} wake it, nothing polls. Lineage is computed from {@code builtFrom} in both
+ * directions.
  */
 @Service
 @Primary
 public class ResourceQueryHandler implements ResourceQueries {
 
-    public static final Duration POLL_EVERY = Duration.ofMillis(500);
+    /** How long {@code use} with {@code waitUntil} waits; a use step waits as long as its own timeout. */
     public static final Duration WAIT_AT_MOST = Duration.ofSeconds(60);
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final ResourceStorePort store;
     private final PolicyPort policy;
-    private final Duration pollEvery;
     private final Duration waitAtMost;
+    /** The open waits by resource id; each looks at the store again when an event about its resource arrives. */
+    private final Map<String, Set<Runnable>> waiting = new ConcurrentHashMap<>();
 
     @Autowired
-    public ResourceQueryHandler(ResourceStorePort store, PolicyPort policy) {
-        this(store, policy, POLL_EVERY, WAIT_AT_MOST);
+    public ResourceQueryHandler(ResourceStorePort store, PolicyPort policy, EventBus events) {
+        this(store, policy, events, WAIT_AT_MOST);
     }
 
-    public ResourceQueryHandler(ResourceStorePort store, PolicyPort policy, Duration pollEvery, Duration waitAtMost) {
+    public ResourceQueryHandler(ResourceStorePort store, PolicyPort policy, EventBus events, Duration waitAtMost) {
         this.store = store;
         this.policy = policy;
-        this.pollEvery = pollEvery;
         this.waitAtMost = waitAtMost;
+        events.register(this::changed);
     }
 
     @Override
@@ -91,26 +97,45 @@ public class ResourceQueryHandler implements ResourceQueries {
         Mono<Resource> found = Mono.defer(() -> Mono.justOrEmpty(find(type, id)))
                 .switchIfEmpty(Mono.error(() -> new NotFoundException(type == null || type.isBlank() ? "resource" : type, id)));
         Mono<Resource> inState = waitUntil == null || waitUntil.isBlank() ? found
-                : found.flatMap(r -> waitUntil.equals(r.status()) ? Mono.just(r) : poll(type, id, waitUntil));
+                : found.flatMap(r -> waitUntil.equals(r.status()) ? Mono.just(r)
+                        : awaitState(type, id, waitUntil, waitAtMost).switchIfEmpty(Mono.defer(() -> notReady(type, id, waitUntil))));
         return checkAccess ? inState.flatMap(r -> checkAccess(r, who)) : inState;
+    }
+
+    @Override
+    public Mono<Resource> awaitState(String type, String id, String state, Duration timeout) {
+        return Mono.<Resource>create(sink -> {
+            Runnable look = () -> find(type, id).filter(r -> state.equals(r.status())).ifPresent(sink::success);
+            waiting.compute(id, (k, open) -> {
+                Set<Runnable> s = open == null ? ConcurrentHashMap.newKeySet() : open;
+                s.add(look);
+                return s;
+            });
+            sink.onDispose(() -> waiting.computeIfPresent(id, (k, s) -> {
+                s.remove(look);
+                return s.isEmpty() ? null : s;
+            }));
+            // listening before this first look: a change between the look and the wait is not missed
+            look.run();
+        }).timeout(timeout, Mono.empty());
+    }
+
+    /** A registry event about a resource: the waits on it look again (on the publisher's thread, right after the save). */
+    private void changed(DomainEvent e) {
+        Set<Runnable> open = "resource".equals(e.aggregate()) && e.aggregateId() != null ? waiting.get(e.aggregateId()) : null;
+        if (open != null) {
+            open.forEach(Runnable::run);
+        }
     }
 
     private Optional<Resource> find(String type, String id) {
         return store.resource(id).filter(r -> type == null || type.isBlank() || type.equals(r.type()));
     }
 
-    /** Poll the store on a blocking-safe scheduler until the resource reaches the state, or give up after the wait window. */
-    private Mono<Resource> poll(String type, String id, String waitUntil) {
-        return Flux.interval(pollEvery, pollEvery, Schedulers.boundedElastic())
-                .map(tick -> find(type, id))
-                .filter(r -> r.isPresent() && waitUntil.equals(r.get().status()))
-                .map(Optional::get)
-                .next()
-                .timeout(waitAtMost, Mono.defer(() -> {
-                    String status = find(type, id).map(Resource::status).orElse("unknown");
-                    return Mono.error(new ConflictException("resource not ready",
-                            Map.of("id", id, "status", status, "waitUntil", waitUntil, "waited", waitAtMost.toString())));
-                }));
+    private Mono<Resource> notReady(String type, String id, String waitUntil) {
+        String status = find(type, id).map(Resource::status).orElse("unknown");
+        return Mono.error(new ConflictException("resource not ready",
+                Map.of("id", id, "status", status, "waitUntil", waitUntil, "waited", waitAtMost.toString())));
     }
 
     private Mono<Resource> checkAccess(Resource r, Identity who) {

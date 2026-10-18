@@ -64,7 +64,7 @@ public final class OpenApiDocument {
             }
             String tag = d.metadata().folder() == null || d.metadata().folder().isBlank() ? "Workflows" : d.metadata().folder();
             tags.add(tag);
-            workflow(paths, schemas, w, d, route, tag);
+            workflow(paths, schemas, w, d, route, tag, published);
         }
 
         List<ResourceTypeDefinition> ts = new ArrayList<>(types == null ? List.of() : types);
@@ -94,17 +94,20 @@ public final class OpenApiDocument {
 
     // ---------------------------------------------------------------- workflows
 
-    private static void workflow(ObjectNode paths, ObjectNode schemas, WorkflowRecord w, WorkflowDefinition d, RouteTemplate route, String tag) {
+    private static void workflow(ObjectNode paths, ObjectNode schemas, WorkflowRecord w, WorkflowDefinition d, RouteTemplate route, String tag,
+            List<WorkflowRecord> published) {
         String operationId = d.mcpTool();
-        JsonNode input = McpTools.inputSchema(d.inputSchema());
+        boolean read = "GET".equals(d.method());
+        // a body field may also ask for its resource to be built first; a path or query parameter stays an id
+        JsonNode ids = McpTools.inputSchema(d.inputSchema());
+        JsonNode input = read ? ids : McpTools.inputSchema(CatalogEntry.input(d, published));
         schemas.set(operationId + "_input", input);
         String description = CatalogEntry.description(d);
-        boolean read = "GET".equals(d.method());
 
         ObjectNode op = operation(operationId, d.title(), description, tag);
         extensions(op, w, d);
         ArrayNode params = op.putArray("parameters");
-        pathParameters(params, route, input);
+        pathParameters(params, route, ids);
         ObjectNode body = bodySchema(input, route.params());
         if (read) {
             queryParameters(params, body);
@@ -122,7 +125,7 @@ public final class OpenApiDocument {
         extensions(batch, w, d);
         RouteTemplate batchRoute = RouteTemplate.compile("POST", d.batchPath());
         ArrayNode batchParams = batch.putArray("parameters");
-        pathParameters(batchParams, batchRoute, input);
+        pathParameters(batchParams, batchRoute, ids);
         batch.set("requestBody", requestBody(McpTools.batchSchema(bodySchema(input, batchRoute.params()), d.batchPolicy()), true));
         ObjectNode batchResponses = batch.putObject("responses");
         batchResponses.set("202", response("Batch accepted", ref("BatchAccepted")));
@@ -354,7 +357,9 @@ public final class OpenApiDocument {
         s.set("PreviewStep", object(Map.of(
                 "id", str(null), "name", str(null),
                 "effect", enumeration("create", "change", "delete", "read", "none", "unknown"),
-                "detail", str(null)), List.of("id", "name", "effect")));
+                "detail", str(null),
+                "skipped", F.objectNode().put("type", "boolean").put("description", "The dry run on this input does not take the step")),
+                List.of("id", "name", "effect")));
         s.set("AffectedResource", object(Map.of("id", str(null), "type", str(null), "name", str(null), "via", str("The step that touches it")), List.of("id", "type")));
         s.set("Cost", object(Map.of("monthly", number(null), "currency", str(null), "detail", str(null)), List.of("monthly", "currency")));
         s.set("Preview", object(Map.of(

@@ -18,10 +18,13 @@ import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.DependencyLink;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.Playbook;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.RegistryProvider;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.RegistryWorkflow;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.StepTypeInfo;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.TypeDependencies;
+import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.WorkflowDependencies;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries.WorkflowSummary;
 
 import reactor.test.StepVerifier;
@@ -175,6 +178,30 @@ class WorkflowQueryHandlerTest {
         assertThat(playbooks.get(0).owner()).isEqualTo("team-platform");
         assertThat(queries.resourceTypes().map(t -> t.name()).collectList().block()).containsExactlyInAnyOrder("database", "environment", "image", "vm", "volume");
         assertThat(queries.credentials().collectList().block()).extracting(c -> c.name() + ":" + c.type()).containsExactly("vsphere/token:token", "ssh/ops-automation:ssh-key");
+    }
+
+    @Test
+    void theRegistryListsProducersConsumersAndCyclesOfThePublishedWorkflows() {
+        StepVerifier.create(queries.dependencies())
+                .assertNext(d -> {
+                    TypeDependencies image = d.resourceTypes().stream().filter(t -> t.type().equals("image")).findFirst().orElseThrow();
+                    assertThat(image.producers()).extracting(DependencyLink::workflow).containsOnly("build-vm-image");
+                    assertThat(image.producers()).extracting(DependencyLink::via).contains("producedBy", "register");
+                    assertThat(image.consumers()).extracting(l -> l.workflow() + " " + l.via() + " " + l.at())
+                            .contains("create-vm input image", "create-vm use useImage", "web-environment input image");
+                    WorkflowDependencies createVm = d.workflows().stream().filter(w -> w.workflow().equals("create-vm")).findFirst().orElseThrow();
+                    assertThat(createVm.produces()).containsExactly("vm");
+                    assertThat(createVm.consumes()).containsExactly("image");
+                    assertThat(createVm.runs()).extracting(l -> l.workflow() + " " + l.via() + " " + l.at()).containsExactly("build-vm-image orCreateWith image");
+                    assertThat(createVm.consumers()).singleElement().satisfies(l -> {
+                        assertThat(l.workflow()).isEqualTo("web-environment");
+                        assertThat(l.via()).isEqualTo("run");
+                        assertThat(l.range()).isEqualTo("^2");
+                    });
+                    assertThat(d.workflows()).hasSize(9);
+                    assertThat(d.cycles()).isEmpty();
+                })
+                .verifyComplete();
     }
 
     @Test

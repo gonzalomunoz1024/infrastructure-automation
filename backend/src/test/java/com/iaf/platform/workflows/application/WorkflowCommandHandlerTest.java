@@ -232,7 +232,7 @@ class WorkflowCommandHandlerTest {
         assertThat(cr.author()).isEqualTo("platform");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
-        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "diff", "routes", "yaml");
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "contracts", "diff", "routes", "yaml");
         assertThat(cr.checks()).extracting(Check::status).containsOnly("passed");
         assertThat(cr.checksPassed()).isTrue();
         assertThat(cr.diff()).contains("--- a/workflows/team-compute/vm-restart.yaml").contains("+  description: Restart a virtual machine after safety checks (edited).");
@@ -316,6 +316,73 @@ class WorkflowCommandHandlerTest {
                 })
                 .verify();
         assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
+    }
+
+    // ------------------------------------------------------------------ contracts between workflows
+
+    String createVm = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml");
+    String withoutOwner = createVm.replace("      owner:\n        type: string\n        title: Owner team\n", "");
+
+    @Test
+    void publishPinsARunStepWithoutAVersionToTheProducersCurrentMajor() {
+        String webEnvironment = SampleFixtures.yaml("workflows/team-platform/web-environment.yaml");
+        String unpinned = webEnvironment.replace("workflow: create-vm\n                            version: \"^2\"\n", "workflow: create-vm\n");
+        assertThat(unpinned).isNotEqualTo(webEnvironment);
+        DraftSaved saved = handler.saveDraft("web-environment", WorkflowSource.ofYaml(unpinned)).block();
+        assertThat(store.get("web-environment", saved.version()).orElseThrow().definition().step("vm").orElseThrow().withText("version")).isNull();
+
+        String crId = handler.publish("web-environment", null).block().id();
+
+        WorkflowRecord candidate = store.get("web-environment", saved.version()).orElseThrow();
+        assertThat(candidate.status()).isEqualTo(WorkflowStatus.CANDIDATE);
+        assertThat(candidate.definition().step("vm").orElseThrow().withText("version")).as("create-vm is 2.0.1").isEqualTo("^2");
+        assertThat(WorkflowYaml.parse(changeRequests.get(crId).orElseThrow().yaml()).step("vm").orElseThrow().withText("version")).isEqualTo("^2");
+        assertThat(candidate.contentHash()).isEqualTo(WorkflowYaml.contentHash(WorkflowYaml.parse(candidate.yaml())));
+    }
+
+    @Test
+    void aBreakingChangeWithoutANewMajorVersionFailsTheContractsCheck() {
+        handler.saveDraft("create-vm", WorkflowSource.ofYaml(withoutOwner)).block();
+        String crId = handler.publish("create-vm", null).block().id();
+
+        ChangeRequest cr = changeRequests.get(crId).orElseThrow();
+        Check contracts = cr.checks().stream().filter(c -> c.id().equals("contracts")).findFirst().orElseThrow();
+        assertThat(contracts.status()).isEqualTo("failed");
+        assertThat(contracts.detail()).contains("input 'owner' was removed").contains("web-environment (run ^2 at vm)");
+        assertThat(cr.checksPassed()).isFalse();
+        StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
+    }
+
+    @Test
+    void aBreakingChangeWithANewMajorVersionPassesTheContractsCheck() {
+        handler.saveDraft("create-vm", WorkflowSource.ofYaml(withoutOwner.replace("version: 2.0.1", "version: 3.0.0"))).block();
+        String crId = handler.publish("create-vm", null).block().id();
+
+        Check contracts = changeRequests.get(crId).orElseThrow().checks().stream().filter(c -> c.id().equals("contracts")).findFirst().orElseThrow();
+        assertThat(contracts.status()).isEqualTo("passed");
+        assertThat(contracts.detail()).startsWith("new major version 3.0.0").endsWith("Staying on the old major: web-environment (run ^2 at vm)");
+    }
+
+    @Test
+    void validateAlsoReportsTheChangeRequestChecksTheFileWouldFail() {
+        StepVerifier.create(handler.validate(WorkflowSource.ofYaml(withoutOwner)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    Problem p = v.problems().stream().filter(x -> x.code().equals("publish.contracts")).findFirst().orElseThrow();
+                    assertThat(p.message()).contains("2.0.2").contains("input 'owner' was removed");
+                    assertThat(p.fix().value()).isEqualTo("3.0.0");
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.validate(WorkflowSource.ofYaml(withoutOwner.replace("version: 2.0.1", "version: 3.0.0"))))
+                .assertNext(v -> assertThat(v.problems()).extracting(Problem::code).doesNotContain("publish.contracts"))
+                .verifyComplete();
+        String unpinned = vmRestart.replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "");
+        StepVerifier.create(handler.validate(WorkflowSource.ofYaml(unpinned)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).extracting(Problem::code).contains("publish.ansibleLint").doesNotContain("ansible.unpinned");
+                })
+                .verifyComplete();
     }
 
     @Test

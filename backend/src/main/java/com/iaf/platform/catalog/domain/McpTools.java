@@ -75,12 +75,13 @@ public final class McpTools {
             }
             String description = CatalogEntry.description(d);
             ObjectNode annotations = annotations(d.method().equals("GET"), d.method().equals("DELETE") || "delete".equals(d.verb()) || "destroy".equals(d.verb()));
-            out.add(new Tool(name, d.title(), description, inputSchema(d.inputSchema()), annotations, Kind.INVOKE, w, null));
+            JsonNode input = CatalogEntry.input(d, published);
+            out.add(new Tool(name, d.title(), description, inputSchema(input), annotations, Kind.INVOKE, w, null));
             String batchName = name + BATCH_SUFFIX;
             if (names.add(batchName)) {
                 out.add(new Tool(batchName, d.title() + " (batch)",
                         "Run " + name + " for many items in waves. " + (description == null ? "" : description),
-                        batchSchema(d.inputSchema(), d.batchPolicy()), annotations, Kind.BATCH, w, null));
+                        batchSchema(input, d.batchPolicy()), annotations, Kind.BATCH, w, null));
             }
         }
         List<ResourceTypeDefinition> ts = new ArrayList<>(types == null ? List.of() : types);

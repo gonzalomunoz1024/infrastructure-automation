@@ -63,9 +63,9 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | POST   | `/workflows:render`                          | `{ definition }` → `{ yaml }` (200): the canonical YAML of a document; the browser never renders YAML itself |
 | POST   | `/workflows:parse`                           | `{ yaml }` → `{ definition; problems: Problem[] }` (200): the YAML document as JSON, same shape as `definition` everywhere |
 | DELETE | `/workflows/{name}`                          | drafts only → 204 |
-| POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200) |
+| POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200); also reports, as `publish.ansibleLint`, `publish.routes` and `publish.contracts` errors, the change-request checks the file would fail when published (docs/config-as-code.md, Checks) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
-| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). Checks: schema, checks, ansible-lint, policy, replay, diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
+| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema, checks, ansible-lint, policy, replay, contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
@@ -87,6 +87,17 @@ Registry (read-only, used by the designer and the Devin playbook):
 | GET `/registry/resource-types` | `ResourceType[]` |
 | GET `/registry/playbooks` | `{ name; version; path; owner }[]` |
 | GET `/registry/credentials` | `{ name; type }[]` (names only) |
+| GET `/registry/dependencies` | `Dependencies`: who produces and consumes each resource type, which published workflows run which, and the cycles among runs |
+
+```ts
+type DependencyLink = { workflow; via: 'producedBy' | 'register' | 'input' | 'use' | 'run' | 'orCreateWith';
+  at?: string /* step id or input field */; range?: string /* a run step's version range */ }
+type Dependencies = {
+  resourceTypes: { type; producers: DependencyLink[]; consumers: DependencyLink[] }[];
+  workflows: { workflow; version; produces: string[]; consumes: string[]; runs: DependencyLink[]; consumers: DependencyLink[] }[];
+  cycles: string[][]   // e.g. ['a', 'b', 'a']: a runs b, b runs a
+}
+```
 
 ## Catalog (generated)
 
@@ -99,17 +110,29 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
-| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure or an `x-resource` id the registry does not know; 403 on RBAC |
+| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
 | POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200) |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
 
 ```ts
-type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'change' | 'delete' | 'read' | 'none' | 'unknown'; detail? }[];
+type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'change' | 'delete' | 'read' | 'none' | 'unknown'; detail?; skipped?: true }[];
   affectedResources: { id; type; name; via }[]; cost?: { monthly; currency; detail };
   policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules: { id; result; message }[]; engine: 'mock' | 'opa' } }
 ```
+
+A preview is the flow judged by a dry run on the input (a batch's first row): `skipped` marks a
+step the dry run does not take (effect `none`), and a step's `detail` ends with what its plan said
+(`vsphere vm.delete (destructive) · plan vm.get: web-1042 (vm-1042)`). `via` is `input.<field>`,
+`step <id>` for a resource a `use` step reads, or `built from <id>` for what the registry's lineage
+puts below a resource the run changes or deletes. `cost.detail` names every priced create call and
+who priced it (`vsphere vm.create 38.50 x 3 (price list list-prices)`; `plan <action>`, `sample`),
+then `x <n> rows` for a batch (docs/config-as-code.md, Previews).
+
+An `x-resource` input with `orCreateWith` shows both forms in `CatalogEntry.input`, the OpenAPI
+request bodies and the MCP tool inputs: `anyOf` the id, or `{ create: <the producing workflow's
+input> }` to have the resource built first (docs/config-as-code.md, Resource inputs).
 
 MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `api.input`), one
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
@@ -138,7 +161,7 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs?workflow=&status=&limit=&parent=` | `JobSummary[]` |
 | GET    | `/jobs/{id}`                           | `JobDetail` |
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
-| GET    | `/jobs/{id}/replay`                    | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }` |
+| GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |

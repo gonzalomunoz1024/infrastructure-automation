@@ -30,6 +30,7 @@ import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.CheckContext;
+import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.StepTypeSchemas;
@@ -98,8 +99,9 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     @Override
     public Mono<CheckContext> checkContext() {
         Mono<Map<String, ProviderDefinition>> providerMap = providers.all().collectMap(ProviderDefinition::name, p -> p);
-        Mono<Set<String>> types = resources.types().map(ResourceTypeDefinition::name).collect(Collectors.toSet());
-        Mono<Set<String>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::name).collect(Collectors.toSet()));
+        // every type with its attribute schema (null when the file has none), for the fields use and register steps return
+        Mono<Map<String, JsonNode>> types = resources.types().<Map<String, JsonNode>>collect(HashMap::new, (m, t) -> m.put(t.name(), t.schema()));
+        Mono<List<WorkflowDefinition>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).map(WorkflowRecord::definition).toList());
         return Mono.zip(providerMap, types, published).map(t -> CheckContext.of(t.getT1(), t.getT3(), t.getT2()));
     }
 
@@ -249,6 +251,37 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     @Override
     public Flux<CredentialName> credentials() {
         return credentials.list().flatMapMany(Flux::fromIterable).map(c -> new CredentialName(c.name(), c.type()));
+    }
+
+    @Override
+    public Mono<Dependencies> dependencies() {
+        Mono<List<ResourceTypeDefinition>> types = resources.types().collectList();
+        Mono<List<WorkflowRecord>> published = blocking(() -> store.all().stream().filter(WorkflowRecord::isPublished).toList());
+        return Mono.zip(types, published).map(t -> dependenciesOf(t.getT1(), t.getT2()));
+    }
+
+    /** The dependency graph of the published workflows ({@link DependencyRules}) as the API's read model. */
+    static Dependencies dependenciesOf(List<ResourceTypeDefinition> types, List<WorkflowRecord> published) {
+        DependencyRules.Graph g = DependencyRules.of(published.stream().map(WorkflowRecord::definition).toList(), producedBy(types));
+        List<TypeDependencies> byType = g.types().stream()
+                .map(type -> new TypeDependencies(type,
+                        g.produces().stream().filter(l -> l.type().equals(type)).map(l -> new DependencyLink(l.workflow(), l.via().json(), l.at(), null)).toList(),
+                        g.consumersOfType(type).stream().map(l -> new DependencyLink(l.workflow(), l.via().json(), l.at(), null)).toList()))
+                .toList();
+        List<WorkflowDependencies> byWorkflow = published.stream()
+                .sorted(Comparator.comparing(WorkflowRecord::name))
+                .map(r -> new WorkflowDependencies(r.name(), r.version(), List.copyOf(g.typesProducedBy(r.name())), List.copyOf(g.typesConsumedBy(r.name())),
+                        g.runsOf(r.name()).stream().map(l -> new DependencyLink(l.producer(), l.via().json(), l.at(), l.range())).toList(),
+                        g.consumersOf(r.name()).stream().map(l -> new DependencyLink(l.consumer(), l.via().json(), l.at(), l.range())).toList()))
+                .toList();
+        return new Dependencies(byType, byWorkflow, g.cycles());
+    }
+
+    /** Every type with the workflow its file names in {@code producedBy} (may be null). */
+    static Map<String, String> producedBy(List<ResourceTypeDefinition> types) {
+        Map<String, String> out = new HashMap<>();
+        types.forEach(t -> out.put(t.name(), t.producedBy()));
+        return out;
     }
 
     // ------------------------------------------------------------------ mapping

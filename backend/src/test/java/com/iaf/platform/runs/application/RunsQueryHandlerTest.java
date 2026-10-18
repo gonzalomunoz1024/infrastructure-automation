@@ -137,7 +137,7 @@ class RunsQueryHandlerTest {
     }
 
     @Test
-    void replayDiffsAgainstThePreviousFinishedRunOfTheSameWorkflow() {
+    void replayDiffsAgainstThePreviousSuccessfulRunOfTheSameWorkflow() {
         Instant t = Instant.parse("2026-10-17T10:00:00Z");
         started("job_old", t, Map.of("vmId", "vm-1"));
         step("job_old", "checkVmExists", t.plusSeconds(1), SampleContent.json(Map.of("id", "vm-1", "powerState", "poweredOn")), 1);
@@ -173,6 +173,28 @@ class RunsQueryHandlerTest {
         JsonNode first = queries.replay("job_old", null).block();
         assertThat(first.has("comparedTo")).isFalse();
         assertThat(first.path("steps").get(0).has("diff")).isFalse();
+    }
+
+    @Test
+    void replayComparesWithTheLastSuccessfulRunNotTheLastFinishedOne() {
+        Instant t = Instant.parse("2026-10-17T10:00:00Z");
+        started("job_good", t, Map.of("vmId", "vm-1"));
+        step("job_good", "checkVmExists", t.plusSeconds(1), SampleContent.json(Map.of("id", "vm-1")), 1);
+        finished("job_good", t.plusSeconds(2), JobStatus.SUCCEEDED, null, null);
+        started("job_broken", t.plusSeconds(10), Map.of("vmId", "vm-2"));
+        finished("job_broken", t.plusSeconds(11), JobStatus.FAILED, "not_found", "checkVmExists");
+        started("job_stopped", t.plusSeconds(20), Map.of("vmId", "vm-3"));
+        finished("job_stopped", t.plusSeconds(21), JobStatus.CANCELLED, null, null);
+        started("job_now", t.plusSeconds(30), Map.of("vmId", "vm-4"));
+        step("job_now", "checkVmExists", t.plusSeconds(31), SampleContent.json(Map.of("id", "vm-4")), 1);
+        finished("job_now", t.plusSeconds(32), JobStatus.FAILED, "timeout", "validate");
+
+        JsonNode r = queries.replay("job_now", null).block();
+
+        assertThat(r.path("comparedTo").asText()).isEqualTo("job_good");
+        assertThat(r.path("comparedStatus").asText()).isEqualTo("succeeded");
+        assertThat(queries.replay("job_broken", null).block().path("comparedTo").asText()).isEqualTo("job_good");
+        assertThat(queries.replay("job_good", null).block().has("comparedTo")).isFalse();
     }
 
     @Test

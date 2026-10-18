@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { check, checkYaml, EMPTY_CONTEXT } from '../src/index.ts';
+import { buildContext, check, checkYaml, EMPTY_CONTEXT, hasErrors } from '../src/index.ts';
 import { fixture, FIXTURES, repoContext } from './repo.ts';
 
 const expected = JSON.parse(readFileSync(join(FIXTURES, 'expected.json'), 'utf8')) as Record<string, string[]>;
@@ -37,10 +37,43 @@ describe('fixes', () => {
     expect(problems[0]?.field).toBe('provider');
   });
 
-  it('a delete without an approval offers an insert-approval fix', () => {
+  it('a delete without an approval is a warning that offers an insert-approval fix', () => {
     const problems = checkYaml(fixture('delete-without-approval.yaml'), ctx);
     expect(problems.map((p) => p.code)).toEqual(['policy.approvalRequired']);
+    expect(problems[0]?.level).toBe('warning');
     expect(problems[0]?.fix?.kind).toBe('insert-approval');
+    expect(hasErrors(problems)).toBe(false);
+  });
+
+  it('a field the earlier step does not return suggests the declared path', () => {
+    const problems = checkYaml(fixture('unknown-field.yaml'), ctx);
+    expect(problems.map((p) => p.code)).toEqual(['expr.unknownField', 'expr.unknownField']);
+    expect(problems.map((p) => p.message)).toEqual(["$vm has no field 'nmae'", "The previous step's output has no field 'attributesTemplateId'"]);
+    expect(problems.map((p) => p.fix)).toEqual([
+      { label: 'Did you mean name?', kind: 'replace', value: 'name' },
+      { label: 'Did you mean attributes.templateId?', kind: 'replace', value: 'attributes.templateId' },
+    ]);
+    expect(problems.map((p) => `${p.step ?? ''}.${p.field ?? ''}`)).toEqual(['tell.message', 'tell.message']);
+  });
+
+  it('a run step is checked against the published input of its workflow', () => {
+    const problems = checkYaml(fixture('run-contract.yaml'), ctx);
+    expect(problems.every((p) => p.step === 'first')).toBe(true);
+    expect(problems.map((p) => `${p.code} ${p.field ?? ''}`).sort()).toEqual(
+      ['contract.missingInput input.name', 'contract.type input.size', 'contract.type input.environment', 'contract.unknownInput input.sise', 'run.onFailure onFailure'].sort(),
+    );
+    expect(problems.find((p) => p.code === 'contract.unknownInput')?.fix?.value).toBe('size');
+    expect(problems.find((p) => p.field === 'input.environment')?.message).toBe("'environment' is string in workflow create-vm, not integer");
+    expect(problems.find((p) => p.field === 'input.size')?.message).toBe('\'huge\' is not one of ["small","medium","large"] in workflow create-vm');
+  });
+
+  it('steps a switch always jumps past never run', () => {
+    const yaml = fixture('unreachable-step.yaml');
+    const problems = checkYaml(yaml, ctx);
+    expect(problems.map((p) => `${p.code} @${p.step ?? ''}`)).toEqual(['step.unreachable @forgotten']);
+    expect(problems[0]?.message).toBe("'forgotten' never runs: every case of pick jumps past it");
+    // without a default the switch can fall through, so the next step can run
+    expect(checkYaml(yaml.replace('          - default: small\n', ''), ctx)).toEqual([]);
   });
 
   it('$json in the first step offers a connect fix', () => {
@@ -221,7 +254,7 @@ describe('rules beyond the fixtures', () => {
       'warning step.idFormat',
       'error api.method',
       'error http.url',
-      'error policy.approvalRequired',
+      'warning policy.approvalRequired',
       'error step.missing',
       'error step.missing',
       'error step.missing',
@@ -316,6 +349,53 @@ describe('rules beyond the fixtures', () => {
         },
       },
     ]);
+    expect(codes(doc)).toEqual([]);
+  });
+
+  it('a run step reads only the outputs the workflow publishes', () => {
+    const doc = base([
+      { make: { run: { workflow: 'create-vm', version: '^2', input: { name: 'web-1', image: 'img-1', size: 'small' } }, output: { as: 'made' } } },
+      {
+        tell: {
+          notify: {
+            channel: '#ops',
+            message: "{{ $made.outputs.vmid }} {{ $('make').json.outputs.name }} {{ $made.status }} {{ $made.error.message }} {{ $made.resources[0].id }}",
+          },
+        },
+      },
+    ]);
+    const problems = check(doc, ctx);
+    // resources: what the child registered
+    expect(problems.map((p) => `${p.code}: ${p.message}`)).toEqual(["expr.unknownField: $made has no field 'outputs.vmid'"]);
+    expect(problems[0]?.fix?.value).toBe('outputs.vmId');
+  });
+
+  it('does not judge fields when the output is not declared', () => {
+    const doc = base([
+      { restart: { call: 'provider', with: { provider: 'vsphere', action: 'vm.restart', input: { id: 'vm-1' } } } },
+      { tell: { notify: { channel: '#ops', message: '{{ $json.task }} {{ $json.anything.at.all }}' } } },
+    ]);
+    expect(codes(doc)).toEqual([]);
+    // with names only (no schemas) nothing is judged either
+    expect(check(doc, buildContext([], [], [])).map((p) => p.code)).toEqual(['step.unknownProvider']);
+  });
+
+  it('judges the fields of $json after a switch only where one step leads to it', () => {
+    const doc = base([
+      { getVm: { call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: 'vm-1' } } } },
+      { pick: { switch: [{ case: { when: '{{ $json.name == "x" }}', then: 'tell' } }] } },
+      { read: { notify: { channel: '#ops', message: '{{ $json.nmae }}' } } },
+      { tell: { notify: { channel: '#ops', message: '{{ $json.nmae }}' } } },
+      {
+        guarded: {
+          try: {
+            do: [{ again: { call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: 'vm-1' } } } }],
+            catch: { do: [{ note: { notify: { channel: '#ops', message: '{{ $json.anything }}' } } }] },
+          },
+        },
+      },
+    ]);
+    // read follows the switch, tell is a jump target, the catch starts from what the try started from
     expect(codes(doc)).toEqual([]);
   });
 

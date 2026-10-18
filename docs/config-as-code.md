@@ -1,6 +1,6 @@
 # Config as code
 
-Three kinds of file, all `apiVersion: iaf.platform/v1`. The designer, the natural-language
+Four kinds of file, all `apiVersion: iaf.platform/v1`. The designer, the natural-language
 builder and a text editor all produce the same files; the canvas is a view of the YAML.
 
 ## kind: Workflow
@@ -96,7 +96,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `call: terraform`        | `with: { module: { source, version }, action: plan | apply | destroy, vars, credential }` |
 | `call: idp`              | `with: { tile, input }` (mock until the IDP tiles API is wired)                |
 | `call: activity`         | `with: { taskQueue, activity, input }` (team-owned worker, any SDK language)   |
-| `run: { workflow, version, input }` | runs a published workflow as a child job; `version` is a range ("^1") |
+| `run: { workflow, version, input, onFailure }` | runs a published workflow as a child job and returns `{ jobId, status, outputs, resources }` (`resources`: the `{ id, type }` its register steps recorded). `version` is a range ("^1"); left out, publish writes `^<major>` of the workflow's current version (a run without one takes the current major). `onFailure: continue` makes a failed child the step's output (`status`, `error: { step, message, class }`) and goes on; the default `fail` fails the step |
 | `approval: { group, message, timeout, escalation }` | human sign-off                                         |
 | `switch: [ { case: { when, then \| do } }, { default: then \| { do } } ]` | `then` jumps to a later step id or `end`; `do` runs a nested branch and continues after the switch |
 | `fork: { branches: [ [steps], [steps] ] }` | parallel branches, joined                                     |
@@ -105,7 +105,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource               |
+| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic                                               |
@@ -130,6 +130,77 @@ Inside `{{ }}`:
 
 A string with only one expression yields the typed value (object, number, boolean). A string with
 text around expressions yields a string.
+
+### Resource inputs
+
+An input with `x-resource: { type }` takes the id of a resource in the registry. A start checks
+that the registry knows the id, that it is of that type and that it is not retired (400 with
+`input.unknownResource`, `input.wrongResourceType` or `input.retiredResource`); a resource that is
+still building passes, and the `use` step waits for it.
+
+With `orCreateWith: <workflow>` the input also takes a request to build the resource first:
+
+```json
+{ "name": "web-01", "image": { "create": { "os": "rhel-9" } } }
+```
+
+The start checks `create` against the published `api.input` of that workflow, with its defaults
+(problems under `image.create.<field>`; `input.unknownProducer` when it has no published version).
+The job then runs that workflow as a child job, in a step named `image.create` before its first
+step, nested under the job and in the same trace. From then on `$input.image` is the id of the
+`image` the child registered; a child that registers none fails the job (`no_resource`). The job
+keeps its input as asked, and a rerun replays the recorded build instead of building again. The
+catalog, the OpenAPI document and the MCP tools show both forms: the input becomes `anyOf` the id
+or `{ create: <that workflow's input> }`. Only one level is offered: the producer's own
+`orCreateWith` inputs take ids inside `create`.
+
+### Checks
+
+The editor, `POST /workflows:validate`, `npm run check:workflows` (CI) and the publish run the same
+checks; `packages/workflow-checks` and `WorkflowChecks.java` are twins with shared fixtures. Each
+finding is a `Problem` (docs/api.md). Among them:
+
+| Code                      | Level   | Finding                                                                 |
+|---------------------------|---------|-------------------------------------------------------------------------|
+| `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
+| `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
+| `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |
+| `run.onFailure`           | error   | `onFailure` is neither `fail` nor `continue`                            |
+| `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
+| `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
+| `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
+| `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
+
+### Versions and contracts
+
+`metadata.version` is semantic. At publish, the new version is compared with the published one:
+an input removed, retyped, pointed at another resource type, narrowed (fewer `enum` values) or
+newly required, an output removed, a resource type no longer registered or an attribute no longer
+set is a breaking change. A breaking change without a new major version fails the change request's
+`contracts` check, which lists every consumer it reaches: run steps whose range accepts the new
+version, `orCreateWith` inputs, and workflows that use or take the types it registers. With a new
+major version the check passes and still lists them, with the run steps that stay on the old major.
+
+### Previews
+
+With `api.preview` a workflow publishes a `:preview` operation, and every start of a top-level job
+keeps a preview with the job (its change and its approvals show it). A preview starts from the
+flow: what each step would do to the world (the provider action's `effect`; terraform `plan`,
+`apply` and `destroy` read, create and delete; ansible changes; a run step carries its child's
+steps). A dry run of the flow on the input and the recorded samples then judges it:
+
+- a step the dry run does not take (a switch case, a jump, an empty loop, a catch) is `skipped`,
+  with effect `none`; when the dry run fails, only what it chose to skip is, and the rest stands;
+- the build an input's `{ create }` request asks for shows as the `<input>.create` step and its
+  child's steps;
+- a provider action's `plan` is asked with the step's input and refines the step (kind: Provider,
+  Plans); the answer of a `terraform` apply or destroy is its plan;
+- the touched resources are the `x-resource` inputs of every row and the ids the `use` steps read,
+  and, below each one a change or delete step names in its parameters, what the registry's lineage
+  says was built from it (`via: built from <id>`, three generations down);
+- the monthly cost adds up every create call the dry run makes (each item of a loop): the plan's
+  `monthlyCost`, else the first price list that prices the call (kind: PriceList), else the
+  recorded sample's `monthlyCost`. A batch is walked on its first row and costs that times the rows.
 
 ## kind: Provider
 
@@ -179,6 +250,14 @@ Type-specific `spec` blocks:
 - `sdk`: `taskQueue`; actions are activities a team-owned worker registers.
 - `http`: `endpoints` plus per action `{ method, path, example }`; schemas are inferred from the example.
 
+Plans: `plan: <action>` names the action a preview asks what the step would do, with the step's
+input: for real when that action's `effect` is `read`, otherwise on its recorded sample. Its answer
+may say it with `effect` and `detail`, or count it with `add`, `change` and `destroy` (any destroy
+reads as a delete, else any add as a create, else any change as a change, else as nothing), and
+may price it with `monthlyCost` and `currency`. A plain read answer names what a change or a
+delete acts on (`name (id)`), and a `not_found` leaves it nothing to do (effect `none`); a create
+keeps its effect. A failed plan is noted in the step's detail and changes nothing.
+
 ## kind: ResourceType
 
 ```yaml
@@ -196,3 +275,28 @@ producedBy: build-vm-image     # the workflow whose register step creates this t
 
 The registry generates `GET /api/v1/images`, `GET /api/v1/images/{id}` and the MCP tools
 `list_images`, `get_image` for every type.
+
+## kind: PriceList
+
+```yaml
+apiVersion: iaf.platform/v1
+kind: PriceList
+metadata:
+  name: list-prices           # lists are read by name; the first that prices a call wins
+  owner: team-platform
+spec:
+  currency: USD               # the default
+  prices:
+    - provider: vsphere
+      action: vm.create
+      by: cpu                 # a field of the action's input, dotted for a nested one
+      monthly: { 2: 38.5, 4: 77, 8: 154 }
+    - provider: vsphere
+      action: vm.snapshot
+      monthly: 4.2            # flat
+```
+
+What a preview charges per month for a create call when the action's plan answers no
+`monthlyCost` itself (Previews). A value of `by` the list does not name has no price in it. The file
+may sit in any content folder (the sample is `providers/team-platform/list-prices.yaml`); the
+platform reads every `kind: PriceList` file at startup.

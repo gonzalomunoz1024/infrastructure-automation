@@ -27,6 +27,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
@@ -37,6 +38,8 @@ import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
+import com.iaf.platform.runs.domain.ChildFailure;
+import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.domain.Durations;
@@ -92,7 +95,11 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         final AtomicReference<CompletableFuture<AttentionDecision>> attention = new AtomicReference<>();
         final AtomicReference<AttentionDecision> earlyAttention = new AtomicReference<>();
         final Set<String> children = ConcurrentHashMap.newKeySet();
+        /** use steps waiting for a resource; a cancel ends them */
+        final Set<CompletableFuture<?>> resourceWaits = ConcurrentHashMap.newKeySet();
         volatile String cancelledBy;
+        /** the interpreter's context, kept so a parent sees what this child registered */
+        volatile JobContext context;
 
         Execution(Job job) {
             this.job = job;
@@ -180,6 +187,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         if (a != null) {
             a.completeExceptionally(cause);
         }
+        exec.resourceWaits.forEach(f -> f.completeExceptionally(cause));
         for (String child : exec.children) {
             Execution c = executions.get(child);
             if (c != null) {
@@ -209,7 +217,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         }
         PortStepExecutor executor = executors.live(job, this);
         WorkflowInterpreter.Resume resume = resumeOf(job);
-        Outcome outcome = new WorkflowInterpreter(job.definition(), executor, JobContext.of(job), resume).run();
+        exec.context = JobContext.of(job);
+        Outcome outcome = new WorkflowInterpreter(job.definition(), executor, exec.context, resume).run();
         finish(exec, outcome);
         return outcome;
     }
@@ -312,6 +321,27 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         return exec != null && exec.cancelled.get();
     }
 
+    /** Woken by the registry's events (ResourceQueries.awaitState listens on the EventBus); nothing polls. */
+    @Override
+    public boolean awaitResource(JobContext ctx, String type, String id, String state, Duration timeout) {
+        Execution exec = executions.get(ctx.jobId());
+        CompletableFuture<Resource> f = executors.ports().resources().awaitState(type, id, state, timeout).toFuture();
+        if (exec != null) {
+            exec.resourceWaits.add(f);
+        }
+        try {
+            if (exec != null && exec.cancelled.get()) {
+                throw new JobCancelled(ctx.jobId());
+            }
+            return await(ctx, f, timeout).isPresent();
+        } finally {
+            if (exec != null) {
+                exec.resourceWaits.remove(f);
+            }
+            f.cancel(true);
+        }
+    }
+
     @Override
     public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
         Execution parent = executions.get(ctx.jobId());
@@ -340,22 +370,13 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
                 parent.children.remove(childJob.id());
             }
         }
-        if (outcome.status() == JobStatus.CANCELLED) {
-            if (parent != null && parent.cancelled.get()) {
-                throw new JobCancelled(ctx.jobId());
-            }
-            throw new StepFailure(step.id(), "cancelled", "Child job " + childJob.id() + " (" + child.name() + ") was cancelled", false, true);
+        if (outcome.status() == JobStatus.CANCELLED && parent != null && parent.cancelled.get()) {
+            throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw new StepFailure(step.id(), outcome.errorClass() == null ? "child_failed" : outcome.errorClass(),
-                    "Child job " + childJob.id() + " (" + child.name() + ") " + outcome.status().json()
-                            + (outcome.message() == null ? "" : ": " + outcome.message()), false);
+            throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
         }
-        ObjectNode out = F.objectNode();
-        out.put("jobId", childJob.id());
-        out.put("status", outcome.status().json());
-        out.set("outputs", outcome.output() == null ? F.objectNode() : outcome.output());
-        return out;
+        return ChildResults.of(childJob.id(), outcome, cexec.context);
     }
 
     @Override

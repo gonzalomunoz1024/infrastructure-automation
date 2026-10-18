@@ -213,6 +213,126 @@ class WorkflowInterpreterTest {
         assertThat(ids(ex, "job_test", StepStatus.FAILED)).contains("database", "build");
     }
 
+    @Test
+    void aRunStepWithOnFailureContinueRecordsTheChildFailureAndGoesOn() {
+        String yaml = SampleContent.yaml("web-environment").replace("""
+                                    workflow: create-database
+                                    version: "^1"
+                """, """
+                                    workflow: create-database
+                                    version: "^1"
+                                    onFailure: continue
+                """);
+        assertThat(yaml).contains("onFailure: continue");
+        WorkflowDefinition d = com.iaf.platform.workflows.domain.WorkflowYaml.parse(yaml);
+        SampleStepExecutor ex = SampleContent.executor();
+        ex.failAt("waitReady", "timeout", "cluster never became healthy", false);
+        ex.attender(a -> Optional.of(AttentionDecision.abort("ana")));
+
+        Outcome o = new WorkflowInterpreter(d, ex, context(d, Map.of("name", "shop", "environment", "dev", "image", "img-1", "vmCount", 1))).run();
+
+        StepEvent database = last(ex, "job_test", "database", StepStatus.SUCCEEDED);
+        assertThat(database.output().path("status").asText()).isEqualTo("failed");
+        assertThat(database.output().path("error").path("step").asText()).as("the child's step that failed").isEqualTo("waitReady");
+        assertThat(database.output().path("error").path("class").asText()).isEqualTo("timeout");
+        assertThat(database.output().path("jobId").asText()).isNotBlank();
+        assertThat(ids(ex, "job_test", StepStatus.FAILED)).doesNotContain("database", "build");
+        assertThat(ex.logs()).anyMatch(l -> l.contains("continuing (onFailure: continue)"));
+        // the parent went on past the fork: what fails now is a later step that needs the database
+        assertThat(ids(ex, "job_test", StepStatus.SUCCEEDED)).contains("build", "loadBalancer");
+        assertThat(o.failedStep()).isNotEqualTo("database");
+    }
+
+    // ---------------------------------------------------------------- build it first (orCreateWith)
+
+    static final Map<String, Object> NEW_IMAGE = Map.of("create", Map.of("os", "rhel-9"));
+
+    @Test
+    void createVmBuildsTheImageFirstWhenTheInputAsksForOne() {
+        SampleStepExecutor ex = SampleContent.executor();
+        WorkflowDefinition d = SampleContent.workflow("create-vm");
+        JobContext ctx = context(d, Map.of("name", "web-01", "image", NEW_IMAGE, "size", "small"));
+
+        Outcome o = new WorkflowInterpreter(d, ex, ctx).run();
+
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(ex.childRuns()).singleElement().satisfies(r -> {
+            assertThat(r.definition().name()).isEqualTo("build-vm-image");
+            assertThat(r.parentId()).isEqualTo("job_test");
+            assertThat(r.input().path("os").asText()).isEqualTo("rhel-9");
+            assertThat(r.input().path("hardening").asText()).as("the producer's own default").isEqualTo("cis-l1");
+        });
+        StepEvent build = last(ex, "job_test", "image.create", StepStatus.SUCCEEDED);
+        assertThat(build.output().path("resources")).isNotEmpty();
+        String imageId = build.output().path("resources").get(0).path("id").asText();
+        assertThat(imageId).startsWith("img-");
+        assertThat(ex.resource("image", imageId).path("status").asText()).isEqualTo("ready");
+        assertThat(last(ex, "job_test", "useImage", StepStatus.SUCCEEDED).input().path("id").asText()).as("the job goes on with the new id").isEqualTo(imageId);
+        assertThat(last(ex, "job_test", "registerVm", StepStatus.SUCCEEDED).output().path("attributes").path("image").asText()).isEqualTo(imageId);
+        assertThat(ctx.input().path("image").asText()).isEqualTo(imageId);
+        assertThat(ids(ex, "job_test", StepStatus.SUCCEEDED).get(0)).as("the build runs before the first step").isEqualTo("image.create");
+        assertThat(ex.logs()).anyMatch(l -> l.contains("image: built image " + imageId + " with build-vm-image"));
+    }
+
+    @Test
+    void anIdNeedsNoBuild() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run("create-vm", Map.of("name", "web-01", "image", "img-77", "size", "small"), ex);
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(ex.childRuns()).isEmpty();
+        assertThat(ex.events("job_test")).noneMatch(e -> e.id().equals("image.create"));
+    }
+
+    @Test
+    void aFailedBuildFailsTheJobBeforeItsFirstStep() {
+        SampleStepExecutor ex = SampleContent.executor();
+        ex.failAt("waitForBuild", "timeout", "packer never finished", false);
+        ex.attender(a -> Optional.of(AttentionDecision.abort("gonzalo")));
+
+        Outcome o = run("create-vm", Map.of("name", "web-01", "image", NEW_IMAGE, "size", "small"), ex);
+
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("image.create");
+        assertThat(o.errorClass()).isEqualTo("timeout");
+        assertThat(ex.events("job_test")).noneMatch(e -> e.id().equals("useImage"));
+    }
+
+    @Test
+    void aProducerThatRegistersNoResourceOfTheTypeFailsTheJob() {
+        String yaml = SampleContent.yaml("create-vm").replace("orCreateWith: build-vm-image", "orCreateWith: vm-restart");
+        WorkflowDefinition d = com.iaf.platform.workflows.domain.WorkflowYaml.parse(yaml);
+        SampleStepExecutor ex = SampleContent.executor();
+
+        Outcome o = new WorkflowInterpreter(d, ex, context(d, Map.of("name", "web-01", "image",
+                Map.of("create", Map.of("vmId", "vm-1042", "reason", "stuck")), "size", "small"))).run();
+
+        assertThat(ex.childRuns()).singleElement().satisfies(r -> assertThat(r.outcome().succeeded()).isTrue());
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("image.create");
+        assertThat(o.errorClass()).isEqualTo("no_resource");
+        assertThat(o.message()).isEqualTo("vm-restart registered no image");
+    }
+
+    @Test
+    void aRerunReplaysTheRecordedBuildInsteadOfBuildingAgain() {
+        WorkflowDefinition d = SampleContent.workflow("create-vm");
+        JsonNode built = SampleContent.json(Map.of("jobId", "job_old-1", "status", "succeeded", "outputs", Map.of("imageId", "img-77"),
+                "resources", List.of(Map.of("id", "img-77", "type", "image"))));
+        List<JobStep> seed = List.of(
+                JobStep.builder().id("image.create").status(StepStatus.SUCCEEDED).output(built).build(),
+                JobStep.builder().id("useImage").status(StepStatus.SUCCEEDED)
+                        .output(SampleContent.json(Map.of("id", "img-77", "type", "image", "attributes", Map.of("templateId", "tpl-77")))).build());
+        SampleStepExecutor ex = SampleContent.executor();
+
+        Outcome o = new WorkflowInterpreter(d, ex, context(d, Map.of("name", "web-01", "image", NEW_IMAGE, "size", "small")),
+                WorkflowInterpreter.Resume.from("sizeToSpec", seed)).run();
+
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(ex.childRuns()).as("nothing is built twice").isEmpty();
+        assertThat(ex.events("job_test")).filteredOn(e -> e.id().equals("image.create")).singleElement().satisfies(e -> assertThat(e.replayed()).isTrue());
+        assertThat(last(ex, "job_test", "registerVm", StepStatus.SUCCEEDED).output().path("attributes").path("image").asText()).isEqualTo("img-77");
+    }
+
     // ---------------------------------------------------------------- patch-cve
 
     @Test

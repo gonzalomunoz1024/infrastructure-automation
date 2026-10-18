@@ -4,7 +4,18 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { scan, type ContentFile } from '../cli.ts';
-import { buildContext, parseDocument, parseProvider, parseResourceType, resourceTypeName, type CheckContext, type ProviderDocument } from '../src/index.ts';
+import {
+  buildContext,
+  contextSchemas,
+  parseDocument,
+  parseProvider,
+  parseResourceType,
+  resourceTypeName,
+  type CheckContext,
+  type ParsedWorkflow,
+  type ProviderDocument,
+  type ResourceTypeDocument,
+} from '../src/index.ts';
 
 export const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export const FIXTURES = fileURLToPath(new URL('../fixtures/', import.meta.url));
@@ -21,27 +32,32 @@ export function ofKind(kind: string): ContentFile[] {
   return contentFiles().filter((f) => f.kind === kind);
 }
 
-/** Providers, published workflow names and resource types from workflows/, providers/ and resource-types/. */
+/** Providers, every workflow as published and resource types with their schemas, from workflows/, providers/ and resource-types/. */
 export function repoContext(): CheckContext {
   const providers: ProviderDocument[] = [];
-  const workflows: string[] = [];
-  const resourceTypes: string[] = [];
+  const workflows: ParsedWorkflow[] = [];
+  const types: ResourceTypeDocument[] = [];
   for (const f of contentFiles()) {
     switch (f.kind) {
       case 'Provider':
         providers.push(parseProvider(f.doc));
         break;
       case 'Workflow':
-        workflows.push(parseDocument(f.doc).metadata.name);
+        workflows.push(parseDocument(f.doc));
         break;
       case 'ResourceType':
-        resourceTypes.push(resourceTypeName(parseResourceType(f.doc)));
+        types.push(parseResourceType(f.doc));
         break;
       default:
         break;
     }
   }
-  return buildContext(providers, workflows, resourceTypes);
+  return buildContext(
+    providers,
+    workflows.map((w) => w.metadata.name),
+    types.map((t) => resourceTypeName(t)),
+    contextSchemas(workflows, types),
+  );
 }
 
 export function fixture(name: string): string {

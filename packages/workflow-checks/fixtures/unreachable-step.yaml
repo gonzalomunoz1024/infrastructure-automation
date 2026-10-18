@@ -1,0 +1,20 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-route, title: VM route, noun: vm, verb: route, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    properties:
+      size: { type: string }
+workflow:
+  do:
+    - pick:
+        switch:
+          - case: { when: "{{ $input.size == 'large' }}", then: large }
+          - default: small
+    - forgotten:
+        set: { note: never }
+    - large:
+        set: { cpu: 8 }
+    - small:
+        set: { cpu: 2 }

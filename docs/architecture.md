@@ -77,6 +77,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres`, append-only); write-once object store (planned) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (v3 API)              | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (planned)       | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
+| `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
 
 Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
 profile guard so that the production adapter replaces it when its profile is active.
@@ -172,12 +173,26 @@ runs on a non-blocking thread, and the wiring test expects none.
 `StepExecutor` (the only thing that touches the world) and a `JobContext` (input, step outputs,
 identity). It resolves expressions, walks `do` in order, handles `switch`, `fork`, `try/catch`,
 `for`, `wait`, `set`, `raise`, `run` (child workflow), `approval`, `use`/`register`, and
-compensation on failure. The same class runs:
+compensation on failure. Before the first step it builds what the input asked for: an
+`orCreateWith` input holding `{ create }` runs its producer as a child job (step `<input>.create`)
+and then reads as the id of the resource the child registered; every engine returns a child's
+result through `ChildResults`, which carries those registrations. The same class runs:
 
 - in process, inside `InMemoryWorkflowExecution` (the default), on a bounded scheduler;
 - inside Temporal, where `InterpreterWorkflowImpl` implements `StepExecutor` with activities,
   child workflows, `Workflow.await` for approvals and pause-on-failure, and durable timers for
   waits. The definition snapshot travels in the workflow input.
+
+A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
+in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
+bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
+signal a registry listener sends to the waiting workflow.
+
+A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
+the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
+with it: the steps it does not take are skipped, provider `plan` actions are asked through
+`ProviderCallPort`, the registry's lineage adds what a change touches, and `PriceListPort` prices
+the create calls.
 
 Expressions are n8n-style: `{{ $input.vmId }}`, `{{ $json.vm.id }}` (previous step's output),
 `{{ $('Check VM exists').json.vm.name }}`, `{{ $job.id }}`, `{{ $env.name }}`. See

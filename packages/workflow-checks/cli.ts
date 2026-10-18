@@ -11,7 +11,9 @@ import {
   buildContext,
   check,
   ContentParseError,
+  contextSchemas,
   kindOf,
+  parseDocument,
   parseProvider,
   parseResourceType,
   PROVIDER_KIND,
@@ -19,9 +21,12 @@ import {
   RESOURCE_TYPE_KIND,
   resourceTypeName,
   WORKFLOW_KIND,
+  WorkflowParseError,
   type CheckContext,
+  type ParsedWorkflow,
   type Problem,
   type ProviderDocument,
+  type ResourceTypeDocument,
 } from './src/index.ts';
 
 /** The folders of a content repository that hold config as code. */
@@ -94,6 +99,17 @@ export function scan(root: string): ContentFile[] {
   return files;
 }
 
+/** A workflow as the catalog publishes it; one that does not parse is reported by its own check. */
+function parsed(doc: unknown, into: ParsedWorkflow[]): void {
+  try {
+    into.push(parseDocument(doc));
+  } catch (e) {
+    if (!(e instanceof WorkflowParseError)) {
+      throw e;
+    }
+  }
+}
+
 function invalid(message: string): Problem {
   return { level: 'error', code: 'yaml.invalid', message };
 }
@@ -105,6 +121,8 @@ export function checkRepo(root: string): CheckReport {
   const providers: ProviderDocument[] = [];
   const workflowNames = new Set<string>();
   const resourceTypes = new Set<string>();
+  const parsedWorkflows: ParsedWorkflow[] = [];
+  const typeDocuments: ResourceTypeDocument[] = [];
   let providerCount = 0;
   let resourceTypeCount = 0;
   let workflowCount = 0;
@@ -123,12 +141,15 @@ export function checkRepo(root: string): CheckReport {
           reports.push({ path: f.path, kind: f.kind, problems: [invalid('metadata.name is required')] });
         }
       } else if (f.kind === RESOURCE_TYPE_KIND) {
-        resourceTypes.add(resourceTypeName(parseResourceType(f.doc)));
+        const t = parseResourceType(f.doc);
+        typeDocuments.push(t);
+        resourceTypes.add(resourceTypeName(t));
         resourceTypeCount++;
       } else if (f.kind === WORKFLOW_KIND) {
         const md = (f.doc as { metadata?: { name?: unknown } }).metadata;
         if (typeof md?.name === 'string' && md.name.trim().length > 0) {
           workflowNames.add(md.name);
+          parsed(f.doc, parsedWorkflows);
         }
       }
     } catch (e) {
@@ -140,7 +161,7 @@ export function checkRepo(root: string): CheckReport {
     }
   }
 
-  const ctx: CheckContext = buildContext(providers, workflowNames, resourceTypes);
+  const ctx: CheckContext = buildContext(providers, workflowNames, resourceTypes, contextSchemas(parsedWorkflows, typeDocuments));
   for (const f of files) {
     if (f.error === null && f.kind === WORKFLOW_KIND) {
       workflowCount++;

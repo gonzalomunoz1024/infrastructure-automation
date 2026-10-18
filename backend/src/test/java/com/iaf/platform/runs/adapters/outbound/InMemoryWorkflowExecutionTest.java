@@ -2,20 +2,26 @@ package com.iaf.platform.runs.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
@@ -31,6 +37,9 @@ import com.iaf.platform.runs.domain.WaveScheduler;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
+
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 /** The in-memory engine end to end: threads, latches, cancellation, children, batches. */
 class InMemoryWorkflowExecutionTest {
@@ -222,6 +231,120 @@ class InMemoryWorkflowExecutionTest {
         assertThat(done.output().path("url").asText()).isNotBlank();
         assertThat(done.output().path("databaseId").asText()).isNotBlank();
         assertThat(done.step("registerEnv").output().path("type").asText()).isEqualTo("environment");
+    }
+
+    @Test
+    void aRunStepWithoutAVersionRunsTheProducersCurrentMajorWithItsDefaults() {
+        Job job = start(yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: one-vm, title: One VM, noun: vm, verb: one, owner: team-compute, version: 1.0.0 }
+                workflow:
+                  do:
+                    - make:
+                        run: { workflow: create-vm, input: { name: web-1, image: img-1 } }
+                        output: { as: made }
+                  outputs:
+                    vmId: "{{ $made.outputs.vmId }}"
+                """), Map.of());
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        verify(w.workflows).resolve("create-vm", "^2");
+        assertThat(w.projection.children(job.id())).singleElement().satisfies(child -> {
+            assertThat(child.input().path("size").asText()).as("the child's own defaults").isEqualTo("small");
+            assertThat(child.input().path("environment").asText()).isEqualTo("dev");
+        });
+        assertThat(job(job.id()).output().path("vmId").asText()).isNotBlank();
+    }
+
+    @Test
+    void anInputAskingForANewResourceBuildsItFirstAsAChildJobInTheSameTrace() {
+        Job job = start(SampleContent.workflow("create-vm"), Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9")), "size", "small"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(w.projection.children(job.id())).singleElement().satisfies(child -> {
+            assertThat(child.workflow()).isEqualTo("build-vm-image");
+            assertThat(child.status()).isEqualTo(JobStatus.SUCCEEDED);
+            assertThat(child.traceId()).isEqualTo(job.traceId());
+            assertThat(child.input().path("os").asText()).isEqualTo("rhel-9");
+            assertThat(child.input().path("hardening").asText()).as("the producer's own default").isEqualTo("cis-l1");
+        });
+        Job done = job(job.id());
+        JobStep build = done.step("image.create");
+        assertThat(build.status()).isEqualTo(StepStatus.SUCCEEDED);
+        String imageId = build.output().path("resources").get(0).path("id").asText();
+        assertThat(imageId).isNotBlank();
+        assertThat(build.output().path("resources").get(0).path("type").asText()).isEqualTo("image");
+        assertThat(done.step("useImage").input().path("id").asText()).as("the job goes on with the new id").isEqualTo(imageId);
+        assertThat(done.input().path("image").path("create").path("os").asText()).as("the job keeps the request as asked").isEqualTo("rhel-9");
+    }
+
+    // ---------------------------------------------------------------- the use step's wait
+
+    private static WorkflowDefinition usesSlowImage(String timeout) {
+        return yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: use-slow, title: Use slow, noun: image, verb: use, owner: team-platform, version: 1.0.0 }
+                workflow:
+                  do:
+                    - useIt:
+                        use: { type: image, id: img-slow, waitUntil: ready }
+                        timeout: %s
+                        pauseOnFailure: false
+                """.formatted(timeout));
+    }
+
+    /** The registry answers img-slow in {@code status}; {@code ready} is what awaitState will answer. */
+    private Sinks.One<Resource> slowImage(AtomicReference<String> status) {
+        Sinks.One<Resource> ready = Sinks.one();
+        when(w.resources.use(eq("image"), eq("img-slow"), any(), anyBoolean()))
+                .thenAnswer(i -> Mono.just(RunsTestWiring.resource("image", "img-slow", status.get())));
+        when(w.resources.awaitState(eq("image"), eq("img-slow"), eq("ready"), any())).thenAnswer(i -> ready.asMono());
+        return ready;
+    }
+
+    private void awaitStep(String jobId, String step, StepStatus status) {
+        RunsTestWiring.await(WAIT, () -> job(jobId).steps().stream().anyMatch(s -> s.id().equals(step) && s.status() == status));
+    }
+
+    @Test
+    void aUseStepWaitsUntilTheRegistrySaysTheResourceIsReady() {
+        AtomicReference<String> status = new AtomicReference<>("building");
+        Sinks.One<Resource> ready = slowImage(status);
+        Job job = start(usesSlowImage("10m"), Map.of());
+        awaitStep(job.id(), "useIt", StepStatus.RUNNING);
+
+        status.set("ready");
+        ready.tryEmitValue(RunsTestWiring.resource("image", "img-slow", "ready"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(job(job.id()).step("useIt").output().path("status").asText()).isEqualTo("ready");
+        ArgumentCaptor<Duration> waited = ArgumentCaptor.forClass(Duration.class);
+        verify(w.resources).awaitState(eq("image"), eq("img-slow"), eq("ready"), waited.capture());
+        assertThat(waited.getValue()).as("the step's timeout bounds the wait").isLessThanOrEqualTo(Duration.ofMinutes(10)).isGreaterThan(Duration.ofMinutes(9));
+    }
+
+    @Test
+    void aUseStepGivesUpAtItsTimeoutWhenNoEventComes() {
+        slowImage(new AtomicReference<>("building"));
+        Job job = start(usesSlowImage("1s"), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        JobStep use = job(job.id()).step("useIt");
+        assertThat(use.error().errorClass()).isEqualTo("timeout");
+        assertThat(use.error().message()).isEqualTo("image img-slow was not ready within 1s (status building)");
+    }
+
+    @Test
+    void cancellingEndsAUseStepsWait() {
+        slowImage(new AtomicReference<>("building"));
+        Job job = start(usesSlowImage("1h"), Map.of());
+        awaitStep(job.id(), "useIt", StepStatus.RUNNING);
+
+        w.execution.cancel(job.id(), "gonzalo").block();
+
+        awaitStatus(job.id(), JobStatus.CANCELLED);
     }
 
     @Test

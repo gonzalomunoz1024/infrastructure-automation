@@ -114,4 +114,64 @@ class PublishChecksTest {
         assertThat(clash.status()).isEqualTo("failed");
         assertThat(clash.detail()).contains("served by vm-restart").contains(":restart:batch");
     }
+
+    // ------------------------------------------------------------------ contracts
+
+    static final String CREATE_VM = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml");
+    static final String WITHOUT_OWNER = CREATE_VM.replace("      owner:\n        type: string\n        title: Owner team\n", "");
+
+    static DependencyRules.Graph graph() {
+        return DependencyRules.of(DependencyRulesTest.samples(), DependencyRulesTest.sampleProducers());
+    }
+
+    @Test
+    void contractsAreSkippedForAFirstVersionAndPassWithoutABreakingChange() {
+        WorkflowDefinition current = WorkflowYaml.parse(CREATE_VM);
+        assertThat(PublishChecks.contracts(current, null, graph()).status()).isEqualTo("skipped");
+        Check same = PublishChecks.contracts(current.withVersion("2.0.2"), current, graph());
+        assertThat(same.status()).isEqualTo("passed");
+        assertThat(same.detail()).startsWith("no breaking change against 2.0.1; consumers: ").contains("web-environment (run ^2 at vm)");
+    }
+
+    @Test
+    void aBreakingChangeWithoutAMajorVersionFailsAndListsEveryAffectedConsumer() {
+        WorkflowDefinition current = WorkflowYaml.parse(CREATE_VM);
+        Check c = PublishChecks.contracts(WorkflowYaml.parse(WITHOUT_OWNER).withVersion("2.1.0"), current, graph());
+        assertThat(c.id()).isEqualTo("contracts");
+        assertThat(c.status()).isEqualTo("failed");
+        assertThat(c.detail()).startsWith("2.1.0 breaks the contract of 2.0.1 without a new major version: input 'owner' was removed. Affected consumers: ")
+                .contains("web-environment (run ^2 at vm)");
+    }
+
+    @Test
+    void aBreakingChangeWithAMajorVersionPassesAndListsWhoStaysOnTheOldMajor() {
+        WorkflowDefinition current = WorkflowYaml.parse(CREATE_VM);
+        Check c = PublishChecks.contracts(WorkflowYaml.parse(WITHOUT_OWNER).withVersion("3.0.0"), current, graph());
+        assertThat(c.status()).isEqualTo("passed");
+        assertThat(c.detail()).startsWith("new major version 3.0.0 with breaking changes against 2.0.1: input 'owner' was removed.")
+                .endsWith("Staying on the old major: web-environment (run ^2 at vm)");
+    }
+
+    @Test
+    void validateProblemsNameTheChangeRequestChecksAFileWouldFail() {
+        WorkflowDefinition current = WorkflowYaml.parse(CREATE_VM);
+        List<WorkflowDefinition> published = DependencyRulesTest.samples();
+        assertThat(PublishChecks.problems(current.withVersion("2.0.2"), ctx(), published, current, graph())).isEmpty();
+
+        List<Problem> breaking = PublishChecks.problems(WorkflowYaml.parse(WITHOUT_OWNER).withVersion("2.0.2"), ctx(), published, current, graph());
+        assertThat(breaking).singleElement().satisfies(p -> {
+            assertThat(p.code()).isEqualTo("publish.contracts");
+            assertThat(p.level()).isEqualTo(Problem.Level.ERROR);
+            assertThat(p.field()).isEqualTo("metadata.version");
+            assertThat(p.fix().value()).isEqualTo("3.0.0");
+        });
+
+        String unpinned = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml").replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "")
+                .replace("name: vm-restart", "name: vm-reboot").replace("{vmId}", "{id}");
+        List<Problem> problems = PublishChecks.problems(WorkflowYaml.parse(unpinned), ctx(), published, null, graph());
+        // the invoke, batch and preview routes all clash
+        assertThat(problems).extracting(Problem::code).containsExactly("publish.ansibleLint", "publish.routes", "publish.routes", "publish.routes");
+        assertThat(problems.get(0).step()).isEqualTo("restart");
+        assertThat(problems.get(1).message()).contains("is served by vm-restart");
+    }
 }

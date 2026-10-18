@@ -1,6 +1,10 @@
 package com.iaf.platform.catalog.domain;
 
+import java.util.List;
+import java.util.Optional;
+
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.BatchPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -24,6 +28,11 @@ public record CatalogEntry(
         BatchPolicy batch) {
 
     public static CatalogEntry of(WorkflowRecord record) {
+        return of(record, List.of());
+    }
+
+    /** @param published every published workflow, for the create form of an {@code orCreateWith} input */
+    public static CatalogEntry of(WorkflowRecord record, List<WorkflowRecord> published) {
         WorkflowDefinition d = record.definition();
         String path = d.path();
         return new CatalogEntry(
@@ -36,12 +45,27 @@ public record CatalogEntry(
                 path,
                 d.batchPath(),
                 d.previewEnabled() ? path + RouteTable.PREVIEW : null,
-                d.inputSchema(),
+                input(d, published),
                 d.mcpExposed() ? d.mcpTool() : null,
                 d.metadata().owner(),
                 record.version() == null ? d.version() : record.version(),
                 description(d),
                 d.batchPolicy());
+    }
+
+    /**
+     * The input as callers see it: an {@code orCreateWith} input takes the id of a resource or
+     * {@code { create: <the producer's published input> }} to have one built first.
+     */
+    public static JsonNode input(WorkflowDefinition d, List<WorkflowRecord> published) {
+        return CreateRequests.withCreateForms(d.inputSchema(), name -> producerInput(published, name));
+    }
+
+    private static Optional<JsonNode> producerInput(List<WorkflowRecord> published, String name) {
+        return (published == null ? List.<WorkflowRecord>of() : published).stream()
+                .filter(r -> r.definition() != null && name.equals(r.definition().name()))
+                .findFirst()
+                .map(r -> r.definition().inputSchema());
     }
 
     /** The MCP description when there is one, else the file's description. */

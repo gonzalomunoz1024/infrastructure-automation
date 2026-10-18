@@ -1,0 +1,20 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-pair, title: VM pair, noun: vm, verb: pair, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    properties:
+      name: { type: string }
+workflow:
+  do:
+    - first:
+        run:
+          workflow: create-vm
+          version: "^2"
+          onFailure: carry-on
+          input: { image: img-1, size: huge, sise: small, environment: 3 }
+    - second:
+        run:
+          workflow: create-vm
+          input: { name: "{{ $input.name }}-2", image: { create: { os: ubuntu-24.04 } }, size: small }
