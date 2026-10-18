@@ -224,7 +224,28 @@ public final class ReleaseGates {
         return h == 0 ? m + "m" : m == 0 ? h + "h" : h + "h " + m + "m";
     }
 
-    private static String ms(double v) {
-        return v < 1000 ? Math.round(v) + "ms" : String.format(Locale.ROOT, "%.1fs", v / 1000.0);
+    /** 340ms, 2.2s, 45s, 29m 56s, 2h 5m, 1d 3h: the console's duration format, so a detail reads like the figures beside it. */
+    static String ms(double v) {
+        if (v < 1000) {
+            return Math.round(v) + "ms";
+        }
+        double seconds = v / 1000.0;
+        if (seconds < 60) {
+            return (seconds < 10 ? String.format(Locale.ROOT, "%.1f", seconds).replaceAll("\\.0$", "") : String.valueOf(Math.round(seconds))) + "s";
+        }
+        long total = Math.round(seconds);
+        long m = total / 60;
+        long s = total % 60;
+        if (m < 60) {
+            return s == 0 ? m + "m" : m + "m " + s + "s";
+        }
+        long h = m / 60;
+        long rm = m % 60;
+        if (h < 24) {
+            return rm == 0 ? h + "h" : h + "h " + rm + "m";
+        }
+        long d = h / 24;
+        long rh = h % 24;
+        return rh == 0 ? d + "d" : d + "d " + rh + "h";
     }
 }

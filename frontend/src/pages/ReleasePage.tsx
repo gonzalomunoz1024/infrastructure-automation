@@ -43,20 +43,6 @@ const COMMANDS: Record<Command, { title: (r: Release) => string; message: (r: Re
   },
 }
 
-/** A span in words: "340 ms", "2.2 s", "36 min 40 s", "2 h 5 min". */
-export function spanOf(ms: number): string {
-  if (!Number.isFinite(ms)) return '—'
-  const abs = Math.abs(ms)
-  if (abs < 1000) return `${Math.round(ms)} ms`
-  if (abs < 60_000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')} s`
-  const totalSeconds = Math.round(ms / 1000)
-  const h = Math.floor(totalSeconds / 3600)
-  const m = Math.floor((totalSeconds % 3600) / 60)
-  const s = totalSeconds % 60
-  if (h === 0) return s === 0 ? `${m} min` : `${m} min ${s} s`
-  return m === 0 ? `${h} h` : `${h} h ${m} min`
-}
-
 /** How a gate's figure reads: its value and threshold in the gate's own unit, and the error types as a list; `unit` is what the sample counts. */
 export function gateFigures(g: ReleaseGate, unit: 'job' | 'call' = 'job'): { value: ReactNode; threshold: ReactNode; detail: ReactNode } {
   const num = (v: number | string | undefined): number | null => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null)
@@ -67,7 +53,7 @@ export function gateFigures(g: ReleaseGate, unit: 'job' | 'call' = 'job'): { val
   if (id === 'p95' || id.includes('duration') || id.includes('latency') || /\bp\d{2}\b/.test(label) || label.includes('duration')) {
     const v = num(g.value)
     const t = num(g.threshold)
-    return { value: v === null ? dash : spanOf(v), threshold: t === null ? dash : `at most ${spanOf(t)}`, detail: g.detail || dash }
+    return { value: v === null ? dash : duration(v), threshold: t === null ? dash : `at most ${duration(t)}`, detail: g.detail || dash }
   }
   if (id.includes('rate') || label.includes('rate')) {
     const v = num(g.value)

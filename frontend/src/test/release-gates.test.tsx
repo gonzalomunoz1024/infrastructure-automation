@@ -1,27 +1,30 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
+import { duration } from '@iaf/ui'
 import type { ReleaseGate } from '../lib/types'
-import { gateFigures, spanOf } from '../pages/ReleasePage'
+import { gateFigures } from '../pages/ReleasePage'
 
 const text = (html: string) => html.replace(/<!--.*?-->/g, '')
 const render = (v: unknown) => text(renderToString(<>{v as string}</>))
 
 describe('release gates', () => {
-  it('writes durations in words, not raw milliseconds', () => {
-    expect(spanOf(340)).toBe('340 ms')
-    expect(spanOf(2200)).toBe('2.2 s')
-    expect(spanOf(2000)).toBe('2 s')
-    expect(spanOf(2_200_000)).toBe('36 min 40 s')
-    expect(spanOf(60_000)).toBe('1 min')
-    expect(spanOf(7_500_000)).toBe('2 h 5 min')
-    expect(spanOf(7_200_000)).toBe('2 h')
+  it('writes durations the way the rest of the console does, not raw milliseconds', () => {
+    expect(duration(340)).toBe('340ms')
+    expect(duration(2200)).toBe('2.2s')
+    expect(duration(2000)).toBe('2s')
+    expect(duration(45_000)).toBe('45s')
+    expect(duration(2_200_000)).toBe('36m 40s')
+    expect(duration(60_000)).toBe('1m')
+    expect(duration(7_500_000)).toBe('2h 5m')
+    expect(duration(7_200_000)).toBe('2h')
+    expect(duration(97_200_000)).toBe('1d 3h')
   })
 
   it('shows the p95 gate as durations', () => {
     const gate: ReleaseGate = { id: 'p95', label: 'p95 duration', passed: true, value: 2200, threshold: 2_200_000, detail: '2.2s on the candidate vs 1.8s on the current version (may be 20% slower)' }
     const f = gateFigures(gate)
-    expect(render(f.value)).toBe('2.2 s')
-    expect(render(f.threshold)).toBe('at most 36 min 40 s')
+    expect(render(f.value)).toBe('2.2s')
+    expect(render(f.threshold)).toBe('at most 36m 40s')
     expect(render(f.detail)).toContain('on the candidate')
   })
 
@@ -54,6 +57,6 @@ describe('release gates', () => {
     expect(render(gateFigures({ ...gate, value: 1, threshold: 1 }).threshold)).toBe('at least 1 job')
     const pending: ReleaseGate = { id: 'p95', label: 'p95 duration', passed: null, threshold: 2400, detail: 'no successful jobs on the candidate yet' }
     expect(render(gateFigures(pending).value)).toContain('—')
-    expect(render(gateFigures(pending).threshold)).toBe('at most 2.4 s')
+    expect(render(gateFigures(pending).threshold)).toBe('at most 2.4s')
   })
 })

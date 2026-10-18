@@ -46,7 +46,7 @@ abstract class ReleaseStoreContract {
         Instant stage = now.minus(Duration.ofMinutes(50));
         List<Gate> gates = List.of(
                 new Gate("success-rate", "Success rate", true, 100.0, 92.3, "100.0% on the candidate vs 93.3% on the current version"),
-                new Gate("p95", "p95 duration", true, 38400.0, 43320.0, "38.4s on the candidate vs 36.1s on the current version"),
+                new Gate("p95", "p95 duration", true, 38400.0, 43320.0, "38s on the candidate vs 36s on the current version"),
                 new Gate("error-types", "Error types", true, 0.0, 0.0, "no failures on the candidate"),
                 new Gate("sample", "Sample size", null, 14.0, 20.0, "14 of 20 jobs; 50m of the 2h minimum"));
         return new Release("rel_canary1", "vm-restart", "1.1.0", "1.2.0", Release.STRATEGY_CANARY, ReleaseStatus.CANARY, 1, STAGES, 50,

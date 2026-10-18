@@ -167,9 +167,23 @@ class ReleaseGatesTest {
         assertThat(gate(tooSlow, "p95").passed()).isFalse();
         assertThat(gate(tooSlow, "p95").value()).isEqualTo(1300.0);
         assertThat(gate(tooSlow, "p95").threshold()).isEqualTo(1200.0);
-        assertThat(gate(tooSlow, "p95").detail()).isEqualTo("1.3s on the candidate vs 1.0s on the current version (may be 20% slower)");
+        assertThat(gate(tooSlow, "p95").detail()).isEqualTo("1.3s on the candidate vs 1s on the current version (may be 20% slower)");
         assertThat(gate(limit, "p95").passed()).isTrue();
         assertThat(limit.verdict()).isEqualTo(Verdict.ADVANCE);
+    }
+
+    @Test
+    void theP95DetailWritesLongDurationsInMinutesLikeTheConsole() {
+        Evaluation e = ReleaseGates.evaluate(many(25, () -> ok("1.2.0", 1_796_100)), many(30, () -> ok("1.1.0", 2_269_000)),
+                STAGE_START, THREE_HOURS_LATER);
+
+        assertThat(gate(e, "p95").detail()).isEqualTo("29m 56s on the candidate vs 37m 49s on the current version (may be 20% slower)");
+        assertThat(ReleaseGates.ms(340)).isEqualTo("340ms");
+        assertThat(ReleaseGates.ms(2_000)).isEqualTo("2s");
+        assertThat(ReleaseGates.ms(45_400)).isEqualTo("45s");
+        assertThat(ReleaseGates.ms(60_000)).isEqualTo("1m");
+        assertThat(ReleaseGates.ms(7_500_000)).isEqualTo("2h 5m");
+        assertThat(ReleaseGates.ms(97_200_000)).isEqualTo("1d 3h");
     }
 
     @Test
