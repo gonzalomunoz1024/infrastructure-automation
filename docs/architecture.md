@@ -791,6 +791,22 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+The Provider sheet (`frontend/src/designer/chrome/ProviderSheet.tsx`) is Add provider inside the
+designer: a drawer over the canvas with a rail of sections, as n8n's credential modal has, hosting
+the wizard's own steps (`frontend/src/components/provider-editor/`) and imports. Connect holds the
+Type step's fields, with the type of the entry it was opened from picked (an Ansible repository or a
+Terraform module starts on its import, Describe it on Ask Devin), then the spec import, the tile or
+worker, the environments, the auth with its credential picker and Test connection; Actions, Try it
+and Review follow, and the review can publish the provider on its own ("Publish provider only",
+which clears its draft). It edits one of the workflow's provider drafts
+(`frontend/src/designer/model/providerDrafts.ts`): a new provider's, or, opened on a published
+provider, its next patch as Edit provider starts it, collecting evidence on Connect and Try it. The
+first change saves the draft and each later one replaces it, outside undo and the dirty flag, so
+closing and reopening loses nothing. The action picked in its header becomes a step where the sheet
+was opened from, on "Use this action" or on closing once one is picked, inserted and opened or
+filling the step it came from, as n8n adds a node after creating a credential; when the draft took
+a file instead (Devin's, an import's), its actions are read from the file's `spec.actions`.
+
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
 imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint
