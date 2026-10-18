@@ -6,10 +6,29 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Page, Request, Route } from '@playwright/test'
+import type { Locator, Page, Request, Route } from '@playwright/test'
 import { parse, stringify } from 'yaml'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
+
+/** The YAML drawer's editor once Monaco is up (its chunk loads when the drawer opens). */
+export async function yamlEditor(page: Page): Promise<Locator> {
+  const editor = page.getByTestId('yaml-editor')
+  await editor.locator('.monaco-editor .view-lines').waitFor({ timeout: 20_000 })
+  return editor
+}
+
+/** Replaces a Monaco editor's text the way a paste does: Monaco takes pasted text as it is. */
+export async function pasteInto(page: Page, editor: Locator, text: string): Promise<void> {
+  await editor.locator('.view-lines').click()
+  await page.keyboard.press('ControlOrMeta+A')
+  // as a string: this project's e2e types carry no DOM
+  await page.evaluate(`(() => {
+    const data = new DataTransfer()
+    data.setData('text/plain', ${JSON.stringify(text)})
+    document.activeElement?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+  })()`)
+}
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 type Obj = { [key: string]: Json }
@@ -168,6 +187,8 @@ export interface MockApi {
   merged: string[]
   /** messages sent to the assistant */
   assistant: string[]
+  /** YAML bodies of POST /workflows:parse */
+  parses: string[]
 }
 
 /** Two jobs of vm-restart: one failed at the playbook, one that went through. */
@@ -247,7 +268,7 @@ function bodyOf(req: Request): Obj {
 
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
-  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
+  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [], parses: [] }
   // the canvas the assistant session started from, which an explanation hands back unchanged
   let sessionYaml = ''
   const jobs = vmRestartJobs()
@@ -386,6 +407,7 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
     }
     if (method === 'POST' && path === '/workflows:render') return json(route, { yaml: stringify(bodyOf(req).definition ?? {}) })
     if (method === 'POST' && path === '/workflows:parse') {
+      calls.parses.push(String(bodyOf(req).yaml ?? ''))
       try {
         return json(route, { definition: parse(String(bodyOf(req).yaml ?? '')) as Json, problems: [] })
       } catch (e) {

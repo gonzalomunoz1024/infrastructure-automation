@@ -436,6 +436,22 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
+`monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
+imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint
+does not carry it; the monospace textarea stands in while the chunk loads, if it fails, and under
+renderToString in the tests. The drawer highlights YAML with Monaco's own tokenizer: the two
+packages ship no YAML language service, so there is no YAML worker, and the platform's checks stay
+the validation. It marks the checks' problems on their lines (F8 walks them): a problem names a
+step and a dotted field, which `frontend/src/components/code-editor/markers.ts` finds by the keys
+and their indentation in the YAML the backend rendered, a parameter under the step's `with`, a
+syntax error at the line and column its message gives; the drawer marks the canvas's live problems
+while the file follows the canvas, and the parse's once the file is edited. A multi-line
+expression field's Expand button opens the expanded editor on the same text: its `{{ … }}`
+highlighted, the ones that do not resolve marked with why, and the result underneath. The JSON
+language and its worker are configured for a JSON model; the JSON editor
+(`frontend/src/components/JsonEditor.tsx`) is still its textarea.
+
 ## Where things are in Git
 
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a

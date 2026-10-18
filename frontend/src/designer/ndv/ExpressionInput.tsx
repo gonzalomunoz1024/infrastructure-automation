@@ -1,13 +1,15 @@
 /**
  * n8n's inline expression editor: monospace text where every `{{ … }}` is highlighted (red when
  * it does not resolve), growing with its content, taking fields dropped from the Input pane at
- * the drop point, with the live result underneath, evaluated the way the interpreter will.
+ * the drop point, with the live result underneath, evaluated the way the interpreter will. A
+ * field of several lines opens the expanded editor (Monaco) from the button at its corner.
  */
 import { useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FocusEvent, type KeyboardEvent } from 'react'
-import { cx } from '@iaf/ui'
+import { Icon, cx } from '@iaf/ui'
 import type { ExpressionContext } from '@iaf/workflow-checks'
 import { previewExpression, templateSegments } from '../model/expressions'
 import { MAPPING_MIME, useNdv } from './context'
+import { ExpressionEditor } from './ExpressionEditor'
 
 export interface ExpressionInputProps {
   id?: string
@@ -34,6 +36,8 @@ export function ExpressionInput({ id, value, onChange, ctx: ctxProp, placeholder
   const ctx = ctxProp ?? ndv.ctx
   const ref = useRef<HTMLTextAreaElement>(null)
   const [over, setOver] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const expandable = !readOnly && !singleLine
 
   useLayoutEffect(() => {
     const t = ref.current
@@ -86,7 +90,8 @@ export function ExpressionInput({ id, value, onChange, ctx: ctxProp, placeholder
     <div className={cx('min-w-0', className)}>
       <div
         className={cx(
-          'iaf-expr rounded-md border bg-surface-secondary transition-colors focus-within:ring-2',
+          'iaf-expr group/expr rounded-md border bg-surface-secondary transition-colors focus-within:ring-2',
+          expandable && 'iaf-expr--expandable',
           invalid ? 'border-critical focus-within:ring-critical/20' : 'border-stroke-light focus-within:border-accent focus-within:ring-accent/25',
           ndv.dragging && !readOnly && 'iaf-drop-target',
           over && 'is-over',
@@ -125,6 +130,17 @@ export function ExpressionInput({ id, value, onChange, ctx: ctxProp, placeholder
           }}
           className="iaf-expr__input"
         />
+        {expandable && (
+          <button
+            type="button"
+            onClick={() => setExpanded(true)}
+            aria-label={`Expand ${ariaLabel ?? 'the expression'}`}
+            title="Open the expression editor"
+            className="absolute right-1 top-1 rounded-sm p-1 text-tertiary opacity-60 transition hover:bg-surface hover:text-primary hover:opacity-100 focus-visible:opacity-100 group-focus-within/expr:opacity-100"
+          >
+            <Icon name="expand" size={13} />
+          </button>
+        )}
       </div>
       {result && (
         <div className={cx('mt-1 flex min-w-0 items-baseline gap-2 rounded-sm px-2 py-1 text-caption', result.ok ? 'bg-surface-secondary' : 'bg-critical-tint')} aria-live="polite">
@@ -140,6 +156,7 @@ export function ExpressionInput({ id, value, onChange, ctx: ctxProp, placeholder
           )}
         </div>
       )}
+      {expanded && <ExpressionEditor label={ariaLabel ?? 'Expression'} value={value} onChange={onChange} ctx={ctx} singleLine={singleLine} onClose={() => setExpanded(false)} />}
     </div>
   )
 }

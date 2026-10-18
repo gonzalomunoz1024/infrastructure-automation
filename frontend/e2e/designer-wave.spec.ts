@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { mockDesignerApi, type MockApi } from './designer-fixtures'
+import { mockDesignerApi, pasteInto, yamlEditor, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against the mocked backend: the Validate action and its "Before publishing"
@@ -27,9 +27,9 @@ async function openVmRestart(page: Page): Promise<MockApi> {
 /** Replaces the workflow through the YAML drawer, the way a file is pasted in. */
 async function loadYaml(page: Page, yaml: string): Promise<void> {
   await page.getByRole('button', { name: 'YAML' }).click()
-  const editor = page.getByTestId('yaml-editor')
-  await expect(editor).toHaveValue(/name: /)
-  await editor.fill(yaml)
+  const editor = await yamlEditor(page)
+  await expect(editor.locator('.view-lines')).toContainText('name: ')
+  await pasteInto(page, editor, yaml)
   await page.getByRole('button', { name: 'Apply YAML' }).click()
   await expect(page.getByText('YAML applied')).toBeVisible()
   await page.keyboard.press('Escape')
