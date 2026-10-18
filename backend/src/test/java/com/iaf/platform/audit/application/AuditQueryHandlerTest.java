@@ -7,6 +7,9 @@ import static org.mockito.Mockito.when;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -16,22 +19,31 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.iaf.platform.audit.adapters.outbound.FileSystemEvidenceStore;
 import com.iaf.platform.audit.adapters.outbound.InMemoryEvidenceStore;
 import com.iaf.platform.audit.domain.EvidenceEntry;
+import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
@@ -40,6 +52,7 @@ import com.iaf.platform.audit.domain.Signatures;
 import com.iaf.platform.audit.ports.inbound.AuditQueries;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.AuditRow;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FilterSpec;
+import com.iaf.platform.audit.ports.inbound.AuditQueries.SpooledFile;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.config.PlatformProperties;
@@ -60,10 +73,52 @@ class AuditQueryHandlerTest {
     final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     final InMemoryEvidenceStore store = new InMemoryEvidenceStore();
     final AuditSigner signer = new AuditSigner(AuditCommandHandlerTest.withKey("test-signing-key"));
-    final AuditQueryHandler handler = new AuditQueryHandler(store, signer, clock, JSON);
+    @TempDir
+    Path spool;
+    AuditQueryHandler handler;
+
+    @Test
+    void everyStoreReadRunsOnBoundedElasticNeverOnTheCallersThread(@TempDir Path dir) {
+        Set<String> threads = new CopyOnWriteArraySet<>();
+        FileSystemEvidenceStore files = new FileSystemEvidenceStore(dir, 7) {
+            @Override
+            public Optional<EvidenceRecord> record(String jobId) {
+                threads.add(Thread.currentThread().getName());
+                return super.record(jobId);
+            }
+
+            @Override
+            public List<EvidenceRecord> records(EvidenceFilter filter) {
+                threads.add(Thread.currentThread().getName());
+                return super.records(filter);
+            }
+
+            @Override
+            public Optional<ShareToken> findShareToken(String token) {
+                threads.add(Thread.currentThread().getName());
+                return super.findShareToken(token);
+            }
+        };
+        files.append("job_f", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", JSON.createObjectNode().put("workflow", "vm-restart")));
+        files.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW, EvidenceKind.DECISION, "ana", JSON.createObjectNode().put("event", "workflow.published")));
+        ShareToken link = files.shareToken("job_f", NOW.plus(Duration.ofHours(1)));
+        AuditQueryHandler h = new AuditQueryHandler(files, signer, clock, JSON, dir.resolve("spool"));
+        threads.clear();
+
+        StepVerifier.create(h.list(null, null, null, null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.record("job_f")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.verify("job_f")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.platform(null, null, null, null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.export("job_f", "pdf")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.exportPack(null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.shared(link.token())).expectNextCount(1).verifyComplete();
+
+        assertThat(threads).isNotEmpty().allMatch(t -> t.startsWith("boundedElastic"), "every store read is on boundedElastic");
+    }
 
     @BeforeEach
     void records() {
+        handler = new AuditQueryHandler(store, signer, clock, JSON, spool);
         // yesterday: a closed vm-restart job by ana
         store.append("job_old", EvidenceEntry.draft(NOW.minus(Duration.ofDays(1)), EvidenceKind.REQUESTED, "ana",
                 JSON.createObjectNode().put("workflow", "vm-restart").put("version", "1.2.0").put("channel", "catalog")));
@@ -215,7 +270,9 @@ class AuditQueryHandlerTest {
 
         assertThat(file.filename()).startsWith("evidence-pack-").endsWith(".zip");
         assertThat(file.contentType()).isEqualTo("application/zip");
-        Map<String, byte[]> entries = unzip(file.bytes());
+        assertThat(file.path().getParent()).isEqualTo(spool);
+        assertThat(file.size()).isEqualTo(Files.size(file.path()));
+        Map<String, byte[]> entries = unzip(file);
         assertThat(entries.keySet()).containsExactly("records/release-rel_1.json", "records/job_new.json", "manifest.json");
 
         EvidenceRecord fromZip = JSON.readValue(entries.get("records/job_new.json"), EvidenceRecord.class);
@@ -242,7 +299,7 @@ class AuditQueryHandlerTest {
     void anEmptyPackStillCarriesASignedManifest() throws IOException {
         var file = handler.exportPack(new FilterSpec("nothing", null, null, null)).block();
 
-        Map<String, byte[]> entries = unzip(file.bytes());
+        Map<String, byte[]> entries = unzip(file);
         assertThat(entries.keySet()).containsExactly("manifest.json");
         JsonNode manifest = JSON.readTree(entries.get("manifest.json"));
         assertThat(manifest.get("files")).isEmpty();
@@ -354,7 +411,7 @@ class AuditQueryHandlerTest {
 
         var file = handler.exportPack(new FilterSpec("vm-restart", null, null, null)).block();
 
-        Map<String, byte[]> entries = unzip(file.bytes());
+        Map<String, byte[]> entries = unzip(file);
         assertThat(entries.keySet()).containsExactly("records/job_old.json", "platform.json", "manifest.json");
         EvidenceRecord stream = JSON.readValue(entries.get("platform.json"), EvidenceRecord.class);
         assertThat(stream.jobId()).isEqualTo(EvidenceRecord.PLATFORM);
@@ -364,11 +421,76 @@ class AuditQueryHandlerTest {
     }
 
     @Test
+    void aPackOfARecordWithManyEntriesIsSpooledToAFileAndDiscardedAfter() throws IOException {
+        int many = 5_000;
+        for (int i = 0; i < many; i++) {
+            store.append("job_big", EvidenceEntry.draft(NOW.minusSeconds(many - i), i == 0 ? EvidenceKind.REQUESTED : EvidenceKind.STEP, "ana",
+                    JSON.createObjectNode().put("workflow", "patch-cve").put("step", "host-" + i).put("output", Signatures.sha256Hex(("out" + i).getBytes(StandardCharsets.UTF_8)))));
+        }
+
+        SpooledFile file = handler.exportPack(new FilterSpec("patch-cve", null, null, null)).block();
+
+        assertThat(file.path()).startsWith(spool).exists();
+        assertThat(file.size()).isEqualTo(Files.size(file.path())).isGreaterThan(64 * 1024);
+        Map<String, byte[]> entries = unzip(file);
+        EvidenceRecord big = JSON.readValue(entries.get("records/job_big.json"), EvidenceRecord.class);
+        assertThat(big.entries()).hasSize(many);
+        assertThat(HashChain.verify(big.entries())).isEqualTo(-1);
+        JsonNode manifest = JSON.readTree(entries.get("manifest.json"));
+        assertThat(manifest.get("files").get(0).get("sha256").asText()).isEqualTo(Signatures.sha256Hex(entries.get("records/job_big.json")));
+        assertThat(signer.verify(HashChain.canonical(manifest.get("files")), manifest.get("signature").asText())).isTrue();
+
+        file.discard();
+        assertThat(file.path()).doesNotExist();
+        file.discard();
+    }
+
+    @Test
+    void aPackThatFailsHalfWrittenLeavesNoFileBehind() throws IOException {
+        ObjectMapper failing = JSON.copy().registerModule(new SimpleModule().addSerializer(EvidenceRecord.class, new JsonSerializer<EvidenceRecord>() {
+            @Override
+            public void serialize(EvidenceRecord value, JsonGenerator gen, SerializerProvider serializers) throws IOException {
+                gen.writeStartObject();
+                gen.writeStringField("jobId", value.jobId());
+                throw new IOException("the disk is full");
+            }
+        }));
+
+        StepVerifier.create(new AuditQueryHandler(store, signer, clock, failing, spool).exportPack(null))
+                .expectErrorMessage("the disk is full")
+                .verify();
+        try (var left = Files.list(spool)) {
+            assertThat(left).isEmpty();
+        }
+    }
+
+    @Test
+    void packsLeftUnsentForAnHourAreSweptWhenTheNextOneIsSpooled() throws IOException {
+        Path stale = Files.writeString(spool.resolve("evidence-pack-stale.zip"), "PK");
+        Files.setLastModifiedTime(stale, FileTime.from(NOW.minus(Duration.ofMinutes(61))));
+        Path sending = Files.writeString(spool.resolve("evidence-pack-sending.zip"), "PK");
+        Files.setLastModifiedTime(sending, FileTime.from(NOW.minus(Duration.ofMinutes(5))));
+        Path other = Files.writeString(spool.resolve("notes.txt"), "not a pack");
+        Files.setLastModifiedTime(other, FileTime.from(NOW.minus(Duration.ofDays(2))));
+
+        SpooledFile file = handler.exportPack(null).block();
+
+        assertThat(stale).doesNotExist();
+        assertThat(sending).exists();
+        assertThat(other).exists();
+        assertThat(file.path()).exists();
+    }
+
+    @Test
     void theDemoPropertiesCarryTheSigningKey() {
         PlatformProperties props = new PlatformProperties();
 
         assertThat(props.getAudit().getSigningKey()).isEmpty();
         assertThat(props.getAudit().getRetentionYears()).isEqualTo(7);
+    }
+
+    static Map<String, byte[]> unzip(SpooledFile file) throws IOException {
+        return unzip(Files.readAllBytes(file.path()));
     }
 
     static Map<String, byte[]> unzip(byte[] zip) throws IOException {

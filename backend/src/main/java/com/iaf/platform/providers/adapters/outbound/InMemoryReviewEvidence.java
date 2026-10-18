@@ -18,8 +18,9 @@ import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
 
 /**
  * The demo evidence store: per provider name, the last {@value #MAX_CONNECTIONS} connection tests
- * and the last {@value #MAX_TRIES} tries. A response larger than {@value #MAX_RESPONSE_BYTES} bytes
- * is kept without its body (the try still counts; the schema comparison skips it).
+ * and the last {@value #MAX_TRIES} tries, with a count of the older ones dropped to keep to that.
+ * A response larger than {@value #MAX_RESPONSE_BYTES} bytes is kept without its body (the try
+ * still counts; the schema comparison skips it).
  */
 @Profile("!postgres")
 @Component
@@ -32,19 +33,15 @@ public class InMemoryReviewEvidence implements ReviewEvidencePort {
 
     private final Map<String, Deque<ConnectionTest>> connections = new ConcurrentHashMap<>();
     private final Map<String, Deque<ActionTry>> tries = new ConcurrentHashMap<>();
+    private final Map<String, Integer> droppedConnections = new ConcurrentHashMap<>();
+    private final Map<String, Integer> droppedTries = new ConcurrentHashMap<>();
 
     @Override
     public void recordConnection(String provider, ConnectionTest test) {
         if (provider == null || test == null) {
             return;
         }
-        Deque<ConnectionTest> q = connections.computeIfAbsent(provider, k -> new ArrayDeque<>());
-        synchronized (q) {
-            q.addLast(test);
-            while (q.size() > MAX_CONNECTIONS) {
-                q.pollFirst();
-            }
-        }
+        append(connections.computeIfAbsent(provider, k -> new ArrayDeque<>()), test, MAX_CONNECTIONS, droppedConnections, provider);
     }
 
     @Override
@@ -52,14 +49,7 @@ public class InMemoryReviewEvidence implements ReviewEvidencePort {
         if (provider == null || tryResult == null) {
             return;
         }
-        ActionTry kept = bounded(tryResult);
-        Deque<ActionTry> q = tries.computeIfAbsent(provider, k -> new ArrayDeque<>());
-        synchronized (q) {
-            q.addLast(kept);
-            while (q.size() > MAX_TRIES) {
-                q.pollFirst();
-            }
-        }
+        append(tries.computeIfAbsent(provider, k -> new ArrayDeque<>()), bounded(tryResult), MAX_TRIES, droppedTries, provider);
     }
 
     @Override
@@ -67,12 +57,39 @@ public class InMemoryReviewEvidence implements ReviewEvidencePort {
         if (provider == null) {
             return ReviewEvidence.NONE;
         }
-        return new ReviewEvidence(snapshot(connections.get(provider)), snapshot(tries.get(provider)));
+        Deque<ConnectionTest> c = connections.get(provider);
+        Deque<ActionTry> t = tries.get(provider);
+        return new ReviewEvidence(snapshot(c), snapshot(t), dropped(c, droppedConnections, provider), dropped(t, droppedTries, provider));
+    }
+
+    /** Appends and drops the oldest entries beyond {@code keep}, counting them. */
+    private static <T> void append(Deque<T> q, T entry, int keep, Map<String, Integer> dropped, String provider) {
+        synchronized (q) {
+            q.addLast(entry);
+            int gone = 0;
+            while (q.size() > keep) {
+                q.pollFirst();
+                gone++;
+            }
+            if (gone > 0) {
+                dropped.merge(provider, gone, Integer::sum);
+            }
+        }
+    }
+
+    private static int dropped(Deque<?> q, Map<String, Integer> dropped, String provider) {
+        if (q == null) {
+            return 0;
+        }
+        synchronized (q) {
+            return dropped.getOrDefault(provider, 0);
+        }
     }
 
     /** A try as every store keeps it: without its body when the response is over {@value #MAX_RESPONSE_BYTES} bytes. */
     static ActionTry bounded(ActionTry t) {
-        return tooLarge(t) ? new ActionTry(t.action(), t.environment(), t.ok(), t.status(), t.durationMs(), t.errorClass(), null, t.verified(), t.at(), t.by()) : t;
+        return tooLarge(t) ? new ActionTry(t.action(), t.environment(), t.ok(), t.status(), t.durationMs(), t.errorClass(), null, t.verified(), t.at(), t.by(),
+                t.endpoint(), t.credential()) : t;
     }
 
     private static <T> List<T> snapshot(Deque<T> q) {

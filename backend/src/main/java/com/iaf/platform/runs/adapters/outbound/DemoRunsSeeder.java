@@ -478,7 +478,8 @@ public class DemoRunsSeeder {
                 Attention attention = new Attention(e.id(), e.error(), Attention.OPTIONS, at, Attention.DEFAULT_TIMEOUT);
                 Instant resolvedAt = at.plus(d.after());
                 pending.add(new Pending(at, 4, () -> events.attention(job.id(), attention)));
-                pending.add(new Pending(resolvedAt, 1, () -> events.attentionResolved(job.id(), e.id(), d.decision().action().json(), d.decision().by(), resolvedAt)));
+                pending.add(new Pending(resolvedAt, 1, () -> events.attentionResolved(job.id(), e.id(), d.decision().action().json(), d.decision().by(),
+                        d.decision().input(), resolvedAt)));
             }
         }
     }

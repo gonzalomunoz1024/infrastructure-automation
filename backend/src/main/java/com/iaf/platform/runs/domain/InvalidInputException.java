@@ -26,15 +26,18 @@ public class InvalidInputException extends IllegalArgumentException {
     private final transient List<RowProblems> rows;
 
     public InvalidInputException(String workflow, List<Problem> problems) {
-        super("Invalid input for " + workflow + ": problems: " + json(MAPPER.valueToTree(problems)));
-        this.problems = problems;
-        this.rows = null;
+        this("Invalid input for " + workflow + ": problems: " + json(MAPPER.valueToTree(problems)), problems, null);
     }
 
-    public InvalidInputException(String workflow, List<RowProblems> rows, boolean batch) {
-        super("Invalid rows for " + workflow + ": rows: " + json(rowsJson(rows)));
-        this.problems = null;
+    private InvalidInputException(String message, List<Problem> problems, List<RowProblems> rows) {
+        super(message);
+        this.problems = problems;
         this.rows = rows;
+    }
+
+    /** The rows of a batch that failed validation, each with its problems. */
+    public static InvalidInputException rows(String workflow, List<RowProblems> rows) {
+        return new InvalidInputException("Invalid rows for " + workflow + ": rows: " + json(rowsJson(rows)), null, rows);
     }
 
     public List<Problem> problems() {

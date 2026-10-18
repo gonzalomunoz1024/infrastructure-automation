@@ -162,7 +162,6 @@ public class RunsQueryHandler implements RunsQueries {
         Instant at = job.startedAt() == null ? Instant.EPOCH : job.startedAt();
         return projection.jobs(new JobQuery(job.workflow(), null, null, false, 0)).stream()
                 .filter(j -> !j.id().equals(job.id()))
-                .filter(j -> job.workflow().equals(j.workflow()))
                 .filter(j -> j.kind() == job.kind())
                 .filter(j -> j.status() == JobStatus.SUCCEEDED)
                 .filter(j -> (j.parentId() == null) == (job.parentId() == null))
@@ -184,9 +183,6 @@ public class RunsQueryHandler implements RunsQueries {
             List<JobOutcome> out = new ArrayList<>();
             for (Job j : projection.jobs(new JobQuery(workflow == null || workflow.isBlank() ? null : workflow, null, null, false, 0))) {
                 if (j.status() == null || !j.status().terminal() || j.isBatch()) {
-                    continue;
-                }
-                if (workflow != null && !workflow.isBlank() && !workflow.equals(j.workflow())) {
                     continue;
                 }
                 if (version != null && !version.isBlank() && !version.equals(j.version())) {

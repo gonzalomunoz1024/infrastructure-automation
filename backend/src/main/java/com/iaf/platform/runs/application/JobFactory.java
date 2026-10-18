@@ -160,8 +160,12 @@ public final class JobFactory {
                 .build();
     }
 
-    /** A new job that replays {@code source}'s steps before {@code fromStep} and runs from there. */
-    public static Job rerun(Job source, String fromStep, JsonNode input, Identity who, String channel, ChangeTicket change, Instant now) {
+    /**
+     * A new job that replays {@code source}'s steps before {@code fromStep} and runs from there,
+     * with {@code preview}: the source's own while the input is the same, else one computed for
+     * the new input (or none).
+     */
+    public static Job rerun(Job source, String fromStep, JsonNode input, Preview preview, Identity who, String channel, ChangeTicket change, Instant now) {
         return Job.builder()
                 .id(Ids.next("job"))
                 .workflow(source.workflow())
@@ -175,7 +179,7 @@ public final class JobFactory {
                 .input(input == null ? source.input() : input)
                 .steps(List.of())
                 .approvals(List.of())
-                .preview(source.preview())
+                .preview(preview)
                 .change(change)
                 .traceId(TraceIds.newTraceId())
                 .definition(source.definition())

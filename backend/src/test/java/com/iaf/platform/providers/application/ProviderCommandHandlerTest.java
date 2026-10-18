@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -40,6 +41,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.ports.CredentialsPort.CredentialInfo;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -61,6 +63,7 @@ import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort.ProbeResult;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.providers.ports.outbound.ReviewCall;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
@@ -71,6 +74,7 @@ import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
+import reactor.test.publisher.PublisherProbe;
 
 class ProviderCommandHandlerTest {
 
@@ -139,6 +143,7 @@ class ProviderCommandHandlerTest {
     GitSourcePort gitSource;
     ReleaseQueries releases;
     CredentialsPort credentials;
+    SecretValues secrets;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -157,7 +162,8 @@ class ProviderCommandHandlerTest {
         when(releases.providerCandidate(anyString())).thenReturn(Mono.empty());
         credentials = mock(CredentialsPort.class);
         when(credentials.info(any())).thenReturn(Mono.empty());
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases, credentials);
+        secrets = new SecretValues();
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases, credentials, secrets);
         handler.listen();
     }
 
@@ -217,9 +223,17 @@ class ProviderCommandHandlerTest {
     @Test
     void importsASpecByUrl() {
         when(http.fetch("https://fleet.example.com/openapi.yaml")).thenReturn(Mono.just(spec()));
-        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", "https://fleet.example.com/openapi.yaml", null)))
+        StepVerifier.create(as(handler.importSpec(new ImportSpec("openapi", "https://fleet.example.com/openapi.yaml", null)), OWNER))
                 .assertNext(s -> assertThat(s.sha256()).hasSize(64))
                 .verifyComplete();
+        DomainEvent imported = event("provider.spec-imported").orElseThrow();
+        assertThat(imported.actor()).isEqualTo("mateo");
+        assertThat(imported.data().path("source").asText()).isEqualTo("url");
+        assertThat(imported.data().path("url").asText()).isEqualTo("https://fleet.example.com/openapi.yaml");
+        assertThat(imported.data().path("sha256").asText()).hasSize(64).isEqualTo(imported.aggregateId());
+        assertThat(imported.data().path("operations").asInt()).isEqualTo(8);
+        assertThat(imported.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(imported.data().toString()).as("the document itself stays out of the trail").doesNotContain("paths");
     }
 
     @Test
@@ -249,6 +263,13 @@ class ProviderCommandHandlerTest {
                     assertThat(s.sha256()).hasSize(64);
                 })
                 .verifyComplete();
+        JsonNode imported = event("provider.spec-imported").orElseThrow().data();
+        assertThat(imported.path("source").asText()).isEqualTo("git");
+        assertThat(imported.path("repo").asText()).isEqualTo("https://github.com/acme/machines-api");
+        assertThat(imported.path("ref").asText()).isEqualTo("v2.4.0");
+        assertThat(imported.path("path").asText()).isEqualTo("api/openapi.yaml");
+        assertThat(imported.path("commit").asText()).isEqualTo("3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c");
+        assertThat(imported.path("credential").asText()).as("the reference, never the token").isEqualTo("vault:github/read-token");
     }
 
     @Test
@@ -319,9 +340,20 @@ class ProviderCommandHandlerTest {
         assertThat(recorded.get(1).ok()).isFalse();
         assertThat(recorded.get(1).message()).isEqualTo("HEAD 401");
         assertThat(recorded).allMatch(c -> "mateo".equals(c.by()) && NOW.equals(c.at()));
+        DomainEvent tested = event("provider.connection-tested").orElseThrow();
+        assertThat(tested.aggregateId()).isEqualTo("fleet");
+        assertThat(tested.actor()).isEqualTo("mateo");
+        assertThat(tested.data().path("provider").asText()).isEqualTo("fleet");
+        assertThat(tested.data().path("environments")).extracting(JsonNode::asText).containsExactly("dev", "test");
+        assertThat(tested.data().path("ok").path("dev").asBoolean()).isTrue();
+        assertThat(tested.data().path("ok").path("test").asBoolean()).isFalse();
+        assertThat(tested.data().path("credential").asText()).isEqualTo("vault:fleet/token");
+        assertThat(tested.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(tested.data().has("message")).as("the probe's answer is evidence, not audit").isFalse();
         // without a provider name nothing is recorded, and a bad name is refused
         StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null))).expectNextCount(1).verifyComplete();
         assertThat(evidence.evidence("fleet").connections()).hasSize(2);
+        assertThat(published.stream().filter(e -> e.type().equals("provider.connection-tested")).count()).as("an unnamed test is still audited").isEqualTo(2);
         StepVerifier.create(handler.testConnection(new TestConnection(endpoints, null, "Fleet API"))).expectError(IllegalArgumentException.class).verify();
     }
 
@@ -349,7 +381,40 @@ class ProviderCommandHandlerTest {
         assertThat(t.environment()).isEqualTo("dev");
         assertThat(t.ok()).isTrue();
         assertThat(t.response().path("name").asText()).isEqualTo("web");
+        assertThat(t.response().path("apiToken").asText()).as("the evidence copy is redacted too").isEqualTo("vault:redacted");
+        assertThat(t.response().toString()).doesNotContain("s3cr3t");
         assertThat(t.by()).isEqualTo("mateo");
+        DomainEvent tried = event("provider.tried").orElseThrow();
+        assertThat(tried.aggregateId()).isEqualTo("fleet");
+        assertThat(tried.actor()).isEqualTo("mateo");
+        assertThat(tried.data().path("provider").asText()).isEqualTo("fleet");
+        assertThat(tried.data().path("action").asText()).isEqualTo("vm.get");
+        assertThat(tried.data().path("environment").asText()).isEqualTo("dev");
+        assertThat(tried.data().path("ok").asBoolean()).isTrue();
+        assertThat(tried.data().path("by").asText()).isEqualTo("mateo");
+        assertThat(tried.data().has("response")).as("the answer never goes on the trail").isFalse();
+        assertThat(tried.data().toString()).doesNotContain("s3cr3t").doesNotContain("web");
+    }
+
+    @Test
+    void aSecretThePlatformResolvedIsRedactedFromTheEvidenceWhereverTheAnswerEchoesIt() {
+        secrets.remember("tok-3n-value");
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"note\":\"Bearer tok-3n-value\",\"credential\":\"vault:fleet/token\","
+                + "\"session\":\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhbmEifQ.c2lnbmF0dXJlLXBhcnQ\"}")));
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", json("{\"id\":\"vm-1\"}"))), OWNER))
+                .assertNext(r -> {
+                    assertThat(r.response().path("note").asText()).as("the caller still sees the real answer").isEqualTo("Bearer tok-3n-value");
+                    var sample = ProviderYaml.parse(r.yaml()).action("vm.get").orElseThrow().sample();
+                    assertThat(sample.path("note").asText()).isEqualTo("Bearer vault:redacted");
+                    assertThat(sample.path("session").asText()).as("token shapes are masked too").isEqualTo("vault:redacted");
+                    assertThat(sample.path("credential").asText()).as("a reference names a secret without holding it").isEqualTo("vault:fleet/token");
+                })
+                .verifyComplete();
+        ActionTry t = evidence.evidence("fleet").tries().get(0);
+        assertThat(t.response().path("note").asText()).isEqualTo("Bearer vault:redacted");
+        assertThat(t.response().path("session").asText()).isEqualTo("vault:redacted");
+        assertThat(t.response().path("credential").asText()).isEqualTo("vault:fleet/token");
+        assertThat(t.response().toString()).doesNotContain("tok-3n-value");
     }
 
     @Test
@@ -367,6 +432,10 @@ class ProviderCommandHandlerTest {
         assertThat(t.status()).isEqualTo(404);
         assertThat(t.errorClass()).isEqualTo("not_found");
         assertThat(t.response()).isNull();
+        JsonNode tried = event("provider.tried").orElseThrow().data();
+        assertThat(tried.path("ok").asBoolean()).isFalse();
+        assertThat(tried.path("status").asInt()).isEqualTo(404);
+        assertThat(tried.path("errorClass").asText()).isEqualTo("not_found");
     }
 
     @Test
@@ -405,6 +474,24 @@ class ProviderCommandHandlerTest {
                     assertThat(r.mismatches()).isEmpty();
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    void aTryAndItsVerifyAreReviewCallsThatRecordNoSample() {
+        List<String> marked = new ArrayList<>();
+        when(calls.call(any())).thenAnswer(invocation -> {
+            ProviderCall c = invocation.getArgument(0);
+            return Mono.deferContextual(ctx -> {
+                marked.add(c.action().id() + "=" + ReviewCall.in(ctx));
+                return c.action().id().equals("vm.get")
+                        ? Mono.<JsonNode>error(new ProviderCallException("not_found", "gone", false, 404))
+                        : Mono.<JsonNode>just(json("{\"deleted\":true}"));
+            });
+        });
+        StepVerifier.create(handler.tryAction(new TryAction(YAML, "vm.delete", "dev", json("{\"id\":\"vm-1\"}"))))
+                .assertNext(r -> assertThat(r.verified()).isTrue())
+                .verifyComplete();
+        assertThat(marked).containsExactly("vm.delete=true", "vm.get=true");
     }
 
     @Test
@@ -474,12 +561,57 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), admin)).expectNextCount(1).verifyComplete();
         StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), admin)).expectNextCount(1).verifyComplete();
         owned("vault:fleet/token", null);
+        // the outsider's own team's draft: the try is evidence for a provider they may edit
+        String theirs = YAML.replace("owner: team-compute", "owner: team-data");
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
-        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(theirs, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
         // a reference the store does not know is judged where it is resolved, as before
         when(credentials.info("vault:fleet/token")).thenReturn(Mono.empty());
         StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), OUTSIDER)).expectNextCount(1).verifyComplete();
-        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.tryAction(new TryAction(theirs, "vm.get", "dev", null)), OUTSIDER)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
+    void onlyTheProvidersTeamAddsToItsReviewEvidence() {
+        when(http.probe(any(), any())).thenReturn(Mono.just(new ProbeResult(true, 12, "HEAD 200 in 12 ms")));
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\"}")));
+        Map<String, String> endpoints = Map.of("dev", "https://fleet-dev.example.com");
+        JsonNode auth = json("{\"type\":\"none\"}");
+        Identity guest = new Identity("guest", "Guest", null, List.of(), List.of("user"), false, Identity.Kind.USER);
+
+        // a draft that is not published: its owner team, or any team member when it names none
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("provider fleet").hasMessageContaining("team-compute"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), guest))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("brand-new"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "brand-new")), OUTSIDER)).expectNextCount(1).verifyComplete();
+        // without a provider name nothing is kept, so nothing is judged but the credential
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth)), guest)).expectNextCount(1).verifyComplete();
+        verify(calls, never()).call(any());
+        verify(http, org.mockito.Mockito.times(2)).probe(any(), any());
+
+        // a published provider: its stored owner decides, whatever the posted file claims
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
+        String claimed = YAML.replace("owner: team-compute", "owner: team-data");
+        StepVerifier.create(as(handler.tryAction(new TryAction(claimed, "vm.get", "dev", null)), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("team-compute"))
+                .verify();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet")), OUTSIDER))
+                .expectError(ForbiddenException.class).verify();
+        verify(calls, never()).call(any());
+        verify(http, org.mockito.Mockito.times(2)).probe(any(), any());
+        assertThat(evidence.evidence("fleet").tries()).isEmpty();
+        assertThat(evidence.evidence("fleet").connections()).isEmpty();
+
+        // its team's try is kept with the endpoint and the credential reference it used
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), OWNER)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet")), OWNER)).expectNextCount(1).verifyComplete();
+        ActionTry kept = evidence.evidence("fleet").tries().get(0);
+        assertThat(kept.endpoint()).isEqualTo("https://fleet-dev.example.com");
+        assertThat(kept.credential()).isEqualTo("vault:fleet/token");
+        assertThat(evidence.evidence("fleet").connections()).hasSize(1);
     }
 
     @Test
@@ -598,7 +730,12 @@ class ProviderCommandHandlerTest {
         assertThat(cr.diff()).contains("+metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0 }");
         assertThat(cr.createdAt()).isEqualTo(NOW);
         assertThat(event("provider.change-requested")).isPresent();
-        assertThat(event("provider.change-requested").orElseThrow().data().path("changeRequestId").asText()).isEqualTo(cr.id());
+        JsonNode requested = event("provider.change-requested").orElseThrow().data();
+        assertThat(requested.path("changeRequestId").asText()).isEqualTo(cr.id());
+        assertThat(requested.path("name").asText()).isEqualTo("fleet");
+        assertThat(requested.path("version").asText()).isEqualTo("1.1.0");
+        assertThat(requested.path("by").asText()).isEqualTo("mateo");
+        assertThat(requested.path("owner").asText()).as("the team a reviewer is notified in").isEqualTo("team-compute");
         verify(store, never()).save(any());
     }
 
@@ -628,6 +765,27 @@ class ProviderCommandHandlerTest {
     @Test
     void onlyTheOwnerTeamPublishes() {
         StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OUTSIDER)).expectError(ForbiddenException.class).verify();
+    }
+
+    @Test
+    void aPublishedProviderIsJudgedByItsStoredOwnerNotTheOwnerThePostedFileNames() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.all()).thenReturn(List.of());
+        proven();
+        // ana re-posts team-compute's provider under her own team with the next version
+        String claimed = YAML.replace("owner: team-compute", "owner: team-data");
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Ana may not change provider fleet (owned by team-compute)"))
+                .verify();
+        // the owner team cannot hand it to a team it is not in either
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("owned by team-data"))
+                .verify();
+        verify(changeRequests, never()).save(any());
+        // an admin may hand it over
+        Identity admin = new Identity("gonzalo", "Gonzalo", null, List.of("team-platform"), List.of("admin"), true, Identity.Kind.USER);
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), admin)).expectNextCount(1).verifyComplete();
     }
 
     @Test
@@ -685,6 +843,67 @@ class ProviderCommandHandlerTest {
         events.publish("change-request.merged", "change-request", "cr_2", "gonzalo", data);
         verify(store).save(any());
         assertThat(event("provider.published")).isPresent();
+    }
+
+    ChangeRequest mergedRequest(String id, ChangeRequest.Kind kind, ChangeRequest.Status status, String strategy) {
+        return new ChangeRequest(id, kind, "fleet", "1.1.0", "b", "t", "mateo", status, List.of(), strategy, YAML, "", NOW,
+                status == ChangeRequest.Status.MERGED ? NOW : null, status == ChangeRequest.Status.MERGED ? "gonzalo" : null, null);
+    }
+
+    @Test
+    void publishMergedPublishesTheFileOfAMergedChangeRequestOnce() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.get("cr_9")).thenReturn(Optional.of(mergedRequest("cr_9", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.MERGED, "all")));
+
+        StepVerifier.create(handler.publishMerged("cr_9")).verifyComplete();
+
+        ArgumentCaptor<StoredProvider> saved = ArgumentCaptor.forClass(StoredProvider.class);
+        verify(store).save(saved.capture());
+        assertThat(saved.getValue().definition().metadata().version()).isEqualTo("1.1.0");
+        assertThat(saved.getValue().updatedBy()).as("who merged it").isEqualTo("gonzalo");
+        DomainEvent e = event("provider.published").orElseThrow();
+        assertThat(e.data().path("previous").asText()).isEqualTo("1.0.0");
+        assertThat(e.data().path("strategy").asText()).isEqualTo("all");
+        assertThat(e.data().path("by").asText()).isEqualTo("gonzalo");
+
+        // once the store keeps the version, a second call and the merged event change nothing
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        StepVerifier.create(handler.publishMerged("cr_9")).verifyComplete();
+        ObjectNode data = JSON.createObjectNode();
+        data.put("id", "cr_9");
+        data.put("kind", "provider");
+        data.put("yaml", YAML);
+        events.publish("change-request.merged", "change-request", "cr_9", "gonzalo", data);
+        verify(store, org.mockito.Mockito.times(1)).save(any());
+        verify(store, never()).saveVersion(any());
+        assertThat(published.stream().filter(p -> p.type().equals("provider.published"))).hasSize(1);
+    }
+
+    @Test
+    void publishMergedRollsACanaryOutBesideTheCurrentVersion() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.get("cr_8")).thenReturn(Optional.of(mergedRequest("cr_8", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.MERGED, "canary")));
+        StepVerifier.create(handler.publishMerged("cr_8")).verifyComplete();
+        verify(store).saveVersion(argThat(p -> p.definition().metadata().version().equals("1.1.0")));
+        verify(store, never()).save(any());
+        assertThat(event("provider.published").orElseThrow().data().path("strategy").asText()).isEqualTo("canary");
+    }
+
+    @Test
+    void publishMergedRefusesWhatIsNotAMergedProviderChangeRequest() {
+        when(changeRequests.get("cr_open")).thenReturn(Optional.of(mergedRequest("cr_open", ChangeRequest.Kind.PROVIDER, ChangeRequest.Status.OPEN, "all")));
+        when(changeRequests.get("cr_wf")).thenReturn(Optional.of(mergedRequest("cr_wf", ChangeRequest.Kind.WORKFLOW, ChangeRequest.Status.MERGED, "all")));
+        when(changeRequests.get("cr_none")).thenReturn(Optional.empty());
+
+        StepVerifier.create(handler.publishMerged("cr_none")).expectError(NotFoundException.class).verify();
+        StepVerifier.create(handler.publishMerged("cr_wf")).expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(handler.publishMerged("cr_open"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("is open"))
+                .verify();
+        StepVerifier.create(handler.publishMerged(" ")).expectError(IllegalArgumentException.class).verify();
+        verify(store, never()).save(any());
+        verify(store, never()).saveVersion(any());
+        assertThat(event("provider.published")).isEmpty();
     }
 
     @Test
@@ -807,7 +1026,9 @@ class ProviderCommandHandlerTest {
         assertThat(response.path("properties").path("name").path("type").asText()).isEqualTo("string");
         assertThat(response.path("properties").path("powerState").path("enum")).hasSize(2);
         assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "spec-pinned", "credentials", "actions", "slo", "responses");
-        assertThat(event("provider.change-requested").orElseThrow().data().path("change").asText()).isEqualTo("overrides");
+        JsonNode requested = event("provider.change-requested").orElseThrow().data();
+        assertThat(requested.path("change").asText()).isEqualTo("overrides");
+        assertThat(requested.path("owner").asText()).isEqualTo("team-compute");
     }
 
     @Test
@@ -889,6 +1110,29 @@ class ProviderCommandHandlerTest {
         assertThat(cr.version()).as("the next patch of the candidate, not of the current version").isEqualTo("1.1.1");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.diff()).contains("-metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0 }");
+    }
+
+    @Test
+    void theRunningCandidateIsComposedIntoTheEditNotWaitedFor() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        // a release store that answers later, on another thread
+        PublisherProbe<String> candidate = PublisherProbe.of(Mono.just("1.1.0").delayElement(Duration.ofMillis(30)));
+        when(releases.providerCandidate("fleet")).thenReturn(candidate.mono());
+        StepVerifier.create(as(handler.overrides("fleet", new SetOverride("vm.get", json("{\"id\":\"vm-1\",\"cpu\":4}"))), OWNER))
+                .expectNextCount(1).verifyComplete();
+        candidate.assertWasSubscribed();
+        ChangeRequest cr = opened();
+        assertThat(cr.version()).isEqualTo("1.1.1");
+        assertThat(cr.strategy()).isEqualTo("canary");
+
+        // no release running: the current version, for every call
+        org.mockito.Mockito.reset(changeRequests);
+        when(changeRequests.all()).thenReturn(List.of());
+        when(releases.providerCandidate("fleet")).thenReturn(Mono.<String>empty().delaySubscription(Duration.ofMillis(10)));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, null, null)), OWNER)).expectNextCount(1).verifyComplete();
+        assertThat(opened().version()).isEqualTo("1.0.1");
+        assertThat(opened().strategy()).isEqualTo("all");
     }
 
     @Test

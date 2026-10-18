@@ -19,5 +19,12 @@ public interface ResourceStorePort {
 
     Optional<Resource> resource(String id);
 
+    /**
+     * The resources built directly from {@code id} (their {@code builtFrom} names it), in the
+     * order of {@link #resources()}; empty for an unknown or null id. Lineage and retirements walk
+     * this instead of reading the whole registry.
+     */
+    List<Resource> builtFrom(String id);
+
     void save(Resource resource);
 }

@@ -56,6 +56,22 @@ class JdbcProjectionStoreTest {
         }
 
         @Test
+        void aJobWhoseDefinitionRowIsMissingIsStillListedWithoutItsSnapshot() {
+            ProjectionStore store = newStore();
+            store.save(job("job_1", "vm-restart", JobStatus.RUNNING, T0));
+            store.save(job("job_2", "patch-cve", JobStatus.RUNNING, T0.plusSeconds(1)));
+            String patchHash = db().jdbc().first("SELECT definition_hash FROM runs_jobs WHERE id = ?", (rs, i) -> rs.getString(1), "job_2").orElseThrow();
+            db().jdbc().update("DELETE FROM runs_definitions WHERE hash = ?", patchHash);
+
+            ProjectionStore restarted = reopen();
+
+            assertThat(restarted.jobs(JobQuery.ALL)).extracting(Job::id).containsExactly("job_2", "job_1");
+            assertThat(restarted.job("job_2").orElseThrow().definition()).isNull();
+            assertThat(restarted.job("job_2").orElseThrow().workflow()).isEqualTo("patch-cve");
+            assertThat(restarted.job("job_1").orElseThrow().definition()).isNotNull();
+        }
+
+        @Test
         void keepsEverySeededDemoJobExactly() {
             InMemoryProjectionStore reference = new InMemoryProjectionStore();
             RunsTestWiring w = new RunsTestWiring(new Mirror(reference, newStore()));

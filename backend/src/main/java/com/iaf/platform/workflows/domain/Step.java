@@ -9,7 +9,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 /**
  * One step of a workflow. {@code with} holds the step's own parameters as the YAML spells them;
  * container steps carry their children in {@code branches} (fork), {@code cases} (switch),
- * {@code children} (for, try) and {@code catchBlock} (try).
+ * {@code children} (for, try) and {@code catchBlock} (try). {@code attentionTimeout} is how long
+ * a failed step that pauses for a person's decision waits for one before it aborts (a duration
+ * like {@code PT1H} or {@code 4h}; null means the platform's default of seven days).
  */
 public record Step(
         String id,
@@ -21,6 +23,7 @@ public record Step(
         Retry retry,
         String timeout,
         boolean pauseOnFailure,
+        String attentionTimeout,
         Position position,
         String notes,
         List<List<Step>> branches,
@@ -28,6 +31,14 @@ public record Step(
         List<Step> children,
         @JsonProperty("catch") CatchBlock catchBlock,
         List<Step> compensate) {
+
+    /** A step without an {@code attentionTimeout}, as the steps were before it existed. */
+    public Step(String id, String name, StepType type, JsonNode with, Output output, String assertion, Retry retry, String timeout,
+            boolean pauseOnFailure, Position position, String notes, List<List<Step>> branches, List<SwitchCase> cases, List<Step> children,
+            CatchBlock catchBlock, List<Step> compensate) {
+        this(id, name, type, with, output, assertion, retry, timeout, pauseOnFailure, null, position, notes, branches, cases, children, catchBlock,
+                compensate);
+    }
 
     public record Output(String as) {
     }
@@ -84,14 +95,16 @@ public record Step(
     }
 
     public Step withPosition(Position p) {
-        return new Step(id, name, type, with, output, assertion, retry, timeout, pauseOnFailure, p, notes, branches, cases, children, catchBlock, compensate);
+        return new Step(id, name, type, with, output, assertion, retry, timeout, pauseOnFailure, attentionTimeout, p, notes, branches, cases, children,
+                catchBlock, compensate);
     }
 
     public Step withParams(JsonNode newWith) {
-        return new Step(id, name, type, newWith, output, assertion, retry, timeout, pauseOnFailure, position, notes, branches, cases, children, catchBlock, compensate);
+        return new Step(id, name, type, newWith, output, assertion, retry, timeout, pauseOnFailure, attentionTimeout, position, notes, branches, cases,
+                children, catchBlock, compensate);
     }
 
     public static Step simple(String id, String name, StepType type, JsonNode with) {
-        return new Step(id, name, type, with, null, null, null, null, true, null, null, null, null, null, null, null);
+        return new Step(id, name, type, with, null, null, null, null, true, null, null, null, null, null, null, null, null);
     }
 }

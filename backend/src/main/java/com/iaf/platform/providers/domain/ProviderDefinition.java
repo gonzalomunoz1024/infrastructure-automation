@@ -92,14 +92,23 @@ public record ProviderDefinition(
             JsonNode vars,             // ansible/terraform: variables that become inputs
             String description,
             String effectDetail,       // one line the preview shows when there is no plan action
-            JsonNode recorded) {       // where the sample came from: { environment, at }
+            JsonNode recorded,         // where the sample came from: { environment, at }
+            Slo slo) {                 // the action's own SLO, or null to take the provider's
 
-        /** An action without a declared effect detail or a recorded sample origin. */
+        /** An action without an SLO of its own. */
+        public Action(String id, String title, String operation, String method, String path, Effect effect, boolean retrySafe,
+                boolean approvalRequired, String plan, Verify verify, JsonNode input, JsonNode output, JsonNode sample, JsonNode example,
+                String playbook, JsonNode vars, String description, String effectDetail, JsonNode recorded) {
+            this(id, title, operation, method, path, effect, retrySafe, approvalRequired, plan, verify, input, output, sample, example,
+                    playbook, vars, description, effectDetail, recorded, null);
+        }
+
+        /** An action without a declared effect detail, a recorded sample origin or an SLO of its own. */
         public Action(String id, String title, String operation, String method, String path, Effect effect, boolean retrySafe,
                 boolean approvalRequired, String plan, Verify verify, JsonNode input, JsonNode output, JsonNode sample, JsonNode example,
                 String playbook, JsonNode vars, String description) {
             this(id, title, operation, method, path, effect, retrySafe, approvalRequired, plan, verify, input, output, sample, example,
-                    playbook, vars, description, null, null);
+                    playbook, vars, description, null, null, null);
         }
 
         public boolean destructive() {
@@ -154,8 +163,23 @@ public record ProviderDefinition(
         return actions().stream().filter(a -> a.id().equals(id)).findFirst();
     }
 
+    /** Whether any action creates, changes or deletes something: such a provider is held to the stricter review gates. */
+    public boolean changesThings() {
+        return actions().stream().anyMatch(a -> a.effect() == Effect.CREATE || a.effect() == Effect.CHANGE || a.effect() == Effect.DELETE);
+    }
+
     public Slo slo() {
         return spec.slo() == null ? Slo.DEFAULT : spec.slo();
+    }
+
+    /** The SLO an action is judged against: its own when it declares one, else the provider's. */
+    public Slo sloOf(Action action) {
+        return action == null || action.slo() == null ? slo() : action.slo();
+    }
+
+    /** The SLO of an action by id: the action's own, else the provider's (also for an action the file no longer has). */
+    public Slo sloOf(String actionId) {
+        return actionId == null ? slo() : action(actionId).map(this::sloOf).orElseGet(this::slo);
     }
 
     public List<String> environments() {

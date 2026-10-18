@@ -53,7 +53,8 @@ workflow:
   do:
     - useVm:
         name: Use VM
-        use: { type: vm, id: "{{ $input.vmId }}" }
+        # the platform team patches every team's VMs: the step opts out of the owner-team check
+        use: { type: vm, id: "{{ $input.vmId }}", checkAccess: false }
         output: { as: vm }
     - needsApproval:
         name: Critical in prod?

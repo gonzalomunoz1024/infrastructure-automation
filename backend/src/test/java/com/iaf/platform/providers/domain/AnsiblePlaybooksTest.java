@@ -297,7 +297,9 @@ class AnsiblePlaybooksTest {
         assertThat(def.action("checks.health").orElseThrow().retrySafe()).isTrue();
         assertThat(def.action("vm.restart").orElseThrow().retrySafe()).isFalse();
         assertThat(def.action("vm.restart").orElseThrow().playbook()).isEqualTo("vm/restart.yml");
-        assertThat(ProviderChecks.check(yaml).errors()).isEmpty();
+        assertThat(ProviderChecks.check(yaml).errors()).as("the playbooks change things: the alert channel is the one gate left to the author")
+                .extracting(p -> p.code()).containsExactly("alerts.channel");
+        assertThat(ProviderChecks.check(yaml.replace("  slo:", "  alerts: { channel: \"#platform-alerts\" }\n  slo:")).errors()).isEmpty();
         assertThat(ProviderReview.review(def, ReviewEvidence.NONE).ready()).isTrue();
     }
 

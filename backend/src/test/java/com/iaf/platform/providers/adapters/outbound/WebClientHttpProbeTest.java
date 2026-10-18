@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,11 +29,13 @@ class WebClientHttpProbeTest {
     HttpServer server;
     String base;
     CredentialsPort credentials;
+    AtomicInteger hits = new AtomicInteger();
     WebClientHttpProbe probe;
 
     @BeforeEach
     void start() throws IOException {
         server = LocalHttp.start(ex -> {
+            hits.incrementAndGet();
             String path = ex.getRequestURI().getPath();
             String method = ex.getRequestMethod();
             String auth = ex.getRequestHeaders().getFirst("Authorization");
@@ -144,6 +147,23 @@ class WebClientHttpProbeTest {
     }
 
     @Test
+    void aReferenceThatIsNotInTheVaultFailsTheProbeInsteadOfProbingUnauthenticated() {
+        when(credentials.resolve("vault:fleet/missing")).thenReturn(Mono.empty());
+        // /ok answers anyone: an unauthenticated probe would pass while every real call fails credential_missing
+        StepVerifier.create(probe.probe(base + "/ok", new Auth("bearer", "vault:fleet/missing", null)))
+                .assertNext(r -> {
+                    assertThat(r.ok()).isFalse();
+                    assertThat(r.message()).contains("vault:fleet/missing").contains("not in the vault");
+                })
+                .verifyComplete();
+        assertThat(hits.get()).isZero();
+        // with no credential named the probe still checks the host is there
+        StepVerifier.create(probe.probe(base + "/ok", new Auth("bearer", null, null)))
+                .assertNext(r -> assertThat(r.ok()).isTrue())
+                .verifyComplete();
+    }
+
+    @Test
     void serverErrorsAndUnreachableHostsAreNotOkButNeverThrow() throws IOException {
         StepVerifier.create(probe.probe(base + "/down", NONE))
                 .assertNext(r -> {
@@ -168,11 +188,20 @@ class WebClientHttpProbeTest {
 
     @Test
     void exampleHostsAreSimulatedInTheDemo() {
+        when(credentials.resolve("vault:vsphere/token")).thenReturn(Mono.just("tok"));
         StepVerifier.create(probe.probe("https://vcenter-dev.example.com", new Auth("bearer", "vault:vsphere/token", null)))
                 .assertNext(r -> {
                     assertThat(r.ok()).isTrue();
                     assertThat(r.durationMs()).isBetween(20L, 80L);
                     assertThat(r.message()).contains("Simulated");
+                })
+                .verifyComplete();
+        // a simulated host still needs the credential to be in the vault
+        when(credentials.resolve("vault:vsphere/missing")).thenReturn(Mono.empty());
+        StepVerifier.create(probe.probe("https://vcenter-dev.example.com", new Auth("bearer", "vault:vsphere/missing", null)))
+                .assertNext(r -> {
+                    assertThat(r.ok()).isFalse();
+                    assertThat(r.message()).contains("vault:vsphere/missing");
                 })
                 .verifyComplete();
         assertThat(WebClientHttpProbe.isSimulated("example.com")).isTrue();

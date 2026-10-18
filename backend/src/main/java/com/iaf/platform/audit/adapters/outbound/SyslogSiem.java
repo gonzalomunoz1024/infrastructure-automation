@@ -19,7 +19,6 @@ import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
-import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -40,11 +39,11 @@ import jakarta.annotation.PreDestroy;
  *
  * PRI is {@code facility * 8 + 6} (informational). A message too large for one datagram keeps its
  * structured data and replaces its JSON with {@code {"truncated":true,...}}; the full entry stays in
- * the evidence store.
+ * the evidence store. Not {@code @Primary}, like {@link SplunkHecSiem}: the profile and the
+ * destination select it, and it runs beside the HEC export when both are set.
  */
 @Component
 @Profile("siem")
-@Primary
 @ConditionalOnExpression("!'${platform.siem.syslog.host:}'.isBlank()")
 public class SyslogSiem implements SiemPort {
 

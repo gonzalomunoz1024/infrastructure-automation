@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
@@ -38,7 +39,6 @@ import com.iaf.platform.runs.domain.ChangeTargets;
 import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
-import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobCancelled;
 import com.iaf.platform.runs.domain.JobContext;
@@ -53,13 +53,12 @@ import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort.RunRequest;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
-import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
+import reactor.core.Exceptions;
 import reactor.core.publisher.Mono;
 
 /**
@@ -95,18 +94,22 @@ public class PortStepExecutor implements StepExecutor {
          * The {@code use} step's wait: until resource {@code id} reaches {@code state}, at most
          * {@code timeout}. True when it may have (the step reads it again), false when the time
          * ran out; cancelling the job ends the wait with a {@link JobCancelled}. The in-process
-         * engine is woken by the registry's events on the EventBus ({@code ResourceQueries.awaitState});
-         * on Temporal this is {@code Workflow.await(timeout, ...)} over a signal a registry listener
-         * sends to the waiting workflow. The default, for an engine with neither, looks again every
-         * {@link PortStepExecutor#USE_POLL}.
+         * engine is woken by the registry's events on the EventBus ({@code ResourceQueries.awaitState}).
+         * Temporal does not come here: its workflow reads the resource with an activity and waits
+         * on a timer between reads, backed off ({@code InterpreterWorkflowImpl.useResource}). The
+         * default, for an engine without events, looks again every {@link PortStepExecutor#USE_POLL}.
          */
         default boolean awaitResource(JobContext ctx, String type, String id, String state, Duration timeout) {
             sleep(ctx, timeout.compareTo(USE_POLL) < 0 ? timeout : USE_POLL);
             return true;
         }
 
-        /** Run a child job to its end and return {@code { jobId, status, outputs }}; a failed child is a {@link ChildFailure}. */
-        JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout);
+        /**
+         * Run {@code child} (a job {@link ChildStarts} prepared: definition snapshot, checked
+         * input, policy decision) to its end and return {@code { jobId, status, outputs }}; a
+         * failed child is a {@link ChildFailure}. The engine records the job when it starts it.
+         */
+        JsonNode runChild(JobContext ctx, Step step, Job child, Duration timeout);
 
         List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches);
     }
@@ -119,7 +122,7 @@ public class PortStepExecutor implements StepExecutor {
 
     /** The beans the executor works with. */
     public record Ports(ProviderQueries providers, ProviderCallPort calls, AutomationRunners runners, WorkflowQueries workflows,
-            ResourceQueries resources, ResourceCommands resourceCommands, JobEvents events, Clock clock) {
+            ResourceQueries resources, ResourceCommands resourceCommands, JobEvents events, PolicyPort policy, Clock clock) {
     }
 
     private final Ports ports;
@@ -184,8 +187,10 @@ public class PortStepExecutor implements StepExecutor {
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_action", "Provider " + provider + " has no action '" + action + "'", false));
         JsonNode in = input == null || input.isMissingNode() ? F.objectNode() : input;
         try {
+            // Mono.timeout: running out of time is a TimeoutException, which translate() classifies as the step's timeout
             JsonNode out = ports.calls().call(new ProviderCall(ctx.jobId(), ctx.nextSeq(), p, a, ctx.environment(), in, dryRun))
-                    .block(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout);
+                    .timeout(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout)
+                    .block();
             if (!dryRun && a.effect() != null && (a.effect() == Effect.CREATE || a.effect() == Effect.CHANGE || a.effect() == Effect.DELETE)) {
                 ports.events().changed(ctx.jobId(), step.id(), provider, a.id(), a.effect().json(), ChangeTargets.of(a.path(), in, out));
             }
@@ -244,30 +249,16 @@ public class PortStepExecutor implements StepExecutor {
         }
     }
 
+    /** The child is resolved, checked and built by {@link ChildStarts}, as a start through its own route would be; the engine runs it. */
     @Override
     public JsonNode runChild(JobContext ctx, Step step, String workflow, String version, JsonNode input, Duration timeout) {
         if (workflow == null || workflow.isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "run needs a workflow", false, true);
         }
-        String range = version == null || version.isBlank() ? currentMajor(ctx, step, workflow) : version;
-        WorkflowDefinition child = block(ports.workflows().resolve(workflow, range), LOOKUP_TIMEOUT, step)
-                .map(WorkflowRecord::definition)
-                .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "No published version of '" + workflow + "' satisfies " + range, false));
-        // the child gets its schema's defaults, as a start through its own route would
-        JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? F.objectNode() : input);
-        return engine.runChild(ctx, step, child, in, timeout);
-    }
-
-    /**
-     * The range of a run step that names none: the producer's current major ({@code ^2}), the
-     * range a publish writes into the file, so a new major of the producer never reaches it.
-     */
-    private String currentMajor(JobContext ctx, Step step, String workflow) {
-        String range = block(ports.workflows().published(workflow), LOOKUP_TIMEOUT, step)
-                .map(r -> Optional.ofNullable(DependencyRules.defaultRange(r.version())).orElse(r.version()))
-                .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "'" + workflow + "' has no published version", false));
-        log(ctx, step.id() + ": no version given, running " + workflow + " " + range + " (its current major)");
-        return range;
+        String range = ChildStarts.range(ports, step.id(), workflow, version, message -> log(ctx, message));
+        WorkflowDefinition child = ChildStarts.resolve(ports, step.id(), workflow, range);
+        Job childJob = ChildStarts.prepare(ports, job, step.id(), child, input, now());
+        return engine.runChild(ctx, step, childJob, timeout);
     }
 
     // ---------------------------------------------------------------- people
@@ -465,9 +456,10 @@ public class PortStepExecutor implements StepExecutor {
 
     /**
      * Wait for a runner, looking every second whether the job was cancelled: a cancelled job or
-     * the limit cancels the run, which stops its process.
+     * the limit cancels the run, which stops its process. Running out of the limit throws a
+     * {@link TimeoutException} (wrapped), the step's {@code timeout}.
      */
-    private JsonNode await(Mono<JsonNode> run, Duration limit, JobContext ctx) {
+    JsonNode await(Mono<JsonNode> run, Duration limit, JobContext ctx) {
         CompletableFuture<JsonNode> future = run.toFuture();
         long deadline = System.nanoTime() + limit.toNanos();
         try {
@@ -475,7 +467,7 @@ public class PortStepExecutor implements StepExecutor {
                 long left = deadline - System.nanoTime();
                 if (left <= 0) {
                     future.cancel(true);
-                    throw new IllegalStateException("Timeout on blocking read for " + limit.toMillis() + " MILLISECONDS");
+                    throw Exceptions.propagate(new TimeoutException("The runner did not answer within " + Durations.format(limit)));
                 }
                 try {
                     return future.get(Math.min(left, CANCEL_POLL.toNanos()), TimeUnit.NANOSECONDS);
@@ -502,24 +494,37 @@ public class PortStepExecutor implements StepExecutor {
     }
 
     private static <T> Optional<T> block(Mono<T> mono, Duration timeout, Step step) {
+        return block(mono, timeout, step.id());
+    }
+
+    /** Wait for {@code mono} at most {@code timeout}: running out of it is the step's {@code timeout} failure, any other error its {@code error}. */
+    static <T> Optional<T> block(Mono<T> mono, Duration timeout, String stepId) {
         try {
-            return mono.blockOptional(timeout);
+            return mono.timeout(timeout).blockOptional();
         } catch (StepFailure | JobCancelled | ForbiddenException e) {
             throw e;
         } catch (RuntimeException e) {
-            throw translate(step, e, true);
+            throw translate(stepId, e, true);
         }
     }
 
     private static StepFailure translate(Step step, RuntimeException e, boolean retryable) {
-        String msg = e.getMessage() == null ? e.toString() : e.getMessage();
-        if (e instanceof IllegalStateException && msg.contains("Timeout")) {
-            return new StepFailure(step.id(), "timeout", "Step " + step.id() + " timed out", true);
+        return translate(step.id(), e, retryable);
+    }
+
+    /** A failure that is not a {@link StepFailure} yet: a timed-out wait, a provider error behind a wrapper, or any other error. */
+    static StepFailure translate(String stepId, RuntimeException e, boolean retryable) {
+        Throwable cause = Exceptions.unwrap(e);
+        if (cause instanceof TimeoutException) {
+            return new StepFailure(stepId, "timeout", "Step " + stepId + " timed out", true);
         }
-        if (e.getCause() instanceof ProviderCallException p) {
-            return new StepFailure(step.id(), p.errorClass(), p.getMessage(), p.retryable());
+        ProviderCallException provider = cause instanceof ProviderCallException p ? p
+                : e.getCause() instanceof ProviderCallException q ? q : null;
+        if (provider != null) {
+            return new StepFailure(stepId, provider.errorClass(), provider.getMessage(), provider.retryable());
         }
-        return new StepFailure(step.id(), "error", msg, retryable);
+        String msg = cause.getMessage() == null ? cause.toString() : cause.getMessage();
+        return new StepFailure(stepId, "error", msg, retryable);
     }
 
     /** The engine of a dry run: approvals pass, attention aborts, waits are skipped, children walk in process. */
@@ -544,14 +549,13 @@ public class PortStepExecutor implements StepExecutor {
         }
 
         @Override
-        public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
-            Job childJob = JobFactory.child(job, child, input, now());
+        public JsonNode runChild(JobContext ctx, Step step, Job childJob, Duration timeout) {
             JobContext cctx = JobContext.of(childJob);
             ctx.addChild(childJob.id());
             PortStepExecutor childExecutor = new PortStepExecutor(ports, null, childJob, true, recorder, prefix + step.id() + "/", dryRegistered);
-            var outcome = new WorkflowInterpreter(child, childExecutor, cctx).run();
+            var outcome = new WorkflowInterpreter(childJob.definition(), childExecutor, cctx).run();
             if (!outcome.succeeded()) {
-                throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
+                throw ChildFailure.of(step.id(), childJob.id(), childJob.workflow(), outcome);
             }
             return ChildResults.of(childJob.id(), outcome, cctx);
         }

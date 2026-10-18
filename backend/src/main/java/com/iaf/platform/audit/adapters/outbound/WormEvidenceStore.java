@@ -4,15 +4,19 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -27,8 +31,10 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
+import com.iaf.platform.common.domain.Hashes;
 import com.iaf.platform.common.domain.NotFoundException;
 
 import lombok.extern.slf4j.Slf4j;
@@ -41,7 +47,8 @@ import lombok.extern.slf4j.Slf4j;
  * evidence/&lt;record&gt;/entries/&lt;seq&gt;.json      one chained entry per object (seq zero-padded to 10 digits)
  * evidence/&lt;record&gt;/checkpoints/&lt;seq&gt;.json  an hourly signature over the head entry {@code seq} of an open record
  * evidence/&lt;record&gt;/seal.json               the final seal of a closed record
- * share-tokens/&lt;token&gt;.json                 a read-only link, kept until it expires
+ * sealed/&lt;record&gt;.json                       an index entry per sealed record, so a sealing run never reads one
+ * share-tokens/&lt;sha256&gt;.json                a read-only link under the SHA-256 of its token (never the token), kept until it expires
  * </pre>
  *
  * <p>{@code <record>} is the job id (or {@code platform}, {@code release:<id>}) with every character
@@ -52,18 +59,29 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>The {@link EvidenceRecord} is a projection over the objects of one record, cached here. Reading
  * one record lists its objects and fetches the ones the cache has not seen; a listing discovers new
- * records and reuses the cached ones. Subclasses pick the objects and carry the profile.
+ * records and reuses the cached ones. The cache is bounded: open records (which take appends) stay,
+ * sealed ones, which never change, are kept {@link #SEALED_CACHE} at most, least recently used out
+ * first, and read back from their objects when asked for again. Share links are cached by the hash
+ * of their token, {@link #TOKEN_CACHE} at most, and an expired one is dropped from the cache when it
+ * is found. Records are locked through a fixed set of stripes, so the locks do not grow with the
+ * records. Subclasses pick the objects and carry the profile.
  */
 @Slf4j
 public abstract class WormEvidenceStore implements EvidenceStore {
 
     static final String EVIDENCE = "evidence/";
     static final String SHARE_TOKENS = "share-tokens/";
+    static final String SEALED_INDEX = "sealed/";
     static final String ENTRIES = "entries/";
     static final String CHECKPOINTS = "checkpoints/";
     static final String SEAL = "seal.json";
 
     private static final int CONFLICT_ATTEMPTS = 5;
+    /** Sealed records kept in memory; more are read back from their objects. */
+    static final int SEALED_CACHE = 256;
+    /** Share links kept in memory, by the hash of their token. */
+    static final int TOKEN_CACHE = 1024;
+    private static final int LOCK_STRIPES = 256;
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9_-]{16,128}");
     private static final Comparator<EvidenceRecord> NEWEST_FIRST = Comparator
             .comparing((EvidenceRecord r) -> r.at() == null ? Instant.EPOCH : r.at()).reversed()
@@ -79,18 +97,58 @@ public abstract class WormEvidenceStore implements EvidenceStore {
 
     private final WormObjects objects;
     private final int retentionYears;
-    private final Map<String, EvidenceRecord> records = new ConcurrentHashMap<>();
-    private final Map<String, Object> locks = new ConcurrentHashMap<>();
-    private final Map<String, ShareToken> tokens = new ConcurrentHashMap<>();
+    private final Clock clock;
+    /** Records still taking entries. */
+    private final Map<String, EvidenceRecord> open = new ConcurrentHashMap<>();
+    /** Sealed records, least recently used first; guarded by itself. */
+    private final Map<String, EvidenceRecord> sealedRecords;
+    /** Share links by the SHA-256 of their token, without the token; guarded by itself. */
+    private final Map<String, ShareToken> tokens;
+    private final Object[] stripes = new Object[LOCK_STRIPES];
     private final SecureRandom random = new SecureRandom();
 
     protected WormEvidenceStore(WormObjects objects, int retentionYears) {
+        this(objects, retentionYears, Clock.systemUTC(), SEALED_CACHE);
+    }
+
+    protected WormEvidenceStore(WormObjects objects, int retentionYears, Clock clock) {
+        this(objects, retentionYears, clock, SEALED_CACHE);
+    }
+
+    WormEvidenceStore(WormObjects objects, int retentionYears, Clock clock, int sealedCache) {
         if (retentionYears < 1) {
             throw new IllegalArgumentException("platform.audit.retention-years must be at least 1, not " + retentionYears);
         }
         this.objects = objects;
         this.retentionYears = retentionYears;
+        this.clock = clock;
+        this.sealedRecords = lru(sealedCache);
+        this.tokens = lru(TOKEN_CACHE);
+        for (int i = 0; i < stripes.length; i++) {
+            stripes[i] = new Object();
+        }
         log.info("Evidence is written once to {} and kept {} years", objects.describe(), retentionYears);
+    }
+
+    private static <V> Map<String, V> lru(int max) {
+        return new Lru<>(max);
+    }
+
+    /** Access-ordered, at most {@code max} entries, the least recently used out first; not thread-safe on its own. */
+    private static final class Lru<V> extends LinkedHashMap<String, V> {
+
+        private static final long serialVersionUID = 1L;
+        private final int max;
+
+        Lru(int max) {
+            super(16, 0.75f, true);
+            this.max = max;
+        }
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
+            return size() > max;
+        }
     }
 
     protected WormObjects objects() {
@@ -104,17 +162,17 @@ public abstract class WormEvidenceStore implements EvidenceStore {
             for (int attempt = 1;; attempt++) {
                 EvidenceRecord current = current(id);
                 if (current != null && sealed(id, current)) {
-                    throw new IllegalStateException("evidence record " + id + " is sealed; a late " + entry.kind().json() + " entry is not accepted");
+                    throw new SealedRecordException(id, entry.kind());
                 }
                 int seq = current == null ? 1 : lastSeq(current) + 1;
                 String previous = current == null ? HashChain.GENESIS : current.latestHash();
                 EvidenceEntry chained = stable(entry).chained(seq, previous);
                 if (objects.putIfAbsent(entryKey(id, seq), bytes(chained), retainUntil(chained.at()))) {
-                    records.put(id, current == null ? EvidenceRecord.start(id, chained) : current.append(chained));
+                    cache(id, current == null ? EvidenceRecord.start(id, chained) : current.append(chained));
                     return chained;
                 }
                 // another writer took this seq: read what it wrote and chain after it
-                records.remove(id);
+                uncache(id);
                 if (attempt >= CONFLICT_ATTEMPTS) {
                     throw new IllegalStateException("evidence record " + id + " kept changing under another writer; entry " + seq + " was not appended");
                 }
@@ -139,7 +197,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         List<EvidenceRecord> all = new ArrayList<>();
         for (String folder : objects.folders(EVIDENCE)) {
             String id = decode(folder);
-            EvidenceRecord r = records.get(id);
+            EvidenceRecord r = cached(id);
             if (r == null) {
                 synchronized (lock(id)) {
                     r = current(id);
@@ -165,13 +223,64 @@ public abstract class WormEvidenceStore implements EvidenceStore {
                 return current;
             }
             if (!objects.putIfAbsent(prefix(id) + SEAL, bytes(seal), retainUntil(seal.at()))) {
-                records.remove(id);
-                return refresh(id);
+                uncache(id);
+                EvidenceRecord theirs = refresh(id);
+                index(id, theirs);
+                return theirs;
             }
             EvidenceRecord sealed = current.withSeal(seal);
-            records.put(id, sealed);
+            cache(id, sealed);
+            index(id, sealed);
             return sealed;
         }
+    }
+
+    /**
+     * The records without an entry in the {@code sealed/} index: open ones come from the cache or
+     * their objects, and a record sealed before the index existed is indexed the first time it is
+     * found sealed, so later runs skip it without reading it.
+     */
+    @Override
+    public List<Unsealed> unsealed() {
+        Set<String> indexed = new HashSet<>();
+        for (String key : objects.list(SEALED_INDEX)) {
+            String name = key.substring(SEALED_INDEX.length());
+            indexed.add(name.endsWith(".json") ? name.substring(0, name.length() - ".json".length()) : name);
+        }
+        List<Unsealed> out = new ArrayList<>();
+        for (String folder : objects.folders(EVIDENCE)) {
+            if (indexed.contains(folder)) {
+                continue;
+            }
+            String id = decode(folder);
+            EvidenceRecord r;
+            synchronized (lock(id)) {
+                r = current(id);
+                if (r != null && r.sealed() == null && r.closed() && objects.get(prefix(id) + SEAL).isPresent()) {
+                    uncache(id);
+                    r = refresh(id);
+                }
+            }
+            if (r == null || r.entries().isEmpty()) {
+                continue;
+            }
+            if (r.sealed() != null) {
+                index(id, r);
+                continue;
+            }
+            out.add(Unsealed.of(r));
+        }
+        out.sort(Unsealed.NEWEST_FIRST);
+        return out;
+    }
+
+    /** Notes a sealed record in the {@code sealed/} index (once; kept as long as its seal). */
+    private void index(String id, EvidenceRecord sealed) {
+        if (sealed == null || sealed.sealed() == null) {
+            return;
+        }
+        byte[] entry = bytes(Map.of("jobId", id, "sealedAt", String.valueOf(sealed.sealed().at())));
+        objects.putIfAbsent(SEALED_INDEX + encode(id) + ".json", entry, retainUntil(sealed.sealed().at()));
     }
 
     @Override
@@ -187,20 +296,26 @@ public abstract class WormEvidenceStore implements EvidenceStore {
                 return current; // this head is checkpointed already: the first signature stands
             }
             EvidenceRecord updated = current.withCheckpoint(checkpoint);
-            records.put(id, updated);
+            cache(id, updated);
             return updated;
         }
     }
 
+    /** Mints a link and keeps it under the SHA-256 of its token; the object never holds the token. */
     @Override
     public ShareToken shareToken(String jobId, Instant expiresAt) {
+        forgetExpiredTokens();
         for (int attempt = 1;; attempt++) {
             byte[] raw = new byte[24];
             random.nextBytes(raw);
-            ShareToken token = new ShareToken(Base64.getUrlEncoder().withoutPadding().encodeToString(raw), jobId, expiresAt);
-            if (objects.putIfAbsent(SHARE_TOKENS + token.token() + ".json", bytes(token), expiresAt)) {
-                tokens.put(token.token(), token);
-                return token;
+            String token = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+            String hash = Hashes.sha256(token);
+            ShareToken kept = new ShareToken(null, jobId, expiresAt);
+            if (objects.putIfAbsent(tokenKey(hash), bytes(kept), expiresAt)) {
+                synchronized (tokens) {
+                    tokens.put(hash, kept);
+                }
+                return new ShareToken(token, jobId, expiresAt);
             }
             if (attempt >= CONFLICT_ATTEMPTS) {
                 throw new IllegalStateException("could not mint a unique share token");
@@ -213,18 +328,58 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         if (token == null || !TOKEN.matcher(token).matches()) {
             return Optional.empty();
         }
-        ShareToken known = tokens.get(token);
-        if (known != null) {
-            return Optional.of(known);
+        String hash = Hashes.sha256(token);
+        ShareToken link;
+        synchronized (tokens) {
+            link = tokens.get(hash);
         }
-        Optional<ShareToken> stored = objects.get(SHARE_TOKENS + token + ".json").map(b -> read(b, ShareToken.class));
-        stored.ifPresent(t -> tokens.put(t.token(), t));
-        return stored;
+        if (link == null) {
+            // a link minted before tokens were kept by their hash still sits under the token itself
+            link = objects.get(tokenKey(hash)).or(() -> objects.get(SHARE_TOKENS + token + ".json"))
+                    .map(b -> read(b, ShareToken.class))
+                    .orElse(null);
+            if (link == null) {
+                return Optional.empty();
+            }
+        }
+        ShareToken found = new ShareToken(token, link.jobId(), link.expiresAt());
+        synchronized (tokens) {
+            if (found.expired(clock.instant())) {
+                tokens.remove(hash);
+            } else {
+                tokens.put(hash, new ShareToken(null, link.jobId(), link.expiresAt()));
+            }
+        }
+        return Optional.of(found);
+    }
+
+    static String tokenKey(String tokenHash) {
+        return SHARE_TOKENS + tokenHash + ".json";
+    }
+
+    private void forgetExpiredTokens() {
+        Instant now = clock.instant();
+        synchronized (tokens) {
+            tokens.values().removeIf(t -> t.expired(now));
+        }
+    }
+
+    /** How many records and share links are in memory (for tests and diagnosis). */
+    int cachedRecords() {
+        synchronized (sealedRecords) {
+            return open.size() + sealedRecords.size();
+        }
+    }
+
+    int cachedTokens() {
+        synchronized (tokens) {
+            return tokens.size();
+        }
     }
 
     /** When an object written at {@code at} may go: {@code retention-years} later. */
     Instant retainUntil(Instant at) {
-        Instant from = at == null ? Instant.now() : at;
+        Instant from = at == null ? clock.instant() : at;
         return from.atZone(ZoneOffset.UTC).plusYears(retentionYears).toInstant();
     }
 
@@ -232,13 +387,42 @@ public abstract class WormEvidenceStore implements EvidenceStore {
 
     /** The cached record, else rebuilt from its objects; null when it has none. */
     private EvidenceRecord current(String id) {
-        EvidenceRecord cached = records.get(id);
+        EvidenceRecord cached = cached(id);
         return cached != null ? cached : refresh(id);
+    }
+
+    private EvidenceRecord cached(String id) {
+        EvidenceRecord r = open.get(id);
+        if (r != null) {
+            return r;
+        }
+        synchronized (sealedRecords) {
+            return sealedRecords.get(id);
+        }
+    }
+
+    /** An open record stays; a sealed one moves to the bounded cache. */
+    private void cache(String id, EvidenceRecord record) {
+        if (record.sealed() == null) {
+            open.put(id, record);
+            return;
+        }
+        open.remove(id);
+        synchronized (sealedRecords) {
+            sealedRecords.put(id, record);
+        }
+    }
+
+    private void uncache(String id) {
+        open.remove(id);
+        synchronized (sealedRecords) {
+            sealedRecords.remove(id);
+        }
     }
 
     /** Lists the record's objects and rebuilds it, fetching only the objects the cache has not seen. */
     private EvidenceRecord refresh(String id) {
-        EvidenceRecord known = records.get(id);
+        EvidenceRecord known = cached(id);
         Map<Integer, EvidenceEntry> seen = new HashMap<>();
         Map<Integer, EvidenceRecord.Seal> seenCheckpoints = new HashMap<>();
         if (known != null) {
@@ -264,7 +448,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
             }
         }
         if (entryKeys.isEmpty()) {
-            records.remove(id);
+            uncache(id);
             return null;
         }
         EvidenceRecord rebuilt = null;
@@ -282,7 +466,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
             EvidenceRecord.Seal seal = known != null && known.sealed() != null ? known.sealed() : read(fetch(prefix + SEAL), EvidenceRecord.Seal.class);
             rebuilt = rebuilt.withSeal(seal);
         }
-        records.put(id, rebuilt);
+        cache(id, rebuilt);
         return rebuilt;
     }
 
@@ -294,7 +478,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         if (!current.closed() || objects.get(prefix(id) + SEAL).isEmpty()) {
             return false;
         }
-        records.remove(id);
+        uncache(id);
         refresh(id);
         return true;
     }
@@ -361,8 +545,9 @@ public abstract class WormEvidenceStore implements EvidenceStore {
         return id;
     }
 
+    /** The record's lock stripe: never held while another stripe is taken, so stripes shared by two ids only serialise them. */
     private Object lock(String id) {
-        return locks.computeIfAbsent(id, k -> new Object());
+        return stripes[Math.floorMod(id.hashCode(), stripes.length)];
     }
 
     /** The entry as it will read back from its object, so the hash chained now is the hash verified later. */

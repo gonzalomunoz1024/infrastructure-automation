@@ -88,7 +88,7 @@ describe('shapes', () => {
 
   it('reads call, run and the simple step keys into with', () => {
     const [call, run, approval, wait, wait2] = steps([
-      { call: { call: 'provider', with: { provider: 'p' }, name: 'Call', output: { as: 'out' }, assert: '{{ 1 }}', retry: { maxAttempts: '3' }, timeout: '2h', pauseOnFailure: false, position: { x: 10, y: '20' }, notes: 'n', compensate: [] } },
+      { call: { call: 'provider', with: { provider: 'p' }, name: 'Call', output: { as: 'out' }, assert: '{{ 1 }}', retry: { maxAttempts: '3' }, timeout: '2h', pauseOnFailure: false, attentionTimeout: 'PT1H', position: { x: 10, y: '20' }, notes: 'n', compensate: [] } },
       { run: { run: { workflow: 'w', input: {} }, with: { version: '^1', workflow: 'ignored' } } },
       { approval: { call: 'approval', with: { group: 'g' } } },
       { wait: { wait: 'PT5M' } },
@@ -104,6 +104,7 @@ describe('shapes', () => {
       retry: { maxAttempts: 3, backoff: 'none' },
       timeout: '2h',
       pauseOnFailure: false,
+      attentionTimeout: 'PT1H',
       position: { x: 10, y: 20 },
       notes: 'n',
       branches: null,
@@ -113,6 +114,7 @@ describe('shapes', () => {
       compensate: [],
     });
     expect(run?.type).toBe('run');
+    expect(run?.attentionTimeout).toBeNull();
     expect(run?.with).toEqual({ version: '^1', workflow: 'w', input: {} });
     expect(approval?.type).toBe('approval');
     expect(wait?.with).toEqual({ duration: 'PT5M' });

@@ -126,6 +126,7 @@ spec:
       effect: read
       retry: safe
       description: Polls getVm until the VM reaches the state or the timeout passes.
+      slo: { successRate: 97.0, p95Ms: 2500 }   # a poll takes longer than a read and times out now and then
       input:
         type: object
         required: [id, state]

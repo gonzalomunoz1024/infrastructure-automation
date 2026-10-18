@@ -1,7 +1,6 @@
 package com.iaf.platform.runs.adapters.inbound;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 
@@ -326,9 +325,5 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     @Override
     public Mono<TriggerResult> triggerEvent(String topic, JsonNode payload) {
         return commands.triggerEvent(topic, payload);
-    }
-
-    static List<JsonNode> list(List<JsonNode> items) {
-        return items == null ? new ArrayList<>() : items;
     }
 }

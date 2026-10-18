@@ -54,7 +54,7 @@ class JobTracingInTheEngineTest {
         beans.addBean("jobTracing", jobs);
         TracedProviderCalls processor = new TracedProviderCalls(beans.getBeanProvider(Traces.class), beans.getBeanProvider(JobTracing.class));
         ProviderCallPort calls = (ProviderCallPort) processor.postProcessAfterInitialization(w.calls, "recordedProviderCall");
-        StepExecutors executors = new StepExecutors(w.providers, calls, w.runners, w.workflows, w.resources, w.resourceCommands, w.events, w.clock);
+        StepExecutors executors = new StepExecutors(w.providers, calls, w.runners, w.workflows, w.resources, w.resourceCommands, w.events, w.policy, w.clock);
         InMemoryWorkflowExecution engine = new InMemoryWorkflowExecution(executors, w.projection, w.events, w.changes, w.clock);
 
         WorkflowDefinition def = SampleContent.workflow("vm-restart");

@@ -14,7 +14,9 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.tracing.TraceIds;
 import com.iaf.platform.common.tracing.Traces;
+import com.iaf.platform.runs.ports.outbound.StepTraces;
 
 import io.micrometer.observation.Observation;
 import jakarta.annotation.PostConstruct;
@@ -28,10 +30,11 @@ import jakarta.annotation.PostConstruct;
  * fork's branches run on threads of their own and hang under the fork); {@code waiting} is an
  * event on it and a failure records its error class. Provider calls hang under the step running
  * on the calling thread ({@link #parentOf}). Only a {@link LiveEvents live} {@code job.started}
- * opens a job's span: the history the demo seeds into the past makes none.
+ * opens a job's span: the history the demo seeds into the past makes none. A step's call on a
+ * team's worker carries the {@code traceparent} of the step's span ({@link #traceparent}).
  */
 @Component
-public class JobTracing {
+public class JobTracing implements StepTraces {
 
     public static final String JOB_SPAN = "iaf.job";
     public static final String STEP_SPAN = "iaf.step";
@@ -331,6 +334,25 @@ public class JobTracing {
         }
         OpenJob job = job(jobId);
         return job == null ? null : job.span;
+    }
+
+    /**
+     * The {@code traceparent} of {@code stepId}'s open span in job {@code jobId}, from whichever
+     * thread opened it (on Temporal an activity publishes the step's events and another asks), else
+     * of the job's span; without either (tracing off, or the job's span lives on another instance)
+     * one in the job's trace under a span id made up for it.
+     */
+    @Override
+    public String traceparent(String jobId, String traceId, String stepId) {
+        OpenJob job = jobId == null ? null : job(jobId);
+        OpenStep step = job == null || stepId == null ? null : find(job, stepId);
+        Observation span = step != null ? step.span : job == null ? null : job.span;
+        String trace = span == null ? null : traces.traceId(span);
+        String spanId = span == null ? null : traces.spanId(span);
+        if (trace != null && spanId != null) {
+            return TraceIds.traceparent(trace, spanId, true);
+        }
+        return StepTraces.inTrace(traceId);
     }
 
     /** How many jobs have an open span (for tests and the bound). */

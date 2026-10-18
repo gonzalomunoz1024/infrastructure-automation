@@ -32,6 +32,14 @@ public final class Events {
         return status(at, text, null);
     }
 
+    /**
+     * {@code status} saying the agent's own session is over: its {@code externalId} is empty, so
+     * the builder session forgets it and the next message starts a new one.
+     */
+    public static AssistantEvent sessionEnded(Instant at, String text) {
+        return status(at, text, "");
+    }
+
     /** {@code message}: {@code { role: "assistant", text }}. */
     public static AssistantEvent message(Instant at, String text) {
         ObjectNode data = MAPPER.createObjectNode();

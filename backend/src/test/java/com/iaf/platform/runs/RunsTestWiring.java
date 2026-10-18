@@ -60,7 +60,7 @@ public final class RunsTestWiring {
     public final Clock clock = Clock.systemUTC();
     public final EventBus bus = new EventBus(clock);
     public final JobProjection projection;
-    public final JobEvents events = new JobEvents(bus);
+    public final JobEvents events;
     public final WorkflowQueries workflows = mock(WorkflowQueries.class);
     public final ProviderQueries providers = mock(ProviderQueries.class);
     public final ResourceQueries resources = mock(ResourceQueries.class);
@@ -84,8 +84,9 @@ public final class RunsTestWiring {
 
     /** The same wiring over another runs index, such as the JDBC one. */
     public RunsTestWiring(ProjectionStore store) {
-        projection = new JobProjection(bus, store);
+        projection = new JobProjection(bus, store, clock);
         projection.register();
+        events = new JobEvents(bus, projection, clock);
         when(workflows.publishedAll()).thenAnswer(i -> Flux.fromIterable(SampleContent.workflows()).map(RunsTestWiring::record));
         when(workflows.published(anyString())).thenAnswer(i -> Mono.justOrEmpty(find(i.getArgument(0))).map(RunsTestWiring::record));
         when(workflows.version(anyString(), anyString())).thenAnswer(i -> Mono.justOrEmpty(find(i.getArgument(0)))
@@ -118,7 +119,7 @@ public final class RunsTestWiring {
         prices.load();
         runner = new DemoAutomationRunner(providers, telemetry, projection, clock);
         runners = new AutomationRunners(List.of(runner));
-        executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
+        executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, policy, clock);
         execution = new InMemoryWorkflowExecution(executors, projection, events, changes, clock);
         queries = new RunsQueryHandler(projection, execution);
     }

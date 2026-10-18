@@ -81,6 +81,14 @@ public interface StepExecutor {
     }
 
     /**
+     * How often a {@code wait until} looks at its condition again: every five seconds, unless the
+     * engine pays for every look (Temporal records each one in the history, so it backs off).
+     */
+    default Polling polling(JobContext ctx) {
+        return Polling.FIXED;
+    }
+
+    /**
      * {@code fork}: run the branches concurrently and return their results in order. The default
      * runs them one after the other (dry runs, tests); engines override with threads or
      * {@code Async.function}. The first failure wins once every branch has ended.

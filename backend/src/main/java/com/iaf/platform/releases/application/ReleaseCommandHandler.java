@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -25,7 +26,6 @@ import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
-import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.domain.ReleaseGates;
@@ -373,7 +373,7 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         return authorized(releaseId).map(a -> {
             Release r = requireActive(a.release(), "roll back");
             String reason = "rolled back by " + a.who().name();
-            Release done = store.save(r.rolledBack(clock.instant(), "rolled back", a.who().id()));
+            Release done = store.save(r.rolledBack(clock.instant(), reason, a.who().id()));
             events.publish("release.rolled-back", AGGREGATE, done.id(), a.who().id(), versions(done).put("reason", reason));
             return accepted(done);
         });
@@ -389,24 +389,41 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     private record Authorized(Identity who, Release release) {
     }
 
-    /** The release, once the caller is allowed to change the workflow it belongs to. */
+    /** The team owning a release's workflow or provider: {@code exists} is false once it is gone, {@code team} null when it names none. */
+    private record Owner(boolean exists, String team) {
+    }
+
+    /**
+     * The release, once the caller is allowed to change the workflow or provider it belongs to.
+     * Without an owner (the workflow or provider is gone, or names none) only an admin may.
+     */
     private Mono<Authorized> authorized(String releaseId) {
         return CurrentIdentity.current().flatMap(who -> {
             Release release = store.find(releaseId).orElseThrow(() -> new NotFoundException("release", releaseId));
-            return ownerOf(release).map(Optional::of).defaultIfEmpty(Optional.empty()).map(owner -> {
-                AccessRules.requireEdit(who, owner.orElse(null), "release " + releaseId + " of " + release.subject());
+            String what = "release " + releaseId + " of " + release.subject();
+            return ownerOf(release).map(owner -> {
+                if (owner.team() != null && !owner.team().isBlank()) {
+                    AccessRules.requireEdit(who, owner.team(), what);
+                } else if (!who.admin()) {
+                    String kind = release.provider() != null ? "provider" : "workflow";
+                    throw new ForbiddenException(who.name() + " may not change " + what + ": its " + kind
+                            + (owner.exists() ? " names no owner" : " no longer exists") + ", so only an admin may");
+                }
                 return new Authorized(who, release);
             });
         });
     }
 
-    private Mono<String> ownerOf(Release release) {
+    private Mono<Owner> ownerOf(Release release) {
         if (release.provider() != null) {
-            return providers.provider(release.provider()).mapNotNull(ProviderDefinition::owner);
+            return providers.provider(release.provider())
+                    .map(def -> new Owner(true, def.metadata() == null ? null : def.owner()))
+                    .defaultIfEmpty(new Owner(false, null));
         }
         return workflows.version(release.workflow(), release.to())
                 .switchIfEmpty(Mono.defer(() -> workflows.published(release.workflow())))
-                .mapNotNull(r -> r.definition() == null || r.definition().metadata() == null ? null : r.definition().metadata().owner());
+                .map(r -> new Owner(true, r.definition() == null || r.definition().metadata() == null ? null : r.definition().metadata().owner()))
+                .defaultIfEmpty(new Owner(false, null));
     }
 
     private static CommandAccepted accepted(Release r) {

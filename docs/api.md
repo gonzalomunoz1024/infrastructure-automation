@@ -24,12 +24,15 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | Method | Path                      | Returns |
 |--------|---------------------------|---------|
 | GET    | `/me`                     | `{ id, name, email, teams: string[], roles: string[], admin: boolean }` |
-| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` |
-| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes }` (token shown once; admin only) |
+| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` (admin only; 403 otherwise) |
+| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes, teams, note? }` (token shown once; admin only). `teams` are the teams the account acts for: without any it takes its creator's, and `note` says so (or, when the creator has none either, that the policy refuses every job it starts) |
+
+Shared evidence links (`GET /audit/shared/{token}`) need no credential: the token is the secret.
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
-Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A bearer token that
+Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT of the configured issuer
+and audience (README, [Identity and OIDC](../README.md#identity-and-oidc)). A bearer token that
 does not verify is always 401; it never falls back to the dev identity. Signed webhooks
 (`POST /change-requests:github-webhook`) carry no credential: they come in as an identity that may
 change nothing, and their controller checks the signature before acting.
@@ -44,16 +47,17 @@ in it. An unknown scope or preset is a 400. People are judged by roles and teams
 
 | Scope | Allows |
 |-------|--------|
-| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; generated resource reads; MCP `tools/list` and the resource tools |
+| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; the credential list (`GET /credentials`: names, types and owners, never a value); generated resource reads; MCP `tools/list` and the resource tools |
 | `workflows:validate` | `/workflows:validate`, `:parse`, `:render`, `:replay-check` and `/providers:validate` |
 | `workflows:dry-run` | `/workflows:dry-run` |
 | `workflows:write` | creating, importing, editing, deleting and publishing workflows; merging and closing change requests; assistant sessions and drafts; the MCP draft tool |
 | `jobs:start` | starting jobs (`/jobs`, `/jobs:batch`, generated routes, the MCP invoke, batch and cancel tools), steering them (cancel, retry, skip, abort, rerun) and `/triggers/*` |
-| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails; the job WebSocket; the MCP job status tool |
-| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and `/credentials` |
+| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails (`/audit`, `/audit/platform`, a record, its verification and export); the job WebSocket; the MCP job status tool |
+| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and storing credentials (`POST /credentials`) |
 | `admin` | everything, and makes the account an admin; an endpoint the table does not name needs it |
 
-`/me`, `/mcp` (each tool is judged on its own) and GET `/actuator/*` need no scope.
+`/me`, `/mcp` (each tool is judged on its own), GET `/actuator/*` and GET `/audit/shared/{token}` (the
+token is the credential) need no scope. Sealing, sharing and the export pack need `admin`.
 
 ## Workflows
 
@@ -147,7 +151,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
 | GET    | `/swagger-ui` (outside `/api/v1`)   | Swagger UI over that document: redirects to `/swagger-ui/index.html`, assets from the swagger-ui webjar under `/webjars/swagger-ui/`; the page and its assets load without a caller, a bearer token typed into the page goes with every request it makes |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
-| POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
+| POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry, and judged by the policy engine on its own input and environment, before anything starts: a row the policy denies refuses the whole batch (403 naming the rows), the batch keeps the strictest of its rows' decisions with every rule applied, and it asks for its one approval when any row needs one |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200); judged like a run: the same 400s for the schema and for an `x-resource` id the registry does not know, 403 on RBAC |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
@@ -189,7 +193,7 @@ and MCP `tools/call` read besides the input. The OpenAPI operations document the
 |---------------------------------------|--------|
 | `Idempotency-Key` (`idempotencyKey`)  | Up to 255 characters, scoped to the caller. The first request with a key runs and, when it succeeds, its answer is kept for `platform.gateway.idempotency.ttl` (24h); the same key with the same request (method, path, sorted query, pinned version, canonical JSON body) gets that answer again with `Idempotent-Replay: true` (MCP: `_meta.idempotentReplay`). The same key with another request, or while the first still runs, is 409; a failed request frees its key |
 | `X-Workflow-Version` or `?version=` (`version`) | Runs exactly that version, published or retired, without the release router's canary split; input, RBAC, policy and preview are judged against it. A draft is 409, an unknown version 404, a header and query that disagree 400. On a GET whose own input has a `version` field, `?version=` stays input. `POST /jobs` pins with its body's `version` |
-| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id. A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
+| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id; the job's calls on a team's worker pass the trace on (the worker payload's `traceparent`). A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
 
 Every call that starts jobs takes a token from its caller's team first (the caller's first team,
 or a bucket of their own when they have none): `platform.gateway.quotas` sets 60 a minute with a
@@ -234,23 +238,48 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
-| POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
-| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted` |
-| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input) |
-| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted` |
-| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back) |
-| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
+| POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count); every row is validated and judged by the policy engine as the generated `:batch` routes do |
+| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
+| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input); 403 as cancel |
+| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted`; 403 as cancel |
+| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back); 403 as cancel |
+| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job). The source job's input with `input` merged over it is checked as a start's is (the schema, the registry's resources, requests to build) and judged by the policy engine; the new job keeps the source's preview while the input is the same and gets a fresh one when it changed |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
 | GET    | `/approvals/{id}`                      | `Approval` |
-| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
+| POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted`. The engine takes the decision first, then it is recorded: 409 when the job is not running in the engine (the approval stays pending) or the approval was already decided |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
 
+Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`) is for its requester, a member of the
+workflow's owner team, anyone the workflow's `policy.rbac` roles or approver groups name, and
+admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
+(`policy.rbac`), and approvals by their group.
+
+A job's events come two ways, the same events in the same order. `GET /api/v1/jobs/{id}/events`
+sends them as Server-Sent Events: `id:` is the event's `seq`, `event:` its `type` and `data:` the
+`JobEvent` as JSON. `WS /ws/jobs/{id}` (outside `/api/v1`, scope `jobs:read`) sends one text
+frame per event holding that same `JobEvent` JSON, for example
+`{"seq":4,"at":"2026-10-17T10:00:05Z","jobId":"job_a","type":"log","data":{"jobId":"job_a","message":"hello","event":"job.log"}}`.
+Both replay the job's history first, then send its events as they happen, and end after its last
+one (`job.finished` or `job.cancelled`): the SSE response completes and the server closes the
+socket. A job that has already ended replays its history and ends. Frames a client sends on the
+socket are ignored; a client that closes it ends the stream. For a job that does not exist the
+SSE request is a 404 and the socket is closed without a frame.
+
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
-`iaf.provider.call` per provider call (in-memory engine), under the span of the request that
-started it (`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). `change.evidenceUrl`
+`iaf.provider.call` per provider call, under the span of the request that started it
+(`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). They come from the job's events,
+on either engine: the instance that published `job.started` holds the job's span, and the steps
+whose events it publishes are spans under it. On Temporal, with one instance holding both roles
+that is every step (a provider call hangs under the job's span there, since its activity's thread
+is not the step's); with several instances a step whose activities ran on another one has no
+span, and a worker-only instance traces only the jobs it started itself (children, batch rows).
+A step's call on a team's worker carries the `traceparent` of the step's span in its payload
+(`traceparent`, a string; `job.traceId` stays), so the worker's spans continue the trace under
+the step; an instance without that span sends the job's, or a span id made up in the job's trace.
+`change.evidenceUrl`
 is the link back to the job's evidence that its change record carries
 (`platform.change.evidence-url`). The platform's own provider alerts are matched
 against the published alert triggers like an external alert, as `{ source: 'platform', labels:
@@ -263,15 +292,25 @@ action and class starts nothing more for ten minutes.
 
 ```ts
 type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successRate; p50Ms; p95Ms; calls; errorTrend: number[]; reasons: string[] }
+// status, successRate, p50Ms, p95Ms and calls are the last 24 hours; errorTrend is the failed calls of each of the
+// last 14 days (24-hour windows ending now, oldest first), the same windows as the detail's `daily`.
+// The band is judged against the provider's `slo`, except that an action with an `slo` of its own is judged against
+// it on its own calls: the provider's band is the worst band of its parts (the actions without one together, each
+// action with one alone); a part under 5 calls does not count, and with no part big enough the provider is judged
+// as a whole. The metrics beside the band are always over all the calls.
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
 type ProviderDetail = ProviderSummary & { endpoints: { [environment]: baseUrl }; auth?: { type; credential?: 'vault:…'; header? };
-  yaml; actions: ActionInfo[]; daily: { date; calls; successRate?; p50Ms?; p95Ms? }[];
-  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
-// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts.
+  yaml; actions: ActionInfo[]; daily: { date; calls; errors; successRate?; p50Ms?; p95Ms? }[];
+  perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[]; slo: { successRate; p95Ms }; band }[];
+  changeRequests: ChangeRequest[] }
+// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts, `errors`
+// how many of its calls failed; a window without calls has no rates.
 // The newest window covers the same calls as `health`. A window without calls has no rates.
+// perAction: the last 14 days per action; `slo` is the SLO the action is judged by (its own or the provider's) and
+// `band` its band over the last 24 hours against it ('unknown' under 5 calls).
 // auth.credential is the vault reference's name, never a value.
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;
-  effectDetail?; recorded?: { environment; at } }
+  effectDetail?; recorded?: { environment; at }; slo?: { successRate; p95Ms } }   // slo: the action's own; absent when it takes the provider's
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
   operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[];
   commit? }   // commit: the commit a spec read from Git came from; it goes in the file's spec.commit
@@ -284,35 +323,43 @@ type TerraformImport = { source; version; commit?; notes: string[]; yaml;
   outputs: { name; description?; sensitive; file }[] }
 type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean;
   environment; at; yaml? }   // yaml: the draft with the response saved as the action's sample, when the call went through
+// response is the live answer as the system gave it, for the caller alone. The two copies the platform keeps, the review
+// evidence and the sample in yaml, are redacted: secret-named fields (token, password, api key...), any value resolved
+// from Vault during the call and token-shaped words become vault:redacted; vault: references stay.
 type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
   slo?: { successRate; p95Ms; observedP95Ms; calls; detail } }   // slo is a suggestion, never enforced
 ```
 
 The review judges a provider file against what the platform itself saw in the wizard, kept per
-provider name: the Test connection results sent with `provider`, and every Try it call. Its checks
-come after the file's own checks on the change request:
+provider name: the Test connection results sent with `provider`, and every Try it call with the
+endpoint and credential reference it used. Only the provider's team adds to it: the published
+provider's owner team, else the owner team the draft names, else any member of a team (an admin
+always); anyone else gets a 403 before anything is probed or called. A store keeps the newest 50
+connection tests and 500 tries of a provider and counts the older ones it drops; the review warns
+(`evidence.dropped`) when it judges what is left. Its checks come after the file's own checks on
+the change request:
 
 | Check | Fails when |
 |-------|------------|
 | `connection` | the last Test connection to `dev` or to `test` (the ones the provider declares; its first environment when it has neither) is missing, failed, or used another endpoint or credential reference than the file has now. A missing `test` endpoint is a warning. openapi and http providers only |
-| `tried` | an action never answered when tried against `dev` (its first environment without one). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
-| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it. A tried error that no class matches, or no error classes at all, is a warning |
+| `tried` | an action never answered when tried against `dev` (its first environment without one), or was only tried at another endpoint or with another credential reference than the file has now (`action.staleTry`). A delete whose `verify` still found the thing is a warning. openapi and http providers only |
+| `errors` | an error class has no `match` rule, or (openapi, http) no `status` in it, or (openapi, http) there are no error classes at all while an action creates, changes or deletes something. A tried error that no class matches is a warning, and so are no error classes on a provider that only reads. The file's own checks hold a provider that changes things to `alerts.channel` the same way (`alerts.channel`, a warning for a read-only one) |
 | `preview` | a destructive action has neither a `plan` action nor an `effectDetail` line |
 | `responses` | an action's last real response still disagrees with its schema after the `overrides` |
 | `slo-suggested` | never: it suggests `p95Ms` as 1.5 times the tried calls' p95, rounded up to 50 ms (at least 100), and warns when the file's p95 is below what the tries took |
 
 | Method | Path                                      | Body / Returns |
 |--------|-------------------------------------------|----------------|
-| GET    | `/providers`                              | `ProviderSummary[]` |
-| GET    | `/providers/{name}`                       | `ProviderDetail` |
-| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
+| GET    | `/providers`                              | `ProviderSummary[]`: the providers the caller may see (an admin all of them; anyone else those of their teams and the unowned ones) |
+| GET    | `/providers/{name}`                       | `ProviderDetail`; 404 when the provider does not exist or the caller may not see it (never a 403: the name is not revealed) |
+| GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]`, scoped like the detail |
 | POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? ; git?: GitRef }` → `SpecImport` (200). With `git` the file is read from the repository at the ref and `commit` says which commit that was; a `credential` that is not a `vault:` reference is a 400 (the token never goes through the API). Only https repositories are read, ssh URLs and credentials in the URL are refused. 403 when the caller may not use that credential (see Credentials) |
 | POST   | `/providers:import-ansible`               | `{ git: { repo; ref?; path?; credential? }; playbooks?: string[]; name?; owner?; credential?; executionEnvironment? }` → `AnsibleImport` (200). Reads the playbooks of the repository at the ref (under `git.path`; the whole repository when it is blank) and drafts an `ansible` provider with one action per playbook, pinned to the commit read. `playbooks` picks some by path or action id (default: all); `credential` is the Vault reference of the machine credential the playbooks connect with. 400 when there is no playbook, a playbook named is not one, or a credential is not a `vault:` reference; 403 when the caller may not use `git.credential` or `credential` (see Credentials) |
 | POST   | `/providers:import-terraform`             | `{ git?: { repo; ref?; path?; credential? }; registry?: { module; version?; credential? }; name?; owner?; credential? }` → `TerraformImport` (200). One of `git` (the module's folder at a ref) or `registry` (`namespace/name/provider` in the configured module registry; `version` is an exact version, default its newest release; `credential` a `vault:` registry token for a private module). Drafts a `terraform` provider with a `plan` and an `apply` action whose inputs are the module's variables. `credential` is the Vault reference of what the runner gives Terraform. 400 when the folder has no `.tf` files (the message names the module folders under it), the version or the module does not exist, or the registry serves an archive it does not describe; 403 when the caller may not use a credential named (see Credentials) |
-| POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS. 403 when the caller may not use `auth.credential` (see Credentials) |
-| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted`. 403 when the caller may not use a credential the draft names (see Credentials) |
+| POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS. 403 when the caller may not use `auth.credential` (see Credentials); a reference that is not in the vault fails every environment with a message naming it, as every real call would fail `credential_missing` |
+| POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. The evidence and the sample are redacted (fields named like secrets, values resolved from Vault and token-shaped words become `vault:redacted`); `response` is the live answer. A try (and its verify call) is not a run's call: it records no telemetry sample, so it never counts towards the health or the alerts of a provider of that name. 403 when the caller may not use a credential the draft names (see Credentials) |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
-| POST   | `/providers:publish`                      | `{ yaml; strategy?: 'canary' \| 'all' }` → `CommandAccepted` (change request id). `strategy` defaults to `canary`, like a workflow version. 409 with the problems when the file has errors or the review is not ready, when the version is already published (or kept for a canary), and while another change request for the provider is open; the change request carries both sets of checks |
+| POST   | `/providers:publish`                      | `{ yaml; strategy?: 'canary' \| 'all' }` → `CommandAccepted` (change request id). `strategy` defaults to `canary`, like a workflow version. 409 with the problems when the file has errors or the review is not ready, when the version is already published (or kept for a canary), and while another change request for the provider is open; the change request carries both sets of checks. 403 unless the caller may edit for the owner team the file names and, when the provider is already published, for the owner of the published provider (re-posting a provider under another owner is an edit its owner makes; an admin may do both) |
 | POST   | `/providers:draft`                        | `{ description }` → `{ yaml; summary; assumptions[] }` (Ask Devin, `!provider-draft`) |
 | POST   | `/providers/{name}:refresh-spec`          | `{ ref? ; content? }` (optional) → `CommandAccepted` (202). Reads the spec again from where the file says: the URL, Git at the file's ref (or at `ref`, which is then written to the file), or `content` for a pasted spec. The same document answers `status: 'unchanged'`. Otherwise it opens a change request for the next minor version: new `sha256` (and `commit`), the input and output schemas of the actions that call its operations, and each override dropped only when the new spec agrees with the action's real response (its last Try it answer, else a recorded sample). Checks: the file's, `spec-refresh` (what was read and what changed) and the review's `responses`. 409 when an operation an action calls is gone (problems `refresh.operationGone`) or another change request for the provider is open; 400 when `ref` or `content` do not fit the spec's source; owner team or admin, who must also be allowed to use the file's `git.credential` (403 otherwise, see Credentials) |
 | POST   | `/providers/{name}/overrides`             | `{ action; response }` → `CommandAccepted` (202). "Use the real response": opens a change request for the next patch version whose file has the schema inferred from `response` merged into `overrides.<action>.response`, with the file's checks and the review's `responses`; `status: 'unchanged'` when the override would add nothing |
@@ -322,14 +369,24 @@ Publish, refresh spec, overrides and the SLO all change a provider through a cha
 open at a time per provider: a second one is a 409 that names the open change request, so merging
 one can never publish over another. Merging publishes the provider: a first version, or one whose
 change request says `strategy: 'all'`, becomes the current version at once; otherwise the version
-is kept beside the current one and a provider release rolls it out (see Releases). A spec refresh
+is kept beside the current one and a provider release rolls it out (see Releases). The publish is
+the providers slice's `publishMerged(changeRequestId)`, called once the change request is saved
+as merged; it is idempotent (a version already kept is left alone and no second
+`provider.published` goes out), so the `change-request.merged` listener that also calls it
+changes nothing the second time. A spec refresh
 rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
 is still running, in which case they build on its candidate and roll out as a canary too.
-`provider.published` carries `{ name; version; previous?; strategy; by }`.
+`provider.change-requested` carries `{ name; version; changeRequestId; by; owner; change?; strategy? }` (`owner` is the
+team a reviewer is notified in); `provider.published` carries `{ name; version; previous?; strategy; by }`.
+The wizard's steps are audited too, without the document, the secret or the answer:
+`provider.spec-imported` `{ source: 'url' | 'content' | 'git'; url?; repo?; ref?; path?; credential?; commit?; sha256; title?; operations; by }`,
+`provider.connection-tested` `{ provider?; environments; ok: { [environment]: boolean }; credential?; by }` and
+`provider.tried` `{ provider; action; environment; ok; status; errorClass?; durationMs; by }` (a `credential` is always the `vault:` reference).
 
 The two imports draft a provider file from what a repository holds and save nothing: the draft
 goes through Validate and Publish like a file written by hand, and `notes` says what is left to do
-(the credentials, the execution environment, what the import could not read). They read Git like
+(the credentials, the execution environment, the alert channel the file checks hold a provider
+that changes things to, what the import could not read). They read Git like
 Import spec does (https only, a private repository names a `vault:` read token, at most 2000 files
 of up to 1 MB and 32 MB in all) and pin the commit they read, so a later push changes nothing
 until a new version is published. When a provider of that name exists, the draft is its next
@@ -372,9 +429,11 @@ of the other jobs on the candidate (every call of one job uses one version), and
 outside a job and every job while the release is paused use the current version. Promotion makes
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
-The commands need edit rights on the provider's owner team. Release events (`release.started`,
-`release.stage`, `release.promoted`, `release.paused`, `release.resumed`, `release.rolled-back`)
-carry `{ releaseId; workflow | provider; from; to }`.
+The commands need edit rights on the owner team of the release's workflow or provider; when it
+has none (the workflow or provider is gone, or names no owner) only an admin may. A rollback by
+hand says who, in the history and in the event's `reason` alike ("rolled back by Ana"). Release
+events (`release.started`, `release.stage`, `release.promoted`, `release.paused`,
+`release.resumed`, `release.rolled-back`) carry `{ releaseId; workflow | provider; from; to }`.
 
 | GET `/releases?workflow=&provider=&kind=` | `Release[]`, newest first: a workflow's or a provider's releases, else every release of `kind` (`workflow`, the default, `provider` or `all`; anything else is a 400) |
 | GET `/releases/{id}` | `Release` |
@@ -397,19 +456,21 @@ type Verification = { valid: boolean; entries; brokenAt?: number; seal?: 'verifi
 | GET `/audit/{jobId}` | `EvidenceRecord` |
 | GET `/audit/{jobId}:verify` | `Verification` (every checkpoint, then the seal) |
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
-| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest) |
-| POST `/audit/{jobId}:share` | → `{ url; expiresAt }` |
-| GET `/audit/shared/{token}` | read-only `EvidenceRecord` |
-| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`) |
+| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest), sent in chunks with its `Content-Length`: the pack is written to a temporary file first (so a failure is an error status, never half a zip) and deleted once sent |
+| POST `/audit/{jobId}:share` | → `{ url; expiresAt }`, a link valid for seven days. By the job's requester, a member of the teams it ran for (the requester's teams when it started, the workflow's owner team) or an admin; 403 otherwise. Published as `audit.shared` `{ recordId; by; expiresAt }`, never with the token |
+| GET `/audit/shared/{token}` | read-only `EvidenceRecord`; needs no account in any mode (the token is the secret: a request without `Authorization` runs as an identity with no team, role or scope), 404 for an unknown token, 410 once it expired |
+| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`). Admins only; 403 otherwise |
 
 A job's record holds `requested` (with `publish`: the version's `contentHash` and where it was
 published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, `publishedBy`,
 `changeRequestId`), `preview`, `policy`, `change` (opened, then closed with its state),
 `approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
-provider, action, effect, target), `decision` (on a job that needed attention, with the edited
-input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
-requests, publishes, provider changes, credentials by name and type, service accounts, release
-decisions, builder sessions, retired resources) go on the platform stream, a chain of its own
+provider, action, effect, target), `decision` (on a job that needed attention: the action, who
+took it and, for `edit-input`, the edited input, on either engine) and `closed` (with the
+retention date). Commands that are not about a job (drafts, change requests, publishes, provider
+changes and the wizard's imports, connection tests and tries, credentials by name and type,
+service accounts, release decisions, builder sessions, retired resources, seals, uploaded
+playbooks) go on the platform stream, a chain of its own
 whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the
 file. Every entry is redacted before it is chained: secret-looking fields and values resolved from
 Vault during the run become `***`, `vault:` references stay; job views are redacted the same way.
@@ -442,7 +503,7 @@ is a reserved noun.
 ## Resources
 
 ```ts
-type ResourceType = { name; plural; owner; schema; states; producedBy? }
+type ResourceType = { name; plural; owner; visibility: 'team' | 'public'; schema; states; producedBy? }
 type Resource = { id; type; name?; status; attributes; owner; visibility; createdBy: { jobId; workflow }; builtFrom: string[]; createdAt }
 ```
 
@@ -450,8 +511,15 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | GET `/resource-types/{name}` | `ResourceType` |
 | GET `/resources?type=&owner=&status=` | `Resource[]` |
 | GET `/resources/{id}` | `Resource` |
-| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[] }` |
-| POST `/resources/{id}:retire` | → 409 with dependents list when something is built from it, else `CommandAccepted` |
+| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[]; nodes: Resource[]; edges: { from; to; via? }[] }`. `builtFrom` and `dependents` are the direct neighbours; `nodes` and `edges` are the whole graph around the resource in both directions, each resource once, at most 32 hops away and 1000 resources in all, the resource itself first. An edge `from → to` says `to` was built from `from`, `via` the workflow that registered `to` when it is known |
+| POST `/resources/{id}:retire` | → 403 unless the caller is in the resource's owner team or an admin (a resource without an owner is anyone's); 409 `resource has dependents` with `detail: Resource[]`, everything still built from it, directly or through other resources, depth-first; else `CommandAccepted` |
+
+A `register` step creates a resource owned by the requester's first team (the type's `owner` when
+they have none), with the type's `visibility`, and its attributes must match the type's schema
+when the type declares one (400 otherwise). Registering an id that exists updates it: only the
+resource's owner team, the job that created it (so a workflow that registers `building` and later
+`ready` finishes its own work) or an admin may (403 to anyone else), and the attributes the
+resource would then hold must still match the schema.
 
 ## Credentials
 
@@ -472,21 +540,30 @@ never says whether a credential exists for another team.
 ## Playbooks
 
 ```ts
-type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[]; lint: 'passed' | 'skipped' }
 type ResolvedRef = { repo: string; ref: string; commit: string }
 ```
 
-| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload` |
-| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now |
+| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload`; 400 naming the file and line when a text file of the upload holds what looks like a secret (never the value), or with the linter's output when `platform.playbooks.lint-command` refuses it |
+| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now. 403 naming the credential and its team when the caller may not use `credential` (see Credentials); the same rule judges the publishing identity when a publish pins a git playbook with a credential |
 
 Both need a team (or admin), 403 otherwise. An upload is checked before it is kept: every
 archive entry is a relative path without `..`, backslashes or control characters; links,
 devices and duplicate names are refused; the entry count and the bytes it unpacks to are
 capped while reading (`platform.playbooks.max-entries`, `max-unpacked-size`); `path` must be a
 `.yml`/`.yaml` file in the archive; a single playbook, and the one `path` names, must parse as a
-YAML list of plays. A file over `platform.playbooks.max-upload-size` is a 413. The bytes are
-kept once in the artifact store under their SHA-256, which a workflow pins as
-`playbook: { upload: { file, sha256, path? } }`; each upload is a `playbook.uploaded` event.
+YAML list of plays. Every text file of the upload is then scanned for secrets: a private key
+block; a key named like a secret (`password`, `token`, `secret`, `api_key`, `access_key`,
+`credentials`, `authorization`, ...) with a literal value that is neither a `vault:<name>`
+reference, an expression (`{{ ... }}`, `${...}`) nor an ansible-vault block; a long high-entropy
+value after a weaker key (`key`, `auth`, `pass`, `cert`); and the shapes of AWS, GitHub and Slack
+tokens anywhere. A finding is a 400 that names the file and the line, never the value. When
+`platform.playbooks.lint-command` is set (for example `ansible-lint --offline {playbook}`) it
+runs in the unpacked upload and a non-zero exit is a 400 with its output; the answer's `lint`
+says `passed`, or `skipped` when no linter is configured. A file over
+`platform.playbooks.max-upload-size` is a 413. The bytes are kept once in the artifact store under
+their SHA-256, which a workflow pins as `playbook: { upload: { file, sha256, path? } }`; each
+upload is a `playbook.uploaded` event.
 
 `repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
 URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding
@@ -501,6 +578,25 @@ read 502.
 | GET `/assistant/sessions/{id}` | `{ sessionId; mode: 'create' \| 'edit'; workflow?; status: 'idle' \| 'working' \| 'done' \| 'failed'; draft?; history: { role: 'user' \| 'assistant'; text; at }[]; createdAt; updatedAt }` (`workflow` in edit mode, `draft` once there is one) |
 | POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
 | POST `/assistant/playbooks:sync` | → `{ playbooks: { file; macro; playbookId; action: 'created' \| 'updated' \| 'unchanged' }[] }`. Creates the Devin playbooks of `devin/*.md` that Devin does not have (by macro) and updates the ones whose title, body or schema changed; also at startup with `platform.assistant.sync-playbooks-on-startup`. Admins only |
+
+A session belongs to the identity that started it: only that identity reads it or sends it
+messages, plus an admin who is a person; anyone else gets 403 naming the session and who
+started it. A service account, admin or not, only uses the sessions it started itself. A session
+nothing happened on for `platform.assistant.session-retention` (default 30 days) is deleted, and
+then answers 404.
+
+A message that asks what the workflow does ("Explain what this workflow does", "describe it",
+"summarise the flow") changes nothing: the answer is a `message` event describing the draft on the
+canvas (what starts it, each step in order with what it calls, the approvals, the outputs) and no
+`draft` event follows. On an empty canvas the demo agent answers that there is nothing to explain,
+unless the message names something to build ("Describe a workflow that restarts a VM" is drafted).
+Devin gets it as `MODE: explain` when there is a draft.
+
+Closing the stream before its `done` (the panel closed, the page left) ends the agent's own session:
+with Devin, the platform ends and archives it (`DELETE /sessions/{id}?archive=true`) so it stops
+spending ACUs, and so it does when `platform.assistant.devin-timeout` passes without a draft (the
+stream then ends with a message, a `status` whose `externalId` is empty, and a failed `done`). The
+next message on the builder session starts a new Devin session with the current draft.
 
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,

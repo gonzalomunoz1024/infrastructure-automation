@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
@@ -56,23 +57,39 @@ public interface StepActivities {
      */
     WorkerRoute providerRoute(JobRef job, String stepId, String provider, String action);
 
+    /** The {@code traceparent} a step's call on a team's worker carries (a local activity): the step's span ({@code StepTraces}). */
+    String traceparent(JobRef job, String stepId);
+
+    /** The telemetry sample of one call a team's worker answered (a local activity); a failure to record it is logged, never the step's. */
+    void recordCall(CallSample sample);
+
     // ---------------------------------------------------------------- records and ids
 
     /**
-     * The child job of a {@code run} step: resolves the published child workflow in {@code range},
-     * builds the job (its id minted here), stores it in the projection and publishes
-     * {@code job.started}. Returns the job with its definition snapshot: the workflow starts it as
-     * a child workflow.
+     * The child job of a {@code run} step, checked as a start through its own route is (the
+     * schema's defaults, the schema, RBAC, the policy): the published child workflow is resolved
+     * in {@code version} (a range), or in the current major of the workflow when none is given,
+     * and the job built with its id minted here. Nothing is stored or published: the child
+     * workflow records itself ({@link #started}) once it runs. Returns the job with its
+     * definition snapshot: the workflow starts it as a child workflow.
      */
-    Job childJob(JobRef parent, String stepId, String workflow, String range, JsonNode input);
+    Job childJob(JobRef parent, String stepId, String workflow, String version, JsonNode input);
 
     /**
      * The child job of one batch row (approved, previewed and change-managed once for the
-     * batch), stored with the batch's definition snapshot and started like {@link #childJob}.
+     * batch), built like {@link #childJob} and recorded by its own workflow the same way.
      * Neither argument nor result carries the definition: the workflow attaches the batch's own
      * snapshot, so a 500-row batch does not ship it through 500 activities.
      */
     Job rowJob(JobRef batch, BatchRow row);
+
+    /**
+     * {@code job.started} of a child job or a batch row, from the child workflow's own first
+     * activity: the job is stored with its definition snapshot and the event published once the
+     * child actually runs, so a child whose start never happened leaves no queued job behind. A
+     * job already stored (a retry of this activity) is left as it is.
+     */
+    void started(Job job);
 
     /** Create the approval of a step and publish {@code job.approval-requested}; returns its id. */
     String requestApproval(JobRef job, Step step, ApprovalRequest request, Preview preview);
@@ -91,8 +108,11 @@ public interface StepActivities {
     /** {@code job.attention}. */
     void publishAttention(String jobId, Attention attention);
 
-    /** {@code job.attention-resolved}. */
-    void attentionResolved(String jobId, String stepId, String action, String by);
+    /**
+     * {@code job.attention-resolved}, with the edited input of an edit-input decision (null for
+     * the others; an activity scheduled before the input was added runs with null too).
+     */
+    void attentionResolved(String jobId, String stepId, String action, String by, JsonNode input);
 
     /** {@code job.step}. */
     void publishStep(String jobId, StepEventData event);

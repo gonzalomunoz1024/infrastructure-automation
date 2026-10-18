@@ -31,8 +31,12 @@ public final class AccessRules {
         return who.admin() || group == null || who.teams().contains(group) || who.roles().contains(group);
     }
 
+    /**
+     * Admins see every provider; anyone else the providers of their own teams and the providers
+     * without an owner (a blank owner is none). Meant to scope the provider list.
+     */
     public static boolean canSeeProvider(Identity who, String ownerTeam) {
-        return canEdit(who, ownerTeam);
+        return ownerTeam == null || ownerTeam.isBlank() || canEdit(who, ownerTeam);
     }
 
     /** Admins may use any credential; anyone else one without an owner, or one owned by a team they are in. */

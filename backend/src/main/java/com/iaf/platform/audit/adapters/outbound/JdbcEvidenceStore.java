@@ -18,6 +18,7 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
@@ -72,7 +73,7 @@ public class JdbcEvidenceStore implements EvidenceStore {
             }
             Header current = locked.orElseThrow(() -> new IllegalStateException("evidence record " + jobId + " vanished while appending"));
             if (current.record().sealed() != null) {
-                throw new IllegalStateException("evidence record " + jobId + " is sealed; a late " + entry.kind().json() + " entry is not accepted");
+                throw new SealedRecordException(jobId, entry.kind());
             }
             EvidenceEntry chained = entry.chained(current.count() + 1, current.record().latestHash());
             EvidenceRecord grown = current.record().append(chained);
@@ -114,6 +115,24 @@ public class JdbcEvidenceStore implements EvidenceStore {
         }
         String sql = WITH_ENTRIES + (where.isEmpty() ? "" : " WHERE" + where.substring(4)) + " ORDER BY r.job_id, e.seq";
         return withEntries(sql, args.toArray()).stream().filter(f::matches).sorted(NEWEST_FIRST).toList();
+    }
+
+    /**
+     * The headers of the records not sealed, with whether a {@code closed} entry exists: no entry is
+     * read, and a sealed record is not touched.
+     */
+    @Override
+    public List<Unsealed> unsealed() {
+        return jdbc.query("SELECT r.job_id, r.requested_ns, r.entry_count, r.latest_hash, r.doc,"
+                + " CASE WHEN EXISTS (SELECT 1 FROM evidence_entries e WHERE e.job_id = r.job_id AND e.kind = 'closed') THEN 1 ELSE 0 END"
+                + " FROM evidence_records r WHERE r.sealed_at IS NULL AND r.entry_count > 0",
+                (rs, i) -> {
+                    long ns = rs.getLong(2);
+                    Instant at = rs.wasNull() ? null : Instant.ofEpochSecond(Math.floorDiv(ns, 1_000_000_000L), Math.floorMod(ns, 1_000_000_000L));
+                    EvidenceRecord header = jdbc.read(rs.getString(5), EvidenceRecord.class);
+                    return new Unsealed(rs.getString(1), at, rs.getString(4), rs.getInt(3), rs.getInt(6) == 1, header.latestCheckpoint());
+                })
+                .stream().sorted(Unsealed.NEWEST_FIRST).toList();
     }
 
     @Override

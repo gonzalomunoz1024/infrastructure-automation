@@ -53,7 +53,8 @@ public final class WorkflowYaml {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final List<String> CALL_KINDS = List.of("provider", "http", "ansible", "terraform", "idp", "activity");
-    private static final List<String> COMMON_KEYS = List.of("name", "with", "output", "assert", "retry", "timeout", "pauseOnFailure", "position", "notes", "compensate");
+    private static final List<String> COMMON_KEYS = List.of("name", "with", "output", "assert", "retry", "timeout", "pauseOnFailure", "attentionTimeout", "position",
+            "notes", "compensate");
 
     private WorkflowYaml() {
     }
@@ -308,7 +309,8 @@ public final class WorkflowYaml {
         Position position = pos != null && pos.isObject() ? new Position(pos.path("x").asDouble(), pos.path("y").asDouble()) : null;
         List<Step> compensate = body.has("compensate") ? parseSteps(body.get("compensate"), id + ".compensate") : null;
         return new Step(id, text(body, "name"), type, with, output, text(body, "assert"), retry, text(body, "timeout"),
-                body.path("pauseOnFailure").asBoolean(true), position, text(body, "notes"), branches, cases, children, catchBlock, compensate);
+                body.path("pauseOnFailure").asBoolean(true), text(body, "attentionTimeout"), position, text(body, "notes"), branches, cases, children,
+                catchBlock, compensate);
     }
 
     // ---------------------------------------------------------------- writing
@@ -515,6 +517,7 @@ public final class WorkflowYaml {
         if (!s.pauseOnFailure()) {
             b.put("pauseOnFailure", false);
         }
+        put(b, "attentionTimeout", s.attentionTimeout());
         if (s.position() != null) {
             ObjectNode p = b.putObject("position");
             p.put("x", Math.round(s.position().x()));

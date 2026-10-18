@@ -1,6 +1,8 @@
 package com.iaf.platform.resources.application;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +25,7 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.resources.domain.ResourceGraph;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.resources.ports.outbound.ResourceStorePort;
@@ -160,15 +163,27 @@ public class ResourceQueryHandler implements ResourceQueries {
                 });
     }
 
+    /**
+     * The direct neighbours as before, and the whole graph around the resource: what it was built
+     * from and what was built from it, through any number of steps ({@link ResourceGraph} bounds
+     * the walk and visits each resource once), the resource itself first among the nodes.
+     */
     @Override
     public Mono<Lineage> lineage(String id) {
         return Mono.defer(() -> {
             Resource r = store.resource(id).orElseThrow(() -> new NotFoundException("resource", id));
-            List<Resource> all = store.resources();
             List<Resource> builtFrom = r.builtFrom() == null ? List.of()
                     : r.builtFrom().stream().map(store::resource).filter(Optional::isPresent).map(Optional::get).toList();
-            List<Resource> dependents = all.stream().filter(x -> x.builtFrom() != null && x.builtFrom().contains(id)).toList();
-            return Mono.just(new Lineage(r, builtFrom, dependents));
+            List<Resource> dependents = store.builtFrom(id);
+            ResourceGraph.Walk up = ResourceGraph.ancestors(r, store::resource);
+            ResourceGraph.Walk down = ResourceGraph.descendants(r, store::builtFrom);
+            Map<String, Resource> nodes = new LinkedHashMap<>();
+            nodes.put(r.id(), r);
+            up.nodes().forEach(n -> nodes.putIfAbsent(n.id(), n));
+            down.nodes().forEach(n -> nodes.putIfAbsent(n.id(), n));
+            List<ResourceGraph.Edge> edges = new ArrayList<>(up.edges());
+            edges.addAll(down.edges());
+            return Mono.just(new Lineage(r, builtFrom, dependents, List.copyOf(nodes.values()), List.copyOf(edges)));
         });
     }
 }

@@ -83,12 +83,19 @@ public final class Scopes {
             rule("POST", "/triggers/(alerts|events)", JOBS_START),
             rule("GET", "/jobs(/" + ID + "(/(events|replay|evidence))?)?", JOBS_READ),
             rule("GET", "/approvals(/" + ID + ")?", JOBS_READ),
+            rule("GET", "/audit", JOBS_READ),
+            rule("GET", "/audit/platform", JOBS_READ),
+            // a shared evidence link: its token is the credential, whoever presents it
+            rule("GET", "/audit/shared/" + ID, ANY),
             rule("GET", "/audit/" + ID + "(/export|:verify)?", JOBS_READ),
+            // sealing, sharing and the export pack (POST /audit:seal, /audit/{id}:share, /audit:export-pack) need admin
             // providers
             rule("POST", "/providers:(import-spec|test-connection|try|publish|draft|import-ansible|import-terraform)", PROVIDERS_WRITE),
             rule("POST", "/providers/" + ID + "/overrides", PROVIDERS_WRITE),
             rule("PUT", "/providers/" + ID + "/slo", PROVIDERS_WRITE),
             rule("POST", "/providers/" + ID + ":refresh-spec", PROVIDERS_WRITE),
+            // the list holds names, types and owners, never a value: a read like GET /registry/credentials
+            rule("GET", "/credentials", REGISTRY_READ),
             rule("*", "/credentials", PROVIDERS_WRITE));
 
     private static final Pattern VERSIONED = Pattern.compile("^/api/v\\d+(/.*)?$");

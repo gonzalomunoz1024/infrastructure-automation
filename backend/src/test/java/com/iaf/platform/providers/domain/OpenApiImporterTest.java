@@ -169,4 +169,40 @@ class OpenApiImporterTest {
         assertThatThrownBy(() -> OpenApiImporter.parse("openapi: 3.1.0\ninfo: {}\n")).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("paths");
         assertThatThrownBy(() -> OpenApiImporter.parse("{ not json")).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void aKeyWrittenTwiceIsRefusedLikeEveryOtherFile() {
+        String twice = """
+                openapi: 3.1.0
+                info: { title: Twice, version: 1 }
+                paths: { /x: { get: { responses: { '200': { description: ok } } } } }
+                paths: { /y: { delete: { responses: { '204': { description: gone } } } } }
+                """;
+        assertThatThrownBy(() -> OpenApiImporter.read(twice)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Duplicate field");
+        assertThatThrownBy(() -> OpenApiImporter.parse("{\"openapi\":\"3.0.3\",\"openapi\":\"3.1.0\",\"info\":{},\"paths\":{}}"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Duplicate field");
+    }
+
+    @Test
+    void aReferenceWithAnIndexTooLongForAnIntPointsNowhereInsteadOfThrowing() {
+        String yaml = """
+                openapi: 3.1.0
+                info: { title: Crafted, version: 1 }
+                paths:
+                  /x:
+                    get:
+                      operationId: getX
+                      responses:
+                        '200':
+                          description: ok
+                          content: { application/json: { schema: { $ref: '#/components/list/99999999999' } } }
+                components:
+                  list: [ { type: object, properties: { id: { type: string } } } ]
+                """;
+        JsonNode doc = OpenApiImporter.read(yaml);
+        assertThat(OpenApiImporter.pointer(doc, "#/components/list/99999999999")).isNull();
+        assertThat(OpenApiImporter.pointer(doc, "#/components/list/0").path("type").asText()).isEqualTo("object");
+        Operation x = operations(OpenApiImporter.parse(yaml)).get("getX");
+        assertThat(x.output().path("description").asText()).contains("Unresolved reference");
+    }
 }

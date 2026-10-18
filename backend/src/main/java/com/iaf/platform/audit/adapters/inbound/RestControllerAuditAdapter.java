@@ -1,5 +1,8 @@
 package com.iaf.platform.audit.adapters.inbound;
 
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +29,9 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 @RequestMapping("/api/v1")
 public class RestControllerAuditAdapter implements AuditCommands, AuditQueries {
+
+    /** The chunk an evidence pack is read and sent in. */
+    static final int CHUNK = 64 * 1024;
 
     private final AuditCommandHandler commands;
     private final AuditQueryHandler queries;
@@ -67,13 +73,13 @@ public class RestControllerAuditAdapter implements AuditCommands, AuditQueries {
     }
 
     @Override
-    public Mono<FileExport> exportPack(FilterSpec filter) {
+    public Mono<SpooledFile> exportPack(FilterSpec filter) {
         return queries.exportPack(filter);
     }
 
     @PostMapping("/audit:export-pack")
-    public Mono<ResponseEntity<byte[]>> exportPackFile(@RequestBody(required = false) ExportPackRequest request) {
-        return exportPack(request == null ? null : request.filter()).map(RestControllerAuditAdapter::download);
+    public Mono<ResponseEntity<Flux<DataBuffer>>> exportPackFile(@RequestBody(required = false) ExportPackRequest request) {
+        return exportPack(request == null ? null : request.filter()).map(RestControllerAuditAdapter::stream);
     }
 
     @Override
@@ -92,6 +98,21 @@ public class RestControllerAuditAdapter implements AuditCommands, AuditQueries {
     @PostMapping("/audit:seal")
     public Mono<SealResult> seal() {
         return commands.seal();
+    }
+
+    /**
+     * The spooled file in {@link #CHUNK}-sized pieces with its length, deleted once it is sent, the
+     * send fails or the client leaves.
+     */
+    static ResponseEntity<Flux<DataBuffer>> stream(SpooledFile file) {
+        Flux<DataBuffer> body = Flux.using(() -> file,
+                f -> DataBufferUtils.read(f.path(), DefaultDataBufferFactory.sharedInstance, CHUNK),
+                SpooledFile::discard);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.filename() + "\"")
+                .contentType(MediaType.parseMediaType(file.contentType()))
+                .contentLength(file.size())
+                .body(body);
     }
 
     private static ResponseEntity<byte[]> download(FileExport file) {

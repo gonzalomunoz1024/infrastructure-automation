@@ -25,6 +25,7 @@ import org.springframework.web.reactive.function.BodyInserters;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.ports.GitRemotePort.RemoteUnavailable;
 import com.iaf.platform.common.ports.GitRemotePort.Resolved;
@@ -157,6 +158,19 @@ class RestControllerPlaybookAdapterTest {
                 .jsonPath("$.repo").isEqualTo("github.com/acme/ops-playbooks")
                 .jsonPath("$.ref").isEqualTo("v3.1.0")
                 .jsonPath("$.commit").isEqualTo(COMMIT);
+    }
+
+    @Test
+    void resolveWithAnotherTeamsCredentialIs403NamingTheCredentialAndNeverItsValue() {
+        when(queries.resolve("github.com/acme/ops-playbooks", "v3.1.0", "vault:git/data"))
+                .thenReturn(Mono.error(new ForbiddenException("Mateo may not use credential vault:git/data (owned by team-data)")));
+
+        client.get().uri("/api/v1/playbooks:resolve?repo=github.com/acme/ops-playbooks&ref=v3.1.0&credential=vault:git/data").exchange()
+                .expectStatus().isForbidden()
+                .expectBody()
+                .jsonPath("$.error").isEqualTo("Mateo may not use credential vault:git/data (owned by team-data)")
+                .jsonPath("$.value").doesNotExist()
+                .jsonPath("$.credential").doesNotExist();
     }
 
     @Test

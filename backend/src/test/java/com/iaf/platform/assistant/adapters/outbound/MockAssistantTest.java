@@ -339,6 +339,35 @@ class MockAssistantTest {
     }
 
     @Test
+    void askingWhatTheWorkflowDoesIsAnsweredFromTheCanvasWithoutChangingIt() {
+        String current = workflows.stream().filter(w -> w.name().equals("vm-restart")).findFirst().orElseThrow().yaml();
+
+        List<AssistantEvent> events = run("Explain what this workflow does", current);
+
+        assertThat(types(events)).as("no draft event: the canvas keeps its draft").containsExactly(AssistantEvent.STATUS, AssistantEvent.MESSAGE, AssistantEvent.DONE);
+        String text = events.get(1).data().path("text").asText();
+        assertThat(text).startsWith("VM restart (vm-restart), owned by team-compute");
+        assertThat(text).contains("It is started by: the API call POST /api/v1/vms/{vmId}:restart").contains("an alert from grafana");
+        assertThat(text).contains("1. Check VM exists: calls the vsphere provider's vm.get").contains("waits for an approval by compute-approvers");
+        assertThat(text).contains("It returns vmName and powerState.");
+        assertThat(text).doesNotContain("I could not apply");
+        assertThat(events.get(2).data().path("status").asText()).isEqualTo("done");
+
+        List<AssistantEvent> nothing = run("describe it", null);
+        assertThat(types(nothing)).containsExactly(AssistantEvent.MESSAGE, AssistantEvent.DONE);
+        assertThat(nothing.get(0).data().path("text").asText()).isEqualTo(MockAssistant.NOTHING_TO_EXPLAIN);
+
+        List<AssistantEvent> broken = run("summarise this workflow", "kind: [not, yaml");
+        assertThat(types(broken)).containsExactly(AssistantEvent.STATUS, AssistantEvent.MESSAGE, AssistantEvent.DONE);
+        assertThat(broken.get(1).data().path("text").asText()).startsWith("The draft on the canvas does not parse");
+
+        // on an empty canvas, a request with something to build is drafted
+        List<AssistantEvent> create = run("Describe a workflow that restarts a VM", null);
+        assertThat(types(create)).contains(AssistantEvent.DRAFT);
+        assertThat(definitionOf(create).verb()).isEqualTo("restart");
+    }
+
+    @Test
     void modeIsMock() {
         assertThat(agent().mode()).isEqualTo("mock");
     }

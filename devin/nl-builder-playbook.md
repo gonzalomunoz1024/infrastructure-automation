@@ -17,12 +17,14 @@ The platform is generic. VM restart, MongoDB upgrade, Create database and simila
 The platform's chat API puts these in the session prompt. Ask for something only if it is missing and you cannot infer it.
 
 - `DESCRIPTION`: what the workflow should do and who uses it.
-- `MODE`: `create`, or `edit` when changing an existing workflow.
-- `CURRENT_DRAFT`: the workflow YAML now on the canvas (edit mode only; `none` otherwise).
+- `MODE`: `create`; `edit` when changing an existing workflow; `explain` when the user asks what the workflow on the canvas does.
+- `CURRENT_DRAFT`: the workflow YAML now on the canvas (edit and explain modes; `none` otherwise).
 - `CONTEXT`: owner team, folder, the requester's team, and `PLATFORM_API` (base URL).
 - The `PLATFORM_TOKEN` secret is attached to the session. It is a service account token with the `assistant` scopes (`registry:read`, `workflows:validate`, `workflows:dry-run`): it reads the registry, validates and dry-runs, and any other call is refused with 403.
 
 ## Procedure
+
+When `MODE` is `explain`, the user asked what the workflow on the canvas does, and nothing is to change. Answer in prose, in one message: what starts it (the API call and its inputs, the MCP tool, alert or event triggers), each step in order with what it calls (provider action, workflow, playbook, approval group, notification channel), the approvals, and the outputs. Do not update the structured output: `workflowYaml` stays exactly as `CURRENT_DRAFT`. Skip the steps below.
 
 1. Read the session prompt. Find the `DESCRIPTION`, `MODE`, `CURRENT_DRAFT` and `CONTEXT` blocks.
 2. Load what already exists from the platform API, sending `Authorization: Bearer $PLATFORM_TOKEN`:

@@ -13,9 +13,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.assistant.domain.AssistantEvent;
 import com.iaf.platform.assistant.domain.DraftBuilder;
 import com.iaf.platform.assistant.domain.DraftEditor;
+import com.iaf.platform.assistant.domain.DraftExplainer;
 import com.iaf.platform.assistant.domain.DraftRepairs;
 import com.iaf.platform.assistant.domain.Events;
 import com.iaf.platform.assistant.domain.ProviderDraft;
+import com.iaf.platform.assistant.domain.Words;
 import com.iaf.platform.assistant.domain.ProviderDraftBuilder;
 import com.iaf.platform.assistant.domain.Registry;
 import com.iaf.platform.assistant.domain.WorkflowDoc;
@@ -43,13 +45,15 @@ import reactor.core.scheduler.Schedulers;
  * The demo agent: deterministic drafts from the registry. It reads providers, published workflows
  * and resource types through the other slices' query ports, builds or edits a draft by rules,
  * validates it with the real checks, repairs what it can for up to five rounds, dry-runs it, and
- * streams the same events the Devin adapter would.
+ * streams the same events the Devin adapter would. A message that asks what the workflow does is
+ * answered with an explanation of the draft on the canvas, which stays as it is.
  */
 @Slf4j
 @Component
 public class MockAssistant implements AssistantPort {
 
     static final int MAX_ROUNDS = 5;
+    static final String NOTHING_TO_EXPLAIN = "There is no draft on the canvas yet, so there is nothing to explain. Describe the workflow you want and I will draft it.";
 
     private final ProviderQueries providers;
     private final WorkflowQueries workflows;
@@ -86,6 +90,12 @@ public class MockAssistant implements AssistantPort {
 
     @Override
     public Flux<AssistantEvent> run(AssistantRequest request) {
+        if (explains(request)) {
+            return paced(explanation(request)).onErrorResume(e -> {
+                log.warn("mock assistant could not explain the draft: {}", e.toString());
+                return Flux.just(Events.message(now(), "The assistant could not explain the draft: " + e.getMessage()), Events.failed(now(), e.getMessage()));
+            });
+        }
         Flux<AssistantEvent> events = Flux.concat(
                 Flux.just(Events.status(now(), "Reading the registry")),
                 registry().flatMapMany(reg -> Flux.concat(
@@ -104,6 +114,31 @@ public class MockAssistant implements AssistantPort {
     public Mono<ProviderDraft> draftProvider(String description, Identity who) {
         String owner = who == null || who.teams() == null || who.teams().isEmpty() ? null : who.teams().get(0);
         return registry().publishOn(Schedulers.boundedElastic()).map(reg -> ProviderDraftBuilder.build(description, reg, owner));
+    }
+
+    /**
+     * Whether the person asks what the workflow does: about the draft on the canvas, or, on an empty
+     * canvas, with nothing to build from, so "Describe a workflow that restarts a VM" is still drafted.
+     */
+    static boolean explains(AssistantRequest request) {
+        if (request.fromPlatform() || !DraftExplainer.asks(request.text())) {
+            return false;
+        }
+        boolean hasDraft = request.currentDraft() != null && !request.currentDraft().isBlank();
+        return hasDraft || Words.mainVerb(Words.tokens(request.text())).isEmpty();
+    }
+
+    /** Explain mode: the draft on the canvas in words, and no draft event, so the canvas keeps it as it is. */
+    private Flux<AssistantEvent> explanation(AssistantRequest request) {
+        String current = request.currentDraft();
+        if (current == null || current.isBlank()) {
+            return Flux.just(Events.message(now(), NOTHING_TO_EXPLAIN), Events.done(now()));
+        }
+        return Mono.fromCallable(() -> DraftEditor.edit(current, request.text(), Registry.EMPTY, null).explanation())
+                .subscribeOn(Schedulers.boundedElastic())
+                .onErrorResume(IllegalArgumentException.class,
+                        e -> Mono.just("The draft on the canvas does not parse (" + e.getMessage() + "), so I cannot explain it yet. Fix the YAML or ask me to draft it again."))
+                .flatMapMany(text -> Flux.just(Events.status(now(), "Reading the draft"), Events.message(now(), text), Events.done(now())));
     }
 
     // ---------------------------------------------------------------- pipeline

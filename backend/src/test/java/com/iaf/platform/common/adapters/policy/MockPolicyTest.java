@@ -62,10 +62,37 @@ class MockPolicyTest {
     }
 
     @Test
-    void publishingAndResourceAccessAreOpenToTeamMembers() throws Exception {
+    void publishingIsOpenToTeamMembers() throws Exception {
         assertThat(MockPolicy.decide(input(MATEO, Phase.PUBLISH, "{\"destructive\":true}")).decision()).isEqualTo("allow");
-        assertThat(MockPolicy.decide(input(MATEO, Phase.RESOURCE_ACCESS, null)).decision()).isEqualTo("allow");
         assertThat(MockPolicy.decide(input(NOBODY, Phase.PUBLISH, null)).decision()).isEqualTo("deny");
+    }
+
+    static PolicyInput resource(Identity who, String owner, String visibility) throws Exception {
+        String json = "{\"id\":\"image-1\",\"type\":\"image\",\"status\":\"ready\""
+                + (owner == null ? "" : ",\"owner\":\"" + owner + "\"")
+                + (visibility == null ? "" : ",\"visibility\":\"" + visibility + "\"") + "}";
+        return new PolicyInput(Phase.RESOURCE_ACCESS, who, null, null, JSON.readTree(json), JSON.readTree("{\"phase\":\"resource-access\"}"));
+    }
+
+    @Test
+    void aTeamResourceIsItsOwnerTeamsAPublicOrOwnerlessOneIsAnyones() throws Exception {
+        Identity admin = new Identity("gonzalo", "Gonzalo", null, List.of("team-platform"), List.of("admin"), true, Identity.Kind.USER);
+        PolicyDecision own = MockPolicy.decide(resource(MATEO, "team-compute", "team"));
+        assertThat(own.decision()).isEqualTo("allow");
+        assertThat(own.rules()).extracting(Rule::id).containsExactly("requester.team", "resource.owner");
+        assertThat(own.rules().get(1).message()).contains("team-compute");
+        PolicyDecision other = MockPolicy.decide(resource(MATEO, "team-platform", "team"));
+        assertThat(other.decision()).isEqualTo("deny");
+        assertThat(other.allowed()).isFalse();
+        assertThat(other.rules().get(1).result()).isEqualTo("deny");
+        assertThat(other.rules().get(1).message()).contains("image image-1").contains("team-platform").contains("[team-compute]");
+        assertThat(MockPolicy.decide(resource(MATEO, "team-platform", null)).decision()).as("an unset visibility is team").isEqualTo("deny");
+        assertThat(MockPolicy.decide(resource(MATEO, "team-platform", "public")).decision()).isEqualTo("allow");
+        assertThat(MockPolicy.decide(resource(MATEO, null, null)).decision()).as("no owner team").isEqualTo("allow");
+        assertThat(MockPolicy.decide(resource(admin, "team-compute", "team")).decision()).as("admins always").isEqualTo("allow");
+        assertThat(MockPolicy.decide(resource(Identity.SYSTEM, "team-compute", "team")).decision()).isEqualTo("allow");
+        assertThat(MockPolicy.decide(resource(NOBODY, "team-compute", "public")).decision()).as("a requester without a team acts for nobody").isEqualTo("deny");
+        assertThat(MockPolicy.decide(new PolicyInput(Phase.RESOURCE_ACCESS, MATEO, null, null, null, null)).decision()).as("no resource at all: nothing to own").isEqualTo("allow");
     }
 
     @Test

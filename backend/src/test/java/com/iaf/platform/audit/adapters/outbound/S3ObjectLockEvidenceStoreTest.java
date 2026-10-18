@@ -24,6 +24,7 @@ import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.domain.ShareToken;
+import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 
 import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
 import software.amazon.awssdk.core.ResponseBytes;
@@ -132,6 +133,10 @@ class S3ObjectLockEvidenceStoreTest {
         assertThat(r.sealed()).isEqualTo(seal);
         assertThat(r.status()).isEqualTo("failed");
         assertThat(s3.listCalls).isGreaterThan(2);
+        PutObjectRequest sealPut = s3.puts.stream().filter(p -> p.key().equals("iaf/evidence/job_1/seal.json")).findFirst().orElseThrow();
+        PutObjectRequest indexPut = s3.puts.stream().filter(p -> p.key().equals("iaf/sealed/job_1.json")).findFirst().orElseThrow();
+        assertThat(indexPut.objectLockRetainUntilDate()).as("the index entry is locked as long as the seal").isEqualTo(sealPut.objectLockRetainUntilDate());
+        assertThat(restarted.unsealed()).extracting(EvidenceStore.Unsealed::jobId).containsExactly("job_2");
     }
 
     @Test
@@ -166,7 +171,9 @@ class S3ObjectLockEvidenceStoreTest {
 
         assertThat(store().findShareToken(token.token())).contains(token);
         PutObjectRequest put = s3.puts.get(s3.puts.size() - 1);
-        assertThat(put.key()).isEqualTo("iaf/share-tokens/" + token.token() + ".json");
+        assertThat(put.key()).as("kept under the hash of the token, never the token")
+                .isEqualTo("iaf/share-tokens/" + com.iaf.platform.common.domain.Hashes.sha256(token.token()) + ".json");
+        assertThat(new String(s3.objects.get(put.key()), java.nio.charset.StandardCharsets.UTF_8)).doesNotContain(token.token());
         assertThat(put.objectLockRetainUntilDate()).isEqualTo(expires);
         assertThat(store().findShareToken("no-such-token-0123456789")).isEmpty();
     }

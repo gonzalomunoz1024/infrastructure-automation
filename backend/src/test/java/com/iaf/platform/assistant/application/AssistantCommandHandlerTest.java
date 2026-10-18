@@ -61,6 +61,9 @@ class AssistantCommandHandlerTest {
     static final Instant NOW = Instant.parse("2026-10-17T10:00:00Z");
     static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     static final Identity WHO = new Identity("u-ada", "Ada", "ada@example.com", List.of("team-compute", "team-platform"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity OTHER = new Identity("u-bob", "Bob", null, List.of("team-data"), List.of("ops"), false, Identity.Kind.USER);
+    static final Identity ADMIN = new Identity("u-root", "Root", null, List.of(), List.of("admin"), true, Identity.Kind.USER);
+    static final Identity ROBOT = new Identity("sa_agent", "Agent", null, List.of("team-compute"), List.of(), true, Identity.Kind.SERVICE);
 
     static final String YAML = """
             apiVersion: iaf.platform/v1
@@ -332,12 +335,120 @@ class AssistantCommandHandlerTest {
     }
 
     @Test
+    void anAgentSessionThatEndedIsForgottenSoTheNextMessageStartsANewOne() {
+        AssistantCommandHandler h = handler(ScriptedAgent.of(Events.status(NOW, "Devin session devin-1 started", "devin-1"),
+                Events.message(NOW, "Devin did not finish within 30 minutes"), Events.sessionEnded(NOW, "Ending Devin session devin-1"),
+                Events.failed(NOW, "timeout after PT30M")));
+        String id = as(h.startSession("create", null, null));
+
+        as(h.send(id, "x"));
+
+        assertThat(store.get(id).orElseThrow().externalId()).isNull();
+        assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.FAILED);
+    }
+
+    @Test
+    void aClientThatLeavesMidStreamClosesTheSessionAndForgetsTheAgentsOwn() throws Exception {
+        AssistantCommandHandler h = handler(new ScriptedAgent(r -> Flux.concat(Flux.just(Events.status(NOW, "Devin session devin-7 started", "devin-7")), Flux.never())));
+        String id = as(h.startSession("create", null, null));
+
+        h.send(id, "take your time").take(1).contextWrite(ctx -> CurrentIdentity.with(ctx, WHO)).blockLast(Duration.ofSeconds(5));
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!AssistantSession.DONE.equals(store.get(id).orElseThrow().status()) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.DONE);
+        assertThat(store.get(id).orElseThrow().externalId()).as("the agent ends its session on the cancel").isNull();
+    }
+
+    @Test
     void unknownSessionsAndBlankMessagesAreRejected() {
         AssistantCommandHandler h = handler(ScriptedAgent.of(Events.done(NOW)));
         assertThatThrownBy(() -> as(h.send("asst-missing", "x"))).isInstanceOf(NotFoundException.class);
         String id = as(h.startSession("create", null, null));
         assertThatThrownBy(() -> as(h.send(id, "  "))).isInstanceOf(IllegalArgumentException.class);
         assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.IDLE);
+    }
+
+    @Test
+    void aSessionIsItsOwnersAnAdminMayStepInAndAServiceAccountMayNot() {
+        AssistantCommandHandler h = handler(ScriptedAgent.of(Events.done(NOW)));
+        String id = as(h.startSession("create", null, null));
+
+        StepVerifier.create(h.send(id, "x").contextWrite(ctx -> CurrentIdentity.with(ctx, OTHER)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining(id).hasMessageContaining("u-ada"))
+                .verify();
+        StepVerifier.create(h.send(id, "x").contextWrite(ctx -> CurrentIdentity.with(ctx, ROBOT))).expectError(ForbiddenException.class).verify();
+        assertThat(store.get(id).orElseThrow().history()).isEmpty();
+        assertThat(store.get(id).orElseThrow().status()).isEqualTo(AssistantSession.IDLE);
+
+        assertThat(h.send(id, "x").contextWrite(ctx -> CurrentIdentity.with(ctx, ADMIN)).collectList().block(Duration.ofSeconds(5))).hasSize(1);
+        assertThat(store.get(id).orElseThrow().history()).extracting(AssistantSession.Turn::text).containsExactly("x");
+        assertThat(as(h.send(id, "y"))).hasSize(1);
+    }
+
+    /** A store that notes every call made on a non-blocking thread, where the JDBC store would stall the event loop. */
+    static final class ThreadCheckingStore implements com.iaf.platform.assistant.ports.outbound.SessionStore {
+        final InMemorySessionStore inner = new InMemorySessionStore();
+        final List<String> offenders = new CopyOnWriteArrayList<>();
+
+        private void check(String call) {
+            if (reactor.core.scheduler.Schedulers.isInNonBlockingThread()) {
+                offenders.add(call + " on " + Thread.currentThread().getName());
+            }
+        }
+
+        @Override
+        public void save(AssistantSession session) {
+            check("save");
+            inner.save(session);
+        }
+
+        @Override
+        public java.util.Optional<AssistantSession> get(String id) {
+            check("get");
+            return inner.get(id);
+        }
+
+        @Override
+        public java.util.Optional<AssistantSession> update(String id, java.util.function.UnaryOperator<AssistantSession> change) {
+            check("update");
+            return inner.update(id, change);
+        }
+
+        @Override
+        public int deleteUpdatedBefore(java.time.Instant cutoff) {
+            check("deleteUpdatedBefore");
+            return inner.deleteUpdatedBefore(cutoff);
+        }
+    }
+
+    @Test
+    void theSessionIsRecordedOffTheAgentsThreadsAndClosedOffTheCancellingOne() throws Exception {
+        ThreadCheckingStore checking = new ThreadCheckingStore();
+        ScriptedAgent agent = new ScriptedAgent(r -> Flux.just(Events.status(NOW, "Devin session devin-1 started", "devin-1"),
+                Events.draft(NOW, draft("A restart.")), Events.message(NOW, "Here."), Events.done(NOW)).publishOn(reactor.core.scheduler.Schedulers.parallel()));
+        AssistantCommandHandler h = new AssistantCommandHandler(agent, checking, workflows, runs, bus, props, CLOCK, env);
+        String id = as(h.startSession("create", null, null));
+
+        List<AssistantEvent> events = as(h.send(id, "restart a vm"));
+
+        assertThat(events).hasSize(4);
+        assertThat(checking.inner.get(id).orElseThrow().status()).isEqualTo(AssistantSession.DONE);
+        assertThat(checking.inner.get(id).orElseThrow().externalId()).isEqualTo("devin-1");
+        assertThat(checking.offenders).isEmpty();
+
+        // the client leaves while the agent is still working: the cancel arrives on a timer thread
+        AssistantCommandHandler never = new AssistantCommandHandler(new ScriptedAgent(r -> Flux.never()), checking, workflows, runs, bus, props, CLOCK, env);
+        String left = as(never.startSession("create", null, null));
+        never.send(left, "take your time").take(Duration.ofMillis(100)).contextWrite(ctx -> CurrentIdentity.with(ctx, WHO)).blockLast(Duration.ofSeconds(5));
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!AssistantSession.DONE.equals(checking.inner.get(left).orElseThrow().status()) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(checking.inner.get(left).orElseThrow().status()).isEqualTo(AssistantSession.DONE);
+        assertThat(checking.offenders).isEmpty();
     }
 
     @Test

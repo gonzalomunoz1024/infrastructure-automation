@@ -117,7 +117,43 @@ class RestControllerResourceAdapterTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.builtFrom[0].id").isEqualTo("image-base")
-                .jsonPath("$.dependents.length()").isEqualTo(0);
+                .jsonPath("$.dependents.length()").isEqualTo(0)
+                .jsonPath("$.nodes.length()").isEqualTo(2)
+                .jsonPath("$.nodes[0].id").isEqualTo("vm-web1")
+                .jsonPath("$.nodes[1].id").isEqualTo("image-base")
+                .jsonPath("$.edges.length()").isEqualTo(1)
+                .jsonPath("$.edges[0].from").isEqualTo("image-base")
+                .jsonPath("$.edges[0].to").isEqualTo("vm-web1")
+                .jsonPath("$.edges[0].via").isEqualTo("create-vm");
+    }
+
+    @Test
+    void lineageReachesThroughOtherResources() {
+        store.save(resource("volume-v1", "volume", "ready", List.of("vm-web1")));
+        client.get().uri("/api/v1/resources/image-base/lineage").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.dependents.length()").isEqualTo(2)
+                .jsonPath("$.nodes.length()").isEqualTo(4)
+                .jsonPath("$.nodes[2].id").isEqualTo("volume-v1")
+                .jsonPath("$.edges.length()").isEqualTo(3)
+                .jsonPath("$.edges[1].from").isEqualTo("vm-web1")
+                .jsonPath("$.edges[1].to").isEqualTo("volume-v1");
+        client.post().uri("/api/v1/resources/image-base:retire").exchange()
+                .expectStatus().isEqualTo(409)
+                .expectBody()
+                .jsonPath("$.detail.length()").isEqualTo(3)
+                .jsonPath("$.detail[1].id").isEqualTo("volume-v1");
+    }
+
+    @Test
+    void retireOfAnotherTeamsResourceIs403() {
+        store.save(new Resource("database-d1", "database", "orders", "ready", F.objectNode().put("name", "orders"), "team-data", "team",
+                new Resource.Origin("job_seed", "create-database", "1.0.0"), List.of(), CLOCK.instant(), CLOCK.instant()));
+        client.post().uri("/api/v1/resources/database-d1:retire").exchange()
+                .expectStatus().isForbidden()
+                .expectBody().jsonPath("$.error").isEqualTo("Mateo may not retire database database-d1 (owned by team-data)");
+        client.get().uri("/api/v1/resources/database-d1").exchange().expectBody().jsonPath("$.status").isEqualTo("ready");
     }
 
     @Test

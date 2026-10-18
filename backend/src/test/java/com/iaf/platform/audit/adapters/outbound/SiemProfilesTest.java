@@ -64,7 +64,13 @@ class SiemProfilesTest {
                         "platform.siem.syslog.host=127.0.0.1", "platform.siem.syslog.protocol=udp")
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
-                    assertThat(ctx.getBeansOfType(SiemPort.class)).hasSize(2);
+                    assertThat(ctx.getBeansOfType(SiemPort.class).values()).extracting(SiemPort::name)
+                            .containsExactlyInAnyOrder("hec", "syslog");
+                    for (String name : ctx.getBeanNamesForType(SiemPort.class)) {
+                        assertThat(ctx.getBeanFactory().getBeanDefinition(name).isPrimary())
+                                .as("%s is selected by its profile and destination, not by @Primary", name).isFalse();
+                    }
+                    assertThat(ctx.getBean(SiemExporter.class).enabled()).isTrue();
                 });
     }
 }

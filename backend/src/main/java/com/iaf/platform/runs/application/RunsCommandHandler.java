@@ -25,7 +25,6 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
-import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
@@ -37,6 +36,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
+import com.iaf.platform.runs.domain.BatchApprovals;
 import com.iaf.platform.runs.domain.ChangeTicket;
 import com.iaf.platform.runs.domain.DryRunResult;
 import com.iaf.platform.runs.domain.DryRunResult.DryRunStep;
@@ -63,6 +63,7 @@ import com.iaf.platform.runs.ports.outbound.PriceListPort;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.Step;
+import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
@@ -85,6 +86,9 @@ import reactor.core.scheduler.Schedulers;
 public class RunsCommandHandler implements RunsCommands {
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
+
+    /** How many rows of a batch are judged by the policy engine at once. */
+    static final int POLICY_CONCURRENCY = 8;
 
     private final WorkflowQueries workflows;
     private final com.iaf.platform.providers.ports.inbound.ProviderQueries providers;
@@ -167,14 +171,14 @@ public class RunsCommandHandler implements RunsCommands {
                 rows.add(merged);
             }
             if (!invalid.isEmpty()) {
-                throw new InvalidInputException(def.name(), invalid, true);
+                throw InvalidInputException.rows(def.name(), invalid);
             }
             RolloutPolicy rollout = rollout(cmd.rollout(), def);
             List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
             String channel = cmd.channel() == null ? "batch" : cmd.channel();
             return requireKnownResources(def, rows, true)
                     .then(requireBuildable(def, rows, true))
-                    .then(evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null))
+                    .then(evaluateBatchPolicy(who, def, rec.version(), rows, channel))
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true, who)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
@@ -206,6 +210,7 @@ public class RunsCommandHandler implements RunsCommands {
     public Mono<CommandAccepted> cancel(String jobId) {
         return CurrentIdentity.current().flatMap(who -> {
             Job job = job(jobId);
+            requireControl(who, job);
             if (job.status() != null && job.status().terminal()) {
                 throw new ConflictException("Job " + jobId + " already ended (" + job.status().json() + ")");
             }
@@ -218,7 +223,7 @@ public class RunsCommandHandler implements RunsCommands {
     @Override
     public Mono<CommandAccepted> retry(String jobId, String step, JsonNode input) {
         return CurrentIdentity.current().flatMap(who -> {
-            Job job = needsAttention(jobId, step);
+            Job job = needsAttention(who, jobId, step);
             AttentionDecision decision = input == null || input.isNull() || input.isMissingNode()
                     ? AttentionDecision.retry(who.id())
                     : AttentionDecision.editInput(input, who.id());
@@ -228,16 +233,63 @@ public class RunsCommandHandler implements RunsCommands {
 
     @Override
     public Mono<CommandAccepted> skip(String jobId, String step) {
-        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(jobId, step), AttentionDecision.skip(who.id())));
+        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(who, jobId, step), AttentionDecision.skip(who.id())));
     }
 
     @Override
     public Mono<CommandAccepted> abort(String jobId) {
-        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(jobId, null), AttentionDecision.abort(who.id())));
+        return CurrentIdentity.current().flatMap(who -> signalAttention(needsAttention(who, jobId, null), AttentionDecision.abort(who.id())));
     }
 
-    private Job needsAttention(String jobId, String step) {
+    /**
+     * Who may steer a job (cancel it, or retry, skip and abort a step waiting for attention): its
+     * requester, a member of the workflow's owner team, anyone the workflow's {@code policy.rbac}
+     * or approver groups name, and admins. Anyone else is refused with the job's id.
+     */
+    static boolean canControl(Identity who, Job job) {
+        if (who.admin() || (who.id() != null && who.id().equals(job.requesterId()))) {
+            return true;
+        }
+        WorkflowDefinition def = job.definition();
+        if (def == null) {
+            return false;
+        }
+        String owner = def.metadata() == null ? null : def.metadata().owner();
+        if (owner != null && who.teams().contains(owner)) {
+            return true;
+        }
+        List<String> rbac = rbac(def);
+        if (rbac != null && !rbac.isEmpty() && AccessRules.canInvoke(who, rbac)) {
+            return true;
+        }
+        return approverGroups(def).stream().anyMatch(g -> AccessRules.canApprove(who, g));
+    }
+
+    static void requireControl(Identity who, Job job) {
+        if (!canControl(who, job)) {
+            throw new ForbiddenException(who.name() + " may not control job " + job.id() + " (" + job.workflow()
+                    + " started by " + job.requesterId() + ")");
+        }
+    }
+
+    /** The groups the workflow's approval policy and its approval steps name. */
+    private static List<String> approverGroups(WorkflowDefinition def) {
+        List<String> groups = new ArrayList<>();
+        if (def.policy() != null && def.policy().approval() != null && def.policy().approval().group() != null) {
+            groups.add(def.policy().approval().group());
+        }
+        for (Step s : def.allSteps()) {
+            String group = s.type() == StepType.APPROVAL ? s.withText("group") : null;
+            if (group != null && !group.isBlank()) {
+                groups.add(group);
+            }
+        }
+        return groups;
+    }
+
+    private Job needsAttention(Identity who, String jobId, String step) {
         Job job = job(jobId);
+        requireControl(who, job);
         if (job.status() != JobStatus.NEEDS_ATTENTION || job.attention() == null) {
             throw new ConflictException("Job " + jobId + " is not waiting for attention (" + (job.status() == null ? "unknown" : job.status().json()) + ")");
         }
@@ -283,10 +335,15 @@ public class RunsCommandHandler implements RunsCommands {
             AccessRules.requireInvoke(who, rbac(def), def.name());
             JsonNode merged = input == null || input.isNull() ? source.input() : WorkflowInterpreter.merge(source.input(), input);
             JsonNode validated = validate(def, merged);
-            return evaluatePolicy(who, def, source.version(), validated, "rest", null).flatMap(decision -> {
-                Job job = JobFactory.rerun(source, from, validated, who, "rest", null, now()).withPolicy(decision);
-                return openChange(job, def, null);
-            }).flatMap(job -> launch(job, source.id()));
+            // the merged input is checked as a start checks it; the source's preview holds only while the input is the same
+            boolean sameInput = validated.equals(source.input());
+            return requireKnownResources(def, List.of(validated), false)
+                    .then(requireBuildable(def, List.of(validated), false))
+                    .then(evaluatePolicy(who, def, source.version(), validated, "rest", null))
+                    .flatMap(decision -> (sameInput ? Mono.just(Optional.ofNullable(source.preview())) : previewFor(null, def, List.of(validated), decision, true, who))
+                            .flatMap(preview -> openChange(JobFactory.rerun(source, from, validated, preview.orElse(null), who, "rest", null, now())
+                                    .withPolicy(decision), def, null)))
+                    .flatMap(job -> launch(job, source.id()));
         });
     }
 
@@ -342,6 +399,11 @@ public class RunsCommandHandler implements RunsCommands {
         return decide(approvalId, comment, false);
     }
 
+    /**
+     * The engine takes the decision first and only then is it published, so a job the engine
+     * does not hold answers 409 and its approval stays pending for a later decision, instead of
+     * reading as decided while the job waits for good.
+     */
     private Mono<CommandAccepted> decide(String approvalId, String comment, boolean approved) {
         return CurrentIdentity.current().flatMap(who -> {
             Approval a = projection.approval(approvalId).orElseThrow(() -> new NotFoundException("approval", approvalId));
@@ -352,9 +414,8 @@ public class RunsCommandHandler implements RunsCommands {
                 AccessRules.requireApprove(who, a.group(), a.workflow());   // escalated: the escalation group may decide too
             }
             ApprovalDecision d = approved ? ApprovalDecision.approved(who.id(), comment, now()) : ApprovalDecision.rejected(who.id(), comment, now());
-            events.approvalDecided(a, d);
-            return execution.isRunning(a.jobId())
-                    .flatMap(running -> running ? execution.signalApproval(a.jobId(), a.id(), d) : Mono.empty())
+            return execution.signalApproval(a.jobId(), a.id(), d)
+                    .then(Mono.fromRunnable(() -> events.approvalDecided(a, d)))
                     .thenReturn(accepted(a.id(), d.decision(), a.jobId()));
         });
     }
@@ -491,7 +552,6 @@ public class RunsCommandHandler implements RunsCommands {
                         .flatMap(v -> v == null || v.equals(pub.version()) ? Mono.just(pub) : workflows.version(workflow, v).defaultIfEmpty(pub)));
     }
 
-    /** Defaults filled in, then the schema: a 400 with every problem when it does not fit. */
     /** The inventory check: an error naming every row whose x-resource ids the registry does not know. */
     private Mono<Void> requireKnownResources(WorkflowDefinition def, List<JsonNode> rows, boolean batch) {
         List<Inventory.Field> fields = Inventory.fields(def);
@@ -512,7 +572,7 @@ public class RunsCommandHandler implements RunsCommands {
                     if (invalid.isEmpty()) {
                         return Mono.<Void>empty();
                     }
-                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                    return Mono.error(batch ? InvalidInputException.rows(def.name(), invalid)
                             : new InvalidInputException(def.name(), invalid.get(0).problems()));
                 });
     }
@@ -542,7 +602,7 @@ public class RunsCommandHandler implements RunsCommands {
                     if (invalid.isEmpty()) {
                         return Mono.<Void>empty();
                     }
-                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                    return Mono.error(batch ? InvalidInputException.rows(def.name(), invalid)
                             : new InvalidInputException(def.name(), invalid.get(0).problems()));
                 });
     }
@@ -557,32 +617,54 @@ public class RunsCommandHandler implements RunsCommands {
         return in;
     }
 
-    private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
-        ObjectNode context = F.objectNode();
-        context.put("channel", channel);
-        context.put("environment", JobFactory.environmentOf(input));
-        if (parentId != null) {
-            context.put("parentId", parentId);
-        }
-        if (def.policy() != null) {
-            context.put("changeRequired", def.policy().changeRequired());
-            if (def.policy().approval() != null) {
-                context.put("approvalRequired", def.policy().approval().required());
-            }
-        }
-        return policy.evaluate(new PolicyInput(PolicyPort.Phase.INVOKE, who, def.name(), version, input, context))
-                .defaultIfEmpty(PolicyDecision.allow(policy.engine()))
-                .map(decision -> {
-                    if (decision.decision() != null && "deny".equals(decision.decision())) {
-                        String why = decision.rules() == null ? "" : decision.rules().stream()
-                                .filter(r -> "deny".equals(r.result()))
-                                .map(PolicyPort.Rule::message)
-                                .filter(m -> m != null && !m.isBlank())
-                                .reduce((a, b) -> a + "; " + b).map(m -> ": " + m).orElse("");
-                        throw new ForbiddenException("Policy denies running " + def.name() + why);
+    /**
+     * A batch is judged row by row: every row carries its own input and environment, so the
+     * engine sees each one. A deny of any row refuses the whole batch, naming the rows; the
+     * batch keeps the strictest decision, which asks for the batch approval when any row needs
+     * one ({@link BatchApprovals}).
+     */
+    private Mono<PolicyDecision> evaluateBatchPolicy(Identity who, WorkflowDefinition def, String version, List<JsonNode> rows, String channel) {
+        return Flux.range(0, rows.size())
+                .flatMapSequential(i -> judge(who, def, version, rows.get(i), channel, null).map(d -> Map.entry(i, d)), POLICY_CONCURRENCY)
+                .collectList()
+                .map(judged -> {
+                    List<Integer> denied = new ArrayList<>();
+                    List<String> why = new ArrayList<>();
+                    for (Map.Entry<Integer, PolicyDecision> e : judged) {
+                        if (InvokePolicy.denied(e.getValue())) {
+                            denied.add(e.getKey());
+                            denyMessages(e.getValue()).forEach(m -> {
+                                if (!why.contains(m)) {
+                                    why.add(m);
+                                }
+                            });
+                        }
                     }
-                    return decision;
+                    if (!denied.isEmpty()) {
+                        throw new ForbiddenException("Policy denies running " + def.name() + " for row" + (denied.size() == 1 ? " " : "s ") + denied
+                                + (why.isEmpty() ? "" : ": " + String.join("; ", why)));
+                    }
+                    return BatchApprovals.strictest(judged.stream().map(Map.Entry::getValue).toList(), policy.engine());
                 });
+    }
+
+    private static List<String> denyMessages(PolicyDecision decision) {
+        return InvokePolicy.denials(decision);
+    }
+
+    private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
+        return judge(who, def, version, input, channel, parentId).map(decision -> {
+            if (InvokePolicy.denied(decision)) {
+                throw new ForbiddenException(InvokePolicy.refusal(def.name(), decision));
+            }
+            return decision;
+        });
+    }
+
+    /** The engine's answer for one input ({@link InvokePolicy}), an allow when it has none; a deny is the caller's to refuse. */
+    private Mono<PolicyDecision> judge(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
+        return policy.evaluate(InvokePolicy.input(who, def, version, input, channel, parentId))
+                .defaultIfEmpty(PolicyDecision.allow(policy.engine()));
     }
 
     private Mono<Optional<Preview>> previewFor(Preview given, WorkflowDefinition def, List<JsonNode> inputs, PolicyDecision decision, boolean topLevel,

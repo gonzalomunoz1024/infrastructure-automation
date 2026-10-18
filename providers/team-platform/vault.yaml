@@ -39,5 +39,10 @@ spec:
           path: { type: string }
       example: { path: databases/orders, deleted: true }
       sample: { path: "{{ $input.path }}", deleted: true }
+  errors:
+    - { match: { status: 403 }, class: permission_denied, retry: false }
+    - { match: { status: 404 }, class: not_found, retry: false }
+    - { match: { status: 429 }, class: rate_limited, retry: true }
+    - { match: { status: 503 }, class: unavailable, retry: true }
   slo: { successRate: 99.9, p95Ms: 300 }
   alerts: { channel: "#platform-alerts" }

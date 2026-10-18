@@ -23,8 +23,13 @@ import io.temporal.failure.TimeoutFailure;
  *
  * <pre>
  * { "input": {...}, "idempotencyKey": "job-…:reserve:3",
- *   "job": { "id", "workflow", "version", "traceId" }, "step": "reserve", "environment": "prod", "attempt": 1 }
+ *   "job": { "id", "workflow", "version", "traceId" }, "step": "reserve", "environment": "prod", "attempt": 1,
+ *   "traceparent": "00-…-…-01" }
  * </pre>
+ *
+ * <p>{@code traceparent} is the W3C trace context of the step's span, for the worker to continue
+ * the job's trace under it ({@code job.traceId} stays for the workers that read only the trace id);
+ * a call scheduled before it was sent has none.</p>
  *
  * <p>The result is the action's output, a JSON object. The activity runs once: the step's timeout
  * is its start-to-close and its schedule-to-close (a call no worker picks up fails instead of
@@ -55,7 +60,7 @@ final class WorkerCalls {
         return jobId + ":" + stepId + ":" + seq;
     }
 
-    static ObjectNode payload(JobRef job, String stepId, String idempotencyKey, int attempt, JsonNode input) {
+    static ObjectNode payload(JobRef job, String stepId, String idempotencyKey, int attempt, JsonNode input, String traceparent) {
         ObjectNode p = F.objectNode();
         p.set("input", input == null || input.isMissingNode() || input.isNull() ? F.objectNode() : input);
         p.put("idempotencyKey", idempotencyKey);
@@ -67,6 +72,9 @@ final class WorkerCalls {
         p.put("step", stepId);
         p.put("environment", job.environment());
         p.put("attempt", attempt);
+        if (traceparent != null) {
+            p.put("traceparent", traceparent);
+        }
         return p;
     }
 

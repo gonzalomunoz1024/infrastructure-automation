@@ -16,14 +16,10 @@ import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
 import com.iaf.platform.common.adapters.jdbc.Revisioned;
-import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.config.PlatformProperties;
-import com.iaf.platform.resources.domain.DemoResources;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.outbound.ResourceStorePort;
-import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -63,19 +59,9 @@ public class JdbcResourceStore implements ResourceStorePort {
 
     @PostConstruct
     public void seed() {
-        Path root = Path.of(props.getContent().getDir()).toAbsolutePath().normalize();
+        Path root = ResourceSeeds.root(props);
         Map<String, ResourceTypeDefinition> stored = types().stream().collect(Collectors.toMap(ResourceTypeDefinition::name, Function.identity()));
-        List<ResourceTypeDefinition> changed = new ArrayList<>();
-        for (ContentFiles.ContentFile f : ContentFiles.ofKind(root, ResourceTypeDefinition.KIND)) {
-            try {
-                ResourceTypeDefinition type = ResourceTypeDefinition.parse(f.yaml());
-                if (!type.equals(stored.get(type.name()))) {
-                    changed.add(type);
-                }
-            } catch (IllegalArgumentException e) {
-                log.warn("skipping resource type {}: {}", f.relative(root), e.getMessage());
-            }
-        }
+        List<ResourceTypeDefinition> changed = ResourceSeeds.types(root).stream().filter(t -> !t.equals(stored.get(t.name()))).toList();
         if (!changed.isEmpty()) {
             jdbc.inTransaction(() -> {
                 changed.forEach(this::upsertType);
@@ -84,17 +70,10 @@ public class JdbcResourceStore implements ResourceStorePort {
         }
         log.info("resource registry: {} types ({} written from {})", types().size(), changed.size(), root.resolve("resource-types"));
         if (props.getDemo().isSeedHistory() && !types().isEmpty()) {
-            List<WorkflowDefinition> workflows = new ArrayList<>();
-            for (ContentFiles.ContentFile f : ContentFiles.ofKind(root, WorkflowDefinition.KIND)) {
-                try {
-                    workflows.add(WorkflowYaml.parse(f.yaml()));
-                } catch (IllegalArgumentException e) {
-                    log.debug("demo seed ignores {}: {}", f.relative(root), e.getMessage());
-                }
-            }
+            List<Resource> demo = ResourceSeeds.demo(root, types(), clock.instant());
             int added = jdbc.inTransaction(() -> {
                 int n = 0;
-                for (Resource r : DemoResources.seed(types(), workflows, clock.instant())) {
+                for (Resource r : demo) {
                     if (jdbc.insertIfAbsent("INSERT INTO resources (id, type, status, created_at, doc) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
                             r.id(), r.type(), r.status(), Jdbc.time(r.createdAt()), jdbc.json(r))) {
                         n++;
@@ -134,6 +113,26 @@ public class JdbcResourceStore implements ResourceStorePort {
     @Override
     public Optional<Resource> resource(String id) {
         return id == null ? Optional.empty() : jdbc.first("SELECT doc FROM resources WHERE id = ?", (rs, i) -> read(rs.getString(1)), id);
+    }
+
+    /**
+     * Only the rows whose document holds the id as a JSON string are read and parsed (a LIKE on
+     * the text column, the id written as Jackson writes it); their {@code builtFrom} decides.
+     */
+    @Override
+    public List<Resource> builtFrom(String id) {
+        if (id == null || id.isBlank()) {
+            return List.of();
+        }
+        String pattern = "%" + escapeLike(jdbc.json(id)) + "%";
+        List<Resource> out = new ArrayList<>(jdbc.query("SELECT doc FROM resources WHERE doc LIKE ? ESCAPE '\\'", (rs, i) -> read(rs.getString(1)), pattern));
+        out.removeIf(r -> r.builtFrom() == null || !r.builtFrom().contains(id));
+        out.sort(ORDER);
+        return out;
+    }
+
+    static String escapeLike(String text) {
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
     @Override

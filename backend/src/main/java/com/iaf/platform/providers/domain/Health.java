@@ -6,8 +6,9 @@ import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
  * How a provider is doing over the last 24 hours, judged by {@link ProviderHealthRule} against the
- * provider's SLO. {@code errorTrend} is failed calls per hour, oldest hour first; {@code reasons}
- * are sentences the admin view shows next to the band.
+ * provider's SLO. {@code errorTrend} is failed calls per day over the last
+ * {@value ProviderHealthRule#TREND_DAYS} days, oldest day first; {@code reasons} are sentences the
+ * admin view shows next to the band.
  */
 public record Health(
         Status status,

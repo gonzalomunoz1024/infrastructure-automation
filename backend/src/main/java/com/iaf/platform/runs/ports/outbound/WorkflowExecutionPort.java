@@ -20,7 +20,10 @@ import reactor.core.publisher.Mono;
  * A job of kind {@code batch} is released in its waves; its rows run as child jobs.</p>
  *
  * <p>Every method completes when the engine accepted the request, never when the job ends. The
- * engine reports progress only through the job events ({@code job.step}, {@code job.finished}, ...).</p>
+ * engine reports progress only through the job events ({@code job.step}, {@code job.finished}, ...).
+ * A signal for a job the engine does not hold (it ended, or never started here) fails with a
+ * {@code ConflictException} saying the job is not running, on every engine; so does a cancel on
+ * Temporal, while the in-memory engine ignores it.</p>
  */
 public interface WorkflowExecutionPort {
 
