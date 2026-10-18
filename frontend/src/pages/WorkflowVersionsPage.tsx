@@ -4,9 +4,69 @@ import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
-import type { WorkflowVersion } from '../lib/types'
+import type { WorkflowDefinition, WorkflowVersion } from '../lib/types'
 import { ErrorState, Mono, TextLink, When } from '../components/common'
 import { unifiedDiff } from '../components/diff'
+import { allStepLocations } from '../designer/model/graph'
+import { stepTypeOfBody } from '../designer/model/fixes'
+
+/** One row of a version's step list: what the step is and, for a run step, which workflow it runs at which version range. */
+export interface VersionStepRow {
+  id: string
+  name: string
+  type: string
+  depth: number
+  runs?: { workflow: string; range?: string }
+}
+
+/** The steps of a version in document order, nested ones indented, run steps with their version range (`^2`). */
+export function versionSteps(definition: WorkflowDefinition | undefined): VersionStepRow[] {
+  if (!definition) return []
+  return allStepLocations(definition).map((loc) => {
+    const type = stepTypeOfBody(loc.body) ?? 'step'
+    const run = loc.body.run
+    return {
+      id: loc.id,
+      name: typeof loc.body.name === 'string' && loc.body.name ? loc.body.name : loc.id,
+      type,
+      depth: loc.parents.length,
+      ...(type === 'run' && run && typeof run === 'object' ? { runs: { workflow: typeof run.workflow === 'string' ? run.workflow : '?', range: typeof run.version === 'string' && run.version ? run.version : undefined } } : {}),
+    }
+  })
+}
+
+export function VersionStepList({ definition }: { definition: WorkflowDefinition | undefined }) {
+  const rows = versionSteps(definition)
+  if (rows.length === 0) return <p className="rounded-md bg-surface-secondary px-4 py-6 text-center text-sm text-tertiary">This version has no steps.</p>
+  return (
+    <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light" aria-label="Steps">
+      {rows.map((s) => (
+        <li key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2" style={{ paddingLeft: `${0.75 + s.depth * 1.25}rem` }}>
+          <span className="text-sm text-primary">{s.name}</span>
+          <Mono className="text-tertiary">{s.id}</Mono>
+          <Tag size="sm" outline mono>
+            {s.type}
+          </Tag>
+          {s.runs && (
+            <span className="inline-flex flex-wrap items-center gap-1.5 text-caption text-secondary">
+              runs
+              <TextLink to={pathFor('workflow', { name: s.runs.workflow })} mono>
+                {s.runs.workflow}
+              </TextLink>
+              {s.runs.range ? (
+                <Tag size="sm" mono title="Version range: the published version the child job uses must match it">
+                  {s.runs.range}
+                </Tag>
+              ) : (
+                <span className="text-tertiary">any version</span>
+              )}
+            </span>
+          )}
+        </li>
+      ))}
+    </ol>
+  )
+}
 
 export default function WorkflowVersionsPage({ route }: PageProps) {
   const name = route.params.name
@@ -110,7 +170,7 @@ export default function WorkflowVersionsPage({ route }: PageProps) {
 
 function VersionDrawer({ name, version, versions, onClose }: { name: string; version: string; versions: WorkflowVersion[]; onClose: () => void }) {
   const toast = useToast()
-  const [mode, setMode] = useState<'yaml' | 'compare'>('yaml')
+  const [mode, setMode] = useState<'yaml' | 'steps' | 'compare'>('yaml')
   const others = useMemo(() => versions.filter((v) => v.version !== version), [versions, version])
   const [other, setOther] = useState<string>(() => {
     const published = others.find((v) => v.status === 'published')
@@ -164,6 +224,7 @@ function VersionDrawer({ name, version, versions, onClose }: { name: string; ver
             onChange={setMode}
             options={[
               { value: 'yaml', label: 'YAML' },
+              { value: 'steps', label: 'Steps' },
               { value: 'compare', label: 'Compare', disabled: others.length === 0 },
             ]}
           />
@@ -181,6 +242,8 @@ function VersionDrawer({ name, version, versions, onClose }: { name: string; ver
           <SkeletonRows n={6} rowClassName="h-5" />
         ) : mode === 'yaml' ? (
           <CodeBlock code={current.data?.yaml ?? ''} language="yaml" title={`${name}@${version}`} lineNumbers />
+        ) : mode === 'steps' ? (
+          <VersionStepList definition={current.data?.definition} />
         ) : compared.error ? (
           <ErrorState error={compared.error} compact onRetry={() => void compared.refetch()} />
         ) : compared.loading || !compared.data ? (

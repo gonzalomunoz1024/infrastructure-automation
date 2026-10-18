@@ -8,6 +8,7 @@ import type {
   Dependencies,
   EvidenceRecord,
   JobDetail,
+  JobReplay,
   JobSummary,
   Lineage,
   Me,
@@ -23,6 +24,7 @@ import type {
   TestConnectionResult,
   TryResult,
   WorkflowSummary,
+  WorkflowVersion,
 } from '../src/lib/types'
 
 /*
@@ -188,7 +190,38 @@ export const CATALOG: CatalogEntry[] = [
     method: 'POST',
     path: '/api/v1/vms',
     batchPath: '/api/v1/vms:batch',
-    input: { type: 'object', required: ['name'], properties: { name: { type: 'string', title: 'Name' }, cpu: { type: 'integer', default: 2 }, memoryGb: { type: 'integer', default: 8 } } },
+    previewPath: '/api/v1/vms:preview',
+    input: {
+      type: 'object',
+      required: ['name', 'image'],
+      properties: {
+        name: { type: 'string', title: 'Name' },
+        // an x-resource input with orCreateWith: the id of an existing image, or `{ create }` to build one first
+        image: {
+          title: 'Image',
+          description: 'The image to clone from',
+          'x-resource': { type: 'image', orCreateWith: 'build-vm-image' },
+          anyOf: [
+            { type: 'string', pattern: '^img-', description: 'An existing image id from the registry' },
+            {
+              type: 'object',
+              description: 'Build a new image with build-vm-image first; the job continues with its id',
+              required: ['create'],
+              additionalProperties: false,
+              properties: {
+                create: {
+                  type: 'object',
+                  required: ['os'],
+                  properties: { os: { type: 'string', title: 'Operating system', enum: ['ubuntu-2404', 'rhel-9'] }, hardening: { type: 'string', title: 'Hardening', default: 'cis1' } },
+                },
+              },
+            },
+          ],
+        },
+        cpu: { type: 'integer', default: 2 },
+        memoryGb: { type: 'integer', default: 8 },
+      },
+    },
     mcpTool: 'create_vm',
     owner: 'team-compute',
     version: '2.0.0',
@@ -390,9 +423,10 @@ export const RELEASES: Release[] = [
     startedAt: ago(60 * 2),
     stageStartedAt: ago(35),
     gates: [
-      { id: 'error-rate', label: 'Error rate under 2%', passed: true, value: 0.8, threshold: 2, detail: '2 failures in 240 jobs' },
-      { id: 'p95', label: 'p95 under 1.5× the current version', passed: true, value: 1.1, threshold: 1.5, detail: 'p95 9.1s against 8.3s' },
-      { id: 'soak', label: 'At least 30 minutes in the stage', passed: null, detail: 'Evaluated at the end of the stage' },
+      { id: 'success-rate', label: 'Success rate', passed: true, value: 99.2, threshold: 99, detail: '99.2% on the candidate vs 99.6% on the current version (may trail by 1 point)' },
+      { id: 'p95', label: 'p95 duration', passed: true, value: 2200, threshold: 2_200_000, detail: '2.2s on the candidate vs 1.8s on the current version (may be 20% slower)' },
+      { id: 'error-types', label: 'Error types', passed: false, value: 2, threshold: 0, detail: 'new on the candidate: timeout, upstream' },
+      { id: 'sample', label: 'Sample size', passed: null, value: 12, threshold: 20, detail: '12 of 20 jobs; 35m of the 1h minimum' },
     ],
     jobs: { current: 180, candidate: 60 },
     history: [
@@ -439,6 +473,121 @@ export const EVIDENCE: EvidenceRecord = {
 }
 
 export const VERIFIED: AuditVerification = { valid: true, entries: 5 }
+
+/* ----------------------------------------------------------------------------
+   A run that built its input first (POST /vms with image: { create }), its preview, its replay
+   ------------------------------------------------------------------------- */
+
+/** The dry run of create-vm with an image to build first: a step the dry run skipped, the cost's source, where each resource comes from. */
+export const CREATE_PREVIEW: Preview = {
+  workflow: 'create-vm',
+  version: '2.0.0',
+  steps: [
+    { id: 'image.create', name: 'Build image', effect: 'create', detail: 'build-vm-image ^1 with os rhel-9' },
+    { id: 'clone', name: 'Clone from the image', effect: 'create', detail: 'vsphere vm.clone' },
+    { id: 'tag', name: 'Tag for the cost centre', effect: 'change', skipped: true, detail: 'only when a cost centre is given' },
+    { id: 'register', name: 'Register the VM', effect: 'create' },
+  ],
+  affectedResources: [
+    { id: 'img-new', type: 'image', name: 'rhel-9 cis1', via: 'built from image.create' },
+    { id: 'vm-1044', type: 'vm', name: 'web-1044', via: 'step register' },
+  ],
+  cost: { monthly: 115.5, currency: 'USD', detail: 'list-prices: 2 vCPU × 8 GB in eu-west, on demand' },
+  policy: { decision: 'allow', rules: [], engine: 'opa' },
+}
+
+const CHILD_BUILD: JobSummary = { id: 'job-child-77', workflow: 'build-vm-image', title: 'Build ubuntu-2404 cis1', version: '1.0.0', status: 'succeeded', requester: 'gonzalo', channel: 'catalog', startedAt: ago(20), endedAt: ago(16), durationMs: 240_000, kind: 'single' }
+const CHILD_WARM: JobSummary = { id: 'job-child-78', workflow: 'warm-cache', title: 'Warm the cache of web-1044', version: '1.1.0', status: 'failed', requester: 'gonzalo', channel: 'catalog', startedAt: ago(15), endedAt: ago(14), durationMs: 4_000, kind: 'single' }
+
+/** A create-vm job: the image was built by a child job first, a later run step failed and the workflow continued. */
+export const BUILD_JOB: JobDetail = {
+  id: 'job-9b2e4f10',
+  workflow: 'create-vm',
+  title: 'Create web-1044',
+  version: '2.0.0',
+  status: 'succeeded',
+  requester: 'gonzalo',
+  channel: 'catalog',
+  startedAt: ago(20),
+  endedAt: ago(12),
+  durationMs: 480_000,
+  kind: 'single',
+  input: { name: 'web-1044', image: { create: { os: 'ubuntu-2404', hardening: 'cis1' } }, cpu: 2, memoryGb: 8 },
+  steps: [
+    { id: 'image.create', name: 'Build image', type: 'run', status: 'succeeded', attempt: 1, startedAt: ago(20), endedAt: ago(16), durationMs: 240_000, input: { os: 'ubuntu-2404', hardening: 'cis1' }, output: { jobId: 'job-child-77', status: 'succeeded', outputs: { image: 'img-78' } } },
+    { id: 'clone', name: 'Clone from the image', type: 'provider', status: 'succeeded', attempt: 1, startedAt: ago(16), endedAt: ago(15), durationMs: 60_000, input: { templateId: 'tpl-ubuntu-2404-cis1', name: 'web-1044' }, output: { id: 'vm-1044', host: 'esx-07' } },
+    { id: 'warm-cache', name: 'Warm the cache', type: 'run', status: 'succeeded', attempt: 1, startedAt: ago(15), endedAt: ago(14), durationMs: 4_000, input: { vmId: 'vm-1044' }, output: { jobId: 'job-child-78', status: 'failed', outputs: {}, error: { step: 'fetch', message: 'origin answered 503', class: 'upstream' } } },
+    { id: 'register', name: 'Register the VM', type: 'register', status: 'succeeded', attempt: 1, startedAt: ago(14), endedAt: ago(12), durationMs: 800, output: { id: 'vm-1044' } },
+  ],
+  approvals: [],
+  children: [CHILD_BUILD, CHILD_WARM],
+  traceId: '7d1f0c2a9b3e4d5f6a7b8c9d0e1f2a3b',
+}
+
+/** GET /jobs/job-9b2e4f10/replay?compareTo=job-2c44a810: compared with the earlier create-vm run. */
+export const REPLAY: JobReplay = {
+  jobId: BUILD_JOB.id,
+  workflow: 'create-vm',
+  version: '2.0.0',
+  status: 'succeeded',
+  comparedTo: 'job-2c44a810',
+  comparedVersion: '2.0.0',
+  comparedStatus: 'succeeded',
+  inputDiff: [{ field: 'input.name', before: 'web-1043', after: 'web-1044' }],
+  steps: BUILD_JOB.steps.map((s) => ({ ...s, diff: s.id === 'clone' ? [{ field: 'output.host', before: 'esx-02', after: 'esx-07' }] : [] })),
+}
+
+/* ----------------------------------------------------------------------------
+   A workflow change request with the publish checks (GET /change-requests/cr-202)
+   ------------------------------------------------------------------------- */
+
+export const WORKFLOW_CR: ChangeRequestDetail = {
+  id: 'cr-202',
+  kind: 'workflow',
+  name: 'vm-restart',
+  version: '2.0.0',
+  branch: 'workflow/vm-restart-2.0.0',
+  title: 'Publish vm-restart 2.0.0',
+  author: 'gonzalo',
+  status: 'open',
+  strategy: 'canary',
+  createdAt: ago(30),
+  checks: [
+    { id: 'checks', label: 'Workflow checks', status: 'passed' },
+    { id: 'ansible-lint', label: 'ansible-lint', status: 'passed', detail: '1 playbook pinned to a commit; pinned at publish: restart to 9fceb02d0ae5' },
+    { id: 'contracts', label: 'Contracts', status: 'failed', detail: '2.0.0 breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment, create-vm' },
+    { id: 'replay', label: 'Replay of recent jobs', status: 'passed', detail: '{"replayed":42,"divergences":[]}' },
+  ],
+  diff: '--- a/workflows/team-compute/vm-restart.yaml\n+++ b/workflows/team-compute/vm-restart.yaml\n@@ -12 +12 @@\n-  version: 1.2.0\n+  version: 2.0.0\n',
+  yaml: 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart\n  version: 2.0.0\n',
+}
+
+/* ----------------------------------------------------------------------------
+   The versions of create-vm (GET /workflows/create-vm/versions, …/versions/2.0.0)
+   ------------------------------------------------------------------------- */
+
+/** create-vm 2.0.0 as a document: a run step with a version range, one without, one nested in a loop. */
+export const CREATE_VM_DEFINITION = {
+  apiVersion: 'iaf.platform/v1',
+  kind: 'Workflow',
+  metadata: { name: 'create-vm', title: 'Create a VM', noun: 'vm', verb: 'create', owner: 'team-compute', version: '2.0.0' },
+  api: { method: 'POST', path: '/api/v1/vms', input: CATALOG[1].input },
+  workflow: {
+    do: [
+      { build: { name: 'Build the image', run: { workflow: 'build-vm-image', version: '^1', input: { os: '{{ $input.image.create.os }}' } } } },
+      { clone: { name: 'Clone from the image', call: 'provider', with: { provider: 'vsphere', action: 'vm.clone', input: { templateId: '{{ $input.image }}', name: '{{ $input.name }}' } } } },
+      { wire: { name: 'Wire the environment', run: { workflow: 'web-environment', input: { vmId: '{{ $json.id }}' } } } },
+      { disks: { name: 'Each disk', for: { each: 'disk', in: '{{ $input.disks }}', do: [{ attach: { name: 'Attach the disk', run: { workflow: 'attach-disk', version: '~1.4', input: {} } } }] } } },
+    ],
+  },
+}
+
+export const CREATE_VM_YAML = 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: create-vm\n  version: 2.0.0\nworkflow:\n  do:\n    - build:\n        run: { workflow: build-vm-image, version: "^1" }\n'
+
+export const CREATE_VM_VERSIONS: WorkflowVersion[] = [
+  { version: '2.0.0', status: 'published', contentHash: 'sha256:2', publishedAt: ago(60 * 72), publishedBy: 'gonzalo', releaseId: 'rel-0' },
+  { version: '1.9.0', status: 'retired', contentHash: 'sha256:1', publishedAt: ago(60 * 24 * 30), publishedBy: 'maria' },
+]
 
 /* ----------------------------------------------------------------------------
    Dependencies (GET /registry/dependencies)
