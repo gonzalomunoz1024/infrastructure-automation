@@ -79,4 +79,31 @@ class SampleContentTest {
             assertThat(ProviderYaml.toYaml(again)).isEqualTo(ProviderYaml.toYaml(p));
         }
     }
+
+    @Test
+    void aStepsAttentionTimeoutRoundTripsThroughTheCanonicalWriter() {
+        WorkflowDefinition d = WorkflowYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-attention, title: Attention, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: vm-1 } }
+                        attentionTimeout: PT1H
+                    - after:
+                        name: After
+                        notify: { channel: "#x", message: done }
+                """);
+        assertThat(d.step("get").orElseThrow().attentionTimeout()).isEqualTo("PT1H");
+        assertThat(d.step("after").orElseThrow().attentionTimeout()).isNull();
+
+        String yaml = WorkflowYaml.toYaml(d);
+        assertThat(yaml).contains("attentionTimeout: PT1H").containsOnlyOnce("attentionTimeout");
+        WorkflowDefinition again = WorkflowYaml.parse(yaml);
+        assertThat(again.step("get").orElseThrow().attentionTimeout()).isEqualTo("PT1H");
+        assertThat(WorkflowYaml.toYaml(again)).isEqualTo(yaml);
+    }
 }

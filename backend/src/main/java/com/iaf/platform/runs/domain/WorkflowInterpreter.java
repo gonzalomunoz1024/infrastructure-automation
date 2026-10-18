@@ -708,8 +708,9 @@ public final class WorkflowInterpreter {
         };
     }
 
+    /** How long a person has to decide on the step's failure: its own {@code attentionTimeout}, else the default. */
     private static String attentionTimeout(Step s) {
-        return Attention.DEFAULT_TIMEOUT;
+        return s.attentionTimeout() == null || s.attentionTimeout().isBlank() ? Attention.DEFAULT_TIMEOUT : s.attentionTimeout();
     }
 
     private boolean compensate() {

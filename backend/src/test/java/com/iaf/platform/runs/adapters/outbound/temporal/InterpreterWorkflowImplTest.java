@@ -587,6 +587,37 @@ class InterpreterWorkflowImplTest {
         t.replay(job.id());
     }
 
+    /** A step whose failure waits at most an hour for a person's decision. */
+    private static final String ATTENTION_HOUR = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-attention-hour, title: Attention hour, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - broken:
+                    name: Broken
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+                    attentionTimeout: PT1H
+            """;
+
+    @Test
+    void aStepsAttentionTimeoutIsTheTimerThatEndsTheWaitForADecision() {
+        t = new TemporalTestEngine();
+        Job job = t.start(yaml(ATTENTION_HOUR), Map.of());
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        assertThat(t.job(job.id()).attention().timeout()).isEqualTo("PT1H");
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.failedStep()).isEqualTo("broken");
+        assertThat(outcome.message()).endsWith("(aborted by timeout)");
+        assertThat(t.client.fetchHistory(job.id()).getEvents().stream().filter(HistoryEvent::hasTimerStartedEventAttributes)
+                .map(e -> e.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds()))
+                .as("the hour, less what passed since the step failed").singleElement().satisfies(s -> assertThat(s).isBetween(3500L, 3600L));
+        t.replay(job.id());
+    }
+
     @Test
     void aMalformedWaitDurationFailsTheStepOnceAsInvalidInput() {
         t = new TemporalTestEngine();

@@ -151,7 +151,9 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |
 
 Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, backoff }`,
-`timeout`, `pauseOnFailure` (default true), `compensate: [steps]` (run when a later step fails),
+`timeout`, `pauseOnFailure` (default true), `attentionTimeout` (how long a step paused on its
+failure waits for a person's decision before it aborts, an ISO-8601 duration like `PT1H` or `4h`;
+seven days when unset, on both engines), `compensate: [steps]` (run when a later step fails),
 `position: { x, y }`, `notes`.
 
 A failed step is retried as `retry` says when its error is retryable, then pauses for a person's

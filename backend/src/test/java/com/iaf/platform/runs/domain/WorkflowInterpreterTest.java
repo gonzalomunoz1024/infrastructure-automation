@@ -479,6 +479,41 @@ class WorkflowInterpreterTest {
         assertThat(o.message()).contains("aborted by timeout");
     }
 
+    /** A step whose failure waits at most an hour for a person's decision. */
+    static final String ATTENTION_HOUR = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-attention-hour, title: Attention hour, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - broken:
+                    name: Broken
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+                    attentionTimeout: PT1H
+            """;
+
+    @Test
+    void aStepWithAnAttentionTimeoutOfAnHourAbortsWhenNobodyDecidesWithinTheHour() {
+        SampleStepExecutor ex = SampleContent.executor();
+        // nobody decides: the executor waits out the attention's own timeout, as the engines do
+        ex.attender(a -> {
+            ex.sleep(null, Durations.parse(a.timeout()));
+            return Optional.empty();
+        });
+        Instant before = ex.now();
+        Outcome o = run(ATTENTION_HOUR, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(ex.attentions()).singleElement().satisfies(a -> assertThat(a.timeout()).isEqualTo("PT1H"));
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.message()).endsWith("(aborted by timeout)");
+        assertThat(Duration.between(before, ex.now())).isGreaterThanOrEqualTo(Duration.ofHours(1)).isLessThan(Duration.ofHours(2));
+
+        SampleStepExecutor unset = SampleContent.executor();
+        run(ATTENTION_HOUR.replace("attentionTimeout: PT1H", "pauseOnFailure: true"), unset, WorkflowInterpreter.Rules.CURRENT);
+        assertThat(unset.attentions()).singleElement().satisfies(a -> assertThat(a.timeout()).isEqualTo(Attention.DEFAULT_TIMEOUT));
+    }
+
     @Test
     void pauseOnFailureFalseFailsFast() {
         SampleStepExecutor ex = SampleContent.executor();
