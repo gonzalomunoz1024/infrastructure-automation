@@ -48,7 +48,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `observability` | job and step spans, traced provider calls, per-workflow metrics          |
 | `resources` | resource types, registry, lineage, retire                             |
 | `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
-| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always) |
+| `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always; who sees a provider: the same rule, for scoping the provider list) |
 | `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock, redaction, trace ids |
 | `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
 
