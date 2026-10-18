@@ -84,7 +84,8 @@ platform:
     mode: mock            # mock | devin (the devin profile switches the adapter)
     devin-url: https://api.devin.ai/v3
     devin-org: ""
-    devin-api-key: ""                  # Authorization: Bearer <key>
+    devin-api-key: ""                  # the service user's key (Authorization: Bearer): a vault: reference, e.g. vault:devin/api-key,
+                                       # resolved at each call; the key itself still works but is warned about at startup
     devin-playbook-id: ""              # the !workflow-draft playbook (devin/nl-builder-playbook.md)
     devin-provider-playbook-id: ""     # the !provider-draft playbook (devin/provider-draft-playbook.md)
     platform-token-secret-id: ""       # the Devin secret holding PLATFORM_TOKEN, attached to every session
@@ -112,7 +113,9 @@ platform:
   audit:
     retention-years: 7
     seal-every: PT1H
-    signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
+    signing-key: ""       # HMAC-SHA256 key for seals and export packs: a vault: reference, e.g. vault:platform/audit-signing-key,
+                          # resolved when it signs; blank = a random key per run (its id is logged, never the key); the key
+                          # itself still works but is warned about at startup
     worm:                 # write-once evidence; every object is kept retention-years after it was written
       dir: data/evidence  # profile worm: one read-only file per entry, seal and checkpoint, each with a retention sidecar
       s3:                 # profile worm-s3: S3 Object Lock in COMPLIANCE mode; AWS credentials from the SDK's default chain

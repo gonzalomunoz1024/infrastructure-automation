@@ -19,9 +19,10 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.context.event.EventListener;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.ClientRequest;
+import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
@@ -39,6 +40,7 @@ import com.iaf.platform.assistant.domain.Words;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.PlatformProperties;
 
 import lombok.extern.slf4j.Slf4j;
@@ -63,7 +65,10 @@ import reactor.core.scheduler.Schedulers;
  * before the draft was done, or the timeout fired) is ended and archived
  * ({@code DELETE /sessions/{id}?archive=true}), best effort, so it stops spending ACUs. Admins
  * create or update the playbooks from {@code devin/*.md} ({@code GET}, {@code POST} and
- * {@code PUT /playbooks}).
+ * {@code PUT /playbooks}). Every call carries {@code Authorization: Bearer} the service user's key,
+ * {@code platform.assistant.devin-api-key}: a {@code vault:} reference resolved through the
+ * credentials store per call (the store caches it, so a rotated key is picked up without a
+ * restart), or the key itself, which still works but is warned about at startup.
  */
 @Slf4j
 @Component
@@ -86,6 +91,8 @@ public class DevinAssistant implements AssistantPort {
     private static final int MAX_PAGES = 20;
     /** How long ending a session may take; it never holds up the stream. */
     static final Duration END_TIMEOUT = Duration.ofSeconds(10);
+    static final String API_KEY_PROPERTY = "platform.assistant.devin-api-key";
+    private static final String VAULT = "vault:";
     /** Session statuses on the way to work: Devin has picked the message up. */
     private static final Set<String> STARTING = Set.of("new", "claimed", "resuming");
     /** Suspension reasons that end a session for good: limits, billing, errors. */
@@ -102,19 +109,54 @@ public class DevinAssistant implements AssistantPort {
     private final Map<String, String> synced = new ConcurrentHashMap<>();
 
     @Autowired
-    public DevinAssistant(PlatformProperties props, WebClient.Builder builder, Clock clock) {
-        this(props.getAssistant(), playbookDir(props), builder.clone().baseUrl(baseUrl(props.getAssistant())).build(), clock,
+    public DevinAssistant(PlatformProperties props, CredentialsPort credentials, WebClient.Builder builder, Clock clock) {
+        this(props.getAssistant(), credentials, playbookDir(props), builder.clone().baseUrl(baseUrl(props.getAssistant())).build(), clock,
                 pollEvery(props.getAssistant().getDevinPollEvery()), props.getAssistant().getDevinTimeout());
+        String key = props.getAssistant().getDevinApiKey();
+        if (key != null && !key.isBlank() && !key.trim().startsWith(VAULT)) {
+            log.warn("{} holds the key itself: fine for a demo, but set it to a vault: reference such as vault:devin/api-key "
+                    + "so the key lives in the credentials store, not in configuration", API_KEY_PROPERTY);
+        }
     }
 
-    /** {@code client} already points at the organization ({@link #baseUrl}); tests poll faster than the 10 s floor. */
-    public DevinAssistant(PlatformProperties.Assistant props, Path playbookDir, WebClient client, Clock clock, Duration pollEvery, Duration timeout) {
+    /**
+     * {@code client} already points at the organization ({@link #baseUrl}); the API key is added to
+     * each of its calls. Tests poll faster than the 10 s floor.
+     */
+    public DevinAssistant(PlatformProperties.Assistant props, CredentialsPort credentials, Path playbookDir, WebClient client, Clock clock,
+            Duration pollEvery, Duration timeout) {
         this.props = props;
         this.playbookDir = playbookDir;
-        this.client = client;
+        this.client = client.mutate().filter(authorization(props, credentials)).build();
         this.clock = clock;
         this.pollEvery = pollEvery;
         this.timeout = timeout == null ? Duration.ofMinutes(30) : timeout;
+    }
+
+    /**
+     * Adds {@code Authorization: Bearer <key>} to every call; a blank key adds nothing (Devin
+     * answers 401). The key is never logged.
+     */
+    static ExchangeFilterFunction authorization(PlatformProperties.Assistant props, CredentialsPort credentials) {
+        return (request, next) -> apiKey(props, credentials)
+                .map(key -> key.isBlank() ? request : ClientRequest.from(request).headers(h -> h.setBearerAuth(key)).build())
+                .flatMap(next::exchange);
+    }
+
+    /**
+     * The service user's key: what a {@code vault:} reference resolves to now, or the configured
+     * value itself. A reference that resolves to nothing fails the call with a message naming the
+     * reference.
+     */
+    static Mono<String> apiKey(PlatformProperties.Assistant props, CredentialsPort credentials) {
+        String configured = props.getDevinApiKey() == null ? "" : props.getDevinApiKey().trim();
+        if (!configured.startsWith(VAULT)) {
+            return Mono.just(configured);
+        }
+        Mono<String> resolved = credentials == null ? Mono.empty() : credentials.resolve(configured);
+        return resolved.filter(v -> !v.isBlank())
+                .switchIfEmpty(Mono.error(() -> new IllegalStateException(API_KEY_PROPERTY + " " + configured
+                        + " resolves to nothing: store the Devin service user's API key under that name")));
     }
 
     static String baseUrl(PlatformProperties.Assistant p) {
@@ -372,7 +414,6 @@ public class DevinAssistant implements AssistantPort {
 
     Mono<String> createSession(ObjectNode body) {
         return client.post().uri("/sessions")
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
@@ -390,7 +431,6 @@ public class DevinAssistant implements AssistantPort {
         ObjectNode body = Events.mapper().createObjectNode();
         body.put("message", message);
         return client.post().uri("/sessions/{id}/messages", sessionId)
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
@@ -404,7 +444,6 @@ public class DevinAssistant implements AssistantPort {
      */
     void end(String sessionId, String why) {
         client.delete().uri(b -> b.path("/sessions/{id}").queryParam("archive", "true").build(sessionId))
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .retrieve()
                 .toBodilessEntity()
                 .timeout(END_TIMEOUT)
@@ -416,7 +455,6 @@ public class DevinAssistant implements AssistantPort {
     /** {@code GET /sessions/{id}}, and its new messages when there is a {@code transcript} to keep them in. */
     Mono<Snapshot> snapshot(String sessionId, Transcript transcript) {
         Mono<JsonNode> session = client.get().uri("/sessions/{id}", sessionId)
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .retrieve()
                 .bodyToMono(JsonNode.class);
         Mono<List<Message>> messages = transcript == null ? Mono.just(List.of()) : messages(sessionId, transcript);
@@ -457,7 +495,6 @@ public class DevinAssistant implements AssistantPort {
         return client.get().uri(b -> after == null
                 ? b.path("/sessions/{id}/messages").queryParam("first", PAGE_SIZE).build(sessionId)
                 : b.path("/sessions/{id}/messages").queryParam("first", PAGE_SIZE).queryParam("after", "{after}").build(sessionId, after))
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .retrieve()
                 .bodyToMono(JsonNode.class)
                 .map(n -> {
@@ -471,10 +508,6 @@ public class DevinAssistant implements AssistantPort {
                     String cursor = n.path("end_cursor").asText("");
                     return new Page(items, n.path("has_next_page").asBoolean(false) && !cursor.isBlank() ? cursor : null, cursor.isBlank() ? null : cursor);
                 });
-    }
-
-    private String bearer() {
-        return "Bearer " + (props.getDevinApiKey() == null ? "" : props.getDevinApiKey());
     }
 
     private void requireOrg() {
@@ -628,7 +661,6 @@ public class DevinAssistant implements AssistantPort {
         return client.get().uri(b -> after == null
                 ? b.path("/playbooks").queryParam("first", PAGE_SIZE).build()
                 : b.path("/playbooks").queryParam("first", PAGE_SIZE).queryParam("after", "{after}").build(after))
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .retrieve()
                 .bodyToMono(JsonNode.class);
     }
@@ -644,7 +676,6 @@ public class DevinAssistant implements AssistantPort {
         }
         if (match == null) {
             return client.post().uri("/playbooks")
-                    .header(HttpHeaders.AUTHORIZATION, bearer())
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(body)
                     .retrieve()
@@ -656,7 +687,6 @@ public class DevinAssistant implements AssistantPort {
             return Mono.just(remember(f, id, "unchanged"));
         }
         return client.put().uri("/playbooks/{id}", id)
-                .header(HttpHeaders.AUTHORIZATION, bearer())
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()

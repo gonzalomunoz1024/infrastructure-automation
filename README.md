@@ -124,8 +124,10 @@ Evidence, notifications and change records have profiles of their own: `worm` (w
 evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
 COMPLIANCE mode), `siem` (every evidence entry also to Splunk HEC and syslog), `slack`
 (Slack-compatible incoming webhooks), `mail` (email) and `servicenow` (change records over the
-ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references;
-the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
+ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references,
+and so is `platform.audit.signing-key`, the HMAC key that signs seals and evidence packs (blank: a
+random key per run, so seals cannot be verified after a restart; a literal key still works, with a
+warning at startup); the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
 `MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
 spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics.
 The API keeps idempotency keys and the per-team job quotas in memory, per instance: run one API

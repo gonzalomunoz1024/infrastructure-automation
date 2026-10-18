@@ -79,9 +79,11 @@ public class AuditCommandHandler implements AuditCommands {
      * platform stream) whose head moved since its last checkpoint gets a checkpoint of the same
      * shape and keeps accepting entries. The run's own signature covers the ledger
      * "jobId latestHash" of every head it signed. Only the records still taking signatures are
-     * read ({@link EvidenceStore#unsealed()}), never a sealed one or any entry.
+     * read ({@link EvidenceStore#unsealed()}), never a sealed one or any entry. The run signs
+     * everything with the one key it takes at the start.
      */
     SealResult sealAll(String actor) {
+        AuditSigner.Key key = signer.key();
         Instant now = clock.instant();
         StringBuilder ledger = new StringBuilder();
         int sealed = 0;
@@ -91,12 +93,12 @@ public class AuditCommandHandler implements AuditCommands {
             if (record.entries() == 0) {
                 continue;
             }
-            EvidenceRecord.Seal seal = new EvidenceRecord.Seal(now, signer.sign(record.latestHash()), signer.keyId(), record.entries(),
+            EvidenceRecord.Seal seal = new EvidenceRecord.Seal(now, key.sign(record.latestHash()), key.keyId(), record.entries(),
                     record.latestHash());
             if (record.closed() && !record.platform()) {
                 store.seal(record.jobId(), seal);
                 events.publish("audit.sealed", "audit", record.jobId(), actor,
-                        mapper.createObjectNode().put("jobId", record.jobId()).put("keyId", signer.keyId()));
+                        mapper.createObjectNode().put("jobId", record.jobId()).put("keyId", key.keyId()));
                 sealed++;
             } else {
                 EvidenceRecord.Seal last = record.latestCheckpoint();
@@ -116,7 +118,7 @@ public class AuditCommandHandler implements AuditCommands {
             }
             ledger.append(record.jobId()).append(' ').append(record.latestHash()).append('\n');
         }
-        return new SealResult(now, signer.sign(ledger.toString()), signer.keyId(), sealed, checkpointed);
+        return new SealResult(now, key.sign(ledger.toString()), key.keyId(), sealed, checkpointed);
     }
 
     @Override

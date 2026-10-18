@@ -113,20 +113,21 @@ public class AuditQueryHandler implements AuditQueries {
      */
     Verification verification(EvidenceRecord r) {
         int broken = HashChain.verify(r.entries());
+        AuditSigner.Key key = r.checkpoints().isEmpty() && r.sealed() == null ? null : signer.key();
         List<SealCheck> seals = new ArrayList<>();
         for (EvidenceRecord.Seal c : r.checkpoints()) {
-            seals.add(new SealCheck("checkpoint", c.at(), c.seq(), c.keyId(), sealStatus(r, c)));
+            seals.add(new SealCheck("checkpoint", c.at(), c.seq(), c.keyId(), sealStatus(r, c, key)));
         }
         String seal = null;
         if (r.sealed() != null) {
-            seal = sealStatus(r, r.sealed());
+            seal = sealStatus(r, r.sealed(), key);
             seals.add(new SealCheck("seal", r.sealed().at(), r.sealed().seq() == null ? r.entries().size() : r.sealed().seq(), r.sealed().keyId(), seal));
         }
         boolean valid = broken < 0 && seals.stream().noneMatch(s -> "mismatch".equals(s.status()));
         return new Verification(valid, r.entries().size(), broken < 0 ? null : broken, seal, seals);
     }
 
-    private String sealStatus(EvidenceRecord r, EvidenceRecord.Seal s) {
+    private static String sealStatus(EvidenceRecord r, EvidenceRecord.Seal s, AuditSigner.Key key) {
         String covered = s.hash() == null ? r.latestHash() : s.hash();
         if (s.seq() != null) {
             int i = s.seq() - 1;
@@ -134,10 +135,10 @@ public class AuditQueryHandler implements AuditQueries {
                 return "mismatch";
             }
         }
-        if (!signer.keyId().equals(s.keyId())) {
+        if (!key.keyId().equals(s.keyId())) {
             return "unverifiable";
         }
-        return signer.verify(covered, s.signature()) ? "verified" : "mismatch";
+        return key.verify(covered, s.signature()) ? "verified" : "mismatch";
     }
 
     @Override
@@ -220,9 +221,10 @@ public class AuditQueryHandler implements AuditQueries {
                 manifest.put("generatedAt", clock.instant().toString());
                 manifest.put("filter", filterOf(filter));
                 manifest.put("files", files);
-                manifest.put("keyId", signer.keyId());
+                AuditSigner.Key key = signer.key();
+                manifest.put("keyId", key.keyId());
                 manifest.put("algorithm", "HMAC-SHA256 over the canonical JSON (sorted keys, no whitespace) of files");
-                manifest.put("signature", signer.sign(HashChain.canonical(files)));
+                manifest.put("signature", key.sign(HashChain.canonical(files)));
                 zip.putNextEntry(new ZipEntry(MANIFEST));
                 writer.writeValue(zip, manifest);
                 zip.closeEntry();

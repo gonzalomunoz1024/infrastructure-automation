@@ -89,6 +89,10 @@ public class PlatformProperties {
         private String devinUrl = "https://api.devin.ai/v3";
         /** The Devin organization ({@code org-...}): every call goes to {@code <devin-url>/organizations/<devin-org>}. */
         private String devinOrg = "";
+        /**
+         * The Devin service user's API key: a {@code vault:} reference resolved through the
+         * credentials store at each call; the key itself still works, with a warning at startup.
+         */
         private String devinApiKey = "";
         private String devinPlaybookId = "";
         /** The playbook behind "Ask Devin" in the Add provider wizard ({@code !provider-draft}). */
@@ -146,7 +150,11 @@ public class PlatformProperties {
     public static class Audit {
         private int retentionYears = 7;
         private Duration sealEvery = Duration.ofHours(1);
-        /** HMAC-SHA256 key for seals and export packs; blank = a random key for this run (logged by id only). */
+        /**
+         * HMAC-SHA256 key for seals and export packs: a {@code vault:} reference resolved through
+         * the credentials store when it signs; blank = a random key for this run (logged by id
+         * only); the key itself still works, with a warning at startup.
+         */
         private String signingKey = "";
     }
 

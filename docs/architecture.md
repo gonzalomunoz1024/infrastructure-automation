@@ -256,7 +256,12 @@ runs on a non-blocking thread, and the wiring test expects none.
   (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
   is built (each record serialised straight into the zip, its sha256 taken on the way), streamed in
   64 KiB chunks and deleted once sent, failed or abandoned; a pack whose client left before its
-  body was sent is swept from `java.io.tmpdir/iaf-evidence-packs` after an hour.
+  body was sent is swept from `java.io.tmpdir/iaf-evidence-packs` after an hour. Seals, checkpoints
+  and packs are signed by `AuditSigner` with `platform.audit.signing-key`: a `vault:` reference
+  resolved through `CredentialsPort` when it signs (each sealing run, verification and pack takes
+  the key once, so one never mixes two keys; a rotated key signs from the next run on, and seals
+  signed before read as `unverifiable`), a literal key (accepted with a startup warning) or, blank,
+  a random key per run.
 - `IdempotencyWebFilter` (after the identity filter) and `JobQuotas` guard every request that
   starts jobs; MCP `tools/call` goes through the same `IdempotencyHandler` and quotas.
 - `NotificationListener` turns notify steps, provider alerts, approval requests and escalations

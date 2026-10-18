@@ -31,6 +31,7 @@ import com.iaf.platform.assistant.ports.outbound.AssistantPort.AssistantRequest;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.Context;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.PlaybookSync;
 import com.iaf.platform.assistant.ports.outbound.AssistantPort.ProviderRequest;
+import com.iaf.platform.common.adapters.credentials.InMemoryCredentials;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.testing.LocalHttp;
@@ -139,6 +140,7 @@ class DevinAssistantTest {
 
     FakeDevin fake;
     HttpServer server;
+    final InMemoryCredentials credentials = new InMemoryCredentials(new PlatformProperties(), CLOCK);
 
     @BeforeEach
     void start() throws IOException {
@@ -173,7 +175,7 @@ class DevinAssistantTest {
 
     DevinAssistant agent(PlatformProperties.Assistant props, Path playbooks, Duration timeout) {
         WebClient client = WebClient.builder().baseUrl(DevinAssistant.baseUrl(props)).build();
-        return new DevinAssistant(props, playbooks, client, CLOCK, Duration.ofMillis(5), timeout);
+        return new DevinAssistant(props, credentials, playbooks, client, CLOCK, Duration.ofMillis(5), timeout);
     }
 
     DevinAssistant agent(Duration timeout) {
@@ -510,6 +512,51 @@ class DevinAssistantTest {
         assertThat(events).extracting(AssistantEvent::type).containsExactly(AssistantEvent.MESSAGE, AssistantEvent.DONE);
         assertThat(Events.isFailed(events.get(1))).isTrue();
         assertThat(events.get(1).data().path("error").asText()).contains("no session id");
+    }
+
+    @Test
+    void theApiKeyMayBeAVaultReferenceResolvedThroughTheCredentialsStoreAtEachCall() {
+        PlatformProperties.Assistant p = props();
+        p.setDevinApiKey("vault:devin/api-key");
+        credentials.store("devin/api-key", "api-key", "key-from-vault", "test", null).block();
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"workflowYaml\":\"kind: Workflow\\n\"}}");
+        DevinAssistant agent = agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5));
+
+        run(agent, request("restart a vm", null, null));
+        assertThat(fake.hits).isNotEmpty().allSatisfy(h -> assertThat(h.auth()).isEqualTo("Bearer key-from-vault"));
+
+        // a rotated key is used from the next call on, without a restart
+        fake.hits.clear();
+        credentials.store("devin/api-key", "api-key", "key-rotated", "test", null).block();
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"workflowYaml\":\"kind: Workflow\\n\"}}");
+        run(agent, request("restart a vm", null, null));
+        assertThat(fake.hits).isNotEmpty().allSatisfy(h -> assertThat(h.auth()).isEqualTo("Bearer key-rotated"));
+    }
+
+    @Test
+    void anApiKeyReferenceThatResolvesToNothingFailsTheStreamWithoutCallingDevin() {
+        PlatformProperties.Assistant p = props();
+        p.setDevinApiKey("vault:devin/missing");
+
+        List<AssistantEvent> events = run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("restart a vm", null, null));
+
+        assertThat(events).extracting(AssistantEvent::type).containsExactly(AssistantEvent.MESSAGE, AssistantEvent.DONE);
+        assertThat(Events.isFailed(events.get(1))).isTrue();
+        assertThat(Events.textOf(events.get(0))).contains("platform.assistant.devin-api-key vault:devin/missing resolves to nothing");
+        assertThat(fake.hits).isEmpty();
+    }
+
+    @Test
+    void aLiteralApiKeyIsSentAsItIsAndABlankOneNotAtAll() {
+        PlatformProperties.Assistant p = props();
+        p.setDevinApiKey(" key-1 ");
+        assertThat(DevinAssistant.apiKey(p, credentials).block()).isEqualTo("key-1");
+        p.setDevinApiKey("");
+        assertThat(DevinAssistant.apiKey(p, credentials).block()).isEmpty();
+
+        fake.sessions("{\"status\":\"running\",\"status_detail\":\"waiting_for_user\",\"structured_output\":{\"status\":\"ready\",\"workflowYaml\":\"kind: Workflow\\n\"}}");
+        run(agent(p, REPO_PLAYBOOKS, Duration.ofSeconds(5)), request("restart a vm", null, null));
+        assertThat(fake.hits).isNotEmpty().allSatisfy(h -> assertThat(h.auth()).isNull());
     }
 
     @Test
