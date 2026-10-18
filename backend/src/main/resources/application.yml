@@ -72,5 +72,16 @@ platform:
       protocol: udp       # udp | tcp (octet counting, RFC 6587)
       facility: 13        # log audit
       sd-id: iaf@32473    # the structured-data id; replace 32473 with the firm's enterprise number
+  change:                 # change records for workflows with policy.change.required
+    evidence-url: http://localhost:3000/audit/{jobId}   # the link back to the job's evidence every change carries
+    servicenow:           # profiles servicenow and live: the Table API on change_request
+      instance: ""        # e.g. https://firm.service-now.com
+      credential: ""      # a vault: reference: user:password for basic auth, the token for bearer
+      auth: basic         # basic | bearer
+      type: normal        # normal | standard | emergency
+      assignment-group: ""
+      open-state: ""      # blank = the instance's default; -1 = Implement
+      close-state: "3"    # Closed
+      evidence-field: work_notes   # or a custom field such as u_evidence_url
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data

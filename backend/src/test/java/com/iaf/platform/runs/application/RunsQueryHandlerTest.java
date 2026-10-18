@@ -57,6 +57,23 @@ class RunsQueryHandlerTest {
     }
 
     @Test
+    void theJobViewShowsTheChangeWithItsLinkBackToTheEvidence() {
+        Instant t = Instant.parse("2026-10-17T10:00:00Z");
+        started("job_c", t, Map.of("vmId", "vm-1"));
+        w.events.changeOpened("job_c", new com.iaf.platform.runs.domain.ChangeTicket("CHG0041201", "https://sn.example/CHG0041201", "implement",
+                "https://iaf.example/audit/job_c"), "gonzalo", t.plusSeconds(1));
+        finished("job_c", t.plusSeconds(5), JobStatus.SUCCEEDED, null, null);
+        w.events.changeClosed("job_c", new com.iaf.platform.runs.domain.ChangeTicket("CHG0041201", "https://sn.example/CHG0041201", "closed",
+                "https://iaf.example/audit/job_c"), t.plusSeconds(6));
+
+        JsonNode change = queries.job("job_c").block().path("change");
+
+        assertThat(change.path("id").asText()).isEqualTo("CHG0041201");
+        assertThat(change.path("state").asText()).isEqualTo("closed");
+        assertThat(change.path("evidenceUrl").asText()).isEqualTo("https://iaf.example/audit/job_c");
+    }
+
+    @Test
     void jobViewsAndEventsAreRedactedButTheProjectionKeepsWhatRan() {
         SecretValues secrets = new SecretValues();
         secrets.remember("tok-resolved-123");
