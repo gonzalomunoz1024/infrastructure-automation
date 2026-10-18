@@ -278,4 +278,25 @@ class WorkflowInvokerTest {
         StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectError(TooManyRequestsException.class).verify();
         verify(runs, times(1)).startJob(any());
     }
+
+    @Test
+    void aStartTheRunsSliceRefusesGivesItsTokenBack() {
+        allow();
+        GatewayProperties.Quotas one = new GatewayProperties.Quotas();
+        one.setBurst(1);
+        WorkflowInvoker limited = new WorkflowInvoker(runs, policy, new JobQuotas(one, java.time.Clock.systemUTC()));
+        JsonNode valid = json("{\"vmId\":\"vm-1\"}");
+        // only the runs slice knows the registry: an unknown or retired resource id is its 400
+        when(runs.startJob(any())).thenReturn(Mono.error(new IllegalArgumentException("vmId: no vm vm-1 in the registry")));
+        when(runs.startBatch(any())).thenReturn(Mono.error(new IllegalArgumentException("row 0: no vm vm-1 in the registry")));
+
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(limited.batch(create, json("{\"items\":[{\"name\":\"web-1\"}],\"defaults\":{\"image\":\"image-demo01\",\"size\":\"small\"}}"),
+                Map.of(), SampleCatalog.OPS, "rest")).expectError(IllegalArgumentException.class).verify();
+        verify(runs).startBatch(any());
+
+        when(runs.startJob(any())).thenReturn(Mono.just(CommandAccepted.of("job_1", "queued")));
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectError(TooManyRequestsException.class).verify();
+    }
 }
