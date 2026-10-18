@@ -70,7 +70,7 @@ class RunsCommandHandlerTest {
     private RunsTestWiring w;
     private WorkflowExecutionPort engine;
     private RunsCommandHandler handler;
-    private final List<DomainEvent> published = new ArrayList<>();
+    private final List<DomainEvent> published = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
