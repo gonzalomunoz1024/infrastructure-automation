@@ -1,5 +1,7 @@
 package com.iaf.platform.runs.application;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -9,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -47,7 +50,8 @@ import reactor.core.publisher.Sinks;
  * {@link #put} a job (with its definition snapshot and the requester's identity, which no event
  * carries) before publishing {@code job.started}; everything after that is folded from events,
  * so the Temporal engine, the in-memory engine and the demo seed all feed the same model. The
- * live fan-out (one replaying sink per running job) stays in memory and ends with the job.
+ * live fan-out (one replaying sink per running job) stays in memory and ends with the job, or
+ * after {@link #IDLE_STREAM} without an event or a subscriber.
  *
  * <p>{@link JobEvents} folds each event here before publishing it: when the store fails, the
  * failure reaches the publisher (a Temporal activity then retries, a command fails) and the
@@ -59,28 +63,40 @@ import reactor.core.publisher.Sinks;
 public class JobProjection {
 
     private static final int REPLAY_BUFFER = 2048;
+    /** A live stream without an event or a subscriber for this long goes (its numbering resumes from the stored history). */
+    static final Duration IDLE_STREAM = Duration.ofMinutes(30);
 
     private final EventBus bus;
     private final ProjectionStore store;
+    private final Clock clock;
     private final Object lock = new Object();
     private final Map<String, Stream> streams = new ConcurrentHashMap<>();
     /** Events {@link #fold} kept before their publication: the bus hands each back once, and it is skipped then. */
     private final Set<String> folded = ConcurrentHashMap.newKeySet();
     private volatile boolean registered;
+    private volatile Instant swept = Instant.EPOCH;
 
     /** One live job's event numbering and its sink (a bounded replay closes the gap between history and live). */
     private static final class Stream {
         final Sinks.Many<JobEvent> sink = Sinks.many().replay().limit(REPLAY_BUFFER);
         long seq;
+        volatile Instant used;
 
-        Stream(long seq) {
+        Stream(long seq, Instant used) {
             this.seq = seq;
+            this.used = used;
         }
     }
 
     public JobProjection(EventBus bus, ProjectionStore store) {
+        this(bus, store, Clock.systemUTC());
+    }
+
+    @Autowired
+    public JobProjection(EventBus bus, ProjectionStore store, Clock clock) {
         this.bus = bus;
         this.store = store;
+        this.clock = clock;
     }
 
     @PostConstruct
@@ -161,12 +177,20 @@ public class JobProjection {
                 if (ended) {
                     return history;
                 }
+                if (job == null) {
+                    return history; // no such job: nothing will come live, so no stream is kept for it
+                }
                 Stream s = stream(jobId);
                 long last = s.seq;
                 Flux<JobEvent> live = s.sink.asFlux().filter(e -> e.seq() > last).takeUntil(JobEvent::terminal);
                 return Flux.concat(history, live);
             }
         });
+    }
+
+    /** How many live streams are kept (one per job with an event or a subscriber in the last {@link #IDLE_STREAM}). */
+    int liveStreams() {
+        return streams.size();
     }
 
     // ---------------------------------------------------------------- event folding
@@ -223,11 +247,14 @@ public class JobProjection {
                 updateParentRow(next, e);
             }
         }
-        record(e, job != null && job.status() != null && job.status().terminal());
+        record(e, job == null || (job.status() != null && job.status().terminal()));
     }
 
-    /** Number the event, keep it, hand it to the live subscribers; an ended job's sink goes (its history stays in the store). */
-    private void record(DomainEvent e, boolean ended) {
+    /**
+     * Number the event, keep it, hand it to the live subscribers. The sink of an ended job goes
+     * (its history stays in the store), and so does the one of an event for no known job.
+     */
+    private void record(DomainEvent e, boolean last) {
         Stream s = stream(e.aggregateId());
         ObjectNode data = e.data() != null && e.data().isObject() ? ((ObjectNode) e.data()).deepCopy() : JobViews.MAPPER.createObjectNode();
         data.put("event", e.type());
@@ -235,14 +262,28 @@ public class JobProjection {
         store.append(je);
         s.seq = je.seq();
         s.sink.tryEmitNext(je);
-        if (ended) {
+        if (last) {
             streams.remove(e.aggregateId());
         }
     }
 
-    /** The live state of a job's stream, numbering on from its stored history. */
+    /** The live state of a job's stream, numbering on from its stored history; idle streams are swept on the way. */
     private Stream stream(String jobId) {
-        return streams.computeIfAbsent(jobId, id -> new Stream(store.lastSeq(id)));
+        Instant now = clock.instant();
+        sweep(now);
+        Stream s = streams.computeIfAbsent(jobId, id -> new Stream(store.lastSeq(id), now));
+        s.used = now;
+        return s;
+    }
+
+    /** Drop the streams nobody listens to that saw no event for {@link #IDLE_STREAM}, at most once a minute. */
+    private void sweep(Instant now) {
+        if (now.isBefore(swept.plus(Duration.ofMinutes(1)))) {
+            return;
+        }
+        swept = now;
+        Instant cutoff = now.minus(IDLE_STREAM);
+        streams.entrySet().removeIf(en -> en.getValue().used.isBefore(cutoff) && en.getValue().sink.currentSubscriberCount() == 0);
     }
 
     private Job apply(Job job, DomainEvent e) {

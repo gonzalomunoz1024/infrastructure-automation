@@ -164,7 +164,9 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   their steps), approvals and event history in `ProjectionStore`. The definition a job ran is
   stored once per distinct definition. Event numbering carries on after a restart, so
   `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
-  fan-out (SSE, WebSocket) stays in memory. `JobEvents` folds each
+  fan-out (SSE, WebSocket) stays in memory: one stream per job that is not over, dropped when the
+  job ends, never made for an id the store does not have, and dropped after 30 minutes without an
+  event or a subscriber (numbering then resumes from the stored history). `JobEvents` folds each
   event into the projection before it publishes it, so a store failure reaches the publisher
   instead of losing the event: nothing is kept or published, a Temporal activity retries, a
   command fails, and the in-memory engine fails the step (its final event

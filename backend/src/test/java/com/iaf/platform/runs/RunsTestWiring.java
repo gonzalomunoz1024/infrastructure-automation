@@ -84,7 +84,7 @@ public final class RunsTestWiring {
 
     /** The same wiring over another runs index, such as the JDBC one. */
     public RunsTestWiring(ProjectionStore store) {
-        projection = new JobProjection(bus, store);
+        projection = new JobProjection(bus, store, clock);
         projection.register();
         events = new JobEvents(bus, projection, clock);
         when(workflows.publishedAll()).thenAnswer(i -> Flux.fromIterable(SampleContent.workflows()).map(RunsTestWiring::record));

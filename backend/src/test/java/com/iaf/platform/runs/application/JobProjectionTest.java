@@ -24,7 +24,9 @@ import com.iaf.platform.runs.domain.JobEvent;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 
-/** The read model's folding: a store failure reaches the publisher. */
+import reactor.core.Disposable;
+
+/** The read model's folding: a store failure reaches the publisher, and live streams do not outlive their use. */
 class JobProjectionTest {
 
     private static final Instant T0 = Instant.parse("2026-10-01T09:00:00Z");
@@ -37,7 +39,7 @@ class JobProjectionTest {
     }
 
     private Wiring wiring(ProjectionStore store) {
-        JobProjection projection = new JobProjection(bus, store);
+        JobProjection projection = new JobProjection(bus, store, clock);
         projection.register();
         bus.register(seen::add);
         return new Wiring(projection, new JobEvents(bus, projection, clock));
@@ -111,6 +113,50 @@ class JobProjectionTest {
 
         assertThat(w.projection().history("job_1")).isEmpty();
         assertThat(store.refused()).isOne();
+    }
+
+    @Test
+    void noStreamIsKeptForAJobTheStoreDoesNotHave() {
+        Wiring w = wiring(new InMemoryProjectionStore());
+
+        assertThat(w.projection().events("job_nope").collectList().block()).isEmpty();
+        bus.publish("job.log", JobEvents.AGGREGATE, "job_nope", "platform", JsonNodeFactory.instance.objectNode().put("message", "orphan"));
+
+        assertThat(w.projection().liveStreams()).isZero();
+    }
+
+    @Test
+    void anIdleStreamWithoutSubscribersExpiresAndTheNumberingGoesOnFromTheHistory() {
+        Wiring w = wiring(new InMemoryProjectionStore());
+        w.projection().put(running("job_1"));
+        w.projection().put(running("job_2"));
+        w.events().log("job_1", "one");
+        assertThat(w.projection().liveStreams()).isOne();
+
+        clock.advance(JobProjection.IDLE_STREAM.plusMinutes(1));
+        w.events().log("job_2", "another job's event sweeps the idle streams");
+
+        assertThat(w.projection().liveStreams()).as("job_1's stream went, job_2's is new").isOne();
+        w.events().log("job_1", "two");
+        assertThat(w.projection().history("job_1")).extracting(JobEvent::seq).containsExactly(1L, 2L);
+    }
+
+    @Test
+    void aStreamSomebodyListensToDoesNotExpire() {
+        Wiring w = wiring(new InMemoryProjectionStore());
+        w.projection().put(running("job_1"));
+        List<JobEvent> received = new CopyOnWriteArrayList<>();
+        Disposable subscription = w.projection().events("job_1").subscribe(received::add);
+        try {
+            clock.advance(JobProjection.IDLE_STREAM.plus(Duration.ofHours(1)));
+            w.projection().put(running("job_2"));
+            w.events().log("job_2", "sweeps");
+            w.events().log("job_1", "still listened to");
+
+            assertThat(received).extracting(e -> e.data().path("message").asText()).containsExactly("still listened to");
+        } finally {
+            subscription.dispose();
+        }
     }
 
     /** A clock the test moves forward. */
