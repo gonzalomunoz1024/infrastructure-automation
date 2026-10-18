@@ -17,6 +17,14 @@ const DECISION: Record<PolicyDecision, { tone: Tone; dot: DotKind; label: string
 /** The note under a step the dry run did not take. */
 export const SKIPPED_NOTE = 'not taken in the dry run'
 
+const NOTE_AT_THE_END = new RegExp(`(?:\\s*·\\s*)?${SKIPPED_NOTE}\\s*$`, 'i')
+
+/** A skipped step's detail without the note the backend appends to it ("set · not taken in the dry run" → "set"), so the note shows once. */
+export function withoutSkippedNote(detail: string | undefined): string | undefined {
+  const rest = detail?.replace(NOTE_AT_THE_END, '').trim()
+  return rest || undefined
+}
+
 /** `input.image` and `step get-vm` read "via …"; `built from img-77` already says how. */
 export function viaLabel(via: string): string {
   return via.startsWith('built from') ? via : `via ${via}`
@@ -68,16 +76,19 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
               <p className="text-caption text-tertiary">No steps touch anything.</p>
             ) : (
               <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
-                {preview.steps.map((s) => (
-                  <li key={s.id} className={cx('flex items-start gap-3 px-3 py-2', s.skipped && 'opacity-60')} data-skipped={s.skipped ? 'true' : undefined}>
-                    <EffectTag effect={s.effect} />
-                    <div className="min-w-0 flex-1">
-                      <div className={cx('truncate text-sm', s.skipped ? 'text-secondary' : 'text-primary')}>{s.name}</div>
-                      {s.detail && <div className="text-caption text-secondary">{s.detail}</div>}
-                      {s.skipped && <div className="text-caption italic text-tertiary">{SKIPPED_NOTE}</div>}
-                    </div>
-                  </li>
-                ))}
+                {preview.steps.map((s) => {
+                  const detail = s.skipped ? withoutSkippedNote(s.detail) : s.detail
+                  return (
+                    <li key={s.id} className={cx('flex items-start gap-3 px-3 py-2', s.skipped && 'opacity-60')} data-skipped={s.skipped ? 'true' : undefined}>
+                      <EffectTag effect={s.effect} />
+                      <div className="min-w-0 flex-1">
+                        <div className={cx('truncate text-sm', s.skipped ? 'text-secondary' : 'text-primary')}>{s.name}</div>
+                        {detail && <div className="text-caption text-secondary">{detail}</div>}
+                        {s.skipped && <div className="text-caption italic text-tertiary">{SKIPPED_NOTE}</div>}
+                      </div>
+                    </li>
+                  )
+                })}
               </ol>
             )}
           </div>

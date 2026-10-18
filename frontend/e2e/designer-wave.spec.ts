@@ -130,7 +130,7 @@ test.describe('the playbook of an ansible step', () => {
     const sent = new URLSearchParams(api.resolves[0])
     expect(sent.get('repo')).toBe('github.com/acme/ops-playbooks')
     expect(sent.get('ref')).toBe('v3.1.0')
-    expect(sent.get('credential')).toBe('ssh/ops-automation')
+    expect(sent.get('credential')).toBe('vault:ssh/ops-automation')
     await expect(ndv.getByRole('textbox', { name: /^Commit/ })).toHaveValue('9fceb02d0ae598e95dc970b74767f19372d61af8')
     await expect(ndv.getByTestId('playbook-pinned')).toHaveText('pinned 9fceb02')
     await expect(ndv.getByTestId('playbook-note')).toContainText('Pinned to 9fceb02')

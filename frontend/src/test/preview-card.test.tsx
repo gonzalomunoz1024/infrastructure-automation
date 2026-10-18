@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { Preview } from '../lib/types'
-import { PreviewCard, SKIPPED_NOTE, viaLabel } from '../components/PreviewCard'
+import { PreviewCard, SKIPPED_NOTE, viaLabel, withoutSkippedNote } from '../components/PreviewCard'
 
 const text = (html: string) => html.replace(/<!--.*?-->/g, '')
 
@@ -62,5 +62,22 @@ describe('PreviewCard', () => {
   it('counts only the effects of steps that run', () => {
     const html = text(renderToString(<PreviewCard preview={PREVIEW} />))
     expect(html).toContain('1 create, 1 delete')
+  })
+
+  it('shows the note once when the backend already put it in the detail', () => {
+    expect(withoutSkippedNote('set · not taken in the dry run')).toBe('set')
+    expect(withoutSkippedNote('not taken in the dry run')).toBeUndefined()
+    expect(withoutSkippedNote('only on demand')).toBe('only on demand')
+    expect(withoutSkippedNote(undefined)).toBeUndefined()
+    const preview: Preview = {
+      ...PREVIEW,
+      steps: [
+        { id: 'large', name: 'Large spec', effect: 'none', skipped: true, detail: 'set · not taken in the dry run' },
+        { id: 'small', name: 'Small spec', effect: 'none', skipped: true, detail: 'not taken in the dry run' },
+      ],
+    }
+    const html = text(renderToString(<PreviewCard preview={preview} />))
+    expect(html.match(new RegExp(SKIPPED_NOTE, 'g'))).toHaveLength(2)
+    expect(html).toContain('>set<')
   })
 })

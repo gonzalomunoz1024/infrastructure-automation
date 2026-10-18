@@ -208,8 +208,9 @@ function AnsibleParams() {
     setPinning(true)
     setNote(null)
     try {
+      // the step's credential as it stands: the backend wants the vault:<path> reference itself
       const credential = asString(get('credential'))
-      const resolved = await api.resolvePlaybook({ repo, ref, credential: credential ? credential.replace(/^vault:/, '') : undefined })
+      const resolved = await api.resolvePlaybook({ repo, ref, credential: credential || undefined })
       set('playbook.commit', resolved.commit)
       setNote({ tone: 'ok', text: `Pinned to ${shortSha(resolved.commit) ?? resolved.commit} (${resolved.ref} of ${resolved.repo} right now).` })
     } catch (e) {

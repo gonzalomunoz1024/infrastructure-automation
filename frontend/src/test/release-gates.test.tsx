@@ -50,6 +50,8 @@ describe('release gates', () => {
     const f = gateFigures(gate)
     expect(render(f.value)).toBe('12 jobs')
     expect(render(f.threshold)).toBe('at least 20 jobs')
+    expect(render(gateFigures({ ...gate, value: 1, threshold: 1 }).value)).toBe('1 job')
+    expect(render(gateFigures({ ...gate, value: 1, threshold: 1 }).threshold)).toBe('at least 1 job')
     const pending: ReleaseGate = { id: 'p95', label: 'p95 duration', passed: null, threshold: 2400, detail: 'no successful jobs on the candidate yet' }
     expect(render(gateFigures(pending).value)).toContain('—')
     expect(render(gateFigures(pending).threshold)).toBe('at most 2.4 s')

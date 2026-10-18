@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Button, Card, ConfirmDialog, EmptyState, PageHeader, ProgressBar, SkeletonRows, StateTag, StatusDot, Stepper, Table, Tag, duration, useToast, type TableColumn } from '@iaf/ui'
+import { Button, Card, ConfirmDialog, EmptyState, PageHeader, ProgressBar, SkeletonRows, StateTag, StatusDot, Stepper, Table, Tag, duration, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
@@ -99,7 +99,7 @@ export function gateFigures(g: ReleaseGate): { value: ReactNode; threshold: Reac
   if (id === 'sample' || label.includes('sample')) {
     const v = num(g.value)
     const t = num(g.threshold)
-    return { value: v === null ? dash : `${v} jobs`, threshold: t === null ? dash : `at least ${t} jobs`, detail: g.detail || dash }
+    return { value: v === null ? dash : plural(v, 'job'), threshold: t === null ? dash : `at least ${plural(t, 'job')}`, detail: g.detail || dash }
   }
   return { value: raw(g.value), threshold: raw(g.threshold), detail: g.detail || dash }
 }
@@ -160,7 +160,7 @@ export default function ReleasePage({ route }: PageProps) {
     { key: 'label', header: 'Gate', render: (g) => <span className="text-primary">{g.label}</span> },
     { key: 'value', header: 'Value', width: '8rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-primary">{gateFigures(g).value}</span> },
     { key: 'threshold', header: 'Threshold', width: '9rem', numeric: true, render: (g) => <span className="whitespace-nowrap tabular-nums text-secondary">{gateFigures(g).threshold}</span> },
-    { key: 'detail', header: 'Detail', render: (g) => <span className="text-secondary">{gateFigures(g).detail}</span> },
+    { key: 'detail', header: 'Detail', render: (g) => <span className="block min-w-56 text-secondary">{gateFigures(g).detail}</span> },
   ]
 
   const current = data ? (data.status === 'promoted' ? data.stages.length : data.stageIndex) : 0
