@@ -92,6 +92,13 @@ export type WorkflowDefinition = WorkflowDocument
 /** The canvas's parsed step record (ids, type, `with`, children), never sent to the API. */
 export type Step = ParsedStep
 
+/*
+ * The parts of a WorkflowDocument under the names this file used before it took them from
+ * @iaf/workflow-checks. Every field is optional now, as in the YAML.
+ */
+export type { WorkflowMetadata, ApiDocument as WorkflowApi, McpDocument as WorkflowMcp, PolicyDocument as WorkflowPolicy, RolloutDocument as WorkflowRollout, TriggerDocument as WorkflowTrigger, SwitchCaseDocument as SwitchCase } from '@iaf/workflow-checks'
+export type StepRetry = { maxAttempts?: number; backoff?: string }
+
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
 
 export type CheckStatus = 'passed' | 'failed' | 'skipped'
