@@ -35,6 +35,14 @@ platform:
   identity:
     mode: dev             # dev | oidc
     default-user: gonzalo
+    # Under the oidc profile (mode: oidc) the issuer, the audience and the JWKS endpoint are
+    # required and the start fails with a message naming a blank one, for example:
+    # oidc-issuer: https://login.example.com/realms/platform
+    # oidc-audience: platform
+    # oidc-jwks-uri: https://login.example.com/realms/platform/protocol/openid-connect/certs
+    oidc-teams-claim: groups          # the token claim that lists the caller's teams
+    oidc-roles-claim: roles           # the token claim that lists the caller's roles
+    oidc-admin-role: platform-admin   # the role in that claim that makes the caller a platform admin
   execution:
     mode: in-memory       # in-memory | temporal; the temporal profile (end of this file) sets temporal
   roles: api, worker      # api (the API) and/or worker (the interpreter's Temporal worker); one alone needs the temporal profile
@@ -60,6 +68,8 @@ platform:
       credential: ""      # vault:<path> holding <access key id>:<secret access key>; blank uses the AWS default chain
   playbooks:
     max-upload-size: 20MB
+    lint-command: ""    # e.g. ansible-lint --offline {playbook}: runs in the unpacked upload, a non-zero exit refuses it; blank skips the lint (the upload answers lint: skipped)
+    lint-timeout: PT60S
     git:
       cache-dir: ${java.io.tmpdir}/iaf-platform/git
   runners:                # profile live: ansible, terraform, script and http steps run for real
@@ -74,7 +84,8 @@ platform:
     mode: mock            # mock | devin (the devin profile switches the adapter)
     devin-url: https://api.devin.ai/v3
     devin-org: ""
-    devin-api-key: ""                  # Authorization: Bearer <key>
+    devin-api-key: ""                  # the service user's key (Authorization: Bearer): a vault: reference, e.g. vault:devin/api-key,
+                                       # resolved at each call; the key itself still works but is warned about at startup
     devin-playbook-id: ""              # the !workflow-draft playbook (devin/nl-builder-playbook.md)
     devin-provider-playbook-id: ""     # the !provider-draft playbook (devin/provider-draft-playbook.md)
     platform-token-secret-id: ""       # the Devin secret holding PLATFORM_TOKEN, attached to every session
@@ -86,6 +97,7 @@ platform:
     sync-playbooks-on-startup: false   # create or update the Devin playbooks from devin/*.md at startup
     platform-api-url: ""               # what the agent calls back; blank = http://localhost:<server.port>
     max-rounds: 3                      # times the platform sends its own check results back to the agent
+    session-retention: P30D            # builder sessions not updated for this long are deleted (checked every hour)
   providers:
     git-allow-local: false             # read file: repositories (tests and local demos only)
     git-timeout: PT60S                 # one fetch of a spec, playbook or module repository
@@ -101,7 +113,9 @@ platform:
   audit:
     retention-years: 7
     seal-every: PT1H
-    signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
+    signing-key: ""       # HMAC-SHA256 key for seals and export packs: a vault: reference, e.g. vault:platform/audit-signing-key,
+                          # resolved when it signs; blank = a random key per run (its id is logged, never the key); the key
+                          # itself still works but is warned about at startup
     worm:                 # write-once evidence; every object is kept retention-years after it was written
       dir: data/evidence  # profile worm: one read-only file per entry, seal and checkpoint, each with a retention sidecar
       s3:                 # profile worm-s3: S3 Object Lock in COMPLIANCE mode; AWS credentials from the SDK's default chain

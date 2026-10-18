@@ -145,7 +145,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
-| `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
+| `use: { type, id, waitUntil: ready, checkAccess: false }` | resolve a registry resource; policy judges whether the requester may use it unless `checkAccess: false` opts the step out (the demo policy: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always); with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
 | `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |
@@ -166,6 +166,13 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
   artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+  An upload is unpacked and checked before it is kept: every text file is scanned for secrets (a
+  private key block, a `password`/`token`/`secret`/`api_key` with a literal value instead of a
+  `vault:` reference or an expression, AWS, GitHub and Slack token shapes) and refused naming the
+  file and line, never the value; then `platform.playbooks.lint-command` (blank by default, which
+  skips the lint and the answer says so) runs a linter such as `ansible-lint --offline {playbook}`
+  in the unpacked upload and refuses it on a non-zero exit with the linter's output. The pin
+  checks at publish therefore skip uploads: they were checked when uploaded.
 - `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
   pinned by the provider's `source.commit`.
 
@@ -470,10 +477,14 @@ schema:
     os: { type: string }
 states: [building, ready, deprecated, retired]
 producedBy: build-vm-image     # the workflow whose register step creates this type
+visibility: public             # what new resources of the type get: public (every team's) or team (the default: the owner team's)
 ```
 
 The registry generates `GET /api/v1/images`, `GET /api/v1/images/{id}` and the MCP tools
-`list_images`, `get_image` for every type.
+`list_images`, `get_image` for every type. A resource belongs to the team that registered it;
+only that team, the job that created it or an admin may update it through a later `register`,
+and only the team or an admin may retire it. `visibility` is what a `use` step's access check
+reads: a `public` resource is any team's, a `team` resource its owner team's.
 
 ## kind: PriceList
 

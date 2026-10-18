@@ -1,5 +1,6 @@
 package com.iaf.platform.assistant.adapters.outbound;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,5 +31,18 @@ public class InMemorySessionStore implements SessionStore {
     @Override
     public Optional<AssistantSession> update(String id, UnaryOperator<AssistantSession> change) {
         return id == null ? Optional.empty() : Optional.ofNullable(byId.computeIfPresent(id, (k, s) -> change.apply(s)));
+    }
+
+    /** Removes a session only as it was read, so one updated meanwhile stays. */
+    @Override
+    public int deleteUpdatedBefore(Instant cutoff) {
+        int removed = 0;
+        for (Map.Entry<String, AssistantSession> e : byId.entrySet()) {
+            AssistantSession s = e.getValue();
+            if (s.updatedAt() != null && s.updatedAt().isBefore(cutoff) && byId.remove(e.getKey(), s)) {
+                removed++;
+            }
+        }
+        return removed;
     }
 }

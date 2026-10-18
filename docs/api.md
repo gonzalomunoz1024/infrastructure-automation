@@ -24,12 +24,15 @@ type Problem = { level: 'error' | 'warning'; code: string; step?: string; field?
 | Method | Path                      | Returns |
 |--------|---------------------------|---------|
 | GET    | `/me`                     | `{ id, name, email, teams: string[], roles: string[], admin: boolean }` |
-| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` |
-| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes }` (token shown once; admin only) |
+| GET    | `/service-accounts`       | `{ id, name, roles, teams, createdAt, scopes }[]` (admin only; 403 otherwise) |
+| POST   | `/service-accounts`       | body `{ name, roles, teams?, scopes?, preset? }` → 201 `{ id, token, scopes, teams, note? }` (token shown once; admin only). `teams` are the teams the account acts for: without any it takes its creator's, and `note` says so (or, when the creator has none either, that the policy refuses every job it starts) |
+
+Shared evidence links (`GET /audit/shared/{token}`) need no credential: the token is the secret.
 
 Dev identity: header `X-User: <id>` (default `gonzalo`, admin, teams `team-compute`,
 `team-platform`); the dev header is for local use only and is ignored under the `oidc` profile.
-Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT. A bearer token that
+Service accounts: `Authorization: Bearer iaf_<token>`. OIDC profile: a JWT of the configured issuer
+and audience (README, [Identity and OIDC](../README.md#identity-and-oidc)). A bearer token that
 does not verify is always 401; it never falls back to the dev identity. Signed webhooks
 (`POST /change-requests:github-webhook`) carry no credential: they come in as an identity that may
 change nothing, and their controller checks the signature before acting.
@@ -44,16 +47,17 @@ in it. An unknown scope or preset is a 400. People are judged by roles and teams
 
 | Scope | Allows |
 |-------|--------|
-| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; generated resource reads; MCP `tools/list` and the resource tools |
+| `registry:read` | GET on the registry, catalog, OpenAPI, templates, workflows, providers, resource types, resources, change requests and releases; the credential list (`GET /credentials`: names, types and owners, never a value); generated resource reads; MCP `tools/list` and the resource tools |
 | `workflows:validate` | `/workflows:validate`, `:parse`, `:render`, `:replay-check` and `/providers:validate` |
 | `workflows:dry-run` | `/workflows:dry-run` |
 | `workflows:write` | creating, importing, editing, deleting and publishing workflows; merging and closing change requests; assistant sessions and drafts; the MCP draft tool |
 | `jobs:start` | starting jobs (`/jobs`, `/jobs:batch`, generated routes, the MCP invoke, batch and cancel tools), steering them (cancel, retry, skip, abort, rerun) and `/triggers/*` |
-| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails; the job WebSocket; the MCP job status tool |
-| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and `/credentials` |
+| `jobs:read` | jobs and their events, replay and evidence; approvals; audit trails (`/audit`, `/audit/platform`, a record, its verification and export); the job WebSocket; the MCP job status tool |
+| `providers:write` | the Add provider wizard (import spec, the Ansible and Terraform imports, test connection, try, publish, draft), refresh spec, overrides, SLO and storing credentials (`POST /credentials`) |
 | `admin` | everything, and makes the account an admin; an endpoint the table does not name needs it |
 
-`/me`, `/mcp` (each tool is judged on its own) and GET `/actuator/*` need no scope.
+`/me`, `/mcp` (each tool is judged on its own), GET `/actuator/*` and GET `/audit/shared/{token}` (the
+token is the credential) need no scope. Sealing, sharing and the export pack need `admin`.
 
 ## Workflows
 
@@ -235,10 +239,10 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |
-| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted` |
-| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input) |
-| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted` |
-| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back) |
+| POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
+| POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input); 403 as cancel |
+| POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted`; 403 as cancel |
+| POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back); 403 as cancel |
 | POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
@@ -246,6 +250,11 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
+
+Steering a job (`:cancel`, `:retry`, `:skip`, `:abort`) is for its requester, a member of the
+workflow's owner team, anyone the workflow's `policy.rbac` roles or approver groups name, and
+admins; anyone else gets 403 with a message naming the job. `:rerun` is judged like a start
+(`policy.rbac`), and approvals by their group.
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
@@ -427,10 +436,10 @@ type Verification = { valid: boolean; entries; brokenAt?: number; seal?: 'verifi
 | GET `/audit/{jobId}` | `EvidenceRecord` |
 | GET `/audit/{jobId}:verify` | `Verification` (every checkpoint, then the seal) |
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
-| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest) |
-| POST `/audit/{jobId}:share` | → `{ url; expiresAt }` |
-| GET `/audit/shared/{token}` | read-only `EvidenceRecord` |
-| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`) |
+| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest), sent in chunks with its `Content-Length`: the pack is written to a temporary file first (so a failure is an error status, never half a zip) and deleted once sent |
+| POST `/audit/{jobId}:share` | → `{ url; expiresAt }`, a link valid for seven days. By the job's requester, a member of the teams it ran for (the requester's teams when it started, the workflow's owner team) or an admin; 403 otherwise. Published as `audit.shared` `{ recordId; by; expiresAt }`, never with the token |
+| GET `/audit/shared/{token}` | read-only `EvidenceRecord`; needs no account in any mode (the token is the secret: a request without `Authorization` runs as an identity with no team, role or scope), 404 for an unknown token, 410 once it expired |
+| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`). Admins only; 403 otherwise |
 
 A job's record holds `requested` (with `publish`: the version's `contentHash` and where it was
 published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, `publishedBy`,
@@ -473,7 +482,7 @@ is a reserved noun.
 ## Resources
 
 ```ts
-type ResourceType = { name; plural; owner; schema; states; producedBy? }
+type ResourceType = { name; plural; owner; visibility: 'team' | 'public'; schema; states; producedBy? }
 type Resource = { id; type; name?; status; attributes; owner; visibility; createdBy: { jobId; workflow }; builtFrom: string[]; createdAt }
 ```
 
@@ -481,8 +490,15 @@ type Resource = { id; type; name?; status; attributes; owner; visibility; create
 | GET `/resource-types/{name}` | `ResourceType` |
 | GET `/resources?type=&owner=&status=` | `Resource[]` |
 | GET `/resources/{id}` | `Resource` |
-| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[] }` |
-| POST `/resources/{id}:retire` | → 409 with dependents list when something is built from it, else `CommandAccepted` |
+| GET `/resources/{id}/lineage` | `{ resource; builtFrom: Resource[]; dependents: Resource[]; nodes: Resource[]; edges: { from; to; via? }[] }`. `builtFrom` and `dependents` are the direct neighbours; `nodes` and `edges` are the whole graph around the resource in both directions, each resource once, at most 32 hops away and 1000 resources in all, the resource itself first. An edge `from → to` says `to` was built from `from`, `via` the workflow that registered `to` when it is known |
+| POST `/resources/{id}:retire` | → 403 unless the caller is in the resource's owner team or an admin (a resource without an owner is anyone's); 409 `resource has dependents` with `detail: Resource[]`, everything still built from it, directly or through other resources, depth-first; else `CommandAccepted` |
+
+A `register` step creates a resource owned by the requester's first team (the type's `owner` when
+they have none), with the type's `visibility`, and its attributes must match the type's schema
+when the type declares one (400 otherwise). Registering an id that exists updates it: only the
+resource's owner team, the job that created it (so a workflow that registers `building` and later
+`ready` finishes its own work) or an admin may (403 to anyone else), and the attributes the
+resource would then hold must still match the schema.
 
 ## Credentials
 
@@ -503,21 +519,30 @@ never says whether a credential exists for another team.
 ## Playbooks
 
 ```ts
-type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[]; lint: 'passed' | 'skipped' }
 type ResolvedRef = { repo: string; ref: string; commit: string }
 ```
 
-| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload` |
-| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now |
+| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload`; 400 naming the file and line when a text file of the upload holds what looks like a secret (never the value), or with the linter's output when `platform.playbooks.lint-command` refuses it |
+| GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now. 403 naming the credential and its team when the caller may not use `credential` (see Credentials); the same rule judges the publishing identity when a publish pins a git playbook with a credential |
 
 Both need a team (or admin), 403 otherwise. An upload is checked before it is kept: every
 archive entry is a relative path without `..`, backslashes or control characters; links,
 devices and duplicate names are refused; the entry count and the bytes it unpacks to are
 capped while reading (`platform.playbooks.max-entries`, `max-unpacked-size`); `path` must be a
 `.yml`/`.yaml` file in the archive; a single playbook, and the one `path` names, must parse as a
-YAML list of plays. A file over `platform.playbooks.max-upload-size` is a 413. The bytes are
-kept once in the artifact store under their SHA-256, which a workflow pins as
-`playbook: { upload: { file, sha256, path? } }`; each upload is a `playbook.uploaded` event.
+YAML list of plays. Every text file of the upload is then scanned for secrets: a private key
+block; a key named like a secret (`password`, `token`, `secret`, `api_key`, `access_key`,
+`credentials`, `authorization`, ...) with a literal value that is neither a `vault:<name>`
+reference, an expression (`{{ ... }}`, `${...}`) nor an ansible-vault block; a long high-entropy
+value after a weaker key (`key`, `auth`, `pass`, `cert`); and the shapes of AWS, GitHub and Slack
+tokens anywhere. A finding is a 400 that names the file and the line, never the value. When
+`platform.playbooks.lint-command` is set (for example `ansible-lint --offline {playbook}`) it
+runs in the unpacked upload and a non-zero exit is a 400 with its output; the answer's `lint`
+says `passed`, or `skipped` when no linter is configured. A file over
+`platform.playbooks.max-upload-size` is a 413. The bytes are kept once in the artifact store under
+their SHA-256, which a workflow pins as `playbook: { upload: { file, sha256, path? } }`; each
+upload is a `playbook.uploaded` event.
 
 `repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
 URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding
@@ -532,6 +557,25 @@ read 502.
 | GET `/assistant/sessions/{id}` | `{ sessionId; status; draft; history }` |
 | POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
 | POST `/assistant/playbooks:sync` | → `{ playbooks: { file; macro; playbookId; action: 'created' \| 'updated' \| 'unchanged' }[] }`. Creates the Devin playbooks of `devin/*.md` that Devin does not have (by macro) and updates the ones whose title, body or schema changed; also at startup with `platform.assistant.sync-playbooks-on-startup`. Admins only |
+
+A session belongs to the identity that started it: only that identity reads it or sends it
+messages, plus an admin who is a person; anyone else gets 403 naming the session and who
+started it. A service account, admin or not, only uses the sessions it started itself. A session
+nothing happened on for `platform.assistant.session-retention` (default 30 days) is deleted, and
+then answers 404.
+
+A message that asks what the workflow does ("Explain what this workflow does", "describe it",
+"summarise the flow") changes nothing: the answer is a `message` event describing the draft on the
+canvas (what starts it, each step in order with what it calls, the approvals, the outputs) and no
+`draft` event follows. On an empty canvas the demo agent answers that there is nothing to explain,
+unless the message names something to build ("Describe a workflow that restarts a VM" is drafted).
+Devin gets it as `MODE: explain` when there is a draft.
+
+Closing the stream before its `done` (the panel closed, the page left) ends the agent's own session:
+with Devin, the platform ends and archives it (`DELETE /sessions/{id}?archive=true`) so it stops
+spending ACUs, and so it does when `platform.assistant.devin-timeout` passes without a draft (the
+stream then ends with a message, a `status` whose `externalId` is empty, and a failed `done`). The
+next message on the builder session starts a new Devin session with the current draft.
 
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,

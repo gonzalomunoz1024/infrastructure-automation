@@ -123,6 +123,7 @@ export function playbookPins(files: readonly PinSource[], options: { allowFileUr
           add(repo, playbook['commit'], path, from);
         }
       } else if (isObject(playbook['upload'])) {
+        // POST /playbooks:upload unpacks, scans for secrets and lints an upload before it is kept; its sha256 pins it
         skipped.push({ from, reason: 'an uploaded playbook is checked when it is uploaded' });
       }
     }

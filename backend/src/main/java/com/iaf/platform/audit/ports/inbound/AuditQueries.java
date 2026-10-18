@@ -1,5 +1,9 @@
 package com.iaf.platform.audit.ports.inbound;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 
@@ -39,6 +43,22 @@ public interface AuditQueries {
     record FileExport(String filename, String contentType, byte[] bytes) {
     }
 
+    /**
+     * A file written to disk before it is sent (the evidence pack, which can be large): whoever
+     * sends it streams {@code path} and then calls {@link #discard()}, also when the client leaves.
+     */
+    record SpooledFile(String filename, String contentType, Path path, long size) {
+
+        /** Deletes the file; nothing to do when it is already gone. */
+        public void discard() {
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot delete the spooled file " + path, e);
+            }
+        }
+    }
+
     /** The filter as the API spells it: dates or instants as strings, every field optional. */
     record FilterSpec(String workflow, String from, String to, String requester) {
     }
@@ -63,8 +83,11 @@ public interface AuditQueries {
     /** {@code format} is json or pdf. */
     Mono<FileExport> export(String jobId, String format);
 
-    /** A zip with one JSON per matching record, the platform stream and a signed manifest. */
-    Mono<FileExport> exportPack(FilterSpec filter);
+    /**
+     * A zip with one JSON per matching record, the platform stream and a signed manifest, spooled
+     * to a temporary file so its size never sits in memory.
+     */
+    Mono<SpooledFile> exportPack(FilterSpec filter);
 
     /** The record behind a share link; 404 unknown, 410 expired. */
     Mono<EvidenceRecord> shared(String token);

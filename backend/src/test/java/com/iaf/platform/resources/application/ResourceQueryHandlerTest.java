@@ -32,6 +32,7 @@ import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.resources.adapters.outbound.InMemoryResourceStore;
 import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.resources.domain.ResourceGraph;
 
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -96,6 +97,60 @@ class ResourceQueryHandlerTest {
             assertThat(l.dependents()).extracting(Resource::id).containsExactly("volume-v1");
         }).verifyComplete();
         StepVerifier.create(handler.lineage("nope")).expectError(NotFoundException.class).verify();
+    }
+
+    @Test
+    void lineageIsTheWholeGraphInBothDirectionsEachResourceOnce() {
+        // image-base <- vm-web1 <- volume-v1 <- environment-e1 (also built from vm-web2); the direct lists stay as they were
+        store.save(resource("environment-e1", "environment", "ready", "team-platform", List.of("volume-v1", "vm-web2")));
+        StepVerifier.create(handler.lineage("vm-web1")).assertNext(l -> {
+            assertThat(l.builtFrom()).extracting(Resource::id).containsExactly("image-base");
+            assertThat(l.dependents()).extracting(Resource::id).containsExactly("volume-v1");
+            assertThat(l.nodes()).extracting(Resource::id).as("the resource first, then what it came from, then what came from it")
+                    .containsExactly("vm-web1", "image-base", "volume-v1", "environment-e1");
+            assertThat(l.edges()).extracting(e -> e.from() + ">" + e.to()).containsExactly("image-base>vm-web1", "vm-web1>volume-v1", "volume-v1>environment-e1");
+            assertThat(l.edges()).allMatch(e -> e.via() == null, "the seed fixture names no workflow");
+        }).verifyComplete();
+        StepVerifier.create(handler.lineage("environment-e1")).assertNext(l -> {
+            assertThat(l.builtFrom()).extracting(Resource::id).containsExactly("volume-v1", "vm-web2");
+            assertThat(l.dependents()).isEmpty();
+            assertThat(l.nodes()).extracting(Resource::id).as("depth first upward, image-base met once through vm-web1")
+                    .containsExactly("environment-e1", "volume-v1", "vm-web1", "image-base", "vm-web2");
+            assertThat(l.edges()).extracting(e -> e.from() + ">" + e.to())
+                    .containsExactly("volume-v1>environment-e1", "vm-web1>volume-v1", "image-base>vm-web1", "vm-web2>environment-e1", "image-base>vm-web2");
+        }).verifyComplete();
+        // the workflow that registered the built resource names the edge
+        store.save(new Resource("vm-web3", "vm", "vm-web3", "ready", F.objectNode(), "team-compute", "team", new Resource.Origin("job_7", "create-vm", "2.0.1"),
+                List.of("image-base"), CLOCK.instant(), CLOCK.instant()));
+        StepVerifier.create(handler.lineage("vm-web3")).assertNext(l ->
+                assertThat(l.edges()).containsExactly(new ResourceGraph.Edge("image-base", "vm-web3", "create-vm"))).verifyComplete();
+    }
+
+    @Test
+    void lineageSurvivesACycleAndStopsAtItsBounds() {
+        // a cycle: image-base is said to be built from volume-v1, which is built from vm-web1, built from image-base
+        store.save(resource("image-base", "image", "ready", "team-platform", List.of("volume-v1")));
+        StepVerifier.create(handler.lineage("image-base")).assertNext(l -> {
+            assertThat(l.nodes()).extracting(Resource::id).doesNotHaveDuplicates().contains("image-base", "volume-v1", "vm-web1", "vm-web2");
+            assertThat(l.edges()).extracting(e -> e.from() + ">" + e.to()).contains("volume-v1>image-base", "image-base>vm-web1", "vm-web1>volume-v1");
+        }).verifyComplete();
+        // a chain longer than the walk goes: the graph ends at the bound instead of walking forever
+        String previous = "vm-web2";
+        for (int i = 0; i < ResourceGraph.MAX_DEPTH + 5; i++) {
+            String id = "volume-chain-" + i;
+            store.save(resource(id, "volume", "ready", "team-platform", List.of(previous)));
+            previous = id;
+        }
+        StepVerifier.create(handler.lineage("vm-web2")).assertNext(l -> {
+            assertThat(l.nodes()).filteredOn(r -> r.id().startsWith("volume-chain-")).as("one hop per level, no further").hasSize(ResourceGraph.MAX_DEPTH);
+            assertThat(l.nodes()).extracting(Resource::id).as("the root, its three ancestors around the cycle, the chain")
+                    .hasSize(1 + 3 + ResourceGraph.MAX_DEPTH).contains("vm-web2", "image-base", "volume-v1", "vm-web1");
+            assertThat(l.dependents()).extracting(Resource::id).containsExactly("volume-chain-0");
+        }).verifyComplete();
+        StepVerifier.create(handler.lineage(previous)).assertNext(l -> {
+            assertThat(l.nodes()).as("upward too").hasSize(1 + ResourceGraph.MAX_DEPTH);
+            assertThat(l.nodes()).extracting(Resource::id).doesNotContain("vm-web2");
+        }).verifyComplete();
     }
 
     @Test

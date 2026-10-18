@@ -459,7 +459,7 @@ public final class WorkflowInterpreter {
             case RAISE -> throw StepFailure.fatal(s.id(), text(with, "error") == null ? "Error" : text(with, "error"),
                     text(with, "message") == null ? text(with, "error") : text(with, "message"));
             case USE -> executor.useResource(ctx, s, new UseRequest(text(with, "type"), text(with, "id"), text(with, "waitUntil"),
-                    with.path("checkAccess").asBoolean(false)), timeout);
+                    with.path("checkAccess").asBoolean(true)), timeout);
             case REGISTER -> registered(executor.registerResource(ctx, s, new RegisterRequest(text(with, "type"), text(with, "id"), text(with, "state"),
                     with.get("attributes"), strings(with.get("builtFrom")))));
             case NOTIFY -> executor.notify(ctx, s, text(with, "channel"), text(with, "message"));

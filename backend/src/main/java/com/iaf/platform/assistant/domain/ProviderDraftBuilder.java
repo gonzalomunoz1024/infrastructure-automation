@@ -11,7 +11,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.assistant.domain.ProviderDraft;
@@ -373,9 +372,5 @@ public final class ProviderDraftBuilder {
         module.put("source", url == null ? "git::https://github.com/example/tf-modules//" + name : "git::" + url);
         module.put("version", "0.1.0");
         return module;
-    }
-
-    static ArrayNode array() {
-        return F.arrayNode();
     }
 }

@@ -5,10 +5,19 @@ import java.util.List;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
-/** One {@code kind: ResourceType} file: what a workflow can register and another can use. */
-public record ResourceTypeDefinition(String name, String plural, String owner, JsonNode schema, List<String> states, String producedBy, String description) {
+/**
+ * One {@code kind: ResourceType} file: what a workflow can register and another can use.
+ * {@code visibility} is what new resources of the type get: {@code team} (the default) keeps them
+ * to their owner team, {@code public} opens them to every team, as the policy engine judges a
+ * {@code use} step.
+ */
+public record ResourceTypeDefinition(String name, String plural, String owner, JsonNode schema, List<String> states, String producedBy,
+        String description, String visibility) {
 
     public static final String KIND = "ResourceType";
+    public static final String VISIBILITY_TEAM = "team";
+    public static final String VISIBILITY_PUBLIC = "public";
+    public static final List<String> VISIBILITIES = List.of(VISIBILITY_TEAM, VISIBILITY_PUBLIC);
 
     public static ResourceTypeDefinition parse(String yaml) {
         return fromJson(WorkflowYaml.readTree(yaml));
@@ -32,8 +41,17 @@ public record ResourceTypeDefinition(String name, String plural, String owner, J
         if (states.isEmpty()) {
             states.addAll(List.of("building", "ready", "deprecated", "retired"));
         }
+        String visibility = root.path("visibility").asText(VISIBILITY_TEAM);
+        if (!VISIBILITIES.contains(visibility)) {
+            throw new IllegalArgumentException("visibility is one of " + VISIBILITIES + ", was " + visibility);
+        }
         return new ResourceTypeDefinition(name, md.path("plural").asText(name + "s"), md.path("owner").asText(null),
-                root.get("schema"), states, root.path("producedBy").asText(null), md.path("description").asText(null));
+                root.get("schema"), states, root.path("producedBy").asText(null), md.path("description").asText(null), visibility);
+    }
+
+    /** The visibility a new resource of the type gets: {@code team} when the type says nothing (a type stored before it could). */
+    public String defaultVisibility() {
+        return visibility == null || visibility.isBlank() ? VISIBILITY_TEAM : visibility;
     }
 
     public String readPath() {

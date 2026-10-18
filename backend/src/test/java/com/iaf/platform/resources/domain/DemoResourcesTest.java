@@ -73,7 +73,8 @@ class DemoResourcesTest {
             assertThat(Schemas.validate(t.schema(), r.attributes())).as(r.id()).isEmpty();
             assertThat(r.id()).startsWith(r.type() + "-").hasSize(r.type().length() + 1 + ResourceIds.SUFFIX_LENGTH);
             assertThat(r.owner()).isEqualTo(t.owner());
-            assertThat(r.visibility()).isEqualTo("team");
+            assertThat(r.visibility()).as("the type's visibility").isEqualTo(t.defaultVisibility());
+            assertThat(r.visibility()).isEqualTo(r.type().equals("image") ? "public" : "team");
             assertThat(r.createdBy().workflow()).isEqualTo(t.producedBy());
             assertThat(r.createdBy().jobId()).startsWith("job_demo");
             assertThat(r.createdAt()).isNotNull();

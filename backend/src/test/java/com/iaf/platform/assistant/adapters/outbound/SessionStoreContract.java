@@ -39,6 +39,29 @@ abstract class SessionStoreContract {
     }
 
     @Test
+    void deletesTheSessionsLastUpdatedBeforeTheCutoffAndKeepsTheRest() {
+        SessionStore store = newStore();
+        Instant cutoff = NOW.minus(java.time.Duration.ofDays(30));
+        store.save(session("as_old").withStatus(AssistantSession.DONE, cutoff.minusSeconds(1)));
+        store.save(session("as_stuck").withStatus(AssistantSession.WORKING, cutoff.minus(java.time.Duration.ofDays(3))));
+        store.save(session("as_edge").withStatus(AssistantSession.DONE, cutoff));
+        store.save(session("as_new").withStatus(AssistantSession.FAILED, NOW));
+
+        assertThat(store.deleteUpdatedBefore(cutoff)).isEqualTo(2);
+
+        assertThat(store.get("as_old")).isEmpty();
+        assertThat(store.get("as_stuck")).isEmpty();
+        assertThat(store.get("as_edge")).isPresent();
+        assertThat(store.get("as_new")).isPresent();
+        assertThat(store.deleteUpdatedBefore(cutoff)).isZero();
+        SessionStore again = reopen();
+        if (again != null) {
+            assertThat(again.get("as_old")).isEmpty();
+            assertThat(again.get("as_new")).isPresent();
+        }
+    }
+
+    @Test
     void readsASessionBackExactly() {
         SessionStore store = newStore();
         AssistantSession s = session("as_1");

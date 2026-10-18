@@ -257,7 +257,7 @@ class WorkflowCommandHandlerTest {
         String commit = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
         GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
         when(git.resolve("github.com/acme/ops-playbooks", "v3.1.0", null)).thenReturn(Mono.just(new Resolved("github.com/acme/ops-playbooks", "v3.1.0", commit)));
-        handler.setPlaybookPinning(new PlaybookPinning(git));
+        handler.setPlaybookPinning(new PlaybookPinning(git, credentials));
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(unpinned(edited(vmRestart)))).block();
 
         ChangeRequest cr = changeRequests.get(handler.publish("vm-restart", null).block().id()).orElseThrow();
@@ -277,7 +277,7 @@ class WorkflowCommandHandlerTest {
     void aRefThatDoesNotResolveAtPublishFailsTheAnsibleLintCheckWithTheReason() {
         GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
         when(git.resolve(any(), any(), any())).thenReturn(Mono.error(new RemoteUnavailable("Could not read https://github.com/acme/ops-playbooks: connect timed out")));
-        handler.setPlaybookPinning(new PlaybookPinning(git));
+        handler.setPlaybookPinning(new PlaybookPinning(git, credentials));
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(unpinned(edited(vmRestart)))).block();
 
         String crId = handler.publish("vm-restart", null).block().id();

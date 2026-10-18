@@ -145,26 +145,10 @@ public final class DraftBuilder {
     }
 
     private void detectVerb() {
-        int bestScore = Integer.MAX_VALUE;
-        for (int i = 0; i < tokens.size(); i++) {
-            String t = tokens.get(i);
-            Optional<String> v = Words.verb(t);
-            if (v.isEmpty()) {
-                continue;
-            }
-            int score = i;
-            if (t.endsWith("ing")) {
-                score += 20;
-            }
-            if (("backup".equals(v.get()) || "snapshot".equals(t)) && i > 0) {
-                score += 10;
-            }
-            if (score < bestScore) {
-                bestScore = score;
-                verb = v.get();
-                verbAt = i;
-            }
-        }
+        Words.mainVerb(tokens).ifPresent(v -> {
+            verb = v.verb();
+            verbAt = v.at();
+        });
     }
 
     private void detectNoun() {

@@ -21,13 +21,25 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Action;
  * Edit mode of the demo agent: applies an instruction to the draft on the canvas by rules (add an
  * approval before a step, rename, add a notification, remove a step, change a timeout or retry,
  * add an input, add a step calling a provider action, set the canary stages). Unknown asks become
- * questions; the draft is never thrown away.
+ * questions; the draft is never thrown away. A message that asks what the workflow does
+ * ({@link DraftExplainer#asks}) changes nothing and is answered with an explanation.
  */
 public final class DraftEditor {
 
-    public record Result(ObjectNode document, List<String> changes, List<Question> questions, List<String> assumptions, List<Missing> missing) {
+    /** {@code explanation} is the answer to an explain request (and then nothing changed), null for an edit. */
+    public record Result(ObjectNode document, List<String> changes, List<Question> questions, List<String> assumptions, List<Missing> missing,
+            String explanation) {
+
+        public Result(ObjectNode document, List<String> changes, List<Question> questions, List<String> assumptions, List<Missing> missing) {
+            this(document, changes, questions, assumptions, missing, null);
+        }
+
         public String yaml() {
             return WorkflowDoc.toYaml(document);
+        }
+
+        public boolean explained() {
+            return explanation != null;
         }
     }
 
@@ -62,6 +74,9 @@ public final class DraftEditor {
 
     public static Result edit(String currentYaml, String instruction, Registry registry, DraftBuilder.Context ctx) {
         ObjectNode doc = WorkflowDoc.of(currentYaml);
+        if (DraftExplainer.asks(instruction)) {
+            return new Result(doc, List.of(), List.of(), List.of(), List.of(), DraftExplainer.explain(doc));
+        }
         String owner = ctx != null && ctx.owner() != null ? ctx.owner() : doc.path("metadata").path("owner").asText(null);
         DraftEditor e = new DraftEditor(doc, registry, owner);
         for (String clause : clauses(instruction)) {

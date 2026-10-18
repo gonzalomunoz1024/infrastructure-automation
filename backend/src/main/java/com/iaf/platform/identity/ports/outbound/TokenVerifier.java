@@ -1,10 +1,14 @@
 package com.iaf.platform.identity.ports.outbound;
 
-import java.util.Optional;
-
 import com.iaf.platform.common.domain.Identity;
 
-/** Turns a bearer token from an identity provider (OIDC) into an identity; empty when invalid. */
+import reactor.core.publisher.Mono;
+
+/**
+ * Turns a bearer token from an identity provider (OIDC) into an identity; empty when invalid.
+ * Verifying may fetch the provider's keys, so it answers asynchronously and never on the caller's
+ * thread when that would block.
+ */
 public interface TokenVerifier {
-    Optional<Identity> verify(String token);
+    Mono<Identity> verify(String token);
 }

@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -17,12 +18,16 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.PlatformEvents;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.config.PlatformProperties;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,12 +40,19 @@ import lombok.extern.slf4j.Slf4j;
  * fields and resolved secret values become {@code ***}, {@code vault:} references stay) and handed
  * to the SIEM exporter after. Registered on the bus synchronously, so a record is complete by the
  * time the command that caused the event returns.
+ *
+ * <p>A store that fails an append is tried once more; when it fails again the entry is lost, the
+ * {@value #APPEND_FAILED} counter (tag {@code store}) goes up and an error names the record, and the
+ * job goes on: evidence never stops a job, the counter is what to alert on. A sealed record that
+ * refuses a late entry is a refusal, logged as a warning and not counted.</p>
  */
 @Slf4j
 @Component
 public class AuditListener {
 
     private static final Set<String> RECORDED_STEP_STATUSES = Set.of("succeeded", "failed", "skipped", "compensated");
+    /** Entries the store failed to keep after a retry. */
+    public static final String APPEND_FAILED = "audit.append.failed";
 
     private final EvidenceStore store;
     private final EventBus events;
@@ -49,6 +61,7 @@ public class AuditListener {
     private final ObjectMapper mapper;
     private final SecretValues secrets;
     private final SiemExporter siem;
+    private final Counter appendFailed;
 
     /** {@code name@version} -> where its publish sits on the platform stream (rebuilt from the stream after a restart). */
     private final Map<String, ObjectNode> publishes = new ConcurrentHashMap<>();
@@ -57,7 +70,17 @@ public class AuditListener {
 
     @Autowired
     public AuditListener(EvidenceStore store, EventBus events, PlatformProperties props, Clock clock, ObjectMapper mapper, SecretValues secrets,
+            SiemExporter siem, ObjectProvider<MeterRegistry> meters) {
+        this(store, events, props, clock, mapper, secrets, siem, meters == null ? null : meters.getIfAvailable());
+    }
+
+    public AuditListener(EvidenceStore store, EventBus events, PlatformProperties props, Clock clock, ObjectMapper mapper, SecretValues secrets,
             SiemExporter siem) {
+        this(store, events, props, clock, mapper, secrets, siem, (MeterRegistry) null);
+    }
+
+    public AuditListener(EvidenceStore store, EventBus events, PlatformProperties props, Clock clock, ObjectMapper mapper, SecretValues secrets,
+            SiemExporter siem, MeterRegistry meters) {
         this.store = store;
         this.events = events;
         this.props = props;
@@ -65,6 +88,10 @@ public class AuditListener {
         this.mapper = mapper;
         this.secrets = secrets == null ? new SecretValues() : secrets;
         this.siem = siem == null ? SiemExporter.none() : siem;
+        this.appendFailed = Counter.builder(APPEND_FAILED)
+                .description("evidence entries the store failed to keep after a retry")
+                .tag("store", store == null ? "none" : store.getClass().getSimpleName())
+                .register(meters == null ? new SimpleMeterRegistry() : meters);
     }
 
     public AuditListener(EvidenceStore store, EventBus events, PlatformProperties props, Clock clock, ObjectMapper mapper) {
@@ -312,18 +339,41 @@ public class AuditListener {
         }
     }
 
-    /** Redacts, chains and hands the entry to the SIEM; null when the record refused it. */
+    /** Redacts, chains and hands the entry to the SIEM; null when the record refused it or the store failed twice. */
     private EvidenceEntry append(String jobId, DomainEvent e, EvidenceKind kind, String actor, JsonNode data) {
+        EvidenceEntry draft = EvidenceEntry.draft(at(e), kind, actor, secrets.redact(data));
+        EvidenceEntry chained;
         try {
-            JsonNode safe = secrets.redact(data);
-            EvidenceEntry chained = store.append(jobId, EvidenceEntry.draft(at(e), kind, actor, safe));
-            if (siem.enabled()) {
-                siem.offer(jobId, workflowOf(jobId, e), chained);
-            }
-            return chained;
-        } catch (IllegalStateException ex) {
-            log.warn("evidence of {} not recorded: {}", jobId, ex.getMessage());
+            chained = chain(jobId, draft);
+        } catch (SealedRecordException refused) {
+            log.warn("evidence of {} not recorded: {}", jobId, refused.getMessage());
             return null;
+        }
+        if (chained != null && siem.enabled()) {
+            siem.offer(jobId, workflowOf(jobId, e), chained);
+        }
+        return chained;
+    }
+
+    /** The store's append, tried twice; a second failure is counted and logged at error, and the caller goes on. */
+    private EvidenceEntry chain(String jobId, EvidenceEntry draft) {
+        try {
+            return store.append(jobId, draft);
+        } catch (SealedRecordException refused) {
+            throw refused;
+        } catch (RuntimeException first) {
+            log.warn("evidence store failed to append a {} entry to {}; trying once more: {}", draft.kind().json(), jobId, first.toString());
+            try {
+                return store.append(jobId, draft);
+            } catch (SealedRecordException refused) {
+                throw refused;
+            } catch (RuntimeException second) {
+                second.addSuppressed(first);
+                appendFailed.increment();
+                log.error("evidence of {} is missing a {} entry: the store failed twice ({}), the job goes on", jobId, draft.kind().json(),
+                        store.getClass().getSimpleName(), second);
+                return null;
+            }
         }
     }
 

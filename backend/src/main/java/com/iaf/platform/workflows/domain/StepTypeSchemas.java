@@ -150,7 +150,7 @@ public final class StepTypeSchemas {
                             prop("id", "string", "The resource id; may be an expression"),
                             prop("selector", "object", "Attributes to match when there is no id"),
                             enumProp("waitUntil", "ready"),
-                            prop("checkAccess", "boolean", "Ask policy whether the requester may use it"))
+                            prop("checkAccess", "boolean", "Ask policy whether the requester may use it (default true; false opts out)"))
                     .build();
             case REGISTER -> object("type")
                     .props(prop("type", "string", "A resource type"),

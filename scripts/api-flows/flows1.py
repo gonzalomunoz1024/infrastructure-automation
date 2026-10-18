@@ -21,6 +21,11 @@ s, sa = call('POST', A + '/service-accounts', {'name': 'ci-bot', 'roles': ['ops'
 token = sa.get('token') if isinstance(sa, dict) else None
 check(bool(token), f'service account token missing: {sa}')
 s, _ = call('POST', A + '/service-accounts', {'name': 'x', 'roles': ['ops']}, user='ana', expect=403, note='non-admin creates SA')
+s, _ = call('GET', A + '/service-accounts', user='ana', expect=403, note='non-admin lists SAs')
+# without teams an account acts for its creator's teams, and the response says so
+s, sa_default = call('POST', A + '/service-accounts', {'name': 'nightly-bot', 'roles': ['ops']}, expect=201)
+check(isinstance(sa_default, dict) and sa_default.get('teams') == (me or {}).get('teams')
+      and 'No teams were given' in str(sa_default.get('note')), f'SA without teams: {sa_default}')
 s, sas2 = call('GET', A + '/service-accounts', expect=200)
 check(all('token' not in a for a in (sas2 or [])), 'service account list leaks tokens')
 if token:

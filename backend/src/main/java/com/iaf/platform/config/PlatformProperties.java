@@ -37,9 +37,18 @@ public class PlatformProperties {
     public static class IdentityProps {
         private String mode = "dev";
         private String defaultUser = "gonzalo";
+        /** The {@code iss} the tokens carry; required under the oidc profile. */
         private String oidcIssuer = "";
+        /** The issuer's JWKS endpoint; required under the oidc profile. */
         private String oidcJwksUri = "";
+        /** The {@code aud} the tokens carry for this platform; required under the oidc profile. */
         private String oidcAudience = "";
+        /** The claim that lists the caller's teams. */
+        private String oidcTeamsClaim = "groups";
+        /** The claim that lists the caller's roles. */
+        private String oidcRolesClaim = "roles";
+        /** The role (in the roles claim) that makes the caller a platform admin. */
+        private String oidcAdminRole = "platform-admin";
     }
 
     @Data
@@ -80,6 +89,10 @@ public class PlatformProperties {
         private String devinUrl = "https://api.devin.ai/v3";
         /** The Devin organization ({@code org-...}): every call goes to {@code <devin-url>/organizations/<devin-org>}. */
         private String devinOrg = "";
+        /**
+         * The Devin service user's API key: a {@code vault:} reference resolved through the
+         * credentials store at each call; the key itself still works, with a warning at startup.
+         */
         private String devinApiKey = "";
         private String devinPlaybookId = "";
         /** The playbook behind "Ask Devin" in the Add provider wizard ({@code !provider-draft}). */
@@ -100,6 +113,8 @@ public class PlatformProperties {
         private String platformApiUrl = "";
         /** How many times the platform sends its own check results back to the agent before it settles a draft. */
         private int maxRounds = 3;
+        /** Builder sessions not updated for this long are deleted (checked every hour). */
+        private Duration sessionRetention = Duration.ofDays(30);
     }
 
     @Data
@@ -135,7 +150,11 @@ public class PlatformProperties {
     public static class Audit {
         private int retentionYears = 7;
         private Duration sealEvery = Duration.ofHours(1);
-        /** HMAC-SHA256 key for seals and export packs; blank = a random key for this run (logged by id only). */
+        /**
+         * HMAC-SHA256 key for seals and export packs: a {@code vault:} reference resolved through
+         * the credentials store when it signs; blank = a random key for this run (logged by id
+         * only); the key itself still works, with a warning at startup.
+         */
         private String signingKey = "";
     }
 
