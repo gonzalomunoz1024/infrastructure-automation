@@ -24,8 +24,9 @@ import reactor.core.publisher.Mono;
  * The HTTP side of {@code platform.roles}. An instance without the api role serves the actuator
  * only (health, metrics), so a worker keeps its probes and its scrape target: every other request
  * answers 404 before any other filter or route sees it (only {@code BlockingStoresWebFilter}, which
- * moves the chain off the event loop under {@code postgres}, runs ahead of it). The roles are checked when the context
- * starts: an instance has at least one, and only the {@code temporal} engine can split them.
+ * moves the chain off the event loop under {@code mongo}, runs ahead of it). The roles are checked
+ * when the context starts: an instance has at least one, and only the {@code temporal} engine can
+ * split them.
  */
 @Slf4j
 @Component

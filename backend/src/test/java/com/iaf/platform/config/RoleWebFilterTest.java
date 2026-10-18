@@ -14,7 +14,7 @@ import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.server.WebFilterChain;
 
-import com.iaf.platform.common.adapters.jdbc.BlockingStoresWebFilter;
+import com.iaf.platform.common.adapters.mongo.BlockingStoresWebFilter;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 
 import reactor.core.publisher.Mono;

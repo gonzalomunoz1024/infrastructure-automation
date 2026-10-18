@@ -9,14 +9,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
+import org.bson.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-import com.iaf.platform.common.adapters.jdbc.Jdbc;
-import com.iaf.platform.common.adapters.jdbc.Revisioned;
+import com.iaf.platform.common.adapters.mongo.Mongo;
+import com.iaf.platform.common.adapters.mongo.Revisioned;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.workflows.domain.Semver;
@@ -25,18 +26,22 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Indexes;
+import com.mongodb.client.model.ReplaceOptions;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * The workflow store of the {@code postgres} profile: every version of every workflow is a row of
- * {@code workflow_versions}, its doc the whole {@link WorkflowRecord} (the YAML as written and
- * the parsed definition, so a definition comes back exactly as it was saved). At startup each
+ * The workflow store of the {@code mongo} profile: every version of every workflow is a document
+ * of {@code workflow_versions}, its doc the whole {@link WorkflowRecord} (the YAML as written and
+ * the parsed definition, so a definition comes back exactly as it was saved), keyed
+ * {@code <name>@<version>}. At startup each
  * {@code kind: Workflow} file under the content dir that the database does not hold yet becomes
  * a published version, as in memory; a stored version is never reset by its file, except that a
  * version still exactly as seeded takes the file's new content. Reads come from a copy of the
- * table that is reloaded whenever any instance has written to it.
+ * collection that is reloaded whenever any instance has written to it.
  *
  * <p>With {@code platform.content.git} on, the content repo stays the store
  * ({@link GitWorkflowStore}): Git is durable already.
@@ -44,29 +49,31 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Component
 @Primary
-@Profile("postgres")
+@Profile("mongo")
 @ConditionalOnProperty(name = "platform.content.git", havingValue = "false", matchIfMissing = true)
-public class JdbcWorkflowStore implements WorkflowStorePort {
+public class MongoWorkflowStore implements WorkflowStorePort {
 
     static final String STORE = "workflows";
+    static final String COLLECTION = "workflow_versions";
     static final String SEED_AUTHOR = "content";
 
-    private final Jdbc jdbc;
+    private final Mongo mongo;
     private final Path root;
     private final Clock clock;
     private final Revisioned<Index> table;
 
     @Autowired
-    public JdbcWorkflowStore(Jdbc jdbc, PlatformProperties props, Clock clock) {
-        this(jdbc, Path.of(props.getContent().getDir()), clock);
+    public MongoWorkflowStore(Mongo mongo, PlatformProperties props, Clock clock) {
+        this(mongo, Path.of(props.getContent().getDir()), clock);
     }
 
     /** @param root the content dir to seed from at {@link #init()}; null seeds nothing */
-    public JdbcWorkflowStore(Jdbc jdbc, Path root, Clock clock) {
-        this.jdbc = jdbc;
+    public MongoWorkflowStore(Mongo mongo, Path root, Clock clock) {
+        this.mongo = mongo;
         this.root = root;
         this.clock = clock;
-        this.table = new Revisioned<>(jdbc, STORE, this::load);
+        this.table = new Revisioned<>(mongo, STORE, this::load);
+        mongo.index(COLLECTION, Indexes.ascending("name"));
     }
 
     @PostConstruct
@@ -107,10 +114,8 @@ public class JdbcWorkflowStore implements WorkflowStorePort {
             }
         }
         if (!writes.isEmpty()) {
-            jdbc.inTransaction(() -> {
-                writes.forEach(this::upsert);
-                table.bump();
-            });
+            writes.forEach(this::upsert);
+            table.bump();
         }
         log.info("workflow store: {} version(s) seeded and {} refreshed from {}", added, writes.size() - added, abs);
         return writes.size();
@@ -143,35 +148,38 @@ public class JdbcWorkflowStore implements WorkflowStorePort {
 
     @Override
     public void save(WorkflowRecord record) {
-        jdbc.inTransaction(() -> {
-            upsert(record);
-            table.bump();
-        });
+        upsert(record);
+        table.bump();
     }
 
     @Override
     public void delete(String name, String version) {
-        jdbc.inTransaction(() -> {
-            if (jdbc.update("DELETE FROM workflow_versions WHERE name = ? AND version = ?", name, version) > 0) {
-                table.bump();
-            }
-        });
+        if (mongo.collection(COLLECTION).deleteOne(Filters.eq("_id", key(name, version))).getDeletedCount() > 0) {
+            table.bump();
+        }
     }
 
     private void upsert(WorkflowRecord r) {
-        String status = r.status() == null ? null : r.status().json();
-        String doc = jdbc.json(r);
-        jdbc.upsert("UPDATE workflow_versions SET status = ?, updated_at = ?, doc = ? WHERE name = ? AND version = ?",
-                new Object[] {status, Jdbc.time(r.updatedAt()), doc, r.name(), r.version()},
-                "INSERT INTO workflow_versions (name, version, status, updated_at, doc) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                new Object[] {r.name(), r.version(), status, Jdbc.time(r.updatedAt()), doc});
+        Document d = new Document("_id", key(r.name(), r.version()))
+                .append("name", r.name())
+                .append("version", r.version())
+                .append("status", r.status() == null ? null : r.status().json())
+                .append("updatedAt", Mongo.date(r.updatedAt()))
+                .append(Mongo.DOC, mongo.doc(r));
+        mongo.collection(COLLECTION).replaceOne(Filters.eq("_id", d.get("_id")), d, new ReplaceOptions().upsert(true));
+    }
+
+    static String key(String name, String version) {
+        return name + "@" + version;
     }
 
     private Index load() {
-        return Index.of(jdbc.query("SELECT doc FROM workflow_versions", (rs, i) -> jdbc.read(rs.getString(1), WorkflowRecord.class)));
+        List<WorkflowRecord> rows = new ArrayList<>();
+        mongo.collection(COLLECTION).find().forEach(d -> rows.add(mongo.read(d, WorkflowRecord.class)));
+        return Index.of(rows);
     }
 
-    /** The table as the in-memory store holds it: names in order, each name's versions oldest first. */
+    /** The collection as the in-memory store holds it: names in order, each name's versions oldest first. */
     private record Index(Map<String, List<WorkflowRecord>> byName) {
 
         static Index of(List<WorkflowRecord> rows) {

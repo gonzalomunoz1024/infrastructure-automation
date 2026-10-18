@@ -183,7 +183,7 @@ public class PlatformProperties {
         private boolean seedHistory = true;
     }
 
-    /** The JDBC stores of the postgres profile. */
+    /** The MongoDB stores of the mongo profile. */
     @Data
     public static class Persistence {
         /** How long provider-call samples are kept; older ones are deleted. */

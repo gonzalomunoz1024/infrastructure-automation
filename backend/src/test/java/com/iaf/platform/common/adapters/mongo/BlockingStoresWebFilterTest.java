@@ -1,4 +1,4 @@
-package com.iaf.platform.common.adapters.jdbc;
+package com.iaf.platform.common.adapters.mongo;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
