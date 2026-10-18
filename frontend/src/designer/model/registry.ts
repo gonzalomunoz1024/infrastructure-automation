@@ -2,7 +2,8 @@
  * The registry the designer browses: step types, providers and their actions, published
  * workflows, resource types, playbooks and credential names, and for the checks alone what each
  * published workflow starts and the MCP tools they hold. Loaded once per session; every part
- * fails independently so the canvas works with whatever answered.
+ * fails independently so the canvas works with whatever answered. A credential stored from a
+ * step's credential field joins the loaded list instead of loading it all again.
  */
 import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
@@ -155,6 +156,16 @@ export async function withTerraformModules(providers: RegistryProvider[], resolv
       }
     }),
   )
+}
+
+/** The registry with one more credential, in place of one of the same name (storing a name again replaces it). */
+export function withCredential(registry: Registry, credential: RegistryCredential): Registry {
+  return { ...registry, credentials: [...registry.credentials.filter((c) => c.name !== credential.name), credential] }
+}
+
+/** A credential stored in this session: every registry loadRegistry hands out from now on lists it. */
+export function rememberCredential(credential: RegistryCredential): void {
+  if (cached) cached = cached.then((r) => withCredential(r, credential))
 }
 
 /** For tests and the executions view: a registry without the network. */
