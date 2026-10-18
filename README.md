@@ -83,7 +83,9 @@ stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DAT
 (change requests as pull requests on the content repo). The Git workflow store (JGit over the
 content repo, a branch per change request) is not a profile but the property
 `platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`).
-`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
+`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them; adding
+`-f docker-compose.temporal-postgres.yml` runs Temporal self-hosted on its own PostgreSQL
+(`temporalio/auto-setup`) instead of the dev server's SQLite file.
 
 ## Deployment
 

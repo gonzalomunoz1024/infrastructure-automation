@@ -1,0 +1,44 @@
+# Temporal self-hosted on PostgreSQL instead of the dev server's SQLite file, the way a production
+# Temporal keeps its state (temporalio/auto-setup creates the schema and the default namespace):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.temporal-postgres.yml up
+#
+# Everything else in docker-compose.yml stays as it is; the platform's own PostgreSQL is untouched.
+services:
+  temporal:
+    image: temporalio/auto-setup:1.29.1
+    command: !reset []
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: temporal-db
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal   # a local stack only; a real deployment takes it from a secret store
+      DEFAULT_NAMESPACE: default
+    volumes: !reset []
+    healthcheck:
+      # the frontend listens on the container's address, which the service name resolves to
+      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 || tctl --address temporal:7233 cluster health"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+
+  temporal-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "temporal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  temporal-db-data:
