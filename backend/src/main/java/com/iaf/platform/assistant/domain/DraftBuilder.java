@@ -92,6 +92,9 @@ public final class DraftBuilder {
     private String owner;
     private String folder;
     private String group;
+    /** Who may run the draft (policy.rbac): the target's roles when it wraps a published workflow, else ops as the samples do. */
+    private List<String> rbac = List.of("ops");
+    private boolean rbacAssumed = true;
     private String title;
     private String name;
     private boolean destructive;
@@ -325,6 +328,10 @@ public final class DraftBuilder {
         tags.add("composite");
         tags.add(verb);
         group = WorkflowDoc.approvalGroup(WorkflowDoc.of(td)).orElse(WorkflowDoc.approversFor(owner));
+        if (td.policy() != null && td.policy().rbac() != null && !td.policy().rbac().isEmpty()) {
+            rbac = td.policy().rbac();
+            rbacAssumed = false;
+        }
         if (approvalMentioned) {
             needsApproval = true;
             steps.add(approvalStep(Words.capitalize(verb) + " " + Words.nounTitle(noun) + " for {{ $input." + firstInput() + " }}?"));
@@ -1182,6 +1189,13 @@ public final class DraftBuilder {
         ObjectNode mcp = doc.putObject("mcp");
         mcp.put("expose", true);
         mcp.put("description", Words.clip(title + ": " + (description.isBlank() ? "drafted by the assistant" : description), 160));
+
+        // every workflow says who may run it; without a published workflow to copy from, the ops role does
+        ArrayNode roles = doc.putObject("policy").putArray("rbac");
+        rbac.forEach(roles::add);
+        if (rbacAssumed) {
+            assumptions.add("Anyone with the ops role may run it (policy.rbac); change the roles if other operators should.");
+        }
 
         ObjectNode rollout = doc.putObject("rollout");
         if (destructive) {

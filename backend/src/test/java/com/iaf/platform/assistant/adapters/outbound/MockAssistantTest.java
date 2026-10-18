@@ -255,6 +255,7 @@ class MockAssistantTest {
                     required: [vmId]
                     properties:
                       vmId: { type: string, title: VM id, x-resource: { type: vm } }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - readVm:

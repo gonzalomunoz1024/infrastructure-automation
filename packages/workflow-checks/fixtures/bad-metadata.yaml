@@ -3,6 +3,8 @@ kind: Workflow
 metadata: { name: VM Restart, title: VM restart, noun: vm, verb: restart, version: "1.2" }
 api:
   path: /api/v1/jobs:restart
+policy:
+  rbac: [ops]
 workflow:
   do:
     - restart:

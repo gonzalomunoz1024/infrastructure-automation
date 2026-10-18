@@ -87,6 +87,7 @@ describe('fixes', () => {
       {
         kind: 'Workflow',
         metadata: { name: 'x', title: 'X', noun: 'a', verb: 'b', owner: 'team' },
+        policy: { rbac: ['ops'] },
         workflow: {
           do: [
             { getVm: { call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '1' } }, output: { as: 'vm' } } },
@@ -112,6 +113,7 @@ describe('catalog', () => {
     const yaml = `apiVersion: iaf.platform/v1
 kind: Workflow
 metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+policy: { rbac: [ops] }
 workflow:
   do:
     - getVm:
@@ -149,18 +151,19 @@ describe('rules beyond the fixtures', () => {
     apiVersion: 'iaf.platform/v1',
     kind: 'Workflow',
     metadata: { name: 'vm-info', title: 'VM info', noun: 'vm', verb: 'read', owner: 'team-compute', version: '1.0.0' },
+    policy: { rbac: ['ops'] },
     ...extra,
     workflow: { do: steps },
   });
   const codes = (doc: unknown) => check(doc, ctx).map((p) => `${p.level} ${p.code}`);
 
   it('judges the metadata', () => {
-    expect(codes({ kind: 'Workflow', metadata: { name: 'ok' }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
+    expect(codes({ kind: 'Workflow', metadata: { name: 'ok' }, policy: { rbac: ['ops'] }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
       'warning metadata.title',
       'error metadata.nounVerb',
       'error metadata.owner',
     ]);
-    expect(codes({ kind: 'Workflow', metadata: { name: 'ok', title: 'T', owner: 'o' }, api: { path: '/api/v1/things' }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
+    expect(codes({ kind: 'Workflow', metadata: { name: 'ok', title: 'T', owner: 'o' }, api: { path: '/api/v1/things' }, policy: { rbac: ['ops'] }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
       'warning metadata.nounVerb',
     ]);
   });
@@ -196,9 +199,12 @@ describe('rules beyond the fixtures', () => {
 
   it('judges policy, rollout and triggers', () => {
     expect(codes(base([{ a: { set: { x: 1 } } }], { policy: { approval: { required: true, timeout: 'soon' } } }))).toEqual([
+      'error policy.missing',
       'error approval.group',
       'error duration.format',
     ]);
+    expect(codes(base([{ a: { set: { x: 1 } } }], { policy: { rbac: [] } }))).toEqual(['error policy.missing']);
+    expect(check(base([{ a: { set: { x: 1 } } }], { policy: null }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['policy.missing @policy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'big-bang' } }))).toEqual(['error rollout.strategy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 50] } }))).toEqual(['error rollout.stages']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 150] } }))).toEqual(['error rollout.stages']);

@@ -6,6 +6,8 @@ api:
     type: object
     properties:
       vmId: { type: string }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - getVm:

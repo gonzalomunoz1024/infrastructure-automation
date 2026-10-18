@@ -28,7 +28,7 @@ describe('cli', () => {
     write('providers/team/syntax.yaml', 'kind: Provider\nmetadata: { name: syntax\n');
     write('resource-types/thing.yaml', 'kind: ResourceType\nmetadata: { name: thing }\n');
     write('resource-types/README.md', 'not yaml');
-    write('workflows/team/warn.yaml', 'kind: Workflow\nmetadata: { name: warn, title: W, noun: thing, verb: get, owner: team }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: p, action: thing.get, input: { id: "{{ $vars.nope }}" } }\n');
+    write('workflows/team/warn.yaml', 'kind: Workflow\nmetadata: { name: warn, title: W, noun: thing, verb: get, owner: team }\npolicy: { rbac: [ops] }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: p, action: thing.get, input: { id: "{{ $vars.nope }}" } }\n');
     write('workflows/team/notes.yaml', 'just: notes\n');
     const warningsOnly = checkRepo(temp);
     expect(warningsOnly.workflows).toBe(1);
@@ -49,7 +49,7 @@ describe('cli', () => {
     expect(main([temp], (l) => lines.push(l))).toBe(0);
     expect(lines[lines.length - 1]).toBe('Checked 1 workflow against 1 provider and 1 resource type: 0 errors, 1 warning.');
 
-    write('workflows/team/bad.yaml', 'kind: Workflow\nmetadata: { name: bad, title: B, noun: thing, verb: get, owner: team }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: q, action: thing.get }\n');
+    write('workflows/team/bad.yaml', 'kind: Workflow\nmetadata: { name: bad, title: B, noun: thing, verb: get, owner: team }\npolicy: { rbac: [ops] }\nworkflow:\n  do:\n    - a:\n        call: provider\n        with: { provider: q, action: thing.get }\n');
     const failing: string[] = [];
     expect(main([temp], (l) => failing.push(l))).toBe(1);
     expect(failing[0]).toBe("workflows/team/bad.yaml: error step.unknownProvider @a.provider - Unknown provider 'q' [Did you mean p?]");

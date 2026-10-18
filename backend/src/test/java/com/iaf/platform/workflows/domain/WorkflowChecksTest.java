@@ -54,6 +54,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - getVm:
@@ -73,6 +74,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-delete, title: Delete VM, noun: vm, verb: delete, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - delete:
@@ -107,6 +109,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-twice, title: VM twice, noun: vm, verb: twice, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - make:
@@ -130,6 +133,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-quiet, title: VM quiet, noun: vm, verb: quiet, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - restart:
@@ -150,6 +154,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-branches, title: VM branches, noun: vm, verb: branch, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - getVm:
@@ -216,6 +221,7 @@ class WorkflowChecksTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - getVm:
@@ -223,6 +229,20 @@ class WorkflowChecksTest {
                         with: { provider: whatever, action: anything, input: { id: "{{ $input.vmId }}" } }
                 """;
         assertThat(WorkflowChecks.check(yaml, CheckContext.EMPTY)).isEmpty();
+    }
+
+    @Test
+    void everyWorkflowNamesWhoMayRunIt() throws IOException {
+        String yaml = Files.readString(FIXTURES.resolve("missing-policy.yaml"));
+        assertThat(WorkflowChecks.check(yaml, SampleContentTest.context())).singleElement().satisfies(p -> {
+            assertThat(p.code()).isEqualTo("policy.missing");
+            assertThat(p.field()).isEqualTo("policy");
+        });
+        String withoutRbac = yaml.replace("workflow:\n", "policy:\n  approval: { required: true, group: ops-approvers }\nworkflow:\n");
+        assertThat(WorkflowChecks.check(withoutRbac, SampleContentTest.context())).extracting(Problem::field).containsExactly("policy.rbac");
+        String emptyRbac = yaml.replace("workflow:\n", "policy:\n  rbac: []\nworkflow:\n");
+        assertThat(WorkflowChecks.check(emptyRbac, SampleContentTest.context())).extracting(Problem::code).containsExactly("policy.missing");
+        assertThat(WorkflowChecks.check(yaml.replace("workflow:\n", "policy: { rbac: [ops] }\nworkflow:\n"), SampleContentTest.context())).isEmpty();
     }
 
     @Test

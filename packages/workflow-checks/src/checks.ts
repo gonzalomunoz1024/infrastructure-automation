@@ -422,8 +422,11 @@ class Checker {
 
   policy(): void {
     const p = this.def.policy;
-    if (p === null) {
-      return;
+    if (p === null || p.rbac.length === 0) {
+      this.error('policy.missing', null, p === null ? 'policy' : 'policy.rbac', 'Every workflow says who may run it: add a policy block with rbac, the roles allowed to invoke it (for example [ops])');
+      if (p === null) {
+        return;
+      }
     }
     if (p.approval !== null && p.approval.required && (p.approval.group === null || isBlank(p.approval.group))) {
       this.error('approval.group', null, 'policy.approval.group', 'A required approval needs a group of approvers');

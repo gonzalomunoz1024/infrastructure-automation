@@ -21,6 +21,7 @@ class WorkflowResponseBodyTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 api:
                   path: /api/v1/vms/{vmId}:info
                   input: { type: object, required: [vmId], properties: { vmId: { type: string } } }

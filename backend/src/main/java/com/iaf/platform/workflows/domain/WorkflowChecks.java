@@ -304,8 +304,12 @@ public final class WorkflowChecks {
 
         void policy() {
             var p = def.policy();
-            if (p == null) {
-                return;
+            if (p == null || p.rbac() == null || p.rbac().isEmpty()) {
+                error("policy.missing", null, p == null ? "policy" : "policy.rbac",
+                        "Every workflow says who may run it: add a policy block with rbac, the roles allowed to invoke it (for example [ops])");
+                if (p == null) {
+                    return;
+                }
             }
             if (p.approval() != null && p.approval().required() && (p.approval().group() == null || p.approval().group().isBlank())) {
                 error("approval.group", null, "policy.approval.group", "A required approval needs a group of approvers");

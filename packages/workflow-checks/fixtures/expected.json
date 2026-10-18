@@ -102,5 +102,8 @@
   ],
   "bad-upload-digest.yaml": [
     "error playbook.digest"
+  ],
+  "missing-policy.yaml": [
+    "error policy.missing"
   ]
 }

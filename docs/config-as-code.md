@@ -40,9 +40,9 @@ api:
 mcp:
   expose: true
   description: Restart a virtual machine after safety checks
-policy:
+policy:                     # required: every workflow says who may run it
   approval: { required: true, group: compute-approvers, timeout: 4h }
-  rbac: [ops, sre]            # roles that may invoke
+  rbac: [ops, sre]            # roles that may invoke (at least one; policy.missing otherwise)
   change: { required: true }  # a ServiceNow change is opened for every job
 triggers:                     # optional extra ways in besides the API and MCP
   - alert: { match: { source: grafana, labels: { severity: critical } } }
@@ -274,6 +274,7 @@ finding is a `Problem` (docs/api.md). Among them:
 | `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
 | `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
 | `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
+| `policy.missing`          | error   | no `policy` block, or one without `rbac`: every workflow names the roles that may invoke it |
 | `trigger.schedule`        | error   | a `schedule` trigger: the platform runs no schedules; use an alert, an event or the API |
 | `playbook.digest`         | error   | an uploaded playbook's `sha256` is not a digest: 64 lowercase hex digits, as `POST /api/v1/playbooks:upload` answered it |
 | `playbook.missing`        | error   | only at publish, from the platform: the artifact store holds no upload with the digest the step pins; upload the file again. The TypeScript twin cannot see the store and leaves this to the backend |

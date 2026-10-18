@@ -132,6 +132,7 @@ class WorkflowCommandHandlerTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - say:
@@ -643,6 +644,7 @@ class WorkflowCommandHandlerTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - say:
