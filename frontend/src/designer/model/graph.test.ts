@@ -33,6 +33,15 @@ describe('round trips', () => {
     const doc = minimal([{ a: { notify: { channel: '#x', message: 'm', 'x-custom': { deep: [1, 2] } }, name: 'A', notes: 'keep me', with: { extra: true } } }], { 'x-extra': true } as Partial<WorkflowDocument>)
     expect(graphToDocument(documentToGraph(doc), doc)).toEqual(doc)
   })
+  it('keeps how long a paused step waits for a decision', () => {
+    const doc = minimal([
+      { a: { notify: { channel: '#x', message: 'm' }, attentionTimeout: 'PT4H' } },
+      { b: { notify: { channel: '#x', message: 'm' }, pauseOnFailure: false, attentionTimeout: 'P2D' } },
+    ])
+    const graph = documentToGraph(doc)
+    expect(findStepNode(graph, 'a')?.data.step.attentionTimeout).toBe('PT4H')
+    expect(graphToDocument(graph, doc)).toEqual(doc)
+  })
   it('writes positions only for positioned nodes', () => {
     const doc = minimal([{ a: { notify: { channel: '#x', message: 'm' } } }, { b: { notify: { channel: '#x', message: 'm' }, position: { x: 10, y: 20 } } }])
     const graph = documentToGraph(doc)

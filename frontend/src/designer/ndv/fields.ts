@@ -68,7 +68,7 @@ export function checkAccessValue(on: JsonValue | undefined): false | undefined {
 }
 
 /** The keys the Settings tab edits; their problems are counted there. */
-export const SETTINGS_KEYS = ['name', 'output', 'assert', 'retry', 'timeout', 'pauseOnFailure', 'notes', 'compensate', 'position'] as const
+export const SETTINGS_KEYS = ['name', 'output', 'assert', 'retry', 'timeout', 'pauseOnFailure', 'attentionTimeout', 'notes', 'compensate', 'position'] as const
 
 export function isSettingsField(field: string | undefined): boolean {
   return field !== undefined && (SETTINGS_KEYS as readonly string[]).includes(rootOf(field))

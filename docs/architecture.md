@@ -574,7 +574,9 @@ the Git credential (`playbook.git.credential`, the read token of a private repos
 machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
 credential to `GET /playbooks:resolve`, never the machine credential. A `use` step's Check access
 switch is on unless the step opts out: switching it off writes `checkAccess: false` and switching
-it back on removes the key, so the canvas never writes `checkAccess: true`. The assistant panel shows a
+it back on removes the key, so the canvas never writes `checkAccess: true`. A step's Settings tab
+offers its Decision timeout (`attentionTimeout`) beside Pause on failure while the step pauses:
+how long it waits for someone before it aborts, seven days when left empty. The assistant panel shows a
 draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
 after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
 is, like an explanation, is a message with nothing to apply. The Executions tab's replay walks a

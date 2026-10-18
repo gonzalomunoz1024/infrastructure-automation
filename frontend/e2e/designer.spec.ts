@@ -169,6 +169,23 @@ test.describe('workflow designer', () => {
     await expect(ndv.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Restarted {{ $vm.name }} at last')
   })
 
+  test('a step that pauses on its failure says how long it waits for a decision, and saves it', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await node(page, 'step:restart').dblclick()
+    const ndv = page.getByTestId('ndv')
+    await ndv.getByRole('tab', { name: 'Settings' }).click()
+    const timeout = ndv.getByRole('textbox', { name: /^Decision timeout/ })
+    await expect(timeout).toHaveAttribute('placeholder', 'P7D')
+    await timeout.fill('PT4H')
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await page.getByTestId('save-button').click()
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const steps = (api.drafts[0].definition as { workflow: { do: Record<string, Record<string, unknown>>[] } }).workflow.do
+    const restart = steps.find((s) => 'restart' in s)?.restart
+    expect(restart?.attentionTimeout).toBe('PT4H')
+    expect(restart && 'pauseOnFailure' in restart).toBe(false)
+  })
+
   test('dragging a field of the input onto a parameter maps it as an expression', async ({ page }) => {
     await openVmRestart(page)
     await node(page, 'step:notifyDone').dblclick()
