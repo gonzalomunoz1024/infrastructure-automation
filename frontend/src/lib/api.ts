@@ -3,6 +3,8 @@ import type {
   ActuatorHealth,
   ActuatorInfo,
   AlertPayload,
+  AnsibleImport,
+  AnsibleImportRequest,
   Approval,
   ApprovalStatus,
   AssistantEvent,
@@ -30,6 +32,7 @@ import type {
   EvidenceRecord,
   ImportResult,
   ImportSource,
+  Inbox,
   JobDetail,
   JobEvent,
   JobReplay,
@@ -38,8 +41,11 @@ import type {
   JsonRpcResponse,
   Lineage,
   Me,
+  Notification,
   OverrideRequest,
   ParseResult,
+  PlatformAuditFilter,
+  PlatformStream,
   PlaybookUpload,
   Preview,
   Problem,
@@ -49,11 +55,13 @@ import type {
   ProviderSummary,
   ProviderValidation,
   PublishRequest,
+  RefreshSpecRequest,
   RegistryCredential,
   RegistryPlaybook,
   RegistryProvider,
   RegistryWorkflow,
   Release,
+  ReleaseFilter,
   RenderResult,
   ReplayCheck,
   RerunRequest,
@@ -63,6 +71,7 @@ import type {
   ResourceType,
   RetryRequest,
   RunAccepted,
+  RunOptions,
   SealResult,
   ServiceAccount,
   ServiceAccountCreated,
@@ -73,6 +82,8 @@ import type {
   StepTypeInfo,
   Strategy,
   Template,
+  TerraformImport,
+  TerraformImportRequest,
   TestConnectionRequest,
   TestConnectionResult,
   TriggerResult,
@@ -89,6 +100,10 @@ import type {
 } from './types'
 
 export const API_BASE = '/api/v1'
+/** The OpenAPI 3.1 document of every published workflow and resource type. */
+export const OPENAPI_URL = `${API_BASE}/openapi.json`
+/** Swagger UI over that document; outside /api/v1, so the page and its assets load without a caller. */
+export const SWAGGER_UI_URL = '/swagger-ui'
 export const USER_STORAGE_KEY = 'iaf-user'
 
 /* ----------------------------------------------------------------------------
@@ -152,8 +167,10 @@ export class ApiError extends Error {
   readonly rows?: BatchRowProblem[]
   readonly detail?: unknown
   readonly body: ApiErrorBody | null
+  /** seconds until a 429 (over the team's job-start quota) may be retried: the Retry-After header, else the body's `retryAfter` */
+  readonly retryAfter?: number
 
-  constructor(status: number, body: ApiErrorBody | null, fallback?: string) {
+  constructor(status: number, body: ApiErrorBody | null, fallback?: string, retryAfter?: number) {
     const error = body?.error ?? fallback ?? (status === 0 ? 'Backend unreachable' : `Request failed (${status})`)
     super(error)
     this.name = 'ApiError'
@@ -163,15 +180,54 @@ export class ApiError extends Error {
     this.rows = body?.rows
     this.detail = body?.detail
     this.body = body
+    this.retryAfter = retryAfter ?? (typeof body?.retryAfter === 'number' ? body.retryAfter : undefined)
   }
 
   get unreachable(): boolean {
     return this.status === 0
   }
+
+  /** over the quota: the caller may try again after `retryAfter` seconds */
+  get tooManyRequests(): boolean {
+    return this.status === 429
+  }
 }
 
 export function isApiError(e: unknown): e is ApiError {
   return e instanceof ApiError
+}
+
+/** The seconds a Retry-After header asks for: a delta, or an HTTP date read against `now`. */
+export function retryAfterSeconds(header: string | null | undefined, now = Date.now()): number | undefined {
+  if (!header) return undefined
+  const text = header.trim()
+  if (/^\d+$/.test(text)) return Number(text)
+  const at = Date.parse(text)
+  if (Number.isNaN(at)) return undefined
+  return Math.max(0, Math.ceil((at - now) / 1000))
+}
+
+/** "try again in 42 s", or a longer wait in minutes; nothing when the wait is unknown. */
+export function retryIn(seconds: number | undefined): string | null {
+  if (seconds === undefined || !Number.isFinite(seconds)) return null
+  const s = Math.max(0, Math.ceil(seconds))
+  if (s < 90) return `try again in ${s} s`
+  return `try again in ${Math.ceil(s / 60)} min`
+}
+
+/** A fresh Idempotency-Key for one form submission: a UUID, scoped to the caller by the backend. */
+export function newIdempotencyKey(): string {
+  const c = typeof crypto !== 'undefined' ? crypto : undefined
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}-${Math.random().toString(16).slice(2, 10)}`
+}
+
+/** The headers of a call that starts jobs: the pinned version and the idempotency key, when given. */
+export function runHeaders(opts?: RunOptions): Record<string, string> {
+  const h: Record<string, string> = {}
+  if (opts?.version) h['X-Workflow-Version'] = opts.version
+  if (opts?.idempotencyKey) h['Idempotency-Key'] = opts.idempotencyKey
+  return h
 }
 
 /** A one-line message for any thrown value. */
@@ -226,7 +282,13 @@ async function fail(res: Response): Promise<never> {
   } catch {
     body = null
   }
-  throw new ApiError(res.status, body, res.statusText || undefined)
+  let retryAfter: number | undefined
+  try {
+    retryAfter = retryAfterSeconds(res.headers?.get('Retry-After'))
+  } catch {
+    retryAfter = undefined
+  }
+  throw new ApiError(res.status, body, res.statusText || undefined, retryAfter)
 }
 
 async function send(method: string, path: string, body: unknown, opts: RequestOptions, accept?: string): Promise<Response> {
@@ -557,16 +619,18 @@ export const api = {
   /* catalog (generated surface) */
   catalog: () => get<CatalogEntry[]>('/catalog'),
   openapi: () => get<Record<string, unknown>>('/openapi.json'),
-  /** Invoke a published workflow through its generated endpoint; path params come from the input. */
-  run: (entry: Pick<CatalogEntry, 'method' | 'path'>, input: Record<string, unknown>) => {
+  /** Invoke a published workflow through its generated endpoint; path params come from the input. `opts` pins the version and keys the submission. */
+  run: (entry: Pick<CatalogEntry, 'method' | 'path'>, input: Record<string, unknown>, opts?: RunOptions) => {
     const method = entry.method.toUpperCase()
     const { path, rest } = fillPath(entry.path, input)
-    if (method === 'GET' || method === 'HEAD') return get<RunAccepted>(`${path}${qs(rest as QueryParams)}`)
-    return request<RunAccepted>(method, path, input)
+    const headers = runHeaders(opts)
+    if (method === 'GET' || method === 'HEAD') return get<RunAccepted>(`${path}${qs(rest as QueryParams)}`, { headers })
+    return request<RunAccepted>(method, path, input, { headers })
   },
-  runBatch: (entry: Pick<CatalogEntry, 'batchPath'>, body: BatchRequest) => post<BatchAccepted>(entry.batchPath, body),
-  preview: (entry: Pick<CatalogEntry, 'path' | 'previewPath'>, input: Record<string, unknown>) =>
-    post<Preview>(fillPath(entry.previewPath ?? `${entry.path}:preview`, input).path, input),
+  runBatch: (entry: Pick<CatalogEntry, 'batchPath'>, body: BatchRequest, opts?: RunOptions) => post<BatchAccepted>(entry.batchPath, body, { headers: runHeaders(opts) }),
+  /** judged against the pinned version when `opts.version` is given, like the run would be */
+  preview: (entry: Pick<CatalogEntry, 'path' | 'previewPath'>, input: Record<string, unknown>, opts?: Pick<RunOptions, 'version'>) =>
+    post<Preview>(fillPath(entry.previewPath ?? `${entry.path}:preview`, input).path, input, { headers: runHeaders(opts) }),
   /** Generated resource read endpoints: /api/v1/{plural} and /{plural}/{id}. */
   resourcesOf: (plural: string, params?: QueryParams) => get<Resource[]>(`/${enc(plural)}${qs(params)}`),
   resourceOf: (plural: string, id: string) => get<Resource>(`/${enc(plural)}/${enc(id)}`),
@@ -578,7 +642,7 @@ export const api = {
   jobReplay: (id: string) => get<JobReplay>(`/jobs/${enc(id)}/replay`),
   jobEvidence: (id: string) => get<EvidenceRecord>(`/jobs/${enc(id)}/evidence`),
   cancelJob: (id: string) => post<CommandAccepted>(`/jobs/${enc(id)}:cancel`),
-  retryJob: (id: string, body: RetryRequest = {}) => post<CommandAccepted>(`/jobs/${enc(id)}:retry`, body),
+  retryJob: (id: string, body: RetryRequest = {}, opts?: Pick<RunOptions, 'idempotencyKey'>) => post<CommandAccepted>(`/jobs/${enc(id)}:retry`, body, { headers: runHeaders(opts) }),
   skipJob: (id: string, step: string) => post<CommandAccepted>(`/jobs/${enc(id)}:skip`, { step }),
   abortJob: (id: string) => post<CommandAccepted>(`/jobs/${enc(id)}:abort`),
   rerunJob: (id: string, body: RerunRequest) => post<CommandAccepted>(`/jobs/${enc(id)}:rerun`, body),
@@ -594,16 +658,26 @@ export const api = {
   provider: (name: string) => get<ProviderDetail>(`/providers/${enc(name)}`),
   providerAlerts: (name: string) => get<ProviderAlert[]>(`/providers/${enc(name)}/alerts`),
   importSpec: (body: SpecImportRequest) => post<SpecImport>('/providers:import-spec', body),
+  /** an ansible provider drafted from the playbooks of a repository; nothing is saved */
+  importAnsible: (body: AnsibleImportRequest) => post<AnsibleImport>('/providers:import-ansible', body),
+  /** a terraform provider drafted from a module in Git or the module registry; nothing is saved */
+  importTerraform: (body: TerraformImportRequest) => post<TerraformImport>('/providers:import-terraform', body),
   testConnection: (body: TestConnectionRequest) => post<TestConnectionResult>('/providers:test-connection', body),
   tryAction: (body: TryRequest) => post<TryResult>('/providers:try', body),
   validateProvider: (yaml: string) => post<ProviderValidation>('/providers:validate', { yaml }),
+  /** opens a change request (its id); 409 while another one for the provider is open */
   publishProvider: (yaml: string, strategy?: Strategy) => post<CommandAccepted>('/providers:publish', strategy ? { yaml, strategy } : { yaml }),
   draftProvider: (description: string) => post<ProviderDraft>('/providers:draft', { description }),
+  /** "Use the real response": a change request for the next patch version; `status: 'unchanged'` when the override would add nothing */
   overrideAction: (name: string, body: OverrideRequest) => post<CommandAccepted>(`/providers/${enc(name)}/overrides`, body),
+  /** a change request for the next patch version with the new SLO; `status: 'unchanged'` when nothing changes */
   setProviderSlo: (name: string, body: Slo) => put<CommandAccepted>(`/providers/${enc(name)}/slo`, body),
+  /** reads the spec again; a change request for the next minor version, or `status: 'unchanged'` */
+  refreshSpec: (name: string, body: RefreshSpecRequest = {}) => post<CommandAccepted>(`/providers/${enc(name)}:refresh-spec`, body),
 
   /* releases */
-  releases: (workflow?: string) => get<Release[]>(`/releases${qs({ workflow })}`),
+  /** a workflow's or a provider's releases, else every release of `kind` (workflow by default) */
+  releases: (filter?: ReleaseFilter) => get<Release[]>(`/releases${qs(filter)}`),
   release: (id: string) => get<Release>(`/releases/${enc(id)}`),
   promoteRelease: (id: string) => post<CommandAccepted>(`/releases/${enc(id)}:promote`),
   pauseRelease: (id: string) => post<CommandAccepted>(`/releases/${enc(id)}:pause`),
@@ -613,6 +687,8 @@ export const api = {
 
   /* audit */
   audit: (filter?: AuditFilter) => get<AuditSummary[]>(`/audit${qs(filter)}`),
+  /** the platform stream: commands that are not about a job, oldest first, with its chain verified */
+  auditPlatform: (filter?: PlatformAuditFilter) => get<PlatformStream>(`/audit/platform${qs(filter)}`),
   auditRecord: (jobId: string) => get<EvidenceRecord>(`/audit/${enc(jobId)}`),
   verifyAudit: (jobId: string) => get<AuditVerification>(`/audit/${enc(jobId)}:verify`),
   /** href for a download link */
@@ -622,6 +698,11 @@ export const api = {
   shareAudit: (jobId: string) => post<ShareLink>(`/audit/${enc(jobId)}:share`),
   sharedAudit: (token: string) => get<EvidenceRecord>(`/audit/shared/${enc(token)}`),
   sealAudit: () => post<SealResult>('/audit:seal'),
+
+  /* notifications */
+  /** the caller's inbox, newest first; `unread` true keeps only what they have not read */
+  notifications: (unread?: boolean) => get<Inbox>(`/notifications${qs({ unread })}`),
+  markNotificationRead: (id: string) => post<Notification>(`/notifications/${enc(id)}:read`),
 
   /* resources */
   resourceTypes: () => get<ResourceType[]>('/resource-types'),

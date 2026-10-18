@@ -29,7 +29,7 @@ export default function ReleasesPage({ route }: PageProps) {
   const [polling, setPolling] = useState(true)
   const now = useNow(polling ? 1000 : 30_000)
   const workflows = useQuery('workflows', () => api.workflows())
-  const list = useQuery(['releases', workflow], () => api.releases(workflow || undefined), { refetchInterval: polling ? 5000 : undefined })
+  const list = useQuery(['releases', workflow], () => api.releases({ workflow: workflow || undefined }), { refetchInterval: polling ? 5000 : undefined })
   // every 5 s while a canary is in flight, then at rest
   const anyActive = !list.data || list.data.some(isActiveRelease)
   if (anyActive !== polling) setPolling(anyActive)
@@ -41,10 +41,10 @@ export default function ReleasesPage({ route }: PageProps) {
       key: 'workflow',
       header: 'Workflow',
       sortable: true,
-      accessor: (r) => r.workflow,
+      accessor: (r) => r.workflow ?? r.provider ?? '',
       render: (r) => (
         <div className="min-w-0">
-          <TextLink to={pathFor('workflow', { name: r.workflow })} mono onClick={(e) => e.stopPropagation()}>
+          <TextLink to={pathFor('workflow', { name: r.workflow ?? '' })} mono onClick={(e) => e.stopPropagation()}>
             {r.workflow}
           </TextLink>
           <div className="text-caption text-tertiary">

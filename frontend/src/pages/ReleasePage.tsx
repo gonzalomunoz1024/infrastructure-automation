@@ -121,7 +121,7 @@ export default function ReleasePage({ route }: PageProps) {
     try {
       await call(id)
       invalidate('release')
-      toast.success(COMMANDS[cmd].done, data ? `${data.workflow} ${data.to}` : undefined)
+      toast.success(COMMANDS[cmd].done, data ? `${data.workflow ?? data.provider} ${data.to}` : undefined)
     } catch (e) {
       toast.error(`Could not ${COMMANDS[cmd].label.toLowerCase()}`, errorMessage(e))
       throw e
@@ -174,7 +174,7 @@ export default function ReleasePage({ route }: PageProps) {
         title={
           data ? (
             <span>
-              {data.workflow} <span className="font-mono text-secondary">{data.from ?? 'new'}</span> → <span className="font-mono">{data.to}</span>
+              {data.workflow ?? data.provider} <span className="font-mono text-secondary">{data.from ?? 'new'}</span> → <span className="font-mono">{data.to}</span>
             </span>
           ) : (
             <span className="font-mono">{id}</span>
@@ -258,14 +258,14 @@ export default function ReleasePage({ route }: PageProps) {
                 <Facts
                   columns={2}
                   items={[
-                    { label: 'Workflow', value: <TextLink to={pathFor('workflow', { name: data.workflow })} mono>{data.workflow}</TextLink>, wide: true },
+                    { label: 'Workflow', value: <TextLink to={pathFor('workflow', { name: data.workflow ?? '' })} mono>{data.workflow}</TextLink>, wide: true },
                     { label: 'From', value: <Mono className="text-primary">{data.from ?? '—'}</Mono> },
                     { label: 'To', value: <Mono className="text-primary">{data.to}</Mono> },
                     { label: 'Started', value: <When at={data.startedAt} now={now} /> },
                     { label: 'Ended', value: data.endedAt ? <When at={data.endedAt} now={now} /> : <span className="text-tertiary">in flight</span> },
                     { label: 'In this stage', value: active ? <span className="tabular-nums">{duration(now - Date.parse(data.stageStartedAt))}</span> : '—' },
-                    { label: 'Versions', value: <TextLink to={pathFor('workflow-versions', { name: data.workflow })}>all versions</TextLink> },
-                    { label: 'Jobs', value: <TextLink to={pathFor('jobs', {}, { workflow: data.workflow })}>jobs of {data.workflow}</TextLink>, wide: true },
+                    { label: 'Versions', value: <TextLink to={pathFor('workflow-versions', { name: data.workflow ?? '' })}>all versions</TextLink> },
+                    { label: 'Jobs', value: <TextLink to={pathFor('jobs', {}, { workflow: data.workflow ?? '' })}>jobs of {data.workflow}</TextLink>, wide: true },
                   ]}
                 />
               </Card>
