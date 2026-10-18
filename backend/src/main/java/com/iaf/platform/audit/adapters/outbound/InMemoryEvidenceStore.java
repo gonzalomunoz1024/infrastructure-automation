@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.audit.domain.EvidenceEntry;
@@ -20,8 +21,12 @@ import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.domain.NotFoundException;
 
-/** The demo store: records in a map, chained under a per-record atomic update. */
+/**
+ * The demo store, without the {@code mongo} profile: records in a map, chained under a per-record
+ * atomic update. A write-once store ({@code worm}, {@code worm-s3}) wins over it where one is on.
+ */
 @Component
+@Profile("!mongo")
 public class InMemoryEvidenceStore implements EvidenceStore {
 
     private static final Comparator<EvidenceRecord> NEWEST_FIRST = Comparator
