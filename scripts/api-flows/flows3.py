@@ -160,6 +160,34 @@ s, creds2 = call('GET', A + '/credentials', expect=200)
 check('super-secret-e2e' not in json.dumps(creds2), 'secret value returned by the list')
 s, _ = call('POST', A + '/credentials', {'name': 'x', 'type': 'token', 'value': 'v'}, user='nobody-here', expect=403, note='nobody stores credential')
 s, _ = call('POST', A + '/credentials', {'name': '', 'type': 'token', 'value': 'v'}, expect=400, note='empty cred name')
+# a credential belongs to a team: the caller's first one unless they name another of theirs
+e2e = next((c for c in creds2 if c['name'] == 'e2e/token'), None)
+check(e2e is not None and e2e.get('owner') == 'team-compute', f'e2e/token owner: {e2e}')
+check(any(c.get('owner') is None for c in creds2), 'no seeded credential without an owner')
+s, _ = call('POST', A + '/credentials', {'name': 'e2e/data-token', 'type': 'token', 'value': 'e2e-data-value'}, user='ana', expect=202, note='ana stores for team-data')
+s, creds3 = call('GET', A + '/credentials', user='ana', expect=200)
+dt = next((c for c in creds3 if c['name'] == 'e2e/data-token'), None)
+check(dt is not None and dt.get('owner') == 'team-data', f'e2e/data-token owner: {dt}')
+s, _ = call('POST', A + '/credentials', {'name': 'e2e/other', 'type': 'token', 'value': 'v', 'owner': 'team-platform'}, user='mateo', expect=403, note='mateo names a team he is not in')
+s, _ = call('POST', A + '/credentials', {'name': 'e2e/data-token', 'type': 'token', 'value': 'v2'}, user='mateo', expect=403, note='mateo overwrites a team-data credential')
+s, _ = call('POST', A + '/credentials', {'name': 'e2e/for-data', 'type': 'token', 'value': 'v', 'owner': 'team-data'}, expect=202, note='admin names any team')
+s, creds4 = call('GET', A + '/credentials', expect=200)
+check(next((c.get('owner') for c in creds4 if c['name'] == 'e2e/for-data'), None) == 'team-data', 'admin-named owner not kept')
+# only its team (and admins) may send a credential anywhere: judged before the secret is resolved
+probe = {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/data-token'}}
+s, body = call('POST', A + '/providers:test-connection', probe, user='mateo', expect=403, note='mateo tests with a team-data credential')
+check(isinstance(body, dict) and 'vault:e2e/data-token' in body.get('error', '') and 'team-data' in body.get('error', ''), f'403 names the credential and its team: {body}')
+check('e2e-data-value' not in json.dumps(body), 'the refusal leaks the value')
+s, _ = call('POST', A + '/providers:test-connection', probe, user='ana', expect=200, timeout=60, note='ana tests with her credential')
+s, _ = call('POST', A + '/providers:test-connection', probe, expect=200, timeout=60, note='admin tests with any credential')
+s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://github.com/acme/ops-playbooks', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports with a team-data read token')
+s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://github.com/acme/ops-playbooks'}, 'credential': 'vault:e2e/data-token'}, user='mateo', expect=403, note='mateo drafts with a team-data machine credential')
+s, _ = call('POST', A + '/providers:import-terraform', {'registry': {'module': 'acme/lb/aws', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports with a team-data registry token')
+s, _ = call('POST', A + '/providers:import-spec', {'type': 'openapi', 'git': {'repo': 'https://github.com/acme/fleet-api', 'path': 'openapi.yaml', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports a spec with a team-data read token')
+s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/nope'}}, user='mateo', expect=200, timeout=60, note='unknown credential is judged where it is resolved')
+seeded = (pd.get('auth') or {}).get('credential') if isinstance(pd, dict) else None
+if seeded:
+    s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': seeded}}, user='mateo', expect=200, timeout=60, note='a seeded credential is any team\'s')
 
 # ---------------- assistant
 s, sess = call('POST', A + '/assistant/sessions', {'mode': 'create'}, expect=[200, 201, 202])
