@@ -120,6 +120,11 @@ public class Traces {
 
     /** The trace id of the span behind {@code o}; null when tracing is off. */
     public String traceId(Observation o) {
+        return traceIdOf(o);
+    }
+
+    /** The trace id of the span behind {@code o}; null when there is no observation or tracing is off. */
+    public static String traceIdOf(Observation o) {
         Span span = span(o);
         String id = span == null ? null : span.context().traceId();
         return TraceIds.isTraceId(id) ? id : null;

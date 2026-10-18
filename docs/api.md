@@ -9,7 +9,8 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
 404 (unknown id), 409 (state conflict), 429 (over the team's job-start quota, with `Retry-After`
-and `retryAfter` in seconds), 500. Input that fails a workflow's schema or names a
+and `retryAfter` in seconds), 500 (`error` is always `unexpected error`; `correlationId` is the
+request's trace id, which finds the cause in the API's log). Input that fails a workflow's schema or names a
 resource the registry does not know adds `problems: Problem[]` (one job) or
 `rows: { index; problems }[]` (a batch). Commands return 202 with `CommandAccepted` unless noted.
 

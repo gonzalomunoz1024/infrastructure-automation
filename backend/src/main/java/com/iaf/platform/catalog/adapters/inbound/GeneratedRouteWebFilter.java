@@ -333,8 +333,9 @@ public class GeneratedRouteWebFilter implements WebFilter {
         if (e instanceof TooManyRequestsException tm) {
             return tooManyRequests(exchange, tm);
         }
-        log.error("generated route failed", e);
-        return write(exchange, HttpStatus.INTERNAL_SERVER_ERROR, body(e.getMessage()));
+        String correlationId = traceId(exchange);
+        log.error("generated route failed [{}]", correlationId, e);
+        return write(exchange, HttpStatus.INTERNAL_SERVER_ERROR, unexpected(correlationId));
     }
 
     /** Over the team's quota: 429 with {@code Retry-After}. */
@@ -348,6 +349,13 @@ public class GeneratedRouteWebFilter implements WebFilter {
     private static Map<String, Object> body(String error) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("error", error == null ? "unexpected error" : error);
+        return m;
+    }
+
+    /** A 500 says nothing of its cause (a message may name a host, a path or a query); the id finds it in the log. */
+    private static Map<String, Object> unexpected(String correlationId) {
+        Map<String, Object> m = body("unexpected error");
+        m.put("correlationId", correlationId);
         return m;
     }
 
