@@ -36,7 +36,7 @@ import {
   type TriggerKind,
 } from './edits'
 import { applyFix, clone } from './fixes'
-import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
+import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, type Registry } from './registry'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
@@ -466,6 +466,15 @@ export class DesignerStore {
     if (stepId === newId) return true
     const next = renameStep(this.state.doc, stepId, newId)
     if (next === this.state.doc) return false
+    // the open node detail view follows the step to its new node id
+    const oldNode = this.nodeOf(stepId)
+    if (oldNode !== null && this.state.ndv === oldNode) this.state = { ...this.state, ndv: stepNodeId(newId) }
+    const pin = this.state.pins[stepId]
+    if (pin !== undefined) {
+      const pins = { ...this.state.pins, [newId]: pin }
+      delete pins[stepId]
+      this.state = { ...this.state, pins }
+    }
     this.commit(next)
     return true
   }
@@ -702,6 +711,14 @@ export class DesignerStore {
     if (pins[stepId] !== undefined) delete pins[stepId]
     else if (output !== undefined) pins[stepId] = output
     else return
+    this.set({ pins })
+  }
+
+  /** Pinned data set by hand ("Set mock data"), or removed with undefined. */
+  setPin(stepId: string, value: JsonValue | undefined): void {
+    const pins = { ...this.state.pins }
+    if (value === undefined) delete pins[stepId]
+    else pins[stepId] = value
     this.set({ pins })
   }
 

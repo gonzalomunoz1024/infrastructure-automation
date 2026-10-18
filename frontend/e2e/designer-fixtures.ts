@@ -64,6 +64,22 @@ export function registryProviders(): Obj[] {
   })
 }
 
+/** GET /registry/playbooks: every action of an ansible provider as `<provider>/<action id>`, like the backend. */
+export function registryPlaybooks(): Obj[] {
+  return yamlFiles('providers').flatMap((file) => {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const spec = asObj(doc.spec)
+    if (spec.type !== 'ansible') return []
+    const git = asObj(asObj(spec.source).git)
+    const version = String(meta.version ?? git.ref ?? '')
+    return (Array.isArray(spec.actions) ? spec.actions : []).map((a) => {
+      const action = asObj(a)
+      return { name: `${String(meta.name)}/${String(action.id)}`, version, path: String(action.playbook ?? ''), owner: String(meta.owner ?? '') }
+    })
+  })
+}
+
 export function registryResourceTypes(): Obj[] {
   return yamlFiles('resource-types').map((file) => {
     const doc = load(file)
@@ -169,7 +185,7 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
     if (method === 'GET' && path === '/registry/providers') return json(route, providers)
     if (method === 'GET' && path === '/registry/workflows') return json(route, workflows)
     if (method === 'GET' && path === '/registry/resource-types') return json(route, resourceTypes)
-    if (method === 'GET' && path === '/registry/playbooks') return json(route, [{ name: 'vm/restart.yml', version: 'v3.1.0', path: 'vm/restart.yml', owner: 'team-platform' }])
+    if (method === 'GET' && path === '/registry/playbooks') return json(route, registryPlaybooks())
     if (method === 'GET' && path === '/registry/credentials')
       return json(route, [
         { name: 'ssh/ops-automation', type: 'ssh' },

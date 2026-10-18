@@ -6,6 +6,8 @@ import { useDesignerSelector, useDesignerStore } from '../model/store'
 import { Canvas } from '../canvas/Canvas'
 import { testRunStates, type RunInfo } from '../canvas/flow'
 import { RunBar } from '../chrome/TestRun'
+import { NodeCreator } from '../creator/NodeCreator'
+import { NodeDetailView } from '../ndv/NodeDetailView'
 
 const NO_PROVIDERS: RegistryProvider[] = []
 const NO_RUNS: ReadonlyMap<string, RunInfo> = new Map()
@@ -18,6 +20,8 @@ export function EditorView({ onTest }: { onTest: () => void }) {
   const pins = useDesignerSelector((s) => s.pins)
   const stickies = useDesignerSelector((s) => s.stickies)
   const providers = useDesignerSelector((s) => s.registry?.providers ?? NO_PROVIDERS)
+  const creatorOpen = useDesignerSelector((s) => s.creator !== null)
+  const ndv = useDesignerSelector((s) => s.ndv)
 
   const runs = useMemo(
     () => (testRun?.result ? testRunStates(testRun.result.path, testRun.result.steps, testRun.revealed, testRun.status === 'running') : NO_RUNS),
@@ -38,6 +42,8 @@ export function EditorView({ onTest }: { onTest: () => void }) {
       <Canvas graph={graph} problems={problems} runs={runs} pins={pins} stickies={stickies} providers={providers} onOpen={open}>
         <RunBar onTest={onTest} />
       </Canvas>
+      {creatorOpen && <NodeCreator />}
+      {ndv && <NodeDetailView nodeId={ndv} />}
     </div>
   )
 }

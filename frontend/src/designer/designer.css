@@ -206,17 +206,25 @@
   overflow: hidden;
   pointer-events: none;
   color: var(--color-text-primary);
-  border: 1px solid transparent;
+  border: 0;
+  margin: 0;
 }
 .iaf-expr__input {
   position: relative;
   display: block;
   width: 100%;
+  min-height: 34px;
   resize: none;
   overflow: hidden;
+  border: 0;
+  margin: 0;
+  outline: none;
   background: transparent;
   color: transparent;
   caret-color: var(--color-text-primary);
+}
+.iaf-expr__input::placeholder {
+  color: var(--color-text-tertiary);
 }
 .iaf-expr__input::selection {
   background: var(--halo-accent);
@@ -230,4 +238,23 @@
 .iaf-expr__token--error {
   color: var(--color-critical);
   background: var(--color-critical-bg);
+}
+
+/* a parameter that takes the dragged Input field */
+.iaf-drop-target {
+  outline: 2px dashed color-mix(in srgb, var(--color-neutral) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+.iaf-drop-target.is-over {
+  outline-style: solid;
+  outline-color: var(--color-neutral);
+  background: var(--halo-accent);
+}
+/* the Input pane's draggable fields */
+.iaf-map-pill {
+  cursor: grab;
+}
+.iaf-map-pill:active {
+  cursor: grabbing;
 }

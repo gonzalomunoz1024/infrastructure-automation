@@ -479,6 +479,8 @@ export interface NewStepParams {
   resourceType?: string
   playbook?: string | JsonObject
   module?: JsonObject
+  /** a terraform step's action: plan (the default), apply or destroy */
+  terraformAction?: 'plan' | 'apply' | 'destroy'
   group?: string
 }
 
@@ -493,7 +495,7 @@ export function bodyFor(type: StepType, params: NewStepParams = {}): StepBody {
     case 'ansible':
       return { name, call: 'ansible', with: { playbook: params.playbook ?? { git: { repo: '', ref: 'main', path: '' }, commit: '' }, inventory: 'dynamic', extraVars: {} } }
     case 'terraform':
-      return { name, call: 'terraform', with: { module: params.module ?? { source: '', version: '' }, action: 'plan', vars: {} } }
+      return { name, call: 'terraform', with: { module: params.module ?? { source: '', version: '' }, action: params.terraformAction ?? 'plan', vars: {} } }
     case 'idp':
       return { name, call: 'idp', with: { tile: params.tile ?? '', input: {} } }
     case 'activity':
