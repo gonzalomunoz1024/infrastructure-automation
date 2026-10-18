@@ -371,6 +371,14 @@ public final class ExpressionEngine {
         }
     }
 
+    /** The {@code i}th argument of a method call; a call with too few is an error that names the method. */
+    private static JsonNode arg(String method, List<JsonNode> a, int i) {
+        if (i >= a.size()) {
+            throw new ExpressionException(method + "() needs " + (i + 1) + " argument" + (i == 0 ? "" : "s") + ", got " + a.size());
+        }
+        return a.get(i);
+    }
+
     private record Call(Node target, String method, List<Node> args) implements Node {
         @Override
         public JsonNode eval(ExpressionContext ctx) {
@@ -389,21 +397,22 @@ public final class ExpressionEngine {
                     }
                 }
                 case "includes", "contains" -> {
+                    JsonNode needle = arg(method, a, 0);
                     if (t.isArray()) {
                         for (JsonNode v : t) {
-                            if (equal(v, a.get(0))) {
+                            if (equal(v, needle)) {
                                 yield BooleanNode.TRUE;
                             }
                         }
                         yield BooleanNode.FALSE;
                     }
-                    yield BooleanNode.valueOf(asText(t).contains(asText(a.get(0))));
+                    yield BooleanNode.valueOf(asText(t).contains(asText(needle)));
                 }
-                case "startsWith" -> BooleanNode.valueOf(asText(t).startsWith(asText(a.get(0))));
-                case "endsWith" -> BooleanNode.valueOf(asText(t).endsWith(asText(a.get(0))));
+                case "startsWith" -> BooleanNode.valueOf(asText(t).startsWith(asText(arg(method, a, 0))));
+                case "endsWith" -> BooleanNode.valueOf(asText(t).endsWith(asText(arg(method, a, 0))));
                 case "split" -> {
                     ArrayNode out = F.arrayNode();
-                    for (String s : asText(t).split(java.util.regex.Pattern.quote(asText(a.get(0))), -1)) {
+                    for (String s : asText(t).split(java.util.regex.Pattern.quote(asText(arg(method, a, 0))), -1)) {
                         out.add(s);
                     }
                     yield out;
@@ -422,7 +431,10 @@ public final class ExpressionEngine {
                 }
                 case "isEmpty" -> BooleanNode.valueOf(!truthy(t) || (t.isContainerNode() && t.size() == 0));
                 case "isNotEmpty" -> BooleanNode.valueOf(truthy(t) && !(t.isContainerNode() && t.size() == 0));
-                case "replace" -> new TextNode(asText(t).replace(asText(a.get(0)), asText(a.get(1))));
+                case "replace" -> {
+                    String with = asText(arg(method, a, 1));
+                    yield new TextNode(asText(t).replace(asText(a.get(0)), with));
+                }
                 case "substring", "slice" -> {
                     int from = a.isEmpty() ? 0 : a.get(0).asInt();
                     if (t.isArray()) {
@@ -458,24 +470,26 @@ public final class ExpressionEngine {
                     yield new TextNode(sb.toString());
                 }
                 case "indexOf" -> {
+                    JsonNode needle = arg(method, a, 0);
                     if (t.isArray()) {
                         for (int i = 0; i < t.size(); i++) {
-                            if (equal(t.get(i), a.get(0))) {
+                            if (equal(t.get(i), needle)) {
                                 yield new LongNode(i);
                             }
                         }
                         yield new LongNode(-1);
                     }
-                    yield new LongNode(asText(t).indexOf(asText(a.get(0))));
+                    yield new LongNode(asText(t).indexOf(asText(needle)));
                 }
                 case "padStart" -> {
                     String s = asText(t);
+                    int width = arg(method, a, 0).asInt();
                     String pad = a.size() > 1 ? asText(a.get(1)) : " ";
                     StringBuilder sb = new StringBuilder();
-                    while (sb.length() + s.length() < a.get(0).asInt() && !pad.isEmpty()) {
+                    while (sb.length() + s.length() < width && !pad.isEmpty()) {
                         sb.append(pad);
                     }
-                    yield new TextNode(sb.substring(0, Math.max(0, a.get(0).asInt() - s.length())) + s);
+                    yield new TextNode(sb.substring(0, Math.max(0, width - s.length())) + s);
                 }
                 case "toFixed" -> new TextNode(String.format(java.util.Locale.ROOT, "%." + (a.isEmpty() ? 0 : a.get(0).asInt()) + "f", t.asDouble()));
                 case "sum" -> {
@@ -1121,9 +1135,6 @@ public final class ExpressionEngine {
                     char next = src.charAt(pos + 1);
                     if ((s.equals("<") || s.equals(">") || s.equals("!")) && next == '=') {
                         return false;
-                    }
-                    if (s.equals("-") && Character.isDigit(next) && pos > 0 && !Character.isWhitespace(src.charAt(pos - 1))) {
-                        // "a -1" is subtraction; "a - 1" too; both handled by the caller
                     }
                 }
                 pos += s.length();
