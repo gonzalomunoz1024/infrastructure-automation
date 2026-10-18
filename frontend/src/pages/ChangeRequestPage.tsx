@@ -7,6 +7,82 @@ import { useMutation, useQuery } from '../lib/queries'
 import type { Check } from '../lib/types'
 import { ErrorState, ExternalLink, Facts, Mono, TextLink, When, checkDot } from '../components/common'
 
+/** A list the backend wrote into a sentence: `Affected consumers: a, b` → ['a', 'b']. */
+function namesAfter(text: string, lead: RegExp): string[] | null {
+  const m = lead.exec(text)
+  if (!m) return null
+  return m[1]
+    .split(/,\s*/)
+    .map((s) => s.trim().replace(/[.;]$/, ''))
+    .filter(Boolean)
+}
+
+/** A check's detail as a person reads it: sentences, with the names the backend lists as items. */
+export function readableDetail(detail: string | undefined): { text: string | null; lists: { label: string; items: string[]; tone: 'critical' | 'neutral' | 'healthy' }[] } {
+  if (!detail) return { text: null, lists: [] }
+  const trimmed = detail.trim()
+  // a JSON blob: say its fields one per line instead of the braces
+  if (/^[[{]/.test(trimmed)) {
+    try {
+      const v: unknown = JSON.parse(trimmed)
+      if (Array.isArray(v)) return { text: null, lists: [{ label: 'Items', items: v.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))), tone: 'neutral' }] }
+      if (v && typeof v === 'object') {
+        return { text: null, lists: [{ label: 'Fields', items: Object.entries(v as Record<string, unknown>).map(([k, x]) => `${k}: ${typeof x === 'string' ? x : JSON.stringify(x)}`), tone: 'neutral' }] }
+      }
+    } catch {
+      /* not JSON after all: shown as text */
+    }
+  }
+  const lists: { label: string; items: string[]; tone: 'critical' | 'neutral' | 'healthy' }[] = []
+  let text = trimmed
+  const affected = namesAfter(text, /Affected consumers?:\s*([^.;]+)/i)
+  if (affected) {
+    lists.push({ label: 'A breaking change reaches', items: affected, tone: 'critical' })
+    text = text.replace(/\s*Affected consumers?:\s*[^.;]+[.;]?/i, '')
+  }
+  const staying = namesAfter(text, /Staying on the old major:\s*([^.;]+)/i)
+  if (staying) {
+    lists.push({ label: 'Staying on the old major', items: staying, tone: 'neutral' })
+    text = text.replace(/\s*Staying on the old major:\s*[^.;]+[.;]?/i, '')
+  }
+  const pinned = namesAfter(text, /pinned at publish:\s*(.+)$/i)
+  if (pinned) {
+    lists.push({ label: 'Pinned at publish', items: pinned, tone: 'healthy' })
+    text = text.replace(/;?\s*pinned at publish:\s*.+$/i, '')
+  }
+  const unpinned = namesAfter(text, /not pinned to a commit:\s*(.+)$/i)
+  if (unpinned) {
+    lists.push({ label: 'Not pinned to a commit', items: unpinned, tone: 'critical' })
+    text = text.replace(/\s*not pinned to a commit:\s*.+$/i, '')
+  }
+  text = text.trim().replace(/[;,]$/, '')
+  return { text: text || null, lists }
+}
+
+function CheckDetail({ check }: { check: Check }) {
+  const { text, lists } = readableDetail(check.detail)
+  if (!text && lists.length === 0) return <span className="text-tertiary">—</span>
+  return (
+    <div className="space-y-1.5 text-secondary">
+      {text && <p className="whitespace-normal break-words">{text}</p>}
+      {lists.map((l) => (
+        <div key={l.label} className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+          <span className="text-caption text-tertiary">{l.label}:</span>
+          <ul className="inline-flex flex-wrap gap-1" aria-label={l.label}>
+            {l.items.map((item) => (
+              <li key={item}>
+                <Tag size="sm" mono tone={l.tone === 'critical' ? 'critical' : l.tone === 'healthy' ? 'healthy' : 'neutral'} outline={l.tone === 'neutral'}>
+                  {item}
+                </Tag>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function ChangeRequestPage({ route }: PageProps) {
   const id = route.params.id
   const toast = useToast()
@@ -42,8 +118,8 @@ export default function ChangeRequestPage({ route }: PageProps) {
 
   const checkColumns: TableColumn<Check>[] = [
     { key: 'status', header: 'Result', width: '8rem', render: (c) => <StatusDot kind={checkDot(c.status)} label={c.status} /> },
-    { key: 'label', header: 'Check', render: (c) => <span className="text-primary">{c.label}</span> },
-    { key: 'detail', header: 'Detail', render: (c) => <span className="text-secondary">{c.detail || '—'}</span> },
+    { key: 'label', header: 'Check', width: '12rem', render: (c) => <span className="text-primary">{c.label}</span> },
+    { key: 'detail', header: 'Detail', render: (c) => <CheckDetail check={c} /> },
   ]
 
   if (cr.error && !data) {
