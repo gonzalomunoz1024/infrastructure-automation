@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.gateway.application.GatewayProperties;
@@ -24,6 +25,7 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
     private final int keep;
     private final LinkedHashMap<String, KeyedRequest> entries = new LinkedHashMap<>();
 
+    @Autowired
     public InMemoryIdempotencyStore(GatewayProperties props) {
         this(props.getIdempotency().getKeep());
     }

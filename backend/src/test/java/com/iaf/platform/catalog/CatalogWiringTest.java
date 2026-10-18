@@ -22,6 +22,10 @@ import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.gateway.adapters.inbound.IdempotencyWebFilter;
+import com.iaf.platform.gateway.adapters.outbound.InMemoryIdempotencyStore;
+import com.iaf.platform.gateway.application.IdempotencyHandler;
+import com.iaf.platform.gateway.application.JobQuotas;
 import com.iaf.platform.resources.adapters.inbound.RestControllerResourceAdapter;
 import com.iaf.platform.resources.adapters.outbound.InMemoryResourceStore;
 import com.iaf.platform.resources.application.ResourceCommandHandler;
@@ -34,13 +38,15 @@ import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
 /**
  * The two slices wire as beans: the adapters and the handlers both implement the inbound ports,
- * and injecting a port must resolve to the handler. The other slices' ports are mocked.
+ * and injecting a port must resolve to the handler. The gateway's guards in front of them wire
+ * too. The other slices' ports are mocked.
  */
 class CatalogWiringTest {
 
     @Configuration
     @ComponentScan(basePackageClasses = {CatalogQueryHandler.class, GeneratedRouteWebFilter.class, RestControllerCatalogAdapter.class,
-            ResourceQueryHandler.class, RestControllerResourceAdapter.class, InMemoryResourceStore.class})
+            ResourceQueryHandler.class, RestControllerResourceAdapter.class, InMemoryResourceStore.class,
+            JobQuotas.class, InMemoryIdempotencyStore.class, IdempotencyWebFilter.class})
     static class Slices {
     }
 
@@ -69,6 +75,9 @@ class CatalogWiringTest {
                     assertThat(ctx.getBean(ResourceQueries.class)).isInstanceOf(ResourceQueryHandler.class);
                     assertThat(ctx.getBean(ResourceCommands.class)).isInstanceOf(ResourceCommandHandler.class);
                     assertThat(ctx.getBeansOfType(WebFilter.class).values()).anyMatch(f -> f instanceof GeneratedRouteWebFilter);
+                    assertThat(ctx.getBeansOfType(WebFilter.class).values()).anyMatch(f -> f instanceof IdempotencyWebFilter);
+                    assertThat(ctx).hasSingleBean(JobQuotas.class);
+                    assertThat(ctx).hasSingleBean(IdempotencyHandler.class);
                     InMemoryResourceStore store = ctx.getBean(InMemoryResourceStore.class);
                     assertThat(store.types()).hasSize(5);
                     assertThat(store.resources()).isNotEmpty();
