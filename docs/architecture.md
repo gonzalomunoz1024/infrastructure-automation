@@ -388,8 +388,10 @@ assistant page shows the validation's problems as the designer's Issues list, th
 events from the platform stream, and submits a ready draft as a change request. It reads the
 message stream as the backend writes it (the SSE event name is the type, the data the payload
 alone) and keeps the session in its address (`?session=`), so a reload or a shared link goes on
-from `GET /assistant/sessions/{id}`, in the session's mode. The settings page creates service
-accounts with the presets and the grouped scopes of `docs/api.md`. Its identity card sends the dev
+from `GET /assistant/sessions/{id}`, in the session's mode. The settings page lists and creates service
+accounts with the presets and the grouped scopes of `docs/api.md`; only a platform admin may (the
+API answers anyone else 403), so anyone else sees a quiet "Only admins see service accounts" and
+no create button. Its identity card sends the dev
 `X-User` header and says what production does instead: an auth proxy in front of the app and the
 API signs a person in and adds the bearer token the API verifies under the `oidc` profile, which
 ignores the header. The shell cannot tell which profile the API runs, so it claims none and links

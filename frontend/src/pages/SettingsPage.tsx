@@ -41,13 +41,23 @@ const ROLES = ['ops', 'sre', 'admin'] as const
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
+/**
+ * Only a platform admin lists or creates service accounts; anyone else gets a 403 (docs/api.md,
+ * Identity). Known from /me, or from the 403 itself while /me has not answered.
+ */
+export function adminsOnly(me: Me | undefined, error: unknown): boolean {
+  return me?.admin === false || (isApiError(error) && error.status === 403)
+}
+
 export default function SettingsPage({ route }: PageProps) {
   const { mode, setMode } = useTheme()
   const user = useCurrentUser()
   const me = useQuery(['me', user ?? 'default'], () => api.me())
   const health = useQuery('health', () => api.health(), { refetchInterval: 30_000 })
   const info = useQuery('info', () => api.info())
-  const accounts = useQuery('service-accounts', () => api.serviceAccounts())
+  // the list depends on who asks: a non-admin's is a 403, so it is not asked for once /me says so
+  const accounts = useQuery(['service-accounts', user ?? 'default'], () => api.serviceAccounts(), { enabled: me.data?.admin !== false })
+  const notAdmin = adminsOnly(me.data, accounts.error)
   const [creating, setCreating] = useState(false)
   const [created, setCreated] = useState<ServiceAccountCreated | null>(null)
 
@@ -159,23 +169,31 @@ export default function SettingsPage({ route }: PageProps) {
           title="Service accounts"
           subtitle="Non-human callers: automation, agents. The token is shown once, right after creation."
           actions={
-            <Button variant="primary" size="sm" icon="plus" onClick={() => setCreating(true)}>
-              New service account
-            </Button>
+            notAdmin ? undefined : (
+              <Button variant="primary" size="sm" icon="plus" onClick={() => setCreating(true)}>
+                New service account
+              </Button>
+            )
           }
           flush
         >
           <Table
             columns={columns}
-            rows={accounts.data ?? []}
+            rows={notAdmin ? [] : (accounts.data ?? [])}
             rowKey={(a) => a.id}
-            loading={accounts.loading}
+            loading={accounts.loading && !notAdmin}
             bordered={false}
             stickyHeader={false}
             defaultSort={{ key: 'createdAt', dir: 'desc' }}
-            emptyIcon="key"
-            emptyTitle={accounts.error ? 'Could not load service accounts' : 'No service accounts yet'}
-            emptyMessage={accounts.error ? errorMessage(accounts.error) : 'Create one for a CI pipeline or an agent; it signs requests with a bearer token.'}
+            emptyIcon={notAdmin ? 'lock' : 'key'}
+            emptyTitle={notAdmin ? 'Only admins see service accounts' : accounts.error ? 'Could not load service accounts' : 'No service accounts yet'}
+            emptyMessage={
+              notAdmin
+                ? 'A platform admin creates them and hands out their tokens: ask one for an account for your pipeline or agent.'
+                : accounts.error
+                  ? errorMessage(accounts.error)
+                  : 'Create one for a CI pipeline or an agent; it signs requests with a bearer token.'
+            }
             caption="Service accounts"
           />
         </Card>

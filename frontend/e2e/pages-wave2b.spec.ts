@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SERVICE_ACCOUNTS, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, ME, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SERVICE_ACCOUNTS, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 import type { ServiceAccount } from '../src/lib/types'
 
 /*
@@ -752,5 +752,18 @@ test.describe('settings', () => {
     // the shell cannot tell the API's profile, so nothing claims one
     await expect(page.getByText('Identity mode')).toHaveCount(0)
     await expect(page.getByText(/SSO/)).toHaveCount(0)
+  })
+
+  test('someone who is not an admin is told only admins see service accounts, with no error and no create button', async ({ page }) => {
+    await mockApi(page, {
+      'GET /me': { ...ME, id: 'ana', name: 'Ana', email: 'ana@example.com', teams: ['team-compute'], roles: ['ops'], admin: false },
+      'GET /service-accounts': () => reply(403, { error: 'Only a platform admin lists service accounts' }),
+    })
+    await page.goto('/#/settings')
+    await expect(page.getByText('Only admins see service accounts')).toBeVisible()
+    await expect(page.getByText('ask one for an account for your pipeline or agent')).toBeVisible()
+    await expect(page.getByText('Could not load service accounts')).toHaveCount(0)
+    await expect(page.getByText('Only a platform admin lists service accounts')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'New service account' })).toHaveCount(0)
   })
 })
