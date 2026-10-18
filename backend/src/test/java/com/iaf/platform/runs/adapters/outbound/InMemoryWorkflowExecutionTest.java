@@ -34,6 +34,7 @@ import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
+import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Job;
@@ -268,6 +269,58 @@ class InMemoryWorkflowExecutionTest {
         assertThat(resolved.data().path("action").asText()).isEqualTo("edit-input");
         assertThat(resolved.data().path("input").path("input").path("id").asText()).isEqualTo("vm-7");
         w.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+    }
+
+    /** A slow first step, then one that fails and pauses for attention. */
+    private static final String SLOW_THEN_BROKEN = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-slow-broken, title: Slow then broken, noun: thing, verb: poke, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - slow:
+                    wait: { duration: 3s }
+                - broken:
+                    call: provider
+                    with: { provider: vsphere, action: vm.doesNotExist, input: { id: "{{ $input.id }}" } }
+                - after:
+                    notify: { channel: "#x", message: "after" }
+            """;
+
+    /** The job reads as paused on {@code step} (a resumed job does before its walker gets there) while the walker is in its slow step. */
+    private Job pausedOnPaperWhileSlow(String step) {
+        Job job = start(yaml(SLOW_THEN_BROKEN), Map.of("id", "vm-1042"));
+        RunsTestWiring.await(WAIT, () -> job(job.id()).step("slow") != null && job(job.id()).step("slow").status() == StepStatus.RUNNING);
+        w.events.attention(job.id(), new Attention(step, null, Attention.OPTIONS, w.clock.instant(), Attention.DEFAULT_TIMEOUT));
+        return job;
+    }
+
+    @Test
+    void aDecisionThatComesBeforeItsPauseOpensIsTakenByThatPause() {
+        Job job = pausedOnPaperWhileSlow("broken");
+
+        w.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block();
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(job(job.id()).step("broken").status()).isEqualTo(StepStatus.SKIPPED);
+        assertThat(job(job.id()).step("after").status()).isEqualTo(StepStatus.SUCCEEDED);
+    }
+
+    @Test
+    void aDecisionForAnotherStepIsNotTakenByTheNextPause() {
+        Job job = pausedOnPaperWhileSlow("elsewhere");
+
+        w.execution.signalAttention(job.id(), AttentionDecision.skip("ana")).block();
+
+        awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        RunsTestWiring.await(WAIT, () -> job(job.id()).attention() != null && "broken".equals(job(job.id()).attention().step()));
+        assertThat(published.stream().filter(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id())))
+                .as("the decision for the other step does not answer this pause").isEmpty();
+
+        w.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+        awaitStatus(job.id(), JobStatus.FAILED);
+        assertThat(published.stream().filter(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id())))
+                .extracting(e -> e.data().path("action").asText()).containsExactly("abort");
     }
 
     @Test

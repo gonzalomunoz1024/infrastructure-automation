@@ -16,7 +16,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.springframework.stereotype.Component;
@@ -93,8 +92,12 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         final AtomicBoolean cancelled = new AtomicBoolean();
         final CountDownLatch cancelLatch = new CountDownLatch(1);
         final Map<String, CompletableFuture<ApprovalDecision>> approvals = new ConcurrentHashMap<>();
-        final AtomicReference<CompletableFuture<AttentionDecision>> attention = new AtomicReference<>();
-        final AtomicReference<AttentionDecision> earlyAttention = new AtomicReference<>();
+        /** Guards {@link #attention} and {@link #earlyAttention}: a decision and a pause never pass each other by. */
+        final Object attentionLock = new Object();
+        /** The pause for attention the walker waits in, if any. */
+        Pause attention;
+        /** A decision that came while no pause was open, for the step it answers; the next pause of that step takes it. */
+        EarlyDecision earlyAttention;
         final Set<String> children = ConcurrentHashMap.newKeySet();
         /** use steps waiting for a resource; a cancel ends them */
         final Set<CompletableFuture<?>> resourceWaits = ConcurrentHashMap.newKeySet();
@@ -105,6 +108,14 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         Execution(Job job) {
             this.job = job;
         }
+    }
+
+    /** A pause for attention on a step, and the future its decision completes. */
+    private record Pause(String step, CompletableFuture<AttentionDecision> decision) {
+    }
+
+    /** A decision for {@code step} (null: whichever pause comes first) that arrived before its pause opened. */
+    private record EarlyDecision(String step, AttentionDecision decision) {
     }
 
     public InMemoryWorkflowExecution(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock) {
@@ -153,6 +164,11 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         });
     }
 
+    /**
+     * The open pause takes the decision; without one (the walker has not reached the pause yet, as
+     * a resumed job may not have) it is kept for the step the job reads as paused on, and only a
+     * pause of that step takes it later.
+     */
     @Override
     public Mono<Void> signalAttention(String jobId, AttentionDecision decision) {
         return Mono.fromRunnable(() -> {
@@ -160,9 +176,12 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             if (exec == null) {
                 throw new ConflictException("Job " + jobId + " is not running");
             }
-            CompletableFuture<AttentionDecision> f = exec.attention.get();
-            if (f == null || !f.complete(decision)) {
-                exec.earlyAttention.set(decision);
+            String step = projection.get(jobId).map(Job::attention).map(Attention::step).orElse(null);
+            synchronized (exec.attentionLock) {
+                Pause pause = exec.attention;
+                if (pause == null || !pause.decision().complete(decision)) {
+                    exec.earlyAttention = new EarlyDecision(step, decision);
+                }
             }
         });
     }
@@ -184,9 +203,10 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         exec.cancelLatch.countDown();
         JobCancelled cause = new JobCancelled(exec.job.id());
         exec.approvals.values().forEach(f -> f.completeExceptionally(cause));
-        CompletableFuture<AttentionDecision> a = exec.attention.get();
-        if (a != null) {
-            a.completeExceptionally(cause);
+        synchronized (exec.attentionLock) {
+            if (exec.attention != null) {
+                exec.attention.decision().completeExceptionally(cause);
+            }
         }
         exec.resourceWaits.forEach(f -> f.completeExceptionally(cause));
         for (String child : exec.children) {
@@ -271,19 +291,27 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         if (exec == null) {
             return Optional.empty();
         }
-        AttentionDecision early = exec.earlyAttention.getAndSet(null);
-        if (early != null) {
-            return Optional.of(early);
+        Pause pause = new Pause(attention.step(), new CompletableFuture<>());
+        synchronized (exec.attentionLock) {
+            EarlyDecision early = exec.earlyAttention;
+            exec.earlyAttention = null;
+            if (early != null && (early.step() == null || early.step().equals(attention.step()))) {
+                pause.decision().complete(early.decision());
+            }
+            // an early decision for another step answered a pause that is over: it is dropped
+            exec.attention = pause;
         }
-        CompletableFuture<AttentionDecision> f = new CompletableFuture<>();
-        exec.attention.set(f);
         try {
-            if (exec.cancelled.get()) {
+            if (exec.cancelled.get() && !pause.decision().isDone()) {
                 throw new JobCancelled(ctx.jobId());
             }
-            return await(ctx, f, timeout);
+            return await(ctx, pause.decision(), timeout);
         } finally {
-            exec.attention.compareAndSet(f, null);
+            synchronized (exec.attentionLock) {
+                if (exec.attention == pause) {
+                    exec.attention = null;
+                }
+            }
         }
     }
 
