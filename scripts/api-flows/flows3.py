@@ -57,7 +57,7 @@ spec:
   type: openapi
   spec: { url: https://fleet.example.com/openapi.json, sha256: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae }
   endpoints: { dev: __DEV_URL__/actuator/health }
-  auth: { type: bearer, credential: vault:fleet/token }
+  auth: { type: header, header: X-Fleet-Token, credential: vault:fleet/token }
   actions:
     - id: vm.get
       title: Get VM
@@ -73,6 +73,7 @@ spec:
   alerts: { channel: "#compute-alerts" }
 """
 # publishing needs a tested connection to every endpoint, with the provider's own credential: the backend's health page answers
+# (fleet sends its key in a header the platform ignores; a bearer token the platform did not issue would get a 401)
 yaml_p = yaml_p.replace('__DEV_URL__', lib.BASE)
 s, pv = call('POST', A + '/providers:validate', {'yaml': yaml_p}, expect=200)
 print('provider validate ->', [(c['id'], c['status']) for c in pv.get('checks', [])], [p['code'] for p in pv.get('problems', [])])
@@ -83,7 +84,7 @@ s, _ = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', '
 s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'none'}, 'provider': 'vsphere'}, user='ana', expect=403, note='ana adds a connection test to vsphere')
 # the connection test resolves the provider's credential as a real call would: a reference that is not in the vault fails it
 s, _ = call('POST', A + '/credentials', {'name': 'fleet/token', 'type': 'token', 'value': 'e2e-fleet-token', 'owner': 'team-compute'}, expect=202, note='store the fleet token the provider names')
-s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'bearer', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
+s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'header', 'header': 'X-Fleet-Token', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
 check(all(r.get('ok') for r in tested.get('results', [])), f'fleet connection test: {tested}')
 s, pub = call('POST', A + '/providers:publish', {'yaml': yaml_p}, expect=202)
 print('publish ->', s, str(pub)[:300])
