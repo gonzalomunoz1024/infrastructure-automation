@@ -60,7 +60,8 @@ type Options struct {
 }
 
 // OptionsFromEnv reads TEMPORAL_ADDRESS (default 127.0.0.1:7233), TEMPORAL_NAMESPACE (default
-// "default") and WORKER_DRAIN_SECONDS (default 30).
+// "default") and WORKER_DRAIN_SECONDS (default 30; a value that is not a whole number of seconds is
+// logged and falls back to it, as in the other SDKs).
 func OptionsFromEnv() Options {
 	return optionsFrom(os.Getenv)
 }
@@ -76,6 +77,9 @@ func optionsFrom(env func(string) string) Options {
 	if v := strings.TrimSpace(env("WORKER_DRAIN_SECONDS")); v != "" {
 		if s, err := strconv.Atoi(v); err == nil && s >= 0 {
 			o.DrainTimeout = time.Duration(s) * time.Second
+		} else {
+			slog.Warn(fmt.Sprintf("WORKER_DRAIN_SECONDS is a whole number of seconds, not '%s'; the worker drains for %ds",
+				v, int(o.DrainTimeout.Seconds())))
 		}
 	}
 	return o

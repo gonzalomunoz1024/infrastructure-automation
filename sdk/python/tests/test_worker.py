@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -210,6 +211,16 @@ def test_options_come_from_the_environment():
     assert WorkerOptions.from_env(
         {"TEMPORAL_ADDRESS": "temporal-frontend.temporal:7233", "TEMPORAL_NAMESPACE": "platform", "WORKER_DRAIN_SECONDS": "90"}
     ) == WorkerOptions(address="temporal-frontend.temporal:7233", namespace="platform", drain_timeout=timedelta(seconds=90))
+
+
+def test_a_drain_time_that_is_not_a_whole_number_of_seconds_falls_back_to_thirty_seconds(caplog):
+    with caplog.at_level(logging.WARNING, logger="iaf_provider"):
+        for drain in ("30s", "1.5", "-5", "soon"):
+            assert WorkerOptions.from_env({"WORKER_DRAIN_SECONDS": drain}).drain_timeout == timedelta(seconds=30), drain
+        assert WorkerOptions.from_env({"WORKER_DRAIN_SECONDS": " 0 "}).drain_timeout == timedelta(0)
+
+    assert len(caplog.records) == 4
+    assert caplog.records[3].getMessage() == "WORKER_DRAIN_SECONDS is a whole number of seconds, not 'soon'; the worker drains for 30s"
 
 
 def test_sync_handlers_need_a_thread_pool_to_run_on():

@@ -218,14 +218,25 @@ class WorkerOptions:
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> WorkerOptions:
-        """``TEMPORAL_ADDRESS``, ``TEMPORAL_NAMESPACE`` and ``WORKER_DRAIN_SECONDS``, each falling back to the default."""
+        """``TEMPORAL_ADDRESS``, ``TEMPORAL_NAMESPACE`` and ``WORKER_DRAIN_SECONDS``, each falling back to
+        the default; a drain time that is not a whole number of seconds is logged and falls back too, as
+        in the other SDKs."""
         env = os.environ if env is None else env
         d = WorkerOptions()
         drain = (env.get("WORKER_DRAIN_SECONDS") or "").strip()
+        drain_timeout = d.drain_timeout
+        if drain.isdigit():
+            drain_timeout = timedelta(seconds=int(drain))
+        elif drain:
+            log.warning(
+                "WORKER_DRAIN_SECONDS is a whole number of seconds, not %r; the worker drains for %ds",
+                drain,
+                int(d.drain_timeout.total_seconds()),
+            )
         return WorkerOptions(
             address=(env.get("TEMPORAL_ADDRESS") or "").strip() or d.address,
             namespace=(env.get("TEMPORAL_NAMESPACE") or "").strip() or d.namespace,
-            drain_timeout=timedelta(seconds=int(drain)) if drain.isdigit() else d.drain_timeout,
+            drain_timeout=drain_timeout,
         )
 
 

@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -255,6 +258,24 @@ func TestRunServesActivitiesOnlyAndDrainsForTheDrainTimeout(t *testing.T) {
 	o := runOptions(Options{Address: "127.0.0.1:7233", Namespace: "default", DrainTimeout: 45 * time.Second})
 	assert.True(t, o.DisableWorkflowWorker, "a provider's worker never polls for workflow tasks")
 	assert.Equal(t, 45*time.Second, o.WorkerStopTimeout)
+}
+
+func TestADrainTimeThatIsNotAWholeNumberOfSecondsFallsBackToThirtySeconds(t *testing.T) {
+	var logged bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+
+	for _, drain := range []string{"30s", "1.5", "-5", "soon"} {
+		assert.Equal(t, 30*time.Second, optionsFrom(func(k string) string {
+			if k == "WORKER_DRAIN_SECONDS" {
+				return drain
+			}
+			return ""
+		}).DrainTimeout, drain)
+	}
+
+	assert.Equal(t, 4, strings.Count(logged.String(), "level=WARN"))
+	assert.Contains(t, logged.String(), "WORKER_DRAIN_SECONDS is a whole number of seconds, not 'soon'; the worker drains for 30s")
 }
 
 func TestOptionsComeFromTheEnvironment(t *testing.T) {
