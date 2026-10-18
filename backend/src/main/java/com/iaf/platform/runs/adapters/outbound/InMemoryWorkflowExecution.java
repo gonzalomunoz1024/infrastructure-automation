@@ -77,6 +77,10 @@ import reactor.util.function.Tuples;
 public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortStepExecutor.Engine {
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
+    /** Attempts at a job's final event, pausing 200 ms, then twice as long each time, up to 5 s. */
+    static final int FINAL_EVENT_ATTEMPTS = 6;
+    static final long FINAL_EVENT_FIRST_PAUSE_MS = 200;
+    static final long FINAL_EVENT_MAX_PAUSE_MS = 5_000;
 
     private final StepExecutors executors;
     private final JobProjection projection;
@@ -256,20 +260,49 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         Job job = exec.job;
         Instant now = clock.instant();
         long duration = job.startedAt() == null ? 0 : Math.max(0, now.toEpochMilli() - job.startedAt().toEpochMilli());
-        try {
+        recordFinal(job, outcome, () -> {
             if (outcome.status() == JobStatus.CANCELLED) {
                 events.cancelled(job.id(), exec.cancelledBy == null ? Identity.SYSTEM.id() : exec.cancelledBy);
             } else {
                 events.finished(job.id(), job.workflow(), job.version(), outcome.status(), duration, outcome.errorClass(), outcome.failedStep(),
                         outcome.output(), outcome.message(), now);
             }
-        } catch (RuntimeException e) {
-            // the store refused the final event: this engine has no activity to retry it (Temporal's does)
-            log.error("job {} ended {} but its final event could not be recorded: {}", job.id(), outcome.status().json(), e.toString());
-        }
+        });
         if (job.change() != null && job.change().id() != null && !"linked".equals(job.change().state())) {
             changes.close(job.change().id(), outcome.succeeded())
                     .subscribe(c -> events.changeClosed(job.id(), c), e -> log.warn("could not close change {}: {}", job.change().id(), e.toString()));
+        }
+    }
+
+    /**
+     * Records a job's final event, again after a growing pause while the store refuses it (a
+     * database that blinked): this engine has no activity to retry it, as Temporal's has, and a
+     * final event never recorded would leave the job running in every view. The bus swallows a
+     * listener's failure, so a refusal means nothing was published and a second attempt publishes once.
+     */
+    void recordFinal(Job job, Outcome outcome, Runnable record) {
+        long pauseMs = FINAL_EVENT_FIRST_PAUSE_MS;
+        for (int attempt = 1;; attempt++) {
+            try {
+                record.run();
+                return;
+            } catch (RuntimeException e) {
+                if (attempt >= FINAL_EVENT_ATTEMPTS) {
+                    log.error("job {} ended {} but its final event could not be recorded after {} attempts: {}", job.id(), outcome.status().json(),
+                            attempt, e.toString());
+                    return;
+                }
+                log.warn("job {} ended {}; the store refused its final event (attempt {}), retrying: {}", job.id(), outcome.status().json(), attempt,
+                        e.toString());
+                try {
+                    Thread.sleep(pauseMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("job {} ended {} but its final event could not be recorded: interrupted", job.id(), outcome.status().json());
+                    return;
+                }
+                pauseMs = Math.min(pauseMs * 2, FINAL_EVENT_MAX_PAUSE_MS);
+            }
         }
     }
 

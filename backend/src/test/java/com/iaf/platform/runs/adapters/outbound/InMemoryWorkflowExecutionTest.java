@@ -92,6 +92,39 @@ class InMemoryWorkflowExecutionTest {
     }
 
     @Test
+    void aFinalEventTheStoreRefusesOnceIsRecordedOnTheNextAttempt() {
+        java.util.concurrent.atomic.AtomicInteger terminalSaves = new java.util.concurrent.atomic.AtomicInteger();
+        w = new RunsTestWiring(new InMemoryProjectionStore() {
+            @Override
+            public void save(Job job) {
+                if (job.status() != null && job.status().terminal() && terminalSaves.getAndIncrement() == 0) {
+                    throw new IllegalStateException("the database blinked");
+                }
+                super.save(job);
+            }
+        });
+        w.bus.register(published::add);
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-blink, title: Blink, noun: thing, verb: blink, owner: team-x, version: 1.0.0 }
+                api: { method: POST, path: "/api/v1/things:blink", input: { type: object, properties: { id: { type: string } } } }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                """);
+
+        Job job = start(def, Map.of("id", "vm-1042"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(terminalSaves.get()).as("refused once, then recorded").isGreaterThanOrEqualTo(2);
+        assertThat(types(job.id()).stream().filter("job.finished"::equals)).as("published once").hasSize(1);
+    }
+
+    @Test
     void aJobWaitsForItsApprovalThenFinishesWithTelemetry() {
         Job job = start(SampleContent.workflow("vm-restart"), Map.of("vmId", "vm-1042", "reason", "stuck", "environment", "dev"));
 
@@ -544,6 +577,8 @@ class InMemoryWorkflowExecutionTest {
         Sinks.One<Resource> ready = slowImage(status);
         Job job = start(usesSlowImage("10m"), Map.of());
         awaitStep(job.id(), "useIt", StepStatus.RUNNING);
+        // the step runs before it asks the registry: only once it has heard "building" may the resource become ready
+        verify(w.resources, org.mockito.Mockito.timeout(WAIT.toMillis())).use(eq("image"), eq("img-slow"), any(), anyBoolean());
 
         status.set("ready");
         ready.tryEmitValue(RunsTestWiring.resource("image", "img-slow", "ready"));
