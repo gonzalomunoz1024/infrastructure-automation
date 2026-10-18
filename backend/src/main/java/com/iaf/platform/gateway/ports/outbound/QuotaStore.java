@@ -14,4 +14,7 @@ public interface QuotaStore {
 
     /** Takes one token from {@code bucket}: empty when it was there, else the wait until it will be. */
     Optional<Duration> take(String bucket, int perMinute, int burst, Instant now);
+
+    /** Gives one token back to {@code bucket} (never above {@code burst}); nothing when the bucket does not exist. */
+    void giveBack(String bucket, int burst);
 }

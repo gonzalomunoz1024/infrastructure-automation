@@ -7,7 +7,10 @@ import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import com.iaf.platform.common.domain.ConflictException;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.gateway.adapters.outbound.InMemoryQuotaStore;
 import com.iaf.platform.gateway.ports.outbound.QuotaStore;
@@ -62,14 +65,44 @@ public class JobQuotas {
 
     /** One job start (or one batch) for the caller's team; a {@link TooManyRequestsException} when its bucket is empty. */
     public Mono<Void> take(Identity who) {
-        if (!charged(who)) {
+        if (!isCharged(who)) {
             return Mono.empty();
         }
         return Mono.<Void>fromRunnable(() -> takeNow(who)).subscribeOn(Schedulers.boundedElastic());
     }
 
+    /**
+     * {@code start} charged to the caller's team, for a call site that cannot validate the request
+     * before it starts: the token is taken first and given back when the request turns out to be
+     * rejected (400, 403, 404, 409), so an invalid request costs nothing. A 429 is never given
+     * back (nothing was taken).
+     */
+    public <T> Mono<T> charged(Identity who, Mono<T> start) {
+        if (!isCharged(who)) {
+            return start;
+        }
+        return take(who).then(start).onErrorResume(e -> rejected(e) ? giveBack(who).then(Mono.error(e)) : Mono.error(e));
+    }
+
+    /** Returns the token a rejected request took. */
+    public Mono<Void> giveBack(Identity who) {
+        if (!isCharged(who)) {
+            return Mono.empty();
+        }
+        return Mono.<Void>fromRunnable(() -> {
+            String bucket = bucketOf(who);
+            store.giveBack(bucket, limitOf(bucket).burst());
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /** A refusal the caller caused by the request itself (not a 429, which took nothing). */
+    static boolean rejected(Throwable e) {
+        return e instanceof IllegalArgumentException || e instanceof NotFoundException || e instanceof ForbiddenException
+                || e instanceof ConflictException;
+    }
+
     void takeNow(Identity who) {
-        if (!charged(who)) {
+        if (!isCharged(who)) {
             return;
         }
         String bucket = bucketOf(who);
@@ -82,7 +115,7 @@ public class JobQuotas {
         }
     }
 
-    private boolean charged(Identity who) {
+    private boolean isCharged(Identity who) {
         return config.isEnabled() && who != null && who.kind() != Identity.Kind.SYSTEM;
     }
 

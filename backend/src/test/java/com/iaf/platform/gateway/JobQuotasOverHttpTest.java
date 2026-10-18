@@ -31,6 +31,7 @@ import com.iaf.platform.catalog.application.McpServer;
 import com.iaf.platform.catalog.application.WorkflowInvoker;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.config.GlobalExceptionHandler;
@@ -163,5 +164,30 @@ class JobQuotasOverHttpTest {
         assertThat(last.path("error").path("data").path("tooManyRequests").asBoolean()).isTrue();
         assertThat(last.path("error").path("data").path("retryAfter").asLong()).isEqualTo(Duration.ofSeconds(2).toSeconds());
         verify(runs, times(2)).startJob(any());
+    }
+
+
+    @Test
+    void aRequestTheHandlerRejectsCostsNoToken() {
+        GatewayProperties.Quotas one = twoAtOnce();
+        one.setBurst(1);
+        RunsCommandHandler commands = mock(RunsCommandHandler.class);
+        when(commands.startJob(any()))
+                .thenReturn(Mono.error(new NotFoundException("workflow", "nope")))
+                .thenReturn(Mono.error(new IllegalArgumentException("workflow is required")))
+                .thenReturn(Mono.just(CommandAccepted.of("job_1", "queued")));
+        WebTestClient jobs = WebTestClient.bindToController(new RestControllerRunsAdapter(commands, mock(RunsQueryHandler.class), new JobQuotas(one, CLOCK)))
+                .controllerAdvice(new GlobalExceptionHandler())
+                .webFilter(identity(SampleCatalog.OPS))
+                .build();
+        Map<String, Object> body = Map.of("workflow", "vm-restart", "input", Map.of("vmId", "vm-1"));
+
+        jobs.post().uri("/api/v1/jobs").contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchange().expectStatus().isNotFound();
+        jobs.post().uri("/api/v1/jobs").contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchange().expectStatus().isBadRequest();
+        jobs.post().uri("/api/v1/jobs").contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchange()
+                .expectStatus().isAccepted();   // the one token was still there
+        jobs.post().uri("/api/v1/jobs").contentType(MediaType.APPLICATION_JSON).bodyValue(body).exchange()
+                .expectStatus().isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        verify(commands, times(3)).startJob(any());
     }
 }

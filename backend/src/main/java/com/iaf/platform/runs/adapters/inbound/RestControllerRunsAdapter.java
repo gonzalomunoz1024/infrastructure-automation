@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.inbound;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -150,7 +151,7 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> start(@RequestBody StartJobRequest body,
             @RequestHeader(name = TraceIds.TRACEPARENT, required = false) String traceparent) {
-        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
+        return charged(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
                 traceId -> commands.startJob(new StartJob(body.workflow(), body.version(), body.input(), null,
                         body.channel() == null ? "rest" : body.channel(), null, traceId, null, body.changeId())))));
     }
@@ -159,9 +160,15 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> batch(@RequestBody StartBatchRequest body,
             @RequestHeader(name = TraceIds.TRACEPARENT, required = false) String traceparent) {
-        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
+        return charged(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
                 traceId -> commands.startBatch(new StartBatch(body.workflow(), body.version(), body.items() == null ? List.of() : body.items(),
                         body.defaults(), body.rollout(), null, body.channel() == null ? "batch" : body.channel(), null, traceId)))));
+    }
+
+    /** {@code start} charged to the caller's team; the handler validates the request, so a token it rejects (400, 403, 404) is given back. */
+    private Mono<CommandAccepted> charged(Mono<CommandAccepted> start) {
+        return CurrentIdentity.current().map(Optional::of).defaultIfEmpty(Optional.empty())
+                .flatMap(who -> quotas.charged(who.orElse(null), start));
     }
 
     /** A {@code traceId} in a body is a W3C trace id (32 hex characters, not all zeros); null when none is given. */

@@ -52,6 +52,11 @@ public final class TokenBucket {
         return Optional.of(Duration.ofNanos(Math.max(1, nanos)));
     }
 
+    /** Returns a token taken for a request that turned out to be rejected; never above the capacity. */
+    public void giveBack() {
+        tokens = Math.min(capacity, tokens + 1d);
+    }
+
     /** Tokens there now (refilled to {@code now}). */
     public double available(Instant now) {
         refill(now);

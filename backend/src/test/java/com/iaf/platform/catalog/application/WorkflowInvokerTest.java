@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,6 +23,9 @@ import com.iaf.platform.catalog.domain.InputProblemsException;
 import com.iaf.platform.catalog.domain.PolicyDeniedException;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.ForbiddenException;
+import com.iaf.platform.common.domain.TooManyRequestsException;
+import com.iaf.platform.gateway.application.GatewayProperties;
+import com.iaf.platform.gateway.application.JobQuotas;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
@@ -252,5 +256,27 @@ class WorkflowInvokerTest {
         StepVerifier.create(invoker.preview(restart, json("{}"), SampleCatalog.OPS)).expectError(InputProblemsException.class).verify();
         StepVerifier.create(invoker.preview(restart, json("{\"vmId\":\"vm-1\"}"), SampleCatalog.GUEST)).expectError(ForbiddenException.class).verify();
         verify(runs, never()).startJob(any());
+    }
+
+
+    @Test
+    void aRejectedRequestLeavesTheBucketUntouched() {
+        allow();
+        GatewayProperties.Quotas one = new GatewayProperties.Quotas();
+        one.setBurst(1);
+        WorkflowInvoker limited = new WorkflowInvoker(runs, policy, new JobQuotas(one, java.time.Clock.systemUTC()));
+        JsonNode valid = json("{\"vmId\":\"vm-1\"}");
+
+        StepVerifier.create(limited.invoke(restart, json("{\"reason\":\"no id\"}"), SampleCatalog.OPS, "rest", "t")).expectError(InputProblemsException.class).verify();
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.GUEST, "rest", "t")).expectError(ForbiddenException.class).verify();
+        when(policy.evaluate(any())).thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("freeze", "deny", "Frozen")), "mock")));
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectError(PolicyDeniedException.class).verify();
+        StepVerifier.create(limited.batch(create, json("{\"items\":[{\"name\":\"BAD NAME\"}]}"), Map.of(), SampleCatalog.OPS, "rest"))
+                .expectError(BatchProblemsException.class).verify();
+        allow();
+
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(limited.invoke(restart, valid, SampleCatalog.OPS, "rest", "t")).expectError(TooManyRequestsException.class).verify();
+        verify(runs, times(1)).startJob(any());
     }
 }

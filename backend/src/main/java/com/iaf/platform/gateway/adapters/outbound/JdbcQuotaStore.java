@@ -53,6 +53,11 @@ public class JdbcQuotaStore implements QuotaStore {
         });
     }
 
+    @Override
+    public void giveBack(String bucket, int burst) {
+        jdbc.update("UPDATE quota_buckets SET tokens = LEAST(?, tokens + 1) WHERE bucket = ?", (double) burst, bucket);
+    }
+
     /** The bucket's row, locked for this transaction; created full when there is none. */
     private TokenBucket lock(String bucket, int perMinute, int burst, Instant now) {
         Optional<Row> row = locked(bucket);

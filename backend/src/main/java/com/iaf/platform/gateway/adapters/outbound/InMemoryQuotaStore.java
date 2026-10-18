@@ -30,6 +30,16 @@ public class InMemoryQuotaStore implements QuotaStore {
         }
     }
 
+    @Override
+    public void giveBack(String bucket, int burst) {
+        TokenBucket b = buckets.get(bucket);
+        if (b != null) {
+            synchronized (b) {
+                b.giveBack();
+            }
+        }
+    }
+
     /** For tests: how many buckets exist. */
     int size() {
         return buckets.size();

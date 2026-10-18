@@ -144,4 +144,21 @@ abstract class JobQuotasContract {
                 .assertNext(thread -> assertThat(thread).startsWith("boundedElastic"))
                 .verifyComplete();
     }
+
+
+    @Test
+    void aRejectedStartGivesItsTokenBackButA429TookNothing() {
+        JobQuotas quotas = quotas(quotas(60, 1));
+        Identity ana = person("ana", "team-data");
+
+        StepVerifier.create(quotas.charged(ana, reactor.core.publisher.Mono.error(new IllegalArgumentException("workflow is required"))))
+                .expectError(IllegalArgumentException.class).verify();
+        StepVerifier.create(quotas.charged(ana, reactor.core.publisher.Mono.error(new com.iaf.platform.common.domain.NotFoundException("workflow", "x"))))
+                .expectError(com.iaf.platform.common.domain.NotFoundException.class).verify();
+        StepVerifier.create(quotas.charged(ana, reactor.core.publisher.Mono.just("started"))).expectNext("started").verifyComplete();
+        StepVerifier.create(quotas.charged(ana, reactor.core.publisher.Mono.just("again"))).expectError(TooManyRequestsException.class).verify();
+        StepVerifier.create(quotas.charged(ana, reactor.core.publisher.Mono.just("and again"))).as("a 429 gave nothing back")
+                .expectError(TooManyRequestsException.class).verify();
+        StepVerifier.create(quotas.charged(Identity.SYSTEM, reactor.core.publisher.Mono.just("platform"))).expectNext("platform").verifyComplete();
+    }
 }
