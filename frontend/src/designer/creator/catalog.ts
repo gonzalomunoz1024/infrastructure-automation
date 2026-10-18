@@ -144,7 +144,7 @@ function draftPlaybooks(drafts: DraftsInput | undefined, registered: readonly Re
 
 /** The entries of "Connect a new system": each opens the Provider sheet on a new provider of its kind. */
 export const CONNECT_ENTRIES: readonly { entry: ProviderSheetEntry; title: string; description: string; glyph: Glyph; keywords: string }[] = [
-  { entry: 'openapi', title: 'API from an OpenAPI spec', description: 'Import a spec by URL, paste, upload or Git; its operations become actions', glyph: providerGlyph('openapi'), keywords: 'openapi swagger spec rest api import' },
+  { entry: 'openapi', title: 'API from an OpenAPI spec', description: 'Import a spec; its operations become actions', glyph: providerGlyph('openapi'), keywords: 'openapi swagger spec rest api import url paste upload git' },
   { entry: 'curl', title: 'HTTP request (cURL)', description: 'Paste a cURL command; the request becomes an action', glyph: providerGlyph('http'), keywords: 'curl http request rest endpoint paste' },
   { entry: 'ansible', title: 'Ansible repository', description: 'Playbooks from a Git repository, pinned to a commit', glyph: providerGlyph('ansible'), keywords: 'ansible playbooks git repository' },
   { entry: 'terraform', title: 'Terraform module', description: 'A module with plan, apply and destroy', glyph: providerGlyph('terraform'), keywords: 'terraform module plan apply destroy' },
