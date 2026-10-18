@@ -73,10 +73,11 @@ The demo adapters are plain Spring components. Each production adapter sits behi
 replaces its demo twin when the profile is on: `temporal` (the interpreter as a Temporal
 workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
-provider calls), `postgres` (the stores in PostgreSQL, migrated by Flyway on start; the
-connection is `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and
-`SPRING_DATASOURCE_PASSWORD`). `docker-compose.yml` starts a Temporal dev server, PostgreSQL and
-the stack on them.
+provider calls, and Ansible, Terraform, script and http steps run for real, see
+[How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `postgres` (the
+stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DATASOURCE_URL`,
+`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3).
+`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
 
 ## Checks
 

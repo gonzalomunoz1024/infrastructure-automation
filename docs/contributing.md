@@ -18,7 +18,18 @@ scripts/dev.sh
 
 # config as code checks (what CI runs)
 npm run check:workflows                                 # packages/workflow-checks over workflows/, providers/, resource-types/
+npm run lint:playbooks                                  # ansible-lint on every pinned git playbook, at its commit (pip install ansible-lint);
+                                                        # GITLEAKS=<gitleaks> also scans each pinned source for secrets
+cd backend && mvn -B -q test -Dtest=SampleWorkflowsDryRunTest   # every sample workflow dry-runs against its recorded samples
 ```
+
+CI also scans the files and the new commits for secrets with gitleaks. A finding reviewed as a
+false positive goes in `.gitleaksignore` by its fingerprint; never commit a real secret, even
+in a test (use an obviously fake value and a `vault:<path>` reference).
+
+The live runners have optional tests against real tools: `IAF_ANSIBLE_BIN` (a directory with
+`ansible-runner` and `ansible-playbook`) enables `AnsibleRealRunTest`, `IAF_TERRAFORM_BIN` (a
+terraform executable) enables `TerraformRealRunTest`.
 
 ## Backend conventions
 

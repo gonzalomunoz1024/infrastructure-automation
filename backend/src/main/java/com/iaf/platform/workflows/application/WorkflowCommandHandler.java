@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
@@ -43,6 +44,7 @@ import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.DependencyRules;
+import com.iaf.platform.workflows.domain.PlaybookPins;
 import com.iaf.platform.workflows.domain.PublishChecks;
 import com.iaf.platform.workflows.domain.ReplayResult;
 import com.iaf.platform.workflows.domain.ReplayResult.Divergence;
@@ -99,6 +101,13 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     private final PolicyPort policy;
     private final EventBus events;
     private final Clock clock;
+    /** Pins git playbooks to a commit at publish; set by Spring, a no-op in handlers built by hand. */
+    private PlaybookPinning pinning;
+
+    @Autowired(required = false)
+    void setPlaybookPinning(PlaybookPinning pinning) {
+        this.pinning = pinning;
+    }
 
     @PostConstruct
     public void init() {
@@ -239,8 +248,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     // ------------------------------------------------------------------ publishing
 
-    /** What a publish or a replay check works on: the version, the previous published one (nullable) and the caller. */
-    private record Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who) {
+    /**
+     * What a publish or a replay check works on: the version, the previous published one
+     * (nullable), the caller, and what pinning its git playbooks did.
+     */
+    private record Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who, PlaybookPins.Outcome pins) {
+        Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who) {
+            this(record, previous, who, PlaybookPins.Outcome.NONE);
+        }
+
         String previousVersion() {
             return previous == null ? null : previous.version();
         }
@@ -263,8 +279,8 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             openChangeRequest(name).ifPresent(cr -> {
                 throw new ConflictException("change request " + cr.id() + " is already open for workflow " + name, Map.of("changeRequest", cr.id()));
             });
-            return new Candidate(pinned(draft), store.published(name).orElse(null), who);
-        })).flatMap(c -> queries.checkContext().flatMap(ctx -> {
+            return new Candidate(withVersionRanges(draft), store.published(name).orElse(null), who);
+        })).flatMap(this::pinned).flatMap(c -> queries.checkContext().flatMap(ctx -> {
             WorkflowDefinition def = c.record().definition();
             List<Problem> problems = WorkflowChecks.check(def, ctx);
             if (WorkflowChecks.hasErrors(problems)) {
@@ -289,7 +305,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
      * The draft as it will be published: a run step that names no version gets its producer's
      * current major ({@code ^2}), written into the file the way an author would pin it.
      */
-    private WorkflowRecord pinned(WorkflowRecord draft) {
+    private WorkflowRecord withVersionRanges(WorkflowRecord draft) {
         WorkflowDefinition def = DependencyRules.pinRanges(draft.definition(), wf -> store.published(wf).map(WorkflowRecord::version));
         return def == draft.definition() ? draft : draft.withDefinition(def, draft.updatedAt(), draft.updatedBy());
     }
@@ -298,6 +314,16 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     private Check contracts(Candidate c, List<ResourceTypeDefinition> types) {
         DependencyRules.Graph graph = DependencyRules.of(publishedDefinitions(), WorkflowQueryHandler.producedBy(types));
         return PublishChecks.contracts(c.record().definition(), c.previous() == null ? null : c.previous().definition(), graph);
+    }
+
+    /** The candidate with its git playbooks pinned to the commits their refs name now (written into the version). */
+    private Mono<Candidate> pinned(Candidate c) {
+        if (pinning == null) {
+            return Mono.just(c);
+        }
+        return pinning.pin(c.record().definition()).map(p -> p.outcome().pinned().isEmpty()
+                ? new Candidate(c.record(), c.previous(), c.who(), p.outcome())
+                : new Candidate(c.record().withDefinition(p.definition(), clock.instant(), c.who().id()), c.previous(), c.who(), p.outcome()));
     }
 
     private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck,
@@ -309,7 +335,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         List<Check> checks = List.of(
                 PublishChecks.schema(def),
                 PublishChecks.checks(problems),
-                PublishChecks.ansibleLint(def, ctx),
+                PublishChecks.ansibleLint(def, ctx, c.pins()),
                 policyCheck,
                 replayCheck,
                 contractsCheck,

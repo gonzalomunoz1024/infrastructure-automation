@@ -61,7 +61,7 @@ public final class StepTypeSchemas {
             case USE -> "Resolve a registry resource by id, optionally waiting until it is ready and checking access.";
             case REGISTER -> "Record what the job created in the registry, with what it was built from.";
             case NOTIFY -> "Send a message to a channel.";
-            case SCRIPT -> "Run a small sandboxed JavaScript function over an input and return its result.";
+            case SCRIPT -> "Run a small sandboxed script (JavaScript, Python, Bash or Go) over an input and return its result.";
         };
     }
 
@@ -163,7 +163,9 @@ public final class StepTypeSchemas {
                     .props(prop("channel", "string", "A channel like #ops"), prop("message", "string", "May contain expressions"))
                     .build();
             case SCRIPT -> object("code")
-                    .props(enumProp("language", "javascript"), prop("code", "string", "The function body; input is in scope"), prop("input", "object", "What the script sees as input"))
+                    .props(enumProp("language", "javascript", "python", "bash", "go"),
+                            prop("code", "string", "javascript and python: the function body, input in scope; bash and go: a program reading JSON on stdin"),
+                            prop("input", "object", "What the script sees as input"))
                     .build();
         };
     }
@@ -240,8 +242,10 @@ public final class StepTypeSchemas {
     }
 
     private static ObjectNode playbook() {
-        ObjectNode git = object("repo", "ref", "path").props(prop("repo", "string", null), prop("ref", "string", "Tag or branch"), prop("path", "string", "Playbook path in the repo")).build();
-        ObjectNode upload = object("file", "sha256").props(prop("file", "string", null), prop("sha256", "string", null)).build();
+        ObjectNode git = object("repo", "ref", "path").props(prop("repo", "string", null), prop("ref", "string", "Tag or branch"), prop("path", "string", "Playbook path in the repo"),
+                prop("credential", "string", "A vault:<path> reference for a private repository")).build();
+        ObjectNode upload = object("file", "sha256").props(prop("file", "string", null), prop("sha256", "string", null),
+                prop("path", "string", "The playbook to run inside an uploaded archive")).build();
         ObjectNode asObject = object().props(obj("git", git), obj("upload", upload), prop("library", "string", "<provider>/<playbook>"), prop("commit", "string", "The commit every run uses")).build();
         ObjectNode asText = F.objectNode();
         asText.put("type", "string");

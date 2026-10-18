@@ -45,7 +45,7 @@ public final class WorkflowChecks {
     private static final Pattern DURATION = Pattern.compile("^(P(?!$)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?|\\d+(ms|s|m|h|d))$");
     private static final Pattern SECRET_KEY = Pattern.compile("(?i)(password|passwd|secret|token|apikey|api_key|credential|privateKey)");
     private static final Set<String> RESERVED_NOUNS = Set.of("workflows", "jobs", "providers", "catalog", "releases", "audit", "resources",
-            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi");
+            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi", "playbooks");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
     private static final Set<String> ROOTS = Set.of("json", "input", "vars", "job", "env", "error");
     private static final List<String> ON_FAILURE = List.of("fail", "continue");
@@ -432,8 +432,8 @@ public final class WorkflowChecks {
                 }
                 case SCRIPT -> {
                     String lang = s.withText("language");
-                    if (lang != null && !"javascript".equals(lang)) {
-                        error("script.language", s.id(), "language", "Scripts are JavaScript");
+                    if (lang != null && !Set.of("javascript", "python", "bash", "go").contains(lang)) {
+                        error("script.language", s.id(), "language", "Scripts are javascript, python, bash or go");
                     }
                     require(s, "code", "step.missing", "A script needs code");
                 }

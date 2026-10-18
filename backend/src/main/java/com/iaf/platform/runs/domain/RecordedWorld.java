@@ -26,13 +26,32 @@ import com.iaf.platform.workflows.domain.StepType;
  * the same id answer {@code not_found} (which is how {@code verify: { expect: notFound }} comes
  * true), and a {@code change} overlays the fields it sent onto later reads of the id (an upgrade
  * to 8.0 is read back as 8.0). Shared by the demo provider adapter, dry runs, the seed and tests.
+ *
+ * <p>A {@link #fork() fork} is a world of its own on top of this one: it reads what this world
+ * remembers, and what it remembers stays private. A dry run answers from a fork, so its verify
+ * steps read back its own changes while the shared world stays as it was.
  */
 public final class RecordedWorld {
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
+    private final RecordedWorld parent;
     private final Set<String> deleted = ConcurrentHashMap.newKeySet();
+    private final Set<String> revived = ConcurrentHashMap.newKeySet();
     private final Map<String, ObjectNode> changed = new ConcurrentHashMap<>();
+
+    public RecordedWorld() {
+        this(null);
+    }
+
+    private RecordedWorld(RecordedWorld parent) {
+        this.parent = parent;
+    }
+
+    /** A private world on top of this one; see the class comment. */
+    public RecordedWorld fork() {
+        return new RecordedWorld(this);
+    }
 
     /** An automation answer: the output and, when a provider file described the playbook/module/tile, which one. */
     public record Answer(JsonNode output, ProviderDefinition provider, Action action) {
@@ -62,12 +81,12 @@ public final class RecordedWorld {
         String id = idOf(input);
         String key = id == null ? null : provider.name() + ":" + id;
         Effect effect = action.effect() == null ? Effect.UNKNOWN : action.effect();
-        if (key != null && effect == Effect.READ && deleted.contains(key)) {
+        if (key != null && effect == Effect.READ && gone(key)) {
             throw new ProviderCallException("not_found", provider.name() + " " + action.id() + ": " + id + " not found", false, 404);
         }
         JsonNode out = resolveSample(action, input, jobId, seq);
         if (key != null && effect == Effect.READ && out.isObject()) {
-            ObjectNode overlay = changed.get(key);
+            ObjectNode overlay = overlay(key);
             if (overlay != null) {
                 ObjectNode o = (ObjectNode) out;
                 overlay.fields().forEachRemaining(e -> {
@@ -81,6 +100,7 @@ public final class RecordedWorld {
             switch (effect) {
                 case DELETE -> {
                     deleted.add(key);
+                    revived.remove(key);
                     changed.remove(key);
                 }
                 case CHANGE -> {
@@ -98,7 +118,9 @@ public final class RecordedWorld {
             }
         }
         if (remember && effect == Effect.CREATE && out.isObject() && out.hasNonNull("id")) {
-            deleted.remove(provider.name() + ":" + out.get("id").asText());
+            String made = provider.name() + ":" + out.get("id").asText();
+            deleted.remove(made);
+            revived.add(made);
         }
         if (action.verify() != null && action.verify().action() != null && effect.destructive() && remember) {
             verify(provider, action, id, jobId, seq, (ObjectNode) (out.isObject() ? out : F.objectNode()));
@@ -131,12 +153,37 @@ public final class RecordedWorld {
     }
 
     public boolean isDeleted(String provider, String id) {
-        return deleted.contains(provider + ":" + id);
+        return gone(provider + ":" + id);
     }
 
+    /** Forget everything this world remembers; a fork's parent keeps its own memory. */
     public void forget() {
         deleted.clear();
+        revived.clear();
         changed.clear();
+    }
+
+    /** Deleted here, or deleted below and not made again here. */
+    private boolean gone(String key) {
+        if (deleted.contains(key)) {
+            return true;
+        }
+        if (revived.contains(key) || changed.containsKey(key)) {
+            return false;
+        }
+        return parent != null && parent.gone(key);
+    }
+
+    /** The fields changed below, with the ones changed here on top; null when nothing changed. */
+    private ObjectNode overlay(String key) {
+        ObjectNode own = changed.get(key);
+        ObjectNode below = parent == null || revived.contains(key) ? null : parent.overlay(key);
+        if (own == null || below == null) {
+            return own != null ? own : below;
+        }
+        ObjectNode merged = below.deepCopy();
+        merged.setAll(own);
+        return merged;
     }
 
     private static String idOf(JsonNode input) {
@@ -154,7 +201,7 @@ public final class RecordedWorld {
      * library reference {@code <provider>/<action>}), terraform by module source + action, idp by
      * tile. HTTP never touches the network ({@code { status: 200, body: {} }}), activities answer
      * {@code { ok: true, activity }}, notify {@code { delivered: true, channel, message }} and
-     * scripts run on {@link MiniScript}.
+     * JavaScript scripts run on {@link MiniScript} (scripts in other languages answer {@code {}}).
      */
     public static Answer automation(List<ProviderDefinition> providers, StepType type, JsonNode with, String jobId, int seq, boolean checkMode) {
         JsonNode w = with == null ? F.objectNode() : with;
@@ -181,7 +228,8 @@ public final class RecordedWorld {
                 out.put("message", w.path("message").asText(null));
                 yield new Answer(out, null, null);
             }
-            case SCRIPT -> new Answer(MiniScript.run(w.path("code").asText(null), w.get("input")), null, null);
+            case SCRIPT -> new Answer("javascript".equals(w.path("language").asText("javascript"))
+                    ? MiniScript.run(w.path("code").asText(null), w.get("input")) : F.objectNode(), null, null);
             default -> throw new IllegalArgumentException("Not an automation step: " + type.key());
         };
     }

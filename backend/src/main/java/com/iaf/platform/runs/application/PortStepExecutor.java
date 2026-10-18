@@ -10,6 +10,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -42,6 +46,7 @@ import com.iaf.platform.runs.domain.StepExecutor;
 import com.iaf.platform.runs.domain.StepFailure;
 import com.iaf.platform.runs.domain.WorkflowInterpreter;
 import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort;
+import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort.Progress;
 import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort.RunRequest;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
@@ -68,6 +73,9 @@ public class PortStepExecutor implements StepExecutor {
     public static final Duration DEFAULT_CALL_TIMEOUT = Duration.ofMinutes(10);
     public static final Duration LOOKUP_TIMEOUT = Duration.ofSeconds(15);
     public static final Duration USE_POLL = Duration.ofSeconds(5);
+    /** How much longer than a step's timeout the executor waits for an automation runner to report its own timeout. */
+    public static final Duration RUNNER_GRACE = Duration.ofSeconds(30);
+    static final Duration CANCEL_POLL = Duration.ofSeconds(1);
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     /** What the walker needs from the engine that hosts it. */
@@ -212,8 +220,9 @@ public class PortStepExecutor implements StepExecutor {
         JsonNode w = with == null ? F.objectNode() : with;
         boolean checkMode = w.path("checkModeOnTest").asBoolean(false) && "test".equals(ctx.environment());
         try {
-            JsonNode out = runner.run(new RunRequest(ctx.jobId(), ctx.nextSeq(), type, step, w, ctx.environment(), dryRun, checkMode))
-                    .block(timeout == null ? DEFAULT_CALL_TIMEOUT : timeout);
+            RunRequest request = new RunRequest(ctx.jobId(), ctx.nextSeq(), type, step, w, ctx.environment(), dryRun, checkMode);
+            // the runner enforces the step's timeout itself (and ends its process); the grace lets it report that
+            JsonNode out = await(runner.run(request, progress(ctx, step)), (timeout == null ? DEFAULT_CALL_TIMEOUT : timeout).plus(RUNNER_GRACE), ctx);
             return out == null ? F.objectNode() : out;
         } catch (ProviderCallException e) {
             throw new StepFailure(step.id(), e.errorClass(), e.getMessage(), e.retryable());
@@ -426,6 +435,64 @@ public class PortStepExecutor implements StepExecutor {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** A step's progress goes to the job log; a heartbeat stops the step once the job is cancelled. */
+    private Progress progress(JobContext ctx, Step step) {
+        if (dryRun) {
+            return Progress.NONE;
+        }
+        return new Progress() {
+            @Override
+            public void report(String message) {
+                ports.events().log(ctx.jobId(), step.id() + ": " + message);
+            }
+
+            @Override
+            public void heartbeat() {
+                if (engine.cancelled(ctx)) {
+                    throw new JobCancelled(ctx.jobId());
+                }
+            }
+        };
+    }
+
+    /**
+     * Wait for a runner, looking every second whether the job was cancelled: a cancelled job or
+     * the limit cancels the run, which stops its process.
+     */
+    private JsonNode await(Mono<JsonNode> run, Duration limit, JobContext ctx) {
+        CompletableFuture<JsonNode> future = run.toFuture();
+        long deadline = System.nanoTime() + limit.toNanos();
+        try {
+            while (true) {
+                long left = deadline - System.nanoTime();
+                if (left <= 0) {
+                    future.cancel(true);
+                    throw new IllegalStateException("Timeout on blocking read for " + limit.toMillis() + " MILLISECONDS");
+                }
+                try {
+                    return future.get(Math.min(left, CANCEL_POLL.toNanos()), TimeUnit.NANOSECONDS);
+                } catch (TimeoutException e) {
+                    if (!dryRun && engine.cancelled(ctx)) {
+                        future.cancel(true);
+                        throw new JobCancelled(ctx.jobId());
+                    }
+                }
+            }
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof RuntimeException re) {
+                throw re;
+            }
+            if (e.getCause() instanceof Error err) {
+                throw err;
+            }
+            throw new IllegalStateException(e.getCause());
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new JobCancelled(ctx.jobId());
+        }
+    }
 
     private static <T> Optional<T> block(Mono<T> mono, Duration timeout, Step step) {
         try {

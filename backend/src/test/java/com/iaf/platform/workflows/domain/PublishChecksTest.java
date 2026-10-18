@@ -56,6 +56,23 @@ class PublishChecksTest {
     }
 
     @Test
+    void ansibleLintNamesThePinsMadeAtPublishAndFailsWithTheReasonOfOneThatWasNot() {
+        WorkflowDefinition pinned = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
+        String commit = "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d";
+
+        Check passed = PublishChecks.ansibleLint(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", commit), List.of()));
+        assertThat(passed.status()).isEqualTo("passed");
+        assertThat(passed.detail()).isEqualTo("1 playbook(s) pinned to a commit; pinned at publish: restart to 4e1d9a2c7b0f");
+
+        Check failed = PublishChecks.ansibleLint(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of(),
+                List.of("step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)")));
+        assertThat(failed.status()).isEqualTo("failed");
+        assertThat(failed.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)");
+
+        assertThat(PublishChecks.ansibleLint(pinned, ctx(), PlaybookPins.Outcome.NONE)).isEqualTo(PublishChecks.ansibleLint(pinned, ctx()));
+    }
+
+    @Test
     void policyAndReplayAndDiffChecksReportTheirDetail() {
         assertThat(PublishChecks.policy(PolicyDecision.allow("mock")).status()).isEqualTo("passed");
         Check denied = PublishChecks.policy(new PolicyDecision("deny", List.of(new Rule("no-prod-friday", "deny", "No prod changes on Friday")), "opa"));

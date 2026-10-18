@@ -93,7 +93,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `call: provider`         | `with: { provider, action, input }`                                            |
 | `call: http`             | `with: { method, url, headers, body, credential }`                             |
 | `call: ansible`          | `with: { playbook: { git | upload | library }, inventory, limit, extraVars, credential, executionEnvironment }` |
-| `call: terraform`        | `with: { module: { source, version }, action: plan | apply | destroy, vars, credential }` |
+| `call: terraform`        | `with: { module: { source, version | ref, credential? }, action: plan | apply | destroy, workspace?, vars, credential }` |
 | `call: idp`              | `with: { tile, input }` (mock until the IDP tiles API is wired)                |
 | `call: activity`         | `with: { taskQueue, activity, input }` (team-owned worker, any SDK language)   |
 | `run: { workflow, version, input, onFailure }` | runs a published workflow as a child job and returns `{ jobId, status, outputs, resources }` (`resources`: the `{ id, type }` its register steps recorded). `version` is a range ("^1"); left out, publish writes `^<major>` of the workflow's current version (a run without one takes the current major). `onFailure: continue` makes a failed child the step's output (`status`, `error: { step, message, class }`) and goes on; the default `fail` fails the step |
@@ -108,11 +108,73 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `use: { type, id, waitUntil: ready, checkAccess: true }` | resolve a registry resource; with `waitUntil: ready` a resource still building holds the step until the registry reports it ready (its events wake the step, nothing polls), for at most the step's `timeout` (10m when unset) |
 | `register: { type, attributes, builtFrom }` | record what the job created                               |
 | `notify: { channel, message }` | message to a channel                                                     |
-| `script: { language, code, input }` | sandboxed small logic                                               |
+| `script: { language, code, input }` | sandboxed small logic in `javascript`, `python`, `bash` or `go`     |
 
 Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, backoff }`,
 `timeout`, `pauseOnFailure` (default true), `compensate: [steps]` (run when a later step fails),
 `position: { x, y }`, `notes`.
+
+### Playbook sources and pins
+
+`playbook` comes from one of three places:
+
+- `git: { repo, ref, path, credential? }` with `commit`: an https repository (`host/path`
+  implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
+  private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
+  peeled to its commit) and writes the commit into the version before the change request's
+  checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
+  check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
+- `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
+  artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+- `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
+  pinned by the provider's `source.commit`.
+
+### How automation steps run
+
+With the default profile, `call: ansible`, `call: terraform`, `call: http` and `script` answer
+from the samples recorded in the provider files (a JavaScript script runs in the platform's own
+interpreter). With the `live` profile they run for real, each in a working directory of its own
+that is removed afterwards; a dry run still answers from the samples and never touches a system.
+Every executable, image and limit is a `platform.runners.*` setting; with
+`platform.runners.container-runtime: docker` (or `podman`) every step runs in a container with no
+new privileges and every kernel privilege dropped, and secrets reach it by variable name, never on
+a command line. A step's `timeout` (10 minutes when it names none) ends the process; cancelling the job
+stops it too. Values read from the vault are masked in every log line and error message.
+
+- `call: ansible` runs `ansible-runner` (or `ansible-playbook` with the JSON callback when
+  ansible-runner is not installed) on the pinned playbook. `inventory` is `dynamic` (the
+  inventory configured in `platform.runners.ansible.dynamic-inventory`), a path inside the
+  playbook's source, a list of hosts, or `{ hosts, group?, vars? }`; `limit` is a pattern or a
+  list. `credential` is an SSH private key in the vault, written to a `0600` file for the run
+  only. The roles and collections of a `requirements.yml` (also `roles/requirements.yml` and
+  `collections/requirements.yml`) are installed once per content with `ansible-galaxy`. `executionEnvironment` (or the provider's) is the image in a
+  container. The output is `{ ok, changed, failed, unreachable, skipped, hosts, stats }` plus the
+  playbook's `set_stats` data; a failed host fails the step (`failed`), an unreachable one with a
+  retryable `unreachable`. `checkModeOnTest: true` adds `--check` in the `test` environment.
+- `call: terraform` checks the module out at the commit `module.ref`, the source's `?ref=` or
+  `module.version` (a tag, tried as given and with a `v`) names, and uses it as the root module.
+  Sources are git over https (`git::https://host/repo//dir`, `github.com/org/repo//dir`); registry
+  modules, local paths, archives and ssh are refused with the reason. State lives in a workspace,
+  `workspace` or one per job and step, on the backend of `platform.runners.terraform.backend`
+  (local disk under the work directory when blank). The plan is saved, kept in the artifact
+  store as the binary and as `terraform show -json`, and `apply` and `destroy` apply exactly that
+  plan. `credential` is a vault entry holding the provider's environment variables, as a JSON
+  object or `NAME=value` lines (variables that would steer terraform itself, like `TF_CLI_ARGS`
+  or `PATH`, are refused). The output is `{ add, change, destroy, plan: { sha256, size, json },
+  workspace, commit, outputs }` with sensitive outputs as `"(sensitive)"`; check mode stops
+  after the plan. A saved plan holds the values it was planned with in clear, so the artifact
+  store must be as private as the state.
+- `script` runs one process: `javascript` (node) and `python` code is a function body with
+  `input` in scope that returns the output, and what it prints goes to the job log; `bash` and
+  `go` (`go run`, standard library only) are programs that read the input as JSON on stdin and
+  print their output as JSON. In a container a script has no network, a read-only root and the
+  memory, CPU and process limits of `platform.runners.script`.
+- `call: http` sends one request. The URL may not be a cloud metadata or link-local address.
+  `credential: vault:<path>` becomes `Authorization: Bearer <secret>`, and a header whose value
+  is `vault:<path>` (or `<scheme> vault:<path>`, like `Basic vault:svc/basic`) gets the secret in
+  its place; a request carrying a secret follows no redirect. The output is `{ status, body }`,
+  and a status outside 2xx fails the step with the class it implies (`rate_limited` and 5xx are
+  retryable).
 
 ### Expressions
 

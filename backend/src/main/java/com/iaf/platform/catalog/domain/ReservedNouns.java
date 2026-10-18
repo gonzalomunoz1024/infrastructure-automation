@@ -12,7 +12,7 @@ public final class ReservedNouns {
     public static final Set<String> NOUNS = Set.of(
             "workflows", "jobs", "approvals", "providers", "releases", "audit", "resources", "resource-types",
             "credentials", "registry", "catalog", "assistant", "triggers", "change-requests", "templates",
-            "service-accounts", "me", "mcp", "openapi.json", "openapi", "batches", "evidence", "ws", "actuator");
+            "service-accounts", "me", "mcp", "openapi.json", "openapi", "batches", "evidence", "ws", "actuator", "playbooks");
 
     private ReservedNouns() {
     }

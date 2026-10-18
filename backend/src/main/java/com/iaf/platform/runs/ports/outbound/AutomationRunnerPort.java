@@ -20,7 +20,28 @@ public interface AutomationRunnerPort {
     record RunRequest(String jobId, int seq, StepType type, Step step, JsonNode with, String environment, boolean dryRun, boolean checkMode) {
     }
 
+    /**
+     * What a runner tells its caller while a step runs: {@link #report} a line worth keeping in the
+     * job log (a task started, a host failed, a plan summary) and {@link #heartbeat} between
+     * reports to say the step is alive. Either may throw to stop the step (the job was
+     * cancelled); the runner then ends its process and the error is the step's.
+     */
+    interface Progress {
+        Progress NONE = message -> {
+        };
+
+        void report(String message);
+
+        default void heartbeat() {
+        }
+    }
+
     Mono<JsonNode> run(RunRequest request);
+
+    /** Run while reporting progress; a runner with nothing to report answers {@link #run(RunRequest)}. */
+    default Mono<JsonNode> run(RunRequest request, Progress progress) {
+        return run(request);
+    }
 
     boolean supports(StepType type);
 }

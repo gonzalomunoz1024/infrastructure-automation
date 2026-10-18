@@ -19,6 +19,8 @@
         <temporal.version>1.40.0</temporal.version>
         <jgit.version>7.8.0.202609011348-r</jgit.version>
         <json-schema-validator.version>1.5.9</json-schema-validator.version>
+        <commons-compress.version>1.28.0</commons-compress.version>
+        <aws-sdk.version>2.55.5</aws-sdk.version>
     </properties>
 
     <dependencies>
@@ -92,6 +94,37 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
+        </dependency>
+        <!-- playbook archives (.zip, .tar.gz): safe listing and extraction -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+            <version>${commons-compress.version}</version>
+        </dependency>
+        <!-- the artifact store on an S3-compatible bucket (profile s3); the JDK HTTP client only -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>${aws-sdk.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>apache-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>apache5-client</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+            <version>${aws-sdk.version}</version>
         </dependency>
 
         <dependency>

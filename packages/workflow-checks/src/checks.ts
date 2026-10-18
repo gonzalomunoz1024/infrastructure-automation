@@ -50,6 +50,7 @@ export const RESERVED_NOUNS: readonly string[] = [
   'registry',
   'triggers',
   'openapi',
+  'playbooks',
 ];
 
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */
@@ -559,8 +560,8 @@ class Checker {
         break;
       case 'script': {
         const lang = withText(s, 'language');
-        if (lang !== null && lang !== 'javascript') {
-          this.error('script.language', s.id, 'language', 'Scripts are JavaScript');
+        if (lang !== null && !['javascript', 'python', 'bash', 'go'].includes(lang)) {
+          this.error('script.language', s.id, 'language', 'Scripts are javascript, python, bash or go');
         }
         this.require(s, 'code', 'step.missing', 'A script needs code');
         break;

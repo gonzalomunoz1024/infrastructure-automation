@@ -49,6 +49,11 @@ public final class OutboundAddresses {
         return http.resolver(RESOLVER).followRedirect(OutboundAddresses::followRedirect);
     }
 
+    /** Every address {@code host} resolves to; an {@link UnknownHostException} when one of them is refused. */
+    public static List<InetAddress> resolveAllowed(String host) throws UnknownHostException {
+        return GuardedNameResolver.allowed(host);
+    }
+
     public static boolean blocked(InetAddress address) {
         return address.isLinkLocalAddress() || address.isAnyLocalAddress() || METADATA_ADDRESSES.contains(address);
     }
