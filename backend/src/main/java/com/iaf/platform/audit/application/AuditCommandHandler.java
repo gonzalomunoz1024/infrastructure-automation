@@ -3,17 +3,21 @@ package com.iaf.platform.audit.application;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Set;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.inbound.AuditCommands;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
+import com.iaf.platform.audit.ports.outbound.RecordOwners;
+import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.EventBus;
@@ -22,8 +26,15 @@ import com.iaf.platform.identity.application.CurrentIdentity;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-/** Seals closed records and checkpoints open ones (on a schedule and on demand), and mints share links. */
+/**
+ * Seals closed records and checkpoints open ones (on a schedule, and on demand by an admin), and
+ * mints share links: a job's record is shared by its requester, a member of the teams it ran for
+ * (the requester's teams and the workflow's owner team, {@link RecordOwners}) or an admin, and
+ * every link is published as {@code audit.shared} (the record, who, until when; never the token).
+ * Both touch the store, so they run on boundedElastic.
+ */
 @Slf4j
 @Primary
 @Service
@@ -37,6 +48,7 @@ public class AuditCommandHandler implements AuditCommands {
     private final EventBus events;
     private final Clock clock;
     private final ObjectMapper mapper;
+    private final RecordOwners owners;
 
     @Scheduled(fixedDelayString = "${platform.audit.seal-every}")
     public void sealOnSchedule() {
@@ -52,7 +64,13 @@ public class AuditCommandHandler implements AuditCommands {
 
     @Override
     public Mono<SealResult> seal() {
-        return CurrentIdentity.current().map(who -> sealAll(who.id()));
+        return CurrentIdentity.current().flatMap(who -> {
+            if (!who.admin()) {
+                return Mono.error(new ForbiddenException(who.name() + " may not seal evidence: only admins seal on demand,"
+                        + " and the platform seals every record on its own schedule"));
+            }
+            return Mono.fromCallable(() -> sealAll(who.id())).subscribeOn(Schedulers.boundedElastic());
+        });
     }
 
     /**
@@ -102,10 +120,28 @@ public class AuditCommandHandler implements AuditCommands {
 
     @Override
     public Mono<ShareLink> share(String jobId) {
-        return Mono.fromSupplier(() -> {
-            store.record(jobId).orElseThrow(() -> new NotFoundException("evidence record", jobId));
+        return CurrentIdentity.current().flatMap(who -> Mono.fromCallable(() -> {
+            EvidenceRecord record = store.record(jobId).orElseThrow(() -> new NotFoundException("evidence record", jobId));
+            Set<String> teams = owners.teams(jobId);
+            if (!canShare(who, record, teams)) {
+                throw new ForbiddenException(who.name() + " may not share the evidence of " + jobId + ": only its requester ("
+                        + record.requester() + ")" + (teams.isEmpty() ? "" : ", a member of " + String.join(", ", teams)) + " or an admin may");
+            }
             ShareToken token = store.shareToken(jobId, clock.instant().plus(SHARE_FOR));
+            ObjectNode data = mapper.createObjectNode()
+                    .put("recordId", jobId)
+                    .put("by", who.id())
+                    .put("expiresAt", token.expiresAt().toString());
+            events.publish("audit.shared", "audit", jobId, who.id(), data);
             return new ShareLink("/api/v1/audit/shared/" + token.token(), token.expiresAt());
-        });
+        }).subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    /** The requester, a member of the job's teams, or an admin. */
+    static boolean canShare(Identity who, EvidenceRecord record, Set<String> teams) {
+        if (who.admin() || (who.id() != null && who.id().equals(record.requester()))) {
+            return true;
+        }
+        return who.teams() != null && who.teams().stream().anyMatch(teams::contains);
     }
 }

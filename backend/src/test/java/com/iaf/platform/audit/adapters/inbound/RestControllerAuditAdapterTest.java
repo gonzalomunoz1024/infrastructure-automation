@@ -7,8 +7,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -22,8 +25,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.iaf.platform.audit.adapters.outbound.InMemoryEvidenceStore;
 import com.iaf.platform.audit.application.AuditCommandHandler;
 import com.iaf.platform.audit.application.AuditQueryHandler;
+import com.iaf.platform.audit.application.AuditSigner;
 import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
@@ -35,8 +40,12 @@ import com.iaf.platform.audit.ports.inbound.AuditQueries.AuditRow;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FileExport;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FilterSpec;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.Verification;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.config.GlobalExceptionHandler;
+import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.identity.application.CurrentIdentity;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -194,6 +203,39 @@ class RestControllerAuditAdapterTest {
         client.get().uri("/api/v1/audit/shared/old").exchange()
                 .expectStatus().isEqualTo(410)
                 .expectBody().jsonPath("$.error").isEqualTo("share link expired");
+    }
+
+    /** The adapter over a real command handler, as {@code who}. */
+    WebTestClient as(Identity who, AuditCommandHandler handler) {
+        return WebTestClient.bindToController(new RestControllerAuditAdapter(handler, queries))
+                .controllerAdvice(new GlobalExceptionHandler())
+                .httpMessageCodecs(c -> c.defaultCodecs().jackson2JsonEncoder(new Jackson2JsonEncoder(JSON)))
+                .webFilter((exchange, chain) -> chain.filter(exchange).contextWrite(ctx -> CurrentIdentity.with(ctx, who)))
+                .build();
+    }
+
+    @Test
+    void sealingNeedsAnAdminAndSharingTheJobsRequesterTeamOrAnAdmin() {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        InMemoryEvidenceStore store = new InMemoryEvidenceStore();
+        store.append("job_1", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", JSON.createObjectNode().put("workflow", "vm-restart")));
+        AuditCommandHandler handler = new AuditCommandHandler(store, new AuditSigner(new PlatformProperties()), new EventBus(clock), clock, JSON,
+                jobId -> Set.of("team-compute"));
+        Identity dev = new Identity("dev", "Dev", null, List.of("team-web"), List.of("developer"), false, Identity.Kind.USER);
+        Identity mateo = new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER);
+
+        as(dev, handler).post().uri("/api/v1/audit:seal").exchange()
+                .expectStatus().isForbidden()
+                .expectBody().jsonPath("$.error").value(e -> assertThat(String.valueOf(e)).startsWith("Dev may not seal evidence"));
+        as(dev, handler).post().uri("/api/v1/audit/job_1:share").exchange()
+                .expectStatus().isForbidden()
+                .expectBody().jsonPath("$.error").isEqualTo("Dev may not share the evidence of job_1: only its requester (ana), a member of team-compute or an admin may");
+        as(mateo, handler).post().uri("/api/v1/audit/job_1:share").exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.url").value(url -> assertThat(String.valueOf(url)).startsWith("/api/v1/audit/shared/"));
+        as(Identity.SYSTEM, handler).post().uri("/api/v1/audit:seal").exchange()
+                .expectStatus().isOk()
+                .expectBody().jsonPath("$.checkpointed").isEqualTo(1);
     }
 
     @Test
