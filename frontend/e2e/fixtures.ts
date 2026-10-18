@@ -21,11 +21,13 @@ import type {
   Problem,
   ProviderAlert,
   ProviderDetail,
+  ProviderDraft,
   ProviderSummary,
   ProviderValidation,
   Release,
   Resource,
   ResourceType,
+  Schema,
   ServiceAccount,
   SpecImport,
   TerraformImport,
@@ -407,6 +409,61 @@ export const SPEC: SpecImport = {
     { operationId: 'listJobs', method: 'get', path: '/jobs', summary: 'List backup jobs', effect: 'read', retry: 'safe', input: { type: 'object', properties: { target: { type: 'string' } } }, output: { type: 'object', properties: { items: { type: 'array' }, total: { type: 'integer' } } } },
     { operationId: 'createJob', method: 'post', path: '/jobs', summary: 'Start a backup', effect: 'create', retry: 'unsafe', input: { type: 'object', required: ['target'], properties: { target: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, state: { type: 'string' } } } },
   ],
+}
+
+/** The id input of a vCenter operation: a VM from the registry. */
+const VM_ID: Schema = { type: 'object', required: ['id'], properties: { id: { type: 'string', title: 'VM', 'x-resource': { type: 'vm' } } } }
+
+/** A spec with more operations than a glance takes in, one a delete whose input names a registry VM. */
+export const VCENTER_SPEC: SpecImport = {
+  title: 'vCenter',
+  version: '8.0.2',
+  sha256: hash('7d1e0c9a'),
+  auth: { type: 'bearer' },
+  servers: ['https://vcenter-dev.example.com/rest', 'https://vcenter.example.com/rest'],
+  operations: [
+    { operationId: 'listVms', method: 'get', path: '/vms', summary: 'List virtual machines', effect: 'read', retry: 'safe', input: { type: 'object', properties: { folder: { type: 'string' } } }, output: { type: 'object', properties: { items: { type: 'array' } } } },
+    { operationId: 'getVm', method: 'get', path: '/vms/{id}', summary: 'Get a virtual machine', effect: 'read', retry: 'safe', input: VM_ID, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } } },
+    { operationId: 'deleteVm', method: 'delete', path: '/vms/{id}', summary: 'Delete a virtual machine', effect: 'delete', retry: 'unsafe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'listSnapshots', method: 'get', path: '/vms/{id}/snapshots', summary: 'List the snapshots of a VM', effect: 'read', retry: 'safe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'createSnapshot', method: 'post', path: '/vms/{id}/snapshots', summary: 'Take a snapshot', effect: 'create', retry: 'unsafe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'listDatastores', method: 'get', path: '/datastores', summary: 'List datastores', effect: 'read', retry: 'safe', input: { type: 'object' }, output: { type: 'object' } },
+  ],
+}
+
+/** A VM made to be deleted by a try: the registry's test resource in dev. */
+export const TEST_VM = resource('vm-dev-7', 'vm', 'scratch-7', { attributes: { cpu: 1, memoryGb: 2, environment: 'dev' } })
+
+/** A destructive try in dev, kept as review evidence and verified gone afterwards. */
+export const TRY_DELETE: TryResult = { ok: true, status: 204, durationMs: 310, response: {}, mismatches: [], verified: true, environment: 'dev', at: ago(0) }
+
+/** Ask Devin's answer: the provider file it drafted from a description. */
+export const PROVIDER_DRAFT: ProviderDraft = {
+  summary: 'An HTTP provider for the backup service with two actions.',
+  assumptions: ['The API key goes in the X-Api-Key header.', 'Starting a backup is not safe to retry.'],
+  yaml: [
+    'apiVersion: iaf.platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: backup',
+    '  title: Backup service',
+    '  owner: team-platform',
+    '  version: 1.0.0',
+    'spec:',
+    '  type: http',
+    '  endpoints:',
+    '    dev: https://backup-dev.example.com/api',
+    '  auth: { type: header, header: X-Api-Key, credential: vault:backup/api-key }',
+    '  actions:',
+    '    - id: jobs.list',
+    '      operation: { method: GET, path: /jobs }',
+    '      effect: read',
+    '    - id: jobs.create',
+    '      operation: { method: POST, path: /jobs }',
+    '      effect: create',
+    '      retry: unsafe',
+    '',
+  ].join('\n'),
 }
 
 export const CONNECTION: TestConnectionResult = {

@@ -50,6 +50,21 @@ export interface ActionRow {
   exampleText: string
 }
 
+/**
+ * One error class of `spec.errors`: a failed call that matches is called `class`, and retried
+ * when `retry` says so. The backend matches the status first, then text the answer's body
+ * contains (`match.body`, a plain substring); the first class that matches wins.
+ */
+export interface ErrorRow {
+  key: number
+  /** the HTTP status, as typed */
+  status: string
+  /** text the body contains, for a status several errors share */
+  body: string
+  class: string
+  retry: boolean
+}
+
 export interface WizardState {
   type: ProviderType
   title: string
@@ -81,6 +96,7 @@ export interface WizardState {
   tries: Record<string, TryResult>
   samples: Record<string, unknown>
   overrides: Record<string, Schema>
+  errors: ErrorRow[]
   slo: { successRate: string; p95Ms: string; channel: string }
   strategy: Strategy
   /** Devin's draft, a tried draft or an import's, when the user chose it over the wizard's document */
@@ -97,6 +113,15 @@ const VERSION_RE = /^\d+\.\d+\.\d+$/
 const HTTPS_RE = /^https:\/\/\S+$/
 const TASK_QUEUE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/
 const DURATION_RE = /^(P(?!$)(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?|\d+(ms|s|m|h|d))$/
+const CLASS_RE = /^[a-z][a-z0-9_]*$/
+const STATUS_RE = /^[1-5]\d\d$/
+/** The classes the backend falls back to for these statuses, as a starting point. */
+const USUAL_ERRORS: { status: number; class: string; retry: boolean }[] = [
+  { status: 404, class: 'not_found', retry: false },
+  { status: 409, class: 'conflict', retry: false },
+  { status: 429, class: 'rate_limited', retry: true },
+  { status: 503, class: 'unavailable', retry: true },
+]
 const EFFECTS: Effect[] = ['read', 'create', 'change', 'delete']
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 const STEPS = [
@@ -127,6 +152,10 @@ export const kebab = (s: string): string =>
 
 export function blankAction(partial: Partial<ActionRow> = {}): ActionRow {
   return { key: nextKey(), selected: true, id: '', title: '', operation: '', method: 'GET', path: '', playbook: '', effect: 'read', retry: 'safe', approval: false, plan: '', description: '', inputText: '', outputText: '', exampleText: '', ...partial }
+}
+
+export function blankError(partial: Partial<ErrorRow> = {}): ErrorRow {
+  return { key: nextKey(), status: '', body: '', class: '', retry: false, ...partial }
 }
 
 function starterActions(type: ProviderType): ActionRow[] {
@@ -169,6 +198,7 @@ export function initialState(): WizardState {
     tries: {},
     samples: {},
     overrides: {},
+    errors: [],
     slo: { successRate: '99.0', p95Ms: '1000', channel: '' },
     strategy: 'canary',
     draftYaml: null,
@@ -227,6 +257,39 @@ export function withVersion(yaml: string, version: string): string {
     }
   }
   return yaml
+}
+
+type MetadataField = 'name' | 'title' | 'owner' | 'version'
+
+/** The plain fields of a file's metadata block, read line by line like `withVersion`: what a draft is called. */
+export function metadataOf(yaml: string): Partial<Record<MetadataField, string>> {
+  const out: Partial<Record<MetadataField, string>> = {}
+  const lines = yaml.split('\n')
+  const start = lines.findIndex((l) => /^metadata:\s*(#.*)?$/.test(l))
+  if (start < 0) return out
+  let indent: number | null = null
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    const lead = line.length - line.trimStart().length
+    if (lead === 0) break
+    indent ??= lead
+    if (lead !== indent) continue
+    const m = /^\s+(name|title|owner|version):\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(?:#.*)?$/.exec(line)
+    if (m) out[m[1] as MetadataField] = (m[2] ?? m[3] ?? m[4] ?? '').trim()
+  }
+  return out
+}
+
+/** A draft names the provider: the wizard takes its name, title, owner and version, so the path and the change request say what is published. */
+export function draftNames(yaml: string): Partial<WizardState> {
+  const m = metadataOf(yaml)
+  return {
+    ...(m.name && NAME_RE.test(m.name) ? { name: m.name, nameTouched: true } : {}),
+    ...(m.title ? { title: m.title } : {}),
+    ...(m.owner ? { owner: m.owner, ownerTouched: true } : {}),
+    ...(m.version && VERSION_RE.test(m.version) ? { version: m.version } : {}),
+  }
 }
 
 const authTypeFrom = (t: string | undefined): AuthType => (t === undefined ? 'none' : t === 'bearer' || t === 'basic' || t === 'header' || t === 'none' ? t : authTypeOf(t))
@@ -331,6 +394,39 @@ function actionDocument(type: ProviderType, a: ActionRow, s: WizardState): Recor
   }
 }
 
+const blankRow = (e: ErrorRow) => !e.status.trim() && !e.body.trim() && !e.class.trim()
+
+/** One `spec.errors` entry: `{ match: { status, body }, class, retry }`; a row left blank is none. */
+export function errorDocument(e: ErrorRow): Record<string, unknown> | undefined {
+  if (blankRow(e)) return undefined
+  const status = e.status.trim()
+  return { match: { status: status ? (/^\d+$/.test(status) ? Number(status) : status) : undefined, body: e.body.trim() || undefined }, class: e.class.trim(), retry: e.retry }
+}
+
+/**
+ * What is wrong with the error classes: each needs a name and something to match, a status when
+ * the provider is called over HTTP, and must not sit behind an earlier class that matches every
+ * call it would (same status, and no body text or text its own contains: the first match wins).
+ */
+export function errorIssues(type: ProviderType, errors: readonly ErrorRow[]): string[] {
+  const out: string[] = []
+  const http = type === 'openapi' || type === 'http'
+  errors.forEach((e, i) => {
+    if (blankRow(e)) return
+    const name = e.class.trim()
+    const label = name || `Error class ${i + 1}`
+    const status = e.status.trim()
+    const body = e.body.trim()
+    if (!CLASS_RE.test(name)) out.push(`${label}: a name in lowercase words joined by underscores, like rate_limited.`)
+    if (status && !STATUS_RE.test(status)) out.push(`${label}: the status is an HTTP status, like 429.`)
+    else if (!status && http) out.push(`${label}: the status it matches; calls are matched by status first, then by body text.`)
+    else if (!status && !body) out.push(`${label}: the status or the body text it matches.`)
+    const shadow = errors.slice(0, i).find((x) => !blankRow(x) && x.status.trim() === status && (status ? !x.body.trim() || body.includes(x.body.trim()) : x.body.trim() === body))
+    if (shadow) out.push(`${label}: ${shadow.class.trim() || 'an earlier class'} above it matches every call it would, and the first match wins.`)
+  })
+  return out
+}
+
 /** The provider document as a plain object; `emitYaml` writes it. */
 export function buildProviderDocument(s: WizardState): Record<string, unknown> {
   const spec: Record<string, unknown> = { type: s.type }
@@ -350,6 +446,8 @@ export function buildProviderDocument(s: WizardState): Record<string, unknown> {
   spec.actions = s.actions.filter((a) => a.selected).map((a) => actionDocument(s.type, a, s))
   const overrides = Object.entries(s.overrides).filter(([id]) => s.actions.some((a) => a.selected && a.id === id))
   if (overrides.length) spec.overrides = Object.fromEntries(overrides.map(([id, schema]) => [id, { response: schema }]))
+  const errors = s.errors.map(errorDocument).filter((e) => e !== undefined)
+  if (errors.length) spec.errors = errors
   const rate = Number(s.slo.successRate)
   const p95 = Number(s.slo.p95Ms)
   if (Number.isFinite(rate) && rate > 0 && Number.isFinite(p95) && p95 > 0) spec.slo = { successRate: rate, p95Ms: p95 }
@@ -410,8 +508,28 @@ export function stepIssues(s: WizardState, step: number): string[] {
         if (!p.empty && p.error) out.push(`${label}: the ${what} is not valid JSON.`)
       }
     }
+    out.push(...errorIssues(s.type, s.errors))
   }
   return out
+}
+
+/** Where the review counts tries: dev when the provider has it (or no environment yet), else its first (ProviderReview.sandbox). */
+export function sandboxEnvironment(environments: readonly string[]): string {
+  return environments.length === 0 || environments.includes('dev') ? 'dev' : environments[0]
+}
+
+/** Whether an operation is one the search asks for: every word in its operationId, action id, method, path or summary. */
+export function matchesOperation(a: Pick<ActionRow, 'operation' | 'id' | 'method' | 'path' | 'title'>, query: string): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  const text = `${a.operation} ${a.id} ${a.method} ${a.path} ${a.title}`.toLowerCase()
+  return words.every((w) => text.includes(w))
+}
+
+/** The input fields that name a registry resource (`x-resource`). */
+export function resourceFields(schema: Schema | undefined): string[] {
+  return Object.entries(schema?.properties ?? {})
+    .filter(([, p]) => !!p && typeof p === 'object' && !!p['x-resource'])
+    .map(([name]) => name)
 }
 
 /** dev / test / prod for each server URL; an unmarked one is prod, and a repeat becomes env<n>. */
@@ -434,10 +552,14 @@ function authTypeOf(t: string | undefined): AuthType {
   return 'bearer'
 }
 
-function describe(s: WizardState): string {
+/** What Ask Devin starts from: the wizard so far, in words, ready to be edited. Exported for its tests. */
+export function describeProvider(s: WizardState): string {
   const sel = s.actions.filter((a) => a.selected)
+  const label = TYPE_LABEL[s.type]
+  const called = s.title.trim() || s.name ? ` called "${s.title.trim() || s.name}"${s.name ? ` (name ${s.name})` : ''}` : ''
+  const errors = s.errors.filter((e) => !blankRow(e))
   const lines = [
-    `A ${TYPE_LABEL[s.type]} provider called "${s.title || s.name}" (name ${s.name || '?'}), owned by ${s.owner || '?'}, version ${s.version}.`,
+    `${s.type === 'terraform' ? 'A' : 'An'} ${label} provider${called}${s.owner ? `, owned by ${s.owner}` : ''}, version ${s.version}.`,
     s.description.trim(),
     s.type === 'openapi' && s.specUrl ? `Spec: ${s.specUrl}.` : '',
     s.environments.some((e) => e.url) ? `Environments: ${s.environments.filter((e) => e.url).map((e) => `${e.name} at ${e.url}`).join(', ')}.` : '',
@@ -445,6 +567,7 @@ function describe(s: WizardState): string {
     s.type === 'terraform' ? `Module ${s.terraform.source} ${s.terraform.version}.` : '',
     `Authentication: ${s.auth.type}${s.auth.credential ? ` with credential ${s.auth.credential}` : ''}.`,
     sel.length ? `Actions: ${sel.map((a) => `${a.id} (${a.effect}${a.approval ? ', approval' : ''})`).join(', ')}.` : 'Actions: suggest the useful ones.',
+    errors.length ? `Error classes: ${errors.map((e) => `${[e.status.trim() && `HTTP ${e.status.trim()}`, e.body.trim() && `"${e.body.trim()}"`].filter(Boolean).join(' with ')} is ${e.class.trim()}${e.retry ? ', retried' : ''}`).join('; ')}.` : '',
   ]
   return lines.filter(Boolean).join('\n')
 }
@@ -472,6 +595,8 @@ export default function ProviderWizardPage({ route }: PageProps) {
   const [state, setState] = useState<WizardState>(initialState)
   const [stepId, setStepId] = useState<StepId>(steps[0].id)
   const [furthest, setFurthest] = useState(0)
+  // Ask Devin, from the Type step or the Review step
+  const [asking, setAsking] = useState<'type' | 'review' | null>(null)
   const update = (patch: Partial<WizardState>) => setState((s) => ({ ...s, ...patch }))
   // ?import=ansible or ?import=terraform: the backend drafts the provider from a repository or a module, and the wizard opens on the review
   const importKind: ImportKind | null = !editingName && (route.query.import === 'ansible' || route.query.import === 'terraform') ? route.query.import : null
@@ -535,11 +660,11 @@ export default function ProviderWizardPage({ route }: PageProps) {
         />
       ) : (
         <>
-          {stepId === 'type' && <TypeStep state={state} update={update} />}
+          {stepId === 'type' && <TypeStep state={state} update={update} onAsk={() => setAsking('type')} />}
           {stepId === 'connect' && <ConnectStep state={state} update={update} />}
           {stepId === 'actions' && <ActionsStep state={state} update={update} />}
           {stepId === 'try' && <TryStep state={state} update={update} yaml={yaml} />}
-          {stepId === 'review' && <ReviewStep state={state} update={update} yaml={yaml} />}
+          {stepId === 'review' && <ReviewStep state={state} update={update} yaml={yaml} onAsk={() => setAsking('review')} />}
         </>
       )}
 
@@ -567,6 +692,20 @@ export default function ProviderWizardPage({ route }: PageProps) {
           )}
         </div>
       )}
+
+      {asking && (
+        <DraftModal
+          initial={describeProvider(state)}
+          onUse={(d) => {
+            // the draft replaces the wizard's document, and names the provider
+            update({ draftYaml: d.yaml, ...draftNames(d.yaml) })
+            // asked from the Type step: the review is where the draft is checked, tried and published
+            if (asking === 'type') goTo(steps.length - 1)
+            setAsking(null)
+          }}
+          onClose={() => setAsking(null)}
+        />
+      )}
     </>
   )
 }
@@ -575,7 +714,7 @@ type StepProps = { state: WizardState; update: (patch: Partial<WizardState>) => 
 
 /* ---- 1 · Type ------------------------------------------------------------ */
 
-function TypeStep({ state, update }: StepProps) {
+function TypeStep({ state, update, onAsk }: StepProps & { onAsk: () => void }) {
   const pick = (type: ProviderType) => {
     if (type === state.type) return
     update({ type, actions: starterActions(type), tested: null, tries: {}, samples: {}, overrides: {}, auth: { ...state.auth, type: type === 'ansible' || type === 'terraform' || type === 'sdk' ? 'none' : state.auth.type === 'none' ? 'bearer' : state.auth.type } })
@@ -630,6 +769,12 @@ function TypeStep({ state, update }: StepProps) {
             <Textarea id="prov-description" rows={2} value={state.description} onChange={(e) => update({ description: e.target.value })} placeholder="Virtual machines, templates and snapshots in the vCenter of each environment." />
           </Field>
         </div>
+      </Card>
+
+      <Card title="Rather describe it in words?" subtitle="Devin drafts the provider file from a few sentences. The draft opens on the review, where its checks run before anything is published." data-testid="ask-devin">
+        <Button icon="sparkles" onClick={onAsk}>
+          Ask Devin to draft it
+        </Button>
       </Card>
     </div>
   )
@@ -929,6 +1074,8 @@ function ConnectStep({ state, update }: StepProps) {
 /* ---- 3 · Actions --------------------------------------------------------- */
 
 function ActionsStep({ state, update }: StepProps) {
+  // a spec can have hundreds of operations: the search narrows the table, and "select all" takes what it shows
+  const [query, setQuery] = useState('')
   const patch = (key: number, p: Partial<ActionRow>) => update({ actions: state.actions.map((a) => (a.key === key ? { ...a, ...p } : a)) })
   const remove = (key: number) => update({ actions: state.actions.filter((a) => a.key !== key) })
   const add = () => update({ actions: [...state.actions, blankAction()] })
@@ -941,11 +1088,14 @@ function ActionsStep({ state, update }: StepProps) {
   ]
 
   if (state.type === 'openapi') {
-    const allOn = state.actions.length > 0 && state.actions.every((a) => a.selected)
+    const shown = state.actions.filter((a) => matchesOperation(a, query))
+    const shownKeys = new Set(shown.map((a) => a.key))
+    const searching = query.trim() !== ''
+    const allOn = shown.length > 0 && shown.every((a) => a.selected)
     const columns: TableColumn<ActionRow>[] = [
       {
         key: 'on',
-        header: <Checkbox checked={allOn} onChange={(v) => update({ actions: state.actions.map((a) => ({ ...a, selected: v })) })} label={<span className="sr-only">Select all</span>} />,
+        header: <Checkbox checked={allOn} onChange={(v) => update({ actions: state.actions.map((a) => (shownKeys.has(a.key) ? { ...a, selected: v } : a)) })} label={<span className="sr-only">{searching ? 'Select every operation shown' : 'Select all'}</span>} />,
         width: '2.5rem',
         render: (a) => <Checkbox checked={a.selected} onChange={(v) => patch(a.key, { selected: v })} label={<span className="sr-only">Include {a.operation}</span>} />,
       },
@@ -969,13 +1119,39 @@ function ActionsStep({ state, update }: StepProps) {
       { key: 'plan', header: 'Plan via', width: '9rem', render: (a) => <Select size="sm" ariaLabel={`Plan step of ${a.operation}`} value={a.plan} onChange={(v) => patch(a.key, { plan: v })} options={planOptions(a)} disabled={!a.selected || a.effect === 'read'} mono /> },
     ]
     return (
-      <Card title="Actions" subtitle={state.actions.length ? `${selected.length} of ${state.actions.length} operations become actions. Effect and retry decide what a workflow may do with them.` : undefined} flush>
-        {state.actions.length === 0 ? (
-          <EmptyState icon="document" title="No operations yet" message="Go back to Connect and import the spec; its operations appear here." />
-        ) : (
-          <Table columns={columns} rows={state.actions} rowKey={(a) => String(a.key)} dense bordered={false} maxHeight="max-h-[32rem]" caption="Operations" />
-        )}
-      </Card>
+      <div className="space-y-4">
+        <Card title="Actions" subtitle={state.actions.length ? `${selected.length} of ${state.actions.length} operations become actions. Effect and retry decide what a workflow may do with them.` : undefined} flush>
+          {state.actions.length === 0 ? (
+            <EmptyState icon="document" title="No operations yet" message="Go back to Connect and import the spec; its operations appear here." />
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 pb-3">
+                <div className="w-full sm:max-w-xs">
+                  <Input leading="search" size="sm" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search operations" aria-label="Search operations" />
+                </div>
+                {searching && (
+                  <span className="text-caption text-secondary" role="status">
+                    {shown.length} of {state.actions.length} shown; the hidden ones keep their selection
+                  </span>
+                )}
+              </div>
+              <Table
+                columns={columns}
+                rows={shown}
+                rowKey={(a) => String(a.key)}
+                dense
+                bordered={false}
+                maxHeight="max-h-[32rem]"
+                caption="Operations"
+                emptyIcon="search"
+                emptyTitle="No operation matches"
+                emptyMessage={`None of the ${state.actions.length} operations has "${query.trim()}" in its id, method, path or summary.`}
+              />
+            </>
+          )}
+        </Card>
+        <ErrorClasses state={state} update={update} />
+      </div>
     )
   }
 
@@ -1064,7 +1240,68 @@ function ActionsStep({ state, update }: StepProps) {
           </Button>
         </div>
       )}
+      <ErrorClasses state={state} update={update} />
     </div>
+  )
+}
+
+/** `spec.errors`: what a failed call is called and whether it is retried, matched by status and body text. */
+export function ErrorClasses({ state, update }: StepProps) {
+  const http = state.type === 'openapi' || state.type === 'http'
+  const set = (key: number, p: Partial<ErrorRow>) => update({ errors: state.errors.map((e) => (e.key === key ? { ...e, ...p } : e)) })
+  const usual = USUAL_ERRORS.filter((u) => !state.errors.some((e) => e.status.trim() === String(u.status) && !e.body.trim()))
+  const addUsual = () => update({ errors: [...state.errors.filter((e) => !blankRow(e)), ...usual.map((u) => blankError({ status: String(u.status), class: u.class, retry: u.retry }))] })
+  const grid = 'grid grid-cols-2 gap-2 sm:grid-cols-[5.5rem_minmax(0,1fr)_minmax(0,11rem)_4.5rem_2rem] sm:items-center'
+
+  return (
+    <Card
+      title="Error classes"
+      subtitle={
+        http
+          ? 'How a failed call is named, so retries and alerts know what it means. A call is matched by its status, then by text its body contains; the first class that matches wins, and a call none matches is named by its status alone.'
+          : 'How a failure is named, so retries and alerts know what it means. A class matches a status, text the answer contains, or both; the first that matches wins.'
+      }
+      data-testid="error-classes"
+    >
+      {state.errors.length === 0 ? (
+        <p className="text-caption text-tertiary">None yet. The review asks for them: start from the usual ones, then name what this system really answers.</p>
+      ) : (
+        <>
+          <div className={cx(grid, 'mb-1.5 hidden text-caption2 font-medium text-tertiary sm:grid')} aria-hidden="true">
+            <span>Status</span>
+            <span>Body contains</span>
+            <span>Class</span>
+            <span>Retry</span>
+            <span />
+          </div>
+          <ul className="space-y-2" aria-label="Error classes">
+            {state.errors.map((e) => (
+              <li key={e.key} className={cx(grid, 'border-b border-stroke-light pb-2 last:border-b-0 last:pb-0 sm:border-b-0 sm:pb-0')}>
+                <Input size="sm" mono inputMode="numeric" value={e.status} onChange={(ev) => set(e.key, { status: ev.target.value })} placeholder="429" aria-label="Status" invalid={!!e.status.trim() && !STATUS_RE.test(e.status.trim())} />
+                <Input size="sm" mono value={e.body} onChange={(ev) => set(e.key, { body: ev.target.value })} placeholder={http ? 'any body' : 'any text'} aria-label="Body contains" />
+                <Input size="sm" mono value={e.class} onChange={(ev) => set(e.key, { class: ev.target.value })} placeholder="rate_limited" aria-label="Class" invalid={!!e.class.trim() && !CLASS_RE.test(e.class.trim())} />
+                <div className="flex items-center justify-between gap-2 sm:contents">
+                  <Checkbox checked={e.retry} onChange={(v) => set(e.key, { retry: v })} label={<span className="sm:sr-only">Retry</span>} />
+                  <IconButton label="Remove error class" size="sm" onClick={() => update({ errors: state.errors.filter((x) => x.key !== e.key) })}>
+                    <Icon name="trash" size={14} />
+                  </IconButton>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" icon="plus" onClick={() => update({ errors: [...state.errors, blankError()] })}>
+          Add error class
+        </Button>
+        {usual.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={addUsual} title={usual.map((u) => `${u.status} ${u.class}${u.retry ? ', retried' : ''}`).join(' · ')}>
+            {state.errors.length ? 'Add the usual ones' : 'Start from the usual ones'}
+          </Button>
+        )}
+      </div>
+    </Card>
   )
 }
 
@@ -1076,9 +1313,13 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
   const envs = Object.keys(endpointsOf(state))
   const [actionId, setActionId] = useState(selected[0]?.id ?? '')
   const action = selected.find((a) => a.id === actionId) ?? selected[0]
-  const [environment, setEnvironment] = useState(envs[0] ?? 'dev')
+  // the review counts the tries in the sandbox (dev), so a try starts there
+  const sandbox = sandboxEnvironment(envs)
+  const [environment, setEnvironment] = useState(sandbox)
   const inputText = action?.inputText
   const schema = useMemo(() => (inputText === undefined ? undefined : parseSchema(inputText)), [inputText])
+  // the review judges tries for the providers the platform calls over HTTP
+  const counted = state.type === 'openapi' || state.type === 'http'
   const [input, setInput] = useState<SchemaValue>(() => defaultsFor(schema))
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(false)
@@ -1113,6 +1354,11 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
   }
 
   const risky = !!action && action.effect !== 'read'
+  // a destructive action whose input names a registry resource: the developer picks a test one
+  const testFields = action?.effect === 'delete' ? resourceFields(schema) : []
+  const pickTestResource = testFields.length > 0
+  const targets = testFields.map((f) => input[f]).filter((v): v is string => typeof v === 'string' && v !== '')
+  const offSandbox = counted && !!result?.environment && result.environment !== sandbox
   const recorded = action ? action.id in state.samples : false
   const fixed = action ? action.id in state.overrides : false
   const used = !!result?.yaml && state.draftYaml === result.yaml
@@ -1125,7 +1371,7 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
             <Field label="Action">
               <Select ariaLabel="Action" value={action?.id ?? ''} onChange={pick} mono options={selected.map((a) => ({ value: a.id, label: a.id, hint: `${a.title || a.id} · ${a.effect}` }))} />
             </Field>
-            <Field label="Environment">
+            <Field label="Environment" hint={counted ? (environment === sandbox ? 'The review counts the tries in ' + sandbox : 'Not review evidence: the review counts only the tries in ' + sandbox) : undefined}>
               <Select ariaLabel="Environment" value={environment} onChange={setEnvironment} mono options={(envs.length ? envs : ['dev']).map((e) => ({ value: e, label: e }))} />
             </Field>
           </div>
@@ -1139,7 +1385,14 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
               )}
             </div>
           )}
-          <SchemaForm schema={schema} value={input} onChange={setInput} idPrefix="wtry" pickers={false} />
+          {/* a destructive try deletes something real: its resource comes from the registry, like the catalog's run form */}
+          <SchemaForm schema={schema} value={input} onChange={setInput} idPrefix="wtry" pickers={pickTestResource} />
+          {pickTestResource && (
+            <p className="flex items-start gap-1.5 text-caption text-secondary" data-testid="try-test-resource">
+              <Icon name="alert-triangle" size={12} className="mt-0.5 shrink-0 text-warning" />
+              Pick a test resource from the registry: the try deletes it in {environment} for real.
+            </p>
+          )}
           <div className="flex justify-end">
             <Button variant="primary" icon="play" loading={busy} disabled={!action} onClick={() => (risky ? setConfirm(true) : void run())}>
               Try it
@@ -1190,15 +1443,16 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
             )}
             {(result.environment || result.at) && (
               <p className="flex flex-wrap items-center gap-1 text-caption text-secondary" data-testid="try-evidence">
-                <Icon name="check" size={12} className="text-healthy" />
-                Kept as review evidence{result.environment ? ` · tried in ${result.environment}` : ''}
+                <Icon name={offSandbox ? 'info' : 'check'} size={12} className={offSandbox ? 'text-warning' : 'text-healthy'} />
+                {offSandbox ? 'Kept' : 'Kept as review evidence'}
+                {result.environment ? ` · tried in ${result.environment}` : ''}
                 {result.at && (
                   <>
                     {' · '}
                     <When at={result.at} />
                   </>
                 )}
-                . The review's tried check counts it.
+                {offSandbox ? `. The review counts only the tries in ${sandbox}.` : ". The review's tried check counts it."}
               </p>
             )}
             {result.yaml && (
@@ -1256,7 +1510,7 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
           title={`Run ${action.id} in ${environment}?`}
           tone={action.effect === 'delete' ? 'danger' : 'warning'}
           icon="alert-triangle"
-          message={`This is a real ${action.effect} call, not a dry run.`}
+          message={`This is a real ${action.effect} call, not a dry run${targets.length ? `: it deletes ${targets.join(', ')} in ${environment}` : ''}.`}
           confirmLabel="Run it"
           onConfirm={async () => {
             await run()
@@ -1270,13 +1524,12 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
 
 /* ---- 5 · Review ---------------------------------------------------------- */
 
-function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
+function ReviewStep({ state, update, yaml, onAsk }: StepProps & { yaml: string; onAsk: () => void }) {
   const toast = useToast()
   const [judged, setJudged] = useState<{ yaml: string; result: ProviderValidation } | null>(null)
   const validation = judged?.yaml === yaml ? judged.result : null
   const setValidation = (result: ProviderValidation) => setJudged({ yaml, result })
   const [busy, setBusy] = useState<'validate' | 'publish' | null>(null)
-  const [asking, setAsking] = useState(false)
 
   const validate = async (): Promise<ProviderValidation | null> => {
     setBusy('validate')
@@ -1350,7 +1603,7 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
           <Button size="sm" variant="ghost" icon="download" onClick={() => downloadText(yaml, `${state.name || 'provider'}.yaml`, 'application/yaml')}>
             Download
           </Button>
-          <Button size="sm" variant="ghost" icon="sparkles" onClick={() => setAsking(true)}>
+          <Button size="sm" variant="ghost" icon="sparkles" onClick={onAsk}>
             Ask Devin to draft it
           </Button>
         </div>
@@ -1470,17 +1723,6 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
           </div>
         </Card>
       </aside>
-
-      {asking && (
-        <DraftModal
-          initial={describe(state)}
-          onUse={(d) => {
-            update({ draftYaml: d.yaml })
-            setAsking(false)
-          }}
-          onClose={() => setAsking(false)}
-        />
-      )}
     </div>
   )
 }

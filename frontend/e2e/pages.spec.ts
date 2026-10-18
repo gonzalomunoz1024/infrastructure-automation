@@ -17,13 +17,17 @@ import {
   PROVIDER,
   PROVIDER_ALERTS,
   PROVIDER_CR,
+  PROVIDER_DRAFT,
   PROVIDER_STREAM,
   PROVIDERS,
   RELEASES,
   RESOURCE_TYPES,
   SPEC,
+  TEST_VM,
+  TRY_DELETE,
   TRY_RESULT,
   VALIDATION,
+  VCENTER_SPEC,
   VERIFIED,
   VMS,
   WORKFLOWS,
@@ -347,6 +351,120 @@ test.describe('providers', () => {
     expect(published.strategy).toBe('canary')
     expect(published.yaml).toContain('kind: Provider')
     expect(published.yaml).toContain('header: X-Api-Key')
+  })
+
+  test('the wizard searches the operations, classifies errors and tries a delete in dev on a test resource', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:import-spec': VCENTER_SPEC,
+      'POST /providers:try': (req) => ((req.body as { action: string }).action === 'deleteVm' ? TRY_DELETE : TRY_RESULT),
+      'GET /resource-types': RESOURCE_TYPES,
+      'GET /vms': [...VMS, TEST_VM],
+      'POST /providers:validate': VALIDATION,
+    })
+    await page.goto('/#/providers/new')
+    const current = page.getByRole('list', { name: 'Steps' }).locator('[aria-current="step"]')
+    await page.getByRole('textbox', { name: 'Title', exact: true }).fill('vCenter')
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    await page.getByRole('textbox', { name: 'Spec URL' }).fill('https://vcenter-dev.example.com/rest/openapi.json')
+    await page.getByRole('button', { name: 'Import spec' }).click()
+    await expect(page.getByText('6 operations from vCenter 8.0.2.')).toBeVisible()
+    await page.getByRole('button', { name: 'Credential', exact: true }).click()
+    await page.getByRole('option', { name: /vsphere\/token/ }).click()
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 3 · Actions: the search narrows the table, and "select all" takes what it shows
+    await expect(current).toContainText('Actions')
+    const ops = page.getByRole('table', { name: 'Operations' })
+    await expect(ops.getByRole('row')).toHaveCount(7)
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('snapshot')
+    await expect(ops.getByRole('row')).toHaveCount(3)
+    await expect(page.getByText('2 of 6 shown; the hidden ones keep their selection')).toBeVisible()
+    await ops.getByRole('checkbox', { name: 'Select every operation shown' }).uncheck()
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('')
+    await expect(ops.getByRole('row')).toHaveCount(7)
+    await expect(page.getByText('4 of 6 operations become actions.')).toBeVisible()
+    await expect(ops.getByRole('checkbox', { name: 'Include listSnapshots' })).not.toBeChecked()
+    await expect(ops.getByRole('checkbox', { name: 'Include deleteVm' })).toBeChecked()
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('cluster')
+    await expect(ops).toContainText('No operation matches')
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('')
+
+    // the error classes: the usual ones, and one of this API's own
+    const errors = page.getByTestId('error-classes')
+    await errors.getByRole('button', { name: 'Start from the usual ones' }).click()
+    const rows = errors.getByRole('list', { name: 'Error classes' }).getByRole('listitem')
+    await expect(rows).toHaveCount(4)
+    await expect(rows.nth(2).getByRole('textbox', { name: 'Class' })).toHaveValue('rate_limited')
+    await expect(rows.nth(2).getByRole('checkbox', { name: 'Retry' })).toBeChecked()
+    await errors.getByRole('button', { name: 'Add error class' }).click()
+    await rows.nth(4).getByRole('textbox', { name: 'Status' }).fill('429')
+    await rows.nth(4).getByRole('textbox', { name: 'Body contains' }).fill('license')
+    await rows.nth(4).getByRole('textbox', { name: 'Class' }).fill('license_exhausted')
+    // the 429 above takes every 429 first
+    const before = page.getByRole('list', { name: 'Before you continue' })
+    await expect(before).toContainText('license_exhausted: rate_limited above it matches every call it would, and the first match wins.')
+    await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
+    await rows.nth(4).getByRole('textbox', { name: 'Status' }).fill('403')
+    await expect(before).toHaveCount(0)
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 4 · Try it: in dev, which the review counts; a delete picks its VM from the registry
+    await expect(current).toContainText('Try it')
+    await expect(page.getByRole('button', { name: 'Environment', exact: true })).toContainText('dev')
+    await expect(page.getByText('The review counts the tries in dev')).toBeVisible()
+    await page.getByRole('button', { name: 'Action', exact: true }).click()
+    await page.getByRole('option', { name: /deleteVm/ }).click()
+    await expect(page.getByTestId('try-test-resource')).toHaveText('Pick a test resource from the registry: the try deletes it in dev for real.')
+    await page.getByRole('button', { name: 'VM', exact: true }).click()
+    await page.getByRole('option', { name: /scratch-7/ }).click()
+    await page.getByRole('button', { name: 'Try it', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: 'Run deleteVm in dev?' })
+    await expect(confirm).toContainText('This is a real delete call, not a dry run: it deletes vm-dev-7 in dev.')
+    await confirm.getByRole('button', { name: 'Run it' }).click()
+    await expect(page.getByTestId('try-evidence')).toContainText("Kept as review evidence · tried in dev")
+    await expect(page.getByTestId('try-evidence')).toContainText("The review's tried check counts it.")
+    expect(api.callsTo('POST', '/providers:try')[0].body).toMatchObject({ action: 'deleteVm', environment: 'dev', input: { id: 'vm-dev-7' } })
+    // another environment is allowed, and said not to count
+    await page.getByRole('button', { name: 'Environment', exact: true }).click()
+    await page.getByRole('option', { name: 'prod' }).click()
+    await expect(page.getByText('Not review evidence: the review counts only the tries in dev')).toBeVisible()
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 5 · Review: the file has the chosen operations and the error classes
+    await expect(current).toContainText('Review')
+    const file = page.locator('pre').first()
+    for (const line of ['operation: deleteVm', 'errors:', 'class: not_found', 'body: license', 'class: license_exhausted', 'status: 403']) await expect(file).toContainText(line)
+    await expect(file).not.toContainText('listSnapshots')
+  })
+
+  test('Ask Devin from the Type step drafts the provider and opens the draft on the review', async ({ page }) => {
+    const api = await mockApi(page, { 'POST /providers:draft': PROVIDER_DRAFT, 'POST /providers:validate': VALIDATION })
+    await page.goto('/#/providers/new')
+    await page.getByTestId('ask-devin').getByRole('button', { name: 'Ask Devin to draft it' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Ask Devin to draft the provider' })
+    const description = dialog.getByRole('textbox', { name: 'Description' })
+    await expect(description).toHaveValue(/^An OpenAPI provider, owned by team-platform, version 1\.0\.0\./)
+    await description.fill('The backup service: list the backup jobs and start one. An API key in X-Api-Key.')
+    await dialog.getByRole('button', { name: 'Ask Devin' }).click()
+    await expect(dialog).toContainText('An HTTP provider for the backup service with two actions.')
+    await dialog.getByRole('button', { name: 'Use this draft' }).click()
+    await expect(dialog).toBeHidden()
+    expect(api.callsTo('POST', '/providers:draft')[0].body).toEqual({ description: 'The backup service: list the backup jobs and start one. An API key in X-Api-Key.' })
+
+    // the review shows the draft as the file, named by its metadata
+    await expect(page.getByRole('list', { name: 'Steps' }).locator('[aria-current="step"]')).toContainText('Review')
+    await expect(page.getByText("This draft replaces the wizard's document.")).toBeVisible()
+    await expect(page.getByText('providers/team-platform/backup.yaml')).toBeVisible()
+    await expect(page.locator('pre').first()).toContainText('id: jobs.create')
+    await page.getByRole('button', { name: 'Run checks' }).click()
+    expect((api.callsTo('POST', '/providers:validate')[0].body as { yaml: string }).yaml).toBe(PROVIDER_DRAFT.yaml)
+
+    // the steps before it are a click away, with the draft's names
+    await page.getByRole('list', { name: 'Steps' }).getByRole('button', { name: /Type/ }).click()
+    await expect(page.getByRole('textbox', { name: 'Title', exact: true })).toHaveValue('Backup service')
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('backup')
   })
 })
 

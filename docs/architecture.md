@@ -374,7 +374,13 @@ links. The Add provider wizard reads a spec from a URL, a pasted text, a file or
 the commit read), imports an Ansible repository or a Terraform module through the backend's
 drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
-so an edit keeps the file as it is and bumps its version by a line edit of the metadata block. The
+so an edit keeps the file as it is and bumps its version by a line edit of the metadata block.
+Its Actions step searches a spec's operations and writes the error classes (`spec.errors`,
+matched by status and body text, checked for a class an earlier one shadows); Ask Devin is offered
+on the Type and the Review step, and a draft names the wizard's provider by a line read of its
+metadata block. Try it starts in the environment the review counts (`ProviderReview.sandbox`:
+dev, else the first), and a delete whose input has an `x-resource` field gets the registry picker
+of the catalog's run form, so the try deletes a test resource the developer chose. The
 assistant page shows the validation's problems as the designer's Issues list, the session's own
 events from the platform stream, and submits a ready draft as a change request. It reads the
 message stream as the backend writes it (the SSE event name is the type, the data the payload
