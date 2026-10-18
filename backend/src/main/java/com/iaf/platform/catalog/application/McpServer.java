@@ -361,26 +361,26 @@ public class McpServer {
             if (pd.engine() != null) {
                 data.put("engine", pd.engine());
             }
-            return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage(), data);
+            return JsonRpc.error(id, JsonRpc.POLICY_DENIED, e.getMessage(), data);
         }
         if (e instanceof ForbiddenException) {
             ObjectNode data = F.objectNode();
             data.put("forbidden", true);
-            return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage(), data);
+            return JsonRpc.error(id, JsonRpc.FORBIDDEN, e.getMessage(), data);
         }
         if (e instanceof NotFoundException) {
-            return JsonRpc.error(id, JsonRpc.INVALID_PARAMS, e.getMessage(), null);
+            return JsonRpc.error(id, JsonRpc.NOT_FOUND, e.getMessage(), null);
         }
         if (e instanceof ConflictException) {
             ObjectNode data = F.objectNode();
             data.put("conflict", true);
-            return JsonRpc.error(id, JsonRpc.INVALID_PARAMS, e.getMessage(), data);
+            return JsonRpc.error(id, JsonRpc.CONFLICT, e.getMessage(), data);
         }
         if (e instanceof TooManyRequestsException tm) {
             ObjectNode data = F.objectNode();
             data.put("tooManyRequests", true);
             data.put("retryAfter", tm.retryAfterSeconds());
-            return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage(), data);
+            return JsonRpc.error(id, JsonRpc.TOO_MANY_REQUESTS, e.getMessage(), data);
         }
         log.error("mcp call failed", e);
         return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage() == null ? "internal error" : e.getMessage(), null);

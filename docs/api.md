@@ -175,6 +175,18 @@ MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `ap
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
 `get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).
 
+A refused `tools/call` is a JSON-RPC error whose `message` says why; besides the standard codes
+(-32700 parse error, -32600 invalid request, -32601 method not found, -32602 invalid params with
+`data.problems` or `data.rows`, -32603 internal error) the platform answers with its own:
+
+| Code     | When                                   | `data` |
+|----------|----------------------------------------|--------|
+| `-32001` | forbidden (RBAC, scopes)               | `{ forbidden: true }` |
+| `-32002` | denied by the policy engine            | `{ forbidden: true, rules, engine }` |
+| `-32003` | unknown workflow, resource or job      | |
+| `-32004` | state conflict, idempotency key reused | `{ conflict: true }` |
+| `-32005` | over the team's job-start quota        | `{ tooManyRequests: true, retryAfter }` |
+
 In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
 `$response.body#/jobId`), and its input schema is `<noun>_<verb>_input`. A workflow that declares
 `api.response.body` also gets `<noun>_<verb>_output` (the body as written: what the job's `output`

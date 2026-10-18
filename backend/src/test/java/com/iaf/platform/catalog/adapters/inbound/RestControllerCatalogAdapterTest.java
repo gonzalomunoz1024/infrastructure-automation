@@ -232,13 +232,14 @@ class RestControllerCatalogAdapterTest {
     }
 
     @Test
-    void forbiddenIsAnInternalErrorWithAMessage() {
+    void forbiddenAndPolicyDeniedHaveTheirOwnCodesWithAMessage() {
         JsonNode r = rpcResult(SampleCatalog.GUEST, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"vm_restart\",\"arguments\":{\"vmId\":\"vm-1\"}}}");
-        assertThat(r.path("error").path("code").asInt()).isEqualTo(-32603);
+        assertThat(r.path("error").path("code").asInt()).isEqualTo(-32001);
         assertThat(r.path("error").path("message").asText()).contains("may not invoke");
+        assertThat(r.path("error").path("data").path("forbidden").asBoolean()).isTrue();
         when(policy.evaluate(any())).thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("freeze", "deny", "Frozen")), "mock")));
         JsonNode denied = rpcResult(SampleCatalog.AGENT, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"vm_restart\",\"arguments\":{\"vmId\":\"vm-1\"}}}");
-        assertThat(denied.path("error").path("code").asInt()).isEqualTo(-32603);
+        assertThat(denied.path("error").path("code").asInt()).isEqualTo(-32002);
         assertThat(denied.path("error").path("message").asText()).contains("Frozen");
         assertThat(denied.path("error").path("data").path("rules").get(0).path("id").asText()).isEqualTo("freeze");
         verify(runs, never()).startJob(any());
