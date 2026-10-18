@@ -6,8 +6,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -118,6 +120,8 @@ public class PortStepExecutor implements StepExecutor {
     private final String prefix;
     private final Set<String> announced = new HashSet<>();
     private final boolean suppressReplayed;
+    /** What a dry run registered so far, shared with its children: a later {@code use} of it in the same dry run reads it. */
+    private final Map<String, JsonNode> dryRegistered;
 
     /** A live executor for one job. */
     public PortStepExecutor(Ports ports, Engine engine, Job job) {
@@ -125,6 +129,11 @@ public class PortStepExecutor implements StepExecutor {
     }
 
     PortStepExecutor(Ports ports, Engine engine, Job job, boolean dryRun, Recorder recorder, String prefix) {
+        this(ports, engine, job, dryRun, recorder, prefix, new ConcurrentHashMap<>());
+    }
+
+    private PortStepExecutor(Ports ports, Engine engine, Job job, boolean dryRun, Recorder recorder, String prefix, Map<String, JsonNode> dryRegistered) {
+        this.dryRegistered = dryRegistered;
         this.ports = ports;
         this.engine = engine == null ? new DryRunEngine() : engine;
         this.job = job;
@@ -320,6 +329,11 @@ public class PortStepExecutor implements StepExecutor {
         if (request.id() == null || request.id().isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "use needs an id", false, true);
         }
+        JsonNode built = dryRun ? dryRegistered.get(request.id()) : null;
+        if (built != null && (request.type() == null || request.type().equals(built.path("type").asText(null)))) {
+            // registered earlier in this dry run (an input's build): the registry never sees it
+            return built.deepCopy();
+        }
         Duration limit = timeout == null ? DEFAULT_CALL_TIMEOUT : timeout;
         Instant deadline = now().plus(limit);
         while (true) {
@@ -363,6 +377,7 @@ public class PortStepExecutor implements StepExecutor {
                 request.builtFrom().forEach(from::add);
             }
             r.put("dryRun", true);
+            dryRegistered.put(id, r.deepCopy());
             return r;
         }
         Resource r = block(ports.resourceCommands().register(new RegisterResource(request.type(), request.id(), request.state(), request.attributes(),
@@ -459,7 +474,7 @@ public class PortStepExecutor implements StepExecutor {
             Job childJob = JobFactory.child(job, child, input, now());
             JobContext cctx = JobContext.of(childJob);
             ctx.addChild(childJob.id());
-            PortStepExecutor childExecutor = new PortStepExecutor(ports, null, childJob, true, recorder, prefix + step.id() + "/");
+            PortStepExecutor childExecutor = new PortStepExecutor(ports, null, childJob, true, recorder, prefix + step.id() + "/", dryRegistered);
             var outcome = new WorkflowInterpreter(child, childExecutor, cctx).run();
             if (!outcome.succeeded()) {
                 throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);

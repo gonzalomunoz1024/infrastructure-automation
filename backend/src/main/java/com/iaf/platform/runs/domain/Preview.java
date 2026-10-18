@@ -2,6 +2,7 @@ package com.iaf.platform.runs.domain;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.iaf.platform.common.domain.Effect;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 
@@ -14,7 +15,12 @@ public record Preview(
         Cost cost,
         PolicyDecision policy) {
 
-    public record PreviewStep(String id, String name, Effect effect, String detail) {
+    /** {@code skipped}: the dry run on this input did not take the step, so it does nothing (effect none). */
+    public record PreviewStep(String id, String name, Effect effect, String detail, @JsonInclude(JsonInclude.Include.NON_DEFAULT) boolean skipped) {
+
+        public PreviewStep(String id, String name, Effect effect, String detail) {
+            this(id, name, effect, detail, false);
+        }
     }
 
     public record AffectedResource(String id, String type, String name, String via) {

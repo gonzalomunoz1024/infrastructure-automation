@@ -1,6 +1,6 @@
 # Config as code
 
-Three kinds of file, all `apiVersion: iaf.platform/v1`. The designer, the natural-language
+Four kinds of file, all `apiVersion: iaf.platform/v1`. The designer, the natural-language
 builder and a text editor all produce the same files; the canvas is a view of the YAML.
 
 ## kind: Workflow
@@ -181,6 +181,27 @@ set is a breaking change. A breaking change without a new major version fails th
 version, `orCreateWith` inputs, and workflows that use or take the types it registers. With a new
 major version the check passes and still lists them, with the run steps that stay on the old major.
 
+### Previews
+
+With `api.preview` a workflow publishes a `:preview` operation, and every start of a top-level job
+keeps a preview with the job (its change and its approvals show it). A preview starts from the
+flow: what each step would do to the world (the provider action's `effect`; terraform `plan`,
+`apply` and `destroy` read, create and delete; ansible changes; a run step carries its child's
+steps). A dry run of the flow on the input and the recorded samples then judges it:
+
+- a step the dry run does not take (a switch case, a jump, an empty loop, a catch) is `skipped`,
+  with effect `none`; when the dry run fails, only what it chose to skip is, and the rest stands;
+- the build an input's `{ create }` request asks for shows as the `<input>.create` step and its
+  child's steps;
+- a provider action's `plan` is asked with the step's input and refines the step (kind: Provider,
+  Plans); the answer of a `terraform` apply or destroy is its plan;
+- the touched resources are the `x-resource` inputs of every row and the ids the `use` steps read,
+  and, below each one a change or delete step names in its parameters, what the registry's lineage
+  says was built from it (`via: built from <id>`, three generations down);
+- the monthly cost adds up every create call the dry run makes (each item of a loop): the plan's
+  `monthlyCost`, else the first price list that prices the call (kind: PriceList), else the
+  recorded sample's `monthlyCost`. A batch is walked on its first row and costs that times the rows.
+
 ## kind: Provider
 
 ```yaml
@@ -229,6 +250,14 @@ Type-specific `spec` blocks:
 - `sdk`: `taskQueue`; actions are activities a team-owned worker registers.
 - `http`: `endpoints` plus per action `{ method, path, example }`; schemas are inferred from the example.
 
+Plans: `plan: <action>` names the action a preview asks what the step would do, with the step's
+input: for real when that action's `effect` is `read`, otherwise on its recorded sample. Its answer
+may say it with `effect` and `detail`, or count it with `add`, `change` and `destroy` (any destroy
+reads as a delete, else any add as a create, else any change as a change, else as nothing), and
+may price it with `monthlyCost` and `currency`. A plain read answer names what a change or a
+delete acts on (`name (id)`), and a `not_found` leaves it nothing to do (effect `none`); a create
+keeps its effect. A failed plan is noted in the step's detail and changes nothing.
+
 ## kind: ResourceType
 
 ```yaml
@@ -246,3 +275,28 @@ producedBy: build-vm-image     # the workflow whose register step creates this t
 
 The registry generates `GET /api/v1/images`, `GET /api/v1/images/{id}` and the MCP tools
 `list_images`, `get_image` for every type.
+
+## kind: PriceList
+
+```yaml
+apiVersion: iaf.platform/v1
+kind: PriceList
+metadata:
+  name: list-prices           # lists are read by name; the first that prices a call wins
+  owner: team-platform
+spec:
+  currency: USD               # the default
+  prices:
+    - provider: vsphere
+      action: vm.create
+      by: cpu                 # a field of the action's input, dotted for a nested one
+      monthly: { 2: 38.5, 4: 77, 8: 154 }
+    - provider: vsphere
+      action: vm.snapshot
+      monthly: 4.2            # flat
+```
+
+What a preview charges per month for a create call when the action's plan answers no
+`monthlyCost` itself (Previews). A value of `by` the list does not name has no price in it. The file
+may sit in any content folder (the sample is `providers/team-platform/list-prices.yaml`); the
+platform reads every `kind: PriceList` file at startup.

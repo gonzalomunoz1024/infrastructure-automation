@@ -121,6 +121,7 @@ class OpenApiDocumentTest {
             assertThat(schemas.has(name)).as(name).isTrue();
         }
         assertThat(DOC.path("tags")).extracting(t -> t.path("name").asText()).contains("Compute", "Data", "Platform", "Resources", "Jobs");
+        assertThat(schemas.path("PreviewStep").path("properties").path("skipped").path("type").asText()).isEqualTo("boolean");
     }
 
     @Test

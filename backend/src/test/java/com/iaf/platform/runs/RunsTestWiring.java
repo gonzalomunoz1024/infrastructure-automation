@@ -19,12 +19,14 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands.RegisterResource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
+import com.iaf.platform.runs.adapters.outbound.ContentPriceLists;
 import com.iaf.platform.runs.adapters.outbound.DemoAutomationRunner;
 import com.iaf.platform.runs.adapters.outbound.InMemoryWorkflowExecution;
 import com.iaf.platform.runs.adapters.outbound.MockServiceNowChangeTickets;
@@ -66,6 +68,8 @@ public final class RunsTestWiring {
     public final TelemetryPort telemetry = mock(TelemetryPort.class);
     public final MockServiceNowChangeTickets changes = new MockServiceNowChangeTickets();
     public final RecordedProviderCall calls;
+    /** The repo's price lists ({@code kind: PriceList}). */
+    public final ContentPriceLists prices;
     public final DemoAutomationRunner runner;
     public final AutomationRunners runners;
     public final StepExecutors executors;
@@ -86,6 +90,7 @@ public final class RunsTestWiring {
         when(resources.types()).thenAnswer(i -> Flux.fromIterable(SampleContent.types()));
         when(resources.get(anyString())).thenAnswer(i -> registry(i.getArgument(0)));
         when(resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(resource(i.getArgument(0), i.getArgument(1), "ready")));
+        when(resources.lineage(anyString())).thenReturn(Mono.empty());
         when(resourceCommands.register(any())).thenAnswer(i -> {
             RegisterResource r = i.getArgument(0);
             String id = r.id() == null || r.id().isBlank() ? r.type() + "-new" : r.id();
@@ -96,6 +101,10 @@ public final class RunsTestWiring {
         when(policy.evaluate(any())).thenReturn(Mono.just(PolicyDecision.allow("mock")));
         when(policy.engine()).thenReturn("mock");
         calls = new RecordedProviderCall(telemetry, projection, clock);
+        PlatformProperties props = new PlatformProperties();
+        props.getContent().setDir(SampleContent.ROOT.toString());
+        prices = new ContentPriceLists(props);
+        prices.load();
         runner = new DemoAutomationRunner(providers, telemetry, projection, clock);
         runners = new AutomationRunners(List.of(runner));
         executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
@@ -109,7 +118,7 @@ public final class RunsTestWiring {
     }
 
     public RunsCommandHandler commands(WorkflowExecutionPort engine) {
-        return new RunsCommandHandler(workflows, providers, resources, releases, policy, changes, engine, projection, events, executors, clock);
+        return new RunsCommandHandler(workflows, providers, resources, releases, policy, changes, engine, projection, events, executors, prices, clock);
     }
 
     /** A mocked engine that accepts everything and holds nothing. */

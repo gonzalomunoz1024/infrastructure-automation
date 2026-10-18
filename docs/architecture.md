@@ -77,6 +77,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `EvidenceStore`         | write-once object store (planned)      | `InMemoryEvidenceStore`         |
 | `AssistantPort`         | `DevinAssistant` (v3 API)              | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (planned)       | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
+| `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
 
 Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
 profile guard so that the production adapter replaces it when its profile is active.
@@ -120,6 +121,12 @@ A `use` step that waits for a resource to be ready goes through `PortStepExecuto
 in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
 bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
 signal a registry listener sends to the waiting workflow.
+
+A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
+the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
+with it: the steps it does not take are skipped, provider `plan` actions are asked through
+`ProviderCallPort`, the registry's lineage adds what a change touches, and `PriceListPort` prices
+the create calls.
 
 Expressions are n8n-style: `{{ $input.vmId }}`, `{{ $json.vm.id }}` (previous step's output),
 `{{ $('Check VM exists').json.vm.name }}`, `{{ $job.id }}`, `{{ $env.name }}`. See

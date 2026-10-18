@@ -1,9 +1,13 @@
 package com.iaf.platform.runs.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,6 +31,8 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.resources.ports.inbound.ResourceQueries.Lineage;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.domain.Approval;
@@ -42,6 +48,8 @@ import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JobStep.StepError;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Preview;
+import com.iaf.platform.runs.domain.Preview.AffectedResource;
+import com.iaf.platform.runs.domain.Preview.PreviewStep;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartBatch;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.StartJob;
 import com.iaf.platform.runs.ports.inbound.RunsCommands.TriggerResult;
@@ -551,6 +559,123 @@ class RunsCommandHandlerTest {
         assertThat(create.cost().monthly()).isEqualTo(38.5);
         assertThat(create.cost().currency()).isEqualTo("USD");
         assertThat(create.steps()).anyMatch(s -> s.id().equals("createVm") && s.effect().json().equals("create"));
+    }
+
+    private static PreviewStep step(Preview p, String id) {
+        return p.steps().stream().filter(s -> s.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    @Test
+    void previewSkipsWhatTheDryRunDoesNotTakeAndPricesWithThePriceLists() {
+        Preview p = handler.preview(SampleContent.workflow("create-vm"), SampleContent.json(Map.of("name", "web-01", "image", "img-77", "size", "medium")),
+                SampleContent.GONZALO).block();
+
+        assertThat(p.steps()).filteredOn(PreviewStep::skipped).extracting(PreviewStep::id).containsExactly("largeSpec", "smallSpec");
+        assertThat(step(p, "largeSpec").effect().json()).isEqualTo("none");
+        assertThat(p.cost().monthly()).as("a medium VM has 4 cpus").isEqualTo(77.0);
+        assertThat(p.cost().detail()).isEqualTo("vsphere vm.create 77.00 (price list list-prices)");
+    }
+
+    @Test
+    void previewAsksADeletesPlanWhatItWouldDelete() {
+        JsonNode input = SampleContent.json(Map.of("vmId", "vm-1042", "reason", "retired"));
+
+        Preview p = handler.preview(SampleContent.workflow("delete-vm"), input, SampleContent.GONZALO).block();
+
+        assertThat(step(p, "delete").effect().json()).isEqualTo("delete");
+        assertThat(step(p, "delete").detail()).isEqualTo("vsphere vm.delete (destructive) · plan vm.get: web-1042 (vm-1042)");
+        assertThat(p.destructive()).isTrue();
+        // the plan only reads, so it was a real call (dry runs leave no call sample); the dry run's own calls were not
+        verify(w.telemetry).record(argThat(s -> s.action().equals("vm.get") && s.jobId() == null && s.ok()));
+        verify(w.telemetry, never()).record(argThat(s -> s.action().equals("vm.delete")));
+
+        // the VM is gone already: the plan finds nothing to delete
+        ProviderDefinition vsphere = SampleContent.provider("vsphere");
+        w.calls.world().call(vsphere, vsphere.action("vm.delete").orElseThrow(), SampleContent.json(Map.of("id", "vm-1042")), "job_x", 1, true);
+        Preview gone = handler.preview(SampleContent.workflow("delete-vm"), input, SampleContent.GONZALO).block();
+
+        assertThat(step(gone, "delete").effect().json()).isEqualTo("none");
+        assertThat(step(gone, "delete").detail()).startsWith("vsphere vm.delete (destructive) · plan vm.get: nothing to delete");
+        assertThat(gone.destructive()).isFalse();
+    }
+
+    @Test
+    void previewListsWhatWasBuiltFromAResourceTheRunChanges() {
+        when(w.resources.lineage("vm-1042")).thenReturn(Mono.just(new Lineage(RunsTestWiring.resource("vm", "vm-1042", "ready"), List.of(),
+                List.of(RunsTestWiring.resource("snapshot", "snap-1", "ready")))));
+        when(w.resources.lineage("snap-1")).thenReturn(Mono.just(new Lineage(RunsTestWiring.resource("snapshot", "snap-1", "ready"), List.of(),
+                List.of(RunsTestWiring.resource("volume", "vol-7", "ready")))));
+        when(w.resources.lineage("img-77")).thenReturn(Mono.just(new Lineage(RunsTestWiring.resource("image", "img-77", "ready"), List.of(),
+                List.of(RunsTestWiring.resource("vm", "vm-5", "ready")))));
+
+        Preview restart = handler.preview(SampleContent.workflow("vm-restart"), SampleContent.json(Map.of("vmId", "vm-1042")), SampleContent.GONZALO).block();
+
+        assertThat(restart.affectedResources()).extracting(AffectedResource::id, AffectedResource::name, AffectedResource::via).containsExactly(
+                tuple("vm-1042", "name-of-vm-1042", "input.vmId"),
+                tuple("snap-1", "name-of-snap-1", "built from vm-1042"),
+                tuple("vol-7", "name-of-vol-7", "built from snap-1"));
+
+        Preview create = handler.preview(SampleContent.workflow("create-vm"), SampleContent.json(Map.of("name", "web-01", "image", "img-77")),
+                SampleContent.GONZALO).block();
+        assertThat(create.affectedResources()).as("building on an image changes nothing built from it").extracting(AffectedResource::id)
+                .containsExactly("img-77");
+    }
+
+    @Test
+    void previewOfARequestToBuildShowsTheBuildAndTheDryRunReadsBackWhatItBuilt() {
+        // the registry does not know the image the dry run builds
+        when(w.resources.use(eq("image"), startsWith("img-"), any(), anyBoolean())).thenReturn(Mono.empty());
+        JsonNode input = SampleContent.json(Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9"))));
+
+        Preview p = handler.preview(SampleContent.workflow("create-vm"), input, SampleContent.GONZALO).block();
+
+        assertThat(p.steps()).extracting(PreviewStep::id).startsWith("image.create", "image.create/imageName", "image.create/startBuild");
+        assertThat(step(p, "image.create").effect().json()).isEqualTo("create");
+        assertThat(step(p, "image.create").detail()).isEqualTo("run build-vm-image");
+        assertThat(step(p, "useImage").skipped()).isFalse();
+        assertThat(p.affectedResources()).as("what the dry run built is no resource yet").isEmpty();
+        assertThat(p.cost().monthly()).isEqualTo(38.5);
+
+        DryRunResult dry = handler.dryRun(SampleContent.workflow("create-vm"), input, SampleContent.GONZALO).block();
+        assertThat(dry.passed()).as(String.valueOf(dry.error())).isTrue();
+        assertThat(dry.steps()).filteredOn(s -> s.id().equals("useImage")).singleElement()
+                .satisfies(s -> assertThat(s.output().path("dryRun").asBoolean()).isTrue());
+    }
+
+    @Test
+    void previewKeepsTheStaticWalkPastAStepTheDryRunCannotPass() {
+        when(w.resources.use(eq("vm"), eq("vm-404"), any(), anyBoolean())).thenReturn(Mono.empty());
+
+        Preview p = handler.preview(SampleContent.workflow("delete-vm"), SampleContent.json(Map.of("vmId", "vm-404", "reason", "x")), SampleContent.GONZALO).block();
+
+        assertThat(p.steps()).noneMatch(PreviewStep::skipped);
+        assertThat(step(p, "delete").effect().json()).isEqualTo("delete");
+        assertThat(step(p, "delete").detail()).as("no plan past the failure").isEqualTo("vsphere vm.delete (destructive)");
+        assertThat(p.cost().detail()).as("the snapshot it never reached, priced from the flow").isEqualTo("vsphere vm.snapshot 4.20 (price list list-prices)");
+    }
+
+    @Test
+    void previewPricesEveryItemOfALoopAndJudgesATerraformApplyByItsPlan() {
+        Preview p = handler.preview(SampleContent.workflow("web-environment"),
+                SampleContent.json(Map.of("name", "shop", "environment", "dev", "vmCount", 3, "image", "img-77")), SampleContent.GONZALO).block();
+
+        assertThat(p.cost().monthly()).isEqualTo(172.5);
+        assertThat(p.cost().detail()).isEqualTo("mongodb cluster.create 57.00 (price list list-prices) + vsphere vm.create 38.50 x 3 (price list list-prices)");
+        assertThat(step(p, "loadBalancer").detail()).endsWith(" · plan: 3 to add, 0 to change, 0 to destroy");
+        assertThat(step(p, "database/approval").skipped()).as("a dev database needs no approval").isTrue();
+    }
+
+    @Test
+    void aBatchPreviewWalksTheFirstRowAndPricesEveryRowLikeIt() {
+        List<JsonNode> items = List.of(SampleContent.json(Map.of("name", "web-01", "image", "img-1", "size", "medium")),
+                SampleContent.json(Map.of("name", "web-02", "image", "img-2", "size", "medium")));
+
+        CommandAccepted acc = handler.startBatch(new StartBatch("create-vm", null, items, null, null, SampleContent.GONZALO, "batch", null)).block();
+
+        Preview p = w.projection.get(acc.id()).orElseThrow().preview();
+        assertThat(p.cost().monthly()).isEqualTo(154.0);
+        assertThat(p.cost().detail()).isEqualTo("vsphere vm.create 77.00 (price list list-prices) x 2 rows");
+        assertThat(p.affectedResources()).extracting(AffectedResource::id).containsExactly("img-1", "img-2");
     }
 
     // ---------------------------------------------------------------- triggers

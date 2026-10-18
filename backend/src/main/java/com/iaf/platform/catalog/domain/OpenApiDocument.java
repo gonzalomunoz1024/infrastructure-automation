@@ -357,7 +357,9 @@ public final class OpenApiDocument {
         s.set("PreviewStep", object(Map.of(
                 "id", str(null), "name", str(null),
                 "effect", enumeration("create", "change", "delete", "read", "none", "unknown"),
-                "detail", str(null)), List.of("id", "name", "effect")));
+                "detail", str(null),
+                "skipped", F.objectNode().put("type", "boolean").put("description", "The dry run on this input does not take the step")),
+                List.of("id", "name", "effect")));
         s.set("AffectedResource", object(Map.of("id", str(null), "type", str(null), "name", str(null), "via", str("The step that touches it")), List.of("id", "type")));
         s.set("Cost", object(Map.of("monthly", number(null), "currency", str(null), "detail", str(null)), List.of("monthly", "currency")));
         s.set("Preview", object(Map.of(

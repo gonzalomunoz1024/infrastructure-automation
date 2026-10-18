@@ -117,10 +117,18 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 | POST   | `/mcp`                              | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`, `notifications/initialized` |
 
 ```ts
-type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'change' | 'delete' | 'read' | 'none' | 'unknown'; detail? }[];
+type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'change' | 'delete' | 'read' | 'none' | 'unknown'; detail?; skipped?: true }[];
   affectedResources: { id; type; name; via }[]; cost?: { monthly; currency; detail };
   policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules: { id; result; message }[]; engine: 'mock' | 'opa' } }
 ```
+
+A preview is the flow judged by a dry run on the input (a batch's first row): `skipped` marks a
+step the dry run does not take (effect `none`), and a step's `detail` ends with what its plan said
+(`vsphere vm.delete (destructive) · plan vm.get: web-1042 (vm-1042)`). `via` is `input.<field>`,
+`step <id>` for a resource a `use` step reads, or `built from <id>` for what the registry's lineage
+puts below a resource the run changes or deletes. `cost.detail` names every priced create call and
+who priced it (`vsphere vm.create 38.50 x 3 (price list list-prices)`; `plan <action>`, `sample`),
+then `x <n> rows` for a batch (docs/config-as-code.md, Previews).
 
 An `x-resource` input with `orCreateWith` shows both forms in `CatalogEntry.input`, the OpenAPI
 request bodies and the MCP tool inputs: `anyOf` the id, or `{ create: <the producing workflow's

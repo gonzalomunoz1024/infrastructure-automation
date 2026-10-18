@@ -41,7 +41,7 @@ backend/            Spring Boot 3.5 · Java 21 · WebFlux · CQRS · ports and a
 frontend/           React 19 · Vite · TypeScript · Tailwind v4 · the n8n-style designer on @xyflow/react
 packages/ui         the Atlas design system (tokens, kit, hooks) used by every page but the canvas
 packages/workflow-checks   the editor's checks in TypeScript; the same rules run in Java and in CI
-workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType)
+workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType | PriceList)
 devin/              the natural-language builder playbooks and their structured-output schemas
 docs/               architecture, config as code, API, design language, contributing
 ```
