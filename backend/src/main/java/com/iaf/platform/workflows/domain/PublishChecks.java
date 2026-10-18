@@ -62,6 +62,24 @@ public final class PublishChecks {
         return new Check("ansible-lint", "ansible-lint", FAILED, "not pinned to a commit: " + String.join(", ", unpinned));
     }
 
+    /**
+     * As {@link #ansibleLint(WorkflowDefinition, CheckContext)}, after the publish pinned git
+     * playbooks: a ref that did not resolve fails the check with the reason; the pinned steps
+     * are named in the detail.
+     */
+    public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins) {
+        Check check = ansibleLint(def, ctx);
+        if (pins == null || (pins.failures().isEmpty() && pins.pinned().isEmpty())) {
+            return check;
+        }
+        if (!pins.failures().isEmpty()) {
+            return new Check("ansible-lint", "ansible-lint", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
+        }
+        String pinned = pins.pinned().entrySet().stream().map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length())))
+                .collect(Collectors.joining(", "));
+        return new Check(check.id(), check.label(), check.status(), check.detail() + "; pinned at publish: " + pinned);
+    }
+
     static boolean pinned(Step s, CheckContext ctx) {
         JsonNode pb = s.withNode("playbook");
         if (pb == null || pb.isNull()) {

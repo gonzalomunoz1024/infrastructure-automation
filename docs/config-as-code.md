@@ -114,6 +114,21 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
 `timeout`, `pauseOnFailure` (default true), `compensate: [steps]` (run when a later step fails),
 `position: { x, y }`, `notes`.
 
+### Playbook sources and pins
+
+`playbook` comes from one of three places:
+
+- `git: { repo, ref, path, credential? }` with `commit`: an https repository (`host/path`
+  implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
+  private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
+  peeled to its commit) and writes the commit into the version before the change request's
+  checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
+  check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
+- `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
+  artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+- `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
+  pinned by the provider's `source.commit`.
+
 ### Expressions
 
 Inside `{{ }}`:

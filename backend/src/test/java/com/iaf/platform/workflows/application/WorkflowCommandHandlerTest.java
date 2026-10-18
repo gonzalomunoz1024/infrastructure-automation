@@ -23,6 +23,9 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.CredentialsPort;
+import com.iaf.platform.common.ports.GitRemotePort;
+import com.iaf.platform.common.ports.GitRemotePort.RemoteUnavailable;
+import com.iaf.platform.common.ports.GitRemotePort.Resolved;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.identity.application.CurrentIdentity;
@@ -247,6 +250,49 @@ class WorkflowCommandHandlerTest {
         // a second publish while the change request is open is refused
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart).replace("(edited)", "(again)"))).block();
         StepVerifier.create(handler.publish("vm-restart", null)).expectError(ConflictException.class).verify();
+    }
+
+    @Test
+    void publishPinsAGitPlaybookToTheCommitItsRefNamesAndTheDiffShowsThePin() {
+        String commit = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
+        GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
+        when(git.resolve("github.com/acme/ops-playbooks", "v3.1.0", null)).thenReturn(Mono.just(new Resolved("github.com/acme/ops-playbooks", "v3.1.0", commit)));
+        handler.setPlaybookPinning(new PlaybookPinning(git));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(unpinned(edited(vmRestart)))).block();
+
+        ChangeRequest cr = changeRequests.get(handler.publish("vm-restart", null).block().id()).orElseThrow();
+
+        assertThat(cr.yaml()).contains("commit: " + commit);
+        assertThat(cr.diff()).containsPattern("\\n-\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d\\n").containsPattern("\\n\\+\\s+commit: " + commit + "\\n");
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
+                .satisfies(c -> assertThat(c.detail()).endsWith("pinned at publish: restart to 9f2c0b7e1d4a"));
+        assertThat(cr.checksPassed()).isTrue();
+        WorkflowRecord candidate = store.get("vm-restart", "1.2.1").orElseThrow();
+        assertThat(candidate.status()).isEqualTo(WorkflowStatus.CANDIDATE);
+        assertThat(candidate.definition().step("restart").orElseThrow().withNode("playbook").path("commit").asText()).isEqualTo(commit);
+    }
+
+    @Test
+    void aRefThatDoesNotResolveAtPublishFailsTheAnsibleLintCheckWithTheReason() {
+        GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
+        when(git.resolve(any(), any(), any())).thenReturn(Mono.error(new RemoteUnavailable("Could not read https://github.com/acme/ops-playbooks: connect timed out")));
+        handler.setPlaybookPinning(new PlaybookPinning(git));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(unpinned(edited(vmRestart)))).block();
+
+        String crId = handler.publish("vm-restart", null).block().id();
+        ChangeRequest cr = changeRequests.get(crId).orElseThrow();
+
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("failed"))
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve"
+                        + " (Could not read https://github.com/acme/ops-playbooks: connect timed out)"));
+        assertThat(cr.yaml()).doesNotContain("commit:");
+        StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
+    }
+
+    static String unpinned(String yaml) {
+        return yaml.replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "");
     }
 
     @Test
