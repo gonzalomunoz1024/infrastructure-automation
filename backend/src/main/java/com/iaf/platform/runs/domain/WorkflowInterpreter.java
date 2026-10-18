@@ -37,9 +37,36 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition.Flow;
  * pause-on-failure with a person's decision, compensation of completed steps in reverse order,
  * the workflow-level {@code catch} and the {@code outputs}. Everything that touches the world
  * goes through the {@link StepExecutor}; the same class runs in process and inside Temporal.
+ *
+ * <p>Each fork branch walks with its own try depth, so a branch inside a {@code try} does not
+ * keep a sibling's failure from pausing for attention. A leaf's bad input
+ * ({@code IllegalArgumentException}, {@code NullPointerException}) fails it as
+ * {@code invalid_input}, never retried; any other exception outside a step's own handling (a
+ * container, the seed of a rerun, the build of a requested resource, the {@code outputs}) fails
+ * that step, or {@code outputs}, like a step failure: compensation and the catch flow run. A
+ * {@code catch} names the failure it caught ({@code $error}, or its {@code as}) only while it
+ * runs.</p>
  */
 public final class WorkflowInterpreter {
 
+    /**
+     * The rules a walk follows. Temporal executions recorded before these rules replay with the
+     * ones they ran with ({@code InterpreterWorkflowImpl} reads which from the history).
+     */
+    public enum Rules {
+        /**
+         * As recorded before the change {@code interpreter-rules}: one try depth shared by every
+         * fork branch, any leaf exception a retryable {@code error}, a catch alias left bound
+         * after its catch and {@code $error} inside a step's catch the job's error, an exception
+         * outside a step thrown out of {@link #run()}.
+         */
+        RECORDED_BEFORE_INTERPRETER_RULES,
+        /** The rules described on the class. */
+        CURRENT
+    }
+
+    /** The step a failure of the workflow's {@code outputs} is reported at. */
+    public static final String OUTPUTS = "outputs";
     public static final Duration DEFAULT_APPROVAL_TIMEOUT = Duration.ofHours(24);
     public static final Duration DEFAULT_WAIT_TIMEOUT = Duration.ofHours(24);
     public static final Duration POLL_INTERVAL = Duration.ofSeconds(5);
@@ -60,12 +87,16 @@ public final class WorkflowInterpreter {
     private final StepExecutor executor;
     private final JobContext ctx;
     private final Resume resume;
+    private final Rules rules;
 
     private boolean replaying;
     private String pendingApprovalId;
     private Attention pendingAttention;
+    /** The try depth of the whole walk, which only {@link Rules#RECORDED_BEFORE_INTERPRETER_RULES} reads. */
     private int guarded;
     private boolean compensating;
+    /** The step the walk last started (or {@link #OUTPUTS}): where an exception outside any step is reported. */
+    private volatile String current;
     private volatile JsonNode lastOutput = NullNode.getInstance();
 
     public WorkflowInterpreter(WorkflowDefinition definition, StepExecutor executor, JobContext ctx) {
@@ -73,10 +104,15 @@ public final class WorkflowInterpreter {
     }
 
     public WorkflowInterpreter(WorkflowDefinition definition, StepExecutor executor, JobContext ctx, Resume resume) {
+        this(definition, executor, ctx, resume, Rules.CURRENT);
+    }
+
+    public WorkflowInterpreter(WorkflowDefinition definition, StepExecutor executor, JobContext ctx, Resume resume, Rules rules) {
         this.definition = definition;
         this.executor = executor;
         this.ctx = ctx;
         this.resume = resume;
+        this.rules = rules == null ? Rules.CURRENT : rules;
         this.replaying = resume != null && resume.fromStep() != null;
         this.pendingApprovalId = resume == null ? null : resume.pendingApprovalId();
         this.pendingAttention = resume == null ? null : resume.pendingAttention();
@@ -86,7 +122,10 @@ public final class WorkflowInterpreter {
         return ctx;
     }
 
-    /** Walk the flow to its end. Never throws: the outcome says how it ended. */
+    /**
+     * Walk the flow to its end. Never throws under {@link Rules#CURRENT}: the outcome says how it
+     * ended, an exception outside any step included (as a failure of the step it came from).
+     */
     public Outcome run() {
         try {
             if (resume != null && resume.seed() != null) {
@@ -95,23 +134,50 @@ public final class WorkflowInterpreter {
             buildRequested();
             JsonNode last = NullNode.getInstance();
             try {
-                last = runSteps(definition.steps(), last, true);
+                last = runSteps(definition.steps(), last, true, 0);
             } catch (FlowEnd end) {
                 last = end.last;
             }
+            current = OUTPUTS;
             return Outcome.succeeded(outputs(last));
         } catch (StepFailure f) {
-            ctx.setError(f.toJson());
-            try {
-                boolean compensated = compensate();
-                runCatchFlow();
-                return Outcome.failed(f, compensated);
-            } catch (JobCancelled c) {
-                return Outcome.cancelled();
+            return failed(f);
+        } catch (JobCancelled c) {
+            return Outcome.cancelled();
+        } catch (RuntimeException e) {
+            if (rules != Rules.CURRENT) {
+                throw e; // as recorded: the engine ended the job as engine_error
             }
+            return failed(crash(current == null ? OUTPUTS : current, e, false));
+        }
+    }
+
+    /** A failed walk: the completed steps' compensation, then the workflow's catch flow. */
+    private Outcome failed(StepFailure f) {
+        ctx.setError(f.toJson());
+        try {
+            boolean compensated = compensate();
+            runCatchFlow();
+            return Outcome.failed(f, compensated);
         } catch (JobCancelled c) {
             return Outcome.cancelled();
         }
+    }
+
+    /**
+     * An exception that is not a step failure, as the failure of {@code stepId}: bad input
+     * ({@code IllegalArgumentException}, {@code NullPointerException}) is {@code invalid_input}
+     * and never retried, an expression error {@code expression}, anything else {@code error}.
+     */
+    private static StepFailure crash(String stepId, RuntimeException e, boolean retryableError) {
+        String message = e.getMessage() == null ? e.toString() : e.getMessage();
+        if (e instanceof ExpressionException) {
+            return new StepFailure(stepId, "expression", message, false);
+        }
+        if (e instanceof IllegalArgumentException || e instanceof NullPointerException) {
+            return new StepFailure(stepId, "invalid_input", message, false);
+        }
+        return new StepFailure(stepId, "error", message, retryableError);
     }
 
     // ---------------------------------------------------------------- build it first
@@ -129,6 +195,7 @@ public final class WorkflowInterpreter {
             // an expression, so the requester's values are passed as data and never read as templates
             with.put("input", "{{ $input" + (r.field().matches("[A-Za-z_][A-Za-z0-9_]*") ? "." + r.field() : "['" + r.field() + "']") + ".create }}");
             Step s = Step.simple(r.field() + ".create", "Build " + r.type(), StepType.RUN, with);
+            current = s.id();
             if (replaying && s.id().equals(resume.fromStep())) {
                 replaying = false; // a seeded job that stopped while building picks up here
             }
@@ -136,7 +203,7 @@ public final class WorkflowInterpreter {
             if (replaying && recorded(s.id())) {
                 out = replay(s, NullNode.getInstance());
             } else {
-                StepResult result = runLeaf(s, NullNode.getInstance());
+                StepResult result = runLeaf(s, NullNode.getInstance(), 0);
                 if (result.kind() != StepResult.Kind.OUTPUT) {
                     throw StepFailure.fatal(s.id(), "not_built", "The " + r.type() + " for " + r.field() + " was not built");
                 }
@@ -155,7 +222,8 @@ public final class WorkflowInterpreter {
 
     // ---------------------------------------------------------------- step lists
 
-    private JsonNode runSteps(List<Step> steps, JsonNode previous, boolean topLevel) {
+    /** Walk a list of steps; {@code tries} is how many {@code try} blocks this branch of the walk is inside. */
+    private JsonNode runSteps(List<Step> steps, JsonNode previous, boolean topLevel, int tries) {
         JsonNode last = previous;
         int i = 0;
         while (i < steps.size()) {
@@ -170,7 +238,7 @@ public final class WorkflowInterpreter {
                 }
             }
             checkCancelled();
-            StepResult r = runStep(s, last);
+            StepResult r = runStep(s, last, tries);
             switch (r.kind()) {
                 case OUTPUT -> {
                     last = r.output();
@@ -207,19 +275,32 @@ public final class WorkflowInterpreter {
         return -1;
     }
 
-    private StepResult runStep(Step s, JsonNode previous) {
-        return switch (s.type()) {
-            case SWITCH -> runSwitch(s, previous);
-            case FORK -> StepResult.output(runFork(s, previous));
-            case FOR -> StepResult.output(runFor(s, previous));
-            case TRY -> StepResult.output(runTry(s, previous));
-            default -> runLeaf(s, previous);
-        };
+    private StepResult runStep(Step s, JsonNode previous, int tries) {
+        current = s.id();
+        try {
+            return switch (s.type()) {
+                case SWITCH -> runSwitch(s, previous, tries);
+                case FORK -> StepResult.output(runFork(s, previous, tries));
+                case FOR -> StepResult.output(runFor(s, previous, tries));
+                case TRY -> StepResult.output(runTry(s, previous, tries));
+                default -> runLeaf(s, previous, tries);
+            };
+        } catch (StepFailure | JobCancelled | FlowEnd e) {
+            throw e;
+        } catch (RuntimeException e) {
+            if (rules != Rules.CURRENT) {
+                throw e;
+            }
+            // an exception the step's own handling did not turn into a failure: the step fails with it
+            StepFailure f = crash(s.id(), e, false);
+            fail(s, executor.now(), null, f);
+            throw f;
+        }
     }
 
     // ---------------------------------------------------------------- containers
 
-    private StepResult runSwitch(Step s, JsonNode previous) {
+    private StepResult runSwitch(Step s, JsonNode previous, int tries) {
         Instant start = executor.now();
         executor.onStepEvent(ctx, StepEvent.running(s, 1, null, start));
         try {
@@ -247,7 +328,7 @@ public final class WorkflowInterpreter {
             }
             if (chosen.steps() != null) {
                 out.put("branch", true);
-                JsonNode last = runSteps(chosen.steps(), previous, false);
+                JsonNode last = runSteps(chosen.steps(), previous, false, tries);
                 succeed(s, start, null, out, null);
                 return chosen.steps().isEmpty() ? StepResult.keep() : StepResult.output(last);
             }
@@ -269,13 +350,14 @@ public final class WorkflowInterpreter {
         }
     }
 
-    private JsonNode runFork(Step s, JsonNode previous) {
+    private JsonNode runFork(Step s, JsonNode previous, int tries) {
         Instant start = executor.now();
         executor.onStepEvent(ctx, StepEvent.running(s, 1, null, start));
         try {
             List<Supplier<JsonNode>> branches = new ArrayList<>();
             for (List<Step> branch : s.branches() == null ? List.<List<Step>>of() : s.branches()) {
-                branches.add(() -> runSteps(branch, previous, false));
+                // each branch carries its own try depth: a sibling inside a try does not guard this one
+                branches.add(() -> runSteps(branch, previous, false, tries));
             }
             List<JsonNode> results = executor.runBranches(ctx, s, branches);
             ObjectNode out = F.objectNode();
@@ -289,7 +371,7 @@ public final class WorkflowInterpreter {
         }
     }
 
-    private JsonNode runFor(Step s, JsonNode previous) {
+    private JsonNode runFor(Step s, JsonNode previous, int tries) {
         Instant start = executor.now();
         executor.onStepEvent(ctx, StepEvent.running(s, 1, null, start));
         String each = s.withText("each");
@@ -307,7 +389,7 @@ public final class WorkflowInterpreter {
                 if (each != null) {
                     ctx.bindAlias(each, item);
                 }
-                JsonNode last = runSteps(s.children() == null ? List.of() : s.children(), previous, false);
+                JsonNode last = runSteps(s.children() == null ? List.of() : s.children(), previous, false, tries);
                 items.add(last == null ? NullNode.getInstance() : last);
                 n++;
             }
@@ -327,14 +409,14 @@ public final class WorkflowInterpreter {
         }
     }
 
-    private JsonNode runTry(Step s, JsonNode previous) {
+    private JsonNode runTry(Step s, JsonNode previous, int tries) {
         Instant start = executor.now();
         executor.onStepEvent(ctx, StepEvent.running(s, 1, null, start));
         JsonNode last;
         try {
             guarded++;
             try {
-                last = runSteps(s.children() == null ? List.of() : s.children(), previous, false);
+                last = runSteps(s.children() == null ? List.of() : s.children(), previous, false, tries + 1);
             } finally {
                 guarded--;
             }
@@ -344,13 +426,28 @@ public final class WorkflowInterpreter {
                 throw f;
             }
             String as = s.catchBlock().as() == null ? "error" : s.catchBlock().as();
+            JsonNode outer = ctx.alias(as);
+            JsonNode outerError = ctx.error();
             ctx.bindAlias(as, f.toJson());
+            if (rules == Rules.CURRENT && "error".equals(as)) {
+                ctx.setError(f.toJson()); // $error reads the context's error: inside the catch it is this failure
+            }
             executor.log(ctx, "Step " + f.step() + " failed (" + f.errorClass() + "); running catch of " + s.id());
             try {
-                last = runSteps(s.catchBlock().steps() == null ? List.of() : s.catchBlock().steps(), previous, false);
+                last = runSteps(s.catchBlock().steps() == null ? List.of() : s.catchBlock().steps(), previous, false, tries);
             } catch (StepFailure g) {
                 fail(s, start, null, g);
                 throw g;
+            } finally {
+                if (rules == Rules.CURRENT) {
+                    // the alias names this catch's failure only: after it, the name is what it was before
+                    if (outer == null) {
+                        ctx.unbindAlias(as);
+                    } else {
+                        ctx.bindAlias(as, outer);
+                    }
+                    ctx.setError(outerError);
+                }
             }
         }
         succeed(s, start, null, last, null);
@@ -359,7 +456,7 @@ public final class WorkflowInterpreter {
 
     // ---------------------------------------------------------------- leaves
 
-    private StepResult runLeaf(Step s, JsonNode previous) {
+    private StepResult runLeaf(Step s, JsonNode previous, int tries) {
         int attempt = 0;
         int maxAttempts = s.retry() == null ? 1 : Math.max(1, s.retry().maxAttempts());
         JsonNode edited = null;
@@ -397,7 +494,8 @@ public final class WorkflowInterpreter {
                 } catch (ExpressionException e) {
                     failure = new StepFailure(s.id(), "expression", e.getMessage(), false);
                 } catch (RuntimeException e) {
-                    failure = new StepFailure(s.id(), "error", e.getMessage() == null ? e.toString() : e.getMessage(), true);
+                    failure = rules == Rules.CURRENT ? crash(s.id(), e, true)
+                            : new StepFailure(s.id(), "error", e.getMessage() == null ? e.toString() : e.getMessage(), true);
                 }
                 fail(s, start, with, failure, attempt);
                 if (failure.fatal()) {
@@ -411,7 +509,7 @@ public final class WorkflowInterpreter {
                     failure = null;
                     continue;
                 }
-                if (!shouldPause(s)) {
+                if (!shouldPause(s, tries)) {
                     throw failure;
                 }
             }
@@ -593,8 +691,9 @@ public final class WorkflowInterpreter {
 
     // ---------------------------------------------------------------- failure handling
 
-    private boolean shouldPause(Step s) {
-        if (!s.pauseOnFailure() || guarded > 0 || compensating) {
+    private boolean shouldPause(Step s, int tries) {
+        int depth = rules == Rules.CURRENT ? tries : guarded;
+        if (!s.pauseOnFailure() || depth > 0 || compensating) {
             return false;
         }
         return s.type() != StepType.APPROVAL && s.type() != StepType.RAISE;
@@ -625,7 +724,7 @@ public final class WorkflowInterpreter {
             }
             any = true;
             try {
-                runSteps(st.compensate(), c.output(), false);
+                runSteps(st.compensate(), c.output(), false, 0);
                 executor.onStepEvent(ctx, StepEvent.compensated(st, executor.now()));
             } catch (StepFailure f) {
                 executor.log(ctx, "Compensation of " + st.id() + " failed: " + f.getMessage());
@@ -642,7 +741,7 @@ public final class WorkflowInterpreter {
             return;
         }
         try {
-            runSteps(c.steps(), lastOutput, false);
+            runSteps(c.steps(), lastOutput, false, 0);
         } catch (StepFailure f) {
             executor.log(ctx, "The catch flow failed at " + f.step() + ": " + f.getMessage());
         } catch (FlowEnd ignored) {
@@ -675,6 +774,7 @@ public final class WorkflowInterpreter {
             if (js.status() != StepStatus.SUCCEEDED) {
                 continue;
             }
+            current = js.id();
             definition.step(js.id()).ifPresent(st -> {
                 JsonNode out = js.output() == null ? NullNode.getInstance() : js.output();
                 ctx.recordOutput(st, out);

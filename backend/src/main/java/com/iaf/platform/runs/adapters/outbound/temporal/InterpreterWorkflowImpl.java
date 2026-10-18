@@ -113,6 +113,14 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * before they started.
      */
     static final String CHILD_RECORDS = "child-records-itself";
+    /**
+     * The change id of the interpreter's {@link WorkflowInterpreter.Rules#CURRENT} rules (version
+     * 1): a try depth per fork branch, bad input never retried, an exception outside a step
+     * failing it through compensation and the catch flow, a catch's name ({@code $error} or its
+     * {@code as}) bound to its failure only while it runs. Executions without its marker walk
+     * with the rules they were recorded with (fixture {@code before-interpreter-rules}).
+     */
+    static final String INTERPRETER_RULES = "interpreter-rules";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
     static final RetryOptions PUBLISH = RetryOptions.newBuilder()
@@ -218,7 +226,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (cancelled) {
             return Outcome.cancelled();
         }
-        return new WorkflowInterpreter(job.definition(), this, ctx, resumeOf(job)).run();
+        WorkflowInterpreter.Rules rules = Workflow.getVersion(INTERPRETER_RULES, Workflow.DEFAULT_VERSION, 1) >= 1
+                ? WorkflowInterpreter.Rules.CURRENT
+                : WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES;
+        return new WorkflowInterpreter(job.definition(), this, ctx, resumeOf(job), rules).run();
     }
 
     static WorkflowInterpreter.Resume resumeOf(Job job) {

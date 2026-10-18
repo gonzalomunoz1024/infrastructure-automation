@@ -567,6 +567,52 @@ class InterpreterWorkflowImplTest {
     }
 
     @Test
+    void aForkBranchOutsideAnyTryPausesForAttentionWhileItsSiblingWaitsInsideOne() {
+        t = new TemporalTestEngine();
+        Job job = t.start(HistoryRecorder.FORK_GUARD, Map.of());
+
+        t.awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+        Job paused = t.job(job.id());
+        assertThat(paused.attention().step()).isEqualTo("broken");
+        assertThat(paused.attention().error().errorClass()).isEqualTo("unknown_action");
+        t.awaitWorkflowStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+
+        t.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.failedStep()).isEqualTo("broken");
+        assertThat(outcome.message()).endsWith("(aborted by ana)");
+        assertThat(t.job(job.id()).step("guarded").status()).as("the sibling ran to its end").isEqualTo(StepStatus.SUCCEEDED);
+        t.replay(job.id());
+    }
+
+    @Test
+    void aMalformedWaitDurationFailsTheStepOnceAsInvalidInput() {
+        t = new TemporalTestEngine();
+        Job job = t.start(HistoryRecorder.LEAF_ERROR, Map.of());
+
+        Outcome outcome = t.result(job.id());
+        assertThat(outcome.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(outcome.errorClass()).isEqualTo("invalid_input");
+        assertThat(t.steps(job.id())).containsExactly("pause:running", "pause:failed");
+        t.replay(job.id());
+    }
+
+    @Test
+    void historiesRecordedBeforeTheInterpreterRulesStillReplayWithTheRulesTheyRanWith() throws IOException {
+        t = new TemporalTestEngine();
+        WorkflowExecutionHistory leaf = history("/temporal/before-interpreter-rules/leaf-error-retried.json");
+        WorkflowExecutionHistory fork = history("/temporal/before-interpreter-rules/fork-guarded-sibling.json");
+        assertThat(activities(leaf)).as("recorded retrying the malformed duration: two attempts, each running then failed")
+                .filteredOn("PublishStep"::equals).hasSize(4);
+        assertThat(activities(fork)).as("recorded failing the fork without a pause for attention").doesNotContain("PublishAttention");
+
+        t.replay(leaf);
+        t.replay(fork);
+    }
+
+    @Test
     void aRunStepWithoutAVersionRunsTheChildsCurrentMajorAndSaysSo() {
         t = new TemporalTestEngine();
         when(t.w.workflows.published("t-quick")).thenReturn(Mono.just(RunsTestWiring.record(yaml(QUICK))));

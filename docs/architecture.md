@@ -254,6 +254,16 @@ result through `ChildResults`, which carries those registrations. The same class
   child workflows, `Workflow.await` for approvals and pause-on-failure, and durable timers for
   waits. The definition snapshot travels in the workflow input.
 
+A failure pauses for a person's decision only outside every `try`, and each `fork` branch counts
+only the `try` blocks it is itself inside (in process the branches run at once, on threads), so a
+branch inside a `try` does not keep a sibling's failure from pausing. A leaf's bad input
+(`IllegalArgumentException`, `NullPointerException`, such as a `wait` duration that is no duration)
+fails it as `invalid_input`, never retried. An exception outside a step's own handling (a
+container, the seed of a rerun, the build of a requested resource, the `outputs`) fails that step,
+or `outputs`, like any step failure: compensation and the workflow's `catch` run, and the engine
+never ends the job as `engine_error` for it. A `catch` names the failure it caught (`$error`, or
+`$<as>`) only while it runs.
+
 A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
 in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
 bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
@@ -295,7 +305,12 @@ projection of the instance it runs on. A child that did not succeed reaches the 
 a `ChildFailure` on both engines, so `onFailure: continue` means the same there. Executions
 recorded before children recorded themselves (fixture `before-child-records-itself`) still
 replay: the change is gated with `Workflow.getVersion` (`child-records-itself`), as the
-team-worker change was. Every event an execution publishes (its start as a child, the step
+team-worker change was. The interpreter's failure rules above are gated the same way
+(`interpreter-rules`): an execution recorded before them (fixture `before-interpreter-rules`)
+replays with the rules it ran with, `WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES`.
+The fixtures are histories the test-only `HistoryRecorder` writes from scenarios run on the test
+server (`-Diaf.record.histories=<dir>`) before a change alters the commands a workflow issues.
+Every event an execution publishes (its start as a child, the step
 records, decisions, waves, log lines, `job.finished` and `job.cancelled`) is an activity retried
 without a maximum, backing off from 1 s to one attempt a minute: a store that is down holds the
 job where it is until the projection keeps the event, rather than losing a `job.finished` and

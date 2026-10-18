@@ -141,7 +141,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `switch: [ { case: { when, then \| do } }, { default: then \| { do } } ]` | `then` jumps to a later step id or `end`; `do` runs a nested branch and continues after the switch |
 | `fork: { branches: [ [steps], [steps] ] }` | parallel branches, joined                                     |
 | `for: { each, in, do }`  | loop                                                                           |
-| `try: { do, catch: { as, do } }` | scoped error handling                                                  |
+| `try: { do, catch: { as, do } }` | scoped error handling: inside `catch` the failure is `$error` (with `as`, `$<as>`): `{ step, message, class, retryable }`; the name holds only while the catch runs |
 | `wait: PT5M`             | ISO duration or `{ until: expression }`                                        |
 | `set: { name: expression }` | variables, reachable as `$vars.name`                                        |
 | `raise: { error, message }` | fail the job                                                                |
@@ -153,6 +153,13 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, backoff }`,
 `timeout`, `pauseOnFailure` (default true), `compensate: [steps]` (run when a later step fails),
 `position: { x, y }`, `notes`.
+
+A failed step is retried as `retry` says when its error is retryable, then pauses for a person's
+decision (`pauseOnFailure`) unless a `try` around it catches the failure; each `fork` branch counts
+only the `try` blocks it is inside. Bad input, such as a `wait` duration that is no duration, fails
+the step as `invalid_input` at once, without retries. An error outside any step's own handling (in
+a container, or while the `outputs` are evaluated) fails that step, or `outputs`, like any other:
+compensation and the workflow's `catch` run.
 
 ### Playbook sources and pins
 

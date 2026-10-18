@@ -1,12 +1,18 @@
 package com.iaf.platform.runs.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +22,7 @@ import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
+import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 /** The walker against the real sample workflows, on the recorded sample world. */
 class WorkflowInterpreterTest {
@@ -626,5 +633,359 @@ class WorkflowInterpreterTest {
             Outcome o = run(d.name(), inputs.get(d.name()), ex);
             assertThat(o.status()).as(d.name() + ": " + o.message()).isEqualTo(JobStatus.SUCCEEDED);
         }
+    }
+
+    // ---------------------------------------------------------------- the interpreter's rules
+
+    /** A fork whose first branch waits inside a try while the second fails outside any. */
+    static final String FORK_GUARD = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-fork-guard, title: Fork guard, noun: thing, verb: fork, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - both:
+                    name: Both
+                    fork:
+                      branches:
+                        - - guarded:
+                              name: Guarded
+                              try:
+                                do:
+                                  - pause:
+                                      name: Pause
+                                      wait: { duration: 10m }
+                        - - broken:
+                              name: Broken
+                              call: provider
+                              with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+            """;
+
+    /**
+     * Runs a fork's first branch on a thread of its own until it sleeps, then the second branch on
+     * the caller's thread, then lets the first go on: how an engine running branches at once can
+     * interleave them, made deterministic.
+     */
+    static final class InterleavingExecutor extends SampleStepExecutor {
+        private final CountDownLatch sleeping = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private volatile Thread first;
+
+        InterleavingExecutor() {
+            super(SampleContent.providers(), SampleContent::child, SampleContent.types(), T0);
+        }
+
+        @Override
+        public List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches) {
+            CompletableFuture<JsonNode> a = CompletableFuture.supplyAsync(() -> {
+                first = Thread.currentThread();
+                return branches.get(0).get();
+            });
+            await(sleeping);
+            RuntimeException failure = null;
+            JsonNode b = null;
+            try {
+                b = branches.get(1).get();
+            } catch (RuntimeException e) {
+                failure = e;
+            } finally {
+                release.countDown();
+            }
+            List<JsonNode> out = new ArrayList<>();
+            out.add(a.join());
+            out.add(b);
+            if (failure != null) {
+                throw failure;
+            }
+            return out;
+        }
+
+        @Override
+        public void sleep(JobContext ctx, Duration duration) {
+            if (Thread.currentThread() == first) {
+                sleeping.countDown();
+                await(release);
+            }
+            super.sleep(ctx, duration);
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                if (!latch.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("the branches did not interleave");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+            }
+        }
+    }
+
+    static Outcome run(String yaml, SampleStepExecutor executor, WorkflowInterpreter.Rules rules) {
+        WorkflowDefinition d = WorkflowYaml.parse(yaml);
+        return new WorkflowInterpreter(d, executor, context(d, Map.of()), null, rules).run();
+    }
+
+    @Test
+    void aForkBranchOutsideAnyTryPausesForAttentionWhileItsSiblingWaitsInsideOne() {
+        InterleavingExecutor ex = new InterleavingExecutor();
+        Outcome o = run(FORK_GUARD, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(ex.attentions()).singleElement().satisfies(a -> {
+            assertThat(a.step()).isEqualTo("broken");
+            assertThat(a.error().errorClass()).isEqualTo("unknown_action");
+        });
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("broken");
+        assertThat(o.message()).endsWith("(aborted by nobody)");
+        assertThat(ids(ex, "job_test", StepStatus.SUCCEEDED)).as("the sibling still ran to its end").contains("pause", "guarded");
+    }
+
+    @Test
+    void theRecordedRulesLetASiblingInsideATryKeepAForkBranchFromPausing() {
+        InterleavingExecutor ex = new InterleavingExecutor();
+        Outcome o = run(FORK_GUARD, ex, WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES);
+
+        assertThat(ex.attentions()).as("one try depth for every branch, as recorded").isEmpty();
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("broken");
+        assertThat(o.message()).doesNotContain("aborted");
+    }
+
+    /** A malformed wait duration on a step that would retry. */
+    static final String LEAF_ERROR = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-leaf-error, title: Leaf error, noun: thing, verb: wait, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - pause:
+                    name: Pause
+                    wait: { duration: soon }
+                    retry: { maxAttempts: 2 }
+                    pauseOnFailure: false
+            """;
+
+    @Test
+    void aMalformedWaitDurationFailsTheStepAsInvalidInputWithoutARetry() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run(LEAF_ERROR, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("pause");
+        assertThat(o.errorClass()).isEqualTo("invalid_input");
+        assertThat(o.message()).isEqualTo("'soon' is not a duration; use 30m, 4h or PT30M");
+        assertThat(ids(ex, "job_test", StepStatus.FAILED)).as("bad input is never retried").containsExactly("pause");
+        assertThat(last(ex, "job_test", "pause", StepStatus.FAILED).error().retryable()).isFalse();
+    }
+
+    @Test
+    void theRecordedRulesRetriedAMalformedWaitDurationAsAnError() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run(LEAF_ERROR, ex, WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES);
+
+        assertThat(o.errorClass()).isEqualTo("error");
+        assertThat(ids(ex, "job_test", StepStatus.FAILED)).containsExactly("pause", "pause");
+    }
+
+    /** A first step with a compensation, a fork after it, and a catch flow that says where the job failed. */
+    static final String CONTAINER = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-container, title: Container, noun: thing, verb: fork, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - get:
+                    name: Get
+                    call: provider
+                    with: { provider: vsphere, action: vm.get, input: { id: vm-1042 } }
+                    compensate:
+                      - undo:
+                          name: Undo
+                          notify: { channel: "#x", message: "undo {{ $json.name }}" }
+                - both:
+                    name: Both
+                    fork:
+                      branches:
+                        - - one:
+                              name: One
+                              notify: { channel: "#x", message: "one" }
+                        - - two:
+                              name: Two
+                              notify: { channel: "#x", message: "two" }
+              catch:
+                do:
+                  - tell:
+                      name: Tell
+                      notify: { channel: "#x", message: "failed at {{ $error.step }} ({{ $error.class }}): {{ $error.message }}" }
+            """;
+
+    /** An executor whose branch runner breaks: an exception no step's own handling sees. */
+    static SampleStepExecutor brokenBranches() {
+        return new SampleStepExecutor(SampleContent.providers(), SampleContent::child, SampleContent.types(), T0) {
+            @Override
+            public List<JsonNode> runBranches(JobContext ctx, Step step, List<Supplier<JsonNode>> branches) {
+                throw new IllegalStateException("the branch runner broke");
+            }
+        };
+    }
+
+    @Test
+    void anExceptionInAContainerFailsItThroughCompensationAndTheCatchFlow() {
+        SampleStepExecutor ex = brokenBranches();
+        Outcome o = run(CONTAINER, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(o.status()).isEqualTo(JobStatus.ROLLED_BACK);
+        assertThat(o.failedStep()).isEqualTo("both");
+        assertThat(o.errorClass()).isEqualTo("error");
+        assertThat(o.message()).isEqualTo("the branch runner broke");
+        assertThat(last(ex, "job_test", "both", StepStatus.FAILED).error().errorClass()).isEqualTo("error");
+        assertThat(last(ex, "job_test", "undo", StepStatus.SUCCEEDED).output().path("message").asText()).isEqualTo("undo web-1042");
+        assertThat(ids(ex, "job_test", StepStatus.COMPENSATED)).containsExactly("get");
+        assertThat(last(ex, "job_test", "tell", StepStatus.SUCCEEDED).output().path("message").asText())
+                .isEqualTo("failed at both (error): the branch runner broke");
+    }
+
+    @Test
+    void theRecordedRulesThrewAnExceptionInAContainerOutOfTheWalk() {
+        WorkflowDefinition d = WorkflowYaml.parse(CONTAINER);
+        WorkflowInterpreter walk = new WorkflowInterpreter(d, brokenBranches(), context(d, Map.of()), null,
+                WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES);
+
+        assertThatThrownBy(walk::run).isInstanceOf(IllegalStateException.class).hasMessage("the branch runner broke");
+    }
+
+    /** Outputs that cannot be evaluated, on an executor whose log breaks when it is told so. */
+    static final String OUTPUTS = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-outputs, title: Outputs, noun: thing, verb: report, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - get:
+                    name: Get
+                    call: provider
+                    with: { provider: vsphere, action: vm.get, input: { id: vm-1042 } }
+              catch:
+                do:
+                  - tell:
+                      name: Tell
+                      notify: { channel: "#x", message: "failed at {{ $error.step }} ({{ $error.class }})" }
+              outputs:
+                name: "{{ $nope.name }}"
+            """;
+
+    @Test
+    void anExceptionWhileTheOutputsAreEvaluatedFailsTheJobAtOutputsThroughTheCatchFlow() {
+        SampleStepExecutor ex = new SampleStepExecutor(SampleContent.providers(), SampleContent::child, SampleContent.types(), T0) {
+            @Override
+            public void log(JobContext ctx, String message) {
+                if (message.startsWith("Output ")) {
+                    throw new IllegalStateException("the job log is gone");
+                }
+                super.log(ctx, message);
+            }
+        };
+        Outcome o = run(OUTPUTS, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo(WorkflowInterpreter.OUTPUTS);
+        assertThat(o.errorClass()).isEqualTo("error");
+        assertThat(o.message()).isEqualTo("the job log is gone");
+        assertThat(last(ex, "job_test", "tell", StepStatus.SUCCEEDED).output().path("message").asText()).isEqualTo("failed at outputs (error)");
+    }
+
+    /** A try whose catch names its failure {@code oops}, and a later step that still reads the name. */
+    static final String CATCH_ALIAS = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-catch-alias, title: Catch alias, noun: thing, verb: catch, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - guarded:
+                    name: Guarded
+                    try:
+                      do:
+                        - broken:
+                            name: Broken
+                            call: provider
+                            with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+                      catch:
+                        as: oops
+                        do:
+                          - note:
+                              name: Note
+                              notify: { channel: "#x", message: "caught {{ $oops.message }}" }
+                - after:
+                    name: After
+                    notify: { channel: "#x", message: "after {{ $oops.message }}" }
+                    pauseOnFailure: false
+            """;
+
+    @Test
+    void aCatchAliasNamesTheFailureOnlyInsideItsCatch() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run(CATCH_ALIAS, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(last(ex, "job_test", "note", StepStatus.SUCCEEDED).output().path("message").asText())
+                .isEqualTo("caught Provider vsphere has no action 'vm.doesNotExist'");
+        assertThat(o.status()).isEqualTo(JobStatus.FAILED);
+        assertThat(o.failedStep()).isEqualTo("after");
+        assertThat(o.errorClass()).isEqualTo("expression");
+        assertThat(o.message()).contains("$oops");
+    }
+
+    @Test
+    void theRecordedRulesLeftACatchAliasBoundAfterItsCatch() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run(CATCH_ALIAS, ex, WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES);
+
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(last(ex, "job_test", "after", StepStatus.SUCCEEDED).output().path("message").asText())
+                .isEqualTo("after Provider vsphere has no action 'vm.doesNotExist'");
+    }
+
+    /** A try whose catch keeps the default name: {@code $error} there is the failure it caught. */
+    static final String CATCH_ERROR = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-catch-error, title: Catch error, noun: thing, verb: catch, owner: team-x, version: 1.0.0 }
+            workflow:
+              do:
+                - guarded:
+                    name: Guarded
+                    try:
+                      do:
+                        - broken:
+                            name: Broken
+                            call: provider
+                            with: { provider: vsphere, action: vm.doesNotExist, input: { id: vm-1 } }
+                      catch:
+                        do:
+                          - note:
+                              name: Note
+                              notify: { channel: "#x", message: "caught at {{ $error.step }}: {{ $error.message }}" }
+                - after:
+                    name: After
+                    notify: { channel: "#x", message: "after [{{ $error.message }}]" }
+            """;
+
+    @Test
+    void errorInsideAStepCatchIsTheFailureItCaughtAndNothingAfterIt() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run(CATCH_ERROR, ex, WorkflowInterpreter.Rules.CURRENT);
+
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(last(ex, "job_test", "note", StepStatus.SUCCEEDED).output().path("message").asText())
+                .isEqualTo("caught at broken: Provider vsphere has no action 'vm.doesNotExist'");
+        assertThat(last(ex, "job_test", "after", StepStatus.SUCCEEDED).output().path("message").asText()).doesNotContain("vm.doesNotExist");
+    }
+
+    @Test
+    void theRecordedRulesReadTheJobsErrorInsideAStepCatch() {
+        SampleStepExecutor ex = SampleContent.executor();
+        run(CATCH_ERROR, ex, WorkflowInterpreter.Rules.RECORDED_BEFORE_INTERPRETER_RULES);
+
+        assertThat(last(ex, "job_test", "note", StepStatus.SUCCEEDED).output().path("message").asText()).doesNotContain("vm.doesNotExist");
     }
 }
