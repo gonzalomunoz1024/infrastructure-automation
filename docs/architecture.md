@@ -338,6 +338,23 @@ See `docs/design-language.md`. The shell (every page but the canvas) is built fr
 editor on `@xyflow/react`. Routing is a small hash router in `frontend/src/app/router.ts`; no
 router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`.
 
+The shell renders what the API judges and never decides for itself: the catalog and the run page
+show an operation's deprecation (since, sunset, successor) as the catalog reports it; a run can be
+pinned to an exact version (`X-Workflow-Version`, bypassing the canary split) and every
+submission carries one `Idempotency-Key` per form, so a resend after a 429 (shown with the
+backend's `Retry-After` wait) or a lost answer replays the same job; the header bell is the inbox
+(`/notifications`); the audit page has a tab on the platform stream; the releases, release and
+provider pages show provider releases judged over calls. Every provider edit (the SLO, "Use the
+real response", a spec refresh, the wizard's publish) is a change request the page names and
+links. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
+the commit read), imports an Ansible repository or a Terraform module through the backend's
+drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
+it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
+so an edit keeps the file as it is and bumps its version by a line edit of the metadata block. The
+assistant page shows the validation's problems as the designer's Issues list, the session's own
+events from the platform stream, and submits a ready draft as a change request. The settings page
+creates service accounts with the presets and the grouped scopes of `docs/api.md`.
+
 ## Where things are in Git
 
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a

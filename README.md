@@ -4,7 +4,8 @@ A platform where a team designs an infrastructure workflow on an n8n-style canva
 config as code in Git, and runs it on Temporal. Publishing a workflow generates its REST
 endpoint, its OpenAPI entry and its MCP tool. The systems a workflow talks to (a vCenter, an Ops
 Manager, a backup service, an Ansible library, a Terraform module) are registered as *providers*
-through a wizard, without code.
+through a wizard, without code: from an OpenAPI spec (a URL, a file or a Git repository), a few
+HTTP endpoints, or imported from an Ansible repository or a Terraform module.
 
 Everything a team builds (VM restart, MongoDB upgrade, Delete VM, Patch a CVE) is sample content
 under `workflows/`. Nothing in `backend/` or `frontend/` knows what a VM is.
