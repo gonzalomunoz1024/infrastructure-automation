@@ -1,0 +1,184 @@
+# The platform on Kubernetes: the API, the interpreter's workers, the web app and the teams'
+# provider workers. Temporal and PostgreSQL run elsewhere; point at them below. Secrets are only
+# referenced (names of existing Secrets, or Vault agent annotations): the chart never holds a value.
+
+image:
+  # prefix for the images below given as a bare name (platform-backend, platform-frontend), like
+  # registry.example.com/platform
+  registry: ""
+  pullPolicy: IfNotPresent
+
+# names of existing docker-registry Secrets
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# for the backend, the frontend and the provider workers; each image runs as a non-root user
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+# ------------------------------------------------------------------ the backend (API and worker)
+
+backend:
+  image:
+    repository: platform-backend
+    tag: ""                      # the chart's appVersion when empty
+  # SPRING_PROFILES_ACTIVE; temporal runs the jobs on Temporal. Add git, opa, vault, oidc, live as
+  # the install uses them; postgres is added when postgres.enabled is true.
+  profiles: [temporal]
+  # application.yml overrides for the API and the worker, merged over what the chart sets
+  # (platform.temporal.*, platform.content.dir, the health probes). Never put a secret here.
+  config: {}
+  # plain environment variables of the API and the worker
+  env: []
+  javaToolOptions: "-XX:MaxRAMPercentage=75"
+  podAnnotations: {}
+
+api:
+  replicas: 2
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits: { memory: 1536Mi }
+  pdb:
+    minAvailable: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  terminationGracePeriodSeconds: 30
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# The interpreter's Temporal workers (platform.roles worker). With enabled false the API pods run the
+# worker too. A separate worker needs a job store the API shares (postgres.enabled), since the
+# worker records the progress the API shows.
+worker:
+  enabled: true
+  replicas: 2
+  resources:
+    requests: { cpu: 250m, memory: 768Mi }
+    limits: { memory: 1536Mi }
+  pdb:
+    minAvailable: 1
+  # longer than the worker's drain (20s): a stopping worker lets the steps in flight finish
+  terminationGracePeriodSeconds: 45
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+temporal:
+  address: temporal-frontend.temporal.svc.cluster.local:7233
+  namespace: default
+  taskQueue: platform-interpreter
+  # the Temporal web UI, for each job's "Open in Temporal" link; no link when empty
+  uiUrl: ""
+
+postgres:
+  # turns on the backend's postgres profile; with false every pod keeps its state in memory
+  enabled: false
+  url: jdbc:postgresql://postgres.example.internal:5432/platform
+  username: platform
+  # an existing Secret holding the password
+  passwordSecret:
+    name: ""
+    key: password
+
+# The content repository (workflows/, providers/, resource-types/), cloned into each backend pod
+# when it starts. With no repository the platform starts without content.
+content:
+  repository: ""
+  ref: main
+  # an existing Secret with the credentials to clone it, for a private repository
+  credentialsSecret:
+    name: ""
+    usernameKey: username
+    passwordKey: password
+  gitImage:
+    repository: alpine/git
+    tag: "2.52.0"
+
+secrets:
+  # names of existing Secrets whose keys become environment variables of the API and the worker,
+  # like PLATFORM_CREDENTIALS_VAULTTOKEN or PLATFORM_ASSISTANT_DEVINAPIKEY
+  envFrom: []
+  # single variables from keys of existing Secrets:
+  #   - { name: PLATFORM_CREDENTIALS_VAULTTOKEN, secretName: platform-vault, key: token }
+  env: []
+
+# Secrets from Vault through the agent injector instead of Kubernetes Secrets. The agent renders
+# configFile under /vault/secrets/ from the annotations; the backend imports it as configuration.
+vaultAgent:
+  enabled: false
+  role: platform
+  # the file the agent renders as Spring properties, like platform.properties
+  configFile: ""
+  # the vault.hashicorp.com/* annotations that say what to render, for example:
+  #   vault.hashicorp.com/agent-inject-secret-platform.properties: secret/data/platform/backend
+  #   vault.hashicorp.com/agent-inject-template-platform.properties: |
+  #     {{- with secret "secret/data/platform/backend" -}}
+  #     platform.credentials.vault-token={{ .Data.data.vaultToken }}
+  #     {{- end }}
+  annotations: {}
+
+# ------------------------------------------------------------------ the web app
+
+frontend:
+  enabled: true
+  image:
+    repository: platform-frontend
+    tag: ""
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 128Mi }
+  pdb:
+    minAvailable: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: platform.example.com
+  # an existing TLS Secret for the host
+  tlsSecretName: ""
+
+# ------------------------------------------------------------------ the teams' provider workers
+
+# One Deployment per custom-code provider worker, built with a provider SDK. Each polls its
+# provider's task queue on the same Temporal; it needs no Service.
+#   - name: ip-pool
+#     image: { repository: registry.example.com/team-platform/ip-pool-provider, tag: 1.0.0 }
+#     replicas: 2
+#     env: [{ name: LOG_LEVEL, value: info }]
+#     envFrom: [ip-pool-credentials]          # existing Secrets
+#     resources: { requests: { cpu: 50m, memory: 64Mi } }
+#     pdb: { minAvailable: 1 }
+#     drainSeconds: 30                        # WORKER_DRAIN_SECONDS; the grace period is 15s longer
+#     podAnnotations: {}                      # for example Vault agent annotations
+providerWorkers: []
+
+# ------------------------------------------------------------------ monitoring
+
+metrics:
+  # Prometheus Operator: scrape /actuator/prometheus on the API and the workers
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}

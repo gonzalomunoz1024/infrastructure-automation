@@ -6,10 +6,9 @@
 services:
   temporal:
     image: temporalio/temporal:1.4.1
-    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db", "--ui-port", "8233"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db", "--headless"]
     ports:
       - "7233:7233"
-      - "8233:8233"
     volumes:
       - temporal-data:/data
     healthcheck:
@@ -19,9 +18,13 @@ services:
       retries: 20
 
   temporal-ui:
-    # the dev server already serves its UI on :8233; this alias keeps `docker compose up temporal temporal-ui` working
-    image: busybox:1.37
-    command: ["sh", "-c", "echo 'Temporal UI: http://localhost:8233'; sleep infinity"]
+    # the Temporal web UI on :8233, as a deployment runs it; each job's "Open in Temporal" link lands here
+    image: temporalio/ui:2.54.1
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8233:8080"
     depends_on:
       temporal:
         condition: service_healthy
@@ -33,6 +36,7 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: demo,temporal
       PLATFORM_TEMPORAL_TARGET: temporal:7233
+      PLATFORM_TEMPORAL_UI_URL: http://localhost:8233
       PLATFORM_CONTENT_DIR: /content
     volumes:
       - ./workflows:/content/workflows:ro
@@ -45,18 +49,38 @@ services:
         condition: service_healthy
 
   frontend:
-    image: node:22-alpine
-    working_dir: /app
-    command: ["sh", "-c", "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"]
+    # the production build behind nginx, which proxies /api and /ws to the backend (scripts/dev.sh for hot reload)
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     environment:
-      VITE_API_PROXY: http://backend:8080
-    volumes:
-      - ./:/app
-      - frontend-modules:/app/node_modules
+      API_UPSTREAM: http://backend:8080
     ports:
-      - "3000:3000"
+      - "3000:8080"
     depends_on:
       - backend
+
+  ip-pool-worker:
+    # the Go SDK's example provider worker: ip-pool's actions on task queue provider-ip-pool
+    build:
+      context: ./sdk/go
+      dockerfile: examples/ip-pool/Dockerfile
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+  dns-records-worker:
+    # the Python SDK's example provider worker: dns-records' actions on task queue provider-dns-records
+    build:
+      context: ./sdk/python
+      dockerfile: examples/dns_records/Dockerfile
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      temporal:
+        condition: service_healthy
 
 volumes:
   temporal-data:

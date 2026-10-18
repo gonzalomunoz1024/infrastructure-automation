@@ -1,0 +1,10 @@
+apiVersion: v2
+name: platform
+description: The infrastructure automation platform on Kubernetes - the API, the interpreter's workers, the web app and the teams' provider workers, on an external Temporal and PostgreSQL.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - temporal
+  - workflows
+  - automation

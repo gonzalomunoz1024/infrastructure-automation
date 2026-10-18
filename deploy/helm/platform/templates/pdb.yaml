@@ -1,0 +1,40 @@
+{{/* A disruption budget for every component that runs more than one pod. */}}
+{{- $budgets := list (dict "name" "api" "component" "api" "replicas" .Values.api.replicas "pdb" .Values.api.pdb "on" true) -}}
+{{- $budgets = append $budgets (dict "name" "worker" "component" "worker" "replicas" .Values.worker.replicas "pdb" .Values.worker.pdb "on" .Values.worker.enabled) -}}
+{{- $budgets = append $budgets (dict "name" "frontend" "component" "frontend" "replicas" .Values.frontend.replicas "pdb" .Values.frontend.pdb "on" .Values.frontend.enabled) -}}
+{{- range $budgets }}
+{{- if and .on (gt (int .replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "platform.fullname" $ }}-{{ .name }}
+  labels:
+    {{- include "platform.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ .component }}
+spec:
+  minAvailable: {{ default 1 .pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "platform.selector" (dict "ctx" $ "component" .component) | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- range $w := .Values.providerWorkers }}
+{{- if gt (int (default 1 $w.replicas)) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "platform.fullname" $ }}-provider-{{ $w.name }}
+  labels:
+    {{- include "platform.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: provider-worker
+    platform.provider: {{ $w.name | quote }}
+spec:
+  minAvailable: {{ default 1 (($w.pdb | default dict).minAvailable) }}
+  selector:
+    matchLabels:
+      {{- include "platform.selector" (dict "ctx" $ "component" "provider-worker") | nindent 6 }}
+      platform.provider: {{ $w.name | quote }}
+{{- end }}
+{{- end }}

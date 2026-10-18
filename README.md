@@ -68,6 +68,16 @@ workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
 provider calls). `docker-compose.yml` starts a Temporal dev server and the stack on it.
 
+## Deployment
+
+`backend/Dockerfile` and `frontend/Dockerfile` (nginx serving the build and proxying `/api` and
+`/ws` to the backend) build images that run as a non-root user, and so does each provider SDK
+example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter's workers
+(`platform.roles`), the web app and one deployment per provider worker against an external
+Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
+agent annotations and never holds a value; `values.yaml` describes every setting and
+`ci/full-values.yaml` shows them all in use.
+
 ## Checks
 
 ```bash

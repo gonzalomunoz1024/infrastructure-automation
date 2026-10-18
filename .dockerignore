@@ -1,0 +1,11 @@
+# Images built from the repository root (frontend/Dockerfile) need the workspaces' sources only.
+.git
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+**/*.egg-info
+**/.venv
+frontend/test-results
+frontend/playwright-report
+docs/screenshots
