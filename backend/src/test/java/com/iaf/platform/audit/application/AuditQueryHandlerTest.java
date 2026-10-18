@@ -37,6 +37,7 @@ import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.domain.Signatures;
+import com.iaf.platform.audit.ports.inbound.AuditQueries;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.AuditRow;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FilterSpec;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
@@ -261,6 +262,105 @@ class AuditQueryHandlerTest {
                 })
                 .verify();
         StepVerifier.create(handler.shared("nope")).expectError(NotFoundException.class).verify();
+    }
+
+    @Test
+    void verificationReportsEveryCheckpointAndTheFinalSeal() {
+        EvidenceRecord open = store.record("job_new").orElseThrow();
+        EvidenceEntry first = open.entries().get(0);
+        store.checkpoint("job_new", new EvidenceRecord.Seal(NOW, signer.sign(first.hash()), signer.keyId(), 1, first.hash()));
+        store.checkpoint("job_new", new EvidenceRecord.Seal(NOW.plusSeconds(3600), signer.sign(open.latestHash()), signer.keyId(), 2, open.latestHash()));
+        store.append("job_new", EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "platform", JSON.createObjectNode().put("status", "succeeded")));
+        EvidenceRecord closed = store.record("job_new").orElseThrow();
+        store.seal("job_new", new EvidenceRecord.Seal(NOW.plusSeconds(7200), signer.sign(closed.latestHash()), signer.keyId(), 3, closed.latestHash()));
+
+        StepVerifier.create(handler.verify("job_new"))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isTrue();
+                    assertThat(v.seal()).isEqualTo("verified");
+                    assertThat(v.seals()).extracting(AuditQueries.SealCheck::kind).containsExactly("checkpoint", "checkpoint", "seal");
+                    assertThat(v.seals()).extracting(AuditQueries.SealCheck::seq).containsExactly(1, 2, 3);
+                    assertThat(v.seals()).extracting(AuditQueries.SealCheck::status).containsOnly("verified");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void aCheckpointThatNoLongerMatchesItsEntryMakesTheRecordInvalid() {
+        EvidenceRecord open = store.record("job_new").orElseThrow();
+        EvidenceStore tampered = mock(EvidenceStore.class);
+        EvidenceRecord withBadCheckpoint = open
+                .withCheckpoint(new EvidenceRecord.Seal(NOW, signer.sign("not-the-hash"), signer.keyId(), 1, "not-the-hash"))
+                .withCheckpoint(new EvidenceRecord.Seal(NOW, "c2ln", "kother", 2, open.latestHash()));
+        when(tampered.record("job_new")).thenReturn(Optional.of(withBadCheckpoint));
+
+        StepVerifier.create(new AuditQueryHandler(tampered, signer, clock, JSON).verify("job_new"))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.brokenAt()).isNull();
+                    assertThat(v.seal()).isNull();
+                    assertThat(v.seals()).extracting(AuditQueries.SealCheck::status).containsExactly("mismatch", "unverifiable");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void thePlatformStreamIsFilteredButVerifiedWhole() {
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW.minus(Duration.ofDays(1)), EvidenceKind.DECISION, "ana",
+                JSON.createObjectNode().put("event", "workflow.draft-saved").put("aggregate", "workflow").put("aggregateId", "vm-restart")));
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW.minusSeconds(60), EvidenceKind.DECISION, "mateo",
+                JSON.createObjectNode().put("event", "credential.stored").put("aggregate", "credential").put("aggregateId", "vsphere/token")));
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW.minusSeconds(30), EvidenceKind.DECISION, "ana",
+                JSON.createObjectNode().put("event", "workflow.published").put("aggregate", "workflow").put("aggregateId", "vm-restart")));
+
+        StepVerifier.create(handler.platform(null, null, null, null))
+                .assertNext(p -> {
+                    assertThat(p.entries()).hasSize(3);
+                    assertThat(p.total()).isEqualTo(3);
+                    assertThat(p.latestHash()).isEqualTo(store.record(EvidenceRecord.PLATFORM).orElseThrow().latestHash());
+                    assertThat(p.verification().valid()).isTrue();
+                    assertThat(p.verification().entries()).isEqualTo(3);
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.platform("2026-10-17", null, "workflow", "ana"))
+                .assertNext(p -> {
+                    assertThat(p.entries()).extracting(e -> e.data().get("event").asText()).containsExactly("workflow.published");
+                    assertThat(p.total()).isEqualTo(3);
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.platform(null, null, "credential:vsphere/token", null).map(p -> p.entries().size())).expectNext(1).verifyComplete();
+        StepVerifier.create(handler.platform(null, null, "vm-restart", null).map(p -> p.entries().size())).expectNext(2).verifyComplete();
+        StepVerifier.create(handler.list(null, null, null, null).map(AuditRow::jobId))
+                .as("the platform stream is not a job row")
+                .expectNext("release:rel_1", "job_new", "job_old")
+                .verifyComplete();
+    }
+
+    @Test
+    void anEmptyPlatformStreamIsValid() {
+        StepVerifier.create(handler.platform(null, null, null, null))
+                .assertNext(p -> {
+                    assertThat(p.entries()).isEmpty();
+                    assertThat(p.latestHash()).isEqualTo(HashChain.GENESIS);
+                    assertThat(p.verification().valid()).isTrue();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void anExportPackCarriesTheWholePlatformStream() throws IOException {
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW.minus(Duration.ofDays(3)), EvidenceKind.DECISION, "ana",
+                JSON.createObjectNode().put("event", "workflow.draft-saved")));
+
+        var file = handler.exportPack(new FilterSpec("vm-restart", null, null, null)).block();
+
+        Map<String, byte[]> entries = unzip(file.bytes());
+        assertThat(entries.keySet()).containsExactly("records/job_old.json", "platform.json", "manifest.json");
+        EvidenceRecord stream = JSON.readValue(entries.get("platform.json"), EvidenceRecord.class);
+        assertThat(stream.jobId()).isEqualTo(EvidenceRecord.PLATFORM);
+        assertThat(HashChain.verify(stream.entries())).isEqualTo(-1);
+        JsonNode manifest = JSON.readTree(entries.get("manifest.json"));
+        assertThat(manifest.get("files")).extracting(f -> f.get("name").asText()).containsExactly("records/job_old.json", "platform.json");
     }
 
     @Test

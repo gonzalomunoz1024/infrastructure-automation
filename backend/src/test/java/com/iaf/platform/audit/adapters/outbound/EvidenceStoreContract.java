@@ -160,6 +160,30 @@ abstract class EvidenceStoreContract {
     }
 
     @Test
+    void checkpointsAnOpenRecordKeepingTheSameHeadOnceAndOutlivingTheStore() {
+        EvidenceStore store = newStore();
+        EvidenceEntry first = store.append("job_1", requested(T0, "vm-restart", "ana"));
+        EvidenceRecord.Seal checkpoint = new EvidenceRecord.Seal(T0.plusSeconds(3600), "sig-1", "key-1", first.seq(), first.hash());
+
+        EvidenceRecord once = store.checkpoint("job_1", checkpoint);
+        EvidenceRecord twice = store.checkpoint("job_1", new EvidenceRecord.Seal(T0.plusSeconds(7200), "sig-2", "key-1", first.seq(), first.hash()));
+
+        assertThat(once.checkpoints()).containsExactly(checkpoint);
+        assertThat(twice.checkpoints()).as("the same head signed twice is kept once").containsExactly(checkpoint);
+        assertThat(twice.sealed()).as("a checkpoint does not close the record").isNull();
+        EvidenceEntry second = store.append("job_1", step(T0.plusSeconds(7201)));
+        EvidenceRecord.Seal later = new EvidenceRecord.Seal(T0.plusSeconds(10800), "sig-3", "key-1", second.seq(), second.hash());
+        assertThat(store.checkpoint("job_1", later).checkpoints()).containsExactly(checkpoint, later);
+        assertThat(store.record("job_1").orElseThrow().checkpoints()).containsExactly(checkpoint, later);
+        assertThatThrownBy(() -> store.checkpoint("job_unknown", later)).isInstanceOf(NotFoundException.class);
+
+        EvidenceStore after = reopen();
+        if (after != null) {
+            assertThat(after.record("job_1").orElseThrow().checkpoints()).containsExactly(checkpoint, later);
+        }
+    }
+
+    @Test
     void sealingAnUnknownJobIsNotFound() {
         EvidenceStore store = newStore();
         assertThatThrownBy(() -> store.seal("job_unknown", new EvidenceRecord.Seal(T0, "sig", "key")))

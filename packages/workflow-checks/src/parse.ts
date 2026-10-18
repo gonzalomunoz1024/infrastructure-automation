@@ -104,6 +104,18 @@ export interface ParsedApi {
   responseStatus: number;
   preview: boolean;
   batch: ParsedBatch | null;
+  /** `api.deprecated`; left out when absent or false. */
+  deprecated?: ParsedDeprecation;
+  /** `api.response.body` as written: the JSON Schema of the job's output; undefined when absent. */
+  responseBody?: Maybe;
+}
+
+/** `api.deprecated: { since, sunset, replacement?, message? }`, dates as written. */
+export interface ParsedDeprecation {
+  since: string | null;
+  sunset: string | null;
+  replacement: string | null;
+  message: string | null;
 }
 
 export interface ParsedMcp {
@@ -210,6 +222,8 @@ export function parseDocument(doc: unknown): ParsedWorkflow {
       responseStatus: asInt(get(get(a, 'response'), 'status'), 202),
       preview: asBoolean(get(a, 'preview'), false),
       batch,
+      deprecated: parseDeprecation(get(a, 'deprecated')),
+      responseBody: get(get(a, 'response'), 'body'),
     };
   }
 
@@ -247,6 +261,17 @@ export function parseDocument(doc: unknown): ParsedWorkflow {
   const w = get(root, 'workflow');
   const workflow = parseFlow(isObject(w) ? w : {});
   return { apiVersion: asTextOr(get(root, 'apiVersion'), API_VERSION), metadata, api, mcp, policy, triggers, rollout, workflow };
+}
+
+/** `api.deprecated`: absent or false is undefined; anything but a mapping is an empty block the checks report. */
+export function parseDeprecation(d: Maybe): ParsedDeprecation | undefined {
+  if (d === undefined || d === null || d === false) {
+    return undefined;
+  }
+  if (!isObject(d)) {
+    return { since: null, sunset: null, replacement: null, message: null };
+  }
+  return { since: text(d, 'since'), sunset: text(d, 'sunset'), replacement: text(d, 'replacement'), message: text(d, 'message') };
 }
 
 function parseFlow(w: JsonObject): ParsedFlow {

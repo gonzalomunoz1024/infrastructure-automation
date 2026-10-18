@@ -48,13 +48,15 @@ class AuditCommandHandlerTest {
     }
 
     @Test
-    void sealsEveryClosedUnsealedRecordAndPublishesIt() {
+    void sealsClosedRecordsAndCheckpointsOpenOnesInOneSignedRun() {
         StepVerifier.create(handler.seal())
                 .assertNext(result -> {
                     assertThat(result.sealedAt()).isEqualTo(NOW);
                     assertThat(result.sealed()).isEqualTo(1);
+                    assertThat(result.checkpointed()).isEqualTo(1);
                     assertThat(result.keyId()).isEqualTo(signer.keyId());
-                    String ledger = "job_closed " + store.record("job_closed").orElseThrow().latestHash() + "\n";
+                    String ledger = "job_open " + store.record("job_open").orElseThrow().latestHash() + "\n"
+                            + "job_closed " + store.record("job_closed").orElseThrow().latestHash() + "\n";
                     assertThat(signer.verify(ledger, result.signature())).isTrue();
                 })
                 .verifyComplete();
@@ -63,8 +65,15 @@ class AuditCommandHandlerTest {
         assertThat(sealed.sealed()).isNotNull();
         assertThat(sealed.sealed().at()).isEqualTo(NOW);
         assertThat(sealed.sealed().keyId()).isEqualTo(signer.keyId());
+        assertThat(sealed.sealed().seq()).isEqualTo(2);
+        assertThat(sealed.sealed().hash()).isEqualTo(sealed.latestHash());
         assertThat(signer.verify(sealed.latestHash(), sealed.sealed().signature())).isTrue();
-        assertThat(store.record("job_open").orElseThrow().sealed()).isNull();
+
+        EvidenceRecord open = store.record("job_open").orElseThrow();
+        assertThat(open.sealed()).isNull();
+        assertThat(open.checkpoints()).hasSize(1);
+        assertThat(open.latestCheckpoint().seq()).isEqualTo(1);
+        assertThat(signer.verify(open.latestHash(), open.latestCheckpoint().signature())).isTrue();
 
         assertThat(published).hasSize(1);
         DomainEvent event = published.get(0);
@@ -82,8 +91,56 @@ class AuditCommandHandlerTest {
         SealResult again = handler.sealAll("platform");
 
         assertThat(again.sealed()).isZero();
+        assertThat(again.checkpointed()).isZero();
         assertThat(store.record("job_closed").orElseThrow().sealed().signature()).isEqualTo(firstSignature);
+        assertThat(store.record("job_open").orElseThrow().checkpoints()).hasSize(1);
         assertThat(published).hasSize(1);
+    }
+
+    @Test
+    void aCheckpointedRecordKeepsAcceptingEntriesAndIsCheckpointedAgainWhenItsHeadMoves() {
+        handler.sealAll("platform");
+        store.append("job_open", EvidenceEntry.draft(NOW, EvidenceKind.STEP, "platform", mapper.createObjectNode().put("step", "s").put("status", "succeeded")));
+
+        SealResult next = handler.sealAll("platform");
+
+        EvidenceRecord open = store.record("job_open").orElseThrow();
+        assertThat(open.entries()).hasSize(2);
+        assertThat(next.checkpointed()).isEqualTo(1);
+        assertThat(open.checkpoints()).extracting(EvidenceRecord.Seal::seq).containsExactly(1, 2);
+        assertThat(open.latestCheckpoint().hash()).isEqualTo(open.latestHash());
+    }
+
+    @Test
+    void thePlatformStreamIsCheckpointedNeverSealed() {
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW, EvidenceKind.DECISION, "ana",
+                mapper.createObjectNode().put("event", "workflow.draft-saved")));
+        store.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "ana", mapper.createObjectNode()));
+
+        handler.sealAll("platform");
+
+        EvidenceRecord stream = store.record(EvidenceRecord.PLATFORM).orElseThrow();
+        assertThat(stream.sealed()).isNull();
+        assertThat(stream.checkpoints()).hasSize(1);
+    }
+
+    @Test
+    void aStoreWithoutCheckpointsStillGetsItsClosedRecordsSealed() {
+        InMemoryEvidenceStore plain = new InMemoryEvidenceStore() {
+            @Override
+            public EvidenceRecord checkpoint(String jobId, EvidenceRecord.Seal checkpoint) {
+                throw new UnsupportedOperationException("no checkpoints here");
+            }
+        };
+        plain.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", mapper.createObjectNode().put("workflow", "w")));
+        plain.append("job_a", EvidenceEntry.draft(NOW, EvidenceKind.CLOSED, "platform", mapper.createObjectNode().put("status", "succeeded")));
+        plain.append("job_b", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", mapper.createObjectNode().put("workflow", "w")));
+
+        SealResult result = new AuditCommandHandler(plain, signer, events, clock, mapper).sealAll("platform");
+
+        assertThat(result.sealed()).isEqualTo(1);
+        assertThat(result.checkpointed()).isZero();
+        assertThat(plain.record("job_a").orElseThrow().sealed()).isNotNull();
     }
 
     @Test

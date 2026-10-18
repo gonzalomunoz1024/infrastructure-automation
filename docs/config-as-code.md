@@ -28,7 +28,11 @@ api:
       vmId: { type: string, title: VM id, x-resource: { type: vm } }   # picked from the registry
       reason: { type: string, examples: [kernel patch, memory leak] }  # examples feed the form, Try it and the demo history
       image: { type: string, x-resource: { type: image, orCreateWith: build-vm-image } }
-  response: { status: 202 }   # always 202 with { jobId }
+  response:
+    status: 202               # always 202 with { jobId }
+    body:                     # optional JSON Schema of the job's output (the keys of workflow.outputs);
+      type: object            # OpenAPI publishes it as <tool>_output and the job read as <tool>_job
+      properties: { powerState: { type: string } }
   preview: true               # publish a :preview operation (blast radius before a run)
   batch:                      # bulk runs (always available; this block sets the owner's defaults)
     max: 500
@@ -42,6 +46,7 @@ policy:
   change: { required: true }  # a ServiceNow change is opened for every job
 triggers:                     # optional extra ways in besides the API and MCP
   - alert: { match: { source: grafana, labels: { severity: critical } } }
+  - alert: { match: { source: platform, labels: { provider: vsphere, class: timeout } } }   # the platform's own provider alerts
   - event: { topic: vm.created }
 rollout:
   strategy: canary            # canary | all
@@ -82,6 +87,41 @@ workflow:
   outputs:
     powerState: "{{ $('validate').json.powerState }}"
 ```
+
+### The generated operation
+
+`api.path` lives under `/api/v<n>/` (`/api/v1/`, `/api/v2/`, …), so a second version of an
+operation can sit next to the first; the platform's own nouns (`jobs`, `audit`, `notifications`,
+…) are reserved under every version. The operation always answers 202 with the job id.
+
+`api.response.body` is the JSON Schema of what the job holds in `output` once it succeeds: an
+object with the keys of `workflow.outputs`. The checks refuse a body that is not an object schema
+(`api.responseBody`) and warn about a property that `workflow.outputs` never sets
+(`api.responseOutput`). OpenAPI publishes it as `<noun>_<verb>_output`, and the job read with that
+output as `<noun>_<verb>_job`.
+
+`api.deprecated` keeps an operation answering while its successor takes over:
+
+```yaml
+api:
+  path: /api/v1/vms/{vmId}:restart
+  deprecated:
+    since: 2026-11-01                          # YYYY-MM-DD or an ISO date-time
+    sunset: 2027-05-01                         # after since
+    replacement: /api/v2/vms/{vmId}:restart    # optional: a path under /api/v<n>/ or a URL
+    message: Use the v2 restart                # optional
+```
+
+Every answer then carries `Deprecation`, `Sunset` and, with a replacement,
+`Link: <...>; rel="successor-version"`; the catalog entry and the OpenAPI operations are marked
+deprecated, and the MCP tool's description starts with `Deprecated:`. The checks report
+`deprecated.since`, `deprecated.sunset` and `deprecated.replacement`. Callers can pin a version
+with `X-Workflow-Version` (docs/api.md, Calls that start jobs).
+
+An alert trigger with `source: platform` matches the platform's own provider alerts: their labels
+are `alertname: provider.alert`, `provider`, `action`, `severity` and `class` (the failed call's
+error class, or `health` for a health band), and the trigger's `input` reads the alert as
+`$alert`, like an external one.
 
 ### Step shapes (the `do` list)
 

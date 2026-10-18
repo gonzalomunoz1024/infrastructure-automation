@@ -38,6 +38,13 @@ public class RestControllerAuditAdapter implements AuditCommands, AuditQueries {
     }
 
     @Override
+    @GetMapping("/audit/platform")
+    public Mono<PlatformStream> platform(@RequestParam(required = false) String from, @RequestParam(required = false) String to,
+            @RequestParam(required = false) String aggregate, @RequestParam(required = false) String actor) {
+        return queries.platform(from, to, aggregate, actor);
+    }
+
+    @Override
     @GetMapping({"/audit/{jobId}", "/jobs/{jobId}/evidence"})
     public Mono<EvidenceRecord> record(@PathVariable String jobId) {
         return queries.record(jobId);

@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +15,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
@@ -28,8 +30,10 @@ import reactor.core.scheduler.Schedulers;
 
 /**
  * The read side of the runs slice, served from the {@link JobProjection}; its store may block, so
- * reads run on bounded-elastic threads. A job's view also links to it in the engine's own tools
- * ({@link WorkflowExecutionPort#links}).
+ * reads run on bounded-elastic threads. Every view of a job's input, step input and output and
+ * events is redacted on the way out (secret-looking fields and secrets the platform resolved
+ * become {@code ***}); the projection itself keeps what ran, so a rerun replays the real values.
+ * A job's view also links to it in the engine's own tools ({@link WorkflowExecutionPort#links}).
  */
 @Service
 @Primary
@@ -40,10 +44,17 @@ public class RunsQueryHandler implements RunsQueries {
 
     private final JobProjection projection;
     private final WorkflowExecutionPort engine;
+    private final SecretValues secrets;
 
     public RunsQueryHandler(JobProjection projection, WorkflowExecutionPort engine) {
+        this(projection, engine, new SecretValues());
+    }
+
+    @Autowired
+    public RunsQueryHandler(JobProjection projection, WorkflowExecutionPort engine, SecretValues secrets) {
         this.projection = projection;
         this.engine = engine;
+        this.secrets = secrets;
     }
 
     @Override
@@ -68,14 +79,14 @@ public class RunsQueryHandler implements RunsQueries {
                         ObjectNode l = detail.putObject("links");
                         links.forEach(l::put);
                     }
-                    return detail;
+                    return secrets.redact(detail);
                 });
     }
 
     @Override
     public Flux<JsonNode> events(String id) {
         return Flux.defer(() -> projection.has(id)
-                ? projection.events(id).map(JobViews::event)
+                ? projection.events(id).map(e -> secrets.redact(JobViews.event(e)))
                 : Flux.<JsonNode>error(new NotFoundException("job", id)))
                 .subscribeOn(Schedulers.boundedElastic());
     }
@@ -138,7 +149,7 @@ public class RunsQueryHandler implements RunsQueries {
                 });
                 steps.add(row);
             }
-            return (JsonNode) out;
+            return secrets.redact(out);
         });
     }
 
@@ -194,7 +205,7 @@ public class RunsQueryHandler implements RunsQueries {
     @Override
     public Mono<List<JsonNode>> steps(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> j.steps().stream().map(s -> (JsonNode) JobViews.step(s)).toList())
+                .map(j -> j.steps().stream().map(s -> (JsonNode) secrets.redact(JobViews.step(s))).toList())
                 .subscribeOn(Schedulers.boundedElastic());
     }
 }

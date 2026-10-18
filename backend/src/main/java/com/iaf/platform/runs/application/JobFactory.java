@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.tracing.TraceIds;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.ChangeTicket;
@@ -48,7 +49,7 @@ public final class JobFactory {
                 .approvals(List.of())
                 .preview(preview)
                 .change(change)
-                .traceId(traceId == null ? Ids.next("trc") : traceId)
+                .traceId(traceId == null ? TraceIds.newTraceId() : traceId)
                 .definition(def)
                 .environment(environmentOf(input))
                 .policy(policy)
@@ -58,6 +59,13 @@ public final class JobFactory {
     /** A batch: the parent of one child per row, released in waves. */
     public static Job newBatch(WorkflowDefinition def, String version, List<JsonNode> rowInputs, JsonNode defaults, RolloutPolicy rollout,
             List<Batch.Wave> waves, Identity who, String channel, Preview preview, PolicyDecision policy, ChangeTicket change, Instant now) {
+        return newBatch(def, version, rowInputs, defaults, rollout, waves, who, channel, preview, policy, change, null, now);
+    }
+
+    /** A batch in the trace {@code traceId} (the request's); null starts a new trace. Its rows share it. */
+    public static Job newBatch(WorkflowDefinition def, String version, List<JsonNode> rowInputs, JsonNode defaults, RolloutPolicy rollout,
+            List<Batch.Wave> waves, Identity who, String channel, Preview preview, PolicyDecision policy, ChangeTicket change, String traceId,
+            Instant now) {
         List<BatchRow> rows = new java.util.ArrayList<>();
         int next = 0;
         for (int w = 0; w < waves.size(); w++) {
@@ -96,7 +104,7 @@ public final class JobFactory {
                 .preview(preview)
                 .change(change)
                 .batch(batch)
-                .traceId(Ids.next("trc"))
+                .traceId(traceId == null ? TraceIds.newTraceId() : traceId)
                 .definition(def)
                 .environment(rowInputs.isEmpty() ? DEFAULT_ENVIRONMENT : environmentOf(rowInputs.get(0)))
                 .policy(policy)
@@ -169,7 +177,7 @@ public final class JobFactory {
                 .approvals(List.of())
                 .preview(source.preview())
                 .change(change)
-                .traceId(Ids.next("trc"))
+                .traceId(TraceIds.newTraceId())
                 .definition(source.definition())
                 .environment(environmentOf(input == null ? source.input() : input))
                 .policy(source.policy())

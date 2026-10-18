@@ -47,6 +47,13 @@
     "error batch.waves",
     "error rollout.stages"
   ],
+  "deprecated-api.yaml": [
+    "error deprecated.replacement",
+    "error deprecated.sunset"
+  ],
+  "response-body.yaml": [
+    "warning api.responseOutput"
+  ],
   "unknown-input-and-var.yaml": [
     "warning expr.errorOutsideCatch",
     "warning expr.unknownInput",

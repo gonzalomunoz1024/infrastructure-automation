@@ -3,6 +3,7 @@ package com.iaf.platform.config;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -13,6 +14,7 @@ import org.springframework.web.server.ServerWebInputException;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.runs.domain.InvalidInputException;
 
 import lombok.extern.slf4j.Slf4j;
@@ -67,6 +69,16 @@ public class GlobalExceptionHandler {
             b.put("detail", ex.detail());
         }
         return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(b));
+    }
+
+    /** Over a quota: 429 with {@code Retry-After} in seconds, and the same number in the body. */
+    @ExceptionHandler(TooManyRequestsException.class)
+    public Mono<ResponseEntity<Map<String, Object>>> tooManyRequests(TooManyRequestsException ex) {
+        Map<String, Object> b = body(ex.getMessage());
+        b.put("retryAfter", ex.retryAfterSeconds());
+        return Mono.just(ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.retryAfterSeconds()))
+                .body(b));
     }
 
     @ExceptionHandler(ResponseStatusException.class)

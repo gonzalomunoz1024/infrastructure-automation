@@ -32,7 +32,28 @@ public record WorkflowDefinition(
             String folder, List<String> tags, String version, String description) {
     }
 
-    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch) {
+    /**
+     * {@code api}: the generated operation. {@code responseBody} is {@code api.response.body} as
+     * written, the JSON Schema of a succeeded job's output (the object {@code workflow.outputs}
+     * builds); the OpenAPI document publishes it as the operation's response schema.
+     */
+    public record Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated,
+            JsonNode responseBody) {
+        public Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch) {
+            this(method, path, input, responseStatus, preview, batch, null, null);
+        }
+
+        public Api(String method, String path, JsonNode input, int responseStatus, boolean preview, BatchPolicy batch, Deprecation deprecated) {
+            this(method, path, input, responseStatus, preview, batch, deprecated, null);
+        }
+    }
+
+    /**
+     * {@code api.deprecated}: the operation still answers, with {@code Deprecation}, {@code Sunset}
+     * and (with a replacement) {@code Link: <...>; rel="successor-version"} headers. Dates are
+     * {@code YYYY-MM-DD} or ISO date-times, as written; the checks judge them.
+     */
+    public record Deprecation(String since, String sunset, String replacement, String message) {
     }
 
     public record BatchPolicy(int max, RolloutPolicy rollout) {
@@ -150,6 +171,16 @@ public record WorkflowDefinition(
 
     public boolean previewEnabled() {
         return api != null && api.preview();
+    }
+
+    /** {@code api.deprecated}, or null when the operation is not deprecated. */
+    public Deprecation deprecation() {
+        return api == null ? null : api.deprecated();
+    }
+
+    /** {@code api.response.body}: the JSON Schema of a succeeded job's output, or null when the file declares none. */
+    public JsonNode responseBody() {
+        return api == null ? null : api.responseBody();
     }
 
     public List<Step> steps() {

@@ -18,7 +18,9 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.ports.outbound.SiemPort;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.config.PlatformProperties;
 
 class AuditListenerTest {
@@ -205,6 +207,159 @@ class AuditListenerTest {
         job("job.approval-requested", "platform", node().put("approvalId", "apr_9"));
 
         assertThat(store.records(null)).isEmpty();
+    }
+
+    @Test
+    void everyEntryIsRedactedBeforeItIsChained() {
+        SecretValues secrets = new SecretValues();
+        secrets.remember("resolved-vault-token");
+        EventBus bus = new EventBus(clock);
+        InMemoryEvidenceStore own = new InMemoryEvidenceStore();
+        new AuditListener(own, bus, props, clock, mapper, secrets, SiemExporter.none()).subscribe();
+
+        bus.publish("job.started", "job", "job_r", "ana", node().put("jobId", "job_r").put("workflow", "vm-restart").put("version", "1.2.0")
+                .set("input", node().put("vmId", "vm-1").put("password", "hunter2")));
+        bus.publish("job.step", "job", "job_r", "platform", node().put("jobId", "job_r").put("step", "login").put("status", "succeeded")
+                .<ObjectNode>set("input", node().put("credential", "vault:ops/token").put("apiKey", "raw-key"))
+                .set("output", node().put("header", "Bearer resolved-vault-token").put("echo", "resolved-vault-token").put("vm", "vm-1")));
+
+        EvidenceRecord record = own.record("job_r").orElseThrow();
+        JsonNode requested = record.entries().get(0).data();
+        assertThat(requested.at("/input/password").asText()).isEqualTo("***");
+        assertThat(requested.at("/input/vmId").asText()).isEqualTo("vm-1");
+        JsonNode step = record.entries().get(1).data();
+        assertThat(step.at("/input/credential").asText()).isEqualTo("vault:ops/token");
+        assertThat(step.at("/input/apiKey").asText()).isEqualTo("***");
+        assertThat(step.at("/output/header").asText()).isEqualTo("Bearer ***");
+        assertThat(step.at("/output/echo").asText()).isEqualTo("***");
+        assertThat(step.at("/output/vm").asText()).isEqualTo("vm-1");
+        assertThat(record.toString()).doesNotContain("hunter2", "raw-key", "resolved-vault-token");
+        assertThat(HashChain.verify(record.entries())).isEqualTo(-1);
+    }
+
+    @Test
+    void theChangeClosingProviderChangesEscalationsAndEditedInputAreEvidenced() {
+        job("job.started", "ana", node().put("jobId", "job_c").put("workflow", "delete-vm").put("version", "1.0.0").put("requester", "ana").put("channel", "rest")
+                .set("change", node().put("id", "CHG0042").put("url", "https://snow.example/CHG0042").put("state", "implement")));
+        job("job.approval-escalated", "platform", node().put("jobId", "job_c").put("approvalId", "apr_1").put("step", "approve").put("to", "compute-leads"));
+        job("job.attention-resolved", "ana", node().put("jobId", "job_c").put("step", "delete").put("action", "edit-input").put("by", "ana")
+                .set("input", node().put("id", "vm-2")));
+        job("job.changed", "platform", node().put("jobId", "job_c").put("step", "delete").put("provider", "vsphere").put("action", "vm.delete")
+                .put("effect", "delete").put("target", "vm-2"));
+        job("job.finished", "platform", node().put("jobId", "job_c").put("status", "succeeded"));
+        job("job.change-closed", "platform", node().put("jobId", "job_c")
+                .set("change", node().put("id", "CHG0042").put("url", "https://snow.example/CHG0042").put("state", "closed")));
+
+        EvidenceRecord record = store.record("job_c").orElseThrow();
+        assertThat(record.entries()).extracting(EvidenceEntry::kind).containsExactly(EvidenceKind.REQUESTED, EvidenceKind.CHANGE,
+                EvidenceKind.APPROVAL, EvidenceKind.DECISION, EvidenceKind.CHANGED, EvidenceKind.CLOSED, EvidenceKind.CHANGE);
+        assertThat(record.entries().get(2).data().get("status").asText()).isEqualTo("escalated");
+        assertThat(record.entries().get(2).data().get("to").asText()).isEqualTo("compute-leads");
+        assertThat(record.entries().get(3).data().at("/input/id").asText()).isEqualTo("vm-2");
+        JsonNode changed = record.entries().get(4).data();
+        assertThat(changed.get("provider").asText()).isEqualTo("vsphere");
+        assertThat(changed.get("action").asText()).isEqualTo("vm.delete");
+        assertThat(changed.get("effect").asText()).isEqualTo("delete");
+        assertThat(changed.get("target").asText()).isEqualTo("vm-2");
+        JsonNode closing = record.entries().get(6).data();
+        assertThat(closing.get("state").asText()).isEqualTo("closed");
+        assertThat(closing.get("event").asText()).isEqualTo("closed");
+        assertThat(record.change().id()).isEqualTo("CHG0042");
+    }
+
+    @Test
+    void commandsThatAreNotJobsGoOnThePlatformStream() {
+        events.publish("workflow.draft-saved", "workflow", "vm-restart", "ana", node().put("name", "vm-restart").put("version", "1.3.0").put("by", "ana"));
+        events.publish("change-request.merged", "change-request", "cr_1", "mateo", node().put("id", "cr_1").put("kind", "workflow")
+                .put("name", "vm-restart").put("version", "1.3.0").put("yaml", "kind: Workflow\n").put("by", "mateo"));
+        events.publish("credential.stored", "credential", "vsphere/token", "ana", node().put("name", "vsphere/token").put("type", "token")
+                .put("value", "should-never-be-here").put("by", "ana"));
+        events.publish("service-account.created", "service-account", "sa_1", "ana", null);
+        events.publish("release.paused", "release", "rel_9", "mateo", node().put("releaseId", "rel_9").put("workflow", "vm-restart").put("to", "1.3.0"));
+        events.publish("assistant.session-started", "assistant-session", "asst_1", "ana", node().put("sessionId", "asst_1").put("mode", "create"));
+        events.publish("provider.alert", "provider", "vsphere", "platform", node().put("message", "slow"));
+
+        EvidenceRecord stream = store.record(EvidenceRecord.PLATFORM).orElseThrow();
+        assertThat(stream.channel()).isEqualTo("platform");
+        assertThat(stream.workflow()).isNull();
+        assertThat(stream.entries()).extracting(e -> e.data().get("event").asText()).containsExactly(
+                "workflow.draft-saved", "change-request.merged", "credential.stored", "service-account.created", "release.paused",
+                "assistant.session-started");
+        assertThat(stream.entries()).extracting(EvidenceEntry::actor).containsExactly("ana", "mateo", "ana", "ana", "mateo", "ana");
+        JsonNode merged = stream.entries().get(1).data();
+        assertThat(merged.has("yaml")).isFalse();
+        assertThat(merged.get("yamlSha256").asText()).hasSize(64);
+        JsonNode credential = stream.entries().get(2).data();
+        assertThat(credential.get("name").asText()).isEqualTo("vsphere/token");
+        assertThat(credential.get("type").asText()).isEqualTo("token");
+        assertThat(credential.has("value")).isFalse();
+        assertThat(stream.entries().get(3).data().get("aggregateId").asText()).isEqualTo("sa_1");
+        assertThat(store.record("release:rel_9")).isPresent();
+        assertThat(HashChain.verify(stream.entries())).isEqualTo(-1);
+    }
+
+    @Test
+    void aJobPointsAtThePublishOfTheVersionItRuns() {
+        events.publish("change-request.merged", "change-request", "cr_7", "mateo", node().put("id", "cr_7").put("kind", "workflow")
+                .put("name", "vm-restart").put("version", "1.3.0").put("by", "mateo"));
+        events.publish("workflow.published", "workflow", "vm-restart", "mateo", node().put("name", "vm-restart").put("version", "1.3.0").put("by", "mateo"));
+        job("job.started", "ana", node().put("jobId", "job_p").put("workflow", "vm-restart").put("version", "1.3.0").put("requester", "ana")
+                .put("contentHash", "abc123"));
+        job("job.started", "ana", node().put("jobId", "job_q").put("workflow", "other").put("version", "0.1.0").put("requester", "ana"));
+
+        EvidenceEntry published = store.record(EvidenceRecord.PLATFORM).orElseThrow().entries().get(1);
+        JsonNode publish = store.record("job_p").orElseThrow().entries().get(0).data().get("publish");
+        assertThat(publish.get("contentHash").asText()).isEqualTo("abc123");
+        assertThat(publish.get("changeRequestId").asText()).isEqualTo("cr_7");
+        assertThat(publish.get("publishedBy").asText()).isEqualTo("mateo");
+        assertThat(publish.get("platformSeq").asInt()).isEqualTo(published.seq());
+        assertThat(publish.get("platformHash").asText()).isEqualTo(published.hash());
+        assertThat(store.record("job_q").orElseThrow().entries().get(0).data().has("publish")).isFalse();
+    }
+
+    @Test
+    void afterARestartThePublishIndexIsRebuiltFromTheStoredStream() {
+        events.publish("workflow.published", "workflow", "vm-restart", "mateo", node().put("name", "vm-restart").put("version", "1.4.0").put("by", "mateo"));
+        EventBus fresh = new EventBus(clock);
+        new AuditListener(store, fresh, props, clock, mapper).subscribe();
+
+        fresh.publish("job.started", "job", "job_after", "ana", node().put("jobId", "job_after").put("workflow", "vm-restart").put("version", "1.4.0"));
+
+        JsonNode publish = store.record("job_after").orElseThrow().entries().get(0).data().get("publish");
+        assertThat(publish.get("platformSeq").asInt()).isEqualTo(1);
+        assertThat(publish.get("publishedBy").asText()).isEqualTo("mateo");
+    }
+
+    @Test
+    void everyChainedEntryIsHandedToTheSiem() throws Exception {
+        List<SiemPort.SiemEvent> sent = new java.util.concurrent.CopyOnWriteArrayList<>();
+        SiemPort port = new SiemPort() {
+            @Override
+            public String name() {
+                return "test";
+            }
+
+            @Override
+            public void send(List<SiemEvent> batch) {
+                sent.addAll(batch);
+            }
+        };
+        SiemExporter exporter = new SiemExporter(List.of(port), new SiemProperties(), null);
+        EventBus bus = new EventBus(clock);
+        InMemoryEvidenceStore own = new InMemoryEvidenceStore();
+        new AuditListener(own, bus, props, clock, mapper, new SecretValues(), exporter).subscribe();
+
+        bus.publish("job.started", "job", "job_s", "ana", node().put("jobId", "job_s").put("workflow", "vm-restart").put("version", "1.2.0")
+                .set("input", node().put("token", "t")));
+        bus.publish("workflow.draft-saved", "workflow", "vm-restart", "ana", node().put("name", "vm-restart"));
+        assertThat(exporter.flush(java.time.Duration.ofSeconds(5))).isTrue();
+
+        assertThat(sent).extracting(SiemPort.SiemEvent::stream).containsExactly("job", "platform");
+        assertThat(sent.get(0).recordId()).isEqualTo("job_s");
+        assertThat(sent.get(0).workflow()).isEqualTo("vm-restart");
+        assertThat(sent.get(0).hash()).isEqualTo(own.record("job_s").orElseThrow().latestHash());
+        assertThat(sent.get(0).data().at("/input/token").asText()).isEqualTo("***");
+        assertThat(sent.get(1).recordId()).isEqualTo(EvidenceRecord.PLATFORM);
     }
 
     private void job(String type, String actor, JsonNode data) {

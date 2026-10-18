@@ -178,7 +178,7 @@ public class RunsCommandHandler implements RunsCommands {
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true, who)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
-                                        preview.orElse(null), decision, null, now());
+                                        preview.orElse(null), decision, null, cmd.traceId(), now());
                                 return openChange(job, def, null);
                             }))
                     .flatMap(job -> launch(job, null))
@@ -348,7 +348,9 @@ public class RunsCommandHandler implements RunsCommands {
             if (!a.pending()) {
                 throw new ConflictException("Approval " + approvalId + " was already " + a.status().json());
             }
-            AccessRules.requireApprove(who, a.group(), a.workflow());
+            if (a.approverGroups().stream().noneMatch(g -> AccessRules.canApprove(who, g))) {
+                AccessRules.requireApprove(who, a.group(), a.workflow());   // escalated: the escalation group may decide too
+            }
             ApprovalDecision d = approved ? ApprovalDecision.approved(who.id(), comment, now()) : ApprovalDecision.rejected(who.id(), comment, now());
             events.approvalDecided(a, d);
             return execution.isRunning(a.jobId())

@@ -97,4 +97,29 @@ class IdentityWebFilterTest {
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("Authorization", "Bearer bad").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(run(filter, MockServerHttpRequest.get("/api/v1/me").header("X-User", "gonzalo").build()).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
+
+    /** Whether the request got past the filter. */
+    private static boolean passes(IdentityWebFilter filter, MockServerHttpRequest request) {
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        AtomicReference<Boolean> reached = new AtomicReference<>(false);
+        filter.filter(exchange, ex -> Mono.fromRunnable(() -> reached.set(true))).block();
+        return reached.get() && exchange.getResponse().getStatusCode() != HttpStatus.UNAUTHORIZED;
+    }
+
+    @Test
+    void theSwaggerUiPageAndItsAssetsLoadWithoutACallerAndTheApiDoesNot() {
+        props.getIdentity().setMode("oidc");
+        IdentityWebFilter filter = new IdentityWebFilter(props, accounts, users, Optional.empty());
+
+        for (String path : List.of("/swagger-ui", "/swagger-ui/", "/swagger-ui/index.html", "/webjars/swagger-ui/swagger-ui-bundle.js")) {
+            assertThat(passes(filter, MockServerHttpRequest.get(path).build())).as(path).isTrue();
+        }
+        assertThat(passes(filter, MockServerHttpRequest.head("/swagger-ui/index.html").build())).isTrue();
+        assertThat(passes(filter, MockServerHttpRequest.get("/api/v1/openapi.json").build())).isFalse();
+        assertThat(passes(filter, MockServerHttpRequest.post("/swagger-ui/index.html").build())).isFalse();
+        assertThat(passes(filter, MockServerHttpRequest.get("/webjars/other/app.js").build())).isFalse();
+        assertThat(passes(filter, MockServerHttpRequest.get("/swagger-ui/../api/v1/jobs").build())).isFalse();
+        assertThat(passes(filter, MockServerHttpRequest.get("/swagger-uix").build())).isFalse();
+        assertThat(passes(filter, MockServerHttpRequest.get("/swagger-ui/index.html").header("X-User", "gonzalo").build())).isTrue();
+    }
 }

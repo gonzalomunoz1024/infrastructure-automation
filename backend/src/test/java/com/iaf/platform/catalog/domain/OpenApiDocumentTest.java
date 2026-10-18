@@ -63,7 +63,8 @@ class OpenApiDocumentTest {
     void createKeepsItsRequiredFieldsInTheBody() {
         JsonNode op = DOC.path("paths").path("/api/v1/vms").path("post");
         assertThat(op.path("operationId").asText()).isEqualTo("vm_create");
-        assertThat(op.path("parameters")).isEmpty();
+        assertThat(op.path("parameters")).extracting(p -> p.path("name").asText() + ":" + p.path("in").asText())
+                .containsExactly("X-Workflow-Version:header", "Idempotency-Key:header");
         JsonNode body = op.path("requestBody").path("content").path("application/json").path("schema");
         List<String> required = new ArrayList<>();
         body.path("required").forEach(r -> required.add(r.asText()));
@@ -87,7 +88,7 @@ class OpenApiDocumentTest {
         JsonNode batch = DOC.path("paths").path("/api/v1/vms:patch:batch").path("post");
         assertThat(batch.path("operationId").asText()).isEqualTo("vm_patch_batch");
         // on the collection: no path parameter, and every row names its VM
-        assertThat(batch.path("parameters")).isEmpty();
+        assertThat(batch.path("parameters")).extracting(p -> p.path("in").asText()).containsOnly("header");
         JsonNode schema = batch.path("requestBody").path("content").path("application/json").path("schema");
         assertThat(schema.path("properties").path("items").path("items").path("properties").has("vmId")).isTrue();
         assertThat(schema.path("required").get(0).asText()).isEqualTo("items");
@@ -127,6 +128,90 @@ class OpenApiDocumentTest {
     }
 
     @Test
+    void aDeclaredResponseBodyIsTheSchemaOfTheJobsOutput() {
+        JsonNode schemas = DOC.path("components").path("schemas");
+        JsonNode body = SampleCatalog.workflow("vm-restart").definition().responseBody();
+        assertThat(body.path("properties").has("powerState")).isTrue();
+        assertThat(schemas.path("vm_restart_output")).isEqualTo(body);
+        JsonNode job = schemas.path("vm_restart_job");
+        assertThat(job.path("allOf").get(0).path("$ref").asText()).isEqualTo("#/components/schemas/JobDetail");
+        assertThat(job.path("allOf").get(1).path("properties").path("output").path("$ref").asText()).isEqualTo("#/components/schemas/vm_restart_output");
+
+        // the call still answers 202 with the job id; the response names the job and the output it ends with
+        JsonNode accepted = DOC.path("paths").path("/api/v1/vms/{vmId}:restart").path("post").path("responses").path("202");
+        assertThat(accepted.path("content").path("application/json").path("schema").path("$ref").asText()).isEqualTo("#/components/schemas/JobAccepted");
+        assertThat(accepted.path("description").asText()).contains("vm_restart_job", "vm_restart_output");
+        JsonNode link = accepted.path("links").path("job");
+        assertThat(link.path("operationId").asText()).isEqualTo("get_job");
+        assertThat(link.path("parameters").path("id").asText()).isEqualTo("$response.body#/jobId");
+        assertThat(link.path("description").asText()).contains("vm_restart_job");
+    }
+
+    @Test
+    void withoutAResponseBodyTheJobIsLinkedButUntyped() {
+        JsonNode schemas = DOC.path("components").path("schemas");
+        assertThat(schemas.has("vm_create_output")).isFalse();
+        assertThat(schemas.has("vm_create_job")).isFalse();
+        JsonNode accepted = DOC.path("paths").path("/api/v1/vms").path("post").path("responses").path("202");
+        assertThat(accepted.path("description").asText()).isEqualTo("Job accepted");
+        assertThat(accepted.path("links").path("job").path("operationId").asText()).isEqualTo("get_job");
+
+        // a body that is not a schema (the checks refuse it) is left out rather than published
+        String yaml = """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: cluster-info, title: Cluster info, noun: cluster, verb: inspect, owner: team-data, version: 1.0.0 }
+                api:
+                  path: /api/v1/clusters/{clusterId}:inspect
+                  input: { type: object, properties: { clusterId: { type: string } } }
+                  response: { status: 202, body: a cluster }
+                workflow:
+                  do:
+                    - noop:
+                        set: { x: 1 }
+                """;
+        var record = com.iaf.platform.workflows.domain.WorkflowRecord.of(com.iaf.platform.workflows.domain.WorkflowYaml.parse(yaml),
+                com.iaf.platform.workflows.domain.WorkflowStatus.PUBLISHED, "x", java.time.Instant.EPOCH, "test");
+        ObjectNode doc = OpenApiDocument.build(List.of(record), List.of());
+        assertThat(doc.path("components").path("schemas").has("cluster_inspect_output")).isFalse();
+        assertThat(doc.path("components").path("schemas").has("cluster_inspect_job")).isFalse();
+        assertThat(doc.path("paths").path("/api/v1/clusters/{clusterId}:inspect").path("post").path("responses").path("202").path("description").asText())
+                .isEqualTo("Job accepted");
+    }
+
+    @Test
+    void everyReferenceAndLinkPointsIntoTheDocument() {
+        List<String> refs = new ArrayList<>();
+        references(DOC, refs);
+        assertThat(refs).contains("#/components/schemas/vm_restart_output", "#/components/schemas/JobDetail");
+        for (String ref : refs) {
+            assertThat(ref).startsWith("#/components/schemas/");
+            assertThat(DOC.path("components").path("schemas").has(ref.substring("#/components/schemas/".length()))).as(ref).isTrue();
+        }
+        List<String> operationIds = new ArrayList<>();
+        List<String> linked = new ArrayList<>();
+        DOC.path("paths").forEach(item -> item.forEach(op -> {
+            operationIds.add(op.path("operationId").asText());
+            op.path("responses").forEach(r -> r.path("links").forEach(l -> linked.add(l.path("operationId").asText())));
+        }));
+        assertThat(linked).isNotEmpty().allSatisfy(id -> assertThat(operationIds).contains(id));
+    }
+
+    /** Every {@code $ref} under a node. */
+    static void references(JsonNode node, List<String> refs) {
+        if (node.isObject()) {
+            node.fields().forEachRemaining(e -> {
+                if (e.getKey().equals("$ref") && e.getValue().isTextual()) {
+                    refs.add(e.getValue().asText());
+                }
+                references(e.getValue(), refs);
+            });
+        } else if (node.isArray()) {
+            node.forEach(n -> references(n, refs));
+        }
+    }
+
+    @Test
     void aReadWorkflowTakesItsInputFromTheQueryString() {
         String yaml = """
                 apiVersion: iaf.platform/v1
@@ -153,6 +238,6 @@ class OpenApiDocumentTest {
         assertThat(op.path("operationId").asText()).isEqualTo("cluster_read");
         assertThat(op.has("requestBody")).isFalse();
         assertThat(op.path("parameters")).extracting(p -> p.path("name").asText() + ":" + p.path("in").asText())
-                .containsExactly("clusterId:path", "verbose:query");
+                .containsExactly("clusterId:path", "verbose:query", "X-Workflow-Version:header");
     }
 }

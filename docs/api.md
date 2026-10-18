@@ -1,14 +1,15 @@
 # API contract
 
 Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live under
-`/api/v1/<noun>s…` and resource read endpoints under `/api/v1/<plural>`. The nouns `workflows`,
+`/api/v<n>/<noun>s…` and resource read endpoints under `/api/v1/<plural>`. The nouns `workflows`,
 `jobs`, `approvals`, `providers`, `releases`, `audit`, `resources`, `resource-types`,
 `credentials`, `registry`, `catalog`, `assistant`, `triggers`, `change-requests`, `templates`,
 `service-accounts`, `me`, `mcp`, `openapi.json`, `playbooks` are reserved for the platform.
 
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
-404 (unknown id), 409 (state conflict), 500. Input that fails a workflow's schema or names a
+404 (unknown id), 409 (state conflict), 429 (over the team's job-start quota, with `Retry-After`
+and `retryAfter` in seconds), 500. Input that fails a workflow's schema or names a
 resource the registry does not know adds `problems: Problem[]` (one job) or
 `rows: { index; problems }[]` (a batch). Commands return 202 with `CommandAccepted` unless noted.
 
@@ -110,6 +111,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
+| GET    | `/swagger-ui` (outside `/api/v1`)   | Swagger UI over that document: redirects to `/swagger-ui/index.html`, assets from the swagger-ui webjar under `/webjars/swagger-ui/`; the page and its assets load without a caller, a bearer token typed into the page goes with every request it makes |
 | *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
 | POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200); judged like a run: the same 400s for the schema and for an `x-resource` id the registry does not know, 403 on RBAC |
@@ -138,6 +140,39 @@ MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `ap
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
 `get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).
 
+In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
+`$response.body#/jobId`), and its input schema is `<noun>_<verb>_input`. A workflow that declares
+`api.response.body` also gets `<noun>_<verb>_output` (the body as written: what the job's `output`
+holds once it succeeds) and `<noun>_<verb>_job` (`JobDetail` with that output), which the 202 names.
+
+### Calls that start jobs
+
+What the generated routes (with their `:batch` and `:preview`), `POST /jobs`, `POST /jobs:batch`
+and MCP `tools/call` read besides the input. The OpenAPI operations document the headers and the
+409 and 429 answers.
+
+| Header (MCP argument)                 | Effect |
+|---------------------------------------|--------|
+| `Idempotency-Key` (`idempotencyKey`)  | Up to 255 characters, scoped to the caller. The first request with a key runs and, when it succeeds, its answer is kept for `platform.gateway.idempotency.ttl` (24h); the same key with the same request (method, path, sorted query, pinned version, canonical JSON body) gets that answer again with `Idempotent-Replay: true` (MCP: `_meta.idempotentReplay`). The same key with another request, or while the first still runs, is 409; a failed request frees its key |
+| `X-Workflow-Version` or `?version=` (`version`) | Runs exactly that version, published or retired, without the release router's canary split; input, RBAC, policy and preview are judged against it. A draft is 409, an unknown version 404, a header and query that disagree 400. On a GET whose own input has a `version` field, `?version=` stays input. `POST /jobs` pins with its body's `version` |
+| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id. A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
+
+Every call that starts jobs takes a token from its caller's team first (the caller's first team,
+or a bucket of their own when they have none): `platform.gateway.quotas` sets 60 a minute with a
+burst of 60, and per-team overrides. A batch takes one token whatever its size. An empty bucket is
+429 with `Retry-After` and `{ error, retryAfter }` naming the team, the limit and when to retry
+(MCP: a JSON-RPC error with `data.tooManyRequests` and `data.retryAfter`). Jobs the platform
+starts itself (triggers, `run` steps, reruns) are not charged. Idempotency keys and buckets live in
+each instance's memory.
+
+Generated paths may live under any API version (`/api/v1/`, `/api/v2/`, …); the platform's
+nouns, and `notifications`, are reserved under every one. A workflow with `api.deprecated` still
+answers, and every answer of its operations carries `Deprecation: @<epoch seconds of since>`
+(RFC 9745), `Sunset: <HTTP date>` (RFC 8594) and, with a replacement,
+`Link: <replacement>; rel="successor-version"` (path parameters filled from the call). Its
+`CatalogEntry` carries `deprecated: { since; sunset; replacement?; message? }`, its OpenAPI
+operations are `deprecated: true`, and its MCP tool descriptions start with `Deprecated:`.
+
 ## Jobs
 
 ```ts
@@ -153,7 +188,7 @@ type Attention = { step; error; options: ('retry' | 'edit-input' | 'skip' | 'abo
 type Batch = { rows: BatchRow[]; waves: { index; percent; size; status; startedAt?; endedAt? }[]; rollout; stoppedReason? }
 type BatchRow = { index; input; jobId?; status; error? }
 type Approval = { id; jobId; workflow; step; group; message; requestedAt; timeout; status: 'pending' | 'approved' | 'rejected' | 'expired';
-  decidedBy?; decidedAt?; comment?; preview?: Preview }
+  decidedBy?; decidedAt?; comment?; preview?: Preview; escalatedTo? }   // escalatedTo: the escalation group, which may decide too
 type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'; data: object }
 ```
 
@@ -177,6 +212,18 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/approvals/{id}:approve` / `:reject`  | `{ comment? }` → `CommandAccepted` |
 | POST   | `/triggers/alerts`                     | alert payload `{ source; labels; annotations }` → 202 `{ started: { workflow; jobId }[]; skipped: { workflow; reason }[] }` |
 | POST   | `/triggers/events`                     | `{ topic; payload }` → 202, same body |
+
+A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
+or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
+`iaf.provider.call` per provider call (in-memory engine), under the span of the request that
+started it (`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). `change.evidenceUrl`
+is the link back to the job's evidence that its change record carries
+(`platform.change.evidence-url`). The platform's own provider alerts are matched
+against the published alert triggers like an external alert, as `{ source: 'platform', labels:
+{ alertname: 'provider.alert', provider, action, severity, class }, annotations: { summary,
+message, jobId, channel, owner } }` (`class` is the call's error class, `health` for a health
+band). An alert raised by a job that such an alert started starts nothing, and the same provider,
+action and class starts nothing more for ten minutes.
 
 ## Providers
 
@@ -226,18 +273,59 @@ type Release = { id; workflow; from?; to; strategy; status: 'canary' | 'paused' 
 ```ts
 type EvidenceEntry = { seq; at; kind: 'requested' | 'preview' | 'policy' | 'change' | 'approval' | 'step' | 'changed' | 'closed' | 'decision';
   actor?; data: object; hash; previous }
-type EvidenceRecord = { jobId; workflow; version; requester; channel; entries: EvidenceEntry[]; latestHash; sealed?: { at; signature; keyId };
-  retention: { until }; change?: { id; url } }
+type EvidenceRecord = { jobId; workflow; version; requester; channel; entries: EvidenceEntry[]; latestHash; sealed?: Seal;
+  retention: { until }; change?: { id; url }; checkpoints?: Seal[] }
+type Seal = { at; signature; keyId; seq?; hash? }   // the HMAC of `hash`, the hash of entry `seq`
+type Verification = { valid: boolean; entries; brokenAt?: number; seal?: 'verified' | 'mismatch' | 'unverifiable';
+  seals?: { kind: 'checkpoint' | 'seal'; at; seq?; keyId; status: 'verified' | 'mismatch' | 'unverifiable' }[] }
 ```
 
 | GET `/audit?workflow=&from=&to=&requester=` | `{ jobId; workflow; requester; channel; at; entries; status }[]` |
+| GET `/audit/platform?from=&to=&aggregate=&actor=` | `{ entries: EvidenceEntry[]; total; latestHash; verification: Verification }`: the platform stream, oldest first; a filter never hides a break in the chain |
 | GET `/audit/{jobId}` | `EvidenceRecord` |
-| GET `/audit/{jobId}:verify` | `{ valid: boolean; entries; brokenAt?: number; seal?: 'verified' \| 'mismatch' \| 'unverifiable' }` |
+| GET `/audit/{jobId}:verify` | `Verification` (every checkpoint, then the seal) |
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
-| POST `/audit:export-pack` | `{ filter }` → zip (signed manifest) |
+| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest) |
 | POST `/audit/{jobId}:share` | → `{ url; expiresAt }` |
 | GET `/audit/shared/{token}` | read-only `EvidenceRecord` |
-| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed }` (also runs every `platform.audit.seal-every`) |
+| POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`) |
+
+A job's record holds `requested` (with `publish`: the version's `contentHash` and where it was
+published on the platform stream, `platformSeq`, `platformHash`, `publishedAt`, `publishedBy`,
+`changeRequestId`), `preview`, `policy`, `change` (opened, then closed with its state),
+`approval` (requested, decided, escalated), `step`, `changed` (each create, change or delete call:
+provider, action, effect, target), `decision` (on a job that needed attention, with the edited
+input) and `closed` (with the retention date). Commands that are not about a job (drafts, change
+requests, publishes, provider changes, credentials by name and type, service accounts, release
+decisions, builder sessions, retired resources) go on the platform stream, a chain of its own
+whose entries carry `event`, `aggregate`, `aggregateId` and the SHA-256 of any file instead of the
+file. Every entry is redacted before it is chained: secret-looking fields and values resolved from
+Vault during the run become `***`, `vault:` references stay; job views are redacted the same way.
+
+Evidence is kept in memory by default, as write-once files under `platform.audit.worm.dir`
+(profile `worm`, each with a read-only retention sidecar) or as S3 objects under Object Lock in
+COMPLIANCE mode for `retention-years` (profile `worm-s3`, `platform.audit.worm.s3.*`; startup fails
+on a bucket without Object Lock). With profile `siem`, every entry also goes to Splunk HEC
+(`platform.siem.hec.url`, the token a `vault:` reference) and to RFC 5424 syslog over UDP or TCP
+(`platform.siem.syslog.host`), from a bounded queue that retries with backoff.
+
+## Notifications
+
+```ts
+type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated';
+  severity: 'info' | 'warning' | 'critical'; title; message; link?; channel?; jobId?; workflow?; provider?;
+  users: string[]; teams: string[]; read: boolean }   // read is the caller's own
+```
+
+| GET `/notifications?unread=` | `{ items: Notification[]; unread: number }`: what was addressed to the caller or one of their teams, newest first; `unread=true` keeps the unread, `false` the read |
+| POST `/notifications/{id}:read` | → `Notification` (404 when the caller cannot see it) |
+
+Notify steps, provider alerts, approval requests (to the approver group) and escalations (to the
+escalation group) go to every delivery adapter: the in-app inbox always, a Slack-compatible
+incoming webhook per channel (profile `slack`, the URL a `vault:` reference) and email (profile
+`mail`). `platform.notifications.channels` and `teams` say who a channel or an approver group
+reaches; events older than `fresh-for` (seeded or replayed history) notify nobody. `notifications`
+is a reserved noun.
 
 ## Resources
 
@@ -293,3 +381,24 @@ read 502.
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,
 `validation`, `dryRun`).
+
+## Telemetry (outside `/api/v1`)
+
+| GET `/actuator/health`, `/actuator/info` | liveness and build info |
+| GET `/actuator/prometheus` | Prometheus scrape; `/actuator/metrics` lists the same meters |
+
+Per workflow, for the jobs this instance runs (history seeded into the past counts for nothing):
+
+| Meter (Prometheus) | Tags |
+|--------------------|------|
+| `workflow_jobs_started_total` | `workflow`, `version`, `channel`, `kind` (`single` or `batch`) |
+| `workflow_jobs_finished_total` | the same and `status` |
+| `workflow_jobs_duration_seconds` (histogram) | `workflow`, `version`; single runs only |
+| `workflow_steps_failed_total` | `workflow`, `class` (the step's error class), one per failed attempt |
+
+Every span is also a timer: `iaf_gateway_seconds`, `iaf_mcp_seconds`, `iaf_job_seconds`,
+`iaf_step_seconds`, `iaf_provider_call_seconds`, with an `error_class` tag (`none` when it
+succeeded) and an `…_active_seconds` long-task timer for what is still running. Tracing samples
+every request and job (`management.tracing.sampling.probability: 1.0`); spans leave the process
+only when `management.otlp.tracing.endpoint` (`MANAGEMENT_OTLP_TRACING_ENDPOINT`) names an OTLP
+collector, which the demo leaves unset.

@@ -223,7 +223,8 @@ public class JobProjection {
             case "job.cancelled" -> job == null ? null : cancelled(job, e);
             case "batch.wave" -> job == null ? null : wave(job, e, d);
             case "job.change-opened", "job.change-closed" -> job == null || !d.path("change").isObject() ? job
-                    : job.withChange(new ChangeTicket(text(d.path("change"), "id"), text(d.path("change"), "url"), text(d.path("change"), "state")));
+                    : job.withChange(changeTicket(d.path("change")));
+            case "job.approval-escalated" -> job == null ? null : approvalEscalated(job, d);
             default -> null;
         };
     }
@@ -258,7 +259,7 @@ public class JobProjection {
                 .row(d.hasNonNull("row") ? d.get("row").asInt() : null)
                 .preview(convert(d.get("preview"), Preview.class))
                 .policy(convert(d.get("policy"), PolicyDecision.class))
-                .change(d.path("change").isObject() ? new ChangeTicket(text(d.path("change"), "id"), text(d.path("change"), "url"), text(d.path("change"), "state")) : null)
+                .change(d.path("change").isObject() ? changeTicket(d.path("change")) : null)
                 .build();
     }
 
@@ -300,6 +301,23 @@ public class JobProjection {
         List<Approval> list = new ArrayList<>(job.approvals().stream().filter(x -> !x.id().equals(a.id())).toList());
         list.add(a);
         return job.toBuilder().approvals(list).status(JobStatus.WAITING_APPROVAL).build();
+    }
+
+    private static ChangeTicket changeTicket(JsonNode c) {
+        return new ChangeTicket(text(c, "id"), text(c, "url"), text(c, "state"), text(c, "evidenceUrl"));
+    }
+
+    /** The escalation group joins the approvers of a pending approval. */
+    private Job approvalEscalated(Job job, JsonNode d) {
+        String id = text(d, "approvalId");
+        String to = text(d, "to");
+        if (id == null || to == null) {
+            return job;
+        }
+        List<Approval> list = job.approvals().stream()
+                .map(a -> a.id().equals(id) && a.pending() ? a.withEscalatedTo(to) : a)
+                .toList();
+        return job.toBuilder().approvals(list).build();
     }
 
     private Job approvalDecided(Job job, DomainEvent e, JsonNode d) {

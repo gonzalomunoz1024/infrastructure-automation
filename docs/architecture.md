@@ -41,12 +41,15 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `providers` | provider files, OpenAPI import, test connection, try action, overrides, checks, health, alerts |
 | `runs`      | jobs, the interpreter, bulk runs, approvals, time travel, previews, job events |
 | `releases`  | canary releases, gates, version routing                               |
-| `audit`     | evidence records, hash chain, sealing, export, share links           |
-| `catalog`   | the generated surface: REST routes, `:batch`, `:preview`, OpenAPI, MCP tools, resource read endpoints |
+| `audit`     | evidence records, hash chain, sealing and checkpoints, export, share links, the platform stream, SIEM export |
+| `catalog`   | the generated surface: REST routes, `:batch`, `:preview`, OpenAPI, Swagger UI, MCP tools, resource read endpoints, version pins, deprecation headers |
+| `gateway`   | guards on the requests that start jobs: idempotency keys, per-team quotas |
+| `notifications` | the in-app inbox and the delivery adapters (chat webhooks, email) behind one port |
+| `observability` | job and step spans, traced provider calls, per-workflow metrics          |
 | `resources` | resource types, registry, lineage, retire                             |
 | `assistant` | natural-language builder sessions (Devin), SSE stream                 |
 | `identity`  | who is calling: dev identity, OIDC, service accounts, RBAC checks     |
-| `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock |
+| `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock, redaction, trace ids |
 | `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
 
 ### CQRS rules
@@ -163,12 +166,43 @@ runs on a non-blocking thread, and the wiring test expects none.
 - `record` for every domain and DTO type. Enums serialise lowercase through `@JsonValue`.
 - Jackson: `non_null`, ISO dates. One injectable `Clock`. Ids are strings (`job_…`, `rel_…`).
 - `GlobalExceptionHandler`: `IllegalArgumentException` → 400, `NotFoundException` → 404,
-  `ForbiddenException` → 403, `ResponseStatusException` → its status, anything else → 500,
+  `ForbiddenException` → 403, `ConflictException` → 409, `TooManyRequestsException` → 429 with
+  `Retry-After`, `ResponseStatusException` → its status, anything else → 500,
   body `{ "error": "…" }`.
 - Tests: Mockito for ports + `StepVerifier` for handlers; plain JUnit for domain rules;
   `WebTestClient` for adapters; `TestWorkflowEnvironment` for the Temporal workflow. No Spring
   context unless the test is about wiring.
 - Logging via Lombok `@Slf4j`. No field injection. No static mutable state outside fixtures.
+
+### Evidence, notifications, guards and telemetry
+
+| Port (slice)                       | Adapters |
+|------------------------------------|----------|
+| `EvidenceStore` (audit)            | `InMemoryEvidenceStore`; over `WormEvidenceStore` (one write-once object per entry, seal and checkpoint, created conditionally so two instances never take the same seq, the record rebuilt from its objects): `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars) and `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) |
+| `SiemPort` (audit)                 | `SplunkHecSiem` and `SyslogSiem` (profile `siem`, each on when its destination is set) |
+| `NotificationPort` (notifications) | `InAppNotifications` (the inbox, over `InboxStore`), `SlackWebhookNotifications` (profile `slack`), `EmailNotifications` (profile `mail`) |
+| `ChangeTicketPort` (runs)          | `MockServiceNowChangeTickets`; `ServiceNowChangeTickets` (profiles `servicenow` and `live`, the Table API on `change_request`) |
+| `IdempotencyStore` (gateway)       | `InMemoryIdempotencyStore` (per instance) |
+
+- `AuditListener` folds job events into one hash chain per job, release decisions into
+  `release:<id>` and every other recorded command into the platform stream. Each entry is
+  redacted (`common/redaction`: secret-looking fields and the values resolved from Vault during
+  the run) before it is chained, then queued for the SIEM by `SiemExporter` (bounded, batched,
+  retried with backoff). The scheduled seal seals closed records and checkpoints open ones.
+- `IdempotencyWebFilter` (after the identity filter) and `JobQuotas` guard every request that
+  starts jobs; MCP `tools/call` goes through the same `IdempotencyHandler` and quotas.
+- `NotificationListener` turns notify steps, provider alerts, approval requests and escalations
+  into notifications; `NotificationHandler` sends each to every `NotificationPort`, and a failing
+  adapter never stops the others. `ProviderAlertTriggers` (runs) starts the alert triggers that
+  match a provider alert.
+- Tracing is Micrometer's Observation API on the OpenTelemetry bridge (`common/tracing`).
+  `GeneratedRouteWebFilter` and `McpServer` open `iaf.gateway` and `iaf.mcp` spans under the
+  request's (which continues an incoming `traceparent`); `JobTracing` (observability) turns job
+  events into `iaf.job` and `iaf.step` spans on the trace the job's `traceId` names
+  (`RequestedTraceIds` makes it the root of that trace when nothing started it from a span);
+  `TracedProviderCalls` proxies every `ProviderCallPort` bean so each call is an
+  `iaf.provider.call` span under its step. `JobMetrics` counts and times jobs per workflow. Step
+  spans come from the in-memory engine's events.
 
 ## The interpreter
 

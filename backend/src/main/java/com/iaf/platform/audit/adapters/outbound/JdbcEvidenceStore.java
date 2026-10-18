@@ -132,6 +132,21 @@ public class JdbcEvidenceStore implements EvidenceStore {
     }
 
     @Override
+    public EvidenceRecord checkpoint(String jobId, EvidenceRecord.Seal checkpoint) {
+        if (checkpoint == null || checkpoint.at() == null) {
+            throw new IllegalArgumentException("a checkpoint needs the time it was made");
+        }
+        return jdbc.inTransaction(() -> {
+            Header current = lock(jobId).orElseThrow(() -> new NotFoundException("evidence record", jobId));
+            EvidenceRecord updated = current.record().withCheckpoint(checkpoint);
+            if (updated != current.record()) {
+                jdbc.update("UPDATE evidence_records SET doc = ? WHERE job_id = ?", header(updated), jobId);
+            }
+            return record(jobId).orElseThrow(() -> new NotFoundException("evidence record", jobId));
+        });
+    }
+
+    @Override
     public ShareToken shareToken(String jobId, Instant expiresAt) {
         byte[] bytes = new byte[24];
         random.nextBytes(bytes);
@@ -177,15 +192,15 @@ public class JdbcEvidenceStore implements EvidenceStore {
         headers.forEach((jobId, doc) -> {
             EvidenceRecord h = jdbc.read(doc, EvidenceRecord.class);
             records.add(new EvidenceRecord(h.jobId(), h.workflow(), h.version(), h.requester(), h.channel(), List.copyOf(entries.get(jobId)),
-                    h.latestHash(), h.sealed(), h.retention(), h.change()));
+                    h.latestHash(), h.sealed(), h.retention(), h.change(), h.checkpoints()));
         });
         return records;
     }
 
-    /** What the header row keeps: the record without its entries. */
+    /** The record without its entries (the entries have their own rows): what the header row's doc keeps, checkpoints included. */
     private String header(EvidenceRecord r) {
         return jdbc.json(new EvidenceRecord(r.jobId(), r.workflow(), r.version(), r.requester(), r.channel(), List.of(), r.latestHash(),
-                r.sealed(), r.retention(), r.change()));
+                r.sealed(), r.retention(), r.change(), r.checkpoints()));
     }
 
     private record Header(EvidenceRecord record, int count) {

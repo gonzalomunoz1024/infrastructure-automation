@@ -30,6 +30,7 @@ import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
 import com.iaf.platform.audit.ports.inbound.AuditCommands.SealResult;
 import com.iaf.platform.audit.ports.inbound.AuditCommands.ShareLink;
+import com.iaf.platform.audit.ports.inbound.AuditQueries;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.AuditRow;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FileExport;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FilterSpec;
@@ -102,6 +103,26 @@ class RestControllerAuditAdapterTest {
                 .jsonPath("$.entries").isEqualTo(5)
                 .jsonPath("$.brokenAt").isEqualTo(3);
         verify(queries).verify("job_1");
+    }
+
+    @Test
+    void thePlatformStreamHasItsOwnEndpointWithItsFilters() {
+        EvidenceEntry entry = new EvidenceEntry(1, NOW, EvidenceKind.DECISION, "ana",
+                new ObjectMapper().createObjectNode().put("event", "workflow.published").put("aggregate", "workflow"),
+                "h1", "genesis");
+        when(queries.platform("2026-10-17", null, "workflow", "ana")).thenReturn(Mono.just(new AuditQueries.PlatformStream(List.of(entry), 4, "h4",
+                new Verification(true, 4, null, null, List.of(new AuditQueries.SealCheck("checkpoint", NOW, 3, "kabc", "verified"))))));
+
+        client.get().uri("/api/v1/audit/platform?from=2026-10-17&aggregate=workflow&actor=ana").exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.entries[0].data.event").isEqualTo("workflow.published")
+                .jsonPath("$.total").isEqualTo(4)
+                .jsonPath("$.latestHash").isEqualTo("h4")
+                .jsonPath("$.verification.valid").isEqualTo(true)
+                .jsonPath("$.verification.seals[0].kind").isEqualTo("checkpoint")
+                .jsonPath("$.verification.seals[0].status").isEqualTo("verified");
+        verify(queries).platform("2026-10-17", null, "workflow", "ana");
     }
 
     @Test

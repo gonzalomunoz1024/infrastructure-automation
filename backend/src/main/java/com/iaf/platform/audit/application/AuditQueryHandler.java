@@ -16,6 +16,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidencePdf;
 import com.iaf.platform.audit.domain.EvidenceRecord;
@@ -38,6 +39,8 @@ public class AuditQueryHandler implements AuditQueries {
 
     static final String MANIFEST = "manifest.json";
     static final String RECORDS_DIR = "records/";
+    /** The whole platform stream, whatever the filter: a chain is only checkable whole. */
+    static final String PLATFORM_FILE = "platform.json";
 
     private final EvidenceStore store;
     private final AuditSigner signer;
@@ -47,6 +50,7 @@ public class AuditQueryHandler implements AuditQueries {
     @Override
     public Flux<AuditRow> list(String workflow, String from, String to, String requester) {
         return Flux.defer(() -> Flux.fromIterable(store.records(EvidenceFilter.parse(workflow, from, to, requester))))
+                .filter(r -> !r.platform())
                 .map(r -> new AuditRow(r.jobId(), r.workflow(), r.requester(), r.channel(), r.at(), r.entries().size(), r.status()));
     }
 
@@ -58,19 +62,68 @@ public class AuditQueryHandler implements AuditQueries {
 
     @Override
     public Mono<Verification> verify(String jobId) {
-        return record(jobId).map(r -> {
-            int broken = HashChain.verify(r.entries());
-            String seal = null;
-            if (r.sealed() != null) {
-                if (!signer.keyId().equals(r.sealed().keyId())) {
-                    seal = "unverifiable";
-                } else {
-                    seal = signer.verify(r.latestHash(), r.sealed().signature()) ? "verified" : "mismatch";
-                }
+        return record(jobId).map(this::verification);
+    }
+
+    /**
+     * The chain walk plus every signature: each checkpoint and the final seal must be signed by
+     * this instance's key over the hash of the entry it names (a seal without seq covers the
+     * latest hash), and that entry must still carry that hash.
+     */
+    Verification verification(EvidenceRecord r) {
+        int broken = HashChain.verify(r.entries());
+        List<SealCheck> seals = new ArrayList<>();
+        for (EvidenceRecord.Seal c : r.checkpoints()) {
+            seals.add(new SealCheck("checkpoint", c.at(), c.seq(), c.keyId(), sealStatus(r, c)));
+        }
+        String seal = null;
+        if (r.sealed() != null) {
+            seal = sealStatus(r, r.sealed());
+            seals.add(new SealCheck("seal", r.sealed().at(), r.sealed().seq() == null ? r.entries().size() : r.sealed().seq(), r.sealed().keyId(), seal));
+        }
+        boolean valid = broken < 0 && seals.stream().noneMatch(s -> "mismatch".equals(s.status()));
+        return new Verification(valid, r.entries().size(), broken < 0 ? null : broken, seal, seals);
+    }
+
+    private String sealStatus(EvidenceRecord r, EvidenceRecord.Seal s) {
+        String covered = s.hash() == null ? r.latestHash() : s.hash();
+        if (s.seq() != null) {
+            int i = s.seq() - 1;
+            if (i < 0 || i >= r.entries().size() || !covered.equals(r.entries().get(i).hash())) {
+                return "mismatch";
             }
-            boolean valid = broken < 0 && !"mismatch".equals(seal);
-            return new Verification(valid, r.entries().size(), broken < 0 ? null : broken, seal);
+        }
+        if (!signer.keyId().equals(s.keyId())) {
+            return "unverifiable";
+        }
+        return signer.verify(covered, s.signature()) ? "verified" : "mismatch";
+    }
+
+    @Override
+    public Mono<PlatformStream> platform(String from, String to, String aggregate, String actor) {
+        return Mono.fromCallable(() -> {
+            EvidenceFilter window = EvidenceFilter.parse(null, from, to, null);
+            String agg = aggregate == null || aggregate.isBlank() ? null : aggregate.trim();
+            String who = actor == null || actor.isBlank() ? null : actor.trim();
+            return store.record(EvidenceRecord.PLATFORM)
+                    .map(r -> {
+                        List<EvidenceEntry> matching = r.entries().stream()
+                                .filter(e -> window.from() == null || (e.at() != null && !e.at().isBefore(window.from())))
+                                .filter(e -> window.to() == null || (e.at() != null && e.at().isBefore(window.to())))
+                                .filter(e -> who == null || who.equals(e.actor()))
+                                .filter(e -> agg == null || aggregateMatches(e, agg))
+                                .toList();
+                        return new PlatformStream(matching, r.entries().size(), r.latestHash(), verification(r));
+                    })
+                    .orElseGet(() -> new PlatformStream(List.of(), 0, HashChain.GENESIS, new Verification(true, 0, null, null)));
         });
+    }
+
+    /** {@code workflow}, {@code vm-restart} or {@code workflow:vm-restart}. */
+    static boolean aggregateMatches(EvidenceEntry e, String aggregate) {
+        String type = e.data() == null ? null : e.data().path("aggregate").asText(null);
+        String id = e.data() == null ? null : e.data().path("aggregateId").asText(null);
+        return aggregate.equals(type) || aggregate.equals(id) || aggregate.equals(type + ":" + id);
     }
 
     @Override
@@ -85,22 +138,24 @@ public class AuditQueryHandler implements AuditQueries {
     }
 
     /**
-     * {@code records/<jobId>.json} per matching record plus {@code manifest.json}: every file with
-     * its sha256, and an HMAC-SHA256 signature (under the sealing key) of the canonical JSON of
-     * that file list, so a pack can be checked for completeness and tampering.
+     * {@code records/<jobId>.json} per matching record, {@code platform.json} (the whole platform
+     * stream) and {@code manifest.json}: every file with its sha256, and an HMAC-SHA256 signature
+     * (under the sealing key) of the canonical JSON of that file list, so a pack can be checked for
+     * completeness and tampering.
      */
     @Override
     public Mono<FileExport> exportPack(FilterSpec spec) {
         return Mono.fromCallable(() -> {
             EvidenceFilter filter = spec == null ? EvidenceFilter.ALL
                     : EvidenceFilter.parse(spec.workflow(), spec.from(), spec.to(), spec.requester());
-            List<EvidenceRecord> records = store.records(filter);
+            List<EvidenceRecord> records = new ArrayList<>(store.records(filter).stream().filter(r -> !r.platform()).toList());
+            store.record(EvidenceRecord.PLATFORM).ifPresent(records::add);
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             List<Map<String, Object>> files = new ArrayList<>();
             try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
                 for (EvidenceRecord r : records) {
                     byte[] content = json(r);
-                    String name = RECORDS_DIR + fileName(r.jobId()) + ".json";
+                    String name = r.platform() ? PLATFORM_FILE : RECORDS_DIR + fileName(r.jobId()) + ".json";
                     zip.putNextEntry(new ZipEntry(name));
                     zip.write(content);
                     zip.closeEntry();

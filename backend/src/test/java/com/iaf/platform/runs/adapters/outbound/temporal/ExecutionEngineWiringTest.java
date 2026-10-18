@@ -27,6 +27,8 @@ import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.adapters.outbound.InMemoryWorkflowExecution;
 import com.iaf.platform.runs.application.RunsCommandHandler;
+import com.iaf.platform.common.redaction.SecretValues;
+import com.iaf.platform.notifications.ports.inbound.NotificationCommands;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.ports.inbound.WorkflowQueries;
 
@@ -70,7 +72,9 @@ class ExecutionEngineWiringTest {
                 .withBean(ResourceCommands.class, () -> mock(ResourceCommands.class))
                 .withBean(ReleaseQueries.class, () -> mock(ReleaseQueries.class))
                 .withBean(PolicyPort.class, () -> mock(PolicyPort.class))
-                .withBean(TelemetryPort.class, () -> mock(TelemetryPort.class));
+                .withBean(TelemetryPort.class, () -> mock(TelemetryPort.class))
+                .withBean(NotificationCommands.class, () -> mock(NotificationCommands.class))
+                .withBean(SecretValues.class, SecretValues::new);
     }
 
     @Test

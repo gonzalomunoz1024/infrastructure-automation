@@ -66,6 +66,10 @@ public class JobEvents {
         }
         d.put("title", job.title());
         d.put("traceId", job.traceId());
+        String contentHash = contentHash(job);
+        if (contentHash != null) {
+            d.put("contentHash", contentHash);
+        }
         if (job.row() != null) {
             d.put("row", job.row());
         }
@@ -170,11 +174,32 @@ public class JobEvents {
     }
 
     public DomainEvent attentionResolved(String jobId, String step, String action, String by, Instant at) {
+        return attentionResolved(jobId, step, action, by, null, at);
+    }
+
+    /** {@code job.attention-resolved} with the edited input of an edit-input decision. */
+    public DomainEvent attentionResolved(String jobId, String step, String action, String by, JsonNode input, Instant at) {
         ObjectNode d = base(jobId);
         d.put("step", step);
         d.put("action", action);
         d.put("by", by);
+        if (input != null && !input.isNull() && !input.isMissingNode()) {
+            d.set("input", input);
+        }
         return publish("job.attention-resolved", jobId, by, d, at);
+    }
+
+    /** {@code job.changed}: {jobId, step, provider, action, effect, target}: a provider call that created, changed or deleted something. */
+    public DomainEvent changed(String jobId, String step, String provider, String action, String effect, String target) {
+        ObjectNode d = base(jobId);
+        d.put("step", step);
+        d.put("provider", provider);
+        d.put("action", action);
+        d.put("effect", effect);
+        if (target != null) {
+            d.put("target", target);
+        }
+        return publish("job.changed", jobId, Identity.SYSTEM.id(), d);
     }
 
     /** {@code job.finished}: {jobId, workflow, version, status, durationMs, errorClass, failedStep, output}. */
@@ -284,5 +309,17 @@ public class JobEvents {
         ObjectNode d = F.objectNode();
         d.put("jobId", jobId);
         return d;
+    }
+
+    /** The content hash of the version the job runs (its definition snapshot), so evidence names exactly what ran. */
+    private static String contentHash(Job job) {
+        if (job.definition() == null) {
+            return null;
+        }
+        try {
+            return com.iaf.platform.workflows.domain.WorkflowYaml.contentHash(job.definition());
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 }

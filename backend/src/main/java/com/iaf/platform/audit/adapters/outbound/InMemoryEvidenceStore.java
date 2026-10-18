@@ -67,6 +67,15 @@ public class InMemoryEvidenceStore implements EvidenceStore {
     }
 
     @Override
+    public EvidenceRecord checkpoint(String jobId, EvidenceRecord.Seal checkpoint) {
+        EvidenceRecord updated = records.computeIfPresent(jobId, (id, current) -> current.withCheckpoint(checkpoint));
+        if (updated == null) {
+            throw new NotFoundException("evidence record", jobId);
+        }
+        return updated;
+    }
+
+    @Override
     public ShareToken shareToken(String jobId, Instant expiresAt) {
         byte[] bytes = new byte[24];
         random.nextBytes(bytes);

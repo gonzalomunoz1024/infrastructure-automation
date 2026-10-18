@@ -101,6 +101,9 @@ class ProviderAlertEvaluatorTest {
         assertThat(published.get(1).data().path("provider").asText()).isEqualTo("fleet");
         assertThat(published.get(0).data().path("channel").asText()).isEqualTo("#compute-alerts");
         assertThat(published.get(1).data().path("channel").asText()).isEqualTo("#compute-alerts");
+        assertThat(published.get(0).data().path("owner").asText()).isEqualTo("team-compute");
+        assertThat(published.get(0).data().path("class").asText()).isEqualTo(ProviderAlertEvaluator.HEALTH_CLASS);
+        assertThat(published.get(1).data().path("class").asText()).isEqualTo("unavailable");
         assertThat(evaluator.alerts("other")).isEmpty();
     }
 

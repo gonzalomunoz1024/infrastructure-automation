@@ -172,6 +172,61 @@ class InMemoryWorkflowExecutionTest {
     }
 
     @Test
+    void providerCallsThatChangeSomethingPublishWhatChangedAndReadsDoNot() {
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-cycle, title: Cycle, noun: thing, verb: cycle, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - look:
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                    - restart:
+                        call: provider
+                        with: { provider: vsphere, action: vm.restart, input: { id: "{{ $input.id }}" } }
+                """);
+        Job job = start(def, Map.of("id", "vm-1042"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        List<DomainEvent> changed = published.stream().filter(e -> e.type().equals("job.changed") && e.aggregateId().equals(job.id())).toList();
+        assertThat(changed).singleElement().satisfies(e -> {
+            assertThat(e.data().get("step").asText()).isEqualTo("restart");
+            assertThat(e.data().get("provider").asText()).isEqualTo("vsphere");
+            assertThat(e.data().get("action").asText()).isEqualTo("vm.restart");
+            assertThat(e.data().get("effect").asText()).isEqualTo("change");
+            assertThat(e.data().get("target").asText()).isEqualTo("vm-1042");
+        });
+        assertThat(published.stream().filter(e -> e.type().equals("job.started") && e.aggregateId().equals(job.id())).findFirst().orElseThrow()
+                .data().get("contentHash").asText()).isEqualTo(WorkflowYaml.contentHash(def));
+    }
+
+    @Test
+    void anEditInputDecisionCarriesTheEditedInputOnItsEvent() {
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-edit, title: Edit, noun: thing, verb: edit, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - broken:
+                        call: provider
+                        with: { provider: vsphere, action: vm.doesNotExist, input: { id: "{{ $input.id }}" } }
+                """);
+        Job job = start(def, Map.of("id", "vm-1042"));
+        awaitStatus(job.id(), JobStatus.NEEDS_ATTENTION);
+
+        w.execution.signalAttention(job.id(), AttentionDecision.editInput(SampleContent.json(Map.of("input", Map.of("id", "vm-7"))), "ana")).block();
+
+        RunsTestWiring.await(WAIT, () -> published.stream().anyMatch(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id())));
+        DomainEvent resolved = published.stream().filter(e -> e.type().equals("job.attention-resolved") && e.aggregateId().equals(job.id()))
+                .findFirst().orElseThrow();
+        assertThat(resolved.data().path("action").asText()).isEqualTo("edit-input");
+        assertThat(resolved.data().path("input").path("input").path("id").asText()).isEqualTo("vm-7");
+        w.execution.signalAttention(job.id(), AttentionDecision.abort("ana")).block();
+    }
+
+    @Test
     void abortRollsBackCompletedStepsWithCompensation() {
         Job job = start(SampleContent.workflow("create-vm"), Map.of("name", "web-01", "image", "img-77", "size", "small"));
         awaitStatus(job.id(), JobStatus.SUCCEEDED);

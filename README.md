@@ -39,6 +39,7 @@ The generated surface:
 | Bulk runs | `POST <path>:batch` with `{ items, defaults, rollout }` |
 | Blast-radius preview | `POST <path>:preview` |
 | OpenAPI 3.1 | `GET /openapi.json` |
+| Swagger UI over it | <http://localhost:8080/swagger-ui> |
 | MCP server (Streamable HTTP, JSON-RPC 2.0) | `POST /api/v1/mcp` |
 | Job events | `GET /api/v1/jobs/{id}/events` (SSE), `ws://…/ws/jobs/{id}` |
 
@@ -89,6 +90,15 @@ example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter'
 Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
 agent annotations and never holds a value; `values.yaml` describes every setting and
 `ci/full-values.yaml` shows them all in use.
+
+Evidence, notifications and change records have profiles of their own: `worm` (write-once
+evidence files under `platform.audit.worm.dir`), `worm-s3` (evidence in S3 under Object Lock in
+COMPLIANCE mode), `siem` (every evidence entry also to Splunk HEC and syslog), `slack`
+(Slack-compatible incoming webhooks), `mail` (email) and `servicenow` (change records over the
+ServiceNow Table API; `live` turns it on too). Their tokens and passwords are `vault:` references;
+the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
+`MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
+spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics.
 
 ## Checks
 

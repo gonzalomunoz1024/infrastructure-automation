@@ -74,9 +74,12 @@ export interface ApiDocument {
   method?: string;
   path?: string;
   input?: JsonSchema;
-  response?: { status?: number };
+  /** `body`: the JSON Schema of a succeeded job's output (the keys of `workflow.outputs`); OpenAPI publishes it. */
+  response?: { status?: number; body?: JsonSchema };
   preview?: boolean;
   batch?: BatchPolicyDocument;
+  /** The operation still answers, with Deprecation, Sunset and Link headers; dates are YYYY-MM-DD or ISO date-times. */
+  deprecated?: { since: string; sunset: string; replacement?: string; message?: string };
 }
 
 export interface McpDocument {

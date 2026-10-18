@@ -142,6 +142,7 @@ class RunsCommandHandlerTest {
         assertThat(job.change()).isNotNull();
         assertThat(job.change().id()).startsWith("CHG00");
         assertThat(job.change().url()).contains(job.change().id());
+        assertThat(job.change().evidenceUrl()).isEqualTo("http://localhost:3000/#/audit/" + acc.id());
         assertThat(job.policy().decision()).isEqualTo("allow");
         assertThat(eventTypes()).containsExactly("job.started", "job.change-opened");
         assertThat(published.get(0).data().path("workflow").asText()).isEqualTo("vm-restart");
@@ -149,6 +150,7 @@ class RunsCommandHandlerTest {
         assertThat(published.get(0).data().path("kind").asText()).isEqualTo("single");
         assertThat(published.get(0).data().has("preview")).isTrue();
         assertThat(published.get(0).data().path("change").path("id").asText()).isEqualTo(job.change().id());
+        assertThat(published.get(1).data().path("change").path("evidenceUrl").asText()).isEqualTo(job.change().evidenceUrl());
         ArgumentCaptor<Job> started = ArgumentCaptor.forClass(Job.class);
         verify(engine).start(started.capture());
         assertThat(started.getValue().id()).isEqualTo(acc.id());
@@ -357,6 +359,25 @@ class RunsCommandHandlerTest {
                 .expectError(ConflictException.class)
                 .verify();
         StepVerifier.create(handler.approve("apr_missing", null)).expectError(NotFoundException.class).verify();
+    }
+
+    @Test
+    void anEscalatedApprovalMayBeDecidedByTheEscalationGroupToo() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042"));
+        Approval a = pendingApproval(jobId);
+        StepVerifier.create(handler.approve(a.id(), "mine").contextWrite(c -> CurrentIdentity.with(c, SampleContent.ANA)))
+                .expectError(ForbiddenException.class)
+                .verify();
+
+        w.events.approvalEscalated(jobId, a.id(), a.step(), "data-approvers");
+
+        Approval escalated = w.projection.approval(a.id()).orElseThrow();
+        assertThat(escalated.escalatedTo()).isEqualTo("data-approvers");
+        assertThat(escalated.approverGroups()).containsExactly("compute-approvers", "data-approvers");
+        assertThat(w.queries.approval(a.id()).block().get("escalatedTo").asText()).isEqualTo("data-approvers");
+        CommandAccepted acc = handler.approve(a.id(), "covering").contextWrite(c -> CurrentIdentity.with(c, SampleContent.ANA)).block();
+        assertThat(acc.status()).isEqualTo("approved");
+        assertThat(w.projection.approval(a.id()).orElseThrow().decidedBy()).isEqualTo("ana");
     }
 
     @Test

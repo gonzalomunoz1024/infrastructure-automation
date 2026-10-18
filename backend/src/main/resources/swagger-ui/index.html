@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform API</title>
+  <link rel="stylesheet" href="../webjars/swagger-ui/swagger-ui.css">
+  <link rel="icon" type="image/png" href="../webjars/swagger-ui/favicon-32x32.png">
+  <style>
+    body { margin: 0; background: #fafafa; }
+    .token { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid #e3e3e3;
+             background: #fff; font: 14px/1.4 sans-serif; color: #3b4151; }
+    .token input { flex: 1 1 260px; max-width: 520px; padding: 5px 8px; border: 1px solid #c8c8c8; border-radius: 4px; }
+    .token button { padding: 5px 12px; border: 1px solid #4990e2; border-radius: 4px; background: #4990e2; color: #fff; cursor: pointer; }
+    .token small { flex-basis: 100%; color: #6b6b6b; }
+  </style>
+</head>
+<body>
+  <!-- the generated OpenAPI document of every published workflow and resource type -->
+  <form class="token" id="token-form">
+    <label for="token">Bearer token</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="iaf_… or an OIDC access token">
+    <button type="submit">Use</button>
+    <small>Sent as Authorization on every request this page makes, kept in this tab only. Leave it empty in dev mode.</small>
+  </form>
+  <div id="swagger-ui"></div>
+  <script src="../webjars/swagger-ui/swagger-ui-bundle.js"></script>
+  <script>
+    (function () {
+      var KEY = 'iaf.swagger.token';
+      var token = '';
+      try { token = sessionStorage.getItem(KEY) || ''; } catch (e) { token = ''; }
+      var field = document.getElementById('token');
+      field.value = token;
+
+      function load() {
+        window.ui = SwaggerUIBundle({
+          url: '../api/v1/openapi.json',
+          dom_id: '#swagger-ui',
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis],
+          layout: 'BaseLayout',
+          requestInterceptor: function (request) {
+            if (token) {
+              request.headers['Authorization'] = 'Bearer ' + token;
+            }
+            return request;
+          }
+        });
+      }
+
+      document.getElementById('token-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        token = field.value.trim();
+        try { sessionStorage.setItem(KEY, token); } catch (e) { /* storage off: the token lasts until the page reloads */ }
+        load();
+      });
+      load();
+    })();
+  </script>
+</body>
+</html>

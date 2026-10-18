@@ -23,7 +23,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
-/** Seals closed records (on a schedule and on demand) and mints share links. */
+/** Seals closed records and checkpoints open ones (on a schedule and on demand), and mints share links. */
 @Slf4j
 @Primary
 @Service
@@ -42,8 +42,8 @@ public class AuditCommandHandler implements AuditCommands {
     public void sealOnSchedule() {
         try {
             SealResult result = sealAll(Identity.SYSTEM.id());
-            if (result.sealed() > 0) {
-                log.info("sealed {} evidence records (keyId={})", result.sealed(), result.keyId());
+            if (result.sealed() > 0 || result.checkpointed() > 0) {
+                log.info("sealed {} evidence records and checkpointed {} open ones (keyId={})", result.sealed(), result.checkpointed(), result.keyId());
             }
         } catch (RuntimeException e) {
             log.warn("sealing run failed: {}", e.toString());
@@ -56,25 +56,48 @@ public class AuditCommandHandler implements AuditCommands {
     }
 
     /**
-     * Every closed, unsealed record gets {@code sealed = {at, signature(latestHash), keyId}}; the
-     * run's own signature covers the ledger "jobId latestHash" of what it sealed.
+     * Signs the head of every record. A closed, unsealed record gets its final seal
+     * {@code {at, signature(latestHash), keyId, seq, hash}}; an open one (a running job, the
+     * platform stream) whose head moved since its last checkpoint gets a checkpoint of the same
+     * shape and keeps accepting entries. The run's own signature covers the ledger
+     * "jobId latestHash" of every head it signed.
      */
     SealResult sealAll(String actor) {
         Instant now = clock.instant();
         StringBuilder ledger = new StringBuilder();
         int sealed = 0;
+        int checkpointed = 0;
+        boolean checkpointsRefused = false;
         for (EvidenceRecord record : store.records(EvidenceFilter.ALL)) {
-            if (!record.closed() || record.sealed() != null) {
+            if (record.sealed() != null || record.entries().isEmpty()) {
                 continue;
             }
-            String signature = signer.sign(record.latestHash());
-            store.seal(record.jobId(), new EvidenceRecord.Seal(now, signature, signer.keyId()));
-            events.publish("audit.sealed", "audit", record.jobId(), actor,
-                    mapper.createObjectNode().put("jobId", record.jobId()).put("keyId", signer.keyId()));
+            EvidenceRecord.Seal seal = new EvidenceRecord.Seal(now, signer.sign(record.latestHash()), signer.keyId(), record.entries().size(),
+                    record.latestHash());
+            if (record.closed() && !record.platform()) {
+                store.seal(record.jobId(), seal);
+                events.publish("audit.sealed", "audit", record.jobId(), actor,
+                        mapper.createObjectNode().put("jobId", record.jobId()).put("keyId", signer.keyId()));
+                sealed++;
+            } else {
+                EvidenceRecord.Seal last = record.latestCheckpoint();
+                if (last != null && record.latestHash().equals(last.hash())) {
+                    continue;
+                }
+                try {
+                    store.checkpoint(record.jobId(), seal);
+                } catch (UnsupportedOperationException e) {
+                    if (!checkpointsRefused) {
+                        log.warn("open records are not checkpointed: {}", e.getMessage());
+                    }
+                    checkpointsRefused = true;
+                    continue;
+                }
+                checkpointed++;
+            }
             ledger.append(record.jobId()).append(' ').append(record.latestHash()).append('\n');
-            sealed++;
         }
-        return new SealResult(now, signer.sign(ledger.toString()), signer.keyId(), sealed);
+        return new SealResult(now, signer.sign(ledger.toString()), signer.keyId(), sealed, checkpointed);
     }
 
     @Override

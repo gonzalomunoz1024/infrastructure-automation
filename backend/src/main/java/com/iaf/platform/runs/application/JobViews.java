@@ -147,6 +147,9 @@ public final class JobViews {
         o.put("workflow", a.workflow());
         o.put("step", a.step());
         o.put("group", a.group());
+        if (a.escalatedTo() != null) {
+            o.put("escalatedTo", a.escalatedTo());
+        }
         o.put("message", a.message());
         put(o, "requestedAt", a.requestedAt());
         o.put("timeout", a.timeout());
@@ -240,6 +243,9 @@ public final class JobViews {
         o.put("id", c.id());
         o.put("url", c.url());
         o.put("state", c.state());
+        if (c.evidenceUrl() != null) {
+            o.put("evidenceUrl", c.evidenceUrl());
+        }
         return o;
     }
 

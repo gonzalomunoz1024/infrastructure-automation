@@ -2,7 +2,11 @@ package com.iaf.platform.catalog.application;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -19,18 +23,24 @@ import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.catalog.domain.McpTools.Tool;
 import com.iaf.platform.catalog.domain.PlatformInfo;
 import com.iaf.platform.catalog.domain.PolicyDeniedException;
+import com.iaf.platform.catalog.domain.VersionPin;
 import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
+import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
-import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.TooManyRequestsException;
 import com.iaf.platform.common.schema.Schemas;
+import com.iaf.platform.common.tracing.TraceIds;
+import com.iaf.platform.common.tracing.Traces;
+import com.iaf.platform.gateway.application.IdempotencyHandler;
+import com.iaf.platform.gateway.domain.IdempotencyKeys;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
 
-import lombok.RequiredArgsConstructor;
+import io.micrometer.observation.Observation;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -43,11 +53,13 @@ import reactor.core.publisher.Mono;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class McpServer {
 
     public static final String PROTOCOL_VERSION = "2025-06-18";
     public static final String CHANNEL = "mcp";
+    public static final String SPAN = "iaf.mcp";
+    /** {@code result._meta} of a tool call answered again from its idempotency key. */
+    public static final String REPLAY_META = "idempotentReplay";
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
     private final CatalogQueries catalog;
@@ -57,6 +69,33 @@ public class McpServer {
     private final RunsCommands runs;
     private final AssistantCommands assistant;
     private final ObjectMapper json;
+    private final IdempotencyHandler idempotency;
+    private final Traces traces;
+
+    public McpServer(CatalogQueries catalog, WorkflowInvoker invoker, ResourceQueries resources, RunsQueries runsQueries, RunsCommands runs,
+            AssistantCommands assistant, ObjectMapper json) {
+        this(catalog, invoker, resources, runsQueries, runs, assistant, json, null);
+    }
+
+    public McpServer(CatalogQueries catalog, WorkflowInvoker invoker, ResourceQueries resources, RunsQueries runsQueries, RunsCommands runs,
+            AssistantCommands assistant, ObjectMapper json, IdempotencyHandler idempotency) {
+        this(catalog, invoker, resources, runsQueries, runs, assistant, json, idempotency, Traces.off());
+    }
+
+    /** {@code traces}: every tools/call is an {@code iaf.mcp} span, and the job it starts carries its trace id. */
+    @Autowired
+    public McpServer(CatalogQueries catalog, WorkflowInvoker invoker, ResourceQueries resources, RunsQueries runsQueries, RunsCommands runs,
+            AssistantCommands assistant, ObjectMapper json, IdempotencyHandler idempotency, Traces traces) {
+        this.catalog = catalog;
+        this.invoker = invoker;
+        this.resources = resources;
+        this.runsQueries = runsQueries;
+        this.runs = runs;
+        this.assistant = assistant;
+        this.json = json;
+        this.idempotency = idempotency;
+        this.traces = traces == null ? Traces.off() : traces;
+    }
 
     /** The HTTP answer: 200 with a body, or 202 without one when only notifications came in. */
     public record HttpReply(int status, JsonNode body) {
@@ -136,7 +175,25 @@ public class McpServer {
 
     // ---------------------------------------------------------------- tools/call
 
+    /** One tools/call as an {@code iaf.mcp} span under the request's; a job it starts carries the span's trace id. */
     private Mono<JsonNode> call(ObjectNode params, Identity who) {
+        return Mono.deferContextual(ctx -> {
+            String name = params.path("name").asText("");
+            Observation span = traces.start(SPAN, "mcp tools/call", Traces.current(ctx), Map.of(), Map.of("tool", name));
+            String traceId = Optional.ofNullable(traces.traceId(span)).orElseGet(TraceIds::newTraceId);
+            traces.remember(traceId, span);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            return call(params, who, traceId)
+                    .doOnError(failure::set)
+                    .contextWrite(c -> Traces.with(c, span))
+                    .doFinally(signal -> {
+                        traces.forget(traceId, span);
+                        Traces.stop(span, failure.get());
+                    });
+        });
+    }
+
+    private Mono<JsonNode> call(ObjectNode params, Identity who, String traceId) {
         String name = params.path("name").asText(null);
         if (name == null || name.isBlank()) {
             return Mono.error(new IllegalArgumentException("params.name is required"));
@@ -149,8 +206,19 @@ public class McpServer {
         return catalog.tools().flatMap(tools -> {
             Tool tool = McpTools.find(tools, name).orElseThrow(() -> new IllegalArgumentException("Unknown tool '" + name + "'"));
             return switch (tool.kind()) {
-                case INVOKE -> invoker.invoke(tool.workflow(), args, who, CHANNEL, Ids.next("trace")).map(this::ok);
-                case BATCH -> invoker.batch(tool.workflow(), args, Map.of(), who, CHANNEL).map(this::ok);
+                case INVOKE -> {
+                    ObjectNode input = args.deepCopy();
+                    String key = McpTools.takeCallArgument(tool, input, McpTools.IDEMPOTENCY_KEY);
+                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, input, McpTools.VERSION), McpTools.VERSION);
+                    yield keyed(who, tool, key, version, input,
+                            () -> invoker.invoke(tool.workflow(), input, who, CHANNEL, traceId, version).map(this::ok));
+                }
+                case BATCH -> {
+                    ObjectNode body = args.deepCopy();
+                    String key = McpTools.takeCallArgument(tool, body, McpTools.IDEMPOTENCY_KEY);
+                    String version = VersionPin.clean(McpTools.takeCallArgument(tool, body, McpTools.VERSION), McpTools.VERSION);
+                    yield keyed(who, tool, key, version, body, () -> invoker.batch(tool.workflow(), body, Map.of(), who, CHANNEL, version, traceId).map(this::ok));
+                }
                 case LIST_RESOURCES -> {
                     check(tool, args);
                     yield resources.list(tool.type().name(), text(args, "owner"), text(args, "status")).collectList().map(list -> {
@@ -183,6 +251,28 @@ public class McpServer {
                     yield assistant.draftWorkflow(text(args, "description")).map(this::ok);
                 }
             };
+        });
+    }
+
+    /**
+     * A workflow tool call with an {@code idempotencyKey}: the first call runs, the same call again
+     * within the key's lifetime gets the first result back marked {@code _meta.idempotentReplay},
+     * the same key with other arguments (or another pinned version) is a conflict. Keys are
+     * scoped to the caller.
+     */
+    private Mono<JsonNode> keyed(Identity who, Tool tool, String key, String version, JsonNode args, Supplier<Mono<JsonNode>> call) {
+        if (key == null || idempotency == null) {
+            return call.get();
+        }
+        String fingerprint = IdempotencyKeys.fingerprint(tool.name(), version, args);
+        return idempotency.once(who.id(), key, fingerprint, call).map(outcome -> {
+            if (!outcome.replayed() || !outcome.value().isObject()) {
+                return outcome.value();
+            }
+            ObjectNode replayed = outcome.value().deepCopy();
+            ObjectNode meta = replayed.has("_meta") && replayed.get("_meta").isObject() ? (ObjectNode) replayed.get("_meta") : replayed.putObject("_meta");
+            meta.put(REPLAY_META, true);
+            return replayed;
         });
     }
 
@@ -263,6 +353,17 @@ public class McpServer {
         }
         if (e instanceof NotFoundException) {
             return JsonRpc.error(id, JsonRpc.INVALID_PARAMS, e.getMessage(), null);
+        }
+        if (e instanceof ConflictException) {
+            ObjectNode data = F.objectNode();
+            data.put("conflict", true);
+            return JsonRpc.error(id, JsonRpc.INVALID_PARAMS, e.getMessage(), data);
+        }
+        if (e instanceof TooManyRequestsException tm) {
+            ObjectNode data = F.objectNode();
+            data.put("tooManyRequests", true);
+            data.put("retryAfter", tm.retryAfterSeconds());
+            return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage(), data);
         }
         log.error("mcp call failed", e);
         return JsonRpc.error(id, JsonRpc.INTERNAL_ERROR, e.getMessage() == null ? "internal error" : e.getMessage(), null);

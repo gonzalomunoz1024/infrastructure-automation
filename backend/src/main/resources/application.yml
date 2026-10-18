@@ -20,6 +20,12 @@ management:
     web:
       exposure:
         include: health, info, prometheus, metrics
+  tracing:
+    sampling:
+      probability: 1.0    # every request and job is traced (spans for the gateway, MCP calls, jobs, steps and provider calls)
+  # otlp:
+  #   tracing:
+  #     endpoint: http://localhost:4318/v1/traces   # set it (or MANAGEMENT_OTLP_TRACING_ENDPOINT) to export spans; unset, nothing leaves the process
 
 platform:
   # the content repo: workflows, providers and resource types as config as code
@@ -76,6 +82,59 @@ platform:
     retention-years: 7
     seal-every: PT1H
     signing-key: ""       # HMAC-SHA256 key for seals and export packs; blank = a random key per run (its id is logged, never the key)
+    worm:                 # write-once evidence; every object is kept retention-years after it was written
+      dir: data/evidence  # profile worm: one read-only file per entry, seal and checkpoint, each with a retention sidecar
+      s3:                 # profile worm-s3: S3 Object Lock in COMPLIANCE mode; AWS credentials from the SDK's default chain
+        bucket: ""        # created with Object Lock enabled, or the store refuses to start
+        prefix: ""
+        region: ""        # blank = AWS_REGION / the profile / instance metadata
+        endpoint: ""      # blank = AWS; set for an S3-compatible store with Object Lock
+  siem:                   # profile siem: every evidence entry (jobs, releases, the platform stream) also goes to the SIEM
+    queue-capacity: 10000 # bounded; when the SIEM is down long enough the newest entries are dropped and counted
+    batch-size: 100
+    max-attempts: 5       # per batch and SIEM, backing off from initial-backoff, doubling
+    initial-backoff: PT1S
+    hec:                  # Splunk HTTP Event Collector; on when url is set
+      url: ""             # e.g. https://splunk.example.com:8088/services/collector/event
+      token: ""           # a vault: reference to the HEC token, never the token
+      index: ""
+    syslog:               # RFC 5424; on when host is set
+      host: ""
+      port: 514
+      protocol: udp       # udp | tcp (octet counting, RFC 6587)
+      facility: 13        # log audit
+      sd-id: iaf@32473    # the structured-data id; replace 32473 with the firm's enterprise number
+  change:                 # change records for workflows with policy.change.required
+    evidence-url: http://localhost:3000/#/audit/{jobId}   # the link back to the job's evidence every change carries
+    servicenow:           # profiles servicenow and live: the Table API on change_request
+      instance: ""        # e.g. https://firm.service-now.com
+      credential: ""      # a vault: reference: user:password for basic auth, the token for bearer
+      auth: basic         # basic | bearer
+      type: normal        # normal | standard | emergency
+      assignment-group: ""
+      open-state: ""      # blank = the instance's default; -1 = Implement
+      close-state: "3"    # Closed
+      evidence-field: work_notes   # or a custom field such as u_evidence_url
+  notifications:          # notify steps, provider alerts, approval requests and escalations
+    keep: 5000            # in-app notifications kept (GET /api/v1/notifications)
+    fresh-for: PT15M      # older events (seeded or replayed history) notify nobody
+    link-base: http://localhost:3000/#   # links in chat and email open the UI here
+    channels: {}          # by name without '#': { vm-ops: { teams: [team-compute], webhook: vault:slack/vm-ops, email: [vm-ops@example.com] } }
+    teams: {}             # approver groups: { data-approvers: { channel: "#data-approvals", email: data-approvers@example.com } }
+    slack:                # profile slack: Slack-compatible incoming webhooks
+      default-webhook: "" # a vault: reference for channels without their own webhook
+    mail:                 # profile mail: spring.mail.host/port/username name the server
+      from: iaf@localhost
+      password: ""        # a vault: reference to the SMTP password
+  gateway:                # guards on the requests that start jobs
+    idempotency:          # Idempotency-Key on POST generated routes, /jobs and /jobs:batch; idempotencyKey on MCP tools/call
+      ttl: PT24H          # a key gives back its first answer this long; per caller
+      keep: 100000        # keys kept at most, the oldest dropped first
+    quotas:               # token bucket per team (the caller's first team) on job starts; a batch takes one token
+      enabled: true
+      per-minute: 60      # every team's sustained starts per minute
+      burst: 60           # and how many at once
+      teams: {}           # overrides: { team-data: { per-minute: 120, burst: 120 } }
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
   persistence:            # used with the postgres profile

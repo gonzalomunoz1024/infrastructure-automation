@@ -28,8 +28,14 @@ public interface RunsCommands {
             String parentId, String traceId, Preview preview, String changeId) {
     }
 
+    /** {@code traceId}: the trace the batch and its rows run in (the request's); null starts a new one. */
     record StartBatch(String workflow, String version, List<JsonNode> items, JsonNode defaults, RolloutPolicy rollout,
-            Identity requester, String channel, Preview preview) {
+            Identity requester, String channel, Preview preview, String traceId) {
+
+        public StartBatch(String workflow, String version, List<JsonNode> items, JsonNode defaults, RolloutPolicy rollout,
+                Identity requester, String channel, Preview preview) {
+            this(workflow, version, items, defaults, rollout, requester, channel, preview, null);
+        }
     }
 
     Mono<CommandAccepted> startJob(StartJob command);
