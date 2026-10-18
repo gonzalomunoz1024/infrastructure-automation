@@ -2,10 +2,14 @@ package com.iaf.platform.runs.adapters.outbound.temporal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -15,12 +19,14 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.WaveScheduler;
+import com.iaf.platform.runs.ports.outbound.StepTraces;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -49,7 +55,8 @@ class StepActivitiesImplTest {
 
     private final RunsTestWiring w = new RunsTestWiring();
     private final List<DomainEvent> published = new ArrayList<>();
-    private final StepActivitiesImpl activities = new StepActivitiesImpl(w.executors, w.projection, w.events, w.changes, w.clock, new PlatformProperties());
+    private final StepActivitiesImpl activities = new StepActivitiesImpl(w.executors, w.projection, w.events, w.changes, w.telemetry, StepTraces.UNTRACED, w.clock,
+            new PlatformProperties());
 
     @BeforeEach
     void setUp() {
@@ -107,6 +114,26 @@ class StepActivitiesImplTest {
         assertThat(child.policy().decision()).isEqualTo("allow");
         assertThat(w.projection.has(child.id())).isFalse();
         assertThat(published).isEmpty();
+    }
+
+    @Test
+    void aWorkerCallsSampleGoesToTheTelemetryAndAStoreThatFailsNeverFailsTheStep() {
+        CallSample sample = new CallSample(Instant.parse("2026-10-17T10:00:00Z"), "reports", "report.create", "dev", true, 42, null, "job-1", "t-team",
+                "1.0.0", "1.0.0");
+
+        activities.recordCall(sample);
+        verify(w.telemetry).record(sample);
+
+        doThrow(new IllegalStateException("the store is down")).when(w.telemetry).record(any());
+        activities.recordCall(sample);
+    }
+
+    @Test
+    void aWorkerCallsTraceparentIsInTheJobsTraceWhenNoSpanOfTheStepIsKnownHere() {
+        Job job = parent();
+
+        assertThat(activities.traceparent(JobRef.of(job), "network")).matches("00-" + job.traceId() + "-[0-9a-f]{16}-01");
+        assertThat(activities.traceparent(JobRef.of(job.withTraceId("not-a-trace-id")), "network")).isNull();
     }
 
     @Test

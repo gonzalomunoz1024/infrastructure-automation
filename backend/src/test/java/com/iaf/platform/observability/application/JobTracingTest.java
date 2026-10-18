@@ -114,6 +114,35 @@ class JobTracingTest {
     }
 
     @Test
+    void aStepsTraceparentNamesItsOpenSpanWhicheverThreadOpenedIt() throws Exception {
+        started("job_w", "reserve-ip", TRACE, null);
+        // on Temporal one activity publishes the step's events and another asks for its traceparent
+        CompletableFuture.runAsync(() -> step("job_w", "reserve", "provider", "running", 1, null)).get();
+
+        String traceparent = jobs.traceparent("job_w", TRACE, "reserve");
+        String beforeAnyStep = jobs.traceparent("job_w", TRACE, "release");
+
+        step("job_w", "reserve", "provider", "succeeded", 1, null);
+        finished("job_w", "succeeded", null);
+        SpanData reserve = tracing.one("step reserve");
+        SpanData job = tracing.one("job reserve-ip");
+        assertThat(traceparent).isEqualTo("00-" + TRACE + "-" + reserve.getSpanId() + "-01");
+        assertThat(beforeAnyStep).as("no open span of that step: the job's").isEqualTo("00-" + TRACE + "-" + job.getSpanId() + "-01");
+    }
+
+    @Test
+    void withoutASpanOfTheJobATraceparentStaysInTheJobsTrace() {
+        JobTracing off = new JobTracing(bus, Traces.off(), Clock.fixed(NOW, ZoneOffset.UTC));
+        off.subscribe();
+        started("job_x", "reserve-ip", TRACE, null);
+        step("job_x", "reserve", "provider", "running", 1, null);
+
+        assertThat(off.traceparent("job_x", TRACE, "reserve")).matches("00-" + TRACE + "-[0-9a-f]{16}-01");
+        assertThat(jobs.traceparent("job_elsewhere", TRACE, "reserve")).as("a job another instance traces").matches("00-" + TRACE + "-[0-9a-f]{16}-01");
+        assertThat(jobs.traceparent("job_elsewhere", "not-a-trace-id", "reserve")).isNull();
+    }
+
+    @Test
     void stepsNestUnderTheirContainerAndAChildJobUnderTheRunStepThatStartedIt() {
         started("job_p", "deploy-app", TRACE, null);
         step("job_p", "steps", "try", "running", 1, null);

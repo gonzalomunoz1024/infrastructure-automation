@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.runs.application.PortStepExecutor;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
@@ -137,6 +138,14 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * {@code before-cancellable-calls}).
      */
     static final String CANCELLABLE_CALLS = "cancellable-calls";
+    /**
+     * The change id of worker telemetry (version 1): a step's call on a team's worker carries the
+     * {@code traceparent} of the step's span (a local activity asks for it), and an sdk provider's
+     * call records its telemetry sample once it is answered (another), as the platform's own
+     * provider calls do. Executions without its marker send neither (fixture
+     * {@code before-worker-telemetry}).
+     */
+    static final String WORKER_TELEMETRY = "worker-telemetry";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     /** Events: every attempt until the projection keeps it (no maximum), one a minute at most once the store has been down a while. */
     static final RetryOptions PUBLISH = RetryOptions.newBuilder()
@@ -288,7 +297,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         if (teamWorkers()) {
             WorkerRoute route = invoke(step, () -> lookups.providerRoute(ref, step.id(), provider, action));
             if (route != null) {
-                return onWorker(step, call, action, route, in);
+                return onWorker(step, call, provider, action, route, in);
             }
         }
         StepActivities activities = calls(timeout);
@@ -305,7 +314,7 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
             if (queue.isBlank() || activity.isBlank()) {
                 throw new StepFailure(step.id(), "invalid_input", "call: activity needs with.taskQueue and with.activity", false, true);
             }
-            return onWorker(step, call, activity, new WorkerRoute(queue, null), w.get("input"));
+            return onWorker(step, call, null, activity, new WorkerRoute(queue, null), w.get("input"));
         }
         StepActivities activities = calls(timeout);
         return platformCall(step, () -> Async.function(activities::runAutomation, call, w));
@@ -344,17 +353,21 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
      * Run a step's call on a team's worker: one activity of {@code activityType} on the route's
      * queue with the {@link WorkerCalls} payload. The idempotency key is minted by the step's
      * first attempt and kept by its retries. A cancel of the job cancels the activity (the worker
-     * sees it on its next heartbeat) and ends the step at once instead of after the call.
+     * sees it on its next heartbeat) and ends the step at once instead of after the call. The
+     * payload carries the step span's {@code traceparent}, and the answered call of an sdk
+     * provider ({@code provider} not null) is a telemetry sample ({@link #WORKER_TELEMETRY}).
      */
-    private JsonNode onWorker(Step step, StepCall call, String activityType, WorkerRoute route, JsonNode input) {
+    private JsonNode onWorker(Step step, StepCall call, String provider, String activityType, WorkerRoute route, JsonNode input) {
         Attempts a = attempts.get();
         int attempt = step.id().equals(a.step) ? Math.max(1, a.attempt) : 1;
         if (attempt == 1 || !a.firstSeq.containsKey(step.id())) {
             a.firstSeq.put(step.id(), call.seq());
         }
         String key = WorkerCalls.idempotencyKey(ref.id(), step.id(), a.firstSeq.get(step.id()));
-        ObjectNode payload = WorkerCalls.payload(ref, step.id(), key, attempt, input);
+        boolean telemetry = Workflow.getVersion(WORKER_TELEMETRY, Workflow.DEFAULT_VERSION, 1) >= 1;
+        ObjectNode payload = WorkerCalls.payload(ref, step.id(), key, attempt, input, telemetry ? traceparent(step) : null);
         ActivityStub stub = Workflow.newUntypedActivityStub(WorkerCalls.options(route, call.timeout()));
+        long asked = Workflow.currentTimeMillis();
         List<Promise<JsonNode>> result = new ArrayList<>(1);
         CancellationScope scope = Workflow.newCancellationScope(() -> {
             result.add(stub.executeAsync(activityType, JsonNode.class, payload));
@@ -368,12 +381,54 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         }
         try {
             JsonNode out = done.get();
+            if (telemetry && provider != null) {
+                recordCall(provider, activityType, route, asked, null);
+            }
             return out == null || out.isNull() ? F.objectNode() : out;
         } catch (ActivityFailure f) {
             if (f.getCause() instanceof CanceledFailure) {
                 throw temporalCancel();
             }
-            throw WorkerCalls.failure(step.id(), route, call.timeout(), f);
+            StepFailure failure = WorkerCalls.failure(step.id(), route, call.timeout(), f);
+            if (telemetry && provider != null) {
+                recordCall(provider, activityType, route, asked, failure.errorClass());
+            }
+            throw failure;
+        } catch (CanceledFailure e) {
+            throw temporalCancel();
+        }
+    }
+
+    /** The {@code traceparent} of the step's span for its call on a team's worker; none when it cannot be had (tracing never fails a step). */
+    private String traceparent(Step step) {
+        return bestEffort("the traceparent of step " + step.id(), () -> lookups.traceparent(ref, step.id()));
+    }
+
+    /**
+     * The telemetry sample of an sdk provider's call a team's worker answered: workflow time from
+     * the moment it was asked to its answer, the provider version of the route; telemetry never
+     * fails a step.
+     */
+    private void recordCall(String provider, String action, WorkerRoute route, long asked, String errorClass) {
+        long latency = Math.max(0, Workflow.currentTimeMillis() - asked);
+        CallSample sample = new CallSample(Instant.ofEpochMilli(asked), provider, action, ref.environment(), errorClass == null, latency, errorClass,
+                ref.id(), ref.workflow(), ref.version(), route.providerVersion());
+        bestEffort("the telemetry of " + provider + "." + action, () -> {
+            lookups.recordCall(sample);
+            return null;
+        });
+    }
+
+    /** A local activity that only adds something (a trace, a sample): its failure is logged and null; a cancel from Temporal still cancels the job. */
+    private <T> T bestEffort(String what, Supplier<T> activity) {
+        try {
+            return activity.get();
+        } catch (ActivityFailure f) {
+            if (f.getCause() instanceof CanceledFailure) {
+                throw temporalCancel();
+            }
+            log.warn("job {}: {} failed: {}", ref.id(), what, f.toString());
+            return null;
         } catch (CanceledFailure e) {
             throw temporalCancel();
         }

@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.List;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
@@ -55,6 +56,12 @@ public interface StepActivities {
      * also classifies an unknown provider). An sdk provider without the action fails the step.
      */
     WorkerRoute providerRoute(JobRef job, String stepId, String provider, String action);
+
+    /** The {@code traceparent} a step's call on a team's worker carries (a local activity): the step's span ({@code StepTraces}). */
+    String traceparent(JobRef job, String stepId);
+
+    /** The telemetry sample of one call a team's worker answered (a local activity); a failure to record it is logged, never the step's. */
+    void recordCall(CallSample sample);
 
     // ---------------------------------------------------------------- records and ids
 

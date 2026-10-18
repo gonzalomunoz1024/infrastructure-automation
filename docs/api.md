@@ -189,7 +189,7 @@ and MCP `tools/call` read besides the input. The OpenAPI operations document the
 |---------------------------------------|--------|
 | `Idempotency-Key` (`idempotencyKey`)  | Up to 255 characters, scoped to the caller. The first request with a key runs and, when it succeeds, its answer is kept for `platform.gateway.idempotency.ttl` (24h); the same key with the same request (method, path, sorted query, pinned version, canonical JSON body) gets that answer again with `Idempotent-Replay: true` (MCP: `_meta.idempotentReplay`). The same key with another request, or while the first still runs, is 409; a failed request frees its key |
 | `X-Workflow-Version` or `?version=` (`version`) | Runs exactly that version, published or retired, without the release router's canary split; input, RBAC, policy and preview are judged against it. A draft is 409, an unknown version 404, a header and query that disagree 400. On a GET whose own input has a `version` field, `?version=` stays input. `POST /jobs` pins with its body's `version` |
-| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id. A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
+| `traceparent`                         | W3C trace context: the request's span continues it and the job's `traceId` is its trace id; the job's calls on a team's worker pass the trace on (the worker payload's `traceparent`). A `traceId` in the body of `POST /jobs` or `/jobs:batch` must be a W3C trace id (32 hex characters, not all zeros), 400 otherwise |
 
 Every call that starts jobs takes a token from its caller's team first (the caller's first team,
 or a bucket of their own when they have none): `platform.gateway.quotas` sets 60 a minute with a
@@ -249,8 +249,17 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
-`iaf.provider.call` per provider call (in-memory engine), under the span of the request that
-started it (`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). `change.evidenceUrl`
+`iaf.provider.call` per provider call, under the span of the request that started it
+(`iaf.gateway` on a generated route, `iaf.mcp` on an MCP call). They come from the job's events,
+on either engine: the instance that published `job.started` holds the job's span, and the steps
+whose events it publishes are spans under it. On Temporal, with one instance holding both roles
+that is every step (a provider call hangs under the job's span there, since its activity's thread
+is not the step's); with several instances a step whose activities ran on another one has no
+span, and a worker-only instance traces only the jobs it started itself (children, batch rows).
+A step's call on a team's worker carries the `traceparent` of the step's span in its payload
+(`traceparent`, a string; `job.traceId` stays), so the worker's spans continue the trace under
+the step; an instance without that span sends the job's, or a span id made up in the job's trace.
+`change.evidenceUrl`
 is the link back to the job's evidence that its change record carries
 (`platform.change.evidence-url`). The platform's own provider alerts are matched
 against the published alert triggers like an external alert, as `{ source: 'platform', labels:

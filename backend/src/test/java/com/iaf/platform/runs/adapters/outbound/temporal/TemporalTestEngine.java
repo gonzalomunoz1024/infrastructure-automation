@@ -21,6 +21,7 @@ import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.Outcome;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
+import com.iaf.platform.runs.ports.outbound.StepTraces;
 import com.iaf.platform.testing.TestWeb;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
@@ -65,6 +66,7 @@ final class TemporalTestEngine implements AutoCloseable {
         };
         Consumer<TestWorkflowEnvironment> workers = env -> {
         };
+        StepTraces traces = StepTraces.UNTRACED;
 
         /** The runs wiring the engine works over (one built over another projection store, say). */
         Options wiring(RunsTestWiring wiring) {
@@ -93,6 +95,12 @@ final class TemporalTestEngine implements AutoCloseable {
         /** Registers the teams' workers on their own task queues before the test server starts. */
         Options workers(Consumer<TestWorkflowEnvironment> workers) {
             this.workers = workers;
+            return this;
+        }
+
+        /** What tells a worker call the {@code traceparent} of its step's span (the tracing slice's spans, say). */
+        Options traces(StepTraces traces) {
+            this.traces = traces;
             return this;
         }
     }
@@ -129,7 +137,7 @@ final class TemporalTestEngine implements AutoCloseable {
                 .build());
         worker = env.newWorker(QUEUE, TemporalConfig.workerOptions(props.getTemporal()));
         worker.registerWorkflowImplementationTypes(TemporalConfig.workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
-        worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock, props));
+        worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.telemetry, options.traces, w.clock, props));
         options.workers.accept(env);
         env.start();
         client = env.getWorkflowClient();

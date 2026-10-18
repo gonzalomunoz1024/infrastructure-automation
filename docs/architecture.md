@@ -236,7 +236,9 @@ runs on a non-blocking thread, and the wiring test expects none.
   (`RequestedTraceIds` makes it the root of that trace when nothing started it from a span);
   `TracedProviderCalls` proxies every `ProviderCallPort` bean so each call is an
   `iaf.provider.call` span under its step. `JobMetrics` counts and times jobs per workflow. Step
-  spans come from the in-memory engine's events.
+  spans come from the job events on either engine (on Temporal the activities publish them, and a
+  provider call hangs under the job's span); `JobTracing` also answers a step's `traceparent`
+  (`StepTraces`) for its calls on a team's worker.
 
 ## The interpreter
 
@@ -364,10 +366,19 @@ and write the provider file, so the code and the file cannot drift.
 
 - The activity type is the action id (`address.reserve`); a `call: activity` step names its own.
 - The one argument is a JSON object: `input` (the step's resolved input), `idempotencyKey`,
-  `job { id, workflow, version, traceId }`, `step`, `environment` and `attempt` (from 1). The
-  key is `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
+  `job { id, workflow, version, traceId }`, `step`, `environment`, `attempt` (from 1) and
+  `traceparent`, the W3C trace context of the step's span, for the worker's spans to continue the
+  job's trace under the step (a local activity asks `JobTracing` for it; without that span, the
+  job's, else a span id made up in the job's trace). The key is
+  `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
   of the step and when a restarted worker picks the call up again, new for a new run of the step.
   The result is the action's output, a JSON object.
+- Each answered call of an sdk provider's action is a telemetry sample, as the platform's own
+  provider calls are (provider, action, outcome, error class, the provider version of the route,
+  and the workflow time from asking to the answer, queueing included), recorded by a local
+  activity: the health band, the alerts and a release's gate judge sdk providers too. The
+  `traceparent` and the sample are gated with `Workflow.getVersion` (`worker-telemetry`): an
+  execution recorded before them (fixture `before-worker-telemetry`) sends neither.
 - The activity runs once. The step's `timeout` (10m by default) is both its schedule-to-close and
   its start-to-close timeout, so a call that no worker picks up fails the step instead of waiting
   in the queue for good; its heartbeat timeout is the provider's `worker.heartbeatTimeout` (none

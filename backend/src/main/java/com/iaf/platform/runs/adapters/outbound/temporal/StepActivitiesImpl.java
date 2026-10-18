@@ -8,11 +8,15 @@ import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderType;
@@ -41,6 +45,7 @@ import com.iaf.platform.runs.domain.StepExecutor.RegisterRequest;
 import com.iaf.platform.runs.domain.StepExecutor.UseRequest;
 import com.iaf.platform.runs.domain.StepFailure;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort;
+import com.iaf.platform.runs.ports.outbound.StepTraces;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
@@ -114,15 +119,26 @@ public class StepActivitiesImpl implements StepActivities {
     private final JobProjection projection;
     private final JobEvents events;
     private final ChangeTicketPort changes;
+    private final TelemetryPort telemetry;
+    private final StepTraces traces;
     private final Clock clock;
     private final Duration heartbeatInterval;
 
-    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock,
-            PlatformProperties props) {
+    /** The spans of the tracing slice when it is there; without it a worker call's {@code traceparent} is only in the job's trace. */
+    @Autowired
+    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, TelemetryPort telemetry,
+            ObjectProvider<StepTraces> traces, Clock clock, PlatformProperties props) {
+        this(executors, projection, events, changes, telemetry, traces.getIfAvailable(() -> StepTraces.UNTRACED), clock, props);
+    }
+
+    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, TelemetryPort telemetry,
+            StepTraces traces, Clock clock, PlatformProperties props) {
         this.executors = executors;
         this.projection = projection;
         this.events = events;
         this.changes = changes;
+        this.telemetry = telemetry;
+        this.traces = traces == null ? StepTraces.UNTRACED : traces;
         this.clock = clock;
         this.heartbeatInterval = props.getTemporal().getHeartbeatInterval();
     }
@@ -189,10 +205,24 @@ public class StepActivitiesImpl implements StepActivities {
         }
         String heartbeat = p.spec().worker() == null ? null : p.spec().worker().heartbeatTimeout();
         try {
-            return new WorkerRoute(p.taskQueue(), Durations.parse(heartbeat, null));
+            return new WorkerRoute(p.taskQueue(), Durations.parse(heartbeat, null), p.metadata() == null ? null : p.metadata().version());
         } catch (IllegalArgumentException e) {
             throw new StepFailureData(stepId, "misconfigured", "Provider " + provider + ": worker.heartbeatTimeout " + e.getMessage(), false, false)
                     .toApplicationFailure();
+        }
+    }
+
+    @Override
+    public String traceparent(JobRef job, String stepId) {
+        return job == null ? null : traces.traceparent(job.id(), job.traceId(), stepId);
+    }
+
+    @Override
+    public void recordCall(CallSample sample) {
+        try {
+            telemetry.record(sample);
+        } catch (RuntimeException e) {
+            log.warn("telemetry of {}.{} failed: {}", sample.provider(), sample.action(), e.toString());
         }
     }
 
