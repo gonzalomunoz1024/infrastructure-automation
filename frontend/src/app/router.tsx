@@ -19,6 +19,7 @@ export type RouteName =
   | 'approvals'
   | 'providers'
   | 'provider-new'
+  | 'provider-edit'
   | 'provider'
   | 'resources'
   | 'resource'
@@ -56,6 +57,7 @@ export const ROUTES: RouteDef[] = [
   { name: 'approvals', pattern: '/approvals', title: 'Approvals' },
   { name: 'providers', pattern: '/providers', title: 'Providers' },
   { name: 'provider-new', pattern: '/providers/new', title: 'Add provider' },
+  { name: 'provider-edit', pattern: '/providers/:name/edit', title: 'Edit provider' },
   { name: 'provider', pattern: '/providers/:name', title: 'Provider' },
   { name: 'resources', pattern: '/resources', title: 'Resources' },
   { name: 'resource', pattern: '/resources/:id', title: 'Resource' },

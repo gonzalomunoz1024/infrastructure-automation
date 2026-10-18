@@ -348,7 +348,8 @@ export const PROVIDERS: ProviderSummary[] = [
 
 export const PROVIDER: ProviderDetail = {
   ...PROVIDERS[0],
-  endpoints: {},
+  endpoints: { dev: 'https://vsphere-dev.example.com/rest', test: 'https://vsphere-test.example.com/rest', prod: 'https://vsphere.example.com/rest' },
+  auth: { type: 'header', credential: 'vault:vsphere/token', header: 'X-Api-Key' },
   yaml: 'apiVersion: iaf.platform/v1\nkind: Provider\nmetadata:\n  name: vsphere\n  title: VMware vSphere\n  owner: team-compute\n  version: 1.3.0\nspec:\n  type: openapi\n',
   actions: [
     { id: 'vm.get', title: 'Get VM', operation: 'getVm', effect: 'read', retry: 'safe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } }, sample: { id: 'vm-1042', powerState: 'poweredOn' }, overridden: false },
@@ -394,6 +395,33 @@ export const CONNECTION: TestConnectionResult = {
 
 export const TRY_RESULT: TryResult = { ok: true, status: 200, durationMs: 182, response: { items: [{ id: 'bk-9001', state: 'running', target: 'vm-1042' }], total: 1 }, mismatches: [] }
 
+/** A try the backend kept as review evidence, with the file (at the next patch) carrying the answer as the sample. */
+export const TRY_RESULT_RECORDED: TryResult = {
+  ...TRY_RESULT,
+  environment: 'dev',
+  at: ago(1),
+  yaml: [
+    'apiVersion: iaf.platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: vsphere',
+    '  title: VMware vSphere',
+    '  owner: team-compute',
+    '  version: 1.3.1',
+    'spec:',
+    '  type: openapi',
+    '  actions:',
+    '    - id: vm.get',
+    '      sample:',
+    '        id: vm-1042',
+    '        powerState: poweredOn',
+    '      recorded:',
+    '        environment: dev',
+    '        at: 2026-10-18T10:32:00Z',
+    '',
+  ].join('\n'),
+}
+
 export const VALIDATION: ProviderValidation = {
   checks: [
     { id: 'schema', label: 'The file follows the provider schema', status: 'passed' },
@@ -401,6 +429,17 @@ export const VALIDATION: ProviderValidation = {
     { id: 'reachable', label: 'Every environment answers', status: 'passed' },
   ],
   problems: [],
+  review: {
+    ready: true,
+    checks: [
+      { id: 'connection', label: 'The connection was tested against dev and test', status: 'passed', detail: 'the endpoints and the credential reference the file has now' },
+      { id: 'tried', label: 'Every action answered when tried', status: 'passed', detail: '3 of 3 actions tried in dev' },
+      { id: 'errors', label: 'Error classes match what was seen', status: 'warning', detail: 'No error classes: a tried error matches nothing' },
+      { id: 'preview', label: 'Destructive actions have a plan or an effect line', status: 'passed' },
+    ],
+    problems: [],
+    slo: { successRate: 99.5, p95Ms: 800, observedP95Ms: 410, calls: 128, detail: 'The p95 of the tried calls, doubled and rounded up' },
+  },
 }
 
 export const PROVIDER_CR: ChangeRequestDetail = {

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ANSIBLE_IMPORT, CATALOG, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -440,6 +440,10 @@ test.describe('provider imports', () => {
 
     await page.getByRole('button', { name: 'Run checks' }).click()
     await expect(page.getByText('Ready to publish.')).toBeVisible()
+    // the review's evidence, with the SLO it suggests
+    await page.getByTestId('review-evidence').getByRole('button', { name: 'Use suggested SLO' }).click()
+    await expect(page.getByRole('spinbutton', { name: 'SLO success (%)' })).toHaveValue('99.5')
+    await expect(page.getByRole('spinbutton', { name: 'SLO p95 (ms)' })).toHaveValue('800')
     await page.getByRole('button', { name: 'Publish as change request' }).click()
     await expect(page).toHaveURL(/#\/change-requests\/cr-101$/)
     const published = api.callsTo('POST', '/providers:publish')[0].body as { yaml: string; strategy: string }
@@ -517,5 +521,101 @@ test.describe('provider imports', () => {
     await importButton.click()
     await expect(page.getByText('2 operations from Backup service 1.0.0.')).toBeVisible()
     expect(api.callsTo('POST', '/providers:import-spec')[0].body).toEqual({ type: 'openapi', content })
+  })
+})
+
+test.describe('editing a provider', () => {
+  test('the wizard tests and tries the provider again, keeps the evidence and publishes the next patch of its file', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /providers/{name}': PROVIDER,
+      'GET /providers/{name}/alerts': PROVIDER_ALERTS,
+      'GET /releases': [],
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:test-connection': CONNECTION,
+      'POST /providers:try': TRY_RESULT_RECORDED,
+      'POST /providers:validate': VALIDATION,
+      'POST /providers:publish': { id: 'cr-101', status: 'open' },
+      'GET /change-requests/{id}': PROVIDER_CR,
+    })
+    await page.goto('/#/providers/vsphere')
+    await page.getByRole('button', { name: 'Edit provider' }).click()
+    await expect(page).toHaveURL(/#\/providers\/vsphere\/edit$/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Edit VMware vSphere' })).toBeVisible()
+    const steps = page.getByRole('list', { name: 'Steps' })
+    await expect(steps.getByRole('listitem')).toHaveCount(3)
+    const current = steps.locator('[aria-current="step"]')
+    await expect(current).toContainText('Connect')
+
+    // the connect step carries the file's endpoints and auth, asks nothing about the spec, and the test names the provider
+    await expect(page.getByRole('textbox', { name: 'Environment URL' }).first()).toHaveValue('https://vsphere-dev.example.com/rest')
+    await expect(page.getByRole('textbox', { name: 'Spec URL' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Test connection' }).click()
+    await expect(page.getByRole('list', { name: 'Connection results' })).toContainText('200 from GET /jobs')
+    expect(api.callsTo('POST', '/providers:test-connection')[0].body).toEqual({
+      endpoints: { dev: 'https://vsphere-dev.example.com/rest', test: 'https://vsphere-test.example.com/rest', prod: 'https://vsphere.example.com/rest' },
+      auth: { type: 'header', credential: 'vault:vsphere/token', header: 'X-Api-Key' },
+      provider: 'vsphere',
+    })
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // try it: the file at the next patch goes out; the backend hands it back with the answer as the sample
+    await expect(current).toContainText('Try it')
+    await page.getByRole('button', { name: 'Try it', exact: true }).click()
+    await expect(page.getByText('HTTP 200 in 182ms.')).toBeVisible()
+    const tried = api.callsTo('POST', '/providers:try')[0].body as { yaml: string; action: string; environment: string }
+    expect(tried.action).toBe('vm.get')
+    expect(tried.environment).toBe('dev')
+    expect(tried.yaml).toContain('version: 1.3.1')
+    expect(tried.yaml).not.toContain('version: 1.3.0')
+    await expect(page.getByTestId('try-evidence')).toContainText('Kept as review evidence · tried in dev')
+    await expect(page.getByRole('button', { name: 'Record as sample' })).toHaveCount(0)
+    await page.getByTestId('try-yaml').locator('summary').click()
+    await expect(page.getByTestId('try-yaml')).toContainText('powerState: poweredOn')
+    await page.getByRole('button', { name: 'Use this' }).click()
+    await expect(page.getByRole('button', { name: 'Using this file' })).toBeDisabled()
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // review: the file as it will be published, its checks, and the evidence as the reviewer sees it
+    await expect(current).toContainText('Review')
+    await expect(page.getByText("The file as published, at version 1.3.1; a try's answer goes in with Use this.")).toBeVisible()
+    await expect(page.getByRole('button', { name: "Back to the wizard's YAML" })).toHaveCount(0)
+    const pre = page.locator('pre').first()
+    await expect(pre).toContainText('version: 1.3.1')
+    await expect(pre).toContainText('powerState: poweredOn')
+    await page.getByRole('button', { name: 'Run checks' }).click()
+    const review = page.getByTestId('review-evidence')
+    await expect(review).toContainText('Ready for review')
+    const checks = review.getByRole('list', { name: 'Review checks' })
+    await expect(checks.getByRole('listitem')).toHaveCount(4)
+    await expect(checks).toContainText('3 of 3 actions tried in dev')
+    await expect(checks).toContainText('No error classes: a tried error matches nothing')
+    await expect(review.getByTestId('slo-suggestion')).toContainText('Suggested SLO: 99.5% success, p95 800ms')
+    // the SLO changes from the provider page while editing
+    await expect(review.getByRole('button', { name: 'Use suggested SLO' })).toHaveCount(0)
+    await expect(page.getByRole('spinbutton', { name: 'SLO success (%)' })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Publish as change request' }).click()
+    await expect(page).toHaveURL(/#\/change-requests\/cr-101$/)
+    const published = api.callsTo('POST', '/providers:publish')[0].body as { yaml: string }
+    expect(published.yaml).toBe(TRY_RESULT_RECORDED.yaml)
+  })
+
+  test('a review that is not ready keeps the publish button off and says why', async ({ page }) => {
+    await mockApi(page, {
+      'GET /providers/{name}': PROVIDER,
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:validate': {
+        ...VALIDATION,
+        review: { ready: false, checks: [{ id: 'tried', label: 'Every action answered when tried', status: 'failed', detail: 'vm.delete was never tried in dev' }], problems: [{ level: 'error', code: 'review.tried', message: 'Try vm.delete in dev before publishing' }] },
+      },
+    })
+    await page.goto('/#/providers/vsphere/edit')
+    await page.getByRole('button', { name: 'Next' }).click()
+    await page.getByRole('button', { name: 'Skip to review' }).click()
+    await page.getByRole('button', { name: 'Run checks' }).click()
+    const review = page.getByTestId('review-evidence')
+    await expect(review).toContainText('Not ready yet')
+    await expect(review).toContainText('Try vm.delete in dev before publishing')
+    await expect(page.getByText('Ready to publish.')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Publish as change request' })).toBeDisabled()
   })
 })

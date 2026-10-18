@@ -106,7 +106,7 @@ export type StepRetry = { maxAttempts?: number; backoff?: string }
 
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
 
-export type CheckStatus = 'passed' | 'failed' | 'skipped'
+export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning'
 export type Check = { id: string; label: string; status: CheckStatus; detail?: string }
 
 export type ChangeRequestStatus = 'open' | 'merged' | 'closed'
@@ -396,6 +396,10 @@ export type ActionInfo = {
   output: Schema
   sample?: unknown
   overridden: boolean
+  /** the line a destructive action shows before it runs, when it has no plan action */
+  effectDetail?: string
+  /** where the sample came from: the Try it call that recorded it */
+  recorded?: { environment: string; at: string }
 }
 /** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
 export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
@@ -412,6 +416,7 @@ export type ProviderDetail = ProviderSummary & {
   endpoints: Record<string, string>
   /** how it signs in; the credential is a vault: name, never a value */
   auth?: ProviderAuth
+  description?: string
   yaml: string
   actions: ActionInfo[]
   daily: ProviderDaily[]

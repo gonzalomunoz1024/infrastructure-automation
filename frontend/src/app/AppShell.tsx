@@ -64,6 +64,7 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   approvals: ApprovalsPage,
   providers: ProvidersPage,
   'provider-new': ProviderWizardPage,
+  'provider-edit': ProviderWizardPage,
   provider: ProviderPage,
   resources: ResourcesPage,
   resource: ResourcePage,

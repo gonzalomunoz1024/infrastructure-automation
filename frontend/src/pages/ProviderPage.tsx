@@ -162,6 +162,9 @@ export default function ProviderPage({ route }: PageProps) {
         actions={
           data && (
             <>
+              <Button icon="edit" onClick={() => navigate(pathFor('provider-edit', { name: data.name }))} title="Test and try it again, then publish the next patch with the evidence">
+                Edit provider
+              </Button>
               {data.type === 'openapi' && (
                 <Button icon="refresh" onClick={() => setRefreshing(true)}>
                   Refresh spec

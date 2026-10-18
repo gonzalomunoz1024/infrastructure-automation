@@ -1,10 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
-import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
+import { Button, Card, Checkbox, CodeBlock, ConfirmDialog, EmptyState, Field, Icon, IconButton, Input, JsonView, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Segmented, Select, Spinner, StatusDot, Stepper, Table, Tag, Textarea, cx, duration, useOverlayClose, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage, useCurrentUser } from '../lib/api'
 import { useQuery } from '../lib/queries'
-import type { Effect, ProviderAuth, ProviderDraft, ProviderImport, ProviderType, ProviderValidation, RetryPolicy, Schema, SpecImport, SpecImportRequest, Strategy, TestConnectionResult, TryResult } from '../lib/types'
+import type { ActionInfo, Effect, ProviderAuth, ProviderDetail, ProviderDraft, ProviderImport, ProviderType, ProviderValidation, RetryPolicy, Schema, SpecImport, SpecImportRequest, Strategy, TestConnectionResult, TryResult } from '../lib/types'
 import { CredentialPicker } from '../components/CredentialPicker'
 import { ImportStep, ImportSummary, type ImportKind } from './ProviderImport'
 import { JsonEditor, parseJsonText } from '../components/JsonEditor'
@@ -12,7 +12,7 @@ import { ProblemList } from '../components/ProblemList'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { downloadText } from '../components/download'
 import { emitYaml } from '../components/yaml-emit'
-import { EffectTag, Mono, checkDot } from '../components/common'
+import { EffectTag, ErrorState, Mono, When, checkDot } from '../components/common'
 
 /*
  * Add provider: five steps from "what kind of system" to a change request. The whole wizard is one
@@ -87,6 +87,8 @@ export interface WizardState {
   draftYaml: string | null
   /** an Ansible repository or a Terraform module the backend drafted; its yaml is the draft */
   imported: ProviderImport | null
+  /** the name of the provider being edited: its file is the draft, the steps collect evidence, and the version is the next patch */
+  editing: string | null
 }
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/
@@ -171,6 +173,7 @@ export function initialState(): WizardState {
     strategy: 'canary',
     draftYaml: null,
     imported: null,
+    editing: null,
   }
 }
 
@@ -194,6 +197,86 @@ export function specImportRequest(s: WizardState): SpecImportRequest {
 }
 
 /** A JSON schema for a value, from its shape: what "Fix schema from response" records. */
+/** 1.3.0 → 1.3.1; anything that is not a version comes back as it was. */
+export function bumpPatch(version: string): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim())
+  return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : version
+}
+
+/**
+ * The file with `metadata.version` replaced and nothing else touched. The browser never parses
+ * YAML, so this is a line edit of the metadata block: the first `version:` at the block's own
+ * indentation. A file without one comes back as it was, and the backend's publish says so.
+ */
+export function withVersion(yaml: string, version: string): string {
+  const lines = yaml.split('\n')
+  const start = lines.findIndex((l) => /^metadata:\s*(#.*)?$/.test(l))
+  if (start < 0) return yaml
+  let indent: number | null = null
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    const lead = line.length - line.trimStart().length
+    if (lead === 0) break
+    indent ??= lead
+    if (lead !== indent) continue
+    const m = /^(\s+version:\s*)(?:"[^"]*"|'[^']*'|[^#\s]+)(\s*(?:#.*)?)$/.exec(line)
+    if (m) {
+      lines[i] = `${m[1]}${version}${m[2]}`
+      return lines.join('\n')
+    }
+  }
+  return yaml
+}
+
+const authTypeFrom = (t: string | undefined): AuthType => (t === undefined ? 'none' : t === 'bearer' || t === 'basic' || t === 'header' || t === 'none' ? t : authTypeOf(t))
+
+/**
+ * The wizard on an existing provider, as the platform describes it: the file at the next patch
+ * version as the draft, and the endpoints, auth and actions the Test connection and Try it calls
+ * are made with. The steps that write a new file (Type, Actions) are not shown while editing.
+ */
+export function stateFromProvider(d: ProviderDetail): WizardState {
+  const s = initialState()
+  const version = bumpPatch(d.version)
+  const names = [...d.environments, ...Object.keys(d.endpoints).filter((e) => !d.environments.includes(e))]
+  const environments: Env[] = names.filter((e) => d.endpoints[e]).map((name) => ({ key: nextKey(), name, url: d.endpoints[name] }))
+  const operationOf = (a: ActionInfo) => (typeof a.operation === 'string' ? a.operation : '')
+  const routeOf = (a: ActionInfo) => (typeof a.operation === 'object' && a.operation !== null ? a.operation : null)
+  return {
+    ...s,
+    editing: d.name,
+    type: d.type,
+    title: d.title,
+    name: d.name,
+    nameTouched: true,
+    owner: d.owner,
+    ownerTouched: true,
+    version,
+    description: d.description ?? '',
+    environments: environments.length ? environments : s.environments,
+    auth: { type: authTypeFrom(d.auth?.type), credential: d.auth?.credential ?? '', header: d.auth?.header ?? '' },
+    actions: d.actions.map((a) =>
+      blankAction({
+        id: a.id,
+        title: a.title,
+        operation: operationOf(a),
+        method: routeOf(a)?.method.toUpperCase() ?? 'GET',
+        path: routeOf(a)?.path ?? '',
+        effect: a.effect,
+        retry: a.retry,
+        approval: a.approval === true || a.approval === 'required',
+        plan: a.plan ?? '',
+        inputText: a.input ? JSON.stringify(a.input, null, 2) : '',
+        outputText: a.output ? JSON.stringify(a.output, null, 2) : '',
+      }),
+    ),
+    samples: Object.fromEntries(d.actions.filter((a) => a.sample !== undefined).map((a) => [a.id, a.sample])),
+    slo: { successRate: d.slo ? String(d.slo.successRate) : '', p95Ms: d.slo ? String(d.slo.p95Ms) : '', channel: d.alerts?.channel ?? '' },
+    draftYaml: withVersion(d.yaml, version),
+  }
+}
+
 export function inferSchema(v: unknown): Schema {
   if (v === null || v === undefined) return { type: 'string' }
   if (Array.isArray(v)) return { type: 'array', items: v.length ? inferSchema(v[0]) : { type: 'string' } }
@@ -288,7 +371,7 @@ export function stepIssues(s: WizardState, step: number): string[] {
     if (!VERSION_RE.test(s.version.trim())) out.push('The version looks like 1.0.0.')
   }
   if (step === 1) {
-    if (s.type === 'openapi') {
+    if (s.type === 'openapi' && !s.editing) {
       if (s.specMode === 'url' && !s.specUrl.trim()) out.push('Point at the spec: its URL.')
       if (s.specMode === 'paste' && !s.specContent.trim()) out.push('Paste the spec.')
       if (s.specMode === 'upload' && !s.specContent.trim()) out.push('Upload the spec file.')
@@ -298,9 +381,9 @@ export function stepIssues(s: WizardState, step: number): string[] {
     if ((s.type === 'openapi' || s.type === 'http') && !s.environments.some((e) => e.name.trim() && HTTPS_RE.test(e.url.trim()))) out.push('Add at least one environment with an https URL.')
     const plain = s.environments.find((e) => e.url.trim() && !HTTPS_RE.test(e.url.trim()))
     if ((s.type === 'openapi' || s.type === 'http') && plain) out.push(`${plain.name || 'An environment'}: endpoints are https URLs.`)
-    if (s.type === 'ansible' && !s.ansible.repo.trim()) out.push('Name the Git repository.')
-    if (s.type === 'terraform' && !s.terraform.source.trim()) out.push('Name the module source.')
-    if (s.type === 'idp' && !s.idp.tileId.trim()) out.push('Name the tile.')
+    if (s.type === 'ansible' && !s.editing && !s.ansible.repo.trim()) out.push('Name the Git repository.')
+    if (s.type === 'terraform' && !s.editing && !s.terraform.source.trim()) out.push('Name the module source.')
+    if (s.type === 'idp' && !s.editing && !s.idp.tileId.trim()) out.push('Name the tile.')
     if (s.type === 'sdk' && s.sdk.taskQueue.trim() && !TASK_QUEUE_RE.test(s.sdk.taskQueue.trim())) out.push('The task queue is letters, digits, dots, dashes and underscores.')
     if (s.type === 'sdk' && s.sdk.heartbeatTimeout.trim() && !DURATION_RE.test(s.sdk.heartbeatTimeout.trim())) out.push('The heartbeat timeout is a duration like 30s or 2m.')
     if (s.auth.type !== 'none' && !s.auth.credential) out.push('Pick the credential, or choose no authentication.')
@@ -370,39 +453,74 @@ function describe(s: WizardState): string {
    The page
    ------------------------------------------------------------------------- */
 
+type StepId = (typeof STEPS)[number]['id']
+/** stepIssues judges by the full wizard's step numbers, whichever steps a mode shows */
+const STEP_NUMBER: Record<StepId, number> = { type: 0, connect: 1, actions: 2, try: 3, review: 4 }
+/** Editing keeps the file as it is: only the evidence (Connect, Try it) and the review are stepped through. */
+const EDIT_STEPS = STEPS.filter((s) => s.id === 'connect' || s.id === 'try' || s.id === 'review')
+
 export default function ProviderWizardPage({ route }: PageProps) {
   // the same cache entry as the shell's, so the owner defaults to the signed-in user's team
   const user = useCurrentUser()
   const me = useQuery(['me', user ?? 'default'], () => api.me())
+  // /providers/:name/edit: the provider's file is the draft, the next patch its version
+  const editingName = route.params.name ?? null
+  const detail = useQuery(['provider', editingName ?? ''], () => api.provider(editingName ?? ''), { enabled: editingName !== null })
+  const steps = editingName ? EDIT_STEPS : STEPS
   const [state, setState] = useState<WizardState>(initialState)
-  const [step, setStep] = useState(0)
+  const [stepId, setStepId] = useState<StepId>(steps[0].id)
   const [furthest, setFurthest] = useState(0)
   const update = (patch: Partial<WizardState>) => setState((s) => ({ ...s, ...patch }))
   // ?import=ansible or ?import=terraform: the backend drafts the provider from a repository or a module, and the wizard opens on the review
-  const importKind: ImportKind | null = route.query.import === 'ansible' || route.query.import === 'terraform' ? route.query.import : null
+  const importKind: ImportKind | null = !editingName && (route.query.import === 'ansible' || route.query.import === 'terraform') ? route.query.import : null
   const importing = importKind !== null && state.imported === null
 
+  // the provider seeds the wizard once it arrives
+  if (detail.data && state.editing !== detail.data.name) setState(stateFromProvider(detail.data))
   // the owner defaults to the signed-in user's first team until they pick one
   const firstTeam = me.data?.teams?.[0]
   if (firstTeam && !state.ownerTouched && !state.owner) update({ owner: firstTeam })
 
-  const issues = stepIssues(state, step)
+  const stepPos = Math.max(0, steps.findIndex((s) => s.id === stepId))
+  const issues = stepIssues(state, STEP_NUMBER[stepId])
   const yaml = useMemo(() => state.draftYaml ?? emitYaml(buildProviderDocument(state)), [state])
 
+  const goTo = (pos: number) => {
+    setStepId(steps[pos].id)
+    setFurthest((f) => Math.max(f, pos))
+  }
   const next = () => {
     if (issues.length) return
-    const n = Math.min(STEPS.length - 1, step + 1)
-    setStep(n)
-    setFurthest((f) => Math.max(f, n))
+    goTo(Math.min(steps.length - 1, stepPos + 1))
   }
 
-  const title = importKind === 'ansible' ? 'Import an Ansible repository' : importKind === 'terraform' ? 'Import a Terraform module' : 'Add a provider'
-  const subtitle = importKind ? 'The platform reads it and drafts the provider; review the draft, then open a change request.' : 'Five steps from a spec, a repository or a module to a change request.'
+  const title = editingName ? `Edit ${detail.data?.title ?? editingName}` : importKind === 'ansible' ? 'Import an Ansible repository' : importKind === 'terraform' ? 'Import a Terraform module' : 'Add a provider'
+  const subtitle = editingName
+    ? 'The file stays as it is: test the connection and try the actions again, which the platform keeps as review evidence, then publish the next patch. The SLO, the overrides and the spec change from the provider page.'
+    : importKind
+      ? 'The platform reads it and drafts the provider; review the draft, then open a change request.'
+      : 'Five steps from a spec, a repository or a module to a change request.'
+  const back = editingName ? { href: `#${pathFor('provider', { name: editingName })}`, label: detail.data?.title ?? editingName } : { href: `#${pathFor('providers')}`, label: 'Providers' }
+
+  if (editingName && !detail.data) {
+    return (
+      <>
+        <PageHeader eyebrow="Providers" title={title} subtitle={subtitle} back={back} />
+        {detail.error ? (
+          <ErrorState error={detail.error} title="Could not load the provider" onRetry={() => void detail.refetch()} />
+        ) : (
+          <div className="flex items-center gap-2 py-10 text-sm text-secondary" role="status">
+            <Spinner /> Loading the provider…
+          </div>
+        )}
+      </>
+    )
+  }
 
   return (
     <>
-      <PageHeader eyebrow="Providers" title={title} subtitle={subtitle} back={{ href: `#${pathFor('providers')}`, label: 'Providers' }} />
-      <Stepper steps={STEPS} current={step} onStepClick={(i) => i <= furthest && setStep(i)} className="mb-6" />
+      <PageHeader eyebrow="Providers" title={title} subtitle={subtitle} back={back} />
+      <Stepper steps={steps} current={stepPos} onStepClick={(i) => i <= furthest && setStepId(steps[i].id)} className="mb-6" />
 
       {importing && importKind ? (
         <ImportStep
@@ -410,43 +528,42 @@ export default function ProviderWizardPage({ route }: PageProps) {
           defaultOwner={state.owner}
           onImported={(patch) => {
             update(patch)
-            setStep(4)
-            setFurthest(4)
+            goTo(steps.length - 1)
           }}
         />
       ) : (
         <>
-          {step === 0 && <TypeStep state={state} update={update} />}
-          {step === 1 && <ConnectStep state={state} update={update} />}
-          {step === 2 && <ActionsStep state={state} update={update} />}
-          {step === 3 && <TryStep state={state} update={update} yaml={yaml} />}
-          {step === 4 && <ReviewStep state={state} update={update} yaml={yaml} />}
+          {stepId === 'type' && <TypeStep state={state} update={update} />}
+          {stepId === 'connect' && <ConnectStep state={state} update={update} />}
+          {stepId === 'actions' && <ActionsStep state={state} update={update} />}
+          {stepId === 'try' && <TryStep state={state} update={update} yaml={yaml} />}
+          {stepId === 'review' && <ReviewStep state={state} update={update} yaml={yaml} />}
         </>
       )}
 
       {!importing && (
-      <div className="mt-6 flex flex-wrap items-start justify-between gap-3 border-t border-stroke-light pt-4">
-        <Button variant="ghost" icon="arrow-left" disabled={step === 0} onClick={() => setStep(step - 1)}>
-          Back
-        </Button>
-        {issues.length > 0 && (
-          <ul className="min-w-0 flex-1 space-y-0.5 text-caption text-secondary" aria-label="Before you continue">
-            {issues.slice(0, 4).map((i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                <Icon name="info" size={12} className="mt-0.5 shrink-0 text-tertiary" />
-                {i}
-              </li>
-            ))}
-          </ul>
-        )}
-        {step < STEPS.length - 1 ? (
-          <Button variant="primary" iconRight="arrow-right" disabled={issues.length > 0} onClick={next}>
-            {step === 3 && Object.keys(state.tries).length === 0 ? 'Skip to review' : 'Next'}
+        <div className="mt-6 flex flex-wrap items-start justify-between gap-3 border-t border-stroke-light pt-4">
+          <Button variant="ghost" icon="arrow-left" disabled={stepPos === 0} onClick={() => setStepId(steps[stepPos - 1].id)}>
+            Back
           </Button>
-        ) : (
-          <span />
-        )}
-      </div>
+          {issues.length > 0 && (
+            <ul className="min-w-0 flex-1 space-y-0.5 text-caption text-secondary" aria-label="Before you continue">
+              {issues.slice(0, 4).map((i) => (
+                <li key={i} className="flex items-start gap-1.5">
+                  <Icon name="info" size={12} className="mt-0.5 shrink-0 text-tertiary" />
+                  {i}
+                </li>
+              ))}
+            </ul>
+          )}
+          {stepPos < steps.length - 1 ? (
+            <Button variant="primary" iconRight="arrow-right" disabled={issues.length > 0} onClick={next}>
+              {stepId === 'try' && Object.keys(state.tries).length === 0 ? 'Skip to review' : 'Next'}
+            </Button>
+          ) : (
+            <span />
+          )}
+        </div>
       )}
     </>
   )
@@ -574,7 +691,8 @@ function ConnectStep({ state, update }: StepProps) {
   const test = async () => {
     setBusy('test')
     try {
-      const result = await api.testConnection({ endpoints: endpointsOf(state), auth: authOf(state) })
+      // editing: the results are kept as review evidence for the provider's change request
+      const result = await api.testConnection({ endpoints: endpointsOf(state), auth: authOf(state), ...(state.editing ? { provider: state.editing } : {}) })
       update({ tested: result })
       const bad = result.results.filter((r) => !r.ok).length
       if (bad) toast.toast({ title: `${bad} of ${result.results.length} environments did not answer`, tone: 'warning' })
@@ -591,7 +709,7 @@ function ConnectStep({ state, update }: StepProps) {
 
   return (
     <div className="space-y-5">
-      {state.type === 'openapi' && (
+      {state.type === 'openapi' && !state.editing && (
         <Card
           title="Spec"
           subtitle="The platform reads the spec, pins its hash at publish and never edits it. From Git it also pins the commit it read."
@@ -676,7 +794,7 @@ function ConnectStep({ state, update }: StepProps) {
         </Card>
       )}
 
-      {state.type === 'ansible' && (
+      {state.type === 'ansible' && !state.editing && (
         <Card title="Source" subtitle="A Git repository pinned to a tag and a commit; the platform runs playbooks with ansible-runner.">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Repository" htmlFor="ans-repo" required>
@@ -698,7 +816,7 @@ function ConnectStep({ state, update }: StepProps) {
         </Card>
       )}
 
-      {state.type === 'terraform' && (
+      {state.type === 'terraform' && !state.editing && (
         <Card title="Module" subtitle="State lives in the platform's backend, one workspace per job.">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_10rem]">
             <Field label="Source" htmlFor="tf-source" required>
@@ -711,7 +829,7 @@ function ConnectStep({ state, update }: StepProps) {
         </Card>
       )}
 
-      {state.type === 'idp' && (
+      {state.type === 'idp' && !state.editing && (
         <Card title="Tile" subtitle="A mock catalog answers until the portal's tiles API is wired.">
           <Field label="Tile id" htmlFor="idp-tile" required>
             <Input id="idp-tile" mono value={state.idp.tileId} onChange={(e) => update({ idp: { tileId: e.target.value } })} placeholder="block-storage-request" />
@@ -719,7 +837,7 @@ function ConnectStep({ state, update }: StepProps) {
         </Card>
       )}
 
-      {state.type === 'sdk' && (
+      {state.type === 'sdk' && !state.editing && (
         <Card title="Worker" subtitle="Your team runs the worker, built with a provider SDK; the platform only schedules the actions on its task queue.">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Task queue" htmlFor="sdk-queue" hint="Leave empty for the default" error={state.sdk.taskQueue.trim() && !TASK_QUEUE_RE.test(state.sdk.taskQueue.trim()) ? 'Letters, digits, dots, dashes and underscores' : undefined}>
@@ -995,6 +1113,7 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
   const risky = !!action && action.effect !== 'read'
   const recorded = action ? action.id in state.samples : false
   const fixed = action ? action.id in state.overrides : false
+  const used = !!result?.yaml && state.draftYaml === result.yaml
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -1067,27 +1186,64 @@ function TryStep({ state, update, yaml }: StepProps & { yaml: string }) {
                 ))}
               </ul>
             )}
+            {(result.environment || result.at) && (
+              <p className="flex flex-wrap items-center gap-1 text-caption text-secondary" data-testid="try-evidence">
+                <Icon name="check" size={12} className="text-healthy" />
+                Kept as review evidence{result.environment ? ` · tried in ${result.environment}` : ''}
+                {result.at && (
+                  <>
+                    {' · '}
+                    <When at={result.at} />
+                  </>
+                )}
+                . The review's tried check counts it.
+              </p>
+            )}
+            {result.yaml && (
+              <details className="rounded-md border border-stroke-light" data-testid="try-yaml">
+                <summary className="cursor-pointer px-3 py-2 text-sm text-primary">The file with this answer as {action.id}'s sample</summary>
+                <CodeBlock code={result.yaml} language="yaml" maxHeight="max-h-72" />
+              </details>
+            )}
             <div className="flex flex-wrap items-center justify-end gap-2 border-t border-stroke-light pt-3">
-              <Button
-                icon={recorded ? 'check' : 'document'}
-                disabled={recorded}
-                onClick={() => {
-                  update({ samples: { ...state.samples, [action.id]: result.response } })
-                  toast.success('Sample recorded', `Dry runs of ${action.id} answer with this.`)
-                }}
-              >
-                {recorded ? 'Sample recorded' : 'Record as sample'}
-              </Button>
-              <Button
-                icon={fixed ? 'check' : 'edit'}
-                disabled={fixed || !result.response || typeof result.response !== 'object'}
-                onClick={() => {
-                  update({ overrides: { ...state.overrides, [action.id]: inferSchema(result.response) } })
-                  toast.success('Schema fixed', `${action.id}'s output now follows the real answer.`)
-                }}
-              >
-                {fixed ? 'Schema fixed' : 'Fix schema from response'}
-              </Button>
+              {result.yaml && (
+                <Button
+                  variant="primary"
+                  icon={used ? 'check' : 'document'}
+                  disabled={used}
+                  title="The backend's file: the response saved as the sample, with where it was recorded"
+                  onClick={() => {
+                    update({ draftYaml: result.yaml ?? null })
+                    toast.success('Draft replaced', `The file now carries ${action.id}'s answer as its sample.`)
+                  }}
+                >
+                  {used ? 'Using this file' : 'Use this'}
+                </Button>
+              )}
+              {!state.editing && (
+                <>
+                  <Button
+                    icon={recorded ? 'check' : 'document'}
+                    disabled={recorded}
+                    onClick={() => {
+                      update({ samples: { ...state.samples, [action.id]: result.response } })
+                      toast.success('Sample recorded', `Dry runs of ${action.id} answer with this.`)
+                    }}
+                  >
+                    {recorded ? 'Sample recorded' : 'Record as sample'}
+                  </Button>
+                  <Button
+                    icon={fixed ? 'check' : 'edit'}
+                    disabled={fixed || !result.response || typeof result.response !== 'object'}
+                    onClick={() => {
+                      update({ overrides: { ...state.overrides, [action.id]: inferSchema(result.response) } })
+                      toast.success('Schema fixed', `${action.id}'s output now follows the real answer.`)
+                    }}
+                  >
+                    {fixed ? 'Schema fixed' : 'Fix schema from response'}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -1135,6 +1291,10 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
   }
 
   const failed = (v: ProviderValidation) => v.checks.some((c) => c.status === 'failed') || v.problems.some((p) => p.level === 'error')
+  // the review judges the evidence; publish refuses a file whose review is not ready
+  const reviewBlocks = (v: ProviderValidation) => v.review?.ready === false
+  const review = validation?.review
+  const suggested = review?.slo ?? null
 
   const publish = async () => {
     setBusy('publish')
@@ -1144,8 +1304,8 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
         v = await api.validateProvider(yaml)
         setValidation(v)
       }
-      if (failed(v)) {
-        toast.error('Not ready to publish', 'Fix the failed checks first.')
+      if (failed(v) || reviewBlocks(v)) {
+        toast.error('Not ready to publish', reviewBlocks(v) ? 'The review is not ready: see what it found.' : 'Fix the failed checks first.')
         return
       }
       const accepted = await api.publishProvider(yaml, state.strategy)
@@ -1173,12 +1333,14 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
         {state.draftYaml && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-tint px-4 py-2 text-sm">
             <span className="inline-flex items-center gap-2 text-primary">
-              <Icon name="sparkles" size={14} className="text-accent" />
-              {state.imported ? "The import's draft replaces the wizard's document." : "This draft replaces the wizard's document."}
+              <Icon name={state.editing ? 'edit' : 'sparkles'} size={14} className="text-accent" />
+              {state.editing ? `The file as published, at version ${state.version}; a try's answer goes in with Use this.` : state.imported ? "The import's draft replaces the wizard's document." : "This draft replaces the wizard's document."}
             </span>
-            <Button size="sm" variant="ghost" onClick={() => update({ draftYaml: null })}>
-              Back to the wizard's YAML
-            </Button>
+            {!state.editing && (
+              <Button size="sm" variant="ghost" onClick={() => update({ draftYaml: null })}>
+                Back to the wizard's YAML
+              </Button>
+            )}
           </div>
         )}
         <CodeBlock code={yaml} language="yaml" title={path} lineNumbers maxHeight="max-h-[60vh]" />
@@ -1217,7 +1379,7 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
                 ))}
               </ul>
               {validation.problems.length > 0 && <ProblemList problems={validation.problems} compact />}
-              {!failed(validation) && (
+              {!failed(validation) && !reviewBlocks(validation) && (
                 <p className="flex items-center gap-1.5 text-caption text-healthy">
                   <Icon name="check" size={13} />
                   Ready to publish.
@@ -1226,6 +1388,47 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
             </div>
           )}
         </Card>
+
+        {validation && review !== undefined && (
+          <Card title="Review" subtitle="What the platform saw in this wizard, judged as the reviewer sees it on the change request." data-testid="review-evidence">
+            {review === null ? (
+              <p className="text-sm text-secondary">Not a provider file: nothing to review.</p>
+            ) : (
+              <div className="space-y-3">
+                <Tag tone={review.ready ? 'healthy' : 'warning'} dot>
+                  {review.ready ? 'Ready for review' : 'Not ready yet'}
+                </Tag>
+                <ul className="space-y-1.5" aria-label="Review checks">
+                  {review.checks.map((c) => (
+                    <li key={c.id} className="flex items-start gap-2 text-sm">
+                      <StatusDot kind={checkDot(c.status)} className="mt-1.5" label={c.status} />
+                      <span className="min-w-0">
+                        <span className="text-primary">{c.label}</span>
+                        {c.detail && <span className="block text-caption text-secondary">{c.detail}</span>}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {review.problems.length > 0 && <ProblemList problems={review.problems} compact />}
+                {suggested && (
+                  <div className="rounded-md border border-stroke-light bg-surface-secondary px-3 py-2 text-caption" data-testid="slo-suggestion">
+                    <p className="text-primary">
+                      Suggested SLO: {suggested.successRate}% success, p95 {duration(suggested.p95Ms)}
+                    </p>
+                    <p className="text-secondary">
+                      Observed p95 {duration(suggested.observedP95Ms)} over {suggested.calls} calls. {suggested.detail}
+                    </p>
+                    {!state.editing && (
+                      <Button size="sm" className="mt-2" onClick={() => update({ slo: { ...state.slo, successRate: String(suggested.successRate), p95Ms: String(suggested.p95Ms) } })}>
+                        Use suggested SLO
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
 
         <Card title="Publish">
           <div className="space-y-4">
@@ -1241,18 +1444,24 @@ function ReviewStep({ state, update, yaml }: StepProps & { yaml: string }) {
                 ]}
               />
             </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="SLO success (%)" htmlFor="pub-slo-rate">
-                <Input id="pub-slo-rate" type="number" min={1} max={100} step={0.1} value={state.slo.successRate} onChange={(e) => update({ slo: { ...state.slo, successRate: e.target.value } })} />
-              </Field>
-              <Field label="SLO p95 (ms)" htmlFor="pub-slo-p95">
-                <Input id="pub-slo-p95" type="number" min={1} value={state.slo.p95Ms} onChange={(e) => update({ slo: { ...state.slo, p95Ms: e.target.value } })} />
-              </Field>
-            </div>
-            <Field label="Alert channel" htmlFor="pub-channel">
-              <Input id="pub-channel" mono value={state.slo.channel} onChange={(e) => update({ slo: { ...state.slo, channel: e.target.value } })} placeholder="#team-alerts" />
-            </Field>
-            <Button variant="primary" icon="git-branch" className="w-full" loading={busy === 'publish'} disabled={busy === 'validate' || (!!validation && failed(validation))} onClick={() => void publish()}>
+            {state.editing ? (
+              <p className="text-caption text-tertiary">The SLO and the alert channel change from the provider page, through a change request of their own.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="SLO success (%)" htmlFor="pub-slo-rate">
+                    <Input id="pub-slo-rate" type="number" min={1} max={100} step={0.1} value={state.slo.successRate} onChange={(e) => update({ slo: { ...state.slo, successRate: e.target.value } })} />
+                  </Field>
+                  <Field label="SLO p95 (ms)" htmlFor="pub-slo-p95">
+                    <Input id="pub-slo-p95" type="number" min={1} value={state.slo.p95Ms} onChange={(e) => update({ slo: { ...state.slo, p95Ms: e.target.value } })} />
+                  </Field>
+                </div>
+                <Field label="Alert channel" htmlFor="pub-channel">
+                  <Input id="pub-channel" mono value={state.slo.channel} onChange={(e) => update({ slo: { ...state.slo, channel: e.target.value } })} placeholder="#team-alerts" />
+                </Field>
+              </>
+            )}
+            <Button variant="primary" icon="git-branch" className="w-full" loading={busy === 'publish'} disabled={busy === 'validate' || (!!validation && (failed(validation) || reviewBlocks(validation)))} onClick={() => void publish()}>
               Publish as change request
             </Button>
             <p className="text-caption text-tertiary">Opens a change request on a branch; the checks run again there, and merging publishes.</p>
