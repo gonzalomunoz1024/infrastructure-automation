@@ -16,6 +16,7 @@ import com.iaf.platform.runs.domain.RecordedWorld;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * The demo {@link ProviderCallPort}: every action answers from its recorded {@code sample},
@@ -47,7 +48,8 @@ public class RecordedProviderCall implements ProviderCallPort {
             return Mono.error(new IllegalArgumentException("a provider call needs a provider and an action"));
         }
         long latency = ThreadLocalRandom.current().nextInt(MIN_LATENCY_MS, MAX_LATENCY_MS + 1);
-        return Mono.delay(Duration.ofMillis(latency)).flatMap(tick -> Mono.fromCallable(() -> {
+        // bounded-elastic, not the parallel timer: recording the call reads the job, which may be a database read
+        return Mono.delay(Duration.ofMillis(latency), Schedulers.boundedElastic()).flatMap(tick -> Mono.fromCallable(() -> {
             Instant at = clock.instant().minusMillis(latency);
             try {
                 JsonNode out = world.call(call.provider(), call.action(), call.input(), call.jobId(), call.seq(), !call.dryRun());

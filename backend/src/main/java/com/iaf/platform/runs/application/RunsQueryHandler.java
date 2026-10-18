@@ -18,11 +18,13 @@ import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.JobStep;
 import com.iaf.platform.runs.domain.JsonDiff;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
+import com.iaf.platform.runs.ports.outbound.ProjectionStore.JobQuery;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-/** The read side of the runs slice, served from the {@link JobProjection}. */
+/** The read side of the runs slice, served from the {@link JobProjection}; its store may block, so reads run on bounded-elastic threads. */
 @Service
 @Primary
 public class RunsQueryHandler implements RunsQueries {
@@ -40,17 +42,17 @@ public class RunsQueryHandler implements RunsQueries {
     public Flux<JsonNode> jobs(String workflow, String status, String parent, Integer limit) {
         JobStatus wanted = status == null || status.isBlank() ? null : JobStatus.of(status);
         int max = limit == null || limit <= 0 ? DEFAULT_LIMIT : limit;
-        return Flux.defer(() -> Flux.fromIterable(projection.all()))
-                .filter(j -> workflow == null || workflow.isBlank() || workflow.equals(j.workflow()))
-                .filter(j -> wanted == null || wanted == j.status())
-                .filter(j -> parent == null || parent.isBlank() ? j.parentId() == null : parent.equals(j.parentId()))
-                .take(max)
+        boolean topLevel = parent == null || parent.isBlank();
+        JobQuery query = new JobQuery(workflow == null || workflow.isBlank() ? null : workflow, wanted, topLevel ? null : parent, topLevel, max);
+        return Flux.defer(() -> Flux.fromIterable(projection.jobs(query)))
+                .subscribeOn(Schedulers.boundedElastic())
                 .map(JobViews::summary);
     }
 
     @Override
     public Mono<JsonNode> job(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
+                .subscribeOn(Schedulers.boundedElastic())
                 .map(j -> JobViews.detail(j, projection.children(j.id())));
     }
 
@@ -58,24 +60,26 @@ public class RunsQueryHandler implements RunsQueries {
     public Flux<JsonNode> events(String id) {
         return Flux.defer(() -> projection.has(id)
                 ? projection.events(id).map(JobViews::event)
-                : Flux.error(new NotFoundException("job", id)));
+                : Flux.<JsonNode>error(new NotFoundException("job", id)))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     @Override
     public Flux<JsonNode> approvals(String status) {
         return Flux.defer(() -> Flux.fromIterable(projection.approvals()))
+                .subscribeOn(Schedulers.boundedElastic())
                 .filter(a -> status == null || status.isBlank() || (a.status() != null && a.status().json().equals(status.toLowerCase())))
                 .map(JobViews::approval);
     }
 
     @Override
     public Mono<JsonNode> approval(String id) {
-        return Mono.defer(() -> Mono.justOrEmpty(projection.approval(id))).map(JobViews::approval);
+        return Mono.defer(() -> Mono.justOrEmpty(projection.approval(id))).subscribeOn(Schedulers.boundedElastic()).map(JobViews::approval);
     }
 
     @Override
     public Mono<JsonNode> replay(String id, String compareTo) {
-        return Mono.defer(() -> Mono.justOrEmpty(projection.get(id))).map(job -> {
+        return Mono.defer(() -> Mono.justOrEmpty(projection.get(id))).subscribeOn(Schedulers.boundedElastic()).map(job -> {
             Optional<Job> compared = compareTo != null && !compareTo.isBlank() ? projection.get(compareTo) : previousOf(job);
             ObjectNode out = F.objectNode();
             out.put("jobId", job.id());
@@ -122,7 +126,7 @@ public class RunsQueryHandler implements RunsQueries {
     /** The previous finished run of the same workflow (same kind: top-level jobs compare with top-level jobs). */
     private Optional<Job> previousOf(Job job) {
         Instant at = job.startedAt() == null ? Instant.EPOCH : job.startedAt();
-        return projection.all().stream()
+        return projection.jobs(new JobQuery(job.workflow(), null, null, false, 0)).stream()
                 .filter(j -> !j.id().equals(job.id()))
                 .filter(j -> job.workflow().equals(j.workflow()))
                 .filter(j -> j.kind() == job.kind())
@@ -144,7 +148,7 @@ public class RunsQueryHandler implements RunsQueries {
     public Mono<List<JobOutcome>> outcomes(String workflow, String version, Instant since) {
         return Mono.fromSupplier(() -> {
             List<JobOutcome> out = new ArrayList<>();
-            for (Job j : projection.all()) {
+            for (Job j : projection.jobs(new JobQuery(workflow == null || workflow.isBlank() ? null : workflow, null, null, false, 0))) {
                 if (j.status() == null || !j.status().terminal() || j.isBatch()) {
                     continue;
                 }
@@ -161,12 +165,13 @@ public class RunsQueryHandler implements RunsQueries {
                         j.durationMs() == null ? 0 : j.durationMs(), j.errorClass(), j.failedStep(), j.input()));
             }
             return out;
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @Override
     public Mono<List<JsonNode>> steps(String id) {
         return Mono.defer(() -> Mono.justOrEmpty(projection.get(id)))
-                .map(j -> j.steps().stream().map(s -> (JsonNode) JobViews.step(s)).toList());
+                .map(j -> j.steps().stream().map(s -> (JsonNode) JobViews.step(s)).toList())
+                .subscribeOn(Schedulers.boundedElastic());
     }
 }

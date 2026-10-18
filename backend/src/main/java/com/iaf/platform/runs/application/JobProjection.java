@@ -2,7 +2,6 @@ package com.iaf.platform.runs.application;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -31,6 +30,8 @@ import com.iaf.platform.runs.domain.JobStep.StepError;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.Preview;
 import com.iaf.platform.runs.domain.StepFolding;
+import com.iaf.platform.runs.ports.outbound.ProjectionStore;
+import com.iaf.platform.runs.ports.outbound.ProjectionStore.JobQuery;
 import com.iaf.platform.workflows.domain.StepType;
 
 import jakarta.annotation.PostConstruct;
@@ -39,11 +40,13 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 /**
- * The read model of the runs slice: every job, approval and per-job event history, kept in
- * memory and updated from the {@code job.*} and {@code batch.*} events. Command handlers
+ * The read model of the runs slice: every job, approval and per-job event history, kept in the
+ * {@link ProjectionStore} (in memory, or in PostgreSQL with the {@code postgres} profile) and
+ * updated from the {@code job.*} and {@code batch.*} events. Command handlers
  * {@link #put} a job (with its definition snapshot and the requester's identity, which no event
  * carries) before publishing {@code job.started}; everything after that is folded from events,
- * so the Temporal engine, the in-memory engine and the demo seed all feed the same model.
+ * so the Temporal engine, the in-memory engine and the demo seed all feed the same model. The
+ * live fan-out (one replaying sink per running job) stays in memory and ends with the job.
  */
 @Slf4j
 @Component
@@ -52,20 +55,23 @@ public class JobProjection {
     private static final int REPLAY_BUFFER = 2048;
 
     private final EventBus bus;
+    private final ProjectionStore store;
     private final Object lock = new Object();
-    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
-    private final Map<String, Approval> approvals = new ConcurrentHashMap<>();
     private final Map<String, Stream> streams = new ConcurrentHashMap<>();
 
-    /** One job's event history and its live sink (a bounded replay closes the gap between history and live). */
+    /** One live job's event numbering and its sink (a bounded replay closes the gap between history and live). */
     private static final class Stream {
-        final List<JobEvent> history = new ArrayList<>();
         final Sinks.Many<JobEvent> sink = Sinks.many().replay().limit(REPLAY_BUFFER);
         long seq;
+
+        Stream(long seq) {
+            this.seq = seq;
+        }
     }
 
-    public JobProjection(EventBus bus) {
+    public JobProjection(EventBus bus, ProjectionStore store) {
         this.bus = bus;
+        this.store = store;
     }
 
     @PostConstruct
@@ -78,24 +84,18 @@ public class JobProjection {
     /** Store (or replace) a job record. */
     public void put(Job job) {
         synchronized (lock) {
-            jobs.put(job.id(), job);
-            for (Approval a : job.approvals()) {
-                approvals.put(a.id(), a);
-            }
+            store.save(job);
         }
     }
 
     public Optional<Job> update(String id, UnaryOperator<Job> change) {
         synchronized (lock) {
-            Job j = jobs.get(id);
+            Job j = store.job(id).orElse(null);
             if (j == null) {
                 return Optional.empty();
             }
             Job next = change.apply(j);
-            jobs.put(id, next);
-            for (Approval a : next.approvals()) {
-                approvals.put(a.id(), a);
-            }
+            store.save(next);
             return Optional.of(next);
         }
     }
@@ -103,50 +103,40 @@ public class JobProjection {
     // ---------------------------------------------------------------- reads
 
     public Optional<Job> get(String id) {
-        return Optional.ofNullable(id == null ? null : jobs.get(id));
+        return store.job(id);
     }
 
     public boolean has(String id) {
-        return id != null && jobs.containsKey(id);
+        return id != null && store.job(id).isPresent();
     }
 
     /** Every job, newest first. */
     public List<Job> all() {
-        List<Job> out = new ArrayList<>(jobs.values());
-        out.sort(Comparator.comparing((Job j) -> j.startedAt() == null ? Instant.EPOCH : j.startedAt()).reversed()
-                .thenComparing(Job::id));
-        return out;
+        return store.jobs(JobQuery.ALL);
+    }
+
+    /** The matching jobs, newest first, at most {@code query.limit()} of them. */
+    public List<Job> jobs(JobQuery query) {
+        return store.jobs(query);
     }
 
     /** The children of a job (rows of a batch, children of run steps), rows first, oldest first. */
     public List<Job> children(String parentId) {
-        List<Job> out = new ArrayList<>();
-        for (Job j : jobs.values()) {
-            if (parentId.equals(j.parentId())) {
-                out.add(j);
-            }
-        }
-        out.sort(Comparator.comparing((Job j) -> j.row() == null ? Integer.MAX_VALUE : j.row())
-                .thenComparing(j -> j.startedAt() == null ? Instant.EPOCH : j.startedAt()));
-        return out;
+        return store.children(parentId);
     }
 
     public Optional<Approval> approval(String id) {
-        return Optional.ofNullable(id == null ? null : approvals.get(id));
+        return store.approval(id);
     }
 
     /** Every approval, newest first. */
     public List<Approval> approvals() {
-        List<Approval> out = new ArrayList<>(approvals.values());
-        out.sort(Comparator.comparing((Approval a) -> a.requestedAt() == null ? Instant.EPOCH : a.requestedAt()).reversed()
-                .thenComparing(Approval::id));
-        return out;
+        return store.approvals();
     }
 
     public List<JobEvent> history(String jobId) {
         synchronized (lock) {
-            Stream s = streams.get(jobId);
-            return s == null ? List.of() : List.copyOf(s.history);
+            return store.history(jobId);
         }
     }
 
@@ -154,15 +144,15 @@ public class JobProjection {
     public Flux<JobEvent> events(String jobId) {
         return Flux.defer(() -> {
             synchronized (lock) {
-                Stream s = streams.computeIfAbsent(jobId, k -> new Stream());
-                List<JobEvent> hist = List.copyOf(s.history);
-                long last = s.seq;
-                Job job = jobs.get(jobId);
+                List<JobEvent> hist = store.history(jobId);
+                Job job = store.job(jobId).orElse(null);
                 boolean ended = job != null && job.status() != null && job.status().terminal();
                 Flux<JobEvent> history = Flux.fromIterable(hist);
                 if (ended) {
                     return history;
                 }
+                Stream s = stream(jobId);
+                long last = s.seq;
                 Flux<JobEvent> live = s.sink.asFlux().filter(e -> e.seq() > last).takeUntil(JobEvent::terminal);
                 return Flux.concat(history, live);
             }
@@ -179,14 +169,13 @@ public class JobProjection {
             return;
         }
         synchronized (lock) {
+            Job job = null;
             try {
-                Job job = jobs.get(e.aggregateId());
+                job = store.job(e.aggregateId()).orElse(null);
                 Job next = apply(job, e);
                 if (next != null) {
-                    jobs.put(next.id(), next);
-                    for (Approval a : next.approvals()) {
-                        approvals.put(a.id(), a);
-                    }
+                    store.save(next);
+                    job = next;
                     if (next.parentId() != null && next.row() != null) {
                         updateParentRow(next, e);
                     }
@@ -194,17 +183,31 @@ public class JobProjection {
             } catch (RuntimeException ex) {
                 log.warn("job projection could not apply {} to {}: {}", e.type(), e.aggregateId(), ex.toString());
             }
-            record(e);
+            try {
+                record(e, job != null && job.status() != null && job.status().terminal());
+            } catch (RuntimeException ex) {
+                log.warn("job projection could not keep {} of {}: {}", e.type(), e.aggregateId(), ex.toString());
+            }
         }
     }
 
-    private void record(DomainEvent e) {
-        Stream s = streams.computeIfAbsent(e.aggregateId(), k -> new Stream());
+    /** Number the event, keep it, hand it to the live subscribers; an ended job's sink goes (its history stays in the store). */
+    private void record(DomainEvent e, boolean ended) {
+        Stream s = stream(e.aggregateId());
         ObjectNode data = e.data() != null && e.data().isObject() ? ((ObjectNode) e.data()).deepCopy() : JobViews.MAPPER.createObjectNode();
         data.put("event", e.type());
-        JobEvent je = new JobEvent(++s.seq, e.at(), e.aggregateId(), JobEvent.typeOf(e.type()), data);
-        s.history.add(je);
+        JobEvent je = new JobEvent(s.seq + 1, e.at(), e.aggregateId(), JobEvent.typeOf(e.type()), data);
+        store.append(je);
+        s.seq = je.seq();
         s.sink.tryEmitNext(je);
+        if (ended) {
+            streams.remove(e.aggregateId());
+        }
+    }
+
+    /** The live state of a job's stream, numbering on from its stored history. */
+    private Stream stream(String jobId) {
+        return streams.computeIfAbsent(jobId, id -> new Stream(store.lastSeq(id)));
     }
 
     private Job apply(Job job, DomainEvent e) {
@@ -423,7 +426,7 @@ public class JobProjection {
 
     /** A row's child job started, ended or was cancelled: reflect it on the batch. */
     private void updateParentRow(Job child, DomainEvent e) {
-        Job parent = jobs.get(child.parentId());
+        Job parent = store.job(child.parentId()).orElse(null);
         if (parent == null || parent.batch() == null) {
             return;
         }
@@ -450,7 +453,7 @@ public class JobProjection {
             return next;
         }).toList();
         Batch batch = parent.batch().withRows(rows);
-        jobs.put(parent.id(), parent.toBuilder().batch(batch).progress(progressOf(batch)).build());
+        store.save(parent.toBuilder().batch(batch).progress(progressOf(batch)).build());
     }
 
     public static Job.Progress progressOf(Batch batch) {
