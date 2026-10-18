@@ -598,6 +598,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             data.put("version", version);
             data.put("changeRequestId", id);
             data.put("by", who.id());
+            data.put("owner", def.metadata().owner()); // the team a reviewer is found in
             events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
             return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id));
         }));
@@ -775,6 +776,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         data.put("version", version);
         data.put("changeRequestId", id);
         data.put("by", who.id());
+        data.put("owner", def.metadata().owner());
         data.put("change", change);
         data.put("strategy", strategy);
         events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);

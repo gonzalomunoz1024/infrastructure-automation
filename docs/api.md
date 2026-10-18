@@ -328,7 +328,8 @@ change request says `strategy: 'all'`, becomes the current version at once; othe
 is kept beside the current one and a provider release rolls it out (see Releases). A spec refresh
 rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
 is still running, in which case they build on its candidate and roll out as a canary too.
-`provider.published` carries `{ name; version; previous?; strategy; by }`.
+`provider.change-requested` carries `{ name; version; changeRequestId; by; owner; change?; strategy? }` (`owner` is the
+team a reviewer is notified in); `provider.published` carries `{ name; version; previous?; strategy; by }`.
 
 The two imports draft a provider file from what a repository holds and save nothing: the draft
 goes through Validate and Publish like a file written by hand, and `notes` says what is left to do

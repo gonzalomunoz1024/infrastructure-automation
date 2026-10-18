@@ -624,7 +624,12 @@ class ProviderCommandHandlerTest {
         assertThat(cr.diff()).contains("+metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0 }");
         assertThat(cr.createdAt()).isEqualTo(NOW);
         assertThat(event("provider.change-requested")).isPresent();
-        assertThat(event("provider.change-requested").orElseThrow().data().path("changeRequestId").asText()).isEqualTo(cr.id());
+        JsonNode requested = event("provider.change-requested").orElseThrow().data();
+        assertThat(requested.path("changeRequestId").asText()).isEqualTo(cr.id());
+        assertThat(requested.path("name").asText()).isEqualTo("fleet");
+        assertThat(requested.path("version").asText()).isEqualTo("1.1.0");
+        assertThat(requested.path("by").asText()).isEqualTo("mateo");
+        assertThat(requested.path("owner").asText()).as("the team a reviewer is notified in").isEqualTo("team-compute");
         verify(store, never()).save(any());
     }
 
@@ -833,7 +838,9 @@ class ProviderCommandHandlerTest {
         assertThat(response.path("properties").path("name").path("type").asText()).isEqualTo("string");
         assertThat(response.path("properties").path("powerState").path("enum")).hasSize(2);
         assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "spec-pinned", "credentials", "actions", "slo", "responses");
-        assertThat(event("provider.change-requested").orElseThrow().data().path("change").asText()).isEqualTo("overrides");
+        JsonNode requested = event("provider.change-requested").orElseThrow().data();
+        assertThat(requested.path("change").asText()).isEqualTo("overrides");
+        assertThat(requested.path("owner").asText()).isEqualTo("team-compute");
     }
 
     @Test
