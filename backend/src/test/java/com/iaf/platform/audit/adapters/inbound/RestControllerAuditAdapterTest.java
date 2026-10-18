@@ -6,14 +6,23 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.json.Jackson2JsonEncoder;
@@ -33,12 +42,14 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.Signatures;
 import com.iaf.platform.audit.ports.inbound.AuditCommands.SealResult;
 import com.iaf.platform.audit.ports.inbound.AuditCommands.ShareLink;
 import com.iaf.platform.audit.ports.inbound.AuditQueries;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.AuditRow;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FileExport;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.FilterSpec;
+import com.iaf.platform.audit.ports.inbound.AuditQueries.SpooledFile;
 import com.iaf.platform.audit.ports.inbound.AuditQueries.Verification;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -170,20 +181,64 @@ class RestControllerAuditAdapterTest {
     }
 
     @Test
-    void exportPackTakesAFilterAndAnswersAZip() {
+    void exportPackTakesAFilterAndStreamsTheSpooledZipThenDeletesIt(@TempDir Path dir) throws IOException {
         byte[] zip = {0x50, 0x4b, 0x03, 0x04};
-        when(queries.exportPack(any())).thenReturn(Mono.just(new FileExport("evidence-pack.zip", "application/zip", zip)));
+        Path first = Files.write(dir.resolve("evidence-pack-1.zip"), zip);
+        Path second = Files.write(dir.resolve("evidence-pack-2.zip"), zip);
+        when(queries.exportPack(any()))
+                .thenReturn(Mono.just(new SpooledFile("evidence-pack.zip", "application/zip", first, zip.length)))
+                .thenReturn(Mono.just(new SpooledFile("evidence-pack.zip", "application/zip", second, zip.length)));
 
         client.post().uri("/api/v1/audit:export-pack").contentType(MediaType.APPLICATION_JSON)
                 .bodyValue("{\"filter\":{\"workflow\":\"vm-restart\",\"from\":\"2026-10-01\"}}").exchange()
                 .expectStatus().isOk()
                 .expectHeader().contentType(MediaType.parseMediaType("application/zip"))
                 .expectHeader().valueEquals("Content-Disposition", "attachment; filename=\"evidence-pack.zip\"")
+                .expectHeader().contentLength(zip.length)
                 .expectBody(byte[].class).value(body -> assertThat(body).isEqualTo(zip));
         verify(queries).exportPack(new FilterSpec("vm-restart", "2026-10-01", null, null));
+        assertThat(first).as("deleted once sent").doesNotExist();
 
-        client.post().uri("/api/v1/audit:export-pack").exchange().expectStatus().isOk();
+        client.post().uri("/api/v1/audit:export-pack").exchange()
+                .expectStatus().isOk()
+                .expectBody(byte[].class).value(body -> assertThat(body).isEqualTo(zip));
         verify(queries).exportPack(null);
+        assertThat(second).doesNotExist();
+    }
+
+    @Test
+    void aPackOfARecordWithManyEntriesStreamsInChunksAndLeavesNothingInTheSpool(@TempDir Path spool) throws IOException {
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+        InMemoryEvidenceStore store = new InMemoryEvidenceStore();
+        int many = 4_000;
+        for (int i = 0; i < many; i++) {
+            store.append("job_big", EvidenceEntry.draft(NOW.plusSeconds(i), i == 0 ? EvidenceKind.REQUESTED : EvidenceKind.STEP, "ana",
+                    JSON.createObjectNode().put("workflow", "patch-cve").put("output", Signatures.sha256Hex(("out" + i).getBytes(StandardCharsets.UTF_8)))));
+        }
+        AuditQueryHandler real = new AuditQueryHandler(store, new AuditSigner(new PlatformProperties()), clock, JSON, spool);
+        WebTestClient packs = WebTestClient.bindToController(new RestControllerAuditAdapter(commands, real))
+                .controllerAdvice(new GlobalExceptionHandler())
+                .configureClient()
+                .codecs(c -> c.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
+                .build();
+
+        byte[] body = packs.post().uri("/api/v1/audit:export-pack").exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentType(MediaType.parseMediaType("application/zip"))
+                .expectBody(byte[].class).returnResult().getResponseBody();
+
+        assertThat(body).hasSizeGreaterThan(RestControllerAuditAdapter.CHUNK);
+        Map<String, byte[]> files = new LinkedHashMap<>();
+        try (ZipInputStream in = new ZipInputStream(new ByteArrayInputStream(body))) {
+            for (ZipEntry e = in.getNextEntry(); e != null; e = in.getNextEntry()) {
+                files.put(e.getName(), in.readAllBytes());
+            }
+        }
+        assertThat(files.keySet()).containsExactly("records/job_big.json", "manifest.json");
+        assertThat(JSON.readValue(files.get("records/job_big.json"), EvidenceRecord.class).entries()).hasSize(many);
+        try (var left = Files.list(spool)) {
+            assertThat(left).as("the spooled pack is deleted once sent").isEmpty();
+        }
     }
 
     @Test

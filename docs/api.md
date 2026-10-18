@@ -406,7 +406,7 @@ type Verification = { valid: boolean; entries; brokenAt?: number; seal?: 'verifi
 | GET `/audit/{jobId}` | `EvidenceRecord` |
 | GET `/audit/{jobId}:verify` | `Verification` (every checkpoint, then the seal) |
 | GET `/audit/{jobId}/export?format=json\|pdf` | file |
-| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest) |
+| POST `/audit:export-pack` | `{ filter }` → zip (one JSON per record, the platform stream, signed manifest), sent in chunks with its `Content-Length`: the pack is written to a temporary file first (so a failure is an error status, never half a zip) and deleted once sent |
 | POST `/audit/{jobId}:share` | → `{ url; expiresAt }`, a link valid for seven days. By the job's requester, a member of the teams it ran for (the requester's teams when it started, the workflow's owner team) or an admin; 403 otherwise. Published as `audit.shared` `{ recordId; by; expiresAt }`, never with the token |
 | GET `/audit/shared/{token}` | read-only `EvidenceRecord`; needs no account in any mode (the token is the secret: a request without `Authorization` runs as an identity with no team, role or scope), 404 for an unknown token, 410 once it expired |
 | POST `/audit:seal` | → `{ sealedAt; signature; keyId; sealed; checkpointed }`: closed records get their final seal, open ones (and the platform stream) a checkpoint over their head (also runs every `platform.audit.seal-every`). Admins only; 403 otherwise |
