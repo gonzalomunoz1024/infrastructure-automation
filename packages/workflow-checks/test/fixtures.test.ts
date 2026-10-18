@@ -355,9 +355,17 @@ describe('rules beyond the fixtures', () => {
   it('a run step reads only the outputs the workflow publishes', () => {
     const doc = base([
       { make: { run: { workflow: 'create-vm', version: '^2', input: { name: 'web-1', image: 'img-1', size: 'small' } }, output: { as: 'made' } } },
-      { tell: { notify: { channel: '#ops', message: "{{ $made.outputs.vmid }} {{ $('make').json.outputs.name }} {{ $made.status }} {{ $made.error.message }}" } } },
+      {
+        tell: {
+          notify: {
+            channel: '#ops',
+            message: "{{ $made.outputs.vmid }} {{ $('make').json.outputs.name }} {{ $made.status }} {{ $made.error.message }} {{ $made.resources[0].id }}",
+          },
+        },
+      },
     ]);
     const problems = check(doc, ctx);
+    // resources: what the child registered
     expect(problems.map((p) => `${p.code}: ${p.message}`)).toEqual(["expr.unknownField: $made has no field 'outputs.vmid'"]);
     expect(problems[0]?.fix?.value).toBe('outputs.vmId');
   });

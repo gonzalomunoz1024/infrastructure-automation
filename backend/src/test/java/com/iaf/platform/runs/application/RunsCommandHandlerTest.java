@@ -203,6 +203,44 @@ class RunsCommandHandlerTest {
         verify(w.releases, never()).route(anyString(), anyString());
     }
 
+    @Test
+    void startJobTakesARequestToBuildTheResourceFirstAndJudgesItAgainstTheProducer() {
+        StartJob build = new StartJob("create-vm", null, SampleContent.json(Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9")))),
+                SampleContent.GONZALO, "rest", null, null, null, null);
+        CommandAccepted acc = handler.startJob(build).block();
+        Job job = w.projection.get(acc.id()).orElseThrow();
+        assertThat(job.input().path("image").path("create").path("os").asText()).as("the job keeps the request as asked").isEqualTo("rhel-9");
+        verify(engine).start(any());
+
+        StartJob wrong = new StartJob("create-vm", null, SampleContent.json(Map.of("name", "web-02", "image", Map.of("create", Map.of("os", "beos")))),
+                SampleContent.GONZALO, "rest", null, null, null, null);
+        StepVerifier.create(handler.startJob(wrong))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems())
+                        .extracting(p -> p.code(), p -> p.field()).containsExactly(org.assertj.core.groups.Tuple.tuple("schema", "image.create.os")))
+                .verify();
+        StartJob notAnId = new StartJob("vm-restart", null, SampleContent.json(Map.of("vmId", Map.of("create", Map.of()))),
+                SampleContent.GONZALO, "rest", null, null, null, null);
+        StepVerifier.create(handler.startJob(notAnId))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.field()).contains("vmId"))
+                .verify();
+    }
+
+    @Test
+    void aBatchNamesEveryRowWhoseRequestToBuildTheProducerWouldRefuse() {
+        List<JsonNode> items = List.of(
+                SampleContent.json(Map.of("name", "web-01", "image", "img-1")),
+                SampleContent.json(Map.of("name", "web-02", "image", Map.of("create", Map.of("hardening", "cis-l9")))),
+                SampleContent.json(Map.of("name", "web-03", "image", Map.of("create", Map.of()))));
+        StepVerifier.create(handler.startBatch(new StartBatch("create-vm", null, items, null, null, SampleContent.GONZALO, "batch", null)))
+                .expectErrorSatisfies(e -> {
+                    InvalidInputException ii = (InvalidInputException) e;
+                    assertThat(ii.rows()).extracting(r -> r.index()).containsExactly(1);
+                    assertThat(ii.rows().get(0).problems()).extracting(p -> p.field()).containsExactly("image.create.hardening");
+                })
+                .verify();
+        verify(engine, never()).start(any());
+    }
+
     // ---------------------------------------------------------------- startBatch
 
     @Test

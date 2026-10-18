@@ -96,7 +96,7 @@ The canvas shows `name` (defaults to the id) and keeps `position` for layout.
 | `call: terraform`        | `with: { module: { source, version }, action: plan | apply | destroy, vars, credential }` |
 | `call: idp`              | `with: { tile, input }` (mock until the IDP tiles API is wired)                |
 | `call: activity`         | `with: { taskQueue, activity, input }` (team-owned worker, any SDK language)   |
-| `run: { workflow, version, input }` | runs a published workflow as a child job; `version` is a range ("^1") |
+| `run: { workflow, version, input, onFailure }` | runs a published workflow as a child job and returns `{ jobId, status, outputs, resources }` (`resources`: the `{ id, type }` its register steps recorded). `version` is a range ("^1"); left out, publish writes `^<major>` of the workflow's current version (a run without one takes the current major). `onFailure: continue` makes a failed child the step's output (`status`, `error: { step, message, class }`) and goes on; the default `fail` fails the step |
 | `approval: { group, message, timeout, escalation }` | human sign-off                                         |
 | `switch: [ { case: { when, then \| do } }, { default: then \| { do } } ]` | `then` jumps to a later step id or `end`; `do` runs a nested branch and continues after the switch |
 | `fork: { branches: [ [steps], [steps] ] }` | parallel branches, joined                                     |
@@ -130,6 +130,56 @@ Inside `{{ }}`:
 
 A string with only one expression yields the typed value (object, number, boolean). A string with
 text around expressions yields a string.
+
+### Resource inputs
+
+An input with `x-resource: { type }` takes the id of a resource in the registry. A start checks
+that the registry knows the id, that it is of that type and that it is not retired (400 with
+`input.unknownResource`, `input.wrongResourceType` or `input.retiredResource`); a resource that is
+still building passes, and the `use` step waits for it.
+
+With `orCreateWith: <workflow>` the input also takes a request to build the resource first:
+
+```json
+{ "name": "web-01", "image": { "create": { "os": "rhel-9" } } }
+```
+
+The start checks `create` against the published `api.input` of that workflow, with its defaults
+(problems under `image.create.<field>`; `input.unknownProducer` when it has no published version).
+The job then runs that workflow as a child job, in a step named `image.create` before its first
+step, nested under the job and in the same trace. From then on `$input.image` is the id of the
+`image` the child registered; a child that registers none fails the job (`no_resource`). The job
+keeps its input as asked, and a rerun replays the recorded build instead of building again. The
+catalog, the OpenAPI document and the MCP tools show both forms: the input becomes `anyOf` the id
+or `{ create: <that workflow's input> }`. Only one level is offered: the producer's own
+`orCreateWith` inputs take ids inside `create`.
+
+### Checks
+
+The editor, `POST /workflows:validate`, `npm run check:workflows` (CI) and the publish run the same
+checks; `packages/workflow-checks` and `WorkflowChecks.java` are twins with shared fixtures. Each
+finding is a `Problem` (docs/api.md). Among them:
+
+| Code                      | Level   | Finding                                                                 |
+|---------------------------|---------|-------------------------------------------------------------------------|
+| `contract.missingInput`   | error   | a run step leaves out a field the workflow's published `api.input` requires (and has no default for) |
+| `contract.unknownInput`   | warning | a run step passes a field that input does not declare; the fix names the closest one |
+| `contract.type`           | error   | a run step passes a literal of the wrong type, or one outside the field's `enum` |
+| `run.onFailure`           | error   | `onFailure` is neither `fail` nor `continue`                            |
+| `expr.unknownField`       | warning | an expression reads a field the step it names does not return (`$vm.vmId`); the fix is the closest field (`id`). Judged where the step declares its output (provider action, run, use, register) |
+| `step.unreachable`        | warning | a step never runs: every case of the switch before it jumps past it     |
+| `policy.approvalRequired` | warning | a destructive step (delete action, HTTP DELETE, `terraform destroy`) with no approval before it; the fix inserts one |
+| `publish.ansibleLint`, `publish.routes`, `publish.contracts` | error | only from `:validate`: the change-request checks the file would fail at publish (an unpinned playbook, a route another published workflow answers, a breaking change without a new major version) |
+
+### Versions and contracts
+
+`metadata.version` is semantic. At publish, the new version is compared with the published one:
+an input removed, retyped, pointed at another resource type, narrowed (fewer `enum` values) or
+newly required, an output removed, a resource type no longer registered or an attribute no longer
+set is a breaking change. A breaking change without a new major version fails the change request's
+`contracts` check, which lists every consumer it reaches: run steps whose range accepts the new
+version, `orCreateWith` inputs, and workflows that use or take the types it registers. With a new
+major version the check passes and still lists them, with the run steps that stay on the old major.
 
 ## kind: Provider
 

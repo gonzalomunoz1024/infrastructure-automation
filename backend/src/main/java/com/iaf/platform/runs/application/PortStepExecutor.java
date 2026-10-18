@@ -28,6 +28,7 @@ import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.ChildFailure;
+import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Job;
@@ -448,11 +449,7 @@ public class PortStepExecutor implements StepExecutor {
             if (!outcome.succeeded()) {
                 throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
             }
-            ObjectNode out = F.objectNode();
-            out.put("jobId", childJob.id());
-            out.put("status", outcome.status().json());
-            out.set("outputs", outcome.output() == null ? F.objectNode() : outcome.output());
-            return out;
+            return ChildResults.of(childJob.id(), outcome, cctx);
         }
 
         @Override

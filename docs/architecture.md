@@ -106,7 +106,10 @@ stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` f
 `StepExecutor` (the only thing that touches the world) and a `JobContext` (input, step outputs,
 identity). It resolves expressions, walks `do` in order, handles `switch`, `fork`, `try/catch`,
 `for`, `wait`, `set`, `raise`, `run` (child workflow), `approval`, `use`/`register`, and
-compensation on failure. The same class runs:
+compensation on failure. Before the first step it builds what the input asked for: an
+`orCreateWith` input holding `{ create }` runs its producer as a child job (step `<input>.create`)
+and then reads as the id of the resource the child registered; every engine returns a child's
+result through `ChildResults`, which carries those registrations. The same class runs:
 
 - in process, inside `InMemoryWorkflowExecution` (the default), on a bounded scheduler;
 - inside Temporal, where `InterpreterWorkflowImpl` implements `StepExecutor` with activities,

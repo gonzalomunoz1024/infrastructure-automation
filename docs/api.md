@@ -63,9 +63,9 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | POST   | `/workflows:render`                          | `{ definition }` → `{ yaml }` (200): the canonical YAML of a document; the browser never renders YAML itself |
 | POST   | `/workflows:parse`                           | `{ yaml }` → `{ definition; problems: Problem[] }` (200): the YAML document as JSON, same shape as `definition` everywhere |
 | DELETE | `/workflows/{name}`                          | drafts only → 204 |
-| POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200) |
+| POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200); also reports, as `publish.ansibleLint`, `publish.routes` and `publish.contracts` errors, the change-request checks the file would fail when published (docs/config-as-code.md, Checks) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
-| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). Checks: schema, checks, ansible-lint, policy, replay, diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
+| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema, checks, ansible-lint, policy, replay, contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
@@ -110,7 +110,7 @@ type CatalogEntry = { workflow; title; noun; verb; persona?; method; path; batch
 |--------|-------------------------------------|---------|
 | GET    | `/catalog`                          | `CatalogEntry[]` |
 | GET    | `/openapi.json` (also `/api/v1/openapi.json`) | OpenAPI 3.1 document of every published workflow and resource type |
-| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure or an `x-resource` id the registry does not know; 403 on RBAC |
+| *      | generated `method path`             | body = input → 202 `{ jobId; status: 'queued'; links: { job } }`; 400 with `{ error, problems }` on schema failure, an `x-resource` id the registry does not know, or a `{ create }` request the producing workflow's input refuses (`<field>.create.<field>`); 403 on RBAC |
 | POST   | `batchPath`                         | `{ items: object[]; defaults?: object; rollout?: { waves; maxParallel; stopIfFailedPercent } }` → 202 `{ jobId; rows; status; links }`; 400 lists invalid rows `{ error, rows: { index; problems }[] }`. A path that ends in a parameter batches on the collection, so every row brings its own id: `/vms/{vmId}:restart` → `/vms:restart:batch`, `DELETE /vms/{vmId}` → `/vms:delete:batch`; any other path adds `:batch` (`/vms` → `/vms:batch`). Earlier path parameters apply to every row. Every row is checked against the schema and the registry before anything starts |
 | POST   | `{path}:preview`                    | body = input → `Preview` (200) |
 | GET    | `/{plural}` and `/{plural}/{id}`    | resources of a type |
@@ -121,6 +121,10 @@ type Preview = { workflow; version; steps: { id; name; effect: 'create' | 'chang
   affectedResources: { id; type; name; via }[]; cost?: { monthly; currency; detail };
   policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules: { id; result; message }[]; engine: 'mock' | 'opa' } }
 ```
+
+An `x-resource` input with `orCreateWith` shows both forms in `CatalogEntry.input`, the OpenAPI
+request bodies and the MCP tool inputs: `anyOf` the id, or `{ create: <the producing workflow's
+input> }` to have the resource built first (docs/config-as-code.md, Resource inputs).
 
 MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `api.input`), one
 `<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,

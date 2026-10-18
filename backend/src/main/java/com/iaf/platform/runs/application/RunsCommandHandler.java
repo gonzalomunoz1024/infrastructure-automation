@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -26,7 +27,6 @@ import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
-import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -67,6 +67,7 @@ import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort.OpenChange;
 import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
+import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
@@ -133,6 +134,7 @@ public class RunsCommandHandler implements RunsCommands {
             JsonNode input = validate(def, cmd.input());
             String channel = cmd.channel() == null ? "rest" : cmd.channel();
             return requireKnownResources(def, List.of(input), false)
+                    .then(requireBuildable(def, List.of(input), false))
                     .then(evaluatePolicy(who, def, rec.version(), input, channel, cmd.parentId()))
                     .flatMap(decision -> previewFor(cmd.preview(), def, List.of(input), decision, cmd.parentId() == null)
                             .flatMap(preview -> {
@@ -163,7 +165,7 @@ public class RunsCommandHandler implements RunsCommands {
             List<RowProblems> invalid = new ArrayList<>();
             for (int i = 0; i < cmd.items().size(); i++) {
                 JsonNode merged = InputDefaults.apply(def.inputSchema(), InputDefaults.merge(cmd.defaults(), cmd.items().get(i)));
-                List<Problem> problems = Schemas.validate(def.inputSchema(), merged);
+                List<Problem> problems = CreateRequests.inputProblems(def, merged);
                 if (!problems.isEmpty()) {
                     invalid.add(new RowProblems(i, problems));
                 }
@@ -176,6 +178,7 @@ public class RunsCommandHandler implements RunsCommands {
             List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
             String channel = cmd.channel() == null ? "batch" : cmd.channel();
             return requireKnownResources(def, rows, true)
+                    .then(requireBuildable(def, rows, true))
                     .then(evaluatePolicy(who, def, rec.version(), rows.get(0), channel, null))
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true)
                             .flatMap(preview -> {
@@ -515,9 +518,40 @@ public class RunsCommandHandler implements RunsCommands {
                 });
     }
 
+    /**
+     * Each request to build a resource first ({@code { create: {...} }} on an {@code orCreateWith}
+     * input) against the published input of the workflow that builds it: a 400 naming every
+     * problem under {@code <input>.create}.
+     */
+    private Mono<Void> requireBuildable(WorkflowDefinition def, List<JsonNode> rows, boolean batch) {
+        Set<String> producers = new TreeSet<>();
+        rows.forEach(row -> CreateRequests.of(def, row).forEach(r -> producers.add(r.orCreateWith())));
+        if (producers.isEmpty()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(producers)
+                .flatMap(name -> workflows.published(name))
+                .collectMap(r -> r.definition().name(), WorkflowRecord::definition)
+                .flatMap(found -> {
+                    List<RowProblems> invalid = new ArrayList<>();
+                    for (int i = 0; i < rows.size(); i++) {
+                        List<Problem> problems = CreateRequests.problems(def, rows.get(i), name -> Optional.ofNullable(found.get(name)));
+                        if (!problems.isEmpty()) {
+                            invalid.add(new RowProblems(i, problems));
+                        }
+                    }
+                    if (invalid.isEmpty()) {
+                        return Mono.<Void>empty();
+                    }
+                    return Mono.error(batch ? new InvalidInputException(def.name(), invalid, true)
+                            : new InvalidInputException(def.name(), invalid.get(0).problems()));
+                });
+    }
+
+    /** Defaults filled in, then the schema, with requests to build a resource first let through (judged by requireBuildable). */
     static JsonNode validate(WorkflowDefinition def, JsonNode input) {
         JsonNode in = InputDefaults.apply(def.inputSchema(), input);
-        List<Problem> problems = Schemas.validate(def.inputSchema(), in);
+        List<Problem> problems = CreateRequests.inputProblems(def, in);
         if (!problems.isEmpty()) {
             throw new InvalidInputException(def.name(), problems);
         }

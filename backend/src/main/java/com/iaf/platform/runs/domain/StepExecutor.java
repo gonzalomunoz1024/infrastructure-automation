@@ -28,7 +28,9 @@ public interface StepExecutor {
 
     /**
      * {@code run}: the child workflow {@code workflow} in the version range {@code version}, as a
-     * child job. Returns {@code { jobId, status, outputs }} and registers the child in the context.
+     * child job. Returns {@code { jobId, status, outputs, resources }} ({@link ChildResults#of},
+     * with the resources the child's register steps recorded: a parent that asked for a resource to
+     * be built first takes its id from there) and registers the child in the context.
      * A child that does not succeed is a {@link ChildFailure}, which the walker turns into the
      * step's output when the step says {@code onFailure: continue}.
      */

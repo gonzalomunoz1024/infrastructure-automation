@@ -38,6 +38,7 @@ import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.ChildFailure;
+import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.domain.Durations;
@@ -94,6 +95,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         final AtomicReference<AttentionDecision> earlyAttention = new AtomicReference<>();
         final Set<String> children = ConcurrentHashMap.newKeySet();
         volatile String cancelledBy;
+        /** the interpreter's context, kept so a parent sees what this child registered */
+        volatile JobContext context;
 
         Execution(Job job) {
             this.job = job;
@@ -210,7 +213,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         }
         PortStepExecutor executor = executors.live(job, this);
         WorkflowInterpreter.Resume resume = resumeOf(job);
-        Outcome outcome = new WorkflowInterpreter(job.definition(), executor, JobContext.of(job), resume).run();
+        exec.context = JobContext.of(job);
+        Outcome outcome = new WorkflowInterpreter(job.definition(), executor, exec.context, resume).run();
         finish(exec, outcome);
         return outcome;
     }
@@ -347,11 +351,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         if (!outcome.succeeded()) {
             throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
         }
-        ObjectNode out = F.objectNode();
-        out.put("jobId", childJob.id());
-        out.put("status", outcome.status().json());
-        out.set("outputs", outcome.output() == null ? F.objectNode() : outcome.output());
-        return out;
+        return ChildResults.of(childJob.id(), outcome, cexec.context);
     }
 
     @Override

@@ -71,6 +71,18 @@ class OpenApiDocumentTest {
     }
 
     @Test
+    void anInputThatCanBeBuiltFirstTakesAnIdOrTheProducersInputUnderCreate() {
+        JsonNode body = DOC.path("paths").path("/api/v1/vms").path("post").path("requestBody").path("content").path("application/json").path("schema");
+        JsonNode image = body.path("properties").path("image");
+        assertThat(image.path("x-resource").path("orCreateWith").asText()).isEqualTo("build-vm-image");
+        assertThat(image.path("anyOf").get(0).path("type").asText()).isEqualTo("string");
+        JsonNode create = image.path("anyOf").get(1).path("properties").path("create");
+        assertThat(create.path("properties").has("os")).as("build-vm-image's input").isTrue();
+        assertThat(create.path("properties").has("hardening")).isTrue();
+        assertThat(DOC.path("components").path("schemas").path("vm_create_input").path("properties").path("image").has("anyOf")).isTrue();
+    }
+
+    @Test
     void batchAndPreviewOperations() {
         JsonNode batch = DOC.path("paths").path("/api/v1/vms:patch:batch").path("post");
         assertThat(batch.path("operationId").asText()).isEqualTo("vm_patch_batch");

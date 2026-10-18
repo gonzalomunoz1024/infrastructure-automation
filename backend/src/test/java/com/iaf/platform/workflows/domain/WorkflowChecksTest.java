@@ -113,11 +113,11 @@ class WorkflowChecksTest {
                         run: { workflow: create-vm, version: "^2", input: { name: web-1, image: img-1, size: small } }
                         output: { as: made }
                     - tell:
-                        notify: { channel: "#ops", message: "{{ $made.outputs.vmid }} {{ $('make').json.outputs.name }} {{ $made.status }} {{ $made.error.message }}" }
+                        notify: { channel: "#ops", message: "{{ $made.outputs.vmid }} {{ $('make').json.outputs.name }} {{ $made.status }} {{ $made.error.message }} {{ $made.resources[0].id }}" }
                 """;
         List<Problem> problems = WorkflowChecks.check(yaml, SampleContentTest.context());
 
-        assertThat(problems).singleElement().satisfies(p -> {
+        assertThat(problems).as("resources: what the child registered").singleElement().satisfies(p -> {
             assertThat(p.code()).isEqualTo("expr.unknownField");
             assertThat(p.message()).isEqualTo("$made has no field 'outputs.vmid'");
             assertThat(p.fix().value()).isEqualTo("outputs.vmId");

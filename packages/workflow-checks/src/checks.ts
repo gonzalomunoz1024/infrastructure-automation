@@ -1129,6 +1129,8 @@ class Checker {
             jobId: { type: 'string' },
             status: { type: 'string' },
             outputs: { type: 'object', properties: outProps },
+            // the resources the child's register steps recorded
+            resources: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string' } } } },
             error: { type: 'object', properties: errorProps },
           },
         };

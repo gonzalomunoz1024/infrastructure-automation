@@ -43,10 +43,15 @@ public final class JobContext {
     private final AtomicInteger seq = new AtomicInteger();
     private final List<String> children = Collections.synchronizedList(new ArrayList<>());
     private final List<Completed> completed = Collections.synchronizedList(new ArrayList<>());
+    private final List<Registered> registered = Collections.synchronizedList(new ArrayList<>());
     private volatile JsonNode error = NullNode.getInstance();
 
     /** A step that finished successfully, kept for compensation (reverse order on failure). */
     public record Completed(Step step, JsonNode input, JsonNode output) {
+    }
+
+    /** A resource a register step of this job recorded in the registry. */
+    public record Registered(String id, String type) {
     }
 
     public JobContext(String jobId, String workflow, String version, JsonNode input, Identity identity, String environment,
@@ -54,7 +59,8 @@ public final class JobContext {
         this.jobId = jobId;
         this.workflow = workflow;
         this.version = version;
-        this.input = input == null ? F.objectNode() : input;
+        // a copy: building a resource first replaces a create request with the new id (resolveInput)
+        this.input = input == null ? F.objectNode() : input.deepCopy();
         this.identity = identity == null ? Identity.SYSTEM : identity;
         this.environment = environment == null ? "dev" : environment;
         this.startedAt = startedAt == null ? Instant.EPOCH : startedAt;
@@ -118,6 +124,24 @@ public final class JobContext {
 
     public void addChild(String childJobId) {
         children.add(childJobId);
+    }
+
+    /** Replace one top-level input field, as {@code $input} reads it from now on (an orCreateWith request becomes the new id). */
+    public void resolveInput(String field, JsonNode value) {
+        if (input instanceof ObjectNode o) {
+            o.set(field, value == null ? NullNode.getInstance() : value);
+        }
+    }
+
+    /** The resources this job's register steps recorded, in order. */
+    public List<Registered> registered() {
+        return List.copyOf(registered);
+    }
+
+    public void addRegistered(String id, String type) {
+        if (id != null && type != null) {
+            registered.add(new Registered(id, type));
+        }
     }
 
     public List<Completed> completed() {

@@ -56,6 +56,10 @@ class CatalogQueryHandlerTest {
         CatalogEntry build = entries.stream().filter(e -> e.workflow().equals("build-vm-image")).findFirst().orElseThrow();
         assertThat(build.previewPath()).isNull();
         assertThat(build.batch().max()).isEqualTo(500);
+
+        CatalogEntry vm = entries.stream().filter(e -> e.workflow().equals("create-vm")).findFirst().orElseThrow();
+        assertThat(vm.input().path("properties").path("image").path("anyOf").get(1).path("properties").path("create"))
+                .as("an image id, or build-vm-image's input to build one first").isEqualTo(build.input());
     }
 
     @Test

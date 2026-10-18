@@ -10,19 +10,21 @@ import java.util.Set;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.resources.domain.Resource;
+import com.iaf.platform.workflows.domain.CreateRequests;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 /**
  * The inventory check of a start: every input marked {@code x-resource} must name a resource the
  * registry knows, of that type, and not retired. A resource that is still building passes; the
- * {@code use} step waits for it.
+ * {@code use} step waits for it. An input with {@code orCreateWith} may instead ask for a new
+ * resource ({@code { create: {...} }}); that request is judged against the producer's input.
  */
 public final class Inventory {
 
     public static final String RETIRED = "retired";
 
-    /** An input that points at the registry. */
-    public record Field(String name, String type) {
+    /** An input that points at the registry; {@code orCreateWith} names the workflow that can build one, or is null. */
+    public record Field(String name, String type, String orCreateWith) {
     }
 
     private Inventory() {
@@ -40,7 +42,8 @@ public final class Inventory {
             JsonNode xr = e.getValue().get("x-resource");
             String type = xr == null ? null : xr.path("type").asText(null);
             if (type != null && !type.isBlank()) {
-                out.add(new Field(e.getKey(), type));
+                String producer = xr.path("orCreateWith").asText(null);
+                out.add(new Field(e.getKey(), type, producer == null || producer.isBlank() ? null : producer));
             }
         }
         return out;
@@ -65,7 +68,14 @@ public final class Inventory {
         List<Problem> out = new ArrayList<>();
         for (Field f : fields) {
             JsonNode v = row == null ? null : row.get(f.name());
-            if (v == null || !v.isTextual() || v.asText().isBlank()) {
+            if (v == null || v.isNull() || v.isTextual() && v.asText().isBlank()) {
+                continue;
+            }
+            if (!v.isTextual()) {
+                if (f.orCreateWith() == null || !CreateRequests.asksToCreate(v)) {
+                    out.add(Problem.error("input.resourceId", null, f.name(), f.name() + " takes the id of an existing " + f.type()
+                            + (f.orCreateWith() == null ? "" : ", or { create: {...} } to build one with " + f.orCreateWith())));
+                }
                 continue;
             }
             String id = v.asText();

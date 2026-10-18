@@ -36,7 +36,7 @@ public class CatalogQueryHandler implements CatalogQueries {
 
     @Override
     public Flux<CatalogEntry> entries() {
-        return published().flatMapIterable(list -> list.stream().map(CatalogEntry::of).toList());
+        return published().flatMapIterable(list -> list.stream().map(r -> CatalogEntry.of(r, list)).toList());
     }
 
     @Override

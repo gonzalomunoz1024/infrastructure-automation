@@ -978,6 +978,13 @@ public final class WorkflowChecks {
                     outputs.put("type", "object");
                     ObjectNode outProps = outputs.putObject("properties");
                     outs.get().forEach(outProps::putObject);
+                    // the resources the child's register steps recorded
+                    ObjectNode resources = props.putObject("resources");
+                    resources.put("type", "array");
+                    ObjectNode resource = resources.putObject("items");
+                    resource.put("type", "object");
+                    ObjectNode resourceProps = resource.putObject("properties");
+                    List.of("id", "type").forEach(k -> resourceProps.putObject(k).put("type", "string"));
                     ObjectNode error = props.putObject("error");
                     error.put("type", "object");
                     ObjectNode errorProps = error.putObject("properties");

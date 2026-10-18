@@ -249,6 +249,28 @@ class InMemoryWorkflowExecutionTest {
     }
 
     @Test
+    void anInputAskingForANewResourceBuildsItFirstAsAChildJobInTheSameTrace() {
+        Job job = start(SampleContent.workflow("create-vm"), Map.of("name", "web-01", "image", Map.of("create", Map.of("os", "rhel-9")), "size", "small"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(w.projection.children(job.id())).singleElement().satisfies(child -> {
+            assertThat(child.workflow()).isEqualTo("build-vm-image");
+            assertThat(child.status()).isEqualTo(JobStatus.SUCCEEDED);
+            assertThat(child.traceId()).isEqualTo(job.traceId());
+            assertThat(child.input().path("os").asText()).isEqualTo("rhel-9");
+            assertThat(child.input().path("hardening").asText()).as("the producer's own default").isEqualTo("cis-l1");
+        });
+        Job done = job(job.id());
+        JobStep build = done.step("image.create");
+        assertThat(build.status()).isEqualTo(StepStatus.SUCCEEDED);
+        String imageId = build.output().path("resources").get(0).path("id").asText();
+        assertThat(imageId).isNotBlank();
+        assertThat(build.output().path("resources").get(0).path("type").asText()).isEqualTo("image");
+        assertThat(done.step("useImage").input().path("id").asText()).as("the job goes on with the new id").isEqualTo(imageId);
+        assertThat(done.input().path("image").path("create").path("os").asText()).as("the job keeps the request as asked").isEqualTo("rhel-9");
+    }
+
+    @Test
     void aBatchRunsInWavesAndStopsWhenTooManyRowsFail() {
         WorkflowDefinition def = yaml("""
                 apiVersion: iaf.platform/v1

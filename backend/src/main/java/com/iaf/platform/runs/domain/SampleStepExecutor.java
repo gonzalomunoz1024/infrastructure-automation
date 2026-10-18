@@ -225,16 +225,18 @@ public class SampleStepExecutor implements StepExecutor {
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_workflow", "No published version of '" + workflow + "' satisfies " + version, false));
         String childId = ctx.jobId() + "-" + counter.incrementAndGet();
         Instant started = now();
-        JobContext cctx = new JobContext(childId, child.name(), child.version(), input, ctx.identity(), ctx.environment(), started, ctx.traceId(), ctx.jobId());
+        JsonNode in = InputDefaults.apply(child.inputSchema(), input);
+        JobContext cctx = new JobContext(childId, child.name(), child.version(), in, ctx.identity(), ctx.environment(), started, ctx.traceId(), ctx.jobId());
         ctx.addChild(childId);
         Outcome o = new WorkflowInterpreter(child, this, cctx).run();
-        childRuns.add(new ChildRun(childId, ctx.jobId(), child, input, o, started, now()));
+        childRuns.add(new ChildRun(childId, ctx.jobId(), child, in, o, started, now()));
         if (!o.succeeded()) {
             throw ChildFailure.of(step.id(), childId, workflow, o);
         }
-        return childResult(childId, o);
+        return ChildResults.of(childId, o, cctx);
     }
 
+    /** A child's result without its registrations; engines use {@link ChildResults#of}. */
     public static JsonNode childResult(String childId, Outcome o) {
         ObjectNode out = F.objectNode();
         out.put("jobId", childId);

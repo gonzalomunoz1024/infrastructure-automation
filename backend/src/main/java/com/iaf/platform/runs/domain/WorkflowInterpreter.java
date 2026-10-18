@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import com.iaf.platform.common.expressions.ExpressionContext;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.expressions.ExpressionException;
@@ -20,6 +21,8 @@ import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.domain.StepExecutor.ApprovalRequest;
 import com.iaf.platform.runs.domain.StepExecutor.RegisterRequest;
 import com.iaf.platform.runs.domain.StepExecutor.UseRequest;
+import com.iaf.platform.workflows.domain.CreateRequests;
+import com.iaf.platform.workflows.domain.DependencyRules.ResourceInput;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.Step.SwitchCase;
 import com.iaf.platform.workflows.domain.StepType;
@@ -89,6 +92,7 @@ public final class WorkflowInterpreter {
             if (resume != null && resume.seed() != null) {
                 seedOutputs(resume.seed());
             }
+            buildRequested();
             JsonNode last = NullNode.getInstance();
             try {
                 last = runSteps(definition.steps(), last, true);
@@ -108,6 +112,45 @@ public final class WorkflowInterpreter {
         } catch (JobCancelled c) {
             return Outcome.cancelled();
         }
+    }
+
+    // ---------------------------------------------------------------- build it first
+
+    /**
+     * Inputs marked {@code x-resource} with {@code orCreateWith} that ask for a new resource
+     * ({@code { create: {...} }}) are built before the first step: the producer runs as a child
+     * job through a run step named {@code <input>.create}, and from then on {@code $input.<input>}
+     * is the id of the resource the child registered. A rerun replays the recorded build.
+     */
+    private void buildRequested() {
+        for (ResourceInput r : CreateRequests.of(definition, ctx.input())) {
+            ObjectNode with = F.objectNode();
+            with.put("workflow", r.orCreateWith());
+            // an expression, so the requester's values are passed as data and never read as templates
+            with.put("input", "{{ $input" + (r.field().matches("[A-Za-z_][A-Za-z0-9_]*") ? "." + r.field() : "['" + r.field() + "']") + ".create }}");
+            Step s = Step.simple(r.field() + ".create", "Build " + r.type(), StepType.RUN, with);
+            if (replaying && s.id().equals(resume.fromStep())) {
+                replaying = false; // a seeded job that stopped while building picks up here
+            }
+            JsonNode out;
+            if (replaying && recorded(s.id())) {
+                out = replay(s, NullNode.getInstance());
+            } else {
+                StepResult result = runLeaf(s, NullNode.getInstance());
+                if (result.kind() != StepResult.Kind.OUTPUT) {
+                    throw StepFailure.fatal(s.id(), "not_built", "The " + r.type() + " for " + r.field() + " was not built");
+                }
+                out = result.output();
+            }
+            String id = ChildResults.registered(out, r.type())
+                    .orElseThrow(() -> StepFailure.fatal(s.id(), "no_resource", r.orCreateWith() + " registered no " + r.type()));
+            ctx.resolveInput(r.field(), TextNode.valueOf(id));
+            executor.log(ctx, r.field() + ": built " + r.type() + " " + id + " with " + r.orCreateWith() + " (job " + out.path("jobId").asText() + ")");
+        }
+    }
+
+    private boolean recorded(String stepId) {
+        return resume.seed() != null && resume.seed().stream().anyMatch(j -> j.id().equals(stepId) && j.status() == StepStatus.SUCCEEDED);
     }
 
     // ---------------------------------------------------------------- step lists
@@ -417,12 +460,20 @@ public final class WorkflowInterpreter {
                     text(with, "message") == null ? text(with, "error") : text(with, "message"));
             case USE -> executor.useResource(ctx, s, new UseRequest(text(with, "type"), text(with, "id"), text(with, "waitUntil"),
                     with.path("checkAccess").asBoolean(false)), timeout);
-            case REGISTER -> executor.registerResource(ctx, s, new RegisterRequest(text(with, "type"), text(with, "id"), text(with, "state"),
-                    with.get("attributes"), strings(with.get("builtFrom"))));
+            case REGISTER -> registered(executor.registerResource(ctx, s, new RegisterRequest(text(with, "type"), text(with, "id"), text(with, "state"),
+                    with.get("attributes"), strings(with.get("builtFrom")))));
             case NOTIFY -> executor.notify(ctx, s, text(with, "channel"), text(with, "message"));
             case SCRIPT -> executor.script(ctx, s, text(with, "language"), text(with, "code"), with.get("input"), timeout);
             default -> throw new StepFailure(s.id(), "unsupported", "Step type " + s.type().key() + " is not a leaf step", false, true);
         };
+    }
+
+    /** A register step's resource, remembered so a parent that asked for it can find its id. */
+    private JsonNode registered(JsonNode resource) {
+        if (resource != null) {
+            ctx.addRegistered(resource.path("id").asText(null), resource.path("type").asText(null));
+        }
+        return resource;
     }
 
     /** A child job; with {@code onFailure: continue} its failure becomes the step's output and the parent goes on. */
