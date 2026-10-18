@@ -239,7 +239,7 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | POST   | `/jobs/{id}:retry`                     | `{ step?; input? }` → `CommandAccepted` (needs-attention retry, optionally with edited input) |
 | POST   | `/jobs/{id}:skip`                      | `{ step }` → `CommandAccepted` |
 | POST   | `/jobs/{id}:abort`                     | → `CommandAccepted` (abort and roll back) |
-| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job) |
+| POST   | `/jobs/{id}:rerun`                     | `{ fromStep; input? }` → `CommandAccepted` (id = the new job). The source job's input with `input` merged over it is checked as a start's is (the schema, the registry's resources, requests to build) and judged by the policy engine; the new job keeps the source's preview while the input is the same and gets a fresh one when it changed |
 | POST   | `/jobs/{id}:retry-failed-rows`         | → `CommandAccepted` (batch) |
 | GET    | `/approvals?status=pending`            | `Approval[]` |
 | GET    | `/approvals/{id}`                      | `Approval` |

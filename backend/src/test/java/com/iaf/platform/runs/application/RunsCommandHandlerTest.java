@@ -560,6 +560,69 @@ class RunsCommandHandlerTest {
         StepVerifier.create(handler.rerun(running, "checkVmExists", null)).expectError(ConflictException.class).verify();
     }
 
+    /** {@code jobId}'s job as a rerun finds it: ended as failed, after {@code steps}. */
+    private void failed(String jobId, List<JobStep> steps) {
+        Job source = w.projection.get(jobId).orElseThrow();
+        w.projection.put(source.toBuilder().status(JobStatus.FAILED).steps(steps).endedAt(Instant.now()).build());
+        published.clear();
+    }
+
+    private Mono<CommandAccepted> rerunAs(String jobId, String fromStep, Map<String, Object> input) {
+        return handler.rerun(jobId, fromStep, input == null ? null : SampleContent.json(input)).contextWrite(c -> CurrentIdentity.with(c, SampleContent.GONZALO));
+    }
+
+    @Test
+    void aRerunChecksItsMergedInputAgainstTheRegistryAsAStartDoes() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042", "reason", "stuck"));
+        failed(jobId, List.of());
+
+        StepVerifier.create(rerunAs(jobId, null, Map.of("vmId", "missing-vm-9")))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("missing-vm-9");
+                    assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.unknownResource");
+                })
+                .verify();
+        StepVerifier.create(rerunAs(jobId, null, Map.of("vmId", "retired-vm-3")))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems()).extracting(p -> p.code()).containsExactly("input.retiredResource"))
+                .verify();
+
+        assertThat(eventTypes()).doesNotContain("job.started");
+        verify(engine, times(1)).start(any());
+    }
+
+    @Test
+    void aRerunJudgesARequestToBuildAgainstTheProducerAsAStartDoes() {
+        String jobId = startedJob("create-vm", Map.of("name", "web-01", "image", "img-77"));
+        failed(jobId, List.of());
+
+        StepVerifier.create(rerunAs(jobId, null, Map.of("image", Map.of("create", Map.of("os", "beos")))))
+                .expectErrorSatisfies(e -> assertThat(((InvalidInputException) e).problems())
+                        .extracting(p -> p.code(), p -> p.field()).containsExactly(tuple("schema", "image.create.os")))
+                .verify();
+        assertThat(eventTypes()).doesNotContain("job.started");
+
+        CommandAccepted acc = rerunAs(jobId, null, Map.of("image", Map.of("create", Map.of("os", "rhel-9")))).block();
+        assertThat(w.projection.get(acc.id()).orElseThrow().input().path("image").path("create").path("os").asText()).isEqualTo("rhel-9");
+    }
+
+    @Test
+    void aRerunWithNewInputGetsAFreshPreviewAndOneWithTheSameInputKeepsTheSourcesPreview() {
+        String jobId = startedJob("vm-restart", Map.of("vmId", "vm-1042", "reason", "stuck"));
+        failed(jobId, List.of());
+        Preview before = w.projection.get(jobId).orElseThrow().preview();
+        assertThat(before.affectedResources()).extracting(AffectedResource::id).contains("vm-1042");
+
+        CommandAccepted same = rerunAs(jobId, null, null).block();
+        CommandAccepted sameValues = rerunAs(jobId, null, Map.of("reason", "stuck")).block();
+        CommandAccepted other = rerunAs(jobId, null, Map.of("vmId", "vm-7")).block();
+
+        assertThat(w.projection.get(same.id()).orElseThrow().preview()).as("no new input").isEqualTo(before);
+        assertThat(w.projection.get(sameValues.id()).orElseThrow().preview()).as("the input it already had").isEqualTo(before);
+        Preview fresh = w.projection.get(other.id()).orElseThrow().preview();
+        assertThat(fresh).isNotNull();
+        assertThat(fresh.affectedResources()).extracting(AffectedResource::id).contains("vm-7").doesNotContain("vm-1042");
+    }
+
     @Test
     void retryFailedRowsAddsAWaveWithTheFailedRowsAndRestartsTheBatch() {
         List<JsonNode> items = List.of(SampleContent.json(Map.of("vmId", "a")), SampleContent.json(Map.of("vmId", "b")),

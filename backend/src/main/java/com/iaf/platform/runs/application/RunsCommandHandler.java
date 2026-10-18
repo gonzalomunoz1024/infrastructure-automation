@@ -286,10 +286,15 @@ public class RunsCommandHandler implements RunsCommands {
             AccessRules.requireInvoke(who, rbac(def), def.name());
             JsonNode merged = input == null || input.isNull() ? source.input() : WorkflowInterpreter.merge(source.input(), input);
             JsonNode validated = validate(def, merged);
-            return evaluatePolicy(who, def, source.version(), validated, "rest", null).flatMap(decision -> {
-                Job job = JobFactory.rerun(source, from, validated, who, "rest", null, now()).withPolicy(decision);
-                return openChange(job, def, null);
-            }).flatMap(job -> launch(job, source.id()));
+            // the merged input is checked as a start checks it; the source's preview holds only while the input is the same
+            boolean sameInput = validated.equals(source.input());
+            return requireKnownResources(def, List.of(validated), false)
+                    .then(requireBuildable(def, List.of(validated), false))
+                    .then(evaluatePolicy(who, def, source.version(), validated, "rest", null))
+                    .flatMap(decision -> (sameInput ? Mono.just(Optional.ofNullable(source.preview())) : previewFor(null, def, List.of(validated), decision, true, who))
+                            .flatMap(preview -> openChange(JobFactory.rerun(source, from, validated, preview.orElse(null), who, "rest", null, now())
+                                    .withPolicy(decision), def, null)))
+                    .flatMap(job -> launch(job, source.id()));
         });
     }
 
