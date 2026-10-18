@@ -87,6 +87,17 @@ Registry (read-only, used by the designer and the Devin playbook):
 | GET `/registry/resource-types` | `ResourceType[]` |
 | GET `/registry/playbooks` | `{ name; version; path; owner }[]` |
 | GET `/registry/credentials` | `{ name; type }[]` (names only) |
+| GET `/registry/dependencies` | `Dependencies`: who produces and consumes each resource type, which published workflows run which, and the cycles among runs |
+
+```ts
+type DependencyLink = { workflow; via: 'producedBy' | 'register' | 'input' | 'use' | 'run' | 'orCreateWith';
+  at?: string /* step id or input field */; range?: string /* a run step's version range */ }
+type Dependencies = {
+  resourceTypes: { type; producers: DependencyLink[]; consumers: DependencyLink[] }[];
+  workflows: { workflow; version; produces: string[]; consumes: string[]; runs: DependencyLink[]; consumers: DependencyLink[] }[];
+  cycles: string[][]   // e.g. ['a', 'b', 'a']: a runs b, b runs a
+}
+```
 
 ## Catalog (generated)
 

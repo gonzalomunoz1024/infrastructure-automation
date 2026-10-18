@@ -233,6 +233,11 @@ class RestControllerWorkflowAdapterTest {
                 .jsonPath("$[?(@.name == 'vm')].producedBy").isEqualTo("create-vm");
         client.get().uri("/api/v1/registry/playbooks").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.length()").isEqualTo(3).jsonPath("$[0].name").isEqualTo("ops-playbooks/vm.restart").jsonPath("$[0].path").isEqualTo("vm/restart.yml");
+        client.get().uri("/api/v1/registry/dependencies").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.workflows.length()").isEqualTo(9)
+                .jsonPath("$.resourceTypes[?(@.type == 'image')].producers[0].workflow").isEqualTo("build-vm-image")
+                .jsonPath("$.workflows[?(@.workflow == 'create-vm')].consumers[0].range").isEqualTo("^2")
+                .jsonPath("$.cycles.length()").isEqualTo(0);
         client.get().uri("/api/v1/registry/credentials").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.length()").isEqualTo(2).jsonPath("$[0].name").isEqualTo("vsphere/token").jsonPath("$[0].type").isEqualTo("token")
                 .jsonPath("$[0].path").doesNotExist();

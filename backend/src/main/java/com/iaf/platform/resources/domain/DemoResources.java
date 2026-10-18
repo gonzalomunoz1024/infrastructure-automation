@@ -10,15 +10,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.TreeSet;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.iaf.platform.workflows.domain.Step;
-import com.iaf.platform.workflows.domain.StepType;
+import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 /**
@@ -40,58 +38,23 @@ public final class DemoResources {
     private DemoResources() {
     }
 
-    /** For each type, the types it is built from, as the workflows describe it. */
+    /** For each type, the types it is built from, as the workflows describe it ({@link DependencyRules}). */
     public static Map<String, Set<String>> dependencies(List<ResourceTypeDefinition> types, List<WorkflowDefinition> workflows) {
-        Map<String, WorkflowDefinition> byName = new HashMap<>();
-        for (WorkflowDefinition w : workflows == null ? List.<WorkflowDefinition>of() : workflows) {
-            byName.put(w.name(), w);
-        }
-        Set<String> known = new TreeSet<>();
-        types.forEach(t -> known.add(t.name()));
-        Map<String, Set<String>> produced = new HashMap<>();   // workflow -> types it registers
-        for (ResourceTypeDefinition t : types) {
-            if (t.producedBy() != null) {
-                produced.computeIfAbsent(t.producedBy(), k -> new TreeSet<>()).add(t.name());
-            }
-        }
-        for (WorkflowDefinition w : byName.values()) {
-            for (Step s : w.allSteps()) {
-                if (s.type() == StepType.REGISTER && s.withText("type") != null && known.contains(s.withText("type"))) {
-                    produced.computeIfAbsent(w.name(), k -> new TreeSet<>()).add(s.withText("type"));
-                }
-            }
-        }
-        Map<String, Set<String>> deps = new TreeMap<>();
-        for (ResourceTypeDefinition t : types) {
-            Set<String> d = new TreeSet<>();
-            WorkflowDefinition producer = t.producedBy() == null ? null : byName.get(t.producedBy());
-            if (producer != null) {
-                for (Step s : producer.allSteps()) {
-                    if (s.type() == StepType.USE && s.withText("type") != null) {
-                        d.add(s.withText("type"));
-                    } else if (s.type() == StepType.RUN && s.withText("workflow") != null) {
-                        d.addAll(produced.getOrDefault(s.withText("workflow"), Set.of()));
-                    }
-                }
-            }
-            d.remove(t.name());
-            d.retainAll(known);
-            deps.put(t.name(), d);
-        }
-        return deps;
+        return graph(types, workflows).typeDependencies();
     }
 
     /** The types some workflow picks from the registry with a {@code use} step. */
     public static Set<String> usedTypes(List<WorkflowDefinition> workflows) {
         Set<String> used = new TreeSet<>();
-        for (WorkflowDefinition w : workflows == null ? List.<WorkflowDefinition>of() : workflows) {
-            for (Step s : w.allSteps()) {
-                if (s.type() == StepType.USE && s.withText("type") != null) {
-                    used.add(s.withText("type"));
-                }
-            }
-        }
+        graph(List.of(), workflows).consumes().stream().filter(l -> l.via() == DependencyRules.Via.USE).forEach(l -> used.add(l.type()));
         return used;
+    }
+
+    /** The dependency graph of the content: every type with the workflow its file names as producer. */
+    public static DependencyRules.Graph graph(List<ResourceTypeDefinition> types, List<WorkflowDefinition> workflows) {
+        Map<String, String> producedBy = new HashMap<>();
+        types.forEach(t -> producedBy.put(t.name(), t.producedBy()));
+        return DependencyRules.of(workflows == null ? List.of() : workflows, producedBy);
     }
 
     /** Types in dependency order (what a type is built from comes first), ties by name. */

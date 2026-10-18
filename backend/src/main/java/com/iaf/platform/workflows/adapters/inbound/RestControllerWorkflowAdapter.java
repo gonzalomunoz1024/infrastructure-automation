@@ -212,6 +212,12 @@ public class RestControllerWorkflowAdapter implements WorkflowCommands, Workflow
         return queries.credentials();
     }
 
+    @Override
+    @GetMapping("/registry/dependencies")
+    public Mono<Dependencies> dependencies() {
+        return queries.dependencies();
+    }
+
     // ------------------------------------------------------------------ the in-process port (no HTTP mapping)
 
     @Override

@@ -76,6 +76,30 @@ public interface WorkflowQueries {
     record Playbook(String name, String version, String path, String owner) {
     }
 
+    /**
+     * {@code GET /registry/dependencies}: how the published workflows and the resource types
+     * depend on each other. {@code cycles} are runs that come back to where they started.
+     */
+    record Dependencies(List<TypeDependencies> resourceTypes, List<WorkflowDependencies> workflows, List<List<String>> cycles) {
+    }
+
+    /** Who produces a type (producedBy, register steps) and who consumes it (x-resource inputs, use steps). */
+    record TypeDependencies(String type, List<DependencyLink> producers, List<DependencyLink> consumers) {
+    }
+
+    /** What a workflow produces and consumes, which workflows it runs and which workflows run it. */
+    record WorkflowDependencies(String workflow, String version, List<String> produces, List<String> consumes, List<DependencyLink> runs,
+            List<DependencyLink> consumers) {
+    }
+
+    /**
+     * One link: the workflow at the other end, how ({@code producedBy}, {@code register},
+     * {@code input}, {@code use}, {@code run}, {@code orCreateWith}), where ({@code at}: the step id
+     * or input field) and, for a run step, its version range.
+     */
+    record DependencyLink(String workflow, String via, String at, String range) {
+    }
+
     record CredentialName(String name, String type) {
     }
 
@@ -112,6 +136,9 @@ public interface WorkflowQueries {
     Flux<ResourceTypeDefinition> resourceTypes();
 
     Flux<Playbook> playbooks();
+
+    /** Producers and consumers of every resource type and published workflow, and the cycles among runs. */
+    Mono<Dependencies> dependencies();
 
     Flux<CredentialName> credentials();
 }
