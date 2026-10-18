@@ -30,8 +30,8 @@ import com.mongodb.client.model.Updates;
 /**
  * The builder sessions of the {@code mongo} profile: one document per session in
  * {@code assistant_sessions}, its doc the {@link AssistantSession}, so a conversation and its
- * draft survive a restart. An update holds the session while it changes it, as the row lock did,
- * so concurrent turns never lose one another: it claims a lease with a conditional
+ * draft survive a restart. An update holds the session while it changes it, so concurrent turns
+ * never lose one another: it claims a lease with a conditional
  * {@code findOneAndUpdate} that only matches a session nobody holds ({@code lease}, a token of
  * its own, until {@code leaseUntil}), changes what that returned, and writes the result only while
  * it still holds the lease, in the same write that gives the lease up. Another update waits

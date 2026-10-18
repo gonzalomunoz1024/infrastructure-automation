@@ -29,8 +29,8 @@ import com.mongodb.client.model.Updates;
 
 /**
  * The inbox of the {@code mongo} profile: one document per notification in
- * {@code inbox_notifications}, keyed by its id, its doc the {@link Notification}. What the JDBC
- * store kept in two child tables is embedded, and stays as small as the notification itself:
+ * {@code inbox_notifications}, keyed by its id, its doc the {@link Notification}. Who it is for
+ * and who read it are embedded, and stay as small as the notification itself:
  * {@code audience}, each of its users as {@code user:<id>} and each of its teams as
  * {@code team:<name>} (indexed, so the inbox of a caller is one query), and {@code readers}, who
  * read it and when, each person once (the inbox lets only the people it is addressed to mark it
