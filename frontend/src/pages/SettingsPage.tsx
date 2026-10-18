@@ -7,6 +7,7 @@ import {
   CodeBlock,
   CopyButton,
   Field,
+  Icon,
   Input,
   Modal,
   OverlayBody,
@@ -18,6 +19,7 @@ import {
   StatusDot,
   Table,
   Tag,
+  cx,
   longDate,
   relativeTime,
   useOverlayClose,
@@ -31,6 +33,8 @@ import { API_BASE, api, errorMessage, isApiError, setCurrentUser, useCurrentUser
 import { useMutation, useQuery } from '../lib/queries'
 import type { ActuatorHealth, CreateServiceAccount, Me, ServiceAccount, ServiceAccountCreated, ServiceAccountScope } from '../lib/types'
 import { ApiLinks } from '../components/ApiLinks'
+import { ExternalLink } from '../components/common'
+import { IDENTITY_DOC, docsUrl } from '../lib/docs'
 import { PRESETS, PRESET_INFO, SCOPE_GROUPS, fitsPreset, orderScopes, presetOf, scopesRequest, type PresetChoice } from '../components/service-account-scopes'
 
 const DEV_USERS = ['gonzalo', 'ana', 'mateo', 'junior'] as const
@@ -38,13 +42,23 @@ const ROLES = ['ops', 'sre', 'admin'] as const
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
+/**
+ * Only a platform admin lists or creates service accounts; anyone else gets a 403 (docs/api.md,
+ * Identity). Known from /me, or from the 403 itself while /me has not answered.
+ */
+export function adminsOnly(me: Me | undefined, error: unknown): boolean {
+  return me?.admin === false || (isApiError(error) && error.status === 403)
+}
+
 export default function SettingsPage({ route }: PageProps) {
   const { mode, setMode } = useTheme()
   const user = useCurrentUser()
   const me = useQuery(['me', user ?? 'default'], () => api.me())
   const health = useQuery('health', () => api.health(), { refetchInterval: 30_000 })
   const info = useQuery('info', () => api.info())
-  const accounts = useQuery('service-accounts', () => api.serviceAccounts())
+  // the list depends on who asks: a non-admin's is a 403, so it is not asked for once /me says so
+  const accounts = useQuery(['service-accounts', user ?? 'default'], () => api.serviceAccounts(), { enabled: me.data?.admin !== false })
+  const notAdmin = adminsOnly(me.data, accounts.error)
   const [creating, setCreating] = useState(false)
   const [created, setCreated] = useState<ServiceAccountCreated | null>(null)
 
@@ -136,7 +150,7 @@ export default function SettingsPage({ route }: PageProps) {
         </Card>
 
         <div ref={identityRef}>
-          <Card title="Identity" subtitle="Development identity: the X-User header sent with every request. Production signs in through SSO.">
+          <Card title="Identity" subtitle="Who the API runs your requests as. Locally that is the person the X-User header names, and this shell sends it.">
             <CardRow label="Act as" description={user ? `Sending X-User: ${user}` : 'No header: the backend default applies'}>
               <Segmented
                 ariaLabel="Development user"
@@ -148,6 +162,7 @@ export default function SettingsPage({ route }: PageProps) {
             <CardRow label="Resolved identity" description="What GET /me says about that header.">
               {me.loading ? <Skeleton className="h-5 w-48" /> : me.error ? <ErrorTag error={me.error} /> : me.data ? <IdentityTags me={me.data} /> : null}
             </CardRow>
+            <SignInRow />
           </Card>
         </div>
 
@@ -155,29 +170,37 @@ export default function SettingsPage({ route }: PageProps) {
           title="Service accounts"
           subtitle="Non-human callers: automation, agents. The token is shown once, right after creation."
           actions={
-            <Button variant="primary" size="sm" icon="plus" onClick={() => setCreating(true)}>
-              New service account
-            </Button>
+            notAdmin ? undefined : (
+              <Button variant="primary" size="sm" icon="plus" onClick={() => setCreating(true)}>
+                New service account
+              </Button>
+            )
           }
           flush
         >
           <Table
             columns={columns}
-            rows={accounts.data ?? []}
+            rows={notAdmin ? [] : (accounts.data ?? [])}
             rowKey={(a) => a.id}
-            loading={accounts.loading}
+            loading={accounts.loading && !notAdmin}
             bordered={false}
             stickyHeader={false}
             defaultSort={{ key: 'createdAt', dir: 'desc' }}
-            emptyIcon="key"
-            emptyTitle={accounts.error ? 'Could not load service accounts' : 'No service accounts yet'}
-            emptyMessage={accounts.error ? errorMessage(accounts.error) : 'Create one for a CI pipeline or an agent; it signs requests with a bearer token.'}
+            emptyIcon={notAdmin ? 'lock' : 'key'}
+            emptyTitle={notAdmin ? 'Only admins see service accounts' : accounts.error ? 'Could not load service accounts' : 'No service accounts yet'}
+            emptyMessage={
+              notAdmin
+                ? 'A platform admin creates them and hands out their tokens: ask one for an account for your pipeline or agent.'
+                : accounts.error
+                  ? errorMessage(accounts.error)
+                  : 'Create one for a CI pipeline or an agent; it signs requests with a bearer token.'
+            }
             caption="Service accounts"
           />
         </Card>
 
         <Card title="Environment" subtitle="Where the API lives and whether it answers.">
-          <CardRow label="Backend" description={`${API_BASE} → http://localhost:8080 through the dev proxy`}>
+          <CardRow label="Backend" description={`${API_BASE} → the API, through the dev server's proxy or the image's nginx`}>
             <BackendStatus health={health.data} error={health.error} loading={health.loading} />
             <Button size="sm" icon="refresh" loading={health.fetching && !health.loading} onClick={() => void health.refetch()}>
               Check
@@ -185,9 +208,6 @@ export default function SettingsPage({ route }: PageProps) {
           </CardRow>
           <CardRow label="Live streams" description="Job events, history replayed first">
             <span className="font-mono text-caption text-tertiary">/jobs/{'{id}'}/events · /ws/jobs/{'{id}'}</span>
-          </CardRow>
-          <CardRow label="Identity mode" description="dev reads X-User; oidc verifies a JWT">
-            <Tag mono>{me.data || me.error ? 'dev' : '—'}</Tag>
           </CardRow>
         </Card>
 
@@ -218,6 +238,30 @@ export default function SettingsPage({ route }: PageProps) {
       )}
       {created && <TokenModal created={created} onClose={() => setCreated(null)} />}
     </>
+  )
+}
+
+/**
+ * How a person signs in where the dev header does not count. The shell cannot tell which profile
+ * the API runs (GET /me does not say), so it describes both and links the README.
+ */
+export function SignInRow() {
+  return (
+    <CardRow
+      stacked
+      label="In production"
+      description={
+        <>
+          An auth proxy in front of the app and the API signs you in and adds the bearer token the API verifies under the{' '}
+          <code className="font-mono">oidc</code> profile. The API ignores X-User there, so Act as changes nothing.
+        </>
+      }
+    >
+      <ExternalLink href={docsUrl(IDENTITY_DOC)} className="inline-flex items-center gap-1 text-caption">
+        README: Identity and OIDC
+        <Icon name="external" size={12} />
+      </ExternalLink>
+    </CardRow>
   )
 }
 
@@ -353,7 +397,7 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
               ))}
             </div>
           </Field>
-          <Field label="Teams" htmlFor="sa-teams" hint="Comma-separated. Scopes what the account can see.">
+          <Field label="Teams" htmlFor="sa-teams" hint="Comma-separated: the teams it acts for, which scope what it sees and the jobs it may start. Left empty, it takes yours.">
             <Input id="sa-teams" value={teams} onChange={(e) => setTeams(e.target.value)} placeholder="team-compute, team-platform" autoComplete="off" />
           </Field>
           <Field label="Preset" hint={presetText}>
@@ -395,6 +439,37 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
   )
 }
 
+/**
+ * The teams a new account acts for: the ones given, or its creator's when none were, which the
+ * backend's note says; a note on an account left with no team warns that the policy refuses
+ * every job it starts.
+ */
+export function ActsFor({ teams, note }: { teams: string[]; note?: string }) {
+  const none = teams.length === 0
+  return (
+    <div className="space-y-1" data-testid="acts-for">
+      <p className="text-caption text-secondary">It acts for:</p>
+      {none ? (
+        <p className="text-caption font-medium text-warning">No team</p>
+      ) : (
+        <div className="flex flex-wrap gap-1" aria-label="Teams">
+          {teams.map((t) => (
+            <Tag key={t} size="sm" mono outline>
+              {t}
+            </Tag>
+          ))}
+        </div>
+      )}
+      {note && (
+        <p className={cx('flex items-start gap-1.5 text-caption', none ? 'text-warning' : 'text-tertiary')} data-tone={none ? 'warning' : 'neutral'}>
+          <Icon name={none ? 'alert-triangle' : 'info'} size={13} className="mt-0.5 shrink-0" />
+          <span>{note}</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
 function TokenModal({ created, onClose }: { created: ServiceAccountCreated; onClose: () => void }) {
   return (
     <Modal onClose={onClose} width="max-w-lg" label="Service account token">
@@ -410,6 +485,7 @@ function TokenModal({ created, onClose }: { created: ServiceAccountCreated; onCl
             <ScopeTags scopes={created.scopes} />
           </div>
         )}
+        <ActsFor teams={created.teams ?? []} note={created.note} />
       </OverlayBody>
       <OverlayFooter>
         <CopyButton text={created.token} label="Copy token" size="md" />

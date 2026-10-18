@@ -1,12 +1,16 @@
 /**
  * The workflow file. The backend renders the document as YAML and parses edits back (the
  * browser never reads or writes YAML itself); leaving the editor applies the edit to the
- * canvas as one undoable change.
+ * canvas as one undoable change. The editor is Monaco (the textarea while it loads) with the
+ * checks' problems marked on their lines: the live ones while the file follows the canvas, the
+ * parse's once it is edited.
  */
-import { useEffect, useState } from 'react'
-import { Button, CopyIconButton, cx, Drawer, Icon, OverlayBody, OverlayHeader, Skeleton, Textarea, useToast } from '@iaf/ui'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Button, CopyIconButton, cx, Drawer, Icon, OverlayBody, OverlayHeader, Skeleton, useToast } from '@iaf/ui'
 import type { Problem } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
+import { CodeEditor } from '../../components/code-editor/CodeEditor'
+import { problemMarkers } from '../../components/code-editor/markers'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
 
 function Body() {
@@ -14,12 +18,15 @@ function Body() {
   const toast = useToast()
   const doc = useDesignerSelector((s) => s.doc)
   const name = useDesignerSelector((s) => s.name)
+  const live = useDesignerSelector((s) => s.problems)
   const [rendered, setRendered] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [problems, setProblems] = useState<Problem[]>([])
   const [applying, setApplying] = useState(false)
   const [edited, setEdited] = useState(false)
+  // leaving the editor for the Apply button applies once, not twice
+  const inFlight = useRef(false)
 
   // the file follows the canvas until the user edits it; an edit that starts while a render is
   // in flight re-runs this and drops that answer
@@ -47,6 +54,8 @@ function Body() {
       setEdited(false)
       return
     }
+    if (inFlight.current) return
+    inFlight.current = true
     setApplying(true)
     try {
       const r = await api.parseWorkflow({ yaml: text })
@@ -59,11 +68,13 @@ function Body() {
     } catch (e) {
       setError(errorMessage(e))
     } finally {
+      inFlight.current = false
       setApplying(false)
     }
   }
 
   const parseErrors = problems.filter((p) => p.code.startsWith('yaml') || p.level === 'error')
+  const markers = useMemo(() => problemMarkers(text, edited ? problems : live), [text, edited, problems, live])
 
   return (
     <>
@@ -81,18 +92,18 @@ function Body() {
             ))}
           </div>
         ) : (
-          <Textarea
-            mono
-            aria-label="Workflow YAML"
-            data-testid="yaml-editor"
-            spellCheck={false}
+          <CodeEditor
+            language="yaml"
+            ariaLabel="Workflow YAML"
+            testId="yaml-editor"
             value={text}
-            onChange={(e) => {
+            markers={markers}
+            onChange={(v) => {
               setEdited(true)
-              setText(e.target.value)
+              setText(v)
             }}
             onBlur={() => void apply()}
-            className="min-h-[60vh] flex-1 resize-none whitespace-pre leading-[18px]"
+            className="min-h-[60vh] flex-1"
           />
         )}
         {error && (

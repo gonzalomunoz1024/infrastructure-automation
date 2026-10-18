@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { Batch, EvidenceEntry, JobStep, JobSummary, Lineage, Preview, Problem, Resource, Schema } from '../lib/types'
-import { BatchPanel } from '../components/BatchPanel'
+import { BatchPanel, retryLabel, retryableRows } from '../components/BatchPanel'
 import { EvidenceTimeline, summarizeEntry } from '../components/EvidenceTimeline'
-import { LineageGraph } from '../components/LineageGraph'
+import { LineageGraph, lineageGraph, lineageLayout } from '../components/LineageGraph'
 import { PreviewCard } from '../components/PreviewCard'
 import { ProblemList, normalizeField, problemsFor, unfieldedProblems } from '../components/ProblemList'
 import { SchemaForm, coerceBySchema, defaultsFor, isComplete, splitProblems, validateAgainst } from '../components/SchemaForm'
@@ -182,12 +182,51 @@ describe('BatchPanel', () => {
     expect(html).not.toContain('Retry 1 failed row')
   })
 
-  it('offers to retry the failed rows and says why it stopped', () => {
-    const html = text(renderToString(<BatchPanel batch={{ ...BATCH, stoppedReason: 'more than 10% failed in wave 2' }} onRetryFailed={async () => {}} />))
-    expect(html).toContain('Retry 1 failed row')
-    expect(html).toContain('more than 10% failed in wave 2')
+  it('offers no retry while the batch runs: the backend retries the rows of an ended batch only', () => {
+    const html = text(renderToString(<BatchPanel batch={BATCH} onRetryFailed={async () => {}} />))
+    expect(html).toContain('vCenter timeout')
+    expect(html).not.toContain('Retry')
+    expect(text(renderToString(<BatchPanel batch={BATCH} ended={false} onRetryFailed={async () => {}} />))).not.toContain('Retry')
+  })
+
+  it('offers to retry the rows that did not succeed once it stopped, and says why it stopped', () => {
+    const html = text(renderToString(<BatchPanel batch={STOPPED} onRetryFailed={async () => {}} />))
+    expect(html).toContain('Retry 4 rows')
+    expect(html).toContain('2 failed, 2 skipped: they run again in a new wave')
+    expect(html).toContain('stopped after wave 1: 2 of 3 rows failed (more than 10%)')
+    // the waves ended (done, done, skipped): none is the current one
+    expect(html).not.toContain('aria-current="step"')
+    expect(text(renderToString(<BatchPanel batch={STOPPED} ended onRetryFailed={async () => {}} />))).toContain('Retry 4 rows')
+    expect(text(renderToString(<BatchPanel batch={STOPPED} />))).not.toContain('Retry')
+  })
+
+  it('counts the rows the backend retries: failed, cancelled and skipped', () => {
+    expect(retryableRows(STOPPED)).toEqual({ failed: 2, cancelled: 0, skipped: 2, total: 4 })
+    expect(retryLabel(retryableRows(STOPPED))).toEqual({ label: 'Retry 4 rows', detail: '2 failed, 2 skipped: they run again in a new wave' })
+    const onlyFailed = { ...STOPPED, rows: STOPPED.rows.filter((r) => r.status !== 'skipped') }
+    expect(retryLabel(retryableRows(onlyFailed))).toEqual({ label: 'Retry 2 failed rows' })
+    const cancelled = { ...STOPPED, rows: [{ index: 0, input: {}, status: 'cancelled' }] }
+    expect(retryLabel(retryableRows(cancelled))).toEqual({ label: 'Retry 1 row', detail: '1 cancelled: they run again in a new wave' })
   })
 })
+
+/** A batch the backend stopped after its second wave: waves done, done, skipped; the job failed. */
+const STOPPED: Batch = {
+  rollout: { waves: [20, 60, 100], maxParallel: 2, stopIfFailedPercent: 10 },
+  waves: [
+    { index: 0, percent: 20, size: 1, status: 'done', startedAt: '2026-10-17T09:00:00Z', endedAt: '2026-10-17T09:01:00Z' },
+    { index: 1, percent: 60, size: 2, status: 'done', startedAt: '2026-10-17T09:01:00Z', endedAt: '2026-10-17T09:03:00Z' },
+    { index: 2, percent: 100, size: 2, status: 'skipped', endedAt: '2026-10-17T09:03:00Z' },
+  ],
+  rows: [
+    { index: 0, input: { vmId: 'vm-1' }, jobId: 'job-r0', status: 'succeeded' },
+    { index: 1, input: { vmId: 'vm-2' }, jobId: 'job-r1', status: 'failed', error: 'vcenter_timeout at restart' },
+    { index: 2, input: { vmId: 'vm-3' }, jobId: 'job-r2', status: 'failed', error: 'failed' },
+    { index: 3, input: { vmId: 'vm-4' }, status: 'skipped' },
+    { index: 4, input: { vmId: 'vm-5' }, status: 'skipped' },
+  ],
+  stoppedReason: 'stopped after wave 1: 2 of 3 rows failed (more than 10%)',
+}
 
 /* ---------------------------------------------------------------- EvidenceTimeline */
 
@@ -252,6 +291,128 @@ describe('LineageGraph', () => {
     const html = text(renderToString(<LineageGraph lineage={{ resource: res('vol-1', 'volume', 'data-1'), builtFrom: [], dependents: [] }} />))
     expect(html).toContain('not built from another resource')
     expect(html).toContain('nothing depends on it')
+  })
+
+  /* the backend's transitive answer: a base image, the image, two VMs from it, a DNS record from one VM */
+  const BASE = res('img-60', 'image', 'ubuntu-2404')
+  const IMG = res('img-77', 'image', 'ubuntu-2404-cis1')
+  const VM1 = res('vm-1042', 'vm', 'web-1042')
+  const VM2 = res('vm-1043', 'vm', 'web-1043')
+  const DNS = res('dns-1042', 'dns-record', 'web-1042.prod')
+  const TRANSITIVE: Lineage = {
+    resource: IMG,
+    builtFrom: [BASE],
+    dependents: [VM1, VM2],
+    nodes: [IMG, BASE, VM1, VM2, DNS],
+    edges: [
+      { from: 'img-60', to: 'img-77', via: 'build-vm-image' },
+      { from: 'img-77', to: 'vm-1042', via: 'create-vm' },
+      { from: 'img-77', to: 'vm-1043', via: 'create-vm' },
+      { from: 'vm-1042', to: 'dns-1042', via: 'register-dns' },
+    ],
+  }
+  const ids = (layout: ReturnType<typeof lineageLayout>) => layout.columns.map((c) => [c.depth, c.nodes.map((n) => n.id)])
+
+  it('draws the whole graph the backend answers, two hops away included, each edge saying how', () => {
+    expect(ids(lineageLayout(TRANSITIVE))).toEqual([
+      [-1, ['img-60']],
+      [0, ['img-77']],
+      [1, ['vm-1042', 'vm-1043']],
+      [2, ['dns-1042']],
+    ])
+    const html = text(renderToString(<LineageGraph lineage={TRANSITIVE} />))
+    expect(html).toContain('href="#/resources/dns-1042"')
+    expect(html).toContain('web-1042.prod')
+    expect(html.match(/<path/g)?.length).toBe(4)
+    expect(html).toContain('<title>web-1042.prod was built from web-1042 by register-dns</title>')
+    expect(html).toContain('aria-label="Lineage of ubuntu-2404-cis1: built from 1, 2 dependents; 1 upstream and 3 downstream in all"')
+    expect(html).not.toContain('nothing depends on it')
+  })
+
+  it('reads the direct lists as the same graph when the backend sends no nodes and edges', () => {
+    const direct: Lineage = { resource: IMG, builtFrom: [BASE], dependents: [VM1, VM2] }
+    expect(lineageGraph(direct).edges).toEqual([
+      { from: 'img-60', to: 'img-77', via: 'build-vm-image' },
+      { from: 'img-77', to: 'vm-1042', via: 'build-vm-image' },
+      { from: 'img-77', to: 'vm-1043', via: 'build-vm-image' },
+    ])
+    expect(ids(lineageLayout(direct))).toEqual([
+      [-1, ['img-60']],
+      [0, ['img-77']],
+      [1, ['vm-1042', 'vm-1043']],
+    ])
+    expect(text(renderToString(<LineageGraph lineage={direct} />))).toContain('aria-label="Lineage of ubuntu-2404-cis1: built from 1, 2 dependents"')
+  })
+
+  it('puts a resource on its longest chain, so every edge points right', () => {
+    // the image was built from both the base and a hardened base, itself built from the base
+    const HARD = res('img-61', 'image', 'ubuntu-2404-hard')
+    const layout = lineageLayout({
+      resource: IMG,
+      builtFrom: [BASE, HARD],
+      dependents: [],
+      nodes: [IMG, BASE, HARD],
+      edges: [
+        { from: 'img-60', to: 'img-77' },
+        { from: 'img-61', to: 'img-77' },
+        { from: 'img-60', to: 'img-61' },
+      ],
+    })
+    expect(ids(layout)).toEqual([
+      [-2, ['img-60']],
+      [-1, ['img-61']],
+      [0, ['img-77']],
+    ])
+    expect(layout.upstream).toBe(2)
+    expect(layout.downstream).toBe(0)
+  })
+
+  it('stays finite on a cycle, drops edges to resources it was not given, and keeps each edge once', () => {
+    const A = res('a', 'thing', 'a')
+    const B = res('b', 'thing', 'b')
+    const layout = lineageLayout({
+      resource: IMG,
+      builtFrom: [],
+      dependents: [A],
+      nodes: [A, B],
+      edges: [
+        { from: 'img-77', to: 'a' },
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'a' },
+        { from: 'a', to: 'b' },
+        { from: 'b', to: 'ghost' },
+      ],
+    })
+    expect(layout.columns.flatMap((c) => c.nodes.map((n) => n.id)).sort()).toEqual(['a', 'b', 'img-77'])
+    expect(layout.columns.every((c) => Math.abs(c.depth) <= 3)).toBe(true)
+    expect(layout.edges).toHaveLength(3)
+    // the resource itself is placed even when the backend's nodes leave it out
+    expect(layout.columns.find((c) => c.depth === 0)?.nodes.map((n) => n.id)).toEqual(['img-77'])
+  })
+
+  it('orders a column after the resources it hangs from, so edges do not cross', () => {
+    const P1 = res('p1', 'thing', 'z-first-parent')
+    const P2 = res('p2', 'thing', 'a-second-parent')
+    const C1 = res('c1', 'thing', 'z-child-of-second')
+    const C2 = res('c2', 'thing', 'a-child-of-first')
+    const layout = lineageLayout({
+      resource: IMG,
+      builtFrom: [],
+      dependents: [P1, P2],
+      nodes: [IMG, P1, P2, C1, C2],
+      edges: [
+        { from: 'img-77', to: 'p1' },
+        { from: 'img-77', to: 'p2' },
+        { from: 'p1', to: 'c2' },
+        { from: 'p2', to: 'c1' },
+      ],
+    })
+    // the parents by name; each child under its own parent, though by name it would come first
+    expect(ids(layout)).toEqual([
+      [0, ['img-77']],
+      [1, ['p2', 'p1']],
+      [2, ['c1', 'c2']],
+    ])
   })
 })
 

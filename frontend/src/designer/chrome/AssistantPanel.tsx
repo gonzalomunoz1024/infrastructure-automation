@@ -1,13 +1,16 @@
 /**
  * The assistant beside the canvas: describe a change in words, the assistant drafts the
- * workflow (checked and dry-run on the server), and "Apply to canvas" replaces the document in
- * one undoable step. A new session starts whenever the canvas changed since the last one, so
- * the assistant always works from what is on screen.
+ * workflow (checked and dry-run on the server), the draft shows as a diff against what is on the
+ * canvas, and "Apply to canvas" replaces the document in one undoable step. An answer that changes
+ * nothing (an explanation) is a message with nothing to apply. A new session starts whenever the
+ * canvas changed since the last one, so the assistant always works from what is on screen.
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Button, cx, Icon, Spinner, Tag, Textarea, useToast } from '@iaf/ui'
+import { Button, cx, DiffView, diffStats, Icon, parseUnifiedDiff, Spinner, Tag, Textarea, useToast } from '@iaf/ui'
+import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
 import type { AssistantDraft, AssistantEvent } from '../../lib/types'
+import { unifiedDiff } from '../../components/diff'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
 
 type Entry = { kind: 'user'; text: string } | { kind: 'assistant'; text: string } | { kind: 'status'; text: string } | { kind: 'error'; text: string } | { kind: 'draft'; draft: AssistantDraft; applied: boolean }
@@ -18,7 +21,7 @@ function textOf(data: unknown): string {
   if (typeof data === 'string') return data
   if (data && typeof data === 'object') {
     const o = data as Record<string, unknown>
-    for (const k of ['text', 'message', 'status', 'summary']) if (typeof o[k] === 'string') return o[k] as string
+    for (const k of ['text', 'message', 'status']) if (typeof o[k] === 'string') return o[k] as string
   }
   return ''
 }
@@ -27,10 +30,85 @@ function isDraft(data: unknown): data is AssistantDraft {
   return !!data && typeof data === 'object' && typeof (data as { workflowYaml?: unknown }).workflowYaml === 'string'
 }
 
-function DraftCard({ draft, applied, onApply, onAnswer, busy }: { draft: AssistantDraft; applied: boolean; onApply: () => void; onAnswer: (text: string) => void; busy: boolean }) {
+/** The draft as the canvas would hold it: parsed by the backend and rendered back, so it compares line for line with the canvas. */
+export type Proposal = { definition: WorkflowDocument; yaml: string } | { error: string }
+
+/** What a draft would change on the canvas. */
+export type Comparison = { kind: 'pending' } | { kind: 'invalid'; message: string } | { kind: 'same' } | { kind: 'diff'; diff: string; additions: number; deletions: number }
+
+/** The canvas YAML against the draft's, both as the backend renders them; pending until both are known. */
+export function compareWithCanvas(canvasYaml: string | null, proposal: Proposal | null): Comparison {
+  if (proposal && 'error' in proposal) return { kind: 'invalid', message: proposal.error }
+  if (canvasYaml === null || proposal === null) return { kind: 'pending' }
+  const diff = unifiedDiff(canvasYaml, proposal.yaml, { oldPath: 'canvas', newPath: 'draft' })
+  if (!diff) return { kind: 'same' }
+  const stats = diffStats(parseUnifiedDiff(diff))
+  return { kind: 'diff', diff, additions: stats.additions, deletions: stats.deletions }
+}
+
+/** The draft's YAML through `POST /workflows:parse` and `POST /workflows:render`, once per draft. */
+function useProposal(yaml: string): Proposal | null {
+  const [state, setState] = useState<{ yaml: string; proposal: Proposal } | null>(null)
+  useEffect(() => {
+    if (!yaml) return
+    let live = true
+    const load = async (): Promise<Proposal> => {
+      const parsed = await api.parseWorkflow({ yaml })
+      if (!parsed.definition) return { error: parsed.problems[0]?.message ?? 'The draft does not parse' }
+      const rendered = await api.renderWorkflow({ definition: parsed.definition })
+      return { definition: parsed.definition, yaml: rendered.yaml }
+    }
+    load().then(
+      (proposal) => live && setState({ yaml, proposal }),
+      (e: unknown) => live && setState({ yaml, proposal: { error: errorMessage(e) } }),
+    )
+    return () => {
+      live = false
+    }
+  }, [yaml])
+  return state && state.yaml === yaml ? state.proposal : null
+}
+
+/** The canvas as YAML (`POST /workflows:render`) for its current version, a moment after the last edit; null meanwhile. */
+function useCanvasYaml(enabled: boolean): string | null {
+  const store = useDesignerStore()
+  const version = useDesignerSelector((s) => s.version)
+  const [state, setState] = useState<{ version: number; yaml: string } | null>(null)
+  useEffect(() => {
+    if (!enabled) return
+    let live = true
+    const timer = setTimeout(() => {
+      api.renderWorkflow({ definition: store.getState().doc }).then(
+        (r) => live && setState({ version, yaml: r.yaml }),
+        () => {},
+      )
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [enabled, version, store])
+  return state && state.version === version ? state.yaml : null
+}
+
+function DraftCard({ draft, applied, canvasYaml, echoed, onApply, onAnswer, busy }: { draft: AssistantDraft; applied: boolean; canvasYaml: string | null; echoed: boolean; onApply: (definition: WorkflowDocument) => void; onAnswer: (text: string) => void; busy: boolean }) {
+  const proposal = useProposal(draft.workflowYaml)
+  const comparison = applied ? null : compareWithCanvas(canvasYaml, proposal)
   const valid = draft.validation?.valid ?? false
+  if (comparison?.kind === 'same' && !(draft.questions && draft.questions.length > 0)) {
+    // an answer that changes nothing, like an explanation: its prose is the message, with nothing to apply
+    return (
+      <div className="mr-8 space-y-1" data-testid="assistant-answer">
+        {draft.summary && !echoed && <div className="whitespace-pre-wrap rounded-lg bg-surface-secondary px-3 py-2 text-footnote text-primary">{draft.summary}</div>}
+        <p className="flex items-center gap-1.5 text-caption text-tertiary">
+          <Icon name="check" size={12} />
+          No change to the canvas
+        </p>
+      </div>
+    )
+  }
   return (
-    <div className="rounded-lg border border-stroke-light bg-surface p-3 shadow-sm">
+    <div className="rounded-lg border border-stroke-light bg-surface p-3 shadow-sm" data-testid="assistant-draft">
       <div className="mb-1.5 flex items-center gap-2">
         <Icon name="sparkles" size={14} className="text-accent" />
         <span className="text-footnote font-semibold text-primary">Draft</span>
@@ -96,9 +174,32 @@ function DraftCard({ draft, applied, onApply, onAnswer, busy }: { draft: Assista
           ))}
         </div>
       )}
-      {draft.workflowYaml && (
+      {draft.workflowYaml && comparison && (
+        <div className="mt-3" data-testid="draft-diff">
+          {comparison.kind === 'pending' && (
+            <p className="flex items-center gap-1.5 text-caption text-tertiary">
+              <Spinner size={11} /> Comparing with the canvas…
+            </p>
+          )}
+          {comparison.kind === 'invalid' && (
+            <p className="text-caption text-critical" role="alert">
+              The draft does not parse: {comparison.message}
+            </p>
+          )}
+          {comparison.kind === 'same' && <p className="text-caption text-tertiary">No change to the canvas.</p>}
+          {comparison.kind === 'diff' && (
+            <>
+              <p className="mb-1 text-caption2 font-semibold uppercase tracking-wide text-tertiary">
+                Changes to the canvas <span className="font-medium normal-case tracking-normal text-accent">+{comparison.additions}</span> <span className="font-medium normal-case tracking-normal text-critical">−{comparison.deletions}</span>
+              </p>
+              <DiffView diff={comparison.diff} toolbar={false} maxHeight="max-h-64" />
+            </>
+          )}
+        </div>
+      )}
+      {draft.workflowYaml && (applied || comparison?.kind === 'diff') && (
         <div className="mt-3 flex justify-end">
-          <Button size="sm" variant={applied ? 'ghost' : 'primary'} icon={applied ? 'check' : undefined} disabled={applied} onClick={onApply}>
+          <Button size="sm" variant={applied ? 'ghost' : 'primary'} icon={applied ? 'check' : undefined} disabled={applied || !proposal || 'error' in proposal} onClick={() => proposal && 'definition' in proposal && onApply(proposal.definition)}>
             {applied ? 'Applied' : 'Apply to canvas'}
           </Button>
         </div>
@@ -118,6 +219,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
   const session = useRef<{ id: string; version: number } | null>(null)
   const abort = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const canvasYaml = useCanvasYaml(entries.some((e) => e.kind === 'draft' && !e.applied))
 
   useEffect(() => () => abort.current?.abort(), [])
   useEffect(() => {
@@ -153,9 +255,12 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
           else if (ev.type === 'message') {
             const m = textOf(ev.data)
             if (m) push({ kind: 'assistant', text: m })
-          } else if (ev.type === 'status' || ev.type === 'validation') {
+          } else if (ev.type === 'status') {
             const m = textOf(ev.data)
             if (m) push({ kind: 'status', text: m })
+          } else if (ev.type === 'done') {
+            const d = (ev.data ?? {}) as { status?: unknown; error?: unknown }
+            if (d.status === 'failed') push({ kind: 'error', text: typeof d.error === 'string' && d.error ? d.error : 'The assistant stopped before it finished' })
           }
         },
         { signal: ctrl.signal },
@@ -168,20 +273,11 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const apply = async (index: number, draft: AssistantDraft) => {
-    try {
-      const parsed = await api.parseWorkflow({ yaml: draft.workflowYaml })
-      if (!parsed.definition) {
-        toast.error('The draft does not parse', parsed.problems[0]?.message ?? 'Ask the assistant to fix it')
-        return
-      }
-      store.setDocument(parsed.definition)
-      session.current = session.current ? { ...session.current, version: store.getState().version } : null
-      setEntries((list) => list.map((e, i) => (i === index && e.kind === 'draft' ? { ...e, applied: true } : e)))
-      toast.toast({ title: 'Draft applied', message: 'Undo brings the previous version back', tone: 'healthy' })
-    } catch (e) {
-      toast.error('Could not apply the draft', errorMessage(e))
-    }
+  const apply = (index: number, definition: WorkflowDocument) => {
+    store.setDocument(definition)
+    session.current = session.current ? { ...session.current, version: store.getState().version } : null
+    setEntries((list) => list.map((e, i) => (i === index && e.kind === 'draft' ? { ...e, applied: true } : e)))
+    toast.toast({ title: 'Draft applied', message: 'Undo brings the previous version back', tone: 'healthy' })
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -223,7 +319,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
               )
             case 'assistant':
               return (
-                <div key={i} className="mr-8 whitespace-pre-wrap rounded-lg bg-surface-secondary px-3 py-2 text-footnote text-primary">
+                <div key={i} className="mr-8 whitespace-pre-wrap rounded-lg bg-surface-secondary px-3 py-2 text-footnote text-primary" data-testid="assistant-message">
                   {e.text}
                 </div>
               )
@@ -240,8 +336,12 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
                   {e.text}
                 </p>
               )
-            case 'draft':
-              return <DraftCard key={i} draft={e.draft} applied={e.applied} busy={busy} onApply={() => void apply(i, e.draft)} onAnswer={(t) => void send(t)} />
+            case 'draft': {
+              // the summary of an answer that changes nothing is not repeated when a message already said it
+              const summary = (e.draft.summary ?? '').trim()
+              const echoed = !!summary && entries.some((o) => o.kind === 'assistant' && o.text.trim() === summary)
+              return <DraftCard key={i} draft={e.draft} applied={e.applied} canvasYaml={canvasYaml} echoed={echoed} busy={busy} onApply={(definition) => apply(i, definition)} onAnswer={(t) => void send(t)} />
+            }
           }
         })}
         {busy && (

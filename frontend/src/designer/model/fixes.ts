@@ -2,8 +2,9 @@
  * The one-click fixes of a Problem: `replace` writes the value where the problem points (the
  * field's value, a name inside an expression, a misspelt key, the x-resource of an input),
  * `insert-approval` puts an approval step before the step, `connect` is answered by the canvas
- * (it opens the node creator in front of the step), so applyFix returns null for it. A step that
- * never runs gets a fix of the designer's own: remove it (the store applies that one).
+ * (it opens the node creator in front of the step), so applyFix returns null for it. Two fixes
+ * are the designer's own: a step that never runs can be removed (the store applies that one), and
+ * a workflow whose policy names no role or team (`policy.missing`) can let its owner team run it.
  */
 import { COMMON_KEYS, STEP_TYPES, type Fix, type JsonObject, type JsonValue, type Problem, type StepBody, type StepDocument, type WorkflowDocument } from '@iaf/workflow-checks'
 import { findStepLocation } from './graph'
@@ -18,12 +19,19 @@ export interface RemoveStepFix {
   kind: 'remove-step'
 }
 
-export type DesignerFix = Fix | RemoveStepFix
+/** A fix only the designer knows: write the owner team into `policy.rbac`. */
+export interface OwnerPolicyFix {
+  label: string
+  kind: 'owner-policy'
+}
 
-/** The fix offered for a problem: the check's own, else the designer's for a step that never runs. */
+export type DesignerFix = Fix | RemoveStepFix | OwnerPolicyFix
+
+/** The fix offered for a problem: the check's own, else the designer's for a step that never runs or a policy without roles. */
 export function fixOf(problem: Problem): DesignerFix | null {
   if (problem.fix) return problem.fix
   if (problem.code === 'step.unreachable' && problem.step) return { label: `Remove '${problem.step}'`, kind: 'remove-step' }
+  if (problem.code === 'policy.missing') return { label: 'Let the owner team run it', kind: 'owner-policy' }
   return null
 }
 
@@ -223,6 +231,13 @@ function replaceIn(next: WorkflowDocument, problem: Problem, value: string | und
 }
 
 export function applyFix(doc: WorkflowDocument, problem: Problem): WorkflowDocument | null {
+  if (fixOf(problem)?.kind === 'owner-policy') {
+    const owner = typeof doc.metadata?.owner === 'string' ? doc.metadata.owner.trim() : ''
+    if (!owner) return null
+    const next = clone(doc)
+    next.policy = { ...(next.policy ?? {}), rbac: [owner] }
+    return next
+  }
   const fix = problem.fix
   if (!fix) return null
   const next = clone(doc)

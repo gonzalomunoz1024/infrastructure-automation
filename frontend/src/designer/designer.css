@@ -223,6 +223,11 @@
   color: transparent;
   caret-color: var(--color-text-primary);
 }
+/* room for the expand button at the top right */
+.iaf-expr--expandable .iaf-expr__mirror,
+.iaf-expr--expandable .iaf-expr__input {
+  padding-right: 30px;
+}
 .iaf-expr__input::placeholder {
   color: var(--color-text-tertiary);
 }

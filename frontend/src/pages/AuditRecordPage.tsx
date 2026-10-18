@@ -1,13 +1,33 @@
 import { useState } from 'react'
-import { Button, Card, CopyButton, Field, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Skeleton, SkeletonRows, StatusDot, Tag, longDate, useOverlayClose, useToast } from '@iaf/ui'
+import { Button, Card, CopyButton, Field, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Skeleton, SkeletonRows, StatusDot, Tag, longDate, useOverlayClose, useToast } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { pathFor } from '../app/router'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, isApiError } from '../lib/api'
 import { useQuery } from '../lib/queries'
-import type { EvidenceRecord, ShareLink } from '../lib/types'
+import type { EvidenceRecord, Seal, ShareLink } from '../lib/types'
 import { EvidenceTimeline } from '../components/EvidenceTimeline'
 import { downloadBlob } from '../components/download'
 import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId } from '../components/common'
+
+/** The latest checkpoint over a record's head while it is open; nothing once it is sealed or before any seal ran. */
+export function lastCheckpoint(record: Pick<EvidenceRecord, 'sealed' | 'checkpoints'>): Seal | undefined {
+  if (record.sealed || !record.checkpoints?.length) return undefined
+  return record.checkpoints.reduce((latest, c) => (Date.parse(c.at) > Date.parse(latest.at) ? c : latest))
+}
+
+/** The backend answers a share link as a path; an auditor needs it whole, on the origin that serves this UI and its API. */
+export function absoluteUrl(url: string, origin: string): string {
+  try {
+    return new URL(url, origin).toString()
+  } catch {
+    return url
+  }
+}
+
+/** A 403 from a share is an answer, not a failure: the backend's message says who may share the record. */
+export function shareRefusal(e: unknown): string | null {
+  return isApiError(e) && e.status === 403 ? errorMessage(e) : null
+}
 
 export default function AuditRecordPage({ route }: PageProps) {
   const jobId = route.params.jobId
@@ -58,6 +78,10 @@ export default function AuditRecordPage({ route }: PageProps) {
               {data.sealed ? (
                 <Tag size="sm" tone="healthy" icon="lock" title={`Signed with ${data.sealed.keyId} at ${longDate(data.sealed.at)}`}>
                   Sealed
+                </Tag>
+              ) : lastCheckpoint(data) ? (
+                <Tag size="sm" outline title="Still open: the seal checkpoints its head, and seals it once the job has closed">
+                  Checkpointed
                 </Tag>
               ) : (
                 <Tag size="sm" outline title="The hourly seal has not covered this record yet">
@@ -135,6 +159,8 @@ export default function AuditRecordPage({ route }: PageProps) {
 }
 
 function RecordFacts({ record }: { record: EvidenceRecord }) {
+  const checkpoint = lastCheckpoint(record)
+  const signed = record.sealed ?? checkpoint
   return (
     <Card title="Record">
       <Facts
@@ -149,7 +175,20 @@ function RecordFacts({ record }: { record: EvidenceRecord }) {
             : []),
           { label: 'Kept until', value: <When at={record.retention.until} /> },
           { label: 'Sealed', value: record.sealed ? <When at={record.sealed.at} /> : <span className="text-tertiary">not yet</span> },
-          ...(record.sealed ? [{ label: 'Signing key', value: <Mono className="text-primary">{record.sealed.keyId}</Mono>, wide: true }] : []),
+          ...(checkpoint
+            ? [
+                {
+                  label: 'Last checkpoint',
+                  value: (
+                    <span>
+                      <When at={checkpoint.at} />
+                      {checkpoint.seq !== undefined && <span className="text-tertiary"> · over entry {checkpoint.seq}</span>}
+                    </span>
+                  ),
+                },
+              ]
+            : []),
+          ...(signed ? [{ label: 'Signing key', value: <Mono className="text-primary">{signed.keyId}</Mono>, wide: true }] : []),
           { label: 'Latest hash', value: <CopyableId id={record.latestHash} className="break-all" />, wide: true },
         ]}
       />
@@ -169,14 +208,18 @@ function ShareBody({ jobId }: { jobId: string }) {
   const close = useOverlayClose()
   const toast = useToast()
   const [link, setLink] = useState<ShareLink | null>(null)
+  const [refused, setRefused] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const create = async () => {
     setBusy(true)
     try {
-      setLink(await api.shareAudit(jobId))
+      const made = await api.shareAudit(jobId)
+      setLink({ ...made, url: absoluteUrl(made.url, window.location.origin) })
     } catch (e) {
-      toast.error('Could not create the link', errorMessage(e))
+      const refusal = shareRefusal(e)
+      if (refusal) setRefused(refusal)
+      else toast.error('Could not create the link', errorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -195,15 +238,20 @@ function ShareBody({ jobId }: { jobId: string }) {
               </div>
             </Field>
           </>
+        ) : refused ? (
+          <p className="flex items-start gap-1.5 text-sm text-secondary" data-testid="share-refused">
+            <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+            <span>{refused}</span>
+          </p>
         ) : (
           <p className="text-sm text-secondary">Anyone with the link can read this record (and only this record) until it expires.</p>
         )}
       </OverlayBody>
       <OverlayFooter>
         <Button variant="ghost" onClick={close}>
-          {link ? 'Done' : 'Cancel'}
+          {link ? 'Done' : refused ? 'Close' : 'Cancel'}
         </Button>
-        {!link && (
+        {!link && !refused && (
           <Button variant="primary" icon="link" loading={busy} onClick={() => void create()}>
             Create link
           </Button>

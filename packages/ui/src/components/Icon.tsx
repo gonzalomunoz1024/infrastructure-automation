@@ -26,6 +26,7 @@ export type IconName =
   | 'copy'
   | 'link'
   | 'external'
+  | 'expand'
   | 'settings'
   | 'user'
   | 'users'
@@ -132,6 +133,7 @@ const GLYPHS: Record<IconName, ReactNode> = {
   external: (
     <path d="M18.5 13.5v5a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 18.5V7a1.5 1.5 0 0 1 1.5-1.5h5M15 4.5h4.5V9M19.5 4.5L11 13" />
   ),
+  expand: <path d="M14 4.5h5.5V10M10 19.5H4.5V14M19.5 4.5L13.5 10.5M4.5 19.5l6-6" />,
   settings: (
     <>
       <circle cx="12" cy="12" r="3" />

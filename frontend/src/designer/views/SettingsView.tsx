@@ -47,8 +47,8 @@ function DocField(spec: ParamSpec) {
   return <ParameterField spec={{ expression: false, ...spec }} value={get(spec.field)} onChange={(v) => set(spec.field, v)} />
 }
 
-/** A list edited as comma-separated text (tags, roles, stages), written when the field loses focus. */
-function ListField({ field, label, numbers, placeholder, description }: { field: string; label: string; numbers?: boolean; placeholder?: string; description?: string }) {
+/** A list edited as comma-separated text (tags, roles, stages), written when the field loses focus; `problemsExact` adds the problems of other fields (not their children's). */
+function ListField({ field, label, numbers, placeholder, description, required, problemsExact = [] }: { field: string; label: string; numbers?: boolean; placeholder?: string; description?: string; required?: boolean; problemsExact?: string[] }) {
   const { get, set } = useDocField()
   const value = get(field)
   const asText = (v: JsonValue | undefined) => (Array.isArray(v) ? v.join(', ') : typeof v === 'string' ? v : '')
@@ -57,10 +57,8 @@ function ListField({ field, label, numbers, placeholder, description }: { field:
   const [focused, setFocused] = useState(false)
   const text = focused ? draft : asText(value)
   const ndvProblems = useDesignerSelector((s) => s.problems)
-  const problems = problemsAt(
-    ndvProblems.filter((p) => !p.step),
-    field,
-  )
+  const docProblems = ndvProblems.filter((p) => !p.step)
+  const problems = [...problemsAt(docProblems, field), ...docProblems.filter((p) => p.field !== undefined && problemsExact.includes(p.field))]
   const commit = () => {
     setFocused(false)
     const parts = text
@@ -72,7 +70,7 @@ function ListField({ field, label, numbers, placeholder, description }: { field:
   }
   return (
     <div>
-      <FieldLabel htmlFor={`list-${field}`} label={label} description={description} />
+      <FieldLabel htmlFor={`list-${field}`} label={label} required={required} description={description} />
       <Input id={`list-${field}`} mono={numbers} value={text} placeholder={placeholder} onFocus={() => {
           setDraft(asText(value))
           setFocused(true)
@@ -536,7 +534,14 @@ export function SettingsView() {
                 <DocField field="policy.approval.group" label="Approver group" type="string" />
                 <DocField field="policy.approval.timeout" label="Approval timeout" type="string" mono placeholder="4h" />
               </div>
-              <ListField field="policy.rbac" label="Roles that may run it" placeholder="ops, sre" description="Empty lets everyone who can see the catalog run it" />
+              <ListField
+                field="policy.rbac"
+                label="Roles or teams that may run it"
+                required
+                problemsExact={['policy']}
+                placeholder="ops, sre"
+                description="At least one role or team: a workflow that names none does not pass the checks (policy.missing). Admins may always run it"
+              />
               <DocField field="policy.change.required" label="Changes need a change record" type="boolean" description="Jobs open and close a change in the ITSM tool" />
             </Section>
 

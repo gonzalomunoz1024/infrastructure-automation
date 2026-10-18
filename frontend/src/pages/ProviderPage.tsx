@@ -2,9 +2,9 @@ import { useMemo, useState } from 'react'
 import { BarChart, Button, Card, CardRow, CodeBlock, ConfirmDialog, Drawer, EmptyState, Field, Input, JsonView, LineChart, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, SkeletonRows, Stat, StateTag, StatusDot, Table, Tabs, Tag, dayLabel, duration, formatNumber, percent, useOverlayClose, useToast, type DotKind, type StatDelta, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, isApiError } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
-import type { ActionInfo, ChangeRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
+import type { ActionInfo, ChangeRequest, OverrideRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
 import { useChangeRequestToast } from '../components/ChangeRequestToast'
 import { HealthBand } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
@@ -19,6 +19,36 @@ const severityDot = (s: string): DotKind => (/crit|error|fail|page/i.test(s) ? '
 const rateDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: Math.round(v * 10) / 10, suffix: ' pts', label: 'vs the day before' })
 const msDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: v, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' })
 const approvalText = (a: ActionInfo['approval']): string => (a === true || a === 'required' ? 'required' : a === false || !a ? 'no' : String(a))
+const failedText = (n: number): string => (n === 0 ? 'None failed in the 14 days' : `${formatNumber(n)} failed in the 14 days`)
+const BAND_RANK: Record<string, number> = { failing: 3, degraded: 2, healthy: 1, unknown: 0 }
+
+/** A 404 for a provider: none of that name, or one the caller may not see; the API does not say which. */
+export function ProviderNotFound({ name }: { name: string }) {
+  return (
+    <Card flush>
+      <EmptyState
+        icon="search"
+        title={`No provider ${name} you can see`}
+        message="There is none of that name, or a team you are not in owns it. The providers list shows the ones you can see."
+        action={<Button onClick={() => navigate(pathFor('providers'))}>All providers</Button>}
+      />
+    </Card>
+  )
+}
+
+/** An action's band against the SLO it is judged by, and that SLO when it is the action's own. */
+export function ActionBand({ action, stats }: { action: Pick<ActionInfo, 'slo'>; stats?: Pick<ProviderActionStats, 'band'> }) {
+  return (
+    <div className="min-w-0">
+      <HealthBand health={{ status: stats?.band ?? 'unknown' }} />
+      {action.slo && (
+        <div className="mt-0.5 whitespace-nowrap text-caption2 text-tertiary" title="The action's own SLO: its calls are judged against it, not against the provider's">
+          own SLO {percent(action.slo.successRate, { digits: 1 })} · p95 {duration(action.slo.p95Ms)}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function ProviderPage({ route }: PageProps) {
   const name = route.params.name
@@ -47,7 +77,7 @@ export default function ProviderPage({ route }: PageProps) {
     return (
       <>
         <PageHeader eyebrow="Provider" title={name} back={{ href: `#${pathFor('providers')}`, label: 'Providers' }} />
-        <ErrorState error={provider.error} title="Could not load the provider" onRetry={() => void provider.refetch()} />
+        {isApiError(provider.error) && provider.error.status === 404 ? <ProviderNotFound name={name} /> : <ErrorState error={provider.error} title="Could not load the provider" onRetry={() => void provider.refetch()} />}
       </>
     )
   }
@@ -85,6 +115,7 @@ export default function ProviderPage({ route }: PageProps) {
       ),
     },
     { key: 'approval', header: 'Approval', width: '6rem', render: (a) => <span className={approvalText(a.approval) === 'no' ? 'text-tertiary' : 'text-primary'}>{approvalText(a.approval)}</span> },
+    { key: 'band', header: 'Band', width: '10rem', sortable: true, accessor: (a) => BAND_RANK[stats.get(a.id)?.band ?? 'unknown'] ?? 0, render: (a) => <ActionBand action={a} stats={stats.get(a.id)} /> },
     { key: 'calls', header: 'Calls', numeric: true, width: '5rem', sortable: true, accessor: (a) => stats.get(a.id)?.calls ?? 0, render: (a) => <span className="text-primary">{formatNumber(stats.get(a.id)?.calls ?? 0, { compact: true })}</span> },
     {
       key: 'success',
@@ -96,10 +127,23 @@ export default function ProviderPage({ route }: PageProps) {
       render: (a) => {
         const s = stats.get(a.id)
         if (!s) return <span className="text-tertiary">—</span>
-        return <span className={data?.slo && s.successRate < data.slo.successRate ? 'font-medium text-critical' : 'text-primary'}>{percent(s.successRate, { digits: 1 })}</span>
+        // against the SLO the action is judged by: its own, else the provider's
+        const slo = s.slo ?? data?.slo
+        return <span className={slo && s.successRate < slo.successRate ? 'font-medium text-critical' : 'text-primary'}>{percent(s.successRate, { digits: 1 })}</span>
       },
     },
-    { key: 'p95', header: 'p95', numeric: true, width: '5rem', render: (a) => <span className="text-primary">{stats.get(a.id) ? duration(stats.get(a.id)!.p95Ms) : '—'}</span> },
+    {
+      key: 'p95',
+      header: 'p95',
+      numeric: true,
+      width: '5rem',
+      render: (a) => {
+        const s = stats.get(a.id)
+        if (!s) return <span className="text-tertiary">—</span>
+        const slo = s.slo ?? data?.slo
+        return <span className={slo && s.p95Ms > slo.p95Ms ? 'font-medium text-critical' : 'text-primary'}>{duration(s.p95Ms)}</span>
+      },
+    },
     {
       key: 'errors',
       header: 'Top errors',
@@ -224,7 +268,7 @@ export default function ProviderPage({ route }: PageProps) {
               </Card>
             ) : (
               <>
-                <Card title="Calls per day">
+                <Card title="Calls per day" subtitle={failedText(daily.reduce((n, d) => n + (d.errors ?? 0), 0))}>
                   <LineChart values={daily.map((d) => d.calls)} labels={labels} area height={160} yFormat={(v) => formatNumber(v, { compact: true })} ariaLabel="Calls per day" />
                 </Card>
                 <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -688,6 +732,75 @@ function ActionDrawer({ action, stats, onTry, onClose }: { action: ActionInfo; s
    Try an action against a real environment
    ------------------------------------------------------------------------- */
 
+/**
+ * "Use the real response": the override a tried answer becomes (POST /providers/{name}/overrides,
+ * a change request with the answer's schema as the action's override). Only an answer that differs
+ * from the declared output and is a JSON object can be one.
+ */
+export function realResponseOverride(result: TryResult | null, action: string): OverrideRequest | null {
+  if (!result || result.mismatches.length === 0 || !action) return null
+  const r = result.response
+  return r !== null && typeof r === 'object' && !Array.isArray(r) ? { action, response: r as Record<string, unknown> } : null
+}
+
+/** What a tried call answered: its status, the answer, the fields that differ from the declared output, and the way to adopt the answer. */
+export function TryOutcome({ result, action, fixing, onUseRealResponse }: { result: TryResult; action: string; fixing: boolean; onUseRealResponse: (override: OverrideRequest) => void }) {
+  const override = realResponseOverride(result, action)
+  return (
+    <section className="animate-fade-in space-y-3 rounded-lg border border-stroke-light p-4" data-testid="try-outcome">
+      <div className="flex flex-wrap items-center gap-2">
+        <Tag tone={result.ok ? 'healthy' : 'critical'} dot>
+          {result.ok ? 'OK' : 'Failed'}
+        </Tag>
+        <Mono className="text-primary">HTTP {result.status}</Mono>
+        <span className="text-caption tabular-nums text-tertiary">{duration(result.durationMs)}</span>
+        {result.verified !== undefined && (
+          <Tag size="sm" tone={result.verified ? 'healthy' : 'warning'} icon={result.verified ? 'check' : 'help'}>
+            {result.verified ? 'verified afterwards' : 'not verified'}
+          </Tag>
+        )}
+        {result.mismatches.length === 0 ? (
+          <Tag size="sm" tone="healthy" outline>
+            matches the declared output
+          </Tag>
+        ) : (
+          <Tag size="sm" tone="warning" outline>
+            {result.mismatches.length} field{result.mismatches.length === 1 ? '' : 's'} differ
+          </Tag>
+        )}
+      </div>
+      <JsonView value={result.response} name="response" defaultExpanded={2} maxHeight="max-h-72" />
+      {result.mismatches.length > 0 && (
+        <Table
+          dense
+          columns={[
+            { key: 'field', header: 'Field', render: (m) => <Mono className="text-primary">{m.field}</Mono> },
+            { key: 'expected', header: 'Declared', render: (m) => <Mono>{JSON.stringify(m.expected)}</Mono> },
+            { key: 'actual', header: 'Real answer', render: (m) => <Mono className="text-primary">{JSON.stringify(m.actual)}</Mono> },
+          ]}
+          rows={result.mismatches}
+          rowKey={(m) => m.field}
+          caption="Mismatches"
+        />
+      )}
+      {result.mismatches.length > 0 && (
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {override ? (
+            <>
+              <span className="text-caption text-tertiary">Opens a change request with the schema of this answer as the action's override.</span>
+              <Button icon="edit" loading={fixing} onClick={() => onUseRealResponse(override)}>
+                Use the real response
+              </Button>
+            </>
+          ) : (
+            <span className="text-caption text-tertiary">The answer is not a JSON object, so it cannot become the action's override.</span>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDetail; preset?: string; onClose: () => void }) {
   const toast = useToast()
   const notify = useChangeRequestToast()
@@ -717,13 +830,12 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
   }
 
   // "Use the real response": the schema inferred from the answer goes into the file's overrides through a change request
-  const fix = async () => {
-    if (!result || !result.response || typeof result.response !== 'object') return
+  const fix = async (override: OverrideRequest) => {
     setBusy('fix')
     try {
-      const accepted = await api.overrideAction(provider.name, { action: actionId, response: result.response as Record<string, unknown> })
+      const accepted = await api.overrideAction(provider.name, override)
       invalidate('provider')
-      notify(accepted, `The override of ${actionId}, from the real answer,`)
+      notify(accepted, `The override of ${override.action}, from the real answer,`)
     } catch (e) {
       toast.error('Could not record the override', errorMessage(e))
     } finally {
@@ -758,53 +870,7 @@ function TryActionDrawer({ provider, preset, onClose }: { provider: ProviderDeta
         )}
         <SchemaForm schema={action?.input} value={input} onChange={setInput} idPrefix="try" pickers={false} />
 
-        {result && (
-          <section className="animate-fade-in space-y-3 rounded-lg border border-stroke-light p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Tag tone={result.ok ? 'healthy' : 'critical'} dot>
-                {result.ok ? 'OK' : 'Failed'}
-              </Tag>
-              <Mono className="text-primary">HTTP {result.status}</Mono>
-              <span className="text-caption tabular-nums text-tertiary">{duration(result.durationMs)}</span>
-              {result.verified !== undefined && (
-                <Tag size="sm" tone={result.verified ? 'healthy' : 'warning'} icon={result.verified ? 'check' : 'help'}>
-                  {result.verified ? 'verified afterwards' : 'not verified'}
-                </Tag>
-              )}
-              {result.mismatches.length === 0 ? (
-                <Tag size="sm" tone="healthy" outline>
-                  matches the declared output
-                </Tag>
-              ) : (
-                <Tag size="sm" tone="warning" outline>
-                  {result.mismatches.length} field{result.mismatches.length === 1 ? '' : 's'} differ
-                </Tag>
-              )}
-            </div>
-            <JsonView value={result.response} name="response" defaultExpanded={2} maxHeight="max-h-72" />
-            {result.mismatches.length > 0 && (
-              <Table
-                dense
-                columns={[
-                  { key: 'field', header: 'Field', render: (m) => <Mono className="text-primary">{m.field}</Mono> },
-                  { key: 'expected', header: 'Declared', render: (m) => <Mono>{JSON.stringify(m.expected)}</Mono> },
-                  { key: 'actual', header: 'Real answer', render: (m) => <Mono className="text-primary">{JSON.stringify(m.actual)}</Mono> },
-                ]}
-                rows={result.mismatches}
-                rowKey={(m) => m.field}
-                caption="Mismatches"
-              />
-            )}
-            {result.mismatches.length > 0 && (
-              <div className="flex flex-wrap items-center justify-end gap-3">
-                <span className="text-caption text-tertiary">Opens a change request with the schema of this answer as the action's override.</span>
-                <Button icon="edit" loading={busy === 'fix'} onClick={() => void fix()}>
-                  Use the real response
-                </Button>
-              </div>
-            )}
-          </section>
-        )}
+        {result && <TryOutcome result={result} action={actionId} fixing={busy === 'fix'} onUseRealResponse={(override) => void fix(override)} />}
       </OverlayBody>
       <OverlayFooter>
         <Button variant="ghost" onClick={onClose}>

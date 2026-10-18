@@ -46,8 +46,9 @@ exact path and the Swagger link), and one MCP tool, `vm_restart`, for an agent.
 ## 3. Design a workflow
 
 1. **Workflows → New workflow**. Choose *From template* for a guided start, *Blank* for an empty
-   canvas, *Import* to turn an OpenAPI operation, an Ansible playbook, a Terraform module or an
-   IDP tile into a draft, or *Describe it* to let the assistant draft one from a sentence.
+   canvas, *Import* to turn an OpenAPI provider's create operation, a library Ansible playbook, a
+   Terraform provider's module or an IDP tile (picked from the tiles the IDP providers offer) into
+   a draft, or *Describe it* to let the assistant draft one from a sentence.
 2. The designer is the n8n-style canvas: add a step with the plus on the edge, pick a provider
    action, an approval, a wait, a switch, a loop, a fork, or a *run* step that calls another
    published workflow. The panel on the right is the step's parameters; expressions use the
@@ -61,10 +62,12 @@ exact path and the Swagger link), and one MCP tool, `vm_restart`, for an agent.
 5. **Publish** opens a change request: the diff of the YAML, the checks (schema, checks,
    playbooks, policy, replay of recent jobs, contracts with dependants, routes), and the release
    strategy (canary by default). The author cannot merge their own change; a reviewer with edit
-   rights on the owner team opens the change request (the Publish panel links it; share the link)
-   and presses *Merge and publish*. From then on the version is in the catalog, has its endpoint
-   and its MCP tool, and the canary release moves traffic to it stage by stage under **Releases**,
-   rolling back on its own when a gate fails.
+   rights on the owner team finds it under **Workflows → Change requests** (the open ones, counted
+   on the tab; the team's inbox also gets a *Review requested* notification that links it), reads
+   the candidate drawn on the canvas, the diff and the YAML, and presses *Merge and publish*. From
+   then on the version is in the catalog, has its endpoint and its MCP tool, and the canary
+   release moves traffic to it stage by stage under **Releases**, rolling back on its own when a
+   gate fails.
 
 Prefer a file? Write the YAML by hand under `workflows/<team>/` following
 [config as code](config-as-code.md) and run `npm run check:workflows`; the designer and the file
@@ -78,17 +81,26 @@ calls from the provider's own description.
 1. **Providers → Add provider**. Choose the type: *OpenAPI* (import a spec and every operation
    can become an action), *HTTP* (a few endpoints described by example), *Ansible* (playbooks
    from a Git repository, pinned to a commit), *Terraform* (a module with plan, apply and destroy),
-   *IDP tile* or *SDK worker* (a team's own code on its own task queue, see `sdk/`).
+   *IDP tile* or *SDK worker* (a team's own code on its own task queue, see `sdk/`). Or *Ask Devin
+   to draft it* from a description, here or on the Review step: the draft opens on the review.
 2. **Connect**: paste the spec or its URL, give the base URL per environment, pick the
    credential as a `vault:` reference (never a value; **Credentials** lists what your team may
    use), and run *Test connection*: every environment is probed and the result is kept as review
    evidence.
-3. **Actions**: tick the operations workflows may call. Name, effect (read, change, create,
-   delete) and retry are inferred from the HTTP method; a delete needs an approval by default.
-4. **Try it**: call an action for real against dev with a generated form. The response is checked
-   against the schema; a mismatch becomes an *overrides* block (the vendor spec is never edited)
-   and the response is saved as the sample the dry runs answer from. A destructive try is verified
-   gone afterwards.
+3. **Actions**: tick the operations workflows may call (the search box narrows a long spec;
+   *select all* takes the operations it shows). Name, effect (read, change, create, delete) and
+   retry are inferred from the HTTP method; a delete needs an approval by default. Then name the
+   **error classes**: a status, and the text the body contains when a status is shared, gives a
+   class and says whether it is retried. *Start from the usual ones* adds 404 `not_found`, 409
+   `conflict`, 429 `rate_limited` and 503 `unavailable`; the first class that matches wins, so
+   the step says when one can never match.
+4. **Try it**: call an action for real against dev with a generated form. The review counts the
+   tries in dev (the first environment when there is no dev); a try elsewhere is allowed and said
+   not to count. A delete whose input names a registry resource picks it from the registry, as the
+   catalog's run form does: pick a test resource, since the try deletes it. The response is
+   checked against the schema; a mismatch becomes an *overrides* block (the vendor spec is never
+   edited) and the response is saved as the sample the dry runs answer from. A destructive try is
+   verified gone afterwards.
 5. **Review**: the automated review (spec pinned, credentials work, every action tried, errors
    classified, owner and alert channel set, SLO suggested). Publishing opens a change request a
    teammate merges; the provider version rolls out as a canary over its calls.

@@ -68,9 +68,16 @@ export default function ApprovalsPage(_: PageProps) {
       header: 'Group',
       width: '9rem',
       render: (a) => (
-        <Tag size="sm" outline>
-          {a.group}
-        </Tag>
+        <span className="inline-flex flex-wrap gap-1">
+          <Tag size="sm" outline>
+            {a.group}
+          </Tag>
+          {a.escalatedTo && a.escalatedTo !== a.group && (
+            <Tag size="sm" tone="warning" outline title="Escalated: this group could decide it too">
+              {a.escalatedTo}
+            </Tag>
+          )}
+        </span>
       ),
     },
     { key: 'by', header: 'Decided by', width: '10rem', render: (a) => <span className="text-primary">{a.decidedBy ?? (a.status === 'expired' ? 'nobody (timed out)' : '—')}</span> },

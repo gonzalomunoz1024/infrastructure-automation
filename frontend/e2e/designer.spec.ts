@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { mockDesignerApi, type MockApi } from './designer-fixtures'
+import { EXPLANATION, mockDesignerApi, pasteInto, vmRestartYaml, yamlEditor, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against a mocked backend (the backend does not run here): the real
@@ -105,13 +105,85 @@ test.describe('workflow designer', () => {
     await expect(list).toContainText('Tell the channel')
   })
 
-  test('the YAML drawer shows the workflow as YAML', async ({ page }) => {
+  test('the YAML drawer shows the workflow as YAML in Monaco', async ({ page }) => {
     await openVmRestart(page)
     await page.getByRole('button', { name: 'YAML' }).click()
-    const editor = page.getByTestId('yaml-editor')
-    await expect(editor).toBeVisible()
-    await expect(editor).toHaveValue(/name: vm-restart/)
-    await expect(editor).toHaveValue(/checkVmExists:/)
+    const editor = await yamlEditor(page)
+    await expect(editor.locator('.view-lines')).toContainText('name: vm-restart')
+    await expect(editor.getByRole('textbox', { name: 'Workflow YAML' })).toBeAttached()
+    // the YAML tokenizer colours a key apart from its value
+    const line = editor.locator('.view-line', { hasText: 'name: vm-restart' }).first()
+    const key = line.locator('span > span', { hasText: /^name$/ })
+    const value = line.locator('span > span', { hasText: /^vm-restart$/ })
+    await expect(key).toHaveClass(/\bmtk\d+\b/)
+    await expect(value).toHaveClass(/\bmtk\d+\b/)
+    expect(await key.getAttribute('class')).not.toBe(await value.getAttribute('class'))
+  })
+
+  test('the YAML drawer marks a check problem on its step and applies a pasted file', async ({ page }) => {
+    const api = await openVmRestart(page)
+    // clearing the notify step's channel is a problem the checks find
+    await node(page, 'step:notifyDone').dblclick()
+    const ndv = page.getByTestId('ndv')
+    await ndv.getByRole('textbox', { name: /^Channel/ }).fill('')
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await page.getByRole('button', { name: 'YAML' }).click()
+    const editor = await yamlEditor(page)
+    // F8 goes to the problem: the editor scrolls to the step and says what is wrong
+    await editor.locator('.view-lines').click()
+    await page.keyboard.press('F8')
+    await expect(editor.locator('.marker-widget')).toContainText('notify needs a channel')
+    await expect(editor.locator('.view-lines')).toContainText('notifyDone:')
+    await page.keyboard.press('Escape')
+
+    // a pasted file goes to the backend as it was pasted, and the canvas follows it
+    const yaml = vmRestartYaml().replace('title: VM restart\n', 'title: VM restart, pasted\n')
+    await pasteInto(page, editor, yaml)
+    await page.getByRole('button', { name: 'Apply YAML' }).click()
+    await expect(page.getByText('YAML applied')).toBeVisible()
+    await expect(page.getByTitle('Rename workflow')).toHaveText('VM restart, pasted')
+    // once, though leaving the editor for the button applies too
+    expect(api.parses.filter((p) => p === yaml)).toHaveLength(1)
+  })
+
+  test('the expression editor opens from a parameter, marks what does not resolve and writes back', async ({ page }) => {
+    await openVmRestart(page)
+    await node(page, 'step:notifyDone').dblclick()
+    const ndv = page.getByTestId('ndv')
+    await ndv.getByRole('button', { name: 'Expand Message' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Edit Message' })
+    const editor = dialog.getByTestId('expression-editor')
+    await editor.locator('.monaco-editor .view-lines').waitFor({ timeout: 20_000 })
+    await expect(editor.locator('.view-lines')).toContainText('Restarted {{ $vm.name }}')
+    const result = dialog.getByTestId('expression-result')
+
+    await pasteInto(page, editor, 'Restarted {{ $nope }}')
+    await expect(editor.locator('.squiggly-error')).toHaveCount(1)
+    await expect(result).toContainText('Unknown reference $nope')
+
+    await pasteInto(page, editor, 'Restarted {{ $vm.name }} at last')
+    await expect(editor.locator('.squiggly-error')).toHaveCount(0)
+    await expect(result).toContainText('at last')
+    await dialog.getByRole('button', { name: 'Done' }).click()
+    await expect(dialog).toBeHidden()
+    await expect(ndv.getByRole('textbox', { name: 'Message', exact: true })).toHaveValue('Restarted {{ $vm.name }} at last')
+  })
+
+  test('a step that pauses on its failure says how long it waits for a decision, and saves it', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await node(page, 'step:restart').dblclick()
+    const ndv = page.getByTestId('ndv')
+    await ndv.getByRole('tab', { name: 'Settings' }).click()
+    const timeout = ndv.getByRole('textbox', { name: /^Decision timeout/ })
+    await expect(timeout).toHaveAttribute('placeholder', 'P7D')
+    await timeout.fill('PT4H')
+    await ndv.getByRole('button', { name: 'Back to canvas' }).click()
+    await page.getByTestId('save-button').click()
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const steps = (api.drafts[0].definition as { workflow: { do: Record<string, Record<string, unknown>>[] } }).workflow.do
+    const restart = steps.find((s) => 'restart' in s)?.restart
+    expect(restart?.attentionTimeout).toBe('PT4H')
+    expect(restart && 'pauseOnFailure' in restart).toBe(false)
   })
 
   test('dragging a field of the input onto a parameter maps it as an expression', async ({ page }) => {
@@ -190,9 +262,28 @@ test.describe('workflow designer', () => {
     await page.keyboard.press('Enter')
     await expect(panel.getByText('Announce the restart in #compute-ops first.')).toBeVisible()
     expect(api.assistant).toEqual(['Tell #compute-ops before restarting'])
+    // what the draft changes on the canvas, before anything is applied
+    const diff = panel.getByTestId('draft-diff')
+    await expect(diff).toContainText('Changes to the canvas')
+    await expect(diff).toContainText('name: Announce the restart')
+    await expect(node(page, 'step:announce')).toHaveCount(0)
     await panel.getByRole('button', { name: 'Apply to canvas' }).click()
     await expect(node(page, 'step:announce')).toBeVisible()
     await expect(panel.getByRole('button', { name: 'Applied' })).toBeDisabled()
+    await expect(panel.getByTestId('draft-diff')).toHaveCount(0)
+  })
+
+  test('the assistant explains the workflow in a message, with nothing to apply', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await page.getByRole('button', { name: 'Assistant' }).click()
+    const panel = page.getByTestId('assistant-panel')
+    await panel.getByRole('button', { name: 'Explain what this workflow does' }).click()
+    await expect(panel.getByTestId('assistant-message')).toHaveText(EXPLANATION)
+    await expect(panel.getByTestId('assistant-answer')).toContainText('No change to the canvas')
+    // said once, as a message: the unchanged draft does not repeat it or offer to apply it
+    await expect(panel.getByText(EXPLANATION)).toHaveCount(1)
+    await expect(panel.getByRole('button', { name: 'Apply to canvas' })).toHaveCount(0)
+    expect(api.assistant).toEqual(['Explain what this workflow does'])
   })
 
   test('a new workflow starts from the dialog and the first save creates it', async ({ page }) => {
@@ -209,6 +300,8 @@ test.describe('workflow designer', () => {
     await page.keyboard.press('ControlOrMeta+s')
     await expect.poll(() => api.created.length).toBe(1)
     expect((api.created[0].definition as { metadata: { name: string } }).metadata.name).toBe('disk-resize')
+    // every workflow names who may run it: the new one lets its owner team
+    expect((api.created[0].definition as { policy?: unknown }).policy).toEqual({ rbac: ['team-compute'] })
     await expect(page).toHaveURL(/#\/workflows\/disk-resize$/)
     await expect(node(page, 'trigger:api')).toBeVisible()
   })

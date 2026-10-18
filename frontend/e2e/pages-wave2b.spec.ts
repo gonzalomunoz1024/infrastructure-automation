@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SERVICE_ACCOUNTS, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, ME, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SERVICE_ACCOUNTS, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 import type { ServiceAccount } from '../src/lib/types'
 
 /*
@@ -203,7 +203,7 @@ test.describe('catalog: a run pinned to a version', () => {
       'GET /resource-types': RESOURCE_TYPES,
       'GET /vms': VMS,
       'GET /workflows/{name}/versions': VM_RESTART_VERSIONS,
-      'POST /vms:restart:batch': reply(202, { jobId: 'job-batch', status: 'queued' }),
+      'POST /vms:restart:batch': reply(202, { jobId: 'job-batch', rows: 2, status: 'queued', links: { job: '/api/v1/jobs/job-batch' } }),
       'GET /jobs/{id}': JOB,
       'GET /jobs/{id}/events': sse([]),
     })
@@ -224,20 +224,19 @@ test.describe('catalog: a run pinned to a version', () => {
   })
 })
 
-test.describe('job: a pinned run and the engine link', () => {
-  test('says the run was pinned to its version and opens it in Temporal', async ({ page }) => {
+test.describe('job: the engine link', () => {
+  test('opens the job in Temporal', async ({ page }) => {
     await mockApi(page, {
-      'GET /jobs/{id}': { ...JOB, pinned: true, links: { temporal: 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91' } },
+      'GET /jobs/{id}': { ...JOB, links: { temporal: 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91' } },
       'GET /jobs/{id}/events': sse([]),
     })
     await page.goto(`/#/jobs/${JOB.id}`)
-    await expect(page.getByText(`pinned to ${JOB.version}`)).toBeVisible()
     const link = page.getByRole('link', { name: 'Open in Temporal' })
     await expect(link).toHaveAttribute('href', 'https://temporal.example.com/namespaces/default/workflows/job-7f3a2c91')
     await expect(link).toHaveAttribute('target', '_blank')
   })
 
-  test('a job the router placed carries no pin, and a retry over the quota waits for Retry-After', async ({ page }) => {
+  test('a job off Temporal has no engine link, and a retry over the quota waits for Retry-After', async ({ page }) => {
     const api = await mockApi(page, {
       'GET /jobs/{id}': JOB,
       'GET /jobs/{id}/events': sse([]),
@@ -245,7 +244,6 @@ test.describe('job: a pinned run and the engine link', () => {
     })
     await page.goto(`/#/jobs/${JOB.id}`)
     await expect(page.getByRole('heading', { level: 1 })).toContainText(JOB.title)
-    await expect(page.getByText(/pinned to/)).toHaveCount(0)
     await expect(page.getByRole('link', { name: /Open in/ })).toHaveCount(0)
 
     const panel = page.getByRole('region', { name: 'Needs attention' })
@@ -625,12 +623,13 @@ test.describe('assistant', () => {
   test('the validation lists the problems on their steps, the timeline shows the session, and the draft becomes a change request', async ({ page }) => {
     const api = await mockApi(page, {
       'POST /assistant/sessions': { sessionId: 'as-77' },
+      // as the backend streams it: the type as the SSE event name, the payload alone as the data
       'POST /assistant/sessions/{id}/messages': sse([
-        { event: 'status', data: { type: 'status', data: 'Drafting' } },
-        { event: 'message', data: { type: 'message', data: { text: 'Here is a first draft: it checks the backups, then restarts.' } } },
-        { event: 'draft', data: { type: 'draft', data: { status: 'ready', summary: 'Restarts a VM after a backup check.', workflowYaml: ASSISTANT_DRAFT_YAML, validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] } } } },
-        { event: 'validation', data: { type: 'validation', data: { valid: false, problems: ASSISTANT_PROBLEMS } } },
-        { event: 'done', data: { type: 'done', data: {} } },
+        { id: 1, event: 'status', data: { status: 'Drafting' } },
+        { id: 2, event: 'message', data: { role: 'assistant', text: 'Here is a first draft: it checks the backups, then restarts.' } },
+        { id: 3, event: 'draft', data: { status: 'ready', summary: 'Restarts a VM after a backup check.', workflowYaml: ASSISTANT_DRAFT_YAML, validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] } } },
+        { id: 4, event: 'validation', data: { valid: false, problems: ASSISTANT_PROBLEMS } },
+        { id: 5, event: 'done', data: { status: 'done' } },
       ]),
       'POST /workflows:parse': { definition: ASSISTANT_DRAFT_DEFINITION, problems: [] },
       'GET /registry/providers': [],
@@ -689,10 +688,13 @@ test.describe('service accounts', () => {
     const api = await mockApi(page, {
       'GET /service-accounts': () => reply(200, accounts),
       'POST /service-accounts': (req) => {
-        const body = req.body as { name: string; preset?: string; scopes?: string[] }
+        const body = req.body as { name: string; preset?: string; scopes?: string[]; teams?: string[] }
         const scopes = body.scopes ?? (body.preset === 'ci' ? ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write', 'providers:write'] : ['registry:read', 'jobs:start', 'jobs:read'])
-        accounts = [...accounts, { id: 'sa-new', name: body.name, roles: ['ops'], teams: ['team-platform'], createdAt: new Date().toISOString(), scopes: scopes as ServiceAccount['scopes'] }]
-        return reply(201, { id: 'sa-new', token: 'iaf_sa_example_token_not_a_secret', scopes })
+        // no teams given: the account acts for its creator's, and the note says so
+        const teams = body.teams && body.teams.length > 0 ? body.teams : ['team-compute', 'team-platform']
+        const note = body.teams && body.teams.length > 0 ? undefined : "No teams were given: the account acts for Gonzalo's teams (team-compute, team-platform)"
+        accounts = [...accounts, { id: 'sa-new', name: body.name, roles: ['ops'], teams, createdAt: new Date().toISOString(), scopes: scopes as ServiceAccount['scopes'] }]
+        return reply(201, { id: 'sa-new', token: 'iaf_sa_example_token_not_a_secret', scopes, teams, ...(note ? { note } : {}) })
       },
     })
     await page.goto('/#/settings')
@@ -727,6 +729,11 @@ test.describe('service accounts', () => {
     const token = page.getByRole('dialog', { name: 'Service account token' })
     await expect(token).toContainText('iaf_sa_example_token_not_a_secret')
     await expect(token.getByLabel('Scopes')).toContainText('workflows:write')
+    // the teams it acts for: its creator's, since none were given
+    const actsFor = token.getByTestId('acts-for')
+    await expect(actsFor.getByLabel('Teams')).toContainText('team-compute')
+    await expect(actsFor.getByLabel('Teams')).toContainText('team-platform')
+    await expect(actsFor).toContainText("No teams were given: the account acts for Gonzalo's teams (team-compute, team-platform)")
     expect(api.callsTo('POST', '/service-accounts')[0].body).toEqual({
       name: 'release-bot',
       roles: ['ops'],
@@ -736,5 +743,33 @@ test.describe('service accounts', () => {
     })
     await token.getByRole('button', { name: 'Done' }).click()
     await expect(table.getByRole('row', { name: /release-bot/ }).getByLabel('Scopes')).toContainText('workflows:write')
+  })
+})
+
+test.describe('settings', () => {
+  test('the identity card says production signs in through the auth proxy and links the README', async ({ page }) => {
+    await mockApi(page, { 'GET /service-accounts': SERVICE_ACCOUNTS })
+    await page.goto('/#/settings')
+    await expect(page.getByText('Who the API runs your requests as.')).toBeVisible()
+    await expect(page.getByText('An auth proxy in front of the app and the API signs you in and adds the bearer token the API verifies')).toBeVisible()
+    const readme = page.getByRole('link', { name: 'README: Identity and OIDC' })
+    await expect(readme).toHaveAttribute('href', 'https://github.com/gonzalomunoz1024/infrastructure-automation/blob/main/README.md#identity-and-oidc')
+    await expect(readme).toHaveAttribute('target', '_blank')
+    // the shell cannot tell the API's profile, so nothing claims one
+    await expect(page.getByText('Identity mode')).toHaveCount(0)
+    await expect(page.getByText(/SSO/)).toHaveCount(0)
+  })
+
+  test('someone who is not an admin is told only admins see service accounts, with no error and no create button', async ({ page }) => {
+    await mockApi(page, {
+      'GET /me': { ...ME, id: 'ana', name: 'Ana', email: 'ana@example.com', teams: ['team-compute'], roles: ['ops'], admin: false },
+      'GET /service-accounts': () => reply(403, { error: 'Only a platform admin lists service accounts' }),
+    })
+    await page.goto('/#/settings')
+    await expect(page.getByText('Only admins see service accounts')).toBeVisible()
+    await expect(page.getByText('ask one for an account for your pipeline or agent')).toBeVisible()
+    await expect(page.getByText('Could not load service accounts')).toHaveCount(0)
+    await expect(page.getByText('Only a platform admin lists service accounts')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'New service account' })).toHaveCount(0)
   })
 })

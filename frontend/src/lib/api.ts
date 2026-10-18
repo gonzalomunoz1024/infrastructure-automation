@@ -8,6 +8,7 @@ import type {
   Approval,
   ApprovalStatus,
   AssistantEvent,
+  AssistantEventType,
   AssistantSession,
   AssistantSessionCreated,
   AssistantSessionRequest,
@@ -156,6 +157,10 @@ export interface ApiErrorBody {
   problems?: Problem[]
   rows?: BatchRowProblem[]
   detail?: unknown
+  /** a 500's trace id (its `error` is always `unexpected error`), which finds the cause in the API's log */
+  correlationId?: string
+  /** a 429's wait in seconds */
+  retryAfter?: number
   [key: string]: unknown
 }
 
@@ -169,6 +174,8 @@ export class ApiError extends Error {
   readonly body: ApiErrorBody | null
   /** seconds until a 429 (over the team's job-start quota) may be retried: the Retry-After header, else the body's `retryAfter` */
   readonly retryAfter?: number
+  /** a 500's correlation id: the request's trace id, which finds the cause in the API's log */
+  readonly correlationId?: string
 
   constructor(status: number, body: ApiErrorBody | null, fallback?: string, retryAfter?: number) {
     const error = body?.error ?? fallback ?? (status === 0 ? 'Backend unreachable' : `Request failed (${status})`)
@@ -181,6 +188,7 @@ export class ApiError extends Error {
     this.detail = body?.detail
     this.body = body
     this.retryAfter = retryAfter ?? (typeof body?.retryAfter === 'number' ? body.retryAfter : undefined)
+    this.correlationId = typeof body?.correlationId === 'string' && body.correlationId ? body.correlationId : undefined
   }
 
   get unreachable(): boolean {
@@ -232,7 +240,8 @@ export function runHeaders(opts?: RunOptions): Record<string, string> {
 
 /** A one-line message for any thrown value. */
 export function errorMessage(e: unknown): string {
-  if (isApiError(e)) return e.error
+  // an unexpected error says which request it was, so the API's log can find the cause
+  if (isApiError(e)) return e.correlationId ? `${e.error} (correlation id ${e.correlationId})` : e.error
   if (e instanceof Error) return e.message
   return String(e)
 }
@@ -360,14 +369,14 @@ export function fillPath(path: string, input: Record<string, unknown>): { path: 
 }
 
 /* ----------------------------------------------------------------------------
-   Streams: SSE (EventSource with reconnect), SSE over POST, WebSocket
+   Streams: SSE (EventSource with reconnect), SSE over POST
    ------------------------------------------------------------------------- */
 
 export interface Subscription {
   close: () => void
 }
 
-export interface SubscribeOptions {
+export interface SubscribeOptions<T = unknown> {
   onOpen?: () => void
   onError?: (e: Event) => void
   /** named events to listen for besides `message` */
@@ -376,17 +385,30 @@ export interface SubscribeOptions {
   retryMs?: number
   /** give up after this many consecutive failures (default: never) */
   maxRetries?: number
+  /**
+   * The event after which the server ends the stream: when the stream ends right after one, it
+   * is over and not reconnected (EventSource would reconnect and replay it again).
+   */
+  endsAfter?: (event: T) => boolean
 }
 
 /**
  * Server-sent events with reconnect. EventSource cannot carry headers, so the
  * dev identity falls back to the backend default on streams.
  */
-export function subscribe<T = unknown>(url: string, onEvent: (event: T, raw: MessageEvent) => void, opts: SubscribeOptions = {}): Subscription {
+export function subscribe<T = unknown>(url: string, onEvent: (event: T, raw: MessageEvent) => void, opts: SubscribeOptions<T> = {}): Subscription {
   let es: EventSource | null = null
   let closed = false
   let attempt = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  // whether the last event of this connection is the one the server ends the stream after
+  let ended = false
+
+  const close = () => {
+    closed = true
+    if (timer) clearTimeout(timer)
+    es?.close()
+  }
 
   const handle = (ev: Event) => {
     const msg = ev as MessageEvent
@@ -399,6 +421,7 @@ export function subscribe<T = unknown>(url: string, onEvent: (event: T, raw: Mes
         data = msg.data
       }
     }
+    ended = opts.endsAfter?.(data as T) ?? false
     onEvent(data as T, msg)
   }
 
@@ -409,9 +432,12 @@ export function subscribe<T = unknown>(url: string, onEvent: (event: T, raw: Mes
     for (const name of opts.events ?? []) es.addEventListener(name, handle)
     es.onopen = () => {
       attempt = 0
+      ended = false
       opts.onOpen?.()
     }
     es.onerror = (e) => {
+      // the server ended the stream after its last event: done
+      if (ended) return close()
       opts.onError?.(e)
       if (!es || es.readyState !== EventSource.CLOSED) return // the browser retries by itself
       es.close()
@@ -424,84 +450,26 @@ export function subscribe<T = unknown>(url: string, onEvent: (event: T, raw: Mes
   }
 
   connect()
-  return {
-    close: () => {
-      closed = true
-      if (timer) clearTimeout(timer)
-      es?.close()
-    },
-  }
+  return { close }
 }
 
-/** Live events of a job (history replayed first). */
-export function jobEvents(id: string, onEvent: (event: JobEvent) => void, opts: SubscribeOptions = {}): Subscription {
+/** The events a job's stream ends after (`data.event`): the job finished or was cancelled. */
+export function isLastJobEvent(event: JobEvent): boolean {
+  const name = event?.data?.event
+  return name === 'job.finished' || name === 'job.cancelled'
+}
+
+/**
+ * Live events of a job: its history replayed first, then its events as they happen. The server
+ * ends the stream after the job's last event (a job already over replays its history and ends),
+ * and the subscription ends there too instead of replaying it again.
+ */
+export function jobEvents(id: string, onEvent: (event: JobEvent) => void, opts: SubscribeOptions<JobEvent> = {}): Subscription {
   return subscribe<JobEvent>(`/jobs/${enc(id)}/events`, onEvent, {
     events: ['job', 'step', 'approval', 'attention', 'batch', 'log'],
+    endsAfter: isLastJobEvent,
     ...opts,
   })
-}
-
-export interface JobSocketHandlers {
-  onEvent: (event: JobEvent) => void
-  onOpen?: () => void
-  onClose?: (ev: CloseEvent) => void
-  onError?: (ev: Event) => void
-  /** reconnect with backoff until closed by the caller (default true) */
-  reconnect?: boolean
-}
-
-export interface JobSocket {
-  close: () => void
-  send: (data: unknown) => void
-  readonly state: () => 'connecting' | 'open' | 'closed'
-}
-
-/** The WebSocket twin of jobEvents: ws(s)://host/ws/jobs/{id}. */
-export function jobSocket(id: string, handlers: JobSocketHandlers): JobSocket {
-  const proto = typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'
-  const host = typeof location !== 'undefined' ? location.host : 'localhost:3000'
-  const url = `${proto}://${host}/ws/jobs/${enc(id)}`
-  let ws: WebSocket | null = null
-  let closed = false
-  let attempt = 0
-  let timer: ReturnType<typeof setTimeout> | undefined
-
-  const connect = () => {
-    if (closed) return
-    ws = new WebSocket(url)
-    ws.onopen = () => {
-      attempt = 0
-      handlers.onOpen?.()
-    }
-    ws.onmessage = (ev) => {
-      try {
-        handlers.onEvent(JSON.parse(String(ev.data)) as JobEvent)
-      } catch {
-        /* not JSON: ignore */
-      }
-    }
-    ws.onerror = (ev) => handlers.onError?.(ev)
-    ws.onclose = (ev) => {
-      handlers.onClose?.(ev)
-      if (closed || handlers.reconnect === false) return
-      const delay = Math.min(30_000, 1000 * 2 ** attempt)
-      attempt++
-      timer = setTimeout(connect, delay)
-    }
-  }
-
-  connect()
-  return {
-    close: () => {
-      closed = true
-      if (timer) clearTimeout(timer)
-      ws?.close()
-    },
-    send: (data) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(typeof data === 'string' ? data : JSON.stringify(data))
-    },
-    state: () => (closed || !ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING ? 'closed' : ws.readyState === WebSocket.OPEN ? 'open' : 'connecting'),
-  }
 }
 
 interface SseFrame {
@@ -525,6 +493,18 @@ function parseSseBlock(block: string): SseFrame | null {
   if (data.length === 0 && !frame.event) return null
   frame.data = data.join('\n')
   return frame
+}
+
+const ASSISTANT_EVENTS: readonly string[] = ['status', 'draft', 'message', 'validation', 'done'] satisfies AssistantEventType[]
+
+/**
+ * A frame of the assistant's message stream as an event: the backend names the event type in the
+ * SSE `event:` field (a frame without one is a `message`, as in any SSE stream) and sends the payload
+ * alone as the data. Null for an event type the page does not know.
+ */
+export function assistantEventOf(name: string | undefined, data: unknown): AssistantEvent | null {
+  const type = name ?? 'message'
+  return ASSISTANT_EVENTS.includes(type) ? { type: type as AssistantEventType, data } : null
 }
 
 /** POST a body and read the SSE response as it streams (EventSource cannot POST). */
@@ -718,13 +698,18 @@ export const api = {
 
   /* assistant */
   createAssistantSession: (body: AssistantSessionRequest) => post<AssistantSessionCreated>('/assistant/sessions', body),
-  /** streams `{ type, data }` events until `done` */
+  /** streams the events of one message until `done`: the SSE event name is the type, the data the payload */
   sendAssistantMessage: (sessionId: string, text: string, onEvent: (event: AssistantEvent) => void, opts?: RequestOptions) =>
-    streamSse<AssistantEvent | unknown>(`/assistant/sessions/${enc(sessionId)}/messages`, { text }, (parsed, frame) => {
-      const e = parsed as Partial<AssistantEvent>
-      if (e && typeof e === 'object' && typeof e.type === 'string') onEvent(e as AssistantEvent)
-      else onEvent({ type: (frame.event as AssistantEvent['type']) ?? 'message', data: parsed })
-    }, opts),
+    streamSse<unknown>(
+      `/assistant/sessions/${enc(sessionId)}/messages`,
+      { text },
+      (data, frame) => {
+        const event = assistantEventOf(frame.event, data)
+        if (event) onEvent(event)
+      },
+      opts,
+    ),
+  /** the session as the backend keeps it: mode, workflow, the latest draft and the exchange so far */
   assistantSession: (id: string) => get<AssistantSession>(`/assistant/sessions/${enc(id)}`),
 
   /* platform */

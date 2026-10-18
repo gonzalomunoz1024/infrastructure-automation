@@ -5,21 +5,29 @@ import {
   CATALOG,
   CONNECTION,
   CREDENTIALS,
+  DNS_RECORD,
   EVIDENCE,
   IMAGE,
   IMAGE_LINEAGE,
   JOB,
   JOBS,
+  ME,
+  PLATFORM_STREAM,
   PREVIEW,
   PROVIDER,
   PROVIDER_ALERTS,
   PROVIDER_CR,
+  PROVIDER_DRAFT,
+  PROVIDER_STREAM,
   PROVIDERS,
   RELEASES,
   RESOURCE_TYPES,
   SPEC,
+  TEST_VM,
+  TRY_DELETE,
   TRY_RESULT,
   VALIDATION,
+  VCENTER_SPEC,
   VERIFIED,
   VMS,
   WORKFLOWS,
@@ -85,7 +93,7 @@ test.describe('catalog', () => {
       'POST /vms:restart:batch': () =>
         ++attempts === 1
           ? reply(400, { error: 'Some rows are invalid', rows: [{ index: 1, problems: [{ level: 'error', code: 'not_found', field: 'vmId', message: 'vm-9999 is not a registered vm' }] }] })
-          : { jobId: 'job-5b10e7d2', rows: [] },
+          : { jobId: 'job-5b10e7d2', rows: 3, status: 'queued', links: { job: '/api/v1/jobs/job-5b10e7d2' } },
       'GET /jobs/{id}': { ...JOB, id: 'job-5b10e7d2', attention: undefined, steps: [] },
       'GET /jobs/{id}/events': sse([]),
       'GET /jobs': JOBS,
@@ -149,10 +157,49 @@ test.describe('jobs', () => {
     await expect(confirm).toBeHidden()
     expect(api.callsTo('POST', '/jobs/job-7f3a2c91:abort')).toHaveLength(0)
   })
+
+  test('cancelling says nothing is rolled back, points a paused run at Abort, then posts the cancel', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /jobs/{id}': JOB,
+      'GET /jobs/{id}/events': sse([]),
+      'GET /workflows': WORKFLOWS,
+      'POST /jobs/{id}:cancel': reply(202, { id: JOB.id, status: 'cancelled' }),
+    })
+    await page.goto('/#/jobs/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Cancel this job?' })
+    await expect(dialog).toContainText('Restart web-1042 stops: no further step starts')
+    await expect(dialog).toContainText('Nothing is rolled back: what the finished steps changed stays changed.')
+    await expect(dialog).toContainText('To roll them back instead, choose Abort for restart under Needs attention.')
+    await expect(dialog).not.toContainText('compensated')
+    await dialog.getByRole('button', { name: 'Keep running' }).click()
+    await expect(dialog).toBeHidden()
+    expect(api.callsTo('POST', '/jobs/job-7f3a2c91:cancel')).toHaveLength(0)
+
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Cancel this job?' }).getByRole('button', { name: 'Cancel job' }).click()
+    await expect.poll(() => api.callsTo('POST', '/jobs/job-7f3a2c91:cancel').length).toBe(1)
+  })
+
+  test("someone who may not steer the job is told so in the backend's words", async ({ page }) => {
+    const refusal = 'Ana may not control job job-7f3a2c91 (vm-restart started by gonzalo)'
+    const api = await mockApi(page, {
+      'GET /jobs/{id}': JOB,
+      'GET /jobs/{id}/events': sse([]),
+      'GET /workflows': WORKFLOWS,
+      'POST /jobs/{id}:cancel': reply(403, { error: refusal }),
+      'POST /jobs/{id}:abort': reply(403, { error: refusal }),
+    })
+    await page.goto('/#/jobs/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Cancel this job?' }).getByRole('button', { name: 'Cancel job' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Could not cancel' })).toContainText(refusal)
+    expect(api.callsTo('POST', '/jobs/job-7f3a2c91:cancel')).toHaveLength(1)
+  })
 })
 
 test.describe('approvals', () => {
-  test('approving posts the decision with the comment and empties the queue', async ({ page }) => {
+  test('approving posts the decision with the comment and empties the queue, the preview in view', async ({ page }) => {
     let pending = [...APPROVALS]
     const api = await mockApi(page, {
       'GET /approvals': (req) => (req.query.get('status') === 'pending' ? pending : []),
@@ -163,6 +210,15 @@ test.describe('approvals', () => {
     })
     await page.goto('/#/approvals')
     await expect(page.getByText('Restart web-1042 in prod for a kernel patch.')).toBeVisible()
+    // what the approver decides on: the run's steps, what it touches and what policy said
+    const preview = page.getByTestId('preview-card')
+    await expect(preview).toBeVisible()
+    await expect(preview).toContainText('Needs approval')
+    await expect(preview).toContainText('Restart the VM')
+    await expect(preview.getByRole('link', { name: /web-1042/ })).toHaveAttribute('href', '#/resources/vm-1042')
+    await expect(preview).toContainText('Production changes need compute-approvers')
+    // escalated: the escalation group may decide it too
+    await expect(page.getByText('escalated to compute-leads')).toBeVisible()
     await page.getByRole('textbox', { name: 'Comment' }).fill('Window agreed')
     await page.getByRole('button', { name: 'Approve', exact: true }).click()
     await expect(page.getByText('Nothing waiting for you')).toBeVisible()
@@ -181,13 +237,88 @@ test.describe('providers', () => {
     await expect(page).toHaveURL(/#\/providers\/vsphere$/)
 
     for (const name of ['Calls per day', 'Success rate per day', 'Latency per day', 'Calls by action']) await expect(page.getByRole('img', { name })).toBeVisible()
+    // each 24-hour window says how many of its calls failed
+    await expect(page.getByText(`${PROVIDER.daily.reduce((n, d) => n + d.errors, 0)} failed in the 14 days`)).toBeVisible()
     await expect(page.getByText('#compute-alerts')).toBeVisible()
 
     await page.getByRole('tab', { name: /Actions/ }).click()
     const actions = page.getByRole('table', { name: 'Actions' })
-    await expect(actions.getByRole('row', { name: /vm\.restart/ })).toContainText('timeout ×31')
+    const restart = actions.getByRole('row', { name: /vm\.restart/ })
+    await expect(restart).toContainText('timeout ×31')
+    // a restart is judged against an SLO of its own, and is healthy by it; the others take the provider's
+    await expect(restart).toContainText('Healthy')
+    await expect(restart).toContainText('own SLO 98.5% · p95 12s')
+    await expect(actions.getByRole('row', { name: /vm\.get/ })).toContainText('Healthy')
+    await expect(actions.getByRole('row', { name: /vm\.get/ })).not.toContainText('own SLO')
+    await expect(actions.getByRole('row', { name: /vm\.delete/ })).toContainText('Unknown')
     await page.getByRole('tab', { name: /Alerts/ }).click()
     await expect(page.getByText('3 timeouts in 10 minutes')).toBeVisible()
+  })
+
+  test('the admin view: the list with p50, performance against the SLO over 14 days, and the provider events', async ({ page }) => {
+    const api = await mockApi(page, { 'GET /providers': PROVIDERS, 'GET /audit/platform': (req) => (req.query.get('aggregate') === 'provider' ? PROVIDER_STREAM : PLATFORM_STREAM) })
+    await page.goto('/#/providers')
+    const views = page.getByRole('tablist', { name: 'Providers views' })
+    await expect(views.getByRole('tab', { name: /Providers/ })).toHaveAttribute('aria-selected', 'true')
+    const table = page.getByRole('table', { name: 'Providers' })
+    await expect(table.getByRole('columnheader', { name: 'p50' })).toBeVisible()
+    await expect(table.getByRole('row', { name: /VMware vSphere/ })).toContainText('190ms')
+    await expect(table.getByRole('row', { name: /Backup service/ })).toContainText('420ms')
+
+    await views.getByRole('tab', { name: /Performance/ }).click()
+    await expect(page).toHaveURL(/#\/providers\?tab=performance$/)
+    await expect(page.getByTestId('slo-summary')).toContainText('1 of 2 providers with an SLO is within it')
+    const perf = page.getByRole('table', { name: 'Provider performance' })
+    // what misses its SLO comes first
+    await expect(perf.getByRole('row').nth(1)).toContainText('Backup service')
+    const backup = perf.getByRole('row', { name: /Backup service/ })
+    await expect(backup).toContainText('2,210')
+    await expect(backup).toContainText('97.20%')
+    await expect(backup).toContainText('SLO ≥ 99.0%')
+    await expect(backup).toContainText('SLO ≤ 1.2s')
+    await expect(backup).toContainText('both missed')
+    await expect(backup).toContainText('63')
+    await expect(backup.getByRole('img', { name: 'Errors per day, last 14 days' })).toBeVisible()
+    await expect(perf.getByRole('row', { name: /VMware vSphere/ })).toContainText('within')
+    await expect(perf.getByRole('row', { name: /VMware vSphere/ })).toContainText('9')
+
+    await views.getByRole('tab', { name: /Audit/ }).click()
+    await expect(page).toHaveURL(/#\/providers\?tab=audit$/)
+    const audit = page.getByTestId('provider-audit')
+    await expect(audit.getByRole('status')).toContainText('Chain intact')
+    const events = audit.getByRole('table', { name: 'Provider events' })
+    await expect(events.getByRole('row')).toHaveCount(4)
+    await expect(events.getByRole('row').nth(1)).toContainText('provider.updated')
+    await expect(events.getByRole('row', { name: /provider\.published/ })).toContainText('maria')
+    await expect(events.getByRole('row', { name: /provider\.published/ }).getByRole('link', { name: 'vsphere' })).toHaveAttribute('href', '#/providers/vsphere')
+    expect(api.callsTo('GET', '/audit/platform').map((c) => c.query)).toContain('?aggregate=provider')
+    await events.getByRole('row', { name: /provider\.change-requested/ }).click()
+    await expect(page.getByRole('dialog', { name: 'Platform event 4' })).toContainText('cr-42')
+    await page.keyboard.press('Escape')
+    await expect(audit.getByRole('link', { name: 'Open in Audit' })).toHaveAttribute('href', '#/audit?tab=platform&aggregate=provider')
+
+    // a reload keeps the view
+    await page.reload()
+    await expect(page.getByRole('tablist', { name: 'Providers views' }).getByRole('tab', { name: /Audit/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('a provider the caller may not see is as missing as one that does not exist', async ({ page }) => {
+    await mockApi(page, { 'GET /providers/{name}': reply(404, { error: 'Provider not found: dns-records' }), 'GET /providers': PROVIDERS })
+    await page.goto('/#/providers/dns-records')
+    await expect(page.getByText('No provider dns-records you can see')).toBeVisible()
+    await expect(page.getByText('There is none of that name, or a team you are not in owns it.')).toBeVisible()
+    await expect(page.getByText('Could not load the provider')).toHaveCount(0)
+    await page.getByRole('button', { name: 'All providers' }).click()
+    await expect(page).toHaveURL(/#\/providers$/)
+  })
+
+  test('someone outside every provider team is told why the list is empty', async ({ page }) => {
+    await mockApi(page, { 'GET /me': { ...ME, id: 'ana', name: 'Ana', admin: false, roles: ['developer'], teams: ['team-data'] }, 'GET /providers': [] })
+    await page.goto('/#/providers')
+    await expect(page.getByText('No providers of your teams yet')).toBeVisible()
+    await expect(page.getByText('You see the providers your teams own (team-data) and the ones no team owns; an admin sees every provider.')).toBeVisible()
+    await page.getByRole('tab', { name: /Performance/ }).click()
+    await expect(page.getByText('No providers of your teams yet')).toBeVisible()
   })
 
   test('the Add provider wizard walks its five steps to a change request', async ({ page }) => {
@@ -232,6 +363,9 @@ test.describe('providers', () => {
     const ops = page.getByRole('table', { name: 'Operations' })
     await expect(ops).toContainText('listJobs')
     await expect(ops).toContainText('createJob')
+    // a backup takes longer than a list: it gets a p95 of its own, the success rate staying the provider's
+    await expect(ops.getByRole('textbox', { name: 'p95 SLO of createJob, milliseconds' })).toHaveAttribute('placeholder', '1000')
+    await ops.getByRole('textbox', { name: 'p95 SLO of createJob, milliseconds' }).fill('2000')
     await page.getByRole('button', { name: 'Next' }).click()
 
     // 4 · Try it
@@ -257,6 +391,121 @@ test.describe('providers', () => {
     expect(published.strategy).toBe('canary')
     expect(published.yaml).toContain('kind: Provider')
     expect(published.yaml).toContain('header: X-Api-Key')
+    expect(published.yaml).toMatch(/- id: createJob\n(?:\s{6}.*\n)*?\s{6}slo:\n\s{8}p95Ms: 2000\n/)
+  })
+
+  test('the wizard searches the operations, classifies errors and tries a delete in dev on a test resource', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /credentials': CREDENTIALS,
+      'POST /providers:import-spec': VCENTER_SPEC,
+      'POST /providers:try': (req) => ((req.body as { action: string }).action === 'deleteVm' ? TRY_DELETE : TRY_RESULT),
+      'GET /resource-types': RESOURCE_TYPES,
+      'GET /vms': [...VMS, TEST_VM],
+      'POST /providers:validate': VALIDATION,
+    })
+    await page.goto('/#/providers/new')
+    const current = page.getByRole('list', { name: 'Steps' }).locator('[aria-current="step"]')
+    await page.getByRole('textbox', { name: 'Title', exact: true }).fill('vCenter')
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    await page.getByRole('textbox', { name: 'Spec URL' }).fill('https://vcenter-dev.example.com/rest/openapi.json')
+    await page.getByRole('button', { name: 'Import spec' }).click()
+    await expect(page.getByText('6 operations from vCenter 8.0.2.')).toBeVisible()
+    await page.getByRole('button', { name: 'Credential', exact: true }).click()
+    await page.getByRole('option', { name: /vsphere\/token/ }).click()
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 3 · Actions: the search narrows the table, and "select all" takes what it shows
+    await expect(current).toContainText('Actions')
+    const ops = page.getByRole('table', { name: 'Operations' })
+    await expect(ops.getByRole('row')).toHaveCount(7)
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('snapshot')
+    await expect(ops.getByRole('row')).toHaveCount(3)
+    await expect(page.getByText('2 of 6 shown; the hidden ones keep their selection')).toBeVisible()
+    await ops.getByRole('checkbox', { name: 'Select every operation shown' }).uncheck()
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('')
+    await expect(ops.getByRole('row')).toHaveCount(7)
+    await expect(page.getByText('4 of 6 operations become actions.')).toBeVisible()
+    await expect(ops.getByRole('checkbox', { name: 'Include listSnapshots' })).not.toBeChecked()
+    await expect(ops.getByRole('checkbox', { name: 'Include deleteVm' })).toBeChecked()
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('cluster')
+    await expect(ops).toContainText('No operation matches')
+    await page.getByRole('textbox', { name: 'Search operations' }).fill('')
+
+    // the error classes: the usual ones, and one of this API's own
+    const errors = page.getByTestId('error-classes')
+    await errors.getByRole('button', { name: 'Start from the usual ones' }).click()
+    const rows = errors.getByRole('list', { name: 'Error classes' }).getByRole('listitem')
+    await expect(rows).toHaveCount(4)
+    await expect(rows.nth(2).getByRole('textbox', { name: 'Class' })).toHaveValue('rate_limited')
+    await expect(rows.nth(2).getByRole('checkbox', { name: 'Retry' })).toBeChecked()
+    await errors.getByRole('button', { name: 'Add error class' }).click()
+    await rows.nth(4).getByRole('textbox', { name: 'Status' }).fill('429')
+    await rows.nth(4).getByRole('textbox', { name: 'Body contains' }).fill('license')
+    await rows.nth(4).getByRole('textbox', { name: 'Class' }).fill('license_exhausted')
+    // the 429 above takes every 429 first
+    const before = page.getByRole('list', { name: 'Before you continue' })
+    await expect(before).toContainText('license_exhausted: rate_limited above it matches every call it would, and the first match wins.')
+    await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
+    await rows.nth(4).getByRole('textbox', { name: 'Status' }).fill('403')
+    await expect(before).toHaveCount(0)
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 4 · Try it: in dev, which the review counts; a delete picks its VM from the registry
+    await expect(current).toContainText('Try it')
+    await expect(page.getByRole('button', { name: 'Environment', exact: true })).toContainText('dev')
+    await expect(page.getByText('The review counts the tries in dev')).toBeVisible()
+    await page.getByRole('button', { name: 'Action', exact: true }).click()
+    await page.getByRole('option', { name: /deleteVm/ }).click()
+    await expect(page.getByTestId('try-test-resource')).toHaveText('Pick a test resource from the registry: the try deletes it in dev for real.')
+    await page.getByRole('button', { name: 'VM', exact: true }).click()
+    await page.getByRole('option', { name: /scratch-7/ }).click()
+    await page.getByRole('button', { name: 'Try it', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: 'Run deleteVm in dev?' })
+    await expect(confirm).toContainText('This is a real delete call, not a dry run: it deletes vm-dev-7 in dev.')
+    await confirm.getByRole('button', { name: 'Run it' }).click()
+    await expect(page.getByTestId('try-evidence')).toContainText("Kept as review evidence · tried in dev")
+    await expect(page.getByTestId('try-evidence')).toContainText("The review's tried check counts it.")
+    expect(api.callsTo('POST', '/providers:try')[0].body).toMatchObject({ action: 'deleteVm', environment: 'dev', input: { id: 'vm-dev-7' } })
+    // another environment is allowed, and said not to count
+    await page.getByRole('button', { name: 'Environment', exact: true }).click()
+    await page.getByRole('option', { name: 'prod' }).click()
+    await expect(page.getByText('Not review evidence: the review counts only the tries in dev')).toBeVisible()
+    await page.getByRole('button', { name: 'Next' }).click()
+
+    // 5 · Review: the file has the chosen operations and the error classes
+    await expect(current).toContainText('Review')
+    const file = page.locator('pre').first()
+    for (const line of ['operation: deleteVm', 'errors:', 'class: not_found', 'body: license', 'class: license_exhausted', 'status: 403']) await expect(file).toContainText(line)
+    await expect(file).not.toContainText('listSnapshots')
+  })
+
+  test('Ask Devin from the Type step drafts the provider and opens the draft on the review', async ({ page }) => {
+    const api = await mockApi(page, { 'POST /providers:draft': PROVIDER_DRAFT, 'POST /providers:validate': VALIDATION })
+    await page.goto('/#/providers/new')
+    await page.getByTestId('ask-devin').getByRole('button', { name: 'Ask Devin to draft it' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Ask Devin to draft the provider' })
+    const description = dialog.getByRole('textbox', { name: 'Description' })
+    await expect(description).toHaveValue(/^An OpenAPI provider, owned by team-platform, version 1\.0\.0\./)
+    await description.fill('The backup service: list the backup jobs and start one. An API key in X-Api-Key.')
+    await dialog.getByRole('button', { name: 'Ask Devin' }).click()
+    await expect(dialog).toContainText('An HTTP provider for the backup service with two actions.')
+    await dialog.getByRole('button', { name: 'Use this draft' }).click()
+    await expect(dialog).toBeHidden()
+    expect(api.callsTo('POST', '/providers:draft')[0].body).toEqual({ description: 'The backup service: list the backup jobs and start one. An API key in X-Api-Key.' })
+
+    // the review shows the draft as the file, named by its metadata
+    await expect(page.getByRole('list', { name: 'Steps' }).locator('[aria-current="step"]')).toContainText('Review')
+    await expect(page.getByText("This draft replaces the wizard's document.")).toBeVisible()
+    await expect(page.getByText('providers/team-platform/backup.yaml')).toBeVisible()
+    await expect(page.locator('pre').first()).toContainText('id: jobs.create')
+    await page.getByRole('button', { name: 'Run checks' }).click()
+    expect((api.callsTo('POST', '/providers:validate')[0].body as { yaml: string }).yaml).toBe(PROVIDER_DRAFT.yaml)
+
+    // the steps before it are a click away, with the draft's names
+    await page.getByRole('list', { name: 'Steps' }).getByRole('button', { name: /Type/ }).click()
+    await expect(page.getByRole('textbox', { name: 'Title', exact: true })).toHaveValue('Backup service')
+    await expect(page.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('backup')
   })
 })
 
@@ -316,6 +565,51 @@ test.describe('audit', () => {
     await expect(page.getByRole('link', { name: 'CHG-4521' })).toHaveAttribute('href', 'https://itsm.example.com/CHG-4521')
   })
 
+  test('an open record shows its last checkpoint instead of a seal', async ({ page }) => {
+    const checkpoint = { at: new Date(Date.now() - 30 * 60_000).toISOString(), signature: 'hmac-of-entry-4', keyId: 'audit-2026-10', seq: 4, hash: EVIDENCE.entries[3].hash }
+    await mockApi(page, { 'GET /audit/{jobId}': { ...EVIDENCE, sealed: undefined, checkpoints: [checkpoint] }, 'GET /audit/{jobId}:verify': VERIFIED })
+    await page.goto('/#/audit/job-7f3a2c91')
+    await expect(page.getByTitle(/^Still open/)).toHaveText('Checkpointed')
+    await expect(page.getByText('over entry 4')).toBeVisible()
+    await expect(page.getByText('audit-2026-10')).toBeVisible()
+  })
+
+  test('sharing gives an auditor a whole link, or says who may share instead', async ({ page }) => {
+    const refusal = 'ana may not share the evidence of job-7f3a2c91: only its requester (gonzalo), a member of compute or an admin may'
+    let refuse = false
+    await mockApi(page, {
+      'GET /audit/{jobId}': EVIDENCE,
+      'GET /audit/{jobId}:verify': VERIFIED,
+      'POST /audit/{jobId}:share': () => (refuse ? reply(403, { error: refusal }) : { url: '/api/v1/audit/shared/tok-example', expiresAt: '2033-10-17T00:00:00Z' }),
+    })
+    await page.goto('/#/audit/job-7f3a2c91')
+    await page.getByRole('button', { name: 'Share', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Share evidence' })
+    await dialog.getByRole('button', { name: 'Create link' }).click()
+    await expect(dialog.getByRole('textbox', { name: 'Link' })).toHaveValue(/^http:\/\/localhost:\d+\/api\/v1\/audit\/shared\/tok-example$/)
+    await dialog.getByRole('button', { name: 'Done' }).click()
+
+    // someone the backend refuses reads its answer in the dialog, with nothing to retry
+    refuse = true
+    await page.getByRole('button', { name: 'Share', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Create link' }).click()
+    await expect(dialog.getByTestId('share-refused')).toHaveText(refusal)
+    await expect(dialog.getByRole('button', { name: 'Create link' })).toHaveCount(0)
+    await expect(page.getByRole('status').filter({ hasText: 'Could not create the link' })).toHaveCount(0)
+  })
+
+  test('sealing now says how many records it signed, and with which key', async ({ page }) => {
+    const api = await mockApi(page, {
+      'GET /audit': [],
+      'GET /workflows': WORKFLOWS,
+      'POST /audit:seal': { sealedAt: new Date().toISOString(), signature: 'hmac-of-the-ledger', keyId: 'audit-2026-10', sealed: 3, checkpointed: 2 },
+    })
+    await page.goto('/#/audit')
+    await page.getByRole('button', { name: 'Seal now' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Sealed' })).toContainText('Sealed 3 closed records and checkpointed 2 open ones with key audit-2026-10')
+    expect(api.callsTo('POST', '/audit:seal')).toHaveLength(1)
+  })
+
   test('a broken chain says where it broke', async ({ page }) => {
     await mockApi(page, { 'GET /audit/{jobId}': EVIDENCE, 'GET /audit/{jobId}:verify': { valid: false, entries: 5, brokenAt: 4 } })
     await page.goto('/#/audit/job-7f3a2c91')
@@ -326,7 +620,7 @@ test.describe('audit', () => {
 
 test.describe('resources', () => {
   test('a resource draws its lineage, and retiring one in use lists its dependents', async ({ page }) => {
-    const all = [IMAGE, BASE_IMAGE, ...VMS]
+    const all = [IMAGE, BASE_IMAGE, ...VMS, DNS_RECORD]
     await mockApi(page, {
       'GET /resources/{id}': (req) => all.find((r) => r.id === req.params.id) ?? reply(404, { error: 'No such resource' }),
       'GET /resources/{id}/lineage': (req) => (req.params.id === IMAGE.id ? IMAGE_LINEAGE : { resource: all.find((r) => r.id === req.params.id), builtFrom: [IMAGE], dependents: [] }),
@@ -335,6 +629,10 @@ test.describe('resources', () => {
     await page.goto('/#/resources/img-77')
     const graph = page.locator('svg').filter({ hasText: 'ubuntu-2404-cis1' })
     for (const name of ['ubuntu-2404', 'web-1042', 'web-1043']) await expect(graph).toContainText(name)
+    // the backend answers the whole graph: the DNS record of web-1042 is two hops away, and says how it came
+    await expect(graph).toHaveAttribute('aria-label', 'Lineage of ubuntu-2404-cis1: built from 1, 2 dependents; 1 upstream and 3 downstream in all')
+    await expect(graph.getByRole('link', { name: /web-1042\.prod/ })).toHaveAttribute('href', '#/resources/dns-1042')
+    await expect(graph.locator('path[data-edge="vm-1042>dns-1042"] title')).toHaveText('web-1042.prod was built from web-1042 by register-dns')
 
     await page.getByRole('button', { name: 'Retire' }).click()
     await page.getByRole('dialog', { name: /Retire ubuntu-2404-cis1/ }).getByRole('button', { name: 'Retire' }).click()

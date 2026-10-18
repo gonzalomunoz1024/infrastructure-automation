@@ -15,11 +15,11 @@ import { navigate, pathFor, type Route } from '../app/router'
 import { Designer } from './Designer'
 import { DesignerSkeleton } from './DesignerSkeleton'
 import { forgetDocument, peekDocument } from './handoff'
-import { newDocument } from './model/edits'
+import { newDocument, withOwnerPolicy } from './model/edits'
 import { clone } from './model/fixes'
 import { NewWorkflowModal, type NewWorkflowMeta } from './chrome/NewWorkflowModal'
 
-/** A template's document under the new workflow's names. */
+/** A template's document under the new workflow's names; one whose policy names no role or team lets the owner team run it. */
 export function fromTemplate(doc: WorkflowDocument, meta: NewWorkflowMeta): WorkflowDocument {
   const next = clone(doc)
   const before = next.metadata ?? {}
@@ -29,7 +29,7 @@ export function fromTemplate(doc: WorkflowDocument, meta: NewWorkflowMeta): Work
   if (!next.api) next.api = base.api
   else if (before.noun !== meta.noun || before.verb !== meta.verb || !next.api.path) next.api = { ...next.api, path: base.api?.path }
   if (!next.workflow) next.workflow = { do: [] }
-  return next
+  return withOwnerPolicy(next, meta.owner)
 }
 
 function useTemplate(id: string | null): { loading: boolean; error: string | null; template: Template | null; doc: WorkflowDocument | null } {

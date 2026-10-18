@@ -181,6 +181,16 @@ export function StepSettings({ stepId, body, step, doc, ownCtx, allProblems, rea
           <FieldLabel label="Pause on failure" description="When the step fails, the job waits for someone to retry, skip or abort instead of failing" />
           <Switch checked={pause} label={pause ? 'On' : 'Off'} disabled={readOnly} onChange={(on) => store.updateStep(stepId, (b) => void (b.pauseOnFailure = on))} />
         </div>
+        {pause &&
+          field({
+            field: 'attentionTimeout',
+            label: 'Decision timeout',
+            type: 'string',
+            mono: true,
+            expression: false,
+            placeholder: 'P7D',
+            description: 'How long the paused step waits for someone before it aborts: a duration like 4h or P3D; seven days when empty',
+          })}
       </ParamSection>
       {!container && (
         <ParamSection title="Compensation">

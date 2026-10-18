@@ -21,7 +21,7 @@ const DETAIL: ProviderDetail = {
   yaml: YAML,
   actions: [
     { id: 'vm.get', title: 'Get VM', operation: 'getVm', effect: 'read', retry: 'safe', input: { type: 'object', properties: { id: { type: 'string' } } }, output: { type: 'object' }, sample: { id: 'vm-1', powerState: 'poweredOn' }, overridden: false },
-    { id: 'vm.delete', title: 'Delete VM', operation: { method: 'delete', path: '/vms/{id}' }, effect: 'delete', retry: 'unsafe', approval: 'required', plan: 'vm.get', input: { type: 'object' }, output: { type: 'object' }, overridden: true },
+    { id: 'vm.delete', title: 'Delete VM', operation: { method: 'delete', path: '/vms/{id}' }, effect: 'delete', retry: 'unsafe', approval: 'required', plan: 'vm.get', input: { type: 'object' }, output: { type: 'object' }, overridden: true, slo: { successRate: 99, p95Ms: 6000 } },
   ],
   daily: [],
   perAction: [],
@@ -65,6 +65,11 @@ describe('editing an existing provider', () => {
       ['vm.delete', '', 'DELETE', '/vms/{id}', true, 'vm.get'],
     ])
     expect(JSON.parse(s.actions[0].inputText)).toEqual({ type: 'object', properties: { id: { type: 'string' } } })
+    // an action's own SLO comes along; one that takes the provider's has none
+    expect(s.actions.map((a) => [a.sloSuccessRate, a.sloP95Ms])).toEqual([
+      ['', ''],
+      ['99', '6000'],
+    ])
     expect(s.samples).toEqual({ 'vm.get': { id: 'vm-1', powerState: 'poweredOn' } })
     expect(s.slo).toEqual({ successRate: '99.5', p95Ms: '900', channel: '#compute-alerts' })
     // the connect step asks nothing about the spec while editing: the file keeps its own

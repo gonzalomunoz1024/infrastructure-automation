@@ -538,6 +538,10 @@ export function commonKeysOf(body: StepBody): string[] {
 }
 
 /** A blank document for a new workflow. */
+/**
+ * A blank workflow under the names of the New workflow dialog. Its policy lets the owner team run
+ * it: every workflow names at least one role or team that may (`policy.missing` otherwise).
+ */
 export function newDocument(meta: { name: string; title: string; noun: string; verb: string; owner: string; folder: string; persona?: string }): WorkflowDocument {
   const doc: WorkflowDocument = {
     apiVersion: 'iaf.platform/v1',
@@ -556,8 +560,16 @@ export function newDocument(meta: { name: string; title: string; noun: string; v
       path: `/api/v1/${meta.noun}s:${meta.verb}`,
       input: { type: 'object', required: [], properties: {} },
     },
+    policy: { rbac: [meta.owner] },
     workflow: { do: [] },
   }
   if (meta.persona && doc.metadata) doc.metadata.persona = meta.persona
   return doc
+}
+
+/** The document with a policy that lets `owner` run it when it names no role or team; as it was otherwise. */
+export function withOwnerPolicy(doc: WorkflowDocument, owner: string): WorkflowDocument {
+  const rbac = doc.policy?.rbac
+  if ((Array.isArray(rbac) && rbac.length > 0) || !owner.trim()) return doc
+  return { ...doc, policy: { ...(doc.policy ?? {}), rbac: [owner.trim()] } }
 }

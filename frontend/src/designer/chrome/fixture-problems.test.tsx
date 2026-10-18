@@ -4,7 +4,6 @@
  * and every fix it offers (a did-you-mean, an approval before a destructive step, the removal
  * of a step that never runs, a connection) applies and makes the problem go away.
  */
-import { parse as parseYaml } from 'yaml'
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
@@ -15,6 +14,7 @@ import {
   parseDocument,
   parseProvider,
   parseResourceType,
+  parseYamlText,
   resourceTypeName,
   type CheckContext,
   type ParsedWorkflow,
@@ -46,7 +46,8 @@ function repoContext(): CheckContext {
   const workflows: ParsedWorkflow[] = []
   const types: ResourceTypeDocument[] = []
   for (const text of Object.values(CONTENT)) {
-    const doc = parseYaml(text, { uniqueKeys: false }) as { kind?: string } | null
+    // read as both twins read YAML: a key written twice is an error, never one of the two values
+    const doc = parseYamlText(text) as { kind?: string } | null
     switch (doc?.kind) {
       case 'Provider':
         providers.push(parseProvider(doc))
@@ -74,7 +75,7 @@ const EMPTY_DOC: WorkflowDocument = { kind: 'Workflow', metadata: { name: 'x' },
 
 function docOf(yaml: string): WorkflowDocument | null {
   try {
-    const doc = parseYaml(yaml, { uniqueKeys: false }) as unknown
+    const doc = parseYamlText(yaml)
     return doc && typeof doc === 'object' ? (doc as WorkflowDocument) : null
   } catch {
     return null

@@ -15,7 +15,11 @@ export const ROUTED = ''
 /** The versions a run may be pinned to, as the API orders them, behind the routed choice. */
 export function versionOptions(versions: readonly WorkflowVersion[] | undefined, current: string): SelectOption[] {
   const runnable = (versions ?? []).filter((v) => v.status === 'published' || v.status === 'retired')
-  return [{ value: ROUTED, label: 'Routed by the release', hint: `${current}, or its canary for a share of runs` }, ...runnable.map((v) => ({ value: v.version, label: v.version, hint: v.status }))]
+  // a rolled-back version can still be pinned, though no run step's range resolves to it again
+  return [
+    { value: ROUTED, label: 'Routed by the release', hint: `${current}, or its canary for a share of runs` },
+    ...runnable.map((v) => ({ value: v.version, label: v.version, hint: v.rolledBack ? `${v.status}, rolled back` : v.status })),
+  ]
 }
 
 export interface RunAdvancedProps {

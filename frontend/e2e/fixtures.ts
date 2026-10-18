@@ -2,8 +2,10 @@ import type { Page } from '@playwright/test'
 import type {
   AnsibleImport,
   Approval,
+  AssistantSession,
   AuditVerification,
   CatalogEntry,
+  ChangeRequest,
   ChangeRequestDetail,
   Credential,
   Dependencies,
@@ -20,11 +22,13 @@ import type {
   Problem,
   ProviderAlert,
   ProviderDetail,
+  ProviderDraft,
   ProviderSummary,
   ProviderValidation,
   Release,
   Resource,
   ResourceType,
+  Schema,
   ServiceAccount,
   SpecImport,
   TerraformImport,
@@ -87,12 +91,12 @@ export interface ApiMock {
 /** A reply with a status other than 200, or no body; `headers` for what the client reads (Retry-After). */
 export const reply = (status: number, json?: unknown, headers?: Record<string, string>): Reply => ({ [REPLY]: true, status, json, headers })
 
-/** A server-sent event stream that tells the browser not to reconnect for ten minutes. */
-export const sse = (events: { event: string; data: unknown; id?: number }[]): Reply => ({
+/** A server-sent event stream that tells the browser not to reconnect for ten minutes, or for `retryMs`. */
+export const sse = (events: { event: string; data: unknown; id?: number }[], retryMs = 600_000): Reply => ({
   [REPLY]: true,
   status: 200,
   contentType: 'text/event-stream',
-  body: 'retry: 600000\n\n' + events.map((e) => `${e.id !== undefined ? `id: ${e.id}\n` : ''}event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`).join(''),
+  body: `retry: ${retryMs}\n\n` + events.map((e) => `${e.id !== undefined ? `id: ${e.id}\n` : ''}event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`).join(''),
 })
 
 const isReply = (v: unknown): v is Reply => typeof v === 'object' && v !== null && REPLY in v
@@ -268,7 +272,20 @@ export const VMS: Resource[] = [
   resource('vm-1042', 'vm', 'web-1042', { attributes: { cpu: 4, memoryGb: 16, environment: 'prod', image: 'img-77' }, builtFrom: ['img-77'] }),
   resource('vm-1043', 'vm', 'web-1043', { attributes: { cpu: 4, memoryGb: 16, environment: 'prod', image: 'img-77' }, builtFrom: ['img-77'] }),
 ]
-export const IMAGE_LINEAGE: Lineage = { resource: IMAGE, builtFrom: [BASE_IMAGE], dependents: VMS }
+/** Two hops from the image: a DNS record registered for web-1042. */
+export const DNS_RECORD = resource('dns-1042', 'dns-record', 'web-1042.prod', { createdBy: { jobId: 'job-dns-1042', workflow: 'register-dns' }, builtFrom: ['vm-1042'] })
+/** The backend's answer: the direct lists, and the whole graph around the image as nodes and edges. */
+export const IMAGE_LINEAGE: Lineage = {
+  resource: IMAGE,
+  builtFrom: [BASE_IMAGE],
+  dependents: VMS,
+  nodes: [IMAGE, BASE_IMAGE, ...VMS, DNS_RECORD],
+  edges: [
+    { from: BASE_IMAGE.id, to: IMAGE.id, via: 'build-vm-image' },
+    ...VMS.map((vm) => ({ from: IMAGE.id, to: vm.id, via: 'create-vm' })),
+    { from: 'vm-1042', to: DNS_RECORD.id, via: 'register-dns' },
+  ],
+}
 
 export const PREVIEW: Preview = {
   workflow: 'vm-restart',
@@ -317,10 +334,16 @@ export const APPROVALS: Approval[] = [
     timeout: 'PT4H',
     status: 'pending',
     preview: PREVIEW,
+    // waited past the policy's escalation: compute-leads may decide it too
+    escalatedTo: 'compute-leads',
   },
 ]
 
-const daily = Array.from({ length: 14 }, (_, i) => ({ date: day(13 - i), calls: 900 + ((i * 137) % 400), successRate: 99.1 + ((i * 7) % 8) / 10, p50Ms: 180 + ((i * 13) % 40), p95Ms: 640 + ((i * 29) % 160) }))
+const daily = Array.from({ length: 14 }, (_, i) => {
+  const calls = 900 + ((i * 137) % 400)
+  const successRate = 99.1 + ((i * 7) % 8) / 10
+  return { date: day(13 - i), calls, errors: Math.round((calls * (100 - successRate)) / 100), successRate, p50Ms: 180 + ((i * 13) % 40), p95Ms: 640 + ((i * 29) % 160) }
+})
 
 export const PROVIDERS: ProviderSummary[] = [
   {
@@ -331,7 +354,7 @@ export const PROVIDERS: ProviderSummary[] = [
     version: '1.3.0',
     environments: ['dev', 'test', 'prod'],
     actionCount: 3,
-    health: { status: 'healthy', successRate: 99.6, p50Ms: 190, p95Ms: 720, calls: 15_480, errorTrend: [1, 0, 2, 1, 0, 0, 1], reasons: [] },
+    health: { status: 'healthy', successRate: 99.6, p50Ms: 190, p95Ms: 720, calls: 15_480, errorTrend: [1, 0, 2, 1, 0, 0, 1, 0, 0, 2, 1, 0, 1, 0], reasons: [] },
     slo: { successRate: 99.5, p95Ms: 800 },
     alerts: { channel: '#compute-alerts' },
   },
@@ -343,7 +366,7 @@ export const PROVIDERS: ProviderSummary[] = [
     version: '1.0.0',
     environments: ['dev', 'test', 'prod'],
     actionCount: 2,
-    health: { status: 'degraded', successRate: 97.2, p50Ms: 420, p95Ms: 1900, calls: 2_210, errorTrend: [2, 3, 5, 8, 6, 9, 11], reasons: ['p95 1.9s is over the 1.2s SLO', 'rate_limited errors are rising'] },
+    health: { status: 'degraded', successRate: 97.2, p50Ms: 420, p95Ms: 1900, calls: 2_210, errorTrend: [0, 1, 0, 2, 1, 3, 2, 3, 5, 8, 6, 9, 11, 12], reasons: ['p95 1.9s is over the 1.2s SLO', 'rate_limited errors are rising'] },
     slo: { successRate: 99.0, p95Ms: 1200 },
     alerts: { channel: '#platform-alerts' },
   },
@@ -356,21 +379,22 @@ export const PROVIDER: ProviderDetail = {
   yaml: 'apiVersion: iaf.platform/v1\nkind: Provider\nmetadata:\n  name: vsphere\n  title: VMware vSphere\n  owner: team-compute\n  version: 1.3.0\nspec:\n  type: openapi\n',
   actions: [
     { id: 'vm.get', title: 'Get VM', operation: 'getVm', effect: 'read', retry: 'safe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } }, sample: { id: 'vm-1042', powerState: 'poweredOn' }, overridden: false },
-    { id: 'vm.restart', title: 'Restart VM', operation: 'restartVm', effect: 'change', retry: 'unsafe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: false },
+    // a restart takes seconds: it is judged against an SLO of its own, not the provider's 800 ms
+    { id: 'vm.restart', title: 'Restart VM', operation: 'restartVm', effect: 'change', retry: 'unsafe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: false, slo: { successRate: 98.5, p95Ms: 12_000 } },
     { id: 'vm.delete', title: 'Delete VM', operation: 'deleteVm', effect: 'delete', retry: 'unsafe', approval: 'required', plan: 'vm.get', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: true },
   ],
   daily,
   perAction: [
-    { action: 'vm.get', calls: 11_200, successRate: 99.9, p50Ms: 120, p95Ms: 380, topErrors: [] },
-    { action: 'vm.restart', calls: 3_900, successRate: 98.9, p50Ms: 2_400, p95Ms: 9_800, topErrors: [{ class: 'timeout', count: 31 }] },
-    { action: 'vm.delete', calls: 380, successRate: 99.5, p50Ms: 1_800, p95Ms: 6_200, topErrors: [{ class: 'not_found', count: 2 }] },
+    { action: 'vm.get', calls: 11_200, successRate: 99.9, p50Ms: 120, p95Ms: 380, topErrors: [], slo: { successRate: 99.5, p95Ms: 800 }, band: 'healthy' },
+    { action: 'vm.restart', calls: 3_900, successRate: 98.9, p50Ms: 2_400, p95Ms: 9_800, topErrors: [{ class: 'timeout', count: 31 }], slo: { successRate: 98.5, p95Ms: 12_000 }, band: 'healthy' },
+    { action: 'vm.delete', calls: 380, successRate: 99.5, p50Ms: 180, p95Ms: 620, topErrors: [{ class: 'not_found', count: 2 }], slo: { successRate: 99.5, p95Ms: 800 }, band: 'unknown' },
   ],
   changeRequests: [
     { id: 'cr-88', kind: 'provider', name: 'vsphere', version: '1.4.0', branch: 'provider/vsphere-1.4.0', title: 'vsphere: add vm.snapshot', author: 'maria', status: 'open', checks: [], strategy: 'canary', createdAt: ago(60 * 3) },
   ],
 }
 
-export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91' }]
+export const PROVIDER_ALERTS: ProviderAlert[] = [{ id: 'al-1', at: ago(40), provider: 'vsphere', action: 'vm.restart', message: '3 timeouts in 10 minutes', severity: 'warning', jobId: 'job-7f3a2c91', channel: '#compute-alerts' }]
 
 /** Two service accounts: a CI one with its scopes, and an older one the API reports no scopes for. */
 export const SERVICE_ACCOUNTS: ServiceAccount[] = [
@@ -393,6 +417,61 @@ export const SPEC: SpecImport = {
     { operationId: 'listJobs', method: 'get', path: '/jobs', summary: 'List backup jobs', effect: 'read', retry: 'safe', input: { type: 'object', properties: { target: { type: 'string' } } }, output: { type: 'object', properties: { items: { type: 'array' }, total: { type: 'integer' } } } },
     { operationId: 'createJob', method: 'post', path: '/jobs', summary: 'Start a backup', effect: 'create', retry: 'unsafe', input: { type: 'object', required: ['target'], properties: { target: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, state: { type: 'string' } } } },
   ],
+}
+
+/** The id input of a vCenter operation: a VM from the registry. */
+const VM_ID: Schema = { type: 'object', required: ['id'], properties: { id: { type: 'string', title: 'VM', 'x-resource': { type: 'vm' } } } }
+
+/** A spec with more operations than a glance takes in, one a delete whose input names a registry VM. */
+export const VCENTER_SPEC: SpecImport = {
+  title: 'vCenter',
+  version: '8.0.2',
+  sha256: hash('7d1e0c9a'),
+  auth: { type: 'bearer' },
+  servers: ['https://vcenter-dev.example.com/rest', 'https://vcenter.example.com/rest'],
+  operations: [
+    { operationId: 'listVms', method: 'get', path: '/vms', summary: 'List virtual machines', effect: 'read', retry: 'safe', input: { type: 'object', properties: { folder: { type: 'string' } } }, output: { type: 'object', properties: { items: { type: 'array' } } } },
+    { operationId: 'getVm', method: 'get', path: '/vms/{id}', summary: 'Get a virtual machine', effect: 'read', retry: 'safe', input: VM_ID, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } } },
+    { operationId: 'deleteVm', method: 'delete', path: '/vms/{id}', summary: 'Delete a virtual machine', effect: 'delete', retry: 'unsafe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'listSnapshots', method: 'get', path: '/vms/{id}/snapshots', summary: 'List the snapshots of a VM', effect: 'read', retry: 'safe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'createSnapshot', method: 'post', path: '/vms/{id}/snapshots', summary: 'Take a snapshot', effect: 'create', retry: 'unsafe', input: VM_ID, output: { type: 'object' } },
+    { operationId: 'listDatastores', method: 'get', path: '/datastores', summary: 'List datastores', effect: 'read', retry: 'safe', input: { type: 'object' }, output: { type: 'object' } },
+  ],
+}
+
+/** A VM made to be deleted by a try: the registry's test resource in dev. */
+export const TEST_VM = resource('vm-dev-7', 'vm', 'scratch-7', { attributes: { cpu: 1, memoryGb: 2, environment: 'dev' } })
+
+/** A destructive try in dev, kept as review evidence and verified gone afterwards. */
+export const TRY_DELETE: TryResult = { ok: true, status: 204, durationMs: 310, response: {}, mismatches: [], verified: true, environment: 'dev', at: ago(0) }
+
+/** Ask Devin's answer: the provider file it drafted from a description. */
+export const PROVIDER_DRAFT: ProviderDraft = {
+  summary: 'An HTTP provider for the backup service with two actions.',
+  assumptions: ['The API key goes in the X-Api-Key header.', 'Starting a backup is not safe to retry.'],
+  yaml: [
+    'apiVersion: iaf.platform/v1',
+    'kind: Provider',
+    'metadata:',
+    '  name: backup',
+    '  title: Backup service',
+    '  owner: team-platform',
+    '  version: 1.0.0',
+    'spec:',
+    '  type: http',
+    '  endpoints:',
+    '    dev: https://backup-dev.example.com/api',
+    '  auth: { type: header, header: X-Api-Key, credential: vault:backup/api-key }',
+    '  actions:',
+    '    - id: jobs.list',
+    '      operation: { method: GET, path: /jobs }',
+    '      effect: read',
+    '    - id: jobs.create',
+    '      operation: { method: POST, path: /jobs }',
+    '      effect: create',
+    '      retry: unsafe',
+    '',
+  ].join('\n'),
 }
 
 export const CONNECTION: TestConnectionResult = {
@@ -525,7 +604,7 @@ export const EVIDENCE: EvidenceRecord = {
     { seq: 5, at: ago(5), kind: 'step', data: { name: 'Restart the VM', status: 'failed' }, hash: hash('e5'), previous: hash('d4') },
   ],
   latestHash: hash('e5'),
-  sealed: { at: ago(2), signature: hash('5ea1'), keyId: 'audit-2026-10' },
+  sealed: { at: ago(2), signature: hash('5ea1'), keyId: 'audit-2026-10', seq: 5, hash: hash('e5') },
   retention: { until: '2033-10-17T00:00:00Z' },
   change: { id: 'CHG-4521', url: 'https://itsm.example.com/CHG-4521' },
 }
@@ -596,6 +675,68 @@ export const REPLAY: JobReplay = {
 }
 
 /* ----------------------------------------------------------------------------
+   A batch the backend stopped (GET /jobs/job-b4d2e9a1), as the in-memory engine leaves it: waves
+   done, done, skipped; the second wave's failures crossed stopIfFailedPercent, so the third wave's
+   rows were skipped and the job failed. POST /jobs/job-b4d2e9a1:retry-failed-rows runs the failed
+   and skipped rows again in a fourth wave and queues the job again (BATCH_RETRIED).
+   ------------------------------------------------------------------------- */
+
+const patchRow = (index: number, host: string) => ({ index, input: { host, cve: 'CVE-2026-1234' } })
+
+export const BATCH_JOB: JobDetail = {
+  id: 'job-b4d2e9a1',
+  workflow: 'patch-cve',
+  title: 'Patch CVE-2026-1234 on 6 servers',
+  version: '0.3.0',
+  status: 'failed',
+  requester: 'maria',
+  channel: 'batch',
+  startedAt: ago(40),
+  endedAt: ago(31),
+  durationMs: 540_000,
+  kind: 'batch',
+  progress: { done: 6, total: 6, failed: 2 },
+  input: { cve: 'CVE-2026-1234' },
+  output: { total: 6, succeeded: 1, failed: 2, skipped: 3 },
+  steps: [],
+  approvals: [],
+  traceId: '4b0e6f2d9a1c3e5f7a9b1c3d5e7f9a1b',
+  batch: {
+    rollout: { waves: [20, 50, 100], maxParallel: 2, stopIfFailedPercent: 20 },
+    waves: [
+      { index: 0, percent: 20, size: 1, status: 'done', startedAt: ago(40), endedAt: ago(37) },
+      { index: 1, percent: 50, size: 2, status: 'done', startedAt: ago(37), endedAt: ago(31) },
+      { index: 2, percent: 100, size: 3, status: 'skipped', endedAt: ago(31) },
+    ],
+    rows: [
+      { ...patchRow(0, 'web-01'), jobId: 'job-b4d2-r0', status: 'succeeded' },
+      { ...patchRow(1, 'web-02'), jobId: 'job-b4d2-r1', status: 'failed', error: 'package_conflict at apply' },
+      { ...patchRow(2, 'web-03'), jobId: 'job-b4d2-r2', status: 'failed', error: 'unreachable at gather' },
+      { ...patchRow(3, 'web-04'), status: 'skipped' },
+      { ...patchRow(4, 'web-05'), status: 'skipped' },
+      { ...patchRow(5, 'web-06'), status: 'skipped' },
+    ],
+    stoppedReason: 'stopped after wave 1: 2 of 3 rows failed (more than 20%)',
+  },
+}
+
+/** BATCH_JOB once :retry-failed-rows accepted: queued again, the five rows pending in wave 4. */
+export const BATCH_RETRIED: JobDetail = {
+  ...BATCH_JOB,
+  status: 'queued',
+  endedAt: undefined,
+  durationMs: undefined,
+  output: undefined,
+  progress: { done: 1, total: 6, failed: 0 },
+  batch: {
+    ...BATCH_JOB.batch!,
+    waves: [...BATCH_JOB.batch!.waves, { index: 3, percent: 100, size: 5, status: 'pending' }],
+    rows: BATCH_JOB.batch!.rows.map((r) => (r.status === 'succeeded' ? r : { index: r.index, input: r.input, status: 'pending' })),
+    stoppedReason: undefined,
+  },
+}
+
+/* ----------------------------------------------------------------------------
    A workflow change request with the publish checks (GET /change-requests/cr-202)
    ------------------------------------------------------------------------- */
 
@@ -612,12 +753,84 @@ export const WORKFLOW_CR: ChangeRequestDetail = {
   createdAt: ago(30),
   checks: [
     { id: 'checks', label: 'Workflow checks', status: 'passed' },
-    { id: 'ansible-lint', label: 'ansible-lint', status: 'passed', detail: '1 playbook pinned to a commit; pinned at publish: restart to 9fceb02d0ae5' },
+    { id: 'playbooks', label: 'Playbooks', status: 'passed', detail: '1 playbook(s) pinned to a commit, 1 linted; pinned at publish: restart to 9fceb02d0ae5' },
     { id: 'contracts', label: 'Contracts', status: 'failed', detail: '2.0.0 breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment, create-vm' },
     { id: 'replay', label: 'Replay of recent jobs', status: 'passed', detail: '{"replayed":42,"divergences":[]}' },
   ],
   diff: '--- a/workflows/team-compute/vm-restart.yaml\n+++ b/workflows/team-compute/vm-restart.yaml\n@@ -12 +12 @@\n-  version: 1.2.0\n+  version: 2.0.0\n',
   yaml: 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart\n  version: 2.0.0\n',
+  url: 'https://github.com/acme/infrastructure/pull/202',
+  // WorkflowMermaid's flowchart of WORKFLOW_CR_DEFINITION
+  preview: {
+    mermaid: 'flowchart LR\n  t0(["POST /api/v1/vms/{vmId}:restart"])\n  subgraph main ["do"]\n    s1["Look up the VM<br/>provider: vsphere vm.get"]\n    s2["Restart the VM<br/>provider: vsphere vm.restart"]\n  end\n  t0 --> s1\n  s1 --> s2\n',
+  },
+}
+
+/* ----------------------------------------------------------------------------
+   Every change request (GET /change-requests?status=): both kinds, open, merged and closed
+   ------------------------------------------------------------------------- */
+
+/** A change request as the list carries it: without its diff, YAML and preview. */
+const listed = ({ diff: _diff, yaml: _yaml, preview: _preview, ...cr }: ChangeRequestDetail): ChangeRequest => cr
+
+export const CHANGE_REQUESTS: ChangeRequest[] = [
+  listed(WORKFLOW_CR),
+  listed(PROVIDER_CR),
+  {
+    id: 'cr-41',
+    kind: 'workflow',
+    name: 'vm-restart',
+    version: '1.2.0',
+    branch: 'workflow/vm-restart-1.2.0',
+    title: 'Publish vm-restart 1.2.0',
+    author: 'ana',
+    status: 'merged',
+    checks: [
+      { id: 'checks', label: 'Workflow checks', status: 'passed' },
+      { id: 'replay', label: 'Replay of recent jobs', status: 'passed' },
+    ],
+    strategy: 'canary',
+    createdAt: ago(60 * 30),
+    mergedAt: ago(60 * 29),
+  },
+  {
+    id: 'cr-37',
+    kind: 'provider',
+    name: 'vsphere',
+    version: '2.1.0',
+    branch: 'provider/vsphere-2.1.0',
+    title: 'Change the SLO of vsphere',
+    author: 'mateo',
+    status: 'closed',
+    checks: [{ id: 'checks', label: 'Provider checks', status: 'skipped' }],
+    strategy: 'canary',
+    createdAt: ago(60 * 48),
+  },
+]
+
+/** GET /change-requests as the backend filters it: by `status`, every one without. */
+export function changeRequestRoutes(items: ChangeRequest[] = CHANGE_REQUESTS): Routes {
+  return {
+    'GET /change-requests': (req) => {
+      const status = req.query.get('status')
+      return status ? items.filter((c) => c.status === status) : items
+    },
+  }
+}
+
+/** The candidate of cr-202 as the backend parses its YAML (POST /workflows:parse): a lookup, the restart, a message. */
+export const WORKFLOW_CR_DEFINITION = {
+  apiVersion: 'iaf.platform/v1',
+  kind: 'Workflow',
+  metadata: { name: 'vm-restart', title: 'VM restart', noun: 'vm', verb: 'restart', owner: 'team-compute', version: '2.0.0' },
+  api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart', input: { type: 'object', required: ['vmId', 'reason'], properties: { vmId: { type: 'string' }, reason: { type: 'string' } } } },
+  policy: { rbac: ['ops', 'sre'] },
+  workflow: {
+    do: [
+      { lookup: { name: 'Look up the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '{{ $input.vmId }}' } } } },
+      { restart: { name: 'Restart the VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.restart', input: { id: '{{ $input.vmId }}', reason: '{{ $input.reason }}' } } } },
+    ],
+  },
 }
 
 /* ----------------------------------------------------------------------------
@@ -630,6 +843,7 @@ export const CREATE_VM_DEFINITION = {
   kind: 'Workflow',
   metadata: { name: 'create-vm', title: 'Create a VM', noun: 'vm', verb: 'create', owner: 'team-compute', version: '2.0.0' },
   api: { method: 'POST', path: '/api/v1/vms', input: CATALOG[1].input },
+  policy: { rbac: ['ops', 'sre', 'developer'] },
   workflow: {
     do: [
       { build: { name: 'Build the image', run: { workflow: 'build-vm-image', version: '^1', input: { os: '{{ $input.image.create.os }}' } } } },
@@ -643,6 +857,8 @@ export const CREATE_VM_DEFINITION = {
 export const CREATE_VM_YAML = 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: create-vm\n  version: 2.0.0\nworkflow:\n  do:\n    - build:\n        run: { workflow: build-vm-image, version: "^1" }\n'
 
 export const CREATE_VM_VERSIONS: WorkflowVersion[] = [
+  // its canary failed a gate: the rollback published 2.0.0 again and took 2.1.0 out
+  { version: '2.1.0', status: 'retired', contentHash: 'sha256:3', publishedAt: ago(60 * 30), publishedBy: 'ana', releaseId: 'rel-4', rolledBack: true },
   { version: '2.0.0', status: 'published', contentHash: 'sha256:2', publishedAt: ago(60 * 72), publishedBy: 'gonzalo', releaseId: 'rel-0' },
   { version: '1.9.0', status: 'retired', contentHash: 'sha256:1', publishedAt: ago(60 * 24 * 30), publishedBy: 'maria' },
 ]
@@ -702,6 +918,21 @@ export const NOTIFICATIONS: Notification[] = [
   { id: 'ntf-3', at: ago(60 * 5), kind: 'notify', severity: 'info', title: 'Patch window done', message: '20 of 20 servers patched', link: '/jobs/job-5b10e7d2', jobId: 'job-5b10e7d2', workflow: 'patch-cve', users: ['gonzalo'], teams: [], read: true },
 ]
 
+/** The owner team is asked to review a change request someone opened (review.requested). */
+export const REVIEW_NOTIFICATION: Notification = {
+  id: 'ntf-4',
+  at: ago(2),
+  kind: 'review.requested',
+  severity: 'info',
+  title: 'Review requested: vm-restart 2.0.0',
+  message: 'gonzalo opened a change request for workflow vm-restart 2.0.0',
+  link: '/change-requests/cr-202',
+  workflow: 'vm-restart',
+  users: [],
+  teams: ['team-compute'],
+  read: false,
+}
+
 /** A mutable inbox: GET filters by `unread`, POST marks one read. */
 export function inboxRoutes(items: Notification[] = NOTIFICATIONS.map((n) => ({ ...n }))): Routes {
   return {
@@ -731,6 +962,18 @@ export const PLATFORM_STREAM: PlatformStream = {
   total: 6,
   latestHash: hash('p6'),
   verification: { valid: true, entries: 6, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 6, keyId: 'audit-2026-10', status: 'verified' }] },
+}
+
+/** GET /audit/platform?aggregate=provider: the provider events of the stream, its chain intact. */
+export const PROVIDER_STREAM: PlatformStream = {
+  entries: [
+    { seq: 4, at: ago(60 * 3), kind: 'decision', actor: 'ana', data: { event: 'provider.change-requested', aggregate: 'provider', aggregateId: 'vsphere', version: '2.1.1', changeRequest: 'cr-42', reason: 'slo' }, hash: hash('p4'), previous: hash('p3') },
+    { seq: 7, at: ago(60 * 2), kind: 'decision', actor: 'maria', data: { event: 'provider.published', aggregate: 'provider', aggregateId: 'vsphere', name: 'vsphere', version: '1.3.0', contentHash: 'sha256:v13' }, hash: hash('p7'), previous: hash('p6') },
+    { seq: 9, at: ago(40), kind: 'decision', actor: 'gonzalo', data: { event: 'provider.updated', aggregate: 'provider', aggregateId: 'backup', name: 'backup', reason: 'override vm.list' }, hash: hash('p9'), previous: hash('p8') },
+  ],
+  total: 9,
+  latestHash: hash('p9'),
+  verification: { valid: true, entries: 9, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 9, keyId: 'audit-2026-10', status: 'verified' }] },
 }
 
 /** vm-restart with a successor: the deprecation the catalog reports. */
@@ -877,6 +1120,7 @@ export const ASSISTANT_DRAFT_DEFINITION = {
   kind: 'Workflow',
   metadata: { name: 'vm-restart-safe', title: 'Safe VM restart', noun: 'vm', verb: 'restart-safely', owner: 'team-compute', version: '0.1.0' },
   api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart-safely', input: { type: 'object', required: ['vmId'], properties: { vmId: { type: 'string' } } } },
+  policy: { rbac: ['ops'] },
   workflow: {
     do: [
       { check: { name: 'Check the backups', call: 'provider', with: { provider: 'backup', action: 'listJobs', input: { target: '{{ $input.vmId }}' } } } },
@@ -899,3 +1143,25 @@ export const ASSISTANT_SESSION_EVENTS: EvidenceEntry[] = [
   { seq: 9, at: ago(1), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.draft-updated', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', status: 'ready', contentHash: 'sha256:d1', valid: false, errors: 1 }, hash: hash('a3'), previous: hash('a2') },
   { seq: 10, at: ago(1), kind: 'decision', actor: 'ana', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-78', draftId: 'as-78', user: 'ana', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a4'), previous: hash('a3') },
 ]
+
+/** GET /assistant/sessions/as-90: an edit of vm-restart the backend kept (its SessionView), one exchange in, the draft not valid yet. */
+export const ASSISTANT_SESSION: AssistantSession = {
+  sessionId: 'as-90',
+  mode: 'edit',
+  workflow: 'vm-restart',
+  status: 'done',
+  draft: {
+    status: 'ready',
+    summary: 'Restarts the VM after a backup check, on vcenter.',
+    workflowYaml: ASSISTANT_DRAFT_YAML,
+    changes: ['Added "Check the backups" before the restart'],
+    validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] },
+    dryRun: { passed: false, path: ['check'], error: 'No provider called vcenter' },
+  },
+  history: [
+    { role: 'user', text: 'Check the backups before restarting.', at: ago(12) },
+    { role: 'assistant', text: 'I added a backup check before the restart.', at: ago(11) },
+  ],
+  createdAt: ago(13),
+  updatedAt: ago(11),
+}

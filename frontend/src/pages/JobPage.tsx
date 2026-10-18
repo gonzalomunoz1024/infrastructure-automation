@@ -5,14 +5,15 @@ import { navigate, pathFor } from '../app/router'
 import { api, errorMessage, isApiError, jobEvents, newIdempotencyKey } from '../lib/api'
 import { apiExtra } from '../lib/api-extra'
 import { invalidate, useQuery } from '../lib/queries'
-import type { JobEvent, JobReplay, JobStepStatus, JobSummary, StepDiff } from '../lib/types'
+import type { JobEvent, JobReplay, JobStepStatus, JobSummary } from '../lib/types'
 import { ApprovalCard } from '../components/ApprovalCard'
 import { AttentionPanel } from '../components/AttentionPanel'
 import { BatchPanel } from '../components/BatchPanel'
 import { EngineLinks } from '../components/EngineLinks'
-import { JsonEditor, parseJsonText } from '../components/JsonEditor'
 import { PreviewCard } from '../components/PreviewCard'
+import { RerunCard, rerunBlocker } from '../components/RerunCard'
 import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
+import { StepDiffTable } from '../components/StepDiffTable'
 import { StepTimeline } from '../components/StepTimeline'
 import { CopyableId, ErrorState, ExternalLink, Facts, Mono, TextLink, When, shortJobId, summarize, useNow } from '../components/common'
 import { isActiveJob } from './JobsPage'
@@ -20,6 +21,18 @@ import { isActiveJob } from './JobsPage'
 type Tab = 'steps' | 'batch' | 'replay' | 'activity'
 
 const STEP_DOT: Record<JobStepStatus, DotKind> = { pending: 'neutral', running: 'healthy', waiting: 'warning', succeeded: 'healthy', failed: 'critical', skipped: 'neutral', compensated: 'warning' }
+
+/**
+ * What a cancel does, for its confirm dialog. Both engines stop the job without compensating:
+ * no further step starts, a wait ends at once, a playbook, plan or worker call in progress is
+ * stopped, and what the finished steps changed stays changed. Only Abort, on a run a failed step
+ * paused, runs the compensation steps; a paused run that offers it says so.
+ */
+export function cancelMessage(job: { title: string; attention?: { step: string; options: readonly string[] } }): string {
+  const stops = `${job.title} stops: no further step starts, a wait ends at once, and a playbook, plan or worker call in progress is stopped. Nothing is rolled back: what the finished steps changed stays changed.`
+  if (job.attention?.options.includes('abort')) return `${stops} To roll them back instead, choose Abort for ${job.attention.step} under Needs attention.`
+  return `${stops} Only Abort, offered when a failed step pauses the run, rolls back.`
+}
 
 /** One line for a live event, from the fields the backend puts in `data`. */
 function eventLine(ev: JobEvent): string {
@@ -54,12 +67,17 @@ export default function JobPage({ route }: PageProps) {
   const now = useNow(polling ? 1000 : 60_000)
   const [live, setLive] = useState<'connecting' | 'open'>('connecting')
   const [events, setEvents] = useState<JobEvent[]>([])
+  // the stream ends with the job; a job that runs again (a batch retrying its failed rows) is listened to again
+  const [round, setRound] = useState(0)
 
   const job = useQuery(['job', id], () => api.job(id), { refetchInterval: polling ? 5000 : undefined })
   const data = job.data
   // the stream is the fast path; the 5 s poll is the safety net while the job is active
   const active = !data || isActiveJob(data.status)
-  if (active !== polling) setPolling(active)
+  if (active !== polling) {
+    setPolling(active)
+    if (active) setRound((r) => r + 1)
+  }
 
   const refetchRef = useRef(job.refetch)
   useEffect(() => {
@@ -83,7 +101,7 @@ export default function JobPage({ route }: PageProps) {
       sub.close()
       if (timer) clearTimeout(timer)
     }
-  }, [id])
+  }, [id, round])
 
   const after = (title: string, message?: string) => {
     invalidate('job')
@@ -135,11 +153,6 @@ export default function JobPage({ route }: PageProps) {
                 {data.workflow}
               </TextLink>
               <Mono>{data.version}</Mono>
-              {data.pinned && (
-                <Tag size="sm" tone="accent" title="Started on exactly this version, bypassing the canary split">
-                  pinned to {data.version}
-                </Tag>
-              )}
               <span className="text-tertiary">·</span>
               <span>{data.requester}</span>
               <Tag size="sm" outline>
@@ -227,9 +240,9 @@ export default function JobPage({ route }: PageProps) {
                 </Card>
               )}
               {tab === 'batch' && data.batch && (
-                <BatchPanel batch={data.batch} onRetryFailed={() => act(() => api.retryFailedRows(id), 'Retrying the failed rows', 'Could not retry the rows')} />
+                <BatchPanel batch={data.batch} ended={!active} onRetryFailed={() => act(() => api.retryFailedRows(id), 'Retrying the rows', 'Could not retry the rows', 'They run again in a new wave.')} />
               )}
-              {tab === 'replay' && <TimeTravel jobId={id} workflow={data.workflow} steps={data.steps} input={data.input} />}
+              {tab === 'replay' && <TimeTravel jobId={id} workflow={data.workflow} steps={data.steps} input={data.input} rerunBlocked={rerunBlocker({ active, batch: isBatch })} />}
               {tab === 'activity' && <Activity events={events} live={live === 'open' && active} />}
             </div>
           </div>
@@ -288,7 +301,7 @@ export default function JobPage({ route }: PageProps) {
           title="Cancel this job?"
           tone="danger"
           icon="stop"
-          message={`${data.title} stops after the current step; steps that already changed something are compensated where the workflow says so.`}
+          message={cancelMessage(data)}
           confirmLabel="Cancel job"
           cancelLabel="Keep running"
           onConfirm={async () => {
@@ -350,34 +363,24 @@ export function ReplayComparison({ replay }: { replay: JobReplay }) {
       {inputDiff.length > 0 && (
         <div>
           <div className="mb-1 text-caption font-medium text-secondary">Input</div>
-          <Table columns={DIFF_COLUMNS} rows={inputDiff} rowKey={(d) => d.field} dense caption="Differences in the input" />
+          <StepDiffTable diff={inputDiff} caption="Differences in the input" />
         </div>
       )}
     </div>
   )
 }
 
-/** A diff row: the compared run's value, then this run's. */
-const DIFF_COLUMNS: TableColumn<StepDiff>[] = [
-  { key: 'field', header: 'Field', render: (d) => <Mono className="text-primary">{d.field}</Mono> },
-  { key: 'before', header: 'Compared run', render: (d) => <Mono className="text-secondary">{summarize(d.before, 80)}</Mono> },
-  { key: 'after', header: 'This run', render: (d) => <Mono className="text-primary">{summarize(d.after, 80)}</Mono> },
-]
-
-function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown> }) {
+function TimeTravel({ jobId, workflow, steps, input, rerunBlocked }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown>; rerunBlocked: string | null }) {
   const toast = useToast()
   const [compareTo, setCompareTo] = useState('')
   const [replay, setReplay] = useState<JobReplay | null>(null)
   const [replayError, setReplayError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<'replay' | 'rerun' | null>(null)
-  const [fromStep, setFromStep] = useState(steps[0]?.id ?? '')
-  const [inputText, setInputText] = useState('')
-  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
   const siblings = useQuery(['jobs', 'of', workflow], () => api.jobs({ workflow, limit: 50 }))
   const others = useMemo(() => (siblings.data ?? []).filter((j) => j.id !== jobId), [siblings.data, jobId])
 
   const runReplay = async () => {
-    setBusy('replay')
+    setBusy(true)
     setReplayError(null)
     try {
       setReplay(await apiExtra.jobReplay(jobId, compareTo || undefined))
@@ -387,21 +390,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
       setReplayError(message)
       toast.error('Replay failed', message)
     } finally {
-      setBusy(null)
-    }
-  }
-
-  const parsed = parseJsonText(inputText)
-  const rerun = async () => {
-    setBusy('rerun')
-    try {
-      const accepted = await api.rerunJob(jobId, { fromStep, input: parsed.empty ? undefined : (parsed.value as Record<string, unknown>) })
-      toast.success('Re-run started', `A new job starts at ${fromStep}.`)
-      navigate(pathFor('job', { id: accepted.id }))
-    } catch (e) {
-      toast.error('Could not re-run', errorMessage(e))
-    } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
@@ -419,7 +408,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
               options={[{ value: '', label: 'Last successful run' }, ...others.map((j) => ({ value: j.id, label: shortJobId(j.id), hint: `${j.status} · ${j.version} · ${j.requester}` }))]}
             />
           </Field>
-          <Button variant="primary" icon="history" loading={busy === 'replay'} onClick={() => void runReplay()}>
+          <Button variant="primary" icon="history" loading={busy} onClick={() => void runReplay()}>
             Replay
           </Button>
         </div>
@@ -448,7 +437,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
                   </div>
                   {s.diff && s.diff.length > 0 && (
                     <div className="mt-2">
-                      <Table columns={DIFF_COLUMNS} rows={s.diff} rowKey={(d) => d.field} dense caption={`Differences at ${s.id}`} />
+                      <StepDiffTable diff={s.diff} caption={`Differences at ${s.id}`} />
                     </div>
                   )}
                 </li>
@@ -458,39 +447,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
         )}
       </Card>
 
-      <Card title="Re-run from a step" subtitle="Starts a new job with this one's input, skipping straight to the step you choose.">
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field label="From step">
-              <Select ariaLabel="From step" value={fromStep} onChange={setFromStep} mono options={steps.map((s) => ({ value: s.id, label: s.id, hint: `${s.name} · ${s.status}` }))} />
-            </Field>
-            <Field label="Input" hint="Leave empty to reuse this job's input" htmlFor="rerun-input">
-              <Button size="sm" variant="ghost" icon="copy" onClick={() => setInputText(JSON.stringify(input, null, 2))}>
-                Start from this job's input
-              </Button>
-            </Field>
-          </div>
-          <JsonEditor id="rerun-input" value={inputText} onChange={setInputText} rows={5} placeholder='{ "name": "…" }' objectOnly />
-          <div className="flex justify-end">
-            <Button variant="primary" icon="play" disabled={!fromStep || !!parsed.error} loading={busy === 'rerun'} onClick={() => setConfirm(true)}>
-              Re-run from {fromStep || 'step'}
-            </Button>
-          </div>
-        </div>
-      </Card>
-
-      {confirm && (
-        <ConfirmDialog
-          title={`Re-run from ${fromStep}?`}
-          icon="play"
-          message="A new job starts now and runs every step from there, with real effects."
-          confirmLabel="Start the re-run"
-          onConfirm={async () => {
-            await rerun()
-          }}
-          onClose={() => setConfirm(false)}
-        />
-      )}
+      <RerunCard jobId={jobId} steps={steps} input={input} blocked={rerunBlocked} />
     </div>
   )
 }

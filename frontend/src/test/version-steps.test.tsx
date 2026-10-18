@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { WorkflowDefinition } from '../lib/types'
-import { VersionStepList, versionSteps } from '../pages/WorkflowVersionsPage'
+import { VersionStatus, VersionStepList, versionSteps } from '../pages/WorkflowVersionsPage'
 
 const text = (html: string) => html.replace(/<!--.*?-->/g, '')
 
@@ -35,5 +35,14 @@ describe('a version\'s steps', () => {
     expect(html).toContain('>~1.4<')
     expect(html).toContain('any version')
     expect(text(renderToString(<VersionStepList definition={{ workflow: { do: [] } }} />))).toContain('no steps')
+  })
+})
+
+describe("a version's status", () => {
+  it('says when a release rollback took the version out', () => {
+    const rolledBack = text(renderToString(<VersionStatus version={{ status: 'retired', rolledBack: true }} />))
+    expect(rolledBack).toContain('retired')
+    expect(rolledBack).toContain('rolled back')
+    expect(text(renderToString(<VersionStatus version={{ status: 'retired' }} />))).not.toContain('rolled back')
   })
 })

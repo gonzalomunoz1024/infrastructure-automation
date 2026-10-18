@@ -1,15 +1,24 @@
 import { useMemo, useState } from 'react'
-import { Button, Drawer, Field, Input, OverlayBody, OverlayHeader, PageHeader, Select, StateTag, Table, Tabs, Tag, isoDate, useToast, type TableColumn } from '@iaf/ui'
+import { Button, Drawer, Field, Input, OverlayBody, OverlayHeader, PageHeader, Select, StateTag, Table, Tabs, Tag, isoDate, plural, useToast, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
 import { useQuery } from '../lib/queries'
-import type { AuditFilter, AuditSummary, EvidenceEntry, PlatformAuditFilter } from '../lib/types'
+import type { AuditFilter, AuditSummary, EvidenceEntry, PlatformAuditFilter, SealResult } from '../lib/types'
 import { downloadBlob, safeFilename } from '../components/download'
 import { AGGREGATES, PlatformEntryDetails, PlatformEventTag, PlatformSubject, PlatformVerification, platformEvent, platformSummary } from '../components/PlatformAudit'
 import { ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
 
 type AuditTab = 'jobs' | 'platform'
+
+/** What a seal did: how many closed records it sealed and open ones it checkpointed, and with which key. */
+export function sealSummary({ sealed, checkpointed, keyId }: Pick<SealResult, 'sealed' | 'checkpointed' | 'keyId'>): string {
+  const hourly = 'The seal also runs hourly.'
+  if (sealed > 0 && checkpointed > 0) return `Sealed ${plural(sealed, 'closed record')} and checkpointed ${plural(checkpointed, 'open one')} with key ${keyId}. ${hourly}`
+  if (sealed > 0) return `Sealed ${plural(sealed, 'closed record')} with key ${keyId}. ${hourly}`
+  if (checkpointed > 0) return `Checkpointed ${plural(checkpointed, 'open record')} with key ${keyId}. ${hourly}`
+  return `Nothing new to sign: every record was already sealed or checkpointed. ${hourly}`
+}
 
 export default function AuditPage({ route }: PageProps) {
   const toast = useToast()
@@ -45,7 +54,7 @@ export default function AuditPage({ route }: PageProps) {
     setBusy('seal')
     try {
       const r = await api.sealAudit()
-      toast.success('Sealed', `Every record so far is signed (${r.signature.slice(0, 12)}…). The seal also runs hourly.`)
+      toast.success(r.sealed + r.checkpointed > 0 ? 'Sealed' : 'Already sealed', sealSummary(r))
     } catch (e) {
       toast.error('Could not seal', errorMessage(e))
     } finally {

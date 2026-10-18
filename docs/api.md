@@ -631,7 +631,7 @@ read 502.
 
 | POST `/assistant/sessions` | `{ mode: 'create' \| 'edit'; workflow?; draftYaml? }` → `{ sessionId }` |
 | POST `/assistant/sessions/{id}/messages` | `{ text }` → SSE events `{ type: 'status' \| 'draft' \| 'message' \| 'validation' \| 'done'; data }` |
-| GET `/assistant/sessions/{id}` | `{ sessionId; status; draft; history }` |
+| GET `/assistant/sessions/{id}` | `{ sessionId; mode: 'create' \| 'edit'; workflow?; status: 'idle' \| 'working' \| 'done' \| 'failed'; draft?; history: { role: 'user' \| 'assistant'; text; at }[]; createdAt; updatedAt }` (`workflow` in edit mode, `draft` once there is one) |
 | POST `/assistant/drafts` | `{ description }` → the final draft payload of a one-shot create session (what the `draft_workflow` MCP tool returns) |
 | POST `/assistant/playbooks:sync` | → `{ playbooks: { file; macro; playbookId; action: 'created' \| 'updated' \| 'unchanged' }[] }`. Creates the Devin playbooks of `devin/*.md` that Devin does not have (by macro) and updates the ones whose title, body or schema changed; also at startup with `platform.assistant.sync-playbooks-on-startup`. Admins only |
 

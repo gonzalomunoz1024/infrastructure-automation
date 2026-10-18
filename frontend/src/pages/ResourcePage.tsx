@@ -138,7 +138,7 @@ export default function ResourcePage({ route }: PageProps) {
             </Card>
           </div>
 
-          <Card title="Lineage" subtitle="What it was built from, and what is built from it." flush>
+          <Card title="Lineage" subtitle="What it was built from and what is built from it, directly or through other resources." flush>
             {lineage.error && !lineage.data ? (
               <ErrorState compact error={lineage.error} title="Could not load the lineage" onRetry={() => void lineage.refetch()} />
             ) : !lineage.data ? (

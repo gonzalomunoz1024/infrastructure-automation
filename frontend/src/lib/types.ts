@@ -51,7 +51,11 @@ export type ServiceAccountPreset = 'invoker' | 'assistant' | 'ci'
 export type ServiceAccount = { id: string; name: string; roles: string[]; teams?: string[]; createdAt: string; scopes?: ServiceAccountScope[] }
 /** `scopes` given with a `preset` must fit in it; neither means the `invoker` set. */
 export type CreateServiceAccount = { name: string; roles: string[]; teams?: string[]; scopes?: ServiceAccountScope[]; preset?: ServiceAccountPreset }
-export type ServiceAccountCreated = { id: string; token: string; scopes?: ServiceAccountScope[] }
+/**
+ * `teams` are the teams the account acts for: the ones given, or its creator's when none were; `note`
+ * says so then (or that the creator has none either, so the policy refuses every job it starts).
+ */
+export type ServiceAccountCreated = { id: string; token: string; scopes: ServiceAccountScope[]; teams: string[]; note?: string }
 
 /* ----------------------------------------------------------------------------
    Workflows
@@ -84,6 +88,8 @@ export type WorkflowVersion = {
   publishedBy?: string
   releaseId?: string
   notes?: string
+  /** a retired version a release rollback took out: still readable, but no run step's range resolves to it again */
+  rolledBack?: true
 }
 
 /**
@@ -125,7 +131,12 @@ export type ChangeRequest = {
   mergedAt?: string
   url?: string
 }
-export type ChangeRequestDetail = ChangeRequest & { diff: string; yaml: string }
+export type ChangeRequestDetail = ChangeRequest & {
+  diff: string
+  yaml: string
+  /** the workflow the change request writes as a Mermaid `flowchart LR`, the one GitHub draws in the pull request; a provider's has none */
+  preview?: { mermaid: string }
+}
 
 export type WorkflowDetail = WorkflowSummary & {
   yaml: string
@@ -167,7 +178,13 @@ export type RegistryAction = {
   sample?: unknown
 }
 export type ProviderType = 'openapi' | 'http' | 'ansible' | 'terraform' | 'idp' | 'sdk'
-export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[] }
+/** A terraform provider's `spec.module`: where the module lives and the version (or commit) every run uses. */
+export type TerraformModuleRef = { source: string; version?: string; ref?: string; commit?: string; credential?: string }
+/**
+ * `module` is the terraform provider's `spec.module`. GET /registry/providers does not carry it;
+ * the designer's registry reads it through the backend (registry.ts, `withTerraformModules`).
+ */
+export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef }
 export type RegistryWorkflow = { name: string; title: string; version: string; input: Schema; output: Schema }
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }
@@ -225,7 +242,8 @@ export type Deprecation = { since: string; sunset: string; replacement?: string;
 export type RunOptions = { version?: string; idempotencyKey?: string }
 export type RunAccepted = { jobId: string; status: 'queued'; links: { job: string } }
 export type BatchRequest = { items: Record<string, unknown>[]; defaults?: Record<string, unknown>; rollout?: Rollout }
-export type BatchAccepted = { jobId: string; rows: BatchRow[] }
+/** 202 of a batch path: the batch job, how many rows it took, and where to read it. */
+export type BatchAccepted = { jobId: string; rows: number; status: string; links: { job: string } & Record<string, string> }
 export type BatchRowProblem = { index: number; problems: Problem[] }
 
 export type PolicyDecision = 'allow' | 'deny' | 'needs-approval'
@@ -314,6 +332,8 @@ export type Approval = {
   decidedAt?: string
   comment?: string
   preview?: Preview
+  /** the escalation group the approval went to when it waited too long, which may decide it too */
+  escalatedTo?: string
 }
 
 export type JobDetail = JobSummary & {
@@ -329,8 +349,6 @@ export type JobDetail = JobSummary & {
   traceId: string
   /** where the engine's own tools show the job: its execution in the Temporal UI on the temporal engine with a UI URL */
   links?: { temporal?: string }
-  /** true when the call pinned `version` (`X-Workflow-Version`, `?version=` or the body's `version`), skipping the canary split; absent when the backend does not say */
-  pinned?: boolean
 }
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'
@@ -355,7 +373,7 @@ export type RerunRequest = { fromStep: string; input?: Record<string, unknown> }
 
 export type AlertPayload = { source: string; labels: Record<string, string>; annotations?: Record<string, string> }
 export type EventPayload = { topic: string; payload: unknown }
-export type TriggerResult = { started: { workflow: string; jobId: string }[] }
+export type TriggerResult = { started: { workflow: string; jobId: string }[]; skipped: { workflow: string; reason: string }[] }
 
 /* ----------------------------------------------------------------------------
    Providers
@@ -372,6 +390,8 @@ export type Health = {
   reasons: string[]
 }
 export type Slo = { successRate: number; p95Ms: number; channel?: string }
+/** What a band is judged against: a success rate in percent and a p95 in milliseconds. */
+export type SloTarget = { successRate: number; p95Ms: number }
 export type ProviderSummary = {
   name: string
   title: string
@@ -400,9 +420,12 @@ export type ActionInfo = {
   effectDetail?: string
   /** where the sample came from: the Try it call that recorded it */
   recorded?: { environment: string; at: string }
+  /** the action's own SLO, which its calls are judged against; absent (null) when it takes the provider's */
+  slo?: SloTarget | null
 }
-/** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
-export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
+/** One 24-hour window, oldest first; `date` is when it starts and `errors` how many of its calls failed. A window without calls has no rates. */
+export type ProviderDaily = { date: string; calls: number; errors: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
+/** One action's calls of the last 14 days. */
 export type ProviderActionStats = {
   action: string
   calls: number
@@ -410,6 +433,10 @@ export type ProviderActionStats = {
   p50Ms: number
   p95Ms: number
   topErrors: { class: string; count: number }[]
+  /** the SLO the action is judged by: its own, else the provider's */
+  slo: SloTarget
+  /** its band over the last 24 hours against that SLO ('unknown' under 5 calls) */
+  band: HealthStatus
 }
 export type ProviderDetail = ProviderSummary & {
   /** base URL per environment */
@@ -423,7 +450,8 @@ export type ProviderDetail = ProviderSummary & {
   perAction: ProviderActionStats[]
   changeRequests: ChangeRequest[]
 }
-export type ProviderAlert = { id: string; at: string; action: string; message: string; severity: string; jobId?: string }
+/** `action` and `jobId` when the alert is about one call; `channel` is the provider's alert channel, where it is meant to go. */
+export type ProviderAlert = { id: string; at: string; provider?: string; action?: string; message: string; severity: string; jobId?: string; channel?: string }
 export type ProviderAuth = { type: 'bearer' | 'basic' | 'header' | 'none'; credential?: string; header?: string; where?: string }
 export type SpecOperation = {
   operationId: string
@@ -534,6 +562,8 @@ export type Release = {
 
 export type EvidenceKind = 'requested' | 'preview' | 'policy' | 'change' | 'approval' | 'step' | 'changed' | 'closed' | 'decision'
 export type EvidenceEntry = { seq: number; at: string; kind: EvidenceKind; actor?: string; data: Record<string, unknown>; hash: string; previous: string }
+/** A signature over a record's head: the HMAC of `hash`, the hash of entry `seq`, made with key `keyId`. */
+export type Seal = { at: string; signature: string; keyId: string; seq?: number; hash?: string }
 export type EvidenceRecord = {
   jobId: string
   workflow: string
@@ -542,9 +572,12 @@ export type EvidenceRecord = {
   channel: JobChannel
   entries: EvidenceEntry[]
   latestHash: string
-  sealed?: { at: string; signature: string; keyId: string }
+  /** the final seal, once the job closed and a seal ran */
+  sealed?: Seal
   retention: { until: string }
   change?: { id: string; url: string }
+  /** the seal's checkpoints over the head while the job was still open */
+  checkpoints?: Seal[]
 }
 export type AuditSummary = { jobId: string; workflow: string; requester: string; channel: JobChannel; at: string; entries: number; status: JobStatus }
 export type AuditFilter = { workflow?: string; from?: string; to?: string; requester?: string }
@@ -561,13 +594,14 @@ export type PlatformAuditFilter = { from?: string; to?: string; aggregate?: stri
 /** The platform stream, oldest first; each entry's `data` carries `event`, `aggregate` and `aggregateId`. */
 export type PlatformStream = { entries: EvidenceEntry[]; total: number; latestHash: string; verification: AuditVerification }
 export type ShareLink = { url: string; expiresAt: string }
-export type SealResult = { sealedAt: string; signature: string }
+/** POST /audit:seal: closed records got their final seal (`sealed`), open ones and the platform stream a checkpoint (`checkpointed`), all with key `keyId`. */
+export type SealResult = { sealedAt: string; signature: string; keyId: string; sealed: number; checkpointed: number }
 
 /* ----------------------------------------------------------------------------
    Notifications
    ------------------------------------------------------------------------- */
 
-export type NotificationKind = 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated'
+export type NotificationKind = 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated' | 'review.requested'
 export type NotificationSeverity = 'info' | 'warning' | 'critical'
 /** One message for people: `link` is a path in the UI (`/jobs/job_123`); `read` is the caller's own. */
 export type Notification = {
@@ -606,7 +640,13 @@ export type Resource = {
   builtFrom: string[]
   createdAt: string
 }
-export type Lineage = { resource: Resource; builtFrom: Resource[]; dependents: Resource[] }
+/** `to` was built from `from`; `via` is the workflow that registered `to`, when known. */
+export type LineageEdge = { from: string; to: string; via?: string }
+/**
+ * `builtFrom` and `dependents` are the direct neighbours; `nodes` and `edges`, when the backend
+ * sends them, are the whole graph around the resource in both directions (the resource first).
+ */
+export type Lineage = { resource: Resource; builtFrom: Resource[]; dependents: Resource[]; nodes?: Resource[]; edges?: LineageEdge[] }
 export type ResourceFilter = { type?: string; owner?: string; status?: string }
 
 /* ----------------------------------------------------------------------------
@@ -626,7 +666,14 @@ export type AssistantMode = 'create' | 'edit'
 export type AssistantSessionRequest = { mode: AssistantMode; workflow?: string; draftYaml?: string }
 export type AssistantSessionCreated = { sessionId: string }
 export type AssistantEventType = 'status' | 'draft' | 'message' | 'validation' | 'done'
+/** One event of the message stream: the SSE event name is the type and the SSE data the payload (see the payloads below). */
 export type AssistantEvent = { type: AssistantEventType; data: unknown }
+/** `status`: what the assistant is doing, with the agent's own session id when there is one. */
+export type AssistantStatusData = { status: string; externalId?: string }
+/** `message`: the assistant's prose (an explanation, a question, what it did). */
+export type AssistantMessageData = { role: 'assistant'; text: string }
+/** `done`: the end of the stream; `failed` with the reason when the assistant could not finish. */
+export type AssistantDoneData = { status: 'done' | 'failed'; error?: string }
 export type AssistantDraftStatus = 'working' | 'ready' | 'needs_input' | 'failed'
 export type AssistantDraft = {
   status: AssistantDraftStatus
@@ -641,8 +688,20 @@ export type AssistantDraft = {
 }
 /** The `validation` event: the platform's checks on the draft, on their steps, as the designer lists them. */
 export type AssistantValidation = { valid: boolean; problems: Problem[] }
-export type AssistantMessage = { role: 'user' | 'assistant'; text: string; at?: string }
-export type AssistantSession = { sessionId: string; mode?: AssistantMode; workflow?: string; status: string; draft?: AssistantDraft; history: AssistantMessage[]; createdAt?: string; updatedAt?: string }
+/** A turn of the exchange as the session keeps it. */
+export type AssistantTurn = { role: 'user' | 'assistant'; text: string; at: string }
+export type AssistantSessionStatus = 'idle' | 'working' | 'done' | 'failed'
+/** `GET /assistant/sessions/{id}`: the backend's SessionView; `workflow` only in edit mode, `draft` once there is one. */
+export type AssistantSession = {
+  sessionId: string
+  mode: AssistantMode
+  workflow?: string
+  status: AssistantSessionStatus
+  draft?: AssistantDraft
+  history: AssistantTurn[]
+  createdAt: string
+  updatedAt: string
+}
 
 /* ----------------------------------------------------------------------------
    Platform (actuator)

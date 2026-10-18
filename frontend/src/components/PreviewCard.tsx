@@ -67,6 +67,7 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
         </Tag>
       }
       className={className}
+      data-testid="preview-card"
     >
       <div className={cx('grid gap-5', compact ? 'grid-cols-1' : 'md:grid-cols-[1.3fr_1fr]')}>
         <div className="min-w-0 space-y-4">

@@ -177,7 +177,9 @@ cancel that arrives while compensation or the `catch` runs stops them too.
 
 - `git: { repo, ref, path, credential? }` with `commit`: an https repository (`host/path`
   implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
-  private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
+  private repository (the designer's "Git credential"; the step's own `credential` is the machine
+  credential the playbook reaches the hosts with). When `commit` is left out, publishing resolves
+  `ref` (an annotated tag is
   peeled to its commit) and writes the commit into the version before the change request's
   checks run, so the diff shows the pin; a ref that does not resolve fails the `playbooks`
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
@@ -413,8 +415,9 @@ spec:
   overrides:                  # fixes from real responses, through a change request; the vendor spec is never edited
     vm.get:
       response: { properties: { powerState: { type: string } } }
-  errors:
+  errors:                     # the first that matches names a failed call; none matching: named by its status
     - { match: { status: 404 }, class: not_found, retry: false }
+    - { match: { status: 429, body: quota }, class: quota_exceeded, retry: false }   # body: text the answer contains
     - { match: { status: 429 }, class: rate_limited, retry: true }
   slo: { successRate: 99.5, p95Ms: 800 }
   alerts: { channel: "#compute-alerts" }

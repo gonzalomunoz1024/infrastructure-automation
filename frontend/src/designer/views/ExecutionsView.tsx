@@ -1,20 +1,23 @@
 /**
  * The Executions tab, n8n style: the jobs of this workflow on the left, the selected job on the
  * canvas of the version it ran (read-only, every step coloured by how it went, live over SSE
- * while it runs), a replay that walks the steps again, a step view with what each step got and
- * returned, "Debug in editor" (the job's outputs become pinned data) and the job page.
+ * while it runs), a replay that walks the steps again beside each step's output diff against the
+ * last successful run before it, a step view with what each step got and returned (and that diff),
+ * "Debug in editor" (the job's outputs become pinned data) and the job page.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, cx, duration, Drawer, EmptyState, Icon, JsonView, OverlayBody, OverlayHeader, relativeTime, Skeleton, SkeletonRows, StateTag, useToast } from '@iaf/ui'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Button, cx, duration, Drawer, EmptyState, Icon, IconButton, JsonView, OverlayBody, OverlayHeader, relativeTime, Skeleton, SkeletonRows, StateTag, Tag, useToast, type Tone } from '@iaf/ui'
 import type { JsonValue } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
 import type { JobDetail, JobStep, JobSummary, RegistryProvider } from '../../lib/types'
 import { Link, pathFor } from '../../app/router'
+import { StepDiffTable } from '../../components/StepDiffTable'
 import { isStepNode } from '../model/graph'
 import { placeGraph, useDesignerSelector, useDesignerStore } from '../model/store'
 import { Canvas } from '../canvas/Canvas'
 import { jobRunStates } from '../canvas/flow'
+import { comparisonSummary, lastSuccessfulBefore, pairSteps, type StepChange, type StepPair } from './replay-compare'
 
 const NO_PROVIDERS: RegistryProvider[] = []
 const NO_PINS: Record<string, JsonValue> = {}
@@ -57,7 +60,103 @@ function stepTiming(step: JobStep): string {
   return parts.join(' · ')
 }
 
-function StepDrawer({ step, job, onClose }: { step: JobStep; job: JobDetail; onClose: () => void }) {
+/** The comparison with the last successful run before the job: looked up only once something shows it. */
+type Comparison = { state: 'loading' } | { state: 'error'; message: string } | { state: 'none' } | { state: 'ready'; run: JobDetail; pairs: StepPair[] }
+
+function useComparison(job: JobDetail, enabled: boolean): Comparison {
+  const succeeded = useQuery(['jobs', 'succeeded', job.workflow], () => api.jobs({ workflow: job.workflow, status: 'succeeded', limit: 50 }), { enabled })
+  const target = useMemo(() => (succeeded.data ? lastSuccessfulBefore(job, succeeded.data) : null), [succeeded.data, job])
+  const compared = useQuery(['job', target?.id ?? ''], () => api.job(target?.id ?? ''), { enabled: enabled && !!target })
+  const pairs = useMemo(() => (compared.data ? pairSteps(job.steps, compared.data.steps) : null), [compared.data, job.steps])
+  if (succeeded.error && !succeeded.data) return { state: 'error', message: errorMessage(succeeded.error) }
+  if (!succeeded.data) return { state: 'loading' }
+  if (!target) return { state: 'none' }
+  if (compared.error && !compared.data) return { state: 'error', message: errorMessage(compared.error) }
+  if (!compared.data || !pairs) return { state: 'loading' }
+  return { state: 'ready', run: compared.data, pairs }
+}
+
+const CHANGE: Record<StepChange, { tone: Tone; label: (p: StepPair) => string }> = {
+  same: { tone: 'neutral', label: () => 'same' },
+  changed: { tone: 'warning', label: (p) => `${p.diff.length} differ` },
+  added: { tone: 'accent', label: () => 'added' },
+  removed: { tone: 'critical', label: () => 'removed' },
+}
+
+/** The line naming the run compared against, or why there is none. */
+function ComparedWith({ comparison }: { comparison: Comparison }) {
+  if (comparison.state === 'loading') return <span>Looking for the last successful run…</span>
+  if (comparison.state === 'error') return <span className="text-critical">Could not load the last successful run: {comparison.message}</span>
+  if (comparison.state === 'none') return <span>No earlier successful run</span>
+  const { run, pairs } = comparison
+  return (
+    <span>
+      Compared with the last successful run,{' '}
+      <Link to={pathFor('job', { id: run.id })} className="font-mono text-accent hover:underline">
+        {run.id}
+      </Link>{' '}
+      ({run.version}, {relativeTime(run.startedAt)}): {comparisonSummary(pairs)}.
+    </span>
+  )
+}
+
+/** The replay beside the canvas: the steps in order, the one being replayed in the accent, each with its output diff. */
+function ReplayPanel({ job, comparison, replay, onOpenStep, onClose }: { job: JobDetail; comparison: Comparison; replay: number | null; onOpenStep: (stepId: string) => void; onClose: () => void }) {
+  const list = useRef<HTMLOListElement>(null)
+  const rows: StepPair[] = comparison.state === 'ready' ? comparison.pairs : job.steps.map((s, i) => ({ key: `step:${i}:${s.id}`, id: s.id, name: s.name || s.id, change: 'same', current: s, diff: [] }))
+  useEffect(() => {
+    list.current?.querySelector('[aria-current="step"]')?.scrollIntoView({ block: 'nearest' })
+  }, [replay])
+  return (
+    <aside aria-label="Replay" data-testid="replay-panel" className="flex w-[380px] max-w-[50%] shrink-0 animate-fade-in flex-col border-l border-stroke-light bg-surface">
+      <div className="flex items-center gap-2 border-b border-stroke-light py-1.5 pl-4 pr-1.5">
+        <h3 className="flex-1 text-footnote font-semibold text-primary">Replay</h3>
+        <IconButton label="Close the replay" size="sm" onClick={onClose}>
+          <Icon name="close" size={14} />
+        </IconButton>
+      </div>
+      <p className="border-b border-stroke-light px-4 py-2 text-caption text-secondary" data-testid="replay-compared">
+        <ComparedWith comparison={comparison} />
+      </p>
+      <ol ref={list} className="min-h-0 flex-1 divide-y divide-stroke-light overflow-y-auto" aria-label="Replayed steps">
+        {rows.map((p, n) => {
+          // a step gone from this run takes the place of the step it followed there
+          const before = rows.slice(0, n + 1).findLast((r) => r.current)?.current
+          const i = before ? job.steps.indexOf(before) : -1
+          const current = replay !== null && !!p.current && i === replay
+          const upcoming = replay !== null && (p.current ? i > replay : i >= replay)
+          return (
+            <li key={p.key} aria-current={current ? 'step' : undefined} data-change={comparison.state === 'ready' ? p.change : undefined} className={cx('px-4 py-2.5 transition-colors', current && 'bg-accent-tint', upcoming && 'opacity-50')}>
+              <div className="flex min-w-0 items-center gap-2">
+                {p.current && <StateTag status={p.current.status} size="sm" />}
+                <button
+                  type="button"
+                  className={cx('min-w-0 truncate text-left text-caption font-medium enabled:hover:underline', p.change === 'removed' ? 'text-tertiary line-through' : 'text-primary')}
+                  onClick={() => onOpenStep(p.id)}
+                  disabled={!p.current}
+                  title={p.current ? `Open ${p.name}` : `Only in the compared run`}
+                >
+                  {p.name}
+                </button>
+                <span className="truncate font-mono text-caption2 text-tertiary">{p.id}</span>
+                <span className="flex-1" />
+                {comparison.state === 'ready' && (
+                  <Tag size="sm" tone={CHANGE[p.change].tone}>
+                    {CHANGE[p.change].label(p)}
+                  </Tag>
+                )}
+              </div>
+              {p.diff.length > 0 && !upcoming && <StepDiffTable diff={p.diff} caption={`Differences at ${p.id}`} className="mt-2" />}
+            </li>
+          )
+        })}
+      </ol>
+    </aside>
+  )
+}
+
+function StepDrawer({ step, job, comparison, onClose }: { step: JobStep; job: JobDetail; comparison: Comparison; onClose: () => void }) {
+  const pair = comparison.state === 'ready' ? comparison.pairs.find((p) => p.current === step) : undefined
   return (
     <Drawer onClose={onClose} width="max-w-xl" label={`Step ${step.name}`}>
       <OverlayHeader title={step.name || step.id} subtitle={`${step.id} · ${step.type} · attempt ${step.attempt}`} actions={<StateTag status={step.status} />} />
@@ -78,6 +177,25 @@ function StepDrawer({ step, job, onClose }: { step: JobStep; job: JobDetail; onC
           <h3 className="mb-1.5 text-caption2 font-semibold uppercase tracking-wide text-tertiary">Output</h3>
           {step.output !== undefined ? <JsonView value={step.output} defaultExpanded={2} /> : <p className="text-caption text-tertiary">No output.</p>}
         </section>
+        <section data-testid="step-compared">
+          <h3 className="mb-1.5 text-caption2 font-semibold uppercase tracking-wide text-tertiary">Against the last successful run</h3>
+          <p className="text-caption text-secondary">
+            <ComparedWith comparison={comparison} />
+          </p>
+          {pair && comparison.state === 'ready' && (
+            <div className="mt-2">
+              {pair.change === 'added' ? (
+                <p className="text-caption text-tertiary">
+                  {comparison.run.id} has no step {step.id}.
+                </p>
+              ) : pair.diff.length === 0 ? (
+                <p className="text-caption text-tertiary">Same output as in {comparison.run.id}.</p>
+              ) : (
+                <StepDiffTable diff={pair.diff} caption={`Differences at ${step.id}`} />
+              )}
+            </div>
+          )}
+        </section>
         <Link to={pathFor('job', { id: job.id }, { step: step.id })} className="inline-flex items-center gap-1 text-footnote font-medium text-accent hover:underline">
           Open in the job page
           <Icon name="external" size={12} />
@@ -97,8 +215,10 @@ function ExecutionCanvas({ job }: { job: JobDetail }) {
   const doc = version.data?.definition ?? (version.error ? currentDoc : null)
   const graph = useMemo(() => (doc ? placeGraph(doc, new Map()) : null), [doc])
   const [replay, setReplay] = useState<number | null>(null)
+  const [panel, setPanel] = useState(false)
   const [openStep, setOpenStep] = useState<string | null>(null)
   const runs = useMemo(() => jobRunStates(job.steps, replay), [job.steps, replay])
+  const comparison = useComparison(job, panel || openStep !== null)
 
   useEffect(() => {
     if (replay === null) return
@@ -145,7 +265,16 @@ function ExecutionCanvas({ job }: { job: JobDetail }) {
           </span>
         )}
         <span className="flex-1" />
-        <Button size="sm" variant="ghost" icon={replay === null ? 'play' : 'stop'} onClick={() => setReplay((r) => (r === null ? 0 : null))} disabled={job.steps.length === 0}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={replay === null ? 'play' : 'stop'}
+          onClick={() => {
+            if (replay === null) setPanel(true)
+            setReplay((r) => (r === null ? 0 : null))
+          }}
+          disabled={job.steps.length === 0}
+        >
           {replay === null ? 'Replay' : 'Stop'}
         </Button>
         <Button size="sm" variant="secondary" icon="edit" onClick={debug} data-testid="debug-in-editor">
@@ -165,16 +294,19 @@ function ExecutionCanvas({ job }: { job: JobDetail }) {
         </div>
       )}
       {version.error !== null && version.error !== undefined && <p className="border-b border-stroke-light bg-warning-tint px-4 py-1.5 text-caption text-warning">Version {job.version} could not be loaded; the canvas shows the current draft.</p>}
-      <div className="relative min-h-0 flex-1">
-        {graph ? (
-          <Canvas graph={graph} problems={[]} runs={runs} pins={NO_PINS} stickies={[]} providers={providers} readOnly onOpen={onOpen} label={`Execution ${job.id}`} />
-        ) : (
-          <div className="flex h-full items-center justify-center bg-dot-grid">
-            <Skeleton className="h-24 w-96" />
-          </div>
-        )}
+      <div className="flex min-h-0 flex-1">
+        <div className="relative min-w-0 flex-1">
+          {graph ? (
+            <Canvas graph={graph} problems={[]} runs={runs} pins={NO_PINS} stickies={[]} providers={providers} readOnly onOpen={onOpen} label={`Execution ${job.id}`} />
+          ) : (
+            <div className="flex h-full items-center justify-center bg-dot-grid">
+              <Skeleton className="h-24 w-96" />
+            </div>
+          )}
+        </div>
+        {panel && <ReplayPanel job={job} comparison={comparison} replay={replay} onOpenStep={setOpenStep} onClose={() => setPanel(false)} />}
       </div>
-      {step && <StepDrawer step={step} job={job} onClose={() => setOpenStep(null)} />}
+      {step && <StepDrawer step={step} job={job} comparison={comparison} onClose={() => setOpenStep(null)} />}
     </div>
   )
 }

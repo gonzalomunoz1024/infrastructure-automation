@@ -75,10 +75,15 @@ export function ApprovalCard({ approval, onApprove, onReject, jobLink = true, sh
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-caption sm:grid-cols-4">
         <div>
           <dt className="text-tertiary">Group</dt>
-          <dd className="mt-0.5">
+          <dd className="mt-0.5 flex flex-wrap gap-1">
             <Tag size="sm" icon="users">
               {approval.group}
             </Tag>
+            {approval.escalatedTo && approval.escalatedTo !== approval.group && (
+              <Tag size="sm" tone="warning" icon="users" title="It waited too long: the escalation group may decide it too">
+                escalated to {approval.escalatedTo}
+              </Tag>
+            )}
           </dd>
         </div>
         {approval.requester && (

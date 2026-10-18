@@ -661,24 +661,146 @@ Besides the test server of the backend's suite, these ran against a Temporal dev
 See `docs/design-language.md`. The shell (every page but the canvas) is built from
 `packages/ui`, the Atlas design system. The canvas (`frontend/src/designer`) replicates n8n's
 editor on `@xyflow/react`. Routing is a small hash router in `frontend/src/app/router.ts`; no
-router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`.
+router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/api.md`; an
+unexpected error (a 500) reads with the request's correlation id, which finds the cause in the
+API's log.
 
 The shell renders what the API judges and never decides for itself: the catalog and the run page
 show an operation's deprecation (since, sunset, successor) as the catalog reports it; a run can be
-pinned to an exact version (`X-Workflow-Version`, bypassing the canary split) and every
+pinned to an exact version (`X-Workflow-Version`, bypassing the canary split; a version a
+release rollback took out is still offered, marked rolled back as the versions page marks it) and every
 submission carries one `Idempotency-Key` per form, so a resend after a 429 (shown with the
 backend's `Retry-After` wait) or a lost answer replays the same job; the header bell is the inbox
-(`/notifications`); the audit page has a tab on the platform stream; the releases, release and
+(`/notifications`); the audit page has a tab on the platform stream, and its Seal now says how
+many closed records it sealed and open ones it checkpointed, with which key; an open record shows
+its last checkpoint, and a share link reads whole (the API answers a path) or, for someone the
+backend refuses, as its 403 message in the dialog; the releases, release and
 provider pages show provider releases judged over calls. Every provider edit (the SLO, "Use the
 real response", a spec refresh, the wizard's publish) is a change request the page names and
-links. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
+links. A workflow's change request opens on its candidate drawn on the designer's read-only
+canvas (its own chunk, loaded with the tab): the backend parses the YAML (`POST /workflows:parse`),
+the designer's model lays it out as the author saw it, and a double-click shows a step as written;
+the Diff and YAML tabs sit beside it, and a provider's change request has only those. Under the
+canvas a closed "Diagram source" disclosure holds the Mermaid flowchart the backend writes
+(`preview.mermaid`, the one GitHub draws in the pull request) as text with a copy button; the
+page draws no Mermaid itself. Its checks
+table lists what a check's detail names: the consumers a breaking change reaches, and for the
+playbooks check (`playbooks`, status `iaf/playbooks`) the steps pinned at publish, the ones not
+pinned, an upload digest that is not one and each finding of the linter. The
+Workflows page's Change requests tab lists both kinds (`GET /change-requests?status=`, the open ones
+by default and counted on the tab, the status in the address), so a reviewer on the owner team
+finds what waits for them, and the inbox renders the `review.requested` notification with a link
+to the change request. The Add provider wizard reads a spec from a URL, a pasted text, a file or Git (pinned to
 the commit read), imports an Ansible repository or a Terraform module through the backend's
 drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
-so an edit keeps the file as it is and bumps its version by a line edit of the metadata block. The
+so an edit keeps the file as it is and bumps its version by a line edit of the metadata block.
+Its Actions step searches a spec's operations, sets an action's own SLO (a success rate and a
+p95, either left empty to take the provider's, written into the action as `slo`) and writes the
+error classes (`spec.errors`, matched by status and body text, checked for a class an earlier one
+shadows); Ask Devin is offered
+on the Type and the Review step, and a draft names the wizard's provider by a line read of its
+metadata block. Try it starts in the environment the review counts (`ProviderReview.sandbox`:
+dev, else the first), and a delete whose input has an `x-resource` field gets the registry picker
+of the catalog's run form, so the try deletes a test resource the developer chose. The
 assistant page shows the validation's problems as the designer's Issues list, the session's own
-events from the platform stream, and submits a ready draft as a change request. The settings page
-creates service accounts with the presets and the grouped scopes of `docs/api.md`.
+events from the platform stream, and submits a ready draft as a change request. It reads the
+message stream as the backend writes it (the SSE event name is the type, the data the payload
+alone) and keeps the session in its address (`?session=`), so a reload or a shared link goes on
+from `GET /assistant/sessions/{id}`, in the session's mode. The settings page lists and creates service
+accounts with the presets and the grouped scopes of `docs/api.md`; only a platform admin may (the
+API answers anyone else 403), so anyone else sees a quiet "Only admins see service accounts" and
+no create button. The token dialog after a create says which teams the account acts for, the ones
+given or, when none were, its creator's with the backend's `note`, which warns when that leaves it
+none (the policy then refuses every job it starts). Its identity card sends the dev
+`X-User` header and says what production does instead: an auth proxy in front of the app and the
+API signs a person in and adds the bearer token the API verifies under the `oidc` profile, which
+ignores the header. The shell cannot tell which profile the API runs, so it claims none and links
+the README ("Identity and OIDC"); links to the repository's docs go to the GitHub repository's main
+branch, or to `VITE_DOCS_URL` when the build sets it.
+
+The job page's cancel says what both engines do: the job stops (a wait at once, a runner process
+or a worker's activity stopped) and nothing is compensated; only Abort, on a run a failed step
+paused, rolls the finished steps back, and a paused run's cancel dialog points there. Someone
+who may not steer the job (cancel, retry, skip, abort) gets the backend's 403 message as it is,
+which names the job and who started it. An approval escalated after waiting too long shows its
+escalation group (`escalatedTo`) beside the approver group, on its card and in the history. Its
+"Re-run from a step" sends `POST /jobs/{id}:rerun` with the step and only the fields typed, which
+the backend merges onto the job's input (a list or a scalar is refused before it is sent); a job
+still running or a batch, both refused by the backend, gets a sentence instead of the form. A
+batch offers its retry once it has ended, counting the rows
+`POST /jobs/{id}:retry-failed-rows` runs again in a new wave (the failed, cancelled and skipped
+ones, named when not all of them failed). The job page reads the job's events over SSE
+(`GET /jobs/{id}/events`), polling every 5 s as a safety net while the job is active; the server
+ends the stream after the job's last event (`job.finished` or `job.cancelled`), and the page stops
+there instead of letting EventSource reconnect and replay a finished job, until a batch that runs
+its failed rows again is listened to again. The shell has no WebSocket client for
+`/ws/jobs/{id}`. The resource page draws the lineage's whole graph
+(`nodes` and `edges`, a column per hop on the longest chain, so every edge points right), and the
+direct lists alone from a backend that sends no graph. The providers page has three tabs, kept in
+its address (`?tab=`): the list, with p50 beside p95; each provider's performance against its SLO
+with the 14-day error trend (`health.errorTrend`, a count a day); and the provider events of the
+platform audit stream (`GET /audit/platform?aggregate=provider`: the stream filters by aggregate,
+not by event type). The backend lists to someone outside the admins only their teams' providers
+and the ones no team owns, which an empty list says; a provider the caller may not see answers
+404 like one that does not exist, and its page says both at once instead of an error. The calls
+chart says how many calls failed in the 14 days (`daily[].errors`). A provider's actions table shows each
+action's band over the last 24 hours (`perAction[].band`, with the provider's `HealthBand`),
+judged against the action's own SLO when it has one, which the table shows, else the provider's,
+and colours the success rate and the p95 against that SLO.
+
+The designer works from the registry. Its node creator inserts a terraform provider's action with
+the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
+`GET /registry/providers` carries no spec, so the designer's registry reads the module from the
+plan step `POST /workflows:import` drafts for the provider, parsed by `POST /workflows:parse`.
+Its checks read the registry as the backend's do: the published versions (`GET /registry/workflows`),
+so a run step pinned to another major is left to the backend, what each published workflow starts
+(`GET /registry/dependencies`) for `run.cycle`, and the MCP tool each one holds (`GET /catalog`)
+for `mcp.toolName`; when either of the last two does not answer, that check is left to Validate.
+An ansible step with a git playbook has two credential pickers fed by `GET /registry/credentials`:
+the Git credential (`playbook.git.credential`, the read token of a private repository) and the
+machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
+credential to `GET /playbooks:resolve`, never the machine credential. The step's Hosts section
+writes the inventory in the shapes the ansible runner reads (`frontend/src/designer/ndv/inventory.ts`):
+Dynamic writes `dynamic`, Path a file or directory in the playbook's source, Hosts a list, Group
+`{ hosts, group, vars }` and None no key, so the playbook runs on ansible's implicit localhost; a
+kind whose field is still empty writes nothing until it is filled, and a limit a file wrote as a
+list stays a list. A `use` step's Check access
+switch is on unless the step opts out: switching it off writes `checkAccess: false` and switching
+it back on removes the key, so the canvas never writes `checkAccess: true`. A step's Settings tab
+offers its Decision timeout (`attentionTimeout`) beside Pause on failure while the step pauses:
+how long it waits for someone before it aborts, seven days when left empty. A new workflow, from
+the Blank tile, the designer's New workflow dialog or a template that names no role, lets its
+owner team run it (`policy.rbac`): a workflow that names no role or team is `policy.missing`, an
+error, which the Settings tab's required field shows and offers to fix with the owner team. The
+canvas never writes an empty key: the TypeScript checks judge the Workflow schema first and read
+an empty YAML value as null, which the schema refuses wherever it names a type, so every edit
+leaves out a null under such a key (`frontend/src/designer/model/nulls.ts`); under the keys the
+schema leaves loose, a call step's `with` or a `set`, a null is a value and stays. The assistant panel shows a
+draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
+after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
+is, like an explanation, is a message with nothing to apply. The Executions tab's replay walks a
+job's steps beside a panel that compares each one with the last successful run of the workflow
+before it (`GET /jobs?workflow=&status=succeeded`, then `GET /jobs/{id}`): steps pair by id, then
+by name, a step on one side only shows as added or removed, and each pair shows its status and the
+fields of its output that differ, the field diff the time travel computes on the server. The step
+view shows the same for its step; a run with no successful run before it says so.
+
+The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
+`monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
+imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint
+does not carry it; the monospace textarea stands in while the chunk loads, if it fails, and under
+renderToString in the tests. The drawer highlights YAML with Monaco's own tokenizer: the two
+packages ship no YAML language service, so there is no YAML worker, and the platform's checks stay
+the validation. It marks the checks' problems on their lines (F8 walks them): a problem names a
+step and a dotted field, which `frontend/src/components/code-editor/markers.ts` finds by the keys
+and their indentation in the YAML the backend rendered, a parameter under the step's `with`, a
+syntax error at the line and column its message gives; the drawer marks the canvas's live problems
+while the file follows the canvas, and the parse's once the file is edited. A multi-line
+expression field's Expand button opens the expanded editor on the same text: its `{{ … }}`
+highlighted, the ones that do not resolve marked with why, and the result underneath. The JSON
+language and its worker are configured for a JSON model; the JSON editor
+(`frontend/src/components/JsonEditor.tsx`) is still its textarea.
 
 ## Where things are in Git
 

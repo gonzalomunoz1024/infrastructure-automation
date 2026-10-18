@@ -6,10 +6,29 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Page, Request, Route } from '@playwright/test'
+import type { Locator, Page, Request, Route } from '@playwright/test'
 import { parse, stringify } from 'yaml'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
+
+/** The YAML drawer's editor once Monaco is up (its chunk loads when the drawer opens). */
+export async function yamlEditor(page: Page): Promise<Locator> {
+  const editor = page.getByTestId('yaml-editor')
+  await editor.locator('.monaco-editor .view-lines').waitFor({ timeout: 20_000 })
+  return editor
+}
+
+/** Replaces a Monaco editor's text the way a paste does: Monaco takes pasted text as it is. */
+export async function pasteInto(page: Page, editor: Locator, text: string): Promise<void> {
+  await editor.locator('.view-lines').click()
+  await page.keyboard.press('ControlOrMeta+A')
+  // as a string: this project's e2e types carry no DOM
+  await page.evaluate(`(() => {
+    const data = new DataTransfer()
+    data.setData('text/plain', ${JSON.stringify(text)})
+    document.activeElement?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+  })()`)
+}
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 type Obj = { [key: string]: Json }
@@ -80,6 +99,37 @@ export function registryPlaybooks(): Obj[] {
   })
 }
 
+/**
+ * POST /workflows:import for a terraform provider, as the backend drafts it: plan, approval and
+ * apply steps that run the provider's own `spec.module` (the placeholder when it has none).
+ */
+export function terraformImport(ref: string): { yaml: string; notes: string[] } | null {
+  for (const file of yamlFiles('providers')) {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const spec = asObj(doc.spec)
+    if (spec.type !== 'terraform' || meta.name !== ref) continue
+    const module = asObj(spec.module).source ? asObj(spec.module) : { source: 'your-module-source', version: '1.0.0' }
+    const credential = String(asObj(spec.auth).credential ?? 'vault:your-credential')
+    const draft = {
+      apiVersion: 'iaf.platform/v1',
+      kind: 'Workflow',
+      metadata: { name: `${ref}-apply`, title: `Apply ${String(meta.title ?? ref)}`, owner: String(meta.owner ?? '') },
+      // as WorkflowImports writes it: every workflow names who may run it
+      policy: { approval: { required: true, group: 'your-approvers', timeout: '4h' }, rbac: ['ops'] },
+      workflow: {
+        do: [
+          { plan: { name: 'Plan', call: 'terraform', with: { module, action: 'plan', vars: {}, credential }, output: { as: 'plan' } } },
+          { approval: { name: 'Approve the plan', approval: { group: 'your-approvers', message: 'Apply the plan?', timeout: '4h' } } },
+          { apply: { name: 'Apply', call: 'terraform', with: { module, action: 'apply', vars: {}, credential }, output: { as: 'apply' } } },
+        ],
+      },
+    }
+    return { yaml: stringify(draft), notes: ['Set the approver group of the approval step and of policy.approval.'] }
+  }
+  return null
+}
+
 export function registryResourceTypes(): Obj[] {
   return yamlFiles('resource-types').map((file) => {
     const doc = load(file)
@@ -93,6 +143,69 @@ export function registryWorkflows(): Obj[] {
     const doc = load(file)
     const meta = asObj(doc.metadata)
     return { name: String(meta.name), title: String(meta.title ?? meta.name), version: String(meta.version ?? '0.1.0'), input: asObj(doc.api).input ?? {}, output: { type: 'object' } }
+  })
+}
+
+/** Every `{ <step id>: { run: { workflow } } }` under a node, nested steps included: the run links DependencyRules reads. */
+function runSteps(node: Json | undefined, out: Obj[]): void {
+  if (Array.isArray(node)) {
+    for (const n of node) runSteps(n, out)
+    return
+  }
+  if (!node || typeof node !== 'object') return
+  for (const [key, value] of Object.entries(node)) {
+    const run = asObj(asObj(value).run)
+    if (typeof run.workflow === 'string') out.push({ workflow: run.workflow, via: 'run', at: key, ...(typeof run.version === 'string' ? { range: run.version } : {}) })
+    runSteps(value, out)
+  }
+}
+
+/**
+ * GET /registry/dependencies over the repository's workflows, the part the designer's checks read:
+ * what each workflow starts through its run steps and `orCreateWith` inputs (the types each one
+ * produces and consumes are left empty).
+ */
+export function registryDependencies(): Obj {
+  const workflows = yamlFiles('workflows').map((file) => {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const runs: Obj[] = []
+    for (const [field, p] of Object.entries(asObj(asObj(asObj(doc.api).input).properties))) {
+      const xr = asObj(asObj(p)['x-resource'])
+      if (typeof xr.type === 'string' && typeof xr.orCreateWith === 'string') runs.push({ workflow: xr.orCreateWith, via: 'orCreateWith', at: field })
+    }
+    runSteps(asObj(doc.workflow).do, runs)
+    return { workflow: String(meta.name), version: String(meta.version ?? '0.1.0'), produces: [], consumes: [], runs, consumers: [] }
+  })
+  return { resourceTypes: [], workflows, cycles: [] }
+}
+
+const slug = (v: Json | undefined) =>
+  String(v ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+
+/**
+ * GET /catalog over the repository's workflows, the fields that name an entry and the MCP tool
+ * the designer's checks read: `<noun>_<verb>` as McpTools spells it, on an exposed workflow only.
+ */
+export function catalogEntries(): Obj[] {
+  return yamlFiles('workflows').map((file) => {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const tool = `${slug(meta.noun)}_${slug(meta.verb)}`.replace(/-/g, '_')
+    return {
+      workflow: String(meta.name),
+      title: String(meta.title ?? meta.name),
+      noun: String(meta.noun ?? ''),
+      verb: String(meta.verb ?? ''),
+      owner: String(meta.owner ?? ''),
+      version: String(meta.version ?? '0.1.0'),
+      input: asObj(doc.api).input ?? {},
+      ...(asObj(doc.mcp).expose === true ? { mcpTool: tool } : {}),
+    }
   })
 }
 
@@ -139,6 +252,8 @@ export interface MockApi {
   merged: string[]
   /** messages sent to the assistant */
   assistant: string[]
+  /** YAML bodies of POST /workflows:parse */
+  parses: string[]
 }
 
 /** Two jobs of vm-restart: one failed at the playbook, one that went through. */
@@ -194,9 +309,13 @@ const DIFF = `--- a/workflows/team-compute/vm-restart.yaml
    description: Restart a virtual machine after safety checks, with an approval for production.
 `
 
-function sse(events: Obj[]): string {
-  return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
+/** An SSE body the way the backend writes the assistant's stream: the type as the event name, the payload alone as the data. */
+function sse(events: { type: string; data: unknown }[]): string {
+  return events.map((e, i) => `id:${i + 1}\nevent:${e.type}\ndata:${JSON.stringify(e.data)}\n\n`).join('')
 }
+
+/** The demo agent's answer to "Explain what this workflow does": prose, and the workflow unchanged. */
+export const EXPLANATION = 'VM restart takes a VM id, checks the VM exists and that no backup runs, asks compute-approvers to approve, restarts it with Ansible and waits for it to power on, then tells the owner.'
 
 const ME = { id: 'gonzalo', name: 'Gonzalo', email: 'gonzalo@example.com', teams: ['team-compute', 'team-platform'], roles: ['ops', 'admin'], admin: true, kind: 'user' }
 
@@ -214,7 +333,9 @@ function bodyOf(req: Request): Obj {
 
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
-  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
+  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [], parses: [] }
+  // the canvas the assistant session started from, which an explanation hands back unchanged
+  let sessionYaml = ''
   const jobs = vmRestartJobs()
   const providers = registryProviders()
   const resourceTypes = registryResourceTypes()
@@ -256,13 +377,19 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
     if (method === 'GET' && path === '/registry/workflows') return json(route, workflows)
     if (method === 'GET' && path === '/registry/resource-types') return json(route, resourceTypes)
     if (method === 'GET' && path === '/registry/playbooks') return json(route, registryPlaybooks())
+    if (method === 'GET' && path === '/registry/dependencies') return json(route, registryDependencies())
+    if (method === 'GET' && path === '/catalog') return json(route, catalogEntries())
     if (method === 'GET' && path === '/registry/credentials')
       return json(route, [
-        { name: 'ssh/ops-automation', type: 'ssh' },
+        { name: 'ssh/ops-automation', type: 'ssh-key' },
         { name: 'vsphere/token', type: 'token' },
+        { name: 'github/read-token', type: 'token' },
       ])
     if (method === 'GET' && path === '/templates') return json(route, [])
-    if (method === 'GET' && path === '/jobs') return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries : [])
+    if (method === 'GET' && path === '/jobs') {
+      const status = url.searchParams.get('status')
+      return json(route, url.searchParams.get('workflow') === 'vm-restart' ? jobs.summaries.filter((j) => !status || j.status === status) : [])
+    }
     const jobMatch = /^\/jobs\/([^/]+)$/.exec(path)
     if (method === 'GET' && jobMatch) return jobs.details[jobMatch[1]] ? json(route, jobs.details[jobMatch[1]]) : json(route, { error: 'no such job' }, 404)
     if (method === 'GET' && /^\/jobs\/[^/]+\/events$/.test(path)) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
@@ -304,9 +431,26 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
           ? [{ id: 'rel_9', workflow: 'vm-restart', from: '1.2.0', to: '1.3.0', strategy: 'canary', status: 'canary', stageIndex: 0, stages: [10, 50, 100], stagePercent: 10, startedAt: '2026-10-17T10:05:00Z', stageStartedAt: '2026-10-17T10:05:00Z', gates: [], jobs: { current: 0, candidate: 0 }, history: [] }]
           : [],
       )
-    if (method === 'POST' && path === '/assistant/sessions') return json(route, { sessionId: 'as_1' })
+    if (method === 'POST' && path === '/assistant/sessions') {
+      sessionYaml = String(bodyOf(req).draftYaml ?? '')
+      return json(route, { sessionId: 'as_1' })
+    }
     if (method === 'POST' && path === '/assistant/sessions/as_1/messages') {
-      calls.assistant.push(String(bodyOf(req).text ?? ''))
+      const text = String(bodyOf(req).text ?? '')
+      calls.assistant.push(text)
+      if (/^explain/i.test(text)) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'text/event-stream',
+          body: sse([
+            { type: 'status', data: { status: 'Reading the workflow' } },
+            { type: 'draft', data: { status: 'ready', summary: EXPLANATION, workflowYaml: sessionYaml, validation: { valid: true, rounds: 1, errors: [] } } },
+            { type: 'validation', data: { valid: true, problems: [] } },
+            { type: 'message', data: { role: 'assistant', text: EXPLANATION } },
+            { type: 'done', data: { status: 'done' } },
+          ]),
+        })
+      }
       const draft = vmRestart()
       const flow = asObj(draft.workflow)
       const steps = Array.isArray(flow.do) ? flow.do : []
@@ -315,15 +459,22 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
         status: 200,
         contentType: 'text/event-stream',
         body: sse([
-          { type: 'status', data: { text: 'Reading the workflow and the registry' } },
-          { type: 'message', data: { text: 'I added a step that tells #compute-ops before anything happens.' } },
-          { type: 'draft', data: { status: 'ready', summary: 'Announce the restart in #compute-ops first.', workflowYaml: stringify(draft), changes: ['Added "Announce the restart" before "Check VM exists"'], validation: { valid: true }, dryRun: { passed: true } } },
-          { type: 'done', data: {} },
+          { type: 'status', data: { status: 'Reading the workflow and the registry' } },
+          { type: 'message', data: { role: 'assistant', text: 'I added a step that tells #compute-ops before anything happens.' } },
+          { type: 'draft', data: { status: 'ready', summary: 'Announce the restart in #compute-ops first.', workflowYaml: stringify(draft), changes: ['Added "Announce the restart" before "Check VM exists"'], validation: { valid: true, rounds: 1, errors: [] }, dryRun: { passed: true } } },
+          { type: 'validation', data: { valid: true, problems: [] } },
+          { type: 'done', data: { status: 'done' } },
         ]),
       })
     }
+    if (method === 'POST' && path === '/workflows:import') {
+      const body = bodyOf(req)
+      const imported = body.source === 'terraform' ? terraformImport(String(body.ref ?? '')) : null
+      return imported ? json(route, imported) : json(route, { error: `No terraform provider '${String(body.ref ?? '')}'` }, 400)
+    }
     if (method === 'POST' && path === '/workflows:render') return json(route, { yaml: stringify(bodyOf(req).definition ?? {}) })
     if (method === 'POST' && path === '/workflows:parse') {
+      calls.parses.push(String(bodyOf(req).yaml ?? ''))
       try {
         return json(route, { definition: parse(String(bodyOf(req).yaml ?? '')) as Json, problems: [] })
       } catch (e) {
@@ -353,7 +504,7 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
       return json(route, {
         valid: false,
         problems: [
-          { level: 'error', code: 'publish.ansibleLint', step: 'restart', field: 'playbook', message: 'The playbook is not pinned to a commit: every run would use whatever main points at' },
+          { level: 'error', code: 'publish.playbooks', step: 'restart', field: 'playbook', message: 'The playbooks check of the change request fails: pin the playbook to a commit' },
           { level: 'error', code: 'publish.routes', field: 'api.path', message: 'POST /api/v1/vms/{vmId}:restart is already answered by vm-reboot 1.0.0' },
           { level: 'error', code: 'publish.contracts', field: 'metadata.version', message: `${v} breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment`, fix: { label: 'Publish as 2.0.0', kind: 'replace', value: '2.0.0' } },
         ],

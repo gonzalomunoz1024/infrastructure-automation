@@ -15,6 +15,7 @@ import {
   Select,
   StateTag,
   Table,
+  Tabs,
   Tag,
   cx,
   useOverlayClose,
@@ -28,9 +29,15 @@ import { api, errorMessage } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
 import type { ImportSource, WorkflowSummary } from '../lib/types'
 import { ErrorState, Mono, When } from '../components/common'
+import { CHANGE_REQUEST_FILTERS, ChangeRequestTable, filterOf, type ChangeRequestFilter } from '../components/ChangeRequestTable'
 import { emitYaml } from '../components/yaml-emit'
+import { IMPORT_SOURCES, importChoices, importField, importRequest } from '../components/workflow-import'
 
 type StatusFilter = 'all' | 'published' | 'draft'
+
+export type WorkflowsTab = 'workflows' | 'change-requests'
+/** `?tab=` as the view: the workflows unless it names the change requests. */
+export const workflowsTabOf = (q: string | undefined): WorkflowsTab => (q === 'change-requests' ? q : 'workflows')
 
 const unique = (values: (string | undefined)[]) => Array.from(new Set(values.filter((v): v is string => !!v))).sort()
 
@@ -38,8 +45,17 @@ function hasDraft(w: WorkflowSummary): boolean {
   return w.status === 'draft' || (!!w.publishedVersion && w.latestVersion !== w.publishedVersion)
 }
 
-export default function WorkflowsPage(_: PageProps) {
+export default function WorkflowsPage({ route }: PageProps) {
   const list = useQuery('workflows', () => api.workflows())
+  // the address holds the view and the change requests' status, so a link, a reload or Back lands on them
+  const tab = workflowsTabOf(route.query.tab)
+  const crFilter = filterOf(route.query.status)
+  // the open ones count on the tab from either view; the other statuses are asked for when shown
+  const openCrs = useQuery(['change-requests', 'open'], () => api.changeRequests('open'), { refetchInterval: 30_000 })
+  const otherCrs = useQuery(['change-requests', crFilter], () => api.changeRequests(crFilter === 'all' ? undefined : crFilter), { enabled: tab === 'change-requests' && crFilter !== 'open' })
+  const crs = crFilter === 'open' ? openCrs : otherCrs
+  const showChangeRequests = (status: ChangeRequestFilter) => navigate(pathFor('workflows', {}, { tab: 'change-requests', status: status === 'open' ? undefined : status }), { replace: true })
+  const switchTab = (t: WorkflowsTab) => (t === 'change-requests' ? showChangeRequests('open') : navigate(pathFor('workflows'), { replace: true }))
   const [q, setQ] = useState('')
   const [folder, setFolder] = useState('')
   const [owner, setOwner] = useState('')
@@ -159,40 +175,60 @@ export default function WorkflowsPage(_: PageProps) {
           </>
         }
       >
-        <div className="flex flex-wrap items-center gap-2">
-          <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search workflows" aria-label="Search workflows" className="sm:max-w-xs" />
-          <Segmented
-            ariaLabel="Status"
-            size="sm"
-            value={status}
-            onChange={setStatus}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'published', label: 'Published' },
-              { value: 'draft', label: 'Drafts' },
-            ]}
-          />
-          <Select ariaLabel="Folder" size="sm" value={folder} onChange={setFolder} options={[{ value: '', label: 'Every folder' }, ...folders.map((f) => ({ value: f, label: f }))]} className="w-44" />
-          <Select ariaLabel="Owner" size="sm" value={owner} onChange={setOwner} options={[{ value: '', label: 'Every owner' }, ...owners.map((o) => ({ value: o, label: o }))]} className="w-44" />
-          {(q || folder || owner || status !== 'all') && (
-            <Button
+        <Tabs<WorkflowsTab>
+          ariaLabel="Workflows views"
+          value={tab}
+          onChange={switchTab}
+          className="mb-3"
+          tabs={[
+            { id: 'workflows', label: 'Workflows', icon: 'workflow', count: list.data?.length },
+            { id: 'change-requests', label: 'Change requests', icon: 'git-branch', count: openCrs.data?.length },
+          ]}
+        />
+        {tab === 'change-requests' ? (
+          <Segmented ariaLabel="Change request status" size="sm" value={crFilter} onChange={showChangeRequests} options={CHANGE_REQUEST_FILTERS} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search workflows" aria-label="Search workflows" className="sm:max-w-xs" />
+            <Segmented
+              ariaLabel="Status"
               size="sm"
-              variant="ghost"
-              icon="close"
-              onClick={() => {
-                setQ('')
-                setFolder('')
-                setOwner('')
-                setStatus('all')
-              }}
-            >
-              Clear
-            </Button>
-          )}
-        </div>
+              value={status}
+              onChange={setStatus}
+              options={[
+                { value: 'all', label: 'All' },
+                { value: 'published', label: 'Published' },
+                { value: 'draft', label: 'Drafts' },
+              ]}
+            />
+            <Select ariaLabel="Folder" size="sm" value={folder} onChange={setFolder} options={[{ value: '', label: 'Every folder' }, ...folders.map((f) => ({ value: f, label: f }))]} className="w-44" />
+            <Select ariaLabel="Owner" size="sm" value={owner} onChange={setOwner} options={[{ value: '', label: 'Every owner' }, ...owners.map((o) => ({ value: o, label: o }))]} className="w-44" />
+            {(q || folder || owner || status !== 'all') && (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="close"
+                onClick={() => {
+                  setQ('')
+                  setFolder('')
+                  setOwner('')
+                  setStatus('all')
+                }}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+        )}
       </PageHeader>
 
-      {list.error && !list.data ? (
+      {tab === 'change-requests' ? (
+        crs.error && !crs.data ? (
+          <ErrorState error={crs.error} title="Could not load the change requests" onRetry={() => void crs.refetch()} />
+        ) : (
+          <ChangeRequestTable rows={crs.data ?? []} loading={crs.loading} filter={crFilter} />
+        )
+      ) : list.error && !list.data ? (
         <ErrorState error={list.error} title="Could not load the workflows" onRetry={() => void list.refetch()} />
       ) : (
         <Table
@@ -287,6 +323,32 @@ function kebab(s: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
+/**
+ * The first draft of the Blank tile, the skeleton the designer opens: its policy lets the owner
+ * team run it, since every workflow names at least one role or team (`policy.missing` otherwise);
+ * a field left empty is left out (an empty YAML value would read as null).
+ */
+export function blankWorkflowDocument(meta: { name: string; title: string; noun?: string; verb?: string; owner: string; folder?: string }) {
+  const owner = meta.owner.trim()
+  return {
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: {
+      name: meta.name,
+      title: meta.title.trim(),
+      noun: meta.noun?.trim() || undefined,
+      verb: meta.verb?.trim() || undefined,
+      owner,
+      folder: meta.folder?.trim() || undefined,
+      version: '0.1.0',
+    },
+    api: { input: { type: 'object', properties: {} }, response: { status: 202 } },
+    mcp: { expose: false },
+    policy: { rbac: [owner] },
+    workflow: { do: [] },
+  }
+}
+
 function BlankForm({ onBack }: { onBack: () => void }) {
   const toast = useToast()
   const close = useOverlayClose()
@@ -312,23 +374,7 @@ function BlankForm({ onBack }: { onBack: () => void }) {
   const submit = () => {
     if (!valid || create.loading) return
     // the skeleton the designer opens; yaml-emit is the browser's one YAML writer (see its header)
-    const doc = {
-      apiVersion: 'iaf.platform/v1',
-      kind: 'Workflow',
-      metadata: {
-        name: effectiveName,
-        title: title.trim(),
-        noun: noun.trim() || undefined,
-        verb: verb.trim() || undefined,
-        owner: owner.trim(),
-        folder: folder.trim() || undefined,
-        version: '0.1.0',
-      },
-      api: { input: { type: 'object', properties: {} }, response: { status: 202 } },
-      mcp: { expose: false },
-      workflow: { do: [] },
-    }
-    void create.mutate(emitYaml(doc))
+    void create.mutate(emitYaml(blankWorkflowDocument({ name: effectiveName, title, noun, verb, owner, folder })))
   }
 
   return (
@@ -383,13 +429,6 @@ function BlankForm({ onBack }: { onBack: () => void }) {
   )
 }
 
-const SOURCES: { value: ImportSource; label: string }[] = [
-  { value: 'idp', label: 'IDP tile' },
-  { value: 'ansible', label: 'Ansible playbook' },
-  { value: 'terraform', label: 'Terraform module' },
-  { value: 'openapi', label: 'OpenAPI provider' },
-]
-
 function ImportForm({ onBack }: { onBack: () => void }) {
   const toast = useToast()
   const close = useOverlayClose()
@@ -410,10 +449,8 @@ function ImportForm({ onBack }: { onBack: () => void }) {
     onError: (e) => toast.error('Could not create the workflow', errorMessage(e)),
   })
 
-  const options = useMemo(() => {
-    if (source === 'ansible') return (playbooks.data ?? []).map((p) => ({ value: p.name, label: p.name, hint: `${p.path} · ${p.version}` }))
-    return (providers.data ?? []).filter((p) => p.type === source).map((p) => ({ value: p.name, label: p.title, hint: `${p.name} · ${p.actions.length} actions` }))
-  }, [source, playbooks.data, providers.data])
+  // each option's value is the `ref` the backend resolves: a tile id, <provider>/<playbook> or a provider name
+  const options = useMemo(() => importChoices(source, playbooks.data ?? [], providers.data ?? []), [source, playbooks.data, providers.data])
   const loading = source === 'ansible' ? playbooks.loading : providers.loading
   const result = importIt.data
 
@@ -429,11 +466,11 @@ function ImportForm({ onBack }: { onBack: () => void }) {
               setRef('')
               importIt.reset()
             }}
-            options={SOURCES}
+            options={IMPORT_SOURCES.map(({ value, label }) => ({ value, label }))}
             full
           />
         </Field>
-        <Field label={source === 'ansible' ? 'Playbook' : 'Provider'} required hint={options.length === 0 && !loading ? `Nothing of that kind is registered yet.` : 'From the registry'}>
+        <Field label={importField(source)} required hint={options.length === 0 && !loading ? `Nothing of that kind is registered yet.` : source === 'idp' ? 'A tile of the developer portal, from the registry' : 'From the registry'}>
           <Select ariaLabel="Reference" value={ref} onChange={setRef} options={options} placeholder={loading ? 'Loading…' : 'Choose…'} disabled={loading || options.length === 0} />
         </Field>
         {result && (
@@ -457,7 +494,7 @@ function ImportForm({ onBack }: { onBack: () => void }) {
           Back
         </Button>
         <div className="flex items-center gap-2">
-          <Button variant={result ? 'secondary' : 'primary'} icon="upload" disabled={!ref} loading={importIt.loading} onClick={() => void importIt.mutate({ source, ref })}>
+          <Button variant={result ? 'secondary' : 'primary'} icon="upload" disabled={!ref} loading={importIt.loading} onClick={() => void importIt.mutate(importRequest(source, ref))}>
             {result ? 'Import again' : 'Import'}
           </Button>
           {result && (

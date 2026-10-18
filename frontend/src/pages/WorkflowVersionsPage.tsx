@@ -36,6 +36,20 @@ export function versionSteps(definition: WorkflowDefinition | undefined): Versio
   })
 }
 
+/** A version's status, and whether a release rollback took it out (`rolledBack`). */
+export function VersionStatus({ version }: { version: Pick<WorkflowVersion, 'status' | 'rolledBack'> }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <StateTag status={version.status} size="sm" />
+      {version.rolledBack && (
+        <Tag size="sm" tone="warning" title="A release rollback took it out: it stays readable, and no run step's version range resolves to it again">
+          rolled back
+        </Tag>
+      )}
+    </span>
+  )
+}
+
 export function VersionStepList({ definition }: { definition: WorkflowDefinition | undefined }) {
   const rows = versionSteps(definition)
   if (rows.length === 0) return <p className="rounded-md bg-surface-secondary px-4 py-6 text-center text-sm text-tertiary">This version has no steps.</p>
@@ -90,7 +104,7 @@ export default function WorkflowVersionsPage({ route }: PageProps) {
         </div>
       ),
     },
-    { key: 'status', header: 'Status', sortable: true, accessor: (v) => v.status, render: (v) => <StateTag status={v.status} size="sm" /> },
+    { key: 'status', header: 'Status', sortable: true, accessor: (v) => v.status, render: (v) => <VersionStatus version={v} /> },
     {
       key: 'publishedAt',
       header: 'Published',
@@ -203,7 +217,7 @@ function VersionDrawer({ name, version, versions, onClose }: { name: string; ver
         subtitle={
           meta && (
             <span className="inline-flex items-center gap-2">
-              <StateTag status={meta.status} size="sm" />
+              <VersionStatus version={meta} />
               {meta.publishedAt && (
                 <span>
                   published {meta.publishedBy ? `by ${meta.publishedBy} ` : ''}
