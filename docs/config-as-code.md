@@ -21,7 +21,7 @@ metadata:
 api:
   method: POST                # inferred from the verb when omitted: create POST, read GET,
   path: /api/v1/vms/{vmId}:restart   # update PUT, delete DELETE, anything else POST <noun>s:<verb>
-  input:                      # JSON Schema; also the MCP tool input schema and the catalog form
+  input:                      # JSON Schema; also the catalog form and the MCP tool input (plus its call arguments, docs/api.md)
     type: object
     required: [vmId]
     properties:

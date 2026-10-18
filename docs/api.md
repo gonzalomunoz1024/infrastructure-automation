@@ -174,8 +174,12 @@ An `x-resource` input with `orCreateWith` shows both forms in `CatalogEntry.inpu
 request bodies and the MCP tool inputs: `anyOf` the id, or `{ create: <the producing workflow's
 input> }` to have the resource built first (docs/config-as-code.md, Resource inputs).
 
-MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `api.input`), one
-`<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
+MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`; input: the workflow's
+`api.input` plus two optional call arguments the platform reads and the job never sees,
+`idempotencyKey` (the same key returns the first answer for 24 hours instead of starting another
+job) and `version` (run that published or retired version instead of the release router's pick),
+each left out when `api.input` declares a field of that name), one `<noun>_<verb>_batch` per
+workflow (which always takes both), `list_<plural>` and `get_<plural>` per resource type,
 `get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).
 
 In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
