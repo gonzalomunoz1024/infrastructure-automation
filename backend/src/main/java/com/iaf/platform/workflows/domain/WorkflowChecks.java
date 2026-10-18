@@ -678,7 +678,7 @@ public final class WorkflowChecks {
             require(s, "url", "step.missing", "An HTTP step needs a url");
             String url = s.withText("url");
             if (url != null && !ExpressionEngine.isTemplate(url) && !url.startsWith("http://") && !url.startsWith("https://")) {
-                error("http.url", s.id(), "url", "url starts with https://");
+                error("http.url", s.id(), "url", "url starts with http:// or https://");
             }
             if ("DELETE".equalsIgnoreCase(method) && !policyApproval && !scope.approved) {
                 warning("policy.approvalRequired", s.id(), null, "An HTTP DELETE is destructive; add an approval step before it or require one in policy",

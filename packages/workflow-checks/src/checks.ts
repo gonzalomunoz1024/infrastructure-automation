@@ -807,7 +807,7 @@ class Checker {
     this.require(s, 'url', 'step.missing', 'An HTTP step needs a url');
     const url = withText(s, 'url');
     if (url !== null && !isTemplate(url) && !url.startsWith('http://') && !url.startsWith('https://')) {
-      this.error('http.url', s.id, 'url', 'url starts with https://');
+      this.error('http.url', s.id, 'url', 'url starts with http:// or https://');
     }
     if (method !== null && method.toUpperCase() === 'DELETE' && !this.policyApproval && !scope.approved) {
       this.warning('policy.approvalRequired', s.id, null, 'An HTTP DELETE is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
