@@ -216,7 +216,8 @@ driver would read it as a DBRef and drop its other keys); an integer beyond a lo
 `uint64` bound) is stored as a Decimal128, exact to 34 digits (a longer one is refused, never
 rounded), and reads back as that integer; a null inside a JSON value or a map is kept both ways,
 so a job's input or an evidence entry's hashed data comes back exactly, while a null record
-component is left out. Each adapter creates the indexes it relies on in its constructor, so every
+component is left out. One known gap: a decimal held as a JSON decimal node (the HCL importer makes
+one for an integer beyond a long) is stored as a double and can lose digits. Each adapter creates the indexes it relies on in its constructor, so every
 start makes the missing ones and leaves the others as they are. The adapters' tests run on a real
 MongoDB when `PLATFORM_TEST_MONGO_URI` names one, a fresh database per test (see
 `docs/contributing.md`).
