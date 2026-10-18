@@ -220,8 +220,9 @@ such as oauth2-proxy in front of the web app and the API, which signs people in 
 provider and adds `Authorization: Bearer <ID token>` to every request it lets through
 (oauth2-proxy's `--set-authorization-header=true`, passed on by ingress-nginx's `auth-url`,
 `auth-signin` and `auth-response-headers` annotations; `values.yaml` shows them under `ingress`).
-The API verifies the token under the `oidc` profile (`platform.identity.oidc-*`): its audience is
-the client id the proxy signs in with, and the token must carry the teams claim. Service accounts
+The API verifies the token under the `oidc` profile (`platform.identity.oidc-issuer`,
+`oidc-audience` and `oidc-jwks-uri`, all required): its audience is the client id the proxy signs
+in with, and the token must carry the teams claim. Service accounts
 and MCP clients call with their own `iaf_` tokens and no browser session, so route them to the API
 on a host the proxy does not guard; the API checks those tokens itself.
 

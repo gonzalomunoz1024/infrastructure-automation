@@ -9,7 +9,10 @@ backend:
     platform:
       identity:
         mode: oidc
+        # all three are required under the oidc profile; the audience is the auth proxy's client id
         oidc-issuer: https://login.example.com/realms/platform
+        oidc-audience: platform
+        oidc-jwks-uri: https://login.example.com/realms/platform/protocol/openid-connect/certs
       credentials:
         mode: vault
         vault-url: https://vault.example.com

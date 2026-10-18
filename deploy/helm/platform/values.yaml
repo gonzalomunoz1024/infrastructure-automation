@@ -152,9 +152,12 @@ content:
 # ------------------------------------------------------------------ audit evidence
 
 audit:
-  # the key that signs evidence seals and export packs: an existing Secret
-  # (PLATFORM_AUDIT_SIGNINGKEY, platform.audit.signing-key). Without one every pod signs with a
-  # random key per run, so a seal made before a restart can no longer be verified.
+  # the key that signs evidence seals and export packs. Preferably a vault: reference in
+  # backend.config (platform.audit.signing-key: vault:platform/audit-signing-key), resolved when a
+  # key is needed, so a rotation needs no restart; or the key itself from an existing Secret
+  # (PLATFORM_AUDIT_SIGNINGKEY, which wins over backend.config), which still works with a warning at
+  # startup. Without either every pod signs with a random key per run, so a seal made before a
+  # restart can no longer be verified.
   signingKeySecret:
     name: ""
     key: signing-key
@@ -194,7 +197,10 @@ audit:
 
 secrets:
   # names of existing Secrets whose keys become environment variables of the API and the worker,
-  # like PLATFORM_CREDENTIALS_VAULTTOKEN or PLATFORM_ASSISTANT_DEVINAPIKEY
+  # like PLATFORM_CREDENTIALS_VAULTTOKEN. The Devin API key belongs in the credentials store, named
+  # by its reference in backend.config (platform.assistant.devin-api-key: vault:devin/api-key) and
+  # resolved at each call; the key itself in a Secret (PLATFORM_ASSISTANT_DEVINAPIKEY) still works,
+  # with a warning at startup.
   envFrom: []
   # single variables from keys of existing Secrets:
   #   - { name: PLATFORM_CREDENTIALS_VAULTTOKEN, secretName: platform-vault, key: token }
@@ -238,7 +244,8 @@ frontend:
 
 # SSO: the web app acquires no token itself. An auth proxy in front of the web app and the API signs
 # people in and forwards their ID token as Authorization: Bearer <token>, which the API verifies
-# under the oidc profile (backend.profiles, and platform.identity.oidc-* in backend.config; the
+# under the oidc profile (backend.profiles, and in backend.config platform.identity.oidc-issuer,
+# oidc-audience and oidc-jwks-uri, which are all required: the start fails naming a blank one; the
 # audience is the proxy's client id). With ingress-nginx and oauth2-proxy
 # (--set-authorization-header=true, served on the same host under /oauth2 by an Ingress of its own):
 #   annotations:
