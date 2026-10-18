@@ -114,7 +114,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 |----------------------------------|-----------------------|--------|
 | `WorkflowStorePort` (workflows)  | `JdbcWorkflowStore`   | `workflow_versions` |
 | `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
-| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers` |
+| `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
 | `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` |
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
@@ -132,6 +132,11 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   content; one changed through the platform is never reset. Resource types are rewritten from
   their files at every start. Reads come from a copy of the table that is reloaded when
   `store_revisions` shows a write from any instance.
+- A provider's current version is its `providers` row; every version saved since the database
+  was made, the current one among them, is also a `provider_versions` row, so a canary candidate
+  (`ProviderStorePort.saveVersion`) is kept beside the current version, routed to by its release,
+  and survives a restart until it is promoted and saved as current. The versions read newest
+  first, as in memory, and a kept version is never written back to the content repo until it is current.
 - Audit evidence is append-only twice over. `JdbcEvidenceStore` has no path that updates or
   deletes an entry, and it refuses entries for a sealed record. The PostgreSQL migration adds
   triggers that refuse `UPDATE`, `DELETE` and `TRUNCATE` of entries, entries for a sealed record,

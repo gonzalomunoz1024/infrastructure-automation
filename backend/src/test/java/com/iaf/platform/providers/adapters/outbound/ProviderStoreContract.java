@@ -63,6 +63,16 @@ abstract class ProviderStoreContract {
         Files.writeString(file, yaml);
     }
 
+    /** The echo provider at another version, changed through the platform. */
+    static StoredProvider echo(String version, String by) {
+        String yaml = ECHO.replace("version: 1.0.0", "version: " + version);
+        return new StoredProvider(ProviderYaml.parse(yaml), yaml, "providers/team-a/echo.yaml", NOW, by);
+    }
+
+    static List<String> versionsOf(List<StoredProvider> versions) {
+        return versions.stream().map(p -> p.definition().metadata().version()).toList();
+    }
+
     @Test
     void seedsEveryProviderFileExactlyAsParsed() {
         ProviderStorePort store = newStore(props(SampleCatalog.ROOT, false));
@@ -137,5 +147,88 @@ abstract class ProviderStoreContract {
         assumeTrue(after != null, "this store does not outlive the process");
         assertThat(after.get("echo")).contains(changed);
         assertThat(after.all()).hasSize(1);
+    }
+
+    // ---------------------------------------------------------------- versions beside the current one
+
+    @Test
+    void aCanaryCandidateIsKeptBesideTheCurrentVersionWithoutReplacingIt() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        StoredProvider current = store.get("echo").orElseThrow();
+        assertThat(store.versions("echo")).as("the current version counts among the versions").containsExactly(current);
+        StoredProvider candidate = echo("1.1.0", "ana");
+
+        store.saveVersion(candidate);
+        assertThat(store.get("echo")).contains(current);
+        assertThat(store.all()).containsExactly(current);
+        assertThat(store.versions("echo")).as("newest first").containsExactly(candidate, current);
+        assertThat(store.version("echo", "1.1.0")).contains(candidate);
+        assertThat(store.version("echo", "1.0.0")).contains(current);
+        assertThat(store.version("echo", "2.0.0")).isEmpty();
+        assertThat(store.version("echo", null)).isEmpty();
+        assertThat(store.version("nope", "1.0.0")).isEmpty();
+        assertThat(store.versions("nope")).isEmpty();
+        assertThat(store.versions(null)).isEmpty();
+    }
+
+    @Test
+    void savingAKeptVersionMakesItCurrentAndTheVersionsStayInSemverOrder() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        store.saveVersion(echo("1.10.0", "ana"));
+        store.saveVersion(echo("1.2.0", "ana"));
+        assertThat(versionsOf(store.versions("echo"))).as("by version, not by text or by order of arrival").containsExactly("1.10.0", "1.2.0", "1.0.0");
+
+        store.save(store.version("echo", "1.2.0").orElseThrow());
+        assertThat(store.get("echo").map(p -> p.definition().metadata().version())).contains("1.2.0");
+        assertThat(store.all()).hasSize(1);
+        assertThat(versionsOf(store.versions("echo"))).containsExactly("1.10.0", "1.2.0", "1.0.0");
+
+        StoredProvider again = new StoredProvider(echo("1.2.0", "mateo").definition(), echo("1.2.0", "mateo").yaml(), "providers/team-a/echo.yaml", NOW.plusSeconds(60), "mateo");
+        store.saveVersion(again);
+        assertThat(store.version("echo", "1.2.0")).as("a version saved again replaces the kept one").contains(again);
+        assertThat(store.versions("echo")).hasSize(3);
+    }
+
+    @Test
+    void aKeptVersionIsNotWrittenToTheContentRepoUntilItIsCurrent() throws Exception {
+        ProviderStorePort store = newStore(props(content, true));
+        store.save(echo("1.0.0", "ana"));
+        Path file = content.resolve("providers/team-a/echo.yaml");
+        assertThat(Files.readString(file)).contains("version: 1.0.0");
+
+        store.saveVersion(echo("1.1.0", "ana"));
+        assertThat(Files.readString(file)).as("the file stays the current version").contains("version: 1.0.0");
+
+        store.save(store.version("echo", "1.1.0").orElseThrow());
+        assertThat(Files.readString(file)).contains("version: 1.1.0");
+    }
+
+    @Test
+    void deletingAProviderForgetsEveryVersion() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        store.saveVersion(echo("1.1.0", "ana"));
+
+        store.delete("echo");
+        assertThat(store.get("echo")).isEmpty();
+        assertThat(store.versions("echo")).isEmpty();
+        assertThat(store.version("echo", "1.1.0")).isEmpty();
+    }
+
+    @Test
+    void keepsACanaryCandidateAcrossARestart() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        StoredProvider current = store.get("echo").orElseThrow();
+        StoredProvider candidate = echo("1.1.0", "ana");
+        store.saveVersion(candidate);
+
+        ProviderStorePort after = reopen(props(content, false));
+        assumeTrue(after != null, "this store does not outlive the process");
+        assertThat(after.get("echo")).as("the candidate did not become current").contains(current);
+        assertThat(after.version("echo", "1.1.0")).contains(candidate);
+        assertThat(after.versions("echo")).containsExactly(candidate, current);
     }
 }
