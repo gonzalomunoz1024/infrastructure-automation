@@ -702,6 +702,27 @@ class ProviderCommandHandlerTest {
     }
 
     @Test
+    void aPublishedProviderIsJudgedByItsStoredOwnerNotTheOwnerThePostedFileNames() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(changeRequests.all()).thenReturn(List.of());
+        proven();
+        // ana re-posts team-compute's provider under her own team with the next version
+        String claimed = YAML.replace("owner: team-compute", "owner: team-data");
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Ana may not change provider fleet (owned by team-compute)"))
+                .verify();
+        // the owner team cannot hand it to a team it is not in either
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("owned by team-data"))
+                .verify();
+        verify(changeRequests, never()).save(any());
+        // an admin may hand it over
+        Identity admin = new Identity("gonzalo", "Gonzalo", null, List.of("team-platform"), List.of("admin"), true, Identity.Kind.USER);
+        StepVerifier.create(as(handler.publish(new Publish(claimed, "all")), admin)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
     void thePublishedVersionCannotBePublishedAgainAndOpenRequestsAreNotDuplicated() {
         when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
         StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OWNER))

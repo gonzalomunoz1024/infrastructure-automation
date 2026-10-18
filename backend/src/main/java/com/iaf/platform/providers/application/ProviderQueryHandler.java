@@ -8,6 +8,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.TreeMap;
 
 import org.springframework.context.annotation.Primary;
@@ -88,6 +89,14 @@ public class ProviderQueryHandler implements ProviderQueries {
     @Override
     public Flux<ProviderDefinition> all() {
         return Flux.defer(() -> Flux.fromIterable(store.all())).map(StoredProvider::definition);
+    }
+
+    @Override
+    public Optional<String> ownerOf(String name) {
+        if (name == null || name.isBlank()) {
+            return Optional.empty();
+        }
+        return store.get(name).map(p -> p.definition().owner()).filter(owner -> !owner.isBlank());
     }
 
     public Flux<ProviderSummary> list() {

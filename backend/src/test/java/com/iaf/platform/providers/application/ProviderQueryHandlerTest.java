@@ -108,6 +108,16 @@ class ProviderQueryHandlerTest {
         StepVerifier.create(handler.all()).expectNextCount(1).verifyComplete();
     }
 
+    @Test
+    void theOwnerOfAPublishedProviderIsTheStoredOnesWhateverAFileClaims() {
+        assertThat(handler.ownerOf("fleet")).contains("team-compute");
+        assertThat(handler.ownerOf("nope")).isEmpty();
+        assertThat(handler.ownerOf(null)).isEmpty();
+        String unowned = YAML.replace("name: fleet, title: Fleet API, owner: team-compute,", "name: shared, title: Shared API,");
+        when(store.get("shared")).thenReturn(Optional.of(new StoredProvider(ProviderYaml.parse(unowned), unowned, "providers/shared.yaml", NOW, "content")));
+        assertThat(handler.ownerOf("shared")).isEmpty();
+    }
+
     String versionFor(Use use) {
         return handler.provider("fleet").contextWrite(c -> Use.with(c, use)).map(d -> d.metadata().version()).block();
     }

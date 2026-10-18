@@ -633,9 +633,14 @@ public class ProviderCommandHandler implements ProviderCommands {
             ProviderDefinition def = ProviderYaml.parse(command.yaml());
             ContentFiles.requireSlug("The provider name", def.name());
             ContentFiles.requireSlug("The owner team", def.owner());
+            Optional<StoredProvider> stored = store.get(def.name());
+            // the published provider's owner decides, not the owner the posted file names: handing a
+            // provider to another team is itself an edit its owner makes, and nobody claims one by re-posting it
+            if (stored.isPresent()) {
+                AccessRules.requireEdit(who, stored.get().definition().owner(), "provider " + def.name());
+            }
             AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
             String version = def.metadata().version();
-            Optional<StoredProvider> stored = store.get(def.name());
             if (stored.filter(c -> version.equals(c.definition().metadata().version())).isPresent() || store.version(def.name(), version).isPresent()) {
                 throw new ConflictException("Version " + version + " of provider " + def.name() + " is already published; bump metadata.version");
             }
