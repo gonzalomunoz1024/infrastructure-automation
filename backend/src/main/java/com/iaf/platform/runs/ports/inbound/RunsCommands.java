@@ -19,13 +19,16 @@ import reactor.core.publisher.Mono;
 public interface RunsCommands {
 
     /**
+     * A top-level job; child workflows and batch rows start inside the engine, not through this port.
+     *
      * @param version  the version to run; null means "whatever the release router says"
      * @param channel  catalog, rest, mcp, trigger or batch
-     * @param parentId the parent job for child workflows and batch rows
+     * @param traceId  the trace the job runs in (the request's); null starts a new one
      * @param preview  the preview shown to the requester, stored on the job (may be null)
+     * @param changeId a change ticket the requester already has, linked instead of opening one
      */
     record StartJob(String workflow, String version, JsonNode input, Identity requester, String channel,
-            String parentId, String traceId, Preview preview, String changeId) {
+            String traceId, Preview preview, String changeId) {
     }
 
     /** {@code traceId}: the trace the batch and its rows run in (the request's); null starts a new one. */

@@ -82,7 +82,6 @@ class WorkflowInvokerTest {
         assertThat(job.input().path("vmId").asText()).isEqualTo("vm-1");
         assertThat(job.requester()).isEqualTo(SampleCatalog.OPS);
         assertThat(job.channel()).isEqualTo("rest");
-        assertThat(job.parentId()).isNull();
         assertThat(job.traceId()).isEqualTo("trace-1");
         assertThat(job.preview()).isNotNull();
         assertThat(job.changeId()).isNull();

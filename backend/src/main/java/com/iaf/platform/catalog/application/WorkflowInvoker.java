@@ -119,7 +119,7 @@ public class WorkflowInvoker {
             return decide(d, rec.version(), who, in, pinContext(context(channel, traceId, 0), version))
                     .then(quotas.take(who))   // a token only once the request is valid, allowed and not denied
                     .then(preview(d, in, who))
-                    .flatMap(p -> runs.startJob(new StartJob(d.name(), version, in, who, channel, null, traceId, p.orElse(null), null)))
+                    .flatMap(p -> runs.startJob(new StartJob(d.name(), version, in, who, channel, traceId, p.orElse(null), null)))
                     .map(Started::of);
         });
     }
