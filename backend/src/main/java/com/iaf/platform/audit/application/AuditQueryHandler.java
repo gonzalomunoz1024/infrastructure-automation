@@ -30,8 +30,13 @@ import com.iaf.platform.common.domain.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
-/** Reads evidence records and turns them into rows, verifications, files and packs. */
+/**
+ * Reads evidence records and turns them into rows, verifications, files and packs. Every store read
+ * runs on boundedElastic: the stores are synchronous (JDBC, files, the S3 client), and only the
+ * {@code postgres} profile moves whole requests off the event loop.
+ */
 @Primary
 @Service
 @RequiredArgsConstructor
@@ -50,6 +55,7 @@ public class AuditQueryHandler implements AuditQueries {
     @Override
     public Flux<AuditRow> list(String workflow, String from, String to, String requester) {
         return Flux.defer(() -> Flux.fromIterable(store.records(EvidenceFilter.parse(workflow, from, to, requester))))
+                .subscribeOn(Schedulers.boundedElastic())
                 .filter(r -> !r.platform())
                 .map(r -> new AuditRow(r.jobId(), r.workflow(), r.requester(), r.channel(), r.at(), r.entries().size(), r.status()));
     }
@@ -57,6 +63,7 @@ public class AuditQueryHandler implements AuditQueries {
     @Override
     public Mono<EvidenceRecord> record(String jobId) {
         return Mono.defer(() -> Mono.justOrEmpty(store.record(jobId)))
+                .subscribeOn(Schedulers.boundedElastic())
                 .switchIfEmpty(Mono.error(() -> new NotFoundException("evidence record", jobId)));
     }
 
@@ -116,7 +123,7 @@ public class AuditQueryHandler implements AuditQueries {
                         return new PlatformStream(matching, r.entries().size(), r.latestHash(), verification(r));
                     })
                     .orElseGet(() -> new PlatformStream(List.of(), 0, HashChain.GENESIS, new Verification(true, 0, null, null)));
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     /** {@code workflow}, {@code vm-restart} or {@code workflow:vm-restart}. */
@@ -179,7 +186,7 @@ public class AuditQueryHandler implements AuditQueries {
                 zip.closeEntry();
             }
             return new FileExport("evidence-pack-" + clock.instant().toString().replace(':', '-') + ".zip", "application/zip", bytes.toByteArray());
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     @Override
@@ -190,7 +197,7 @@ public class AuditQueryHandler implements AuditQueries {
                 throw new ResponseStatusException(HttpStatus.GONE, "share link expired on " + link.expiresAt());
             }
             return record(link.jobId());
-        });
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     private static Map<String, Object> filterOf(EvidenceFilter f) {

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -16,11 +17,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -30,8 +34,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.iaf.platform.audit.adapters.outbound.FileSystemEvidenceStore;
 import com.iaf.platform.audit.adapters.outbound.InMemoryEvidenceStore;
 import com.iaf.platform.audit.domain.EvidenceEntry;
+import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceKind;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
@@ -61,6 +67,45 @@ class AuditQueryHandlerTest {
     final InMemoryEvidenceStore store = new InMemoryEvidenceStore();
     final AuditSigner signer = new AuditSigner(AuditCommandHandlerTest.withKey("test-signing-key"));
     final AuditQueryHandler handler = new AuditQueryHandler(store, signer, clock, JSON);
+
+    @Test
+    void everyStoreReadRunsOnBoundedElasticNeverOnTheCallersThread(@TempDir Path dir) {
+        Set<String> threads = new CopyOnWriteArraySet<>();
+        FileSystemEvidenceStore files = new FileSystemEvidenceStore(dir, 7) {
+            @Override
+            public Optional<EvidenceRecord> record(String jobId) {
+                threads.add(Thread.currentThread().getName());
+                return super.record(jobId);
+            }
+
+            @Override
+            public List<EvidenceRecord> records(EvidenceFilter filter) {
+                threads.add(Thread.currentThread().getName());
+                return super.records(filter);
+            }
+
+            @Override
+            public Optional<ShareToken> findShareToken(String token) {
+                threads.add(Thread.currentThread().getName());
+                return super.findShareToken(token);
+            }
+        };
+        files.append("job_f", EvidenceEntry.draft(NOW, EvidenceKind.REQUESTED, "ana", JSON.createObjectNode().put("workflow", "vm-restart")));
+        files.append(EvidenceRecord.PLATFORM, EvidenceEntry.draft(NOW, EvidenceKind.DECISION, "ana", JSON.createObjectNode().put("event", "workflow.published")));
+        ShareToken link = files.shareToken("job_f", NOW.plus(Duration.ofHours(1)));
+        AuditQueryHandler h = new AuditQueryHandler(files, signer, clock, JSON);
+        threads.clear();
+
+        StepVerifier.create(h.list(null, null, null, null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.record("job_f")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.verify("job_f")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.platform(null, null, null, null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.export("job_f", "pdf")).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.exportPack(null)).expectNextCount(1).verifyComplete();
+        StepVerifier.create(h.shared(link.token())).expectNextCount(1).verifyComplete();
+
+        assertThat(threads).isNotEmpty().allMatch(t -> t.startsWith("boundedElastic"), "every store read is on boundedElastic");
+    }
 
     @BeforeEach
     void records() {

@@ -206,6 +206,8 @@ stubs, so a Netty thread never blocks. Live job progress is a `Flux<JobEvent>` f
 `EventBus`, served over `/ws/jobs/{id}` (reactive WebSocket) and `/api/v1/jobs/{id}/events` (SSE).
 The store ports are synchronous, and the JDBC stores of the `postgres` profile block. So under
 that profile `BlockingStoresWebFilter` subscribes each request's whole chain on `boundedElastic`.
+The evidence stores of the `worm` and `worm-s3` profiles block on files and the S3 client under
+any profile, so the audit handlers read and write them on `boundedElastic` themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
 there, so the job events that follow are stored from there. `Jdbc` counts any statement that still
 runs on a non-blocking thread, and the wiring test expects none.
