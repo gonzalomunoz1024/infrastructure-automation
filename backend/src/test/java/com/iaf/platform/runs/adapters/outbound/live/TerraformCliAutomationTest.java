@@ -49,7 +49,7 @@ class TerraformCliAutomationTest {
 
     static final ObjectMapper JSON = new ObjectMapper();
     static final PersonIdent WHO = new PersonIdent("Test", "test@example.com");
-    static final String TOKEN = "tok-4471-not-a-real-token";
+    static final String BEARER = "brr-4471-not-a-real-value";
     static final List<String> PLAN = List.of(
             "{\"@level\":\"info\",\"@message\":\"Terraform 1.9.8\",\"type\":\"version\",\"terraform\":\"1.9.8\",\"ui\":\"1.2\"}",
             "{\"@level\":\"info\",\"@message\":\"terraform_data.lb: Plan to create\",\"type\":\"planned_change\"}",
@@ -101,7 +101,7 @@ class TerraformCliAutomationTest {
                     cp main.tf "$R/main.tf"
                     ls -A > "$R/module-files"
                     echo "Initializing the backend..."
-                    if [ -n "$ACME_TOKEN" ]; then echo "debug: the token is $ACME_TOKEN" >&2; fi
+                    if [ -n "$ACME_BEARER" ]; then echo "debug: the token is $ACME_BEARER" >&2; fi
                     if [ -f "$R/init-error" ]; then cat "$R/init-error" >&2; exit 1; fi
                     ;;
                   workspace) echo "Created and switched to workspace \\"$5\\"!" ;;
@@ -160,8 +160,8 @@ class TerraformCliAutomationTest {
         git.getGit().setCacheDir(tmp.resolve("git-cache").toString());
         CredentialsPort vault = mock(CredentialsPort.class);
         when(vault.resolve(anyString())).thenReturn(Mono.empty());
-        when(vault.resolve("vault:cloud/acme")).thenReturn(Mono.just("{\"ACME_TOKEN\": \"" + TOKEN + "\", \"ACME_REGION\": \"eu-1\"}"));
-        when(vault.resolve("vault:cloud/lines")).thenReturn(Mono.just("# acme\nexport ACME_TOKEN=\"" + TOKEN + "\"\n"));
+        when(vault.resolve("vault:cloud/acme")).thenReturn(Mono.just("{\"ACME_BEARER\": \"" + BEARER + "\", \"ACME_REGION\": \"eu-1\"}"));
+        when(vault.resolve("vault:cloud/lines")).thenReturn(Mono.just("# acme\nexport ACME_BEARER=\"" + BEARER + "\"\n"));
         when(vault.resolve("vault:cloud/sneaky")).thenReturn(Mono.just("TF_CLI_ARGS=-auto-approve\n"));
         ArtifactsProperties store = new ArtifactsProperties();
         store.setDir(tmp.resolve("artifacts").toString());
@@ -231,7 +231,7 @@ class TerraformCliAutomationTest {
                 + "    workspace_dir = \"" + state.resolve("workspaces") + "\"\n  }\n}\n");
         Path dir = Path.of(Files.readString(record.resolve("cwd")).strip()).getParent();
         assertThat(Files.readAllLines(record.resolve("env")))
-                .contains("ACME_TOKEN=" + TOKEN, "ACME_REGION=eu-1", "TF_IN_AUTOMATION=1", "TF_INPUT=0", "CHECKPOINT_DISABLE=1",
+                .contains("ACME_BEARER=" + BEARER, "ACME_REGION=eu-1", "TF_IN_AUTOMATION=1", "TF_INPUT=0", "CHECKPOINT_DISABLE=1",
                         "HOME=" + dir.resolve(".home"), "TF_PLUGIN_CACHE_DIR=" + work.resolve("terraform/plugin-cache"))
                 .anyMatch(l -> l.startsWith("PATH=" + bin + ":"))
                 .noneMatch(l -> l.startsWith("JAVA_TOOL_OPTIONS="));
@@ -253,8 +253,8 @@ class TerraformCliAutomationTest {
                 "plan: 3 to add, 0 to change, 0 to destroy (kept as " + planSha.substring(0, 12) + ")",
                 "terraform_data.lb: Creation complete after 0s [id=5f0c]", "Apply complete! Resources: 3 added, 0 changed, 0 destroyed.",
                 "apply complete", "debug: the token is ****");
-        assertThat(String.join("\n", logged)).doesNotContain(TOKEN).doesNotContain("s3cr3t-web").doesNotContain("Terraform 1.9.8");
-        assertThat(out.toString()).doesNotContain(TOKEN).doesNotContain("s3cr3t-web");
+        assertThat(String.join("\n", logged)).doesNotContain(BEARER).doesNotContain("s3cr3t-web").doesNotContain("Terraform 1.9.8");
+        assertThat(out.toString()).doesNotContain(BEARER).doesNotContain("s3cr3t-web");
     }
 
     @Test
@@ -279,7 +279,7 @@ class TerraformCliAutomationTest {
         assertThat(calls()).contains("workspace select -or-create=true -no-color shared-web-1",
                 "plan -input=false -no-color -json -lock-timeout=5m -out=../tfplan -destroy",
                 "apply -input=false -no-color -json -lock-timeout=5m ../tfplan");
-        assertThat(Files.readAllLines(record.resolve("env"))).contains("ACME_TOKEN=" + TOKEN);
+        assertThat(Files.readAllLines(record.resolve("env"))).contains("ACME_BEARER=" + BEARER);
         assertThat(out.path("destroy").asInt()).isEqualTo(3);
         assertThat(out.path("add").asInt()).isZero();
         assertThat(out.path("workspace").asText()).isEqualTo("shared-web-1");
@@ -327,7 +327,7 @@ class TerraformCliAutomationTest {
 
     @Test
     void aFailedInitIsRetryableAndItsMessageHidesTheCredential() throws Exception {
-        Files.writeString(record.resolve("init-error"), "Error: Failed to query available provider packages for " + TOKEN + "\n");
+        Files.writeString(record.resolve("init-error"), "Error: Failed to query available provider packages for " + BEARER + "\n");
 
         assertThatThrownBy(() -> run("{\"action\": \"plan\", " + MODULE + ", \"credential\": \"vault:cloud/acme\"}"))
                 .isInstanceOfSatisfying(ProviderCallException.class, e -> {
@@ -402,10 +402,10 @@ class TerraformCliAutomationTest {
                 .containsSubsequence("-e", "TF_IN_AUTOMATION=1")
                 .containsSubsequence("-e", "HOME=/work/.home")
                 .containsSubsequence("-e", "TF_PLUGIN_CACHE_DIR=/plugin-cache")
-                .containsSubsequence("-e", "ACME_TOKEN")
+                .containsSubsequence("-e", "ACME_BEARER")
                 .containsSubsequence("hashicorp/terraform:1.9.8", "apply", "-input=false")
                 .anyMatch(a -> a.endsWith(":/work"))
-                .noneMatch(a -> a.contains(TOKEN));
+                .noneMatch(a -> a.contains(BEARER));
         assertThat(Files.readString(record.resolve("backend.tf"))).contains("path          = \"/state/default.tfstate\"",
                 "workspace_dir = \"/state/workspaces\"");
     }

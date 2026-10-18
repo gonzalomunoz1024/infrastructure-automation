@@ -54,17 +54,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Lint playbooks
+      - name: Lint pinned playbooks
+        # every git playbook the content pins, fetched at its commit, and playbooks/ when the repo
+        # has one; a source CI cannot fetch (private, gone) is skipped with a notice
         run: |
-          if [ -d playbooks ]; then
-            pip install ansible-lint
-            shopt -s globstar nullglob
-            files=(playbooks/**/*.yml)
-            if [ ${#files[@]} -eq 0 ]; then
-              echo "no playbooks in repo"
-            else
-              ansible-lint "${files[@]}"
-            fi
+          pip install ansible-lint==26.9.0
+          npm run lint:playbooks
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Dry-run the sample workflows
+        # every sample workflow runs to its end against the samples recorded in the provider files
+        run: mvn -B -q test -Dtest=SampleWorkflowsDryRunTest -Dsurefire.failIfNoSpecifiedTests=false
+        working-directory: backend
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Install gitleaks
+        # a pinned release built from its module; the Go checksum database verifies the sources
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan the files
+        run: |
+          mkdir -p "$RUNNER_TEMP/tree"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
+          "$(go env GOPATH)/bin/gitleaks" dir --redact --no-banner --exit-code 1 "$RUNNER_TEMP/tree"
+      - name: Scan the new commits
+        # the commits of the pull request or the push; the whole history when there is no range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          range=""
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          fi
+          if [ -n "$range" ]; then
+            "$(go env GOPATH)/bin/gitleaks" git --redact --no-banner --exit-code 1 --log-opts="$range" .
           else
-            echo "no playbooks in repo"
+            "$(go env GOPATH)/bin/gitleaks" git --redact --no-banner --exit-code 1 .
           fi

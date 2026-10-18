@@ -1,0 +1,3 @@
+# Findings reviewed and accepted, one gitleaks fingerprint per line.
+# A fake credential name in a test (no secret), renamed in a later commit.
+efc96ec8fd7e507054564e82bc2f45314e8861ab:backend/src/test/java/com/iaf/platform/runs/adapters/outbound/live/TerraformCliAutomationTest.java:generic-api-key:234

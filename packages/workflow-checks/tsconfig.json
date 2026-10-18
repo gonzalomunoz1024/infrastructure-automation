@@ -16,5 +16,5 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test", "cli.ts"]
+  "include": ["src", "test", "cli.ts", "lint-playbooks.ts"]
 }
