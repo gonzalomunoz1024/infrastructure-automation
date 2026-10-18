@@ -49,6 +49,8 @@ export interface DesignerProps {
   isNew: boolean
   /** a new workflow was created under this name */
   onCreated?: (name: string) => void
+  /** open on this job's run (`?job=`): the Executions view, with its step results in every node */
+  job?: string | null
 }
 
 type Panel = 'issues' | 'yaml' | 'test' | 'publish' | null
@@ -86,6 +88,27 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
     }
   }, [store, toast, onCreated])
 
+  const [validating, setValidating] = useState(false)
+  const validate = useCallback(async () => {
+    if (validating) return
+    setValidating(true)
+    try {
+      const result = await store.validate()
+      const publish = result.problems.filter((p) => p.code.startsWith('publish.')).length
+      const n = result.problems.length
+      toast.toast({
+        title: n === 0 ? 'Nothing to fix' : `${n} ${n === 1 ? 'problem' : 'problems'} found`,
+        message: n === 0 ? 'The backend finds no problem; publishing would pass its checks.' : publish > 0 ? `${publish} ${publish === 1 ? 'is' : 'are'} what publishing would refuse, see Before publishing in Issues` : 'See Issues',
+        tone: n === 0 ? 'healthy' : result.valid ? 'warning' : 'critical',
+      })
+      if (n > 0) setPanel('issues')
+    } catch (e) {
+      toast.error('Could not validate', errorMessage(e))
+    } finally {
+      setValidating(false)
+    }
+  }, [store, toast, validating])
+
   useHotkey('mod+s', () => void save(), { allowInInputs: true })
   useHotkey(
     'mod+enter',
@@ -120,6 +143,8 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
         onAssistant={() => setAssistant((a) => !a)}
         onSave={() => void save()}
         onPublish={() => setPanel('publish')}
+        onValidate={() => void validate()}
+        validating={validating}
         assistantOpen={assistant}
       />
       <div className="relative flex min-h-0 flex-1">
@@ -164,12 +189,16 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
   )
 }
 
-export function Designer({ name, doc, detail, isNew, onCreated }: DesignerProps) {
+export function Designer({ name, doc, detail, isNew, onCreated, job }: DesignerProps) {
   const [store] = useState(() => new DesignerStore({ name, doc, detail, isNew }))
   useEffect(() => () => store.dispose(), [store])
   useEffect(() => {
     if (detail && detail !== store.getState().detail) store.setDetail(detail)
   }, [detail, store])
+  // the job page's "Open in designer": that run's outputs are what every node and detail view shows
+  useEffect(() => {
+    if (job && !isNew && store.getState().execution?.jobId !== job) store.openExecution(job)
+  }, [job, isNew, store])
   return (
     <DesignerContext.Provider value={store}>
       <Shell onCreated={onCreated} />

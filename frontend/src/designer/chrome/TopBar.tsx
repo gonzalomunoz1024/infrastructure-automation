@@ -62,10 +62,13 @@ export interface TopBarProps {
   onAssistant: () => void
   onSave: () => void
   onPublish: () => void
+  /** run every check on the backend, publish checks included */
+  onValidate: () => void
+  validating?: boolean
   assistantOpen: boolean
 }
 
-export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublish, assistantOpen }: TopBarProps) {
+export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublish, onValidate, validating, assistantOpen }: TopBarProps) {
   const store = useDesignerStore()
   const s = useDesigner()
   const meta: WorkflowMetadata = s.doc.metadata ?? {}
@@ -130,6 +133,11 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
             <span className="hidden @3xl:inline">Issues</span>
             <Badge count={s.problems.length} tone={errors > 0 ? 'critical' : 'neutral'} showZero />
           </button>
+        </Tooltip>
+        <Tooltip label="Run every check on the backend, including what publishing would refuse" side="bottom">
+          <Button variant="ghost" size="sm" icon="shield" onClick={onValidate} loading={validating} aria-label="Validate" data-testid="validate-button">
+            <span className="hidden @6xl:inline">Validate</span>
+          </Button>
         </Tooltip>
         <Tooltip label="The workflow as YAML" side="bottom">
           <Button variant="ghost" size="sm" icon="document" onClick={onYaml} aria-label="YAML">

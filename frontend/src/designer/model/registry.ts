@@ -3,7 +3,7 @@
  * workflows, resource types, playbooks and credential names. Loaded once per session; every
  * part fails independently so the canvas works with whatever answered.
  */
-import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type ProviderDocument, type StepType } from '@iaf/workflow-checks'
+import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
 import type { RegistryAction, RegistryCredential, RegistryPlaybook, RegistryProvider, RegistryWorkflow, ResourceType, Schema, StepTypeInfo } from '../../lib/types'
 import { FALLBACK_STEP_SCHEMAS } from './stepSchemas'
@@ -77,13 +77,30 @@ export function toProviderDocument(p: RegistryProvider): ProviderDocument {
   } as ProviderDocument
 }
 
-/** The check context: the catalog when the providers answered, the empty one otherwise. */
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * The check context: the catalog when the providers answered, the empty one otherwise. The
+ * published workflows' inputs and outputs and the resource types' schemas come along, so a run
+ * step's contract and the fields a step returns are judged as the backend judges them.
+ */
 export function contextOf(registry: Registry | null): CheckContext {
   if (!registry || registry.failed.includes('providers')) return EMPTY_CONTEXT
+  const workflowInputs: Record<string, JsonSchema> = {}
+  const workflowOutputs: Record<string, string[]> = {}
+  const resourceTypeSchemas: Record<string, JsonSchema> = {}
+  for (const w of registry.workflows) {
+    if (isObject(w.input) && Object.keys(w.input).length > 0) workflowInputs[w.name] = w.input as unknown as JsonSchema
+    // only an output schema that names its properties says what the workflow publishes
+    const props = isObject(w.output) ? w.output.properties : undefined
+    if (isObject(props)) workflowOutputs[w.name] = Object.keys(props)
+  }
+  for (const r of registry.resourceTypes) if (isObject(r.schema) && Object.keys(r.schema).length > 0) resourceTypeSchemas[r.name] = r.schema as unknown as JsonSchema
   return buildContext(
     registry.providers.map(toProviderDocument),
     registry.workflows.map((w) => w.name),
     registry.resourceTypes.map((r) => r.name),
+    { workflowInputs, workflowOutputs, resourceTypeSchemas },
   )
 }
 
