@@ -80,7 +80,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
-| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres`, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
+| `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres` without a `worm` profile, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
 | `AssistantPort`         | `DevinAssistant` (profile `devin`: the v3 organization API; sessions run the playbooks synced from `devin/` with a required structured-output schema, follow-ups go on the same session, which is polled) | `MockAssistant` (deterministic drafts) |
 | `ChangeRequestPort`     | `GitHubChangeRequests` (profile `github`: pull requests through `GitHubPullRequests`, the GitHub REST API; wraps whichever store keeps the change requests, so it combines with a database profile; merges and closes on GitHub come back through `POST /change-requests:github-webhook`) | `InMemoryChangeRequests` (branch + checks, merged in the UI) |
 | `PriceListPort`         | `ContentPriceLists` (every `kind: PriceList` file of the content repo) | same |
@@ -138,8 +138,8 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 
 Under that profile the in-memory twins of these stores are not created at all
 (`@Profile("!postgres")`), so nothing seeds the content twice and the JDBC adapters are the only
-implementations in the context (the evidence store keeps its in-memory default, which the `worm`
-profiles replace). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
+implementations in the context (the evidence store follows its own rule: `worm` or `worm-s3`
+wins when active, else `postgres` keeps it in the database, else it stays in memory). A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
 (workflow, status, requester, times). Times are also kept as epoch nanoseconds, so the order is
 exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, which the tests use.
 

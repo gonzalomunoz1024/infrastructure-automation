@@ -24,8 +24,8 @@ import com.iaf.platform.common.adapters.jdbc.Jdbc;
 import com.iaf.platform.common.domain.NotFoundException;
 
 /**
- * The evidence store of the {@code postgres} profile (unless {@code live} brings the write-once
- * object store). A job's entries are rows of {@code evidence_entries}, only ever inserted; its
+ * The evidence store of the {@code postgres} profile, unless a write-once store ({@code worm},
+ * {@code worm-s3}) is active. A job's entries are rows of {@code evidence_entries}, only ever inserted; its
  * {@code evidence_records} row is the header (the record without its entries), which an append
  * grows and a seal fixes once. Appends to one record are serialised by locking its header, so
  * concurrent writers still make one chain. The PostgreSQL migration backs this with triggers: the
@@ -34,7 +34,7 @@ import com.iaf.platform.common.domain.NotFoundException;
  */
 @Component
 @Primary
-@Profile("postgres & !live")
+@Profile("postgres & !worm & !worm-s3")
 public class JdbcEvidenceStore implements EvidenceStore {
 
     private static final Comparator<EvidenceRecord> NEWEST_FIRST = Comparator
