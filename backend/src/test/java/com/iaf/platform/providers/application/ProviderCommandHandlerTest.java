@@ -2,6 +2,7 @@ package com.iaf.platform.providers.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -58,6 +59,7 @@ import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort.ProbeResult;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
@@ -120,6 +122,7 @@ class ProviderCommandHandlerTest {
     List<DomainEvent> published;
     InMemoryReviewEvidence evidence;
     GitSourcePort gitSource;
+    ReleaseQueries releases;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -134,7 +137,9 @@ class ProviderCommandHandlerTest {
         events.register(published::add);
         evidence = new InMemoryReviewEvidence();
         gitSource = mock(GitSourcePort.class);
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource);
+        releases = mock(ReleaseQueries.class);
+        when(releases.providerCandidate(anyString())).thenReturn(Mono.empty());
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource, releases);
         handler.listen();
     }
 
@@ -491,7 +496,7 @@ class ProviderCommandHandlerTest {
         assertThat(cr.title()).isEqualTo("Provider Fleet API 1.1.0");
         assertThat(cr.author()).isEqualTo("mateo");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
-        assertThat(cr.strategy()).isEqualTo("all");
+        assertThat(cr.strategy()).as("like a workflow version, through a canary unless the publish says all").isEqualTo("canary");
         assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "spec-pinned", "credentials", "actions", "slo",
                 "connection", "tried", "errors", "preview", "responses", "slo-suggested");
         assertThat(cr.checks()).allMatch(c -> "passed".equals(c.status()));
@@ -603,6 +608,79 @@ class ProviderCommandHandlerTest {
         assertThat(event("provider.published")).isEmpty();
     }
 
+    void merge(String id, String strategy) {
+        when(changeRequests.get(id)).thenReturn(Optional.of(new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, "fleet", "1.1.0", "b", "t", "mateo",
+                ChangeRequest.Status.MERGED, List.of(), strategy, YAML, "", NOW, NOW, "gonzalo", null)));
+        ObjectNode data = JSON.createObjectNode();
+        data.put("id", id);
+        data.put("kind", "provider");
+        data.put("yaml", YAML);
+        data.put("by", "gonzalo");
+        events.publish("change-request.merged", "change-request", id, "gonzalo", data);
+    }
+
+    @Test
+    void aMergedCanaryVersionIsKeptBesideTheCurrentOneForTheReleaseToRollOut() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        merge("cr_5", "canary");
+
+        ArgumentCaptor<StoredProvider> kept = ArgumentCaptor.forClass(StoredProvider.class);
+        verify(store).saveVersion(kept.capture());
+        verify(store, never()).save(any());
+        assertThat(kept.getValue().definition().metadata().version()).isEqualTo("1.1.0");
+        JsonNode published = event("provider.published").orElseThrow().data();
+        assertThat(published.path("version").asText()).isEqualTo("1.1.0");
+        assertThat(published.path("previous").asText()).isEqualTo("1.0.0");
+        assertThat(published.path("strategy").asText()).isEqualTo("canary");
+    }
+
+    @Test
+    void aMergedVersionForEveryCallOrAFirstVersionBecomesCurrentAtOnce() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        merge("cr_6", "all");
+        verify(store).save(argThat(p -> p.definition().metadata().version().equals("1.1.0")));
+        verify(store, never()).saveVersion(any());
+        assertThat(event("provider.published").orElseThrow().data().path("strategy").asText()).isEqualTo("all");
+
+        published.clear();
+        when(store.get("fleet")).thenReturn(Optional.empty());
+        merge("cr_7", "canary");
+        verify(store, never()).saveVersion(any());
+        assertThat(event("provider.published").orElseThrow().data().path("previous").isNull()).isTrue();
+    }
+
+    ObjectNode release(String provider, String from, String to) {
+        ObjectNode data = JSON.createObjectNode();
+        data.put("releaseId", "rel_1");
+        if (provider != null) {
+            data.put("provider", provider);
+        } else {
+            data.put("workflow", "vm-restart");
+        }
+        data.put("from", from);
+        data.put("to", to);
+        return data;
+    }
+
+    @Test
+    void aPromotedProviderReleaseMakesItsCandidateTheCurrentVersion() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        events.publish("release.promoted", "release", "rel_1", "system", release("fleet", "1.0.0", "1.1.0"));
+        verify(store).save(argThat(p -> p.definition().metadata().version().equals("1.1.0") && p.yaml().equals(YAML)));
+    }
+
+    @Test
+    void aPromotionChangesNothingWhenAnotherVersionWasMadeCurrentSinceOrForAWorkflow() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML.replace("version: 1.1.0", "version: 1.2.0"))));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        events.publish("release.promoted", "release", "rel_1", "system", release("fleet", "1.0.0", "1.1.0"));
+        events.publish("release.promoted", "release", "rel_2", "system", release("fleet", "1.1.0", "1.2.0"));
+        events.publish("release.promoted", "release", "rel_3", "system", release(null, "1.0.0", "1.1.0"));
+        events.publish("release.rolled-back", "release", "rel_4", "system", release("fleet", "1.2.0", "1.3.0"));
+        verify(store, never()).save(any());
+    }
+
     // ---------------------------------------------------------------- overrides and slo
 
     ChangeRequest opened() {
@@ -700,6 +778,37 @@ class ProviderCommandHandlerTest {
         assertThat(event("provider.change-requested").orElseThrow().data().path("change").asText()).isEqualTo("slo");
         StepVerifier.create(as(handler.slo("fleet", new SetSlo(120.0, null, null)), OWNER)).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(as(handler.slo("fleet", new SetSlo(null, 0, null)), OWNER)).expectError(IllegalArgumentException.class).verify();
+    }
+
+    @Test
+    void overridesAndSloEditsReachEveryCallAtOnceAsTheyChangeNoCall() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML)));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, null, null)), OWNER)).expectNextCount(1).verifyComplete();
+        assertThat(opened().strategy()).isEqualTo("all");
+        assertThat(event("provider.change-requested").orElseThrow().data().path("strategy").asText()).isEqualTo("all");
+    }
+
+    @Test
+    void anEditWhileACanaryRollsOutBuildsOnTheCandidateAndRollsOutAsACanaryToo() {
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(releases.providerCandidate("fleet")).thenReturn(Mono.just("1.1.0"));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        StepVerifier.create(as(handler.slo("fleet", new SetSlo(99.9, null, null)), OWNER)).expectNextCount(1).verifyComplete();
+        ChangeRequest cr = opened();
+        assertThat(cr.version()).as("the next patch of the candidate, not of the current version").isEqualTo("1.1.1");
+        assertThat(cr.strategy()).isEqualTo("canary");
+        assertThat(cr.diff()).contains("-metadata: { name: fleet, title: Fleet API, owner: team-compute, version: 1.1.0 }");
+    }
+
+    @Test
+    void aVersionKeptForACanaryCannotBePublishedAgain() {
+        proven();
+        when(store.get("fleet")).thenReturn(Optional.of(stored(YAML_V1)));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(stored(YAML)));
+        when(changeRequests.all()).thenReturn(List.of());
+        StepVerifier.create(as(handler.publish(new Publish(YAML, null)), OWNER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessageContaining("1.1.0 of provider fleet is already published"))
+                .verify();
     }
 
     @Test

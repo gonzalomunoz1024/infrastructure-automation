@@ -32,8 +32,9 @@ public class RestControllerReleaseAdapter implements ReleaseCommands {
     private final ReleaseQueryHandler queries;
 
     @GetMapping("/releases")
-    public Flux<Release> list(@RequestParam(required = false) String workflow) {
-        return queries.list(workflow);
+    public Flux<Release> list(@RequestParam(required = false) String workflow, @RequestParam(required = false) String provider,
+            @RequestParam(required = false) String kind) {
+        return queries.list(workflow, provider, kind);
     }
 
     @GetMapping("/releases/{id}")

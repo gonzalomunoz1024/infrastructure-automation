@@ -1,9 +1,12 @@
 package com.iaf.platform.releases.application;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.CRC32;
 
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
@@ -26,11 +29,21 @@ import reactor.core.publisher.Mono;
  * That spreads exactly {@code stagePercent}% of any 100 consecutive jobs over the candidate, evenly
  * (every 10th job at 10%, every other job at 50%), and the first job after a canary starts is a
  * candidate job. Jobs already running keep the version they started with.
+ *
+ * <p>Provider releases route calls, not jobs: sandbox use (dev, dry runs) gets the candidate at
+ * once, and a job is in the stage's share by a stable hash of its id ({@link #candidateJob}), so all
+ * the calls of one job use one version.
  */
 @Primary
 @Service
 @RequiredArgsConstructor
 public class ReleaseQueryHandler implements ReleaseQueries {
+
+    /** The environment where a provider's candidate is used at once: sandbox workflows run there. */
+    public static final String SANDBOX = "dev";
+    static final String KIND_WORKFLOW = "workflow";
+    static final String KIND_PROVIDER = "provider";
+    static final Set<String> KINDS = Set.of(KIND_WORKFLOW, KIND_PROVIDER, "all");
 
     private final ReleaseStore store;
     private final Map<String, AtomicLong> routed = new ConcurrentHashMap<>();
@@ -51,6 +64,41 @@ public class ReleaseQueryHandler implements ReleaseQueries {
         });
     }
 
+    @Override
+    public Mono<String> routeProvider(String provider, String jobId, String environment, boolean dryRun) {
+        return Mono.defer(() -> Mono.justOrEmpty(store.activeProvider(provider).map(release -> {
+            if (release.from() == null || dryRun || SANDBOX.equals(environment)) {
+                return release.to();
+            }
+            if (release.status() == ReleaseStatus.PAUSED) {
+                return release.from();
+            }
+            return candidateJob(release.id(), jobId, release.stagePercent()) ? release.to() : release.from();
+        })));
+    }
+
+    @Override
+    public Mono<String> providerCandidate(String provider) {
+        return Mono.defer(() -> Mono.justOrEmpty(store.activeProvider(provider).map(Release::to)));
+    }
+
+    /**
+     * Pure routing rule of a provider release: a job runs the candidate when its bucket (a CRC-32 of
+     * the release and the job, 0 to 99) is below the stage's percentage. Stateless, so every call of
+     * a job lands on the same version on any instance; a call outside a job uses the current version.
+     */
+    public static boolean candidateJob(String releaseId, String jobId, int stagePercent) {
+        if (jobId == null || jobId.isBlank() || stagePercent <= 0) {
+            return false;
+        }
+        if (stagePercent >= 100) {
+            return true;
+        }
+        CRC32 crc = new CRC32();
+        crc.update((releaseId + "/" + jobId).getBytes(StandardCharsets.UTF_8));
+        return crc.getValue() % 100 < stagePercent;
+    }
+
     /** Pure routing rule: does job number {@code n} (0-based) of a release run the candidate. */
     static boolean candidate(long n, int stagePercent) {
         if (stagePercent <= 0) {
@@ -62,8 +110,33 @@ public class ReleaseQueryHandler implements ReleaseQueries {
         return (n * stagePercent) % 100 < stagePercent;
     }
 
+    /** Workflow releases (of one workflow when given). */
     public Flux<Release> list(String workflow) {
-        return Flux.defer(() -> Flux.fromIterable(store.list(workflow)));
+        return list(workflow, null, null);
+    }
+
+    /**
+     * Newest first: the releases of {@code provider} when given, else of {@code workflow} when given,
+     * else every release of {@code kind} ({@code workflow}, the default, {@code provider} or {@code all}).
+     */
+    public Flux<Release> list(String workflow, String provider, String kind) {
+        return Flux.defer(() -> {
+            if (provider != null && !provider.isBlank()) {
+                return Flux.fromIterable(store.listProvider(provider.trim()));
+            }
+            if (workflow != null && !workflow.isBlank()) {
+                return Flux.fromIterable(store.list(workflow.trim())).filter(r -> r.provider() == null);
+            }
+            String k = kind == null || kind.isBlank() ? KIND_WORKFLOW : kind.trim();
+            if (!KINDS.contains(k)) {
+                throw new IllegalArgumentException("kind is workflow, provider or all");
+            }
+            return Flux.fromIterable(store.list(null)).filter(r -> switch (k) {
+                case KIND_PROVIDER -> r.provider() != null;
+                case KIND_WORKFLOW -> r.provider() == null;
+                default -> true;
+            });
+        });
     }
 
     public Mono<Release> get(String id) {

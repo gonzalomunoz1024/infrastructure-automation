@@ -195,6 +195,12 @@ spec (`POST /providers/{name}:refresh-spec`) reads the spec again (from the URL,
 file's ref or at a new one) and opens a change request for the next minor version with the new
 pin and schemas. A newer spec keeps an override unless it now agrees with the action's real response.
 
+A new version of a provider reaches production through the same canary as a workflow version:
+merging keeps it beside the current version, sandbox use (`dev` and dry runs) gets it at once,
+and the release gives it 10%, 50%, then 100% of the jobs that call the provider while the gates
+hold on its calls. The first version, and a publish with `strategy: all`, take every call at once
+(docs/api.md, Releases).
+
 Type-specific `spec` blocks:
 
 - `ansible`: `source: { git: { repo, ref, path }, commit }` or `upload: { file, sha256 }` or

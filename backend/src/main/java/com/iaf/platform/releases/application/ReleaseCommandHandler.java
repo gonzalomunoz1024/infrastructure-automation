@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.context.annotation.Primary;
@@ -21,8 +22,12 @@ import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.TelemetryPort;
+import com.iaf.platform.common.ports.TelemetryPort.CallSample;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.domain.ReleaseGates;
 import com.iaf.platform.releases.domain.ReleaseGates.Evaluation;
@@ -45,6 +50,10 @@ import reactor.core.publisher.Mono;
  * Starts a release when a workflow version is published, judges the gates (every minute, and
  * whenever a job of the workflow finishes) and takes the manual decisions. Every transition is a
  * {@code release.*} event; the audit slice records them as decisions.
+ *
+ * <p>A provider version published with the {@code canary} strategy gets a provider release: its
+ * gates judge the provider's calls ({@link TelemetryPort} samples of each version, sandbox calls
+ * left out), every minute; the providers slice makes the candidate current once it is promoted.
  */
 @Slf4j
 @Primary
@@ -63,6 +72,8 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     private final EventBus events;
     private final Clock clock;
     private final ObjectMapper mapper;
+    private final ProviderQueries providers;
+    private final TelemetryPort telemetry;
 
     @PostConstruct
     public void subscribe() {
@@ -72,6 +83,7 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     void on(DomainEvent event) {
         switch (event.type()) {
             case "workflow.published" -> onPublished(event);
+            case "provider.published" -> onProviderPublished(event);
             case "job.finished" -> onJobFinished(event);
             default -> {
             }
@@ -114,6 +126,56 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     /** A new publish ends whatever release was still running for the workflow. */
     private void supersede(String workflow, String version, String previous, Instant now, String by) {
         for (Release old : store.list(workflow)) {
+            if (!old.active()) {
+                continue;
+            }
+            if (old.to().equals(previous)) {
+                Release done = store.save(old.promoted(now, "superseded: " + version + " was published on top of " + old.to(), by));
+                events.publish("release.promoted", AGGREGATE, done.id(), by, versions(done));
+            } else {
+                String reason = "superseded by " + version;
+                Release done = store.save(old.rolledBack(now, reason, by));
+                events.publish("release.rolled-back", AGGREGATE, done.id(), by, versions(done).put("reason", reason));
+            }
+        }
+    }
+
+    private void onProviderPublished(DomainEvent event) {
+        JsonNode d = event.data();
+        String name = text(d, "name");
+        String version = text(d, "version");
+        if (name == null || version == null) {
+            log.warn("provider.published without name/version: {}", d);
+            return;
+        }
+        String by = Optional.ofNullable(text(d, "by")).orElse(event.actor());
+        Release r = startProvider(name, version, text(d, "previous"), text(d, "strategy"), by);
+        log.info("release {} for provider {} {} -> {}: {}", r.id(), name, r.from(), r.to(), r.status().json());
+    }
+
+    /**
+     * The release of a provider version: promoted at once for a first version or an {@code all}
+     * publish, otherwise a canary over the calls with the default stages. {@code previous} is the
+     * version it rolls out against: the current one, or the candidate of a canary still running.
+     */
+    Release startProvider(String provider, String version, String previous, String strategy, String by) {
+        Instant now = clock.instant();
+        supersedeProvider(provider, version, previous, now, by);
+        if (previous == null || Release.STRATEGY_ALL.equals(strategy)) {
+            String event = previous == null ? "first version takes every call" : "published to every call";
+            Release release = store.save(Release.promotedAtOnce(Ids.next("rel"), null, previous, version, strategy, now, event, by).forProvider(provider));
+            events.publish("release.promoted", AGGREGATE, release.id(), by, versions(release));
+            return release;
+        }
+        Release release = store.save(Release.canary(Ids.next("rel"), null, previous, version, WorkflowDefinition.Rollout.CANARY.stages(), now, by)
+                .forProvider(provider));
+        events.publish("release.started", AGGREGATE, release.id(), by, versions(release).put("stagePercent", release.stagePercent()));
+        return release;
+    }
+
+    /** A new provider version ends the release still running: promoted when it was built on the candidate, else rolled back. */
+    private void supersedeProvider(String provider, String version, String previous, Instant now, String by) {
+        for (Release old : store.listProvider(provider)) {
             if (!old.active()) {
                 continue;
             }
@@ -196,7 +258,7 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         }
         Instant now = clock.instant();
         return Mono.zip(candidateOutcomes(release), baselineOutcomes(release)).map(t -> {
-            Evaluation evaluation = ReleaseGates.evaluate(t.getT1(), t.getT2(), release.stageStartedAt(), now);
+            Evaluation evaluation = ReleaseGates.evaluate(t.getT1(), t.getT2(), release.stageStartedAt(), now, release.unit());
             Release judged = release.withEvaluation(evaluation.gates(), evaluation.jobs());
             if (judged.status() == ReleaseStatus.PAUSED) {
                 return store.save(judged);
@@ -211,6 +273,9 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     }
 
     private Mono<List<JobOutcome>> candidateOutcomes(Release r) {
+        if (r.provider() != null) {
+            return calls(r.provider(), r.stageStartedAt(), s -> r.to().equals(s.providerVersion()));
+        }
         return runs.outcomes(r.workflow(), r.to(), r.stageStartedAt()).defaultIfEmpty(List.of());
     }
 
@@ -218,10 +283,32 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         if (r.from() == null) {
             return Mono.just(List.of());
         }
+        if (r.provider() != null) {
+            // before the release started every call used the current version, also those recorded without one
+            return calls(r.provider(), r.stageStartedAt(), s -> r.from().equals(s.providerVersion()))
+                    .flatMap(since -> since.isEmpty()
+                            ? calls(r.provider(), r.startedAt().minus(BASELINE_LOOKBACK), s -> r.from().equals(s.providerVersion())
+                                    || s.providerVersion() == null && s.at().isBefore(r.startedAt()))
+                            : Mono.just(since));
+        }
         return runs.outcomes(r.workflow(), r.from(), r.stageStartedAt()).defaultIfEmpty(List.of())
                 .flatMap(since -> since.isEmpty()
                         ? runs.outcomes(r.workflow(), r.from(), r.startedAt().minus(BASELINE_LOOKBACK)).defaultIfEmpty(List.of())
                         : Mono.just(since));
+    }
+
+    /**
+     * The calls of a provider since an instant that {@code version} picks, as outcomes the gates
+     * judge: one per call. Sandbox calls ({@code dev}) always use the candidate, so they compare
+     * nothing and are left out.
+     */
+    private Mono<List<JobOutcome>> calls(String provider, Instant since, Predicate<CallSample> version) {
+        return Mono.fromCallable(() -> telemetry.samples(provider, since).stream()
+                .filter(s -> s.at() != null && !ReleaseQueryHandler.SANDBOX.equals(s.environment()))
+                .filter(version)
+                .map(s -> new JobOutcome(null, null, s.providerVersion(), s.ok() ? "succeeded" : "failed", s.at(), s.at(), s.durationMs(),
+                        s.ok() ? null : s.errorClass(), null, null))
+                .toList());
     }
 
     private Release advance(Release judged, Instant now, String by) {
@@ -311,13 +398,16 @@ public class ReleaseCommandHandler implements ReleaseCommands {
         return CurrentIdentity.current().flatMap(who -> {
             Release release = store.find(releaseId).orElseThrow(() -> new NotFoundException("release", releaseId));
             return ownerOf(release).map(Optional::of).defaultIfEmpty(Optional.empty()).map(owner -> {
-                AccessRules.requireEdit(who, owner.orElse(null), "release " + releaseId + " of " + release.workflow());
+                AccessRules.requireEdit(who, owner.orElse(null), "release " + releaseId + " of " + release.subject());
                 return new Authorized(who, release);
             });
         });
     }
 
     private Mono<String> ownerOf(Release release) {
+        if (release.provider() != null) {
+            return providers.provider(release.provider()).mapNotNull(ProviderDefinition::owner);
+        }
         return workflows.version(release.workflow(), release.to())
                 .switchIfEmpty(Mono.defer(() -> workflows.published(release.workflow())))
                 .mapNotNull(r -> r.definition() == null || r.definition().metadata() == null ? null : r.definition().metadata().owner());
@@ -328,11 +418,13 @@ public class ReleaseCommandHandler implements ReleaseCommands {
     }
 
     private ObjectNode versions(Release r) {
-        return mapper.createObjectNode()
-                .put("releaseId", r.id())
-                .put("workflow", r.workflow())
-                .put("from", r.from())
-                .put("to", r.to());
+        ObjectNode data = mapper.createObjectNode().put("releaseId", r.id());
+        if (r.provider() != null) {
+            data.put("provider", r.provider());
+        } else {
+            data.put("workflow", r.workflow());
+        }
+        return data.put("from", r.from()).put("to", r.to());
     }
 
     private static String text(JsonNode node, String field) {

@@ -66,7 +66,7 @@ public class RecordedProviderCall implements ProviderCallPort {
         }
         Job job = call.jobId() == null ? null : projection.get(call.jobId()).orElse(null);
         telemetry.record(new CallSample(at, call.provider().name(), call.action().id(), call.environment(), ok, latency, errorClass,
-                call.jobId(), job == null ? null : job.workflow(), job == null ? null : job.version()));
+                call.jobId(), job == null ? null : job.workflow(), job == null ? null : job.version(), call.provider().metadata().version()));
     }
 
     /** The world this adapter answers from, for tests and the seed. */

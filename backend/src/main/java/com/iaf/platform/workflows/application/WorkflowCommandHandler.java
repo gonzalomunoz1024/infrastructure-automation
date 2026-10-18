@@ -422,6 +422,9 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     // ------------------------------------------------------------------ events from the releases slice
 
     void on(DomainEvent event) {
+        if (event.type().startsWith("release.") && event.data() != null && event.data().hasNonNull("provider")) {
+            return; // a provider release: the providers slice keeps its versions
+        }
         switch (event.type()) {
             case RELEASE_ROLLED_BACK -> rollBack(event.data());
             case RELEASE_PROMOTED -> log.info("release promoted: {}", event.data());

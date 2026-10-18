@@ -42,6 +42,14 @@ public class InMemoryReleaseStore implements ReleaseStore {
     }
 
     @Override
+    public List<Release> listProvider(String provider) {
+        return releases.values().stream()
+                .filter(r -> provider != null && provider.equals(r.provider()))
+                .sorted(NEWEST_FIRST)
+                .toList();
+    }
+
+    @Override
     public List<Release> active() {
         return releases.values().stream().filter(Release::active).sorted(NEWEST_FIRST).toList();
     }
@@ -49,7 +57,7 @@ public class InMemoryReleaseStore implements ReleaseStore {
     @Override
     public Optional<Release> active(String workflow) {
         return releases.values().stream()
-                .filter(r -> r.active() && r.workflow().equals(workflow))
+                .filter(r -> r.active() && workflow != null && workflow.equals(r.workflow()))
                 .min(NEWEST_FIRST);
     }
 }

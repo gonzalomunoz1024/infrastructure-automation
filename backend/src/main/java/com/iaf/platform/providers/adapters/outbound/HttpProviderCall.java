@@ -401,7 +401,8 @@ public class HttpProviderCall implements ProviderCallPort {
 
     private void record(ProviderCall call, Instant at, long ms, boolean ok, String errorClass) {
         try {
-            telemetry.record(new CallSample(at, call.provider().name(), call.action().id(), call.environment(), ok, ms, errorClass, call.jobId(), null, null));
+            telemetry.record(new CallSample(at, call.provider().name(), call.action().id(), call.environment(), ok, ms, errorClass, call.jobId(), null, null,
+                    call.provider().metadata().version()));
         } catch (RuntimeException e) {
             log.warn("telemetry failed: {}", e.toString());
         }

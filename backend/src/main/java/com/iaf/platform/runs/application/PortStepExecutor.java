@@ -139,7 +139,9 @@ public class PortStepExecutor implements StepExecutor {
         if (provider == null || provider.isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "call: provider needs with.provider", false, true);
         }
-        ProviderDefinition p = block(ports.providers().provider(provider), LOOKUP_TIMEOUT, step)
+        // the job's identity lets an active provider release route this job's calls to its candidate
+        ProviderQueries.Use use = new ProviderQueries.Use(ctx.jobId(), ctx.environment(), dryRun);
+        ProviderDefinition p = block(ports.providers().provider(provider).contextWrite(c -> ProviderQueries.Use.with(c, use)), LOOKUP_TIMEOUT, step)
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_provider", "Unknown provider '" + provider + "'", false));
         Action a = p.action(action == null ? "" : action)
                 .orElseThrow(() -> new StepFailure(step.id(), "unknown_action", "Provider " + provider + " has no action '" + action + "'", false));

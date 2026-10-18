@@ -42,6 +42,8 @@ import com.iaf.platform.providers.ports.outbound.GitSourcePort.GitFile;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.releases.adapters.outbound.InMemoryReleaseStore;
+import com.iaf.platform.releases.application.ReleaseQueryHandler;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
@@ -85,7 +87,7 @@ class ProviderSpecRefreshTest {
         published = new ArrayList<>();
         events.register(published::add);
         handler = new ProviderCommandHandler(store, changeRequests, mock(ProviderCallPort.class), mock(AssistantCommands.class), http, events, CLOCK,
-                evidence, git);
+                evidence, git, new ReleaseQueryHandler(new InMemoryReleaseStore()));
     }
 
     static String toJson(JsonNode node) {
@@ -172,6 +174,7 @@ class ProviderSpecRefreshTest {
         assertThat(cr.version()).isEqualTo("2.1.0");
         assertThat(cr.author()).isEqualTo("mateo");
         assertThat(cr.title()).isEqualTo("Provider Machines API 2.1.0: spec refreshed");
+        assertThat(cr.strategy()).as("a new spec can change the calls, so it rolls out through a canary").isEqualTo("canary");
         ProviderDefinition next = ProviderYaml.parse(cr.yaml());
         assertThat(next.spec().specSource().commit()).isEqualTo(COMMIT_2);
         assertThat(next.spec().specSource().sha256()).isEqualTo(WorkflowYaml.sha256(SPEC_V2));

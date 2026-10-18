@@ -131,4 +131,8 @@ router library. The API client is `frontend/src/lib/api.ts`, typed from `docs/ap
 A workflow is `workflows/<team>/<name>.yaml`, a provider `providers/<team>/<name>.yaml`, a
 resource type `resource-types/<name>.yaml`, all under the content repo (`workflows/` in this
 monorepo for the samples). Publishing writes the file on a branch `change/<name>-<version>` and
-opens a change request; merging it publishes the version and starts its canary.
+opens a change request; merging it publishes the version and starts its canary. A provider
+version rolls out the same way: the providers slice keeps the candidate beside the current version
+(`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
+asked by `ProviderQueries.provider` when the lookup carries the job's `ProviderQueries.Use` in its
+Reactor context) and judges the gates on the calls' telemetry, and promotion makes the candidate current.

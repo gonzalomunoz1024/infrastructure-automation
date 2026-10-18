@@ -53,6 +53,7 @@ import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
 import com.iaf.platform.providers.ports.outbound.ReviewEvidencePort;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
@@ -74,6 +75,10 @@ import reactor.core.scheduler.Schedulers;
  * and an SLO edit each open a change request (one open at a time per provider); the provider is
  * saved when the workflows slice merges it and publishes {@code change-request.merged}, which this
  * handler listens to.
+ *
+ * <p>A merged version with the {@code canary} strategy is kept beside the current one and rolled
+ * out by a provider release (the releases slice); it becomes current on {@code release.promoted}.
+ * Edits made while it rolls out build on it.
  */
 @Slf4j
 @Primary
@@ -91,8 +96,11 @@ public class ProviderCommandHandler implements ProviderCommands {
     /** The change-request check of a spec refresh: what was read and what changed. */
     public static final String SPEC_REFRESH = "spec-refresh";
 
-    /** How a provider change request rolls out when it does not say. */
-    static final String DEFAULT_STRATEGY = "all";
+    /** How a provider version rolls out when its change request does not say: like workflow versions, through a canary. */
+    static final String DEFAULT_STRATEGY = "canary";
+    /** Every call at once: overrides and SLO edits, which change no call, when no canary is running. */
+    static final String ALL = "all";
+    static final String RELEASE_PROMOTED = "release.promoted";
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final Set<String> STRATEGIES = Set.of("canary", "all");
@@ -106,6 +114,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final Clock clock;
     private final ReviewEvidencePort evidence;
     private final GitSourcePort git;
+    private final ReleaseQueries releases;
 
     @PostConstruct
     void listen() {
@@ -176,7 +185,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     public Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command) {
         RefreshSpec c = command == null ? new RefreshSpec(null, null) : command;
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+            StoredProvider current = latest(name);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             SpecSource source = def.spec().specSource();
@@ -303,7 +312,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         extra.add(new Check(SPEC_REFRESH, "Spec refreshed", "passed", detail));
         // the real responses judged against the new schemas: a refresh that breaks one cannot merge
         extra.addAll(reviewChecks(yaml, ProviderReview.RESPONSES));
-        return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": spec refreshed", SPEC_REFRESH, extra);
+        return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": spec refreshed", SPEC_REFRESH, DEFAULT_STRATEGY, extra);
     }
 
     /** The newest real answer of an action: a Try it call the platform recorded, else a sample the wizard recorded. */
@@ -514,7 +523,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             if (command == null || command.yaml() == null || command.yaml().isBlank()) {
                 throw new IllegalArgumentException("yaml is required");
             }
-            String strategy = command.strategy() == null || command.strategy().isBlank() ? "all" : command.strategy().trim();
+            String strategy = command.strategy() == null || command.strategy().isBlank() ? DEFAULT_STRATEGY : command.strategy().trim();
             if (!STRATEGIES.contains(strategy)) {
                 throw new IllegalArgumentException("strategy is canary or all");
             }
@@ -528,10 +537,11 @@ public class ProviderCommandHandler implements ProviderCommands {
             ContentFiles.requireSlug("The owner team", def.owner());
             AccessRules.requireEdit(who, def.owner(), "provider " + def.name());
             String version = def.metadata().version();
-            Optional<StoredProvider> current = store.get(def.name());
-            if (current.isPresent() && version.equals(current.get().definition().metadata().version())) {
+            Optional<StoredProvider> stored = store.get(def.name());
+            if (stored.filter(c -> version.equals(c.definition().metadata().version())).isPresent() || store.version(def.name(), version).isPresent()) {
                 throw new ConflictException("Version " + version + " of provider " + def.name() + " is already published; bump metadata.version");
             }
+            Optional<StoredProvider> current = stored.map(c -> latest(def.name()));
             boolean open = changeRequests.all().stream().anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN
                     && def.name().equals(cr.name()) && version.equals(cr.version()));
             if (open) {
@@ -583,7 +593,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     @Override
     public Mono<CommandAccepted> overrides(String name, SetOverride command) {
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+            StoredProvider current = latest(name);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || command.action() == null || command.action().isBlank()) {
@@ -603,14 +613,14 @@ public class ProviderCommandHandler implements ProviderCommands {
             String version = nextPatch(tree, def);
             String yaml = ProviderYaml.toYaml(tree);
             return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": " + action.id() + " uses the real response", "overrides",
-                    reviewChecks(yaml, ProviderReview.RESPONSES));
+                    editStrategy(name), reviewChecks(yaml, ProviderReview.RESPONSES));
         }));
     }
 
     @Override
     public Mono<CommandAccepted> slo(String name, SetSlo command) {
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
-            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+            StoredProvider current = latest(name);
             ProviderDefinition def = current.definition();
             AccessRules.requireEdit(who, def.owner(), "provider " + name);
             if (command == null || (command.successRate() == null && command.p95Ms() == null && command.channel() == null)) {
@@ -651,7 +661,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             String version = nextPatch(tree, def);
             String yaml = ProviderYaml.toYaml(tree);
             return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": SLO and alerts", "slo",
-                    reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
+                    editStrategy(name), reviewChecks(yaml, ProviderReview.SLO_SUGGESTED));
         }));
     }
 
@@ -680,6 +690,25 @@ public class ProviderCommandHandler implements ProviderCommands {
                 .toList();
     }
 
+    /**
+     * The version an edit builds on: the candidate of a provider release still rolling out (so the
+     * edit keeps what the canary carries), else the current version.
+     */
+    private StoredProvider latest(String name) {
+        StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+        return rollingOut(name).flatMap(v -> store.version(name, v)).orElse(current);
+    }
+
+    /** The candidate version of the provider's running release, if one is running. */
+    private Optional<String> rollingOut(String name) {
+        return releases.providerCandidate(name).blockOptional();
+    }
+
+    /** Overrides and SLO edits change no call: they reach every call at once, unless they build on a candidate still rolling out. */
+    private String editStrategy(String name) {
+        return rollingOut(name).isPresent() ? DEFAULT_STRATEGY : ALL;
+    }
+
     /** One change at a time per provider: two open change requests would publish over each other. */
     private void requireNoOpenChange(String name) {
         changeRequests.all().stream()
@@ -691,10 +720,12 @@ public class ProviderCommandHandler implements ProviderCommands {
     }
 
     /**
-     * Opens a change request that publishes {@code yaml} as the provider's next version, with the
-     * file checks and {@code extra} checks; refused while the file has errors.
+     * Opens a change request that publishes {@code yaml} as the provider's next version, rolled out
+     * by {@code strategy}, with the file checks and {@code extra} checks; refused while the file
+     * has errors.
      */
-    private CommandAccepted openChange(Identity who, StoredProvider current, String yaml, String title, String change, List<Check> extra) {
+    private CommandAccepted openChange(Identity who, StoredProvider current, String yaml, String title, String change, String strategy,
+            List<Check> extra) {
         ProviderChecks.Result checks = ProviderChecks.check(yaml);
         if (checks.hasErrors()) {
             int n = checks.errors().size();
@@ -708,7 +739,7 @@ public class ProviderCommandHandler implements ProviderCommands {
         String diff = TextDiff.unified(current.yaml(), yaml, path);
         String id = Ids.next("cr");
         ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
-                title, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), DEFAULT_STRATEGY, yaml, diff, clock.instant(), null, null, null);
+                title, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), strategy, yaml, diff, clock.instant(), null, null, null);
         changeRequests.save(cr);
         ObjectNode data = F.objectNode();
         data.put("name", def.name());
@@ -716,14 +747,23 @@ public class ProviderCommandHandler implements ProviderCommands {
         data.put("changeRequestId", id);
         data.put("by", who.id());
         data.put("change", change);
+        data.put("strategy", strategy);
         events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
         return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id, "provider", "/api/v1/providers/" + def.name()));
     }
 
     // ---------------------------------------------------------------- merged change requests
 
-    /** The workflows slice merges change requests; a merged provider change request publishes the provider. */
+    /**
+     * The workflows slice merges change requests; a merged provider change request publishes the
+     * provider: as the current version, or, rolled out by a canary, beside it until the release
+     * is promoted.
+     */
     void on(DomainEvent event) {
+        if (RELEASE_PROMOTED.equals(event.type()) && event.data() != null && event.data().hasNonNull("provider")) {
+            promoted(event.data());
+            return;
+        }
         if (!MERGED_EVENT.equals(event.type()) || event.data() == null) {
             return;
         }
@@ -745,13 +785,50 @@ public class ProviderCommandHandler implements ProviderCommands {
         if (by == null || by.isBlank()) {
             by = event.actor() == null ? Identity.SYSTEM.id() : event.actor();
         }
-        store.save(new StoredProvider(def, yaml, pathOf(def), clock.instant(), by));
+        String version = def.metadata().version();
+        String previous = store.get(def.name()).map(p -> p.definition().metadata().version()).orElse(null);
+        String strategy = changeRequests.get(id).map(ChangeRequest::strategy).filter(st -> !st.isBlank()).orElse(DEFAULT_STRATEGY);
+        StoredProvider merged = new StoredProvider(def, yaml, pathOf(def), clock.instant(), by);
+        boolean canary = previous != null && !previous.equals(version) && !ALL.equals(strategy);
+        if (canary) {
+            store.saveVersion(merged); // the release routes calls to it; the current version keeps the rest
+        } else {
+            store.save(merged);
+        }
         ObjectNode data = F.objectNode();
         data.put("name", def.name());
-        data.put("version", def.metadata().version());
+        data.put("version", version);
         data.put("by", by);
+        data.put("previous", previous);
+        data.put("strategy", strategy);
         events.publish(PUBLISHED_EVENT, "provider", def.name(), by, data);
-        log.info("provider {} {} published by {} from change request {}", def.name(), def.metadata().version(), by, id);
+        log.info("provider {} {} published by {} from change request {} ({})", def.name(), version, by, id,
+                canary ? "canary from " + previous : "current");
+    }
+
+    /**
+     * A provider release was promoted: its candidate becomes the current version, unless another
+     * version was made current since the release started.
+     */
+    private void promoted(JsonNode d) {
+        String name = d.path("provider").asText(null);
+        String from = d.path("from").asText(null);
+        String to = d.path("to").asText(null);
+        if (name == null || to == null) {
+            return;
+        }
+        String current = store.get(name).map(p -> p.definition().metadata().version()).orElse(null);
+        if (to.equals(current)) {
+            return;
+        }
+        if (from != null && !from.equals(current)) {
+            log.info("provider {} {} promoted, but {} is current now, not {}; nothing changed", name, to, current, from);
+            return;
+        }
+        store.version(name, to).ifPresentOrElse(candidate -> {
+            store.save(candidate);
+            log.info("provider {} {} promoted to current (was {})", name, to, current);
+        }, () -> log.warn("provider {} {} promoted, but that version is not kept", name, to));
     }
 
     // ---------------------------------------------------------------- helpers

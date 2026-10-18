@@ -20,6 +20,7 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
+import com.iaf.platform.workflows.domain.Semver;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -27,7 +28,9 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * The demo store: every {@code kind: Provider} file under {@code platform.content.dir}, kept in
  * memory. With {@code platform.content.git} on, a save also writes the file back to
- * {@code providers/<owner>/<name>.yaml} (the commit is the workflows slice's job).
+ * {@code providers/<owner>/<name>.yaml} (the commit is the workflows slice's job). Every version
+ * saved since start is kept in memory; a canary candidate ({@link #saveVersion}) is not written
+ * until it is promoted and saved as the current version.
  */
 @Slf4j
 @Component
@@ -38,6 +41,7 @@ public class InMemoryProviderStore implements ProviderStorePort {
     private final PlatformProperties props;
     private final Clock clock;
     private final Map<String, StoredProvider> providers = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StoredProvider>> versions = new ConcurrentHashMap<>();
 
     public InMemoryProviderStore(PlatformProperties props, Clock clock) {
         this.props = props;
@@ -55,7 +59,9 @@ public class InMemoryProviderStore implements ProviderStorePort {
         for (ContentFile f : ContentFiles.ofKind(root, ProviderDefinition.KIND)) {
             try {
                 ProviderDefinition def = ProviderYaml.parse(f.yaml());
-                providers.put(def.name(), new StoredProvider(def, f.yaml(), f.relative(root), modifiedAt(f.path()), SEED_AUTHOR));
+                StoredProvider stored = new StoredProvider(def, f.yaml(), f.relative(root), modifiedAt(f.path()), SEED_AUTHOR);
+                providers.put(def.name(), stored);
+                keep(stored);
                 seeded++;
             } catch (IllegalArgumentException e) {
                 log.warn("skipping provider file {}: {}", f.relative(root), e.getMessage());
@@ -77,13 +83,31 @@ public class InMemoryProviderStore implements ProviderStorePort {
     @Override
     public void save(StoredProvider provider) {
         providers.put(provider.definition().name(), provider);
+        keep(provider);
         if (props.getContent().isGit()) {
             write(provider);
         }
     }
 
     @Override
+    public List<StoredProvider> versions(String name) {
+        Map<String, StoredProvider> kept = name == null ? null : versions.get(name);
+        if (kept == null) {
+            return get(name).map(List::of).orElse(List.of());
+        }
+        return kept.values().stream()
+                .sorted(Comparator.comparing((StoredProvider p) -> Semver.parse(p.definition().metadata().version())).reversed())
+                .toList();
+    }
+
+    @Override
+    public void saveVersion(StoredProvider provider) {
+        keep(provider);
+    }
+
+    @Override
     public void delete(String name) {
+        versions.remove(name);
         StoredProvider removed = providers.remove(name);
         if (removed != null && props.getContent().isGit()) {
             Path file = fileOf(removed);
@@ -94,6 +118,13 @@ public class InMemoryProviderStore implements ProviderStorePort {
             } catch (IOException e) {
                 log.warn("could not delete {}: {}", file, e.getMessage());
             }
+        }
+    }
+
+    private void keep(StoredProvider provider) {
+        String version = provider.definition().metadata().version();
+        if (version != null) {
+            versions.computeIfAbsent(provider.definition().name(), k -> new ConcurrentHashMap<>()).put(version, provider);
         }
     }
 

@@ -26,8 +26,12 @@ import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.Health;
 import com.iaf.platform.providers.domain.ProviderDetail.PerAction;
 import com.iaf.platform.providers.domain.ProviderYaml;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries.Use;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.iaf.platform.releases.adapters.outbound.InMemoryReleaseStore;
+import com.iaf.platform.releases.application.ReleaseQueryHandler;
+import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
@@ -69,6 +73,7 @@ class ProviderQueryHandlerTest {
     ChangeRequestPort changeRequests;
     ProviderQueryHandler handler;
     StoredProvider fleet;
+    InMemoryReleaseStore releases;
 
     @BeforeEach
     void setUp() {
@@ -81,7 +86,8 @@ class ProviderQueryHandlerTest {
         when(store.get("nope")).thenReturn(Optional.empty());
         when(changeRequests.all()).thenReturn(List.of());
         ProviderAlertEvaluator alerts = new ProviderAlertEvaluator(store, telemetry, new EventBus(CLOCK), CLOCK);
-        handler = new ProviderQueryHandler(store, telemetry, changeRequests, alerts, CLOCK);
+        releases = new InMemoryReleaseStore();
+        handler = new ProviderQueryHandler(store, telemetry, changeRequests, alerts, CLOCK, new ReleaseQueryHandler(releases));
     }
 
     static CallSample sample(Instant at, String action, boolean ok, long ms, String errorClass) {
@@ -93,6 +99,34 @@ class ProviderQueryHandlerTest {
         StepVerifier.create(handler.provider("fleet")).assertNext(d -> assertThat(d.name()).isEqualTo("fleet")).verifyComplete();
         StepVerifier.create(handler.provider("nope")).verifyComplete();
         StepVerifier.create(handler.all()).expectNextCount(1).verifyComplete();
+    }
+
+    String versionFor(Use use) {
+        return handler.provider("fleet").contextWrite(c -> Use.with(c, use)).map(d -> d.metadata().version()).block();
+    }
+
+    @Test
+    void aJobGetsTheVersionTheProviderReleaseRoutesItToAndEveryOtherReadTheCurrentOne() {
+        String v2 = YAML.replace("version: 1.1.0", "version: 1.2.0");
+        when(store.version("fleet", "1.2.0")).thenReturn(Optional.of(new StoredProvider(ProviderYaml.parse(v2), v2, fleet.path(), NOW, "mateo")));
+        when(store.version("fleet", "1.1.0")).thenReturn(Optional.of(fleet));
+        Release canary = releases.save(Release.canary("rel_1", null, "1.1.0", "1.2.0", List.of(10, 50, 100), NOW, "mateo").forProvider("fleet"));
+        String inShare = java.util.stream.IntStream.range(0, 100).mapToObj(i -> "job_" + i)
+                .filter(id -> ReleaseQueryHandler.candidateJob("rel_1", id, 10)).findFirst().orElseThrow();
+        String outOfShare = java.util.stream.IntStream.range(0, 100).mapToObj(i -> "job_" + i)
+                .filter(id -> !ReleaseQueryHandler.candidateJob("rel_1", id, 10)).findFirst().orElseThrow();
+
+        assertThat(handler.provider("fleet").block().metadata().version()).as("no job: the registry and the checks").isEqualTo("1.1.0");
+        assertThat(versionFor(new Use("job_x", "dev", false))).as("sandbox workflows get the candidate at once").isEqualTo("1.2.0");
+        assertThat(versionFor(new Use(outOfShare, "prod", true))).as("so do dry runs").isEqualTo("1.2.0");
+        assertThat(versionFor(new Use(inShare, "prod", false))).isEqualTo("1.2.0");
+        assertThat(versionFor(new Use(outOfShare, "prod", false))).isEqualTo("1.1.0");
+        assertThat(versionFor(new Use(null, "prod", false))).as("a call outside a job").isEqualTo("1.1.0");
+
+        releases.save(canary.paused(NOW, "mateo"));
+        assertThat(versionFor(new Use(inShare, "prod", false))).as("a paused release sends every job back").isEqualTo("1.1.0");
+        releases.save(canary.rolledBack(NOW, "rolled back", "mateo"));
+        assertThat(versionFor(new Use("job_x", "dev", false))).as("an ended release routes nothing").isEqualTo("1.1.0");
     }
 
     @Test

@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.application.JobFactory;
@@ -117,6 +118,39 @@ class InMemoryWorkflowExecutionTest {
         assertThat(failed.failedStep()).isEqualTo("approval");
         assertThat(failed.step("notifyOwner").status()).isEqualTo(StepStatus.SUCCEEDED);
         assertThat(failed.step("notifyOwner").output().path("message").asText()).contains("failed at approval");
+    }
+
+    @Test
+    void aJobsProviderLookupsCarryTheJobSoAProviderReleaseCanRouteThem() {
+        List<ProviderQueries.Use> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        org.mockito.Mockito.when(w.providers.provider(org.mockito.ArgumentMatchers.anyString())).thenAnswer(i -> reactor.core.publisher.Mono.deferContextual(ctx -> {
+            ProviderQueries.Use use = ProviderQueries.Use.of(ctx);
+            if (use != null) {
+                seen.add(use);
+            }
+            return reactor.core.publisher.Mono.justOrEmpty(SampleContent.providers().stream().filter(p -> p.name().equals(i.getArgument(0))).findFirst());
+        }));
+        WorkflowDefinition def = yaml("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-routed, title: Routed, noun: thing, verb: get, owner: team-x, version: 1.0.0 }
+                api: { method: POST, path: "/api/v1/things:get", input: { type: object, properties: { id: { type: string } } } }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                """);
+
+        Job job = start(def, Map.of("id", "vm-1042"));
+
+        awaitStatus(job.id(), JobStatus.SUCCEEDED);
+        assertThat(seen).isNotEmpty().allSatisfy(use -> {
+            assertThat(use.jobId()).isEqualTo(job.id());
+            assertThat(use.environment()).isEqualTo(job(job.id()).environment());
+            assertThat(use.dryRun()).isFalse();
+        });
     }
 
     @Test

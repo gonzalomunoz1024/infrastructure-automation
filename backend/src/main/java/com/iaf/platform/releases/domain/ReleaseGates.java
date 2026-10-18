@@ -21,6 +21,7 @@ import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
  * <li>{@code p95}: the candidate's p95 duration (successful jobs) is at most 20% slower;</li>
  * <li>{@code error-types}: no error class on the candidate that the current version never had;</li>
  * <li>{@code sample}: at least {@value #MIN_JOBS} candidate jobs and two hours in the stage; until then it is undecided.</li>
+ * <li>A provider release passes its calls instead of jobs ({@link Unit#CALLS}): the same gates, worded for calls.</li>
  * </ul>
  * Verdict: ADVANCE when every gate passed, ROLLBACK as soon as one gate is false, WAIT otherwise.
  * Cancelled jobs, and jobs that ended on a person's decision (an approval rejected or left to
@@ -52,16 +53,41 @@ public final class ReleaseGates {
     private ReleaseGates() {
     }
 
+    /** What the gates count: the jobs of a workflow version, or the calls of a provider version. */
+    public enum Unit {
+        JOBS("jobs"), CALLS("calls");
+
+        private final String plural;
+
+        Unit(String plural) {
+            this.plural = plural;
+        }
+
+        public String plural() {
+            return plural;
+        }
+    }
+
     public static Evaluation evaluate(List<JobOutcome> candidate, List<JobOutcome> current, Instant stageStartedAt, Instant now) {
+        return evaluate(candidate, current, stageStartedAt, now, Unit.JOBS);
+    }
+
+    /** The same gates over {@code unit}: a provider release passes its calls as outcomes (one per call). */
+    public static Evaluation evaluate(List<JobOutcome> candidate, List<JobOutcome> current, Instant stageStartedAt, Instant now, Unit unit) {
         Stats c = Stats.of(candidate);
         Stats b = Stats.of(current);
-        List<Gate> gates = List.of(successRate(c, b), p95(c, b), errorTypes(c, b), sample(c, stageStartedAt, now));
+        String n = (unit == null ? Unit.JOBS : unit).plural();
+        List<Gate> gates = List.of(successRate(c, b, n), p95(c, b, n), errorTypes(c, b, n), sample(c, stageStartedAt, now, n));
         return new Evaluation(gates, verdict(gates), new Jobs(b.jobs(), c.jobs()));
     }
 
     /** The gates of a stage nothing has run in yet. */
     public static List<Gate> fresh(Instant now) {
-        return evaluate(List.of(), List.of(), now, now).gates();
+        return fresh(now, Unit.JOBS);
+    }
+
+    public static List<Gate> fresh(Instant now, Unit unit) {
+        return evaluate(List.of(), List.of(), now, now, unit).gates();
     }
 
     static Verdict verdict(List<Gate> gates) {
@@ -74,15 +100,15 @@ public final class ReleaseGates {
         return Verdict.WAIT;
     }
 
-    static Gate successRate(Stats c, Stats b) {
+    static Gate successRate(Stats c, Stats b, String unit) {
         Double threshold = b.rate() == null ? null : round1(b.rate() - SUCCESS_RATE_TOLERANCE);
         if (c.rate() == null) {
-            return new Gate("success-rate", "Success rate", null, null, threshold, "no finished jobs on the candidate yet");
+            return new Gate("success-rate", "Success rate", null, null, threshold, "no finished " + unit + " on the candidate yet");
         }
         double value = round1(c.rate());
         if (threshold == null) {
             return new Gate("success-rate", "Success rate", null, value, null,
-                    pct(value) + " on the candidate; no finished jobs on the current version to compare with");
+                    pct(value) + " on the candidate; no finished " + unit + " on the current version to compare with");
         }
         boolean passed = c.rate() + EPSILON >= b.rate() - SUCCESS_RATE_TOLERANCE;
         String detail = pct(value) + " on the candidate vs " + pct(round1(b.rate())) + " on the current version (may trail by "
@@ -90,14 +116,14 @@ public final class ReleaseGates {
         return new Gate("success-rate", "Success rate", passed, value, threshold, detail);
     }
 
-    static Gate p95(Stats c, Stats b) {
+    static Gate p95(Stats c, Stats b, String unit) {
         Double threshold = b.p95() == null ? null : (double) Math.round(b.p95() * (1 + P95_TOLERANCE));
         if (c.p95() == null) {
-            return new Gate("p95", "p95 duration", null, null, threshold, "no successful jobs on the candidate yet");
+            return new Gate("p95", "p95 duration", null, null, threshold, "no successful " + unit + " on the candidate yet");
         }
         if (threshold == null) {
             return new Gate("p95", "p95 duration", null, c.p95(), null,
-                    ms(c.p95()) + " on the candidate; no successful jobs on the current version to compare with");
+                    ms(c.p95()) + " on the candidate; no successful " + unit + " on the current version to compare with");
         }
         boolean passed = c.p95() <= b.p95() * (1 + P95_TOLERANCE) + EPSILON;
         String detail = ms(c.p95()) + " on the candidate vs " + ms(b.p95()) + " on the current version (may be "
@@ -105,9 +131,9 @@ public final class ReleaseGates {
         return new Gate("p95", "p95 duration", passed, c.p95(), threshold, detail);
     }
 
-    static Gate errorTypes(Stats c, Stats b) {
+    static Gate errorTypes(Stats c, Stats b, String unit) {
         if (c.jobs() == 0) {
-            return new Gate("error-types", "Error types", null, null, 0.0, "no finished jobs on the candidate yet");
+            return new Gate("error-types", "Error types", null, null, 0.0, "no finished " + unit + " on the candidate yet");
         }
         Set<String> unseen = new TreeSet<>(c.errorClasses());
         unseen.removeAll(b.errorClasses());
@@ -123,13 +149,13 @@ public final class ReleaseGates {
         return new Gate("error-types", "Error types", passed, (double) unseen.size(), 0.0, detail);
     }
 
-    static Gate sample(Stats c, Instant stageStartedAt, Instant now) {
+    static Gate sample(Stats c, Instant stageStartedAt, Instant now, String unit) {
         long millis = stageStartedAt == null || now == null ? 0 : Math.max(0, Duration.between(stageStartedAt, now).toMillis());
         double hours = Math.floor(millis / 360_000.0) / 10.0;
         boolean enough = c.jobs() >= MIN_JOBS && millis + 1 >= MIN_TIME.toMillis();
         String detail = enough
-                ? c.jobs() + " jobs over " + hours1(hours) + "h in the stage"
-                : c.jobs() + " of " + MIN_JOBS + " jobs, " + hours1(hours) + " of " + MIN_TIME.toHours() + "h";
+                ? c.jobs() + " " + unit + " over " + hours1(hours) + "h in the stage"
+                : c.jobs() + " of " + MIN_JOBS + " " + unit + ", " + hours1(hours) + " of " + MIN_TIME.toHours() + "h";
         return new Gate("sample", "Sample size", enough ? Boolean.TRUE : null, (double) c.jobs(), (double) MIN_JOBS, detail);
     }
 

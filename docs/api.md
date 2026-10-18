@@ -195,7 +195,7 @@ come after the file's own checks on the change request:
 | POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
 | POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted` |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
-| POST   | `/providers:publish`                      | `{ yaml; strategy? }` → `CommandAccepted` (change request id). 409 with the problems when the file has errors or the review is not ready, and 409 while another change request for the provider is open; the change request carries both sets of checks |
+| POST   | `/providers:publish`                      | `{ yaml; strategy?: 'canary' \| 'all' }` → `CommandAccepted` (change request id). `strategy` defaults to `canary`, like a workflow version. 409 with the problems when the file has errors or the review is not ready, when the version is already published (or kept for a canary), and while another change request for the provider is open; the change request carries both sets of checks |
 | POST   | `/providers:draft`                        | `{ description }` → `{ yaml; summary; assumptions[] }` (Ask Devin, `!provider-draft`) |
 | POST   | `/providers/{name}:refresh-spec`          | `{ ref? ; content? }` (optional) → `CommandAccepted` (202). Reads the spec again from where the file says: the URL, Git at the file's ref (or at `ref`, which is then written to the file), or `content` for a pasted spec. The same document answers `status: 'unchanged'`. Otherwise it opens a change request for the next minor version: new `sha256` (and `commit`), the input and output schemas of the actions that call its operations, and each override dropped only when the new spec agrees with the action's real response (its last Try it answer, else a recorded sample). Checks: the file's, `spec-refresh` (what was read and what changed) and the review's `responses`. 409 when an operation an action calls is gone (problems `refresh.operationGone`) or another change request for the provider is open; 400 when `ref` or `content` do not fit the spec's source; owner team or admin |
 | POST   | `/providers/{name}/overrides`             | `{ action; response }` → `CommandAccepted` (202). "Use the real response": opens a change request for the next patch version whose file has the schema inferred from `response` merged into `overrides.<action>.response`, with the file's checks and the review's `responses`; `status: 'unchanged'` when the override would add nothing |
@@ -203,17 +203,36 @@ come after the file's own checks on the change request:
 
 Publish, refresh spec, overrides and the SLO all change a provider through a change request, one
 open at a time per provider: a second one is a 409 that names the open change request, so merging
-one can never publish over another. Merging publishes the provider.
+one can never publish over another. Merging publishes the provider: a first version, or one whose
+change request says `strategy: 'all'`, becomes the current version at once; otherwise the version
+is kept beside the current one and a provider release rolls it out (see Releases). A spec refresh
+rolls out through a canary; overrides and SLO edits change no call and use `all`, unless a canary
+is still running, in which case they build on its candidate and roll out as a canary too.
+`provider.published` carries `{ name; version; previous?; strategy; by }`.
 
 ## Releases
 
 ```ts
-type Release = { id; workflow; from?; to; strategy; status: 'canary' | 'paused' | 'promoted' | 'rolled-back';
+type Release = { id; workflow?; provider?; from?; to; strategy; status: 'canary' | 'paused' | 'promoted' | 'rolled-back';
   stageIndex; stages: number[]; stagePercent; startedAt; stageStartedAt; endedAt?;
   gates: { id; label; passed: boolean | null; value?; threshold?; detail }[]; jobs: { current; candidate }; history: { at; event; by? }[] }
 ```
 
-| GET `/releases?workflow=` | `Release[]` |
+A release rolls out a workflow version (`workflow`) or a provider version (`provider`). A provider
+release has the same stages (10%, 50%, 100%) and gates, judged over the provider's calls instead
+of jobs: the telemetry samples of each version since the stage started, without the `dev`
+environment (`jobs` then counts calls, and the gate details say calls). Which version a call uses
+is decided per job: `dev` and dry runs use the candidate at once (sandbox workflows see the new
+actions right after the merge), a stable hash of the release and the job id puts the stage's share
+of the other jobs on the candidate (every call of one job uses one version), and the rest, calls
+outside a job and every job while the release is paused use the current version. Promotion makes
+the candidate the provider's current version; a rollback leaves the current version in place. A
+newer provider version ends a provider release still running (`rolled-back`, "superseded by").
+The commands need edit rights on the provider's owner team. Release events (`release.started`,
+`release.stage`, `release.promoted`, `release.paused`, `release.resumed`, `release.rolled-back`)
+carry `{ releaseId; workflow | provider; from; to }`.
+
+| GET `/releases?workflow=&provider=&kind=` | `Release[]`, newest first: a workflow's or a provider's releases, else every release of `kind` (`workflow`, the default, `provider` or `all`; anything else is a 400) |
 | GET `/releases/{id}` | `Release` |
 | POST `/releases/{id}:promote` `:pause` `:resume` `:rollback` `:evaluate` | → `CommandAccepted` |
 
