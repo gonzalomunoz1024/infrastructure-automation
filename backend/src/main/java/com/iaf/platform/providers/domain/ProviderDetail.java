@@ -34,10 +34,11 @@ public record ProviderDetail(
         List<ChangeRequest> changeRequests) {
 
     /**
-     * One 24-hour window of calls, oldest first; {@code date} is the instant the window starts. A
-     * window without calls has no rates (null), not a 0% success rate.
+     * One 24-hour window of calls, oldest first; {@code date} is the instant the window starts and
+     * {@code errors} how many of its calls failed. A window without calls has no rates (null), not
+     * a 0% success rate.
      */
-    public record Daily(String date, int calls, Double successRate, Long p50Ms, Long p95Ms) {
+    public record Daily(String date, int calls, int errors, Double successRate, Long p50Ms, Long p95Ms) {
     }
 
     public record PerAction(String action, int calls, double successRate, long p50Ms, long p95Ms, List<ErrorCount> topErrors) {

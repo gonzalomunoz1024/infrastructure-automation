@@ -263,11 +263,14 @@ action and class starts nothing more for ten minutes.
 
 ```ts
 type Health = { status: 'healthy' | 'degraded' | 'failing' | 'unknown'; successRate; p50Ms; p95Ms; calls; errorTrend: number[]; reasons: string[] }
+// status, successRate, p50Ms, p95Ms and calls are the last 24 hours; errorTrend is the failed calls of each of the
+// last 14 days (24-hour windows ending now, oldest first), the same windows as the detail's `daily`.
 type ProviderSummary = { name; title; type; owner; version; environments: string[]; actionCount; health: Health; slo; alerts }
 type ProviderDetail = ProviderSummary & { endpoints: { [environment]: baseUrl }; auth?: { type; credential?: 'vault:…'; header? };
-  yaml; actions: ActionInfo[]; daily: { date; calls; successRate?; p50Ms?; p95Ms? }[];
+  yaml; actions: ActionInfo[]; daily: { date; calls; errors; successRate?; p50Ms?; p95Ms? }[];
   perAction: { action; calls; successRate; p50Ms; p95Ms; topErrors: { class; count }[] }[]; changeRequests: ChangeRequest[] }
-// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts.
+// daily: the last 14 days as 24-hour windows ending now, oldest first; `date` is the instant a window starts, `errors`
+// how many of its calls failed; a window without calls has no rates.
 // The newest window covers the same calls as `health`. A window without calls has no rates.
 // auth.credential is the vault reference's name, never a value.
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;

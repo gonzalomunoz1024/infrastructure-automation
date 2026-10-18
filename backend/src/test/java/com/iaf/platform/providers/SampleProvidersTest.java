@@ -66,7 +66,7 @@ class SampleProvidersTest {
             Health h = ProviderHealthRule.judge(List.of(), def.slo(), NOW);
             assertThat(h.status()).as(def.name()).isEqualTo(Health.Status.UNKNOWN);
             assertThat(h.calls()).isZero();
-            assertThat(h.errorTrend()).hasSize(24);
+            assertThat(h.errorTrend()).hasSize(14);
             ProviderSummary s = ProviderSummary.of(def, h);
             assertThat(s.actionCount()).isGreaterThan(0);
             assertThat(s.alerts().channel()).startsWith("#");

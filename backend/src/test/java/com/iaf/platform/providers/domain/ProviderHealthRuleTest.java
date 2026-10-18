@@ -51,7 +51,7 @@ class ProviderHealthRuleTest {
         assertThat(h.p50Ms()).isEqualTo(100);
         assertThat(h.p95Ms()).isEqualTo(100);
         assertThat(h.reasons()).isEmpty();
-        assertThat(h.errorTrend()).hasSize(24).containsOnly(0);
+        assertThat(h.errorTrend()).hasSize(14).containsOnly(0);
     }
 
     @Test
@@ -112,18 +112,37 @@ class ProviderHealthRuleTest {
     }
 
     @Test
-    void errorTrendCountsFailedCallsPerHourOldestFirst() {
+    void errorTrendCountsFailedCallsPerDayOverTwoWeeksOldestFirst() {
         List<CallSample> samples = List.of(
                 sample(NOW.minus(Duration.ofMinutes(30)), false, 100, "unavailable"),
-                sample(NOW.minus(Duration.ofMinutes(31)), false, 100, "unavailable"),
-                sample(NOW.minus(Duration.ofHours(23)).minus(Duration.ofMinutes(30)), false, 100, "timeout"),
+                sample(NOW.minus(Duration.ofHours(23)), false, 100, "unavailable"),
+                sample(NOW.minus(Duration.ofDays(13)).minus(Duration.ofHours(12)), false, 100, "timeout"),
                 sample(NOW.minus(Duration.ofHours(2)), true, 100, null),
-                sample(NOW.minus(Duration.ofHours(25)), false, 100, "old"));
+                sample(NOW.minus(Duration.ofDays(3)), false, 100, "conflict"),
+                sample(NOW.minus(Duration.ofDays(14)).minus(Duration.ofHours(1)), false, 100, "old"));
         List<Integer> trend = ProviderHealthRule.errorTrend(samples, NOW);
-        assertThat(trend).hasSize(24);
-        assertThat(trend.get(23)).isEqualTo(2);
-        assertThat(trend.get(0)).isEqualTo(1);
-        assertThat(trend.stream().mapToInt(Integer::intValue).sum()).isEqualTo(3);
+        assertThat(trend).hasSize(14);
+        assertThat(trend.get(13)).as("the newest window is the last 24 hours").isEqualTo(2);
+        assertThat(trend.get(11)).as("three days ago").isEqualTo(1);
+        assertThat(trend.get(0)).as("the oldest window").isEqualTo(1);
+        assertThat(trend.stream().mapToInt(Integer::intValue).sum()).as("older failures are out").isEqualTo(4);
+        assertThat(ProviderHealthRule.dailyWindows(samples, NOW)).hasSize(14);
+        assertThat(ProviderHealthRule.dailyWindows(samples, NOW).get(13)).hasSize(3);
+        assertThat(ProviderHealthRule.dailyWindows(null, NOW)).hasSize(14).allMatch(List::isEmpty);
+    }
+
+    @Test
+    void theBandIsJudgedOverTheLastDayWhileTheTrendSpansTwoWeeks() {
+        List<CallSample> samples = new ArrayList<>(samples(10, 100, 0, 0));
+        for (int i = 0; i < 10; i++) {
+            samples.add(sample(NOW.minus(Duration.ofDays(3)).plusSeconds(i + 1), false, 100, "unavailable"));
+        }
+        Health h = ProviderHealthRule.judge(samples, SLO, NOW);
+        assertThat(h.status()).as("an outage three days ago does not colour today's band").isEqualTo(Status.HEALTHY);
+        assertThat(h.calls()).isEqualTo(10);
+        assertThat(h.successRate()).isEqualTo(100.0);
+        assertThat(h.errorTrend().get(11)).as("but the trend remembers it").isEqualTo(10);
+        assertThat(h.errorTrend().get(13)).isZero();
     }
 
     @Test

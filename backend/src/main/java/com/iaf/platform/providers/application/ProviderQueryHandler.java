@@ -59,7 +59,7 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class ProviderQueryHandler implements ProviderQueries {
 
-    static final int DAILY_DAYS = 14;
+    static final int DAILY_DAYS = ProviderHealthRule.TREND_DAYS;
     static final int TOP_ERRORS = 5;
 
     private final ProviderStorePort store;
@@ -93,7 +93,8 @@ public class ProviderQueryHandler implements ProviderQueries {
         return CurrentIdentity.current().flatMapMany(who -> Flux.defer(() -> {
             Instant now = clock.instant();
             Map<String, List<CallSample>> byProvider = new HashMap<>();
-            for (CallSample s : telemetry.samples(null, now.minus(ProviderHealthRule.WINDOW))) {
+            // two weeks: the band is judged over the last day, the error trend beside it spans the whole fortnight
+            for (CallSample s : telemetry.samples(null, now.minus(Duration.ofDays(DAILY_DAYS)))) {
                 byProvider.computeIfAbsent(s.provider(), k -> new ArrayList<>()).add(s);
             }
             return Flux.fromIterable(store.all())
@@ -112,9 +113,7 @@ public class ProviderQueryHandler implements ProviderQueries {
             ProviderDefinition def = p.definition();
             Instant now = clock.instant();
             List<CallSample> twoWeeks = telemetry.samples(name, now.minus(Duration.ofDays(DAILY_DAYS)));
-            Instant dayAgo = now.minus(ProviderHealthRule.WINDOW);
-            List<CallSample> day = twoWeeks.stream().filter(s -> s.at() != null && !s.at().isBefore(dayAgo)).toList();
-            Health health = ProviderHealthRule.judge(day, def.slo(), now);
+            Health health = ProviderHealthRule.judge(twoWeeks, def.slo(), now);
             List<ActionInfo> actions = def.actions().stream().map(a -> ActionInfo.of(def, a)).toList();
             List<ChangeRequest> crs = changeRequests.all().stream()
                     .filter(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && name.equals(cr.name()))
@@ -139,30 +138,22 @@ public class ProviderQueryHandler implements ProviderQueries {
     }
 
     /**
-     * The last {@value #DAILY_DAYS} days as 24-hour windows ending now, oldest first, windows
-     * without calls included. The newest window is a whole day like the others, so it compares
-     * with the one before it (a calendar day just past midnight would read as an outage), and it
-     * covers the same calls as the health judgement.
+     * The last {@value #DAILY_DAYS} days as the 24-hour windows of {@link ProviderHealthRule#dailyWindows}
+     * (the same ones the summary's error trend counts), each with its calls, failed calls and
+     * rates; a window without calls has no rates.
      */
     static List<Daily> daily(List<CallSample> samples, Instant now) {
         Instant from = now.minus(Duration.ofDays(DAILY_DAYS));
-        List<List<CallSample>> windows = new ArrayList<>();
-        for (int i = 0; i < DAILY_DAYS; i++) {
-            windows.add(new ArrayList<>());
-        }
-        for (CallSample s : samples) {
-            if (s.at() == null || s.at().isBefore(from) || s.at().isAfter(now)) {
-                continue;
-            }
-            windows.get((int) Math.min(DAILY_DAYS - 1, Duration.between(from, s.at()).toDays())).add(s);
-        }
+        List<List<CallSample>> windows = ProviderHealthRule.dailyWindows(samples, now);
         List<Daily> out = new ArrayList<>();
         for (int i = 0; i < DAILY_DAYS; i++) {
             List<CallSample> w = windows.get(i);
             String start = from.plus(Duration.ofDays(i)).toString();
+            int errors = (int) w.stream().filter(s -> !s.ok()).count();
             out.add(w.isEmpty()
-                    ? new Daily(start, 0, null, null, null)
-                    : new Daily(start, w.size(), ProviderHealthRule.successRate(w), ProviderHealthRule.percentile(w, 50), ProviderHealthRule.percentile(w, 95)));
+                    ? new Daily(start, 0, 0, null, null, null)
+                    : new Daily(start, w.size(), errors, ProviderHealthRule.successRate(w), ProviderHealthRule.percentile(w, 50),
+                            ProviderHealthRule.percentile(w, 95)));
         }
         return out;
     }

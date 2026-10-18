@@ -152,7 +152,7 @@ class ProviderQueryHandlerTest {
         for (int i = 0; i < 10; i++) {
             samples.add(sample(NOW.minusSeconds(60L * i), "vm.get", true, 100, null));
         }
-        when(telemetry.samples(isNull(), eq(NOW.minus(Duration.ofHours(24))))).thenReturn(samples);
+        when(telemetry.samples(isNull(), eq(NOW.minus(Duration.ofDays(14))))).thenReturn(samples);
         StepVerifier.create(handler.list())
                 .assertNext(s -> {
                     assertThat(s.health().status()).isEqualTo(Health.Status.HEALTHY);
@@ -203,12 +203,20 @@ class ProviderQueryHandlerTest {
                     assertThat(d.daily()).hasSize(14);
                     assertThat(d.daily().get(13).date()).isEqualTo("2026-10-16T10:00:00Z");
                     assertThat(d.daily().get(13).calls()).isEqualTo(6);
+                    assertThat(d.daily().get(13).errors()).isEqualTo(1);
                     assertThat(d.daily().get(13).successRate()).isEqualTo(83.3);
                     assertThat(d.daily().get(11).date()).isEqualTo("2026-10-14T10:00:00Z");
                     assertThat(d.daily().get(11).calls()).isEqualTo(2);
+                    assertThat(d.daily().get(11).errors()).isEqualTo(1);
                     assertThat(d.daily().get(0).calls()).isZero();
+                    assertThat(d.daily().get(0).errors()).isZero();
                     assertThat(d.daily().get(0).successRate()).isNull();
                     assertThat(d.daily().get(0).p95Ms()).isNull();
+                    // the summary's error trend is the same fortnight: one failed call per window that had one
+                    assertThat(d.health().errorTrend()).hasSize(14);
+                    assertThat(d.health().errorTrend().get(13)).isEqualTo(1);
+                    assertThat(d.health().errorTrend().get(11)).isEqualTo(1);
+                    assertThat(d.health().errorTrend().stream().mapToInt(Integer::intValue).sum()).isEqualTo(2);
                     assertThat(d.perAction()).extracting(PerAction::action).containsExactly("vm.delete", "vm.get");
                     PerAction get24 = d.perAction().get(1);
                     assertThat(get24.calls()).isEqualTo(6);
