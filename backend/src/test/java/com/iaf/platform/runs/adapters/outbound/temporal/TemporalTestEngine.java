@@ -14,6 +14,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
+import com.iaf.platform.runs.application.AutomationRunners;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.StepExecutors;
 import com.iaf.platform.runs.domain.Job;
@@ -48,22 +49,61 @@ final class TemporalTestEngine implements AutoCloseable {
     // generous: the test server shares the machine with whole builds
     static final Duration WAIT = Duration.ofSeconds(60);
 
-    final RunsTestWiring w = new RunsTestWiring();
+    final RunsTestWiring w;
     final TestWorkflowEnvironment env;
     final Worker worker;
     final WorkflowClient client;
     final TemporalWorkflowExecution execution;
     final List<DomainEvent> published = new CopyOnWriteArrayList<>();
 
+    /** How the engine is built: each field has the value the plain constructor uses. */
+    static final class Options {
+        RunsTestWiring wiring = new RunsTestWiring();
+        UnaryOperator<ProviderCallPort> calls = UnaryOperator.identity();
+        UnaryOperator<AutomationRunners> runners = UnaryOperator.identity();
+        Consumer<PlatformProperties.Temporal> config = temporal -> {
+        };
+        Consumer<TestWorkflowEnvironment> workers = env -> {
+        };
+
+        /** The runs wiring the engine works over (one built over another projection store, say). */
+        Options wiring(RunsTestWiring wiring) {
+            this.wiring = wiring;
+            return this;
+        }
+
+        /** Wraps the recorded provider port, to make some calls fail or slow. */
+        Options calls(UnaryOperator<ProviderCallPort> calls) {
+            this.calls = calls;
+            return this;
+        }
+
+        /** Wraps the wiring's automation runners, to put a slow or failing runner in front. */
+        Options runners(UnaryOperator<AutomationRunners> runners) {
+            this.runners = runners;
+            return this;
+        }
+
+        /** Adjusts {@code platform.temporal.*} (the heartbeats) before the worker starts. */
+        Options config(Consumer<PlatformProperties.Temporal> config) {
+            this.config = config;
+            return this;
+        }
+
+        /** Registers the teams' workers on their own task queues before the test server starts. */
+        Options workers(Consumer<TestWorkflowEnvironment> workers) {
+            this.workers = workers;
+            return this;
+        }
+    }
+
     TemporalTestEngine() {
-        this(UnaryOperator.identity());
+        this(new Options());
     }
 
     /** @param calls wraps the recorded provider port, to make some calls fail */
     TemporalTestEngine(UnaryOperator<ProviderCallPort> calls) {
-        this(calls, temporal -> {
-        }, env -> {
-        });
+        this(new Options().calls(calls));
     }
 
     /**
@@ -72,20 +112,25 @@ final class TemporalTestEngine implements AutoCloseable {
      * @param workers registers the teams' workers on their own task queues before the test server starts
      */
     TemporalTestEngine(UnaryOperator<ProviderCallPort> calls, Consumer<PlatformProperties.Temporal> config, Consumer<TestWorkflowEnvironment> workers) {
+        this(new Options().calls(calls).config(config).workers(workers));
+    }
+
+    TemporalTestEngine(Options options) {
+        w = options.wiring;
         w.bus.register(published::add);
-        StepExecutors executors = new StepExecutors(w.providers, calls.apply(w.calls), w.runners, w.workflows, w.resources, w.resourceCommands, w.events,
-                w.clock);
+        StepExecutors executors = new StepExecutors(w.providers, options.calls.apply(w.calls), options.runners.apply(w.runners), w.workflows, w.resources,
+                w.resourceCommands, w.events, w.policy, w.clock);
         PlatformProperties props = new PlatformProperties();
         props.getTemporal().setTaskQueue(QUEUE);
         props.getExecution().setMode("temporal");
-        config.accept(props.getTemporal());
+        options.config.accept(props.getTemporal());
         env = TestWorkflowEnvironment.newInstance(TestEnvironmentOptions.newBuilder()
                 .setWorkflowClientOptions(WorkflowClientOptions.newBuilder().setDataConverter(TemporalConfig.dataConverter(TestWeb.json())).build())
                 .build());
         worker = env.newWorker(QUEUE);
         worker.registerWorkflowImplementationTypes(TemporalConfig.workflowOptions(props.getTemporal()), InterpreterWorkflowImpl.class);
         worker.registerActivitiesImplementations(new StepActivitiesImpl(executors, w.projection, w.events, w.changes, w.clock, props));
-        workers.accept(env);
+        options.workers.accept(env);
         env.start();
         client = env.getWorkflowClient();
         execution = new TemporalWorkflowExecution(client, props);

@@ -25,7 +25,6 @@ import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
-import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
@@ -575,7 +574,7 @@ public class RunsCommandHandler implements RunsCommands {
                     List<Integer> denied = new ArrayList<>();
                     List<String> why = new ArrayList<>();
                     for (Map.Entry<Integer, PolicyDecision> e : judged) {
-                        if (BatchApprovals.DENY.equals(e.getValue().decision())) {
+                        if (InvokePolicy.denied(e.getValue())) {
                             denied.add(e.getKey());
                             denyMessages(e.getValue()).forEach(m -> {
                                 if (!why.contains(m)) {
@@ -593,38 +592,21 @@ public class RunsCommandHandler implements RunsCommands {
     }
 
     private static List<String> denyMessages(PolicyDecision decision) {
-        return decision.rules() == null ? List.of() : decision.rules().stream()
-                .filter(r -> BatchApprovals.DENY.equals(r.result()))
-                .map(PolicyPort.Rule::message)
-                .filter(m -> m != null && !m.isBlank())
-                .toList();
+        return InvokePolicy.denials(decision);
     }
 
     private Mono<PolicyDecision> evaluatePolicy(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
         return judge(who, def, version, input, channel, parentId).map(decision -> {
-            if (BatchApprovals.DENY.equals(decision.decision())) {
-                List<String> why = denyMessages(decision);
-                throw new ForbiddenException("Policy denies running " + def.name() + (why.isEmpty() ? "" : ": " + String.join("; ", why)));
+            if (InvokePolicy.denied(decision)) {
+                throw new ForbiddenException(InvokePolicy.refusal(def.name(), decision));
             }
             return decision;
         });
     }
 
-    /** The engine's answer for one input, an allow when it has none; a deny is the caller's to refuse. */
+    /** The engine's answer for one input ({@link InvokePolicy}), an allow when it has none; a deny is the caller's to refuse. */
     private Mono<PolicyDecision> judge(Identity who, WorkflowDefinition def, String version, JsonNode input, String channel, String parentId) {
-        ObjectNode context = F.objectNode();
-        context.put("channel", channel);
-        context.put("environment", JobFactory.environmentOf(input));
-        if (parentId != null) {
-            context.put("parentId", parentId);
-        }
-        if (def.policy() != null) {
-            context.put("changeRequired", def.policy().changeRequired());
-            if (def.policy().approval() != null) {
-                context.put("approvalRequired", def.policy().approval().required());
-            }
-        }
-        return policy.evaluate(new PolicyInput(PolicyPort.Phase.INVOKE, who, def.name(), version, input, context))
+        return policy.evaluate(InvokePolicy.input(who, def, version, input, channel, parentId))
                 .defaultIfEmpty(PolicyDecision.allow(policy.engine()));
     }
 

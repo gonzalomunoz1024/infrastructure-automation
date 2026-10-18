@@ -29,6 +29,7 @@ import com.iaf.platform.runs.domain.Batch;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.domain.BatchApprovals;
+import com.iaf.platform.runs.domain.ChildFailure;
 import com.iaf.platform.runs.domain.ChildResults;
 import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
@@ -105,6 +106,12 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
     static final String TEMPORAL = "temporal";
     /** The change id of sending team steps to the team's worker (version 1); executions without its marker ran them on the platform's activities. */
     static final String TEAM_WORKERS = "team-workers";
+    /**
+     * The change id of a child (a run step's, a batch row's) recording its own start as its first
+     * activity (version 1); executions without its marker were recorded by their parent's activity
+     * before they started.
+     */
+    static final String CHILD_RECORDS = "child-records-itself";
     private static final RetryOptions ONCE = RetryOptions.newBuilder().setMaximumAttempts(1).build();
     private static final RetryOptions PUBLISH = RetryOptions.newBuilder()
             .setMaximumAttempts(5)
@@ -150,6 +157,10 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         status = JobStatus.RUNNING;
         Outcome outcome;
         try {
+            if (job.parentId() != null && Workflow.getVersion(CHILD_RECORDS, Workflow.DEFAULT_VERSION, 1) >= 1) {
+                // a child records itself once it runs: a start that never happens leaves no queued job behind
+                events.started(job);
+            }
             outcome = job.isBatch() ? runBatch() : runSingle();
         } catch (JobCancelled e) {
             outcome = Outcome.cancelled();
@@ -362,12 +373,18 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         return invoke(step, () -> calls(PortStepExecutor.LOOKUP_TIMEOUT).registerResource(call, request));
     }
 
+    /**
+     * The child is resolved, checked and built by the {@code childJob} activity ({@code ChildStarts},
+     * as the in-memory engine does it: the range is the current major when the step names none),
+     * then run as a child workflow. A child that did not succeed is a {@link ChildFailure}, so a
+     * step with {@code onFailure: continue} records it and the parent goes on.
+     */
     @Override
     public JsonNode runChild(JobContext ctx, Step step, String workflow, String version, JsonNode input, Duration timeout) {
         if (workflow == null || workflow.isBlank()) {
             throw new StepFailure(step.id(), "invalid_input", "run needs a workflow", false, true);
         }
-        String range = version == null || version.isBlank() ? "*" : version;
+        String range = version == null || version.isBlank() ? null : version;
         JsonNode in = input == null || input.isMissingNode() ? F.objectNode() : input;
         Job child = invoke(step, () -> records.childJob(ref, step.id(), workflow, range, in));
         ctx.addChild(child.id());
@@ -375,18 +392,14 @@ public class InterpreterWorkflowImpl implements InterpreterWorkflow, StepExecuto
         try {
             outcome = runChildWorkflow(child);
         } catch (ChildWorkflowFailure f) {
-            throw new StepFailure(step.id(), "child_failed", "Child job " + child.id() + " (" + child.workflow() + ") failed in the engine: " + describe(f), false);
+            throw new ChildFailure(step.id(), child.id(), JobStatus.FAILED, "child_failed", null,
+                    "Child job " + child.id() + " (" + child.workflow() + ") failed in the engine: " + describe(f), false);
         }
-        if (outcome.status() == JobStatus.CANCELLED) {
-            if (cancelled) {
-                throw new JobCancelled(ctx.jobId());
-            }
-            throw new StepFailure(step.id(), "cancelled", "Child job " + child.id() + " (" + child.workflow() + ") was cancelled", false, true);
+        if (outcome.status() == JobStatus.CANCELLED && cancelled) {
+            throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw new StepFailure(step.id(), outcome.errorClass() == null ? "child_failed" : outcome.errorClass(),
-                    "Child job " + child.id() + " (" + child.workflow() + ") " + outcome.status().json()
-                            + (outcome.message() == null ? "" : ": " + outcome.message()), false);
+            throw ChildFailure.of(step.id(), child.id(), child.workflow(), outcome);
         }
         return ChildResults.of(child.id(), outcome, null);
     }

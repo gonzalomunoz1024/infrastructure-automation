@@ -4,6 +4,7 @@ import java.time.Clock;
 
 import org.springframework.stereotype.Component;
 
+import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -21,8 +22,8 @@ public class StepExecutors {
     private final Ports ports;
 
     public StepExecutors(ProviderQueries providers, ProviderCallPort calls, AutomationRunners runners, WorkflowQueries workflows,
-            ResourceQueries resources, ResourceCommands resourceCommands, JobEvents events, Clock clock) {
-        this.ports = new Ports(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
+            ResourceQueries resources, ResourceCommands resourceCommands, JobEvents events, PolicyPort policy, Clock clock) {
+        this.ports = new Ports(providers, calls, runners, workflows, resources, resourceCommands, events, policy, clock);
     }
 
     public Ports ports() {

@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.outbound;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
@@ -20,8 +21,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.events.DomainEvent;
+import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.Resource;
@@ -59,7 +63,11 @@ class InMemoryWorkflowExecutionTest {
     }
 
     private Job start(WorkflowDefinition def, Map<String, Object> input) {
-        Job job = JobFactory.newJob(def, def.version(), SampleContent.json(input), SampleContent.GONZALO, "rest", null, null, null, null, null, w.clock.instant());
+        return start(def, input, SampleContent.GONZALO);
+    }
+
+    private Job start(WorkflowDefinition def, Map<String, Object> input, Identity who) {
+        Job job = JobFactory.newJob(def, def.version(), SampleContent.json(input), who, "rest", null, null, null, null, null, w.clock.instant());
         w.projection.put(job);
         w.events.started(job);
         w.execution.start(job).block();
@@ -346,6 +354,84 @@ class InMemoryWorkflowExecutionTest {
             assertThat(child.input().path("environment").asText()).isEqualTo("dev");
         });
         assertThat(job(job.id()).output().path("vmId").asText()).isNotBlank();
+    }
+
+    /** A child only one team may invoke. */
+    private static final String SECRET = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: t-secret, title: Secret, noun: thing, verb: hide, owner: team-x, version: 1.0.0 }
+            policy:
+              rbac: [team-secret]
+            workflow:
+              do:
+                - say:
+                    name: Say
+                    notify: { channel: "#x", message: "hidden" }
+            """;
+
+    /** A parent of one run step ({@code run} is the step's own line) that fails the job outright, then a notify. */
+    private static String parent(String run) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-parent, title: Parent, noun: thing, verb: run, owner: team-x, version: 1.0.0 }
+                workflow:
+                  do:
+                    - child:
+                        name: Child
+                        run: %s
+                        pauseOnFailure: false
+                    - after:
+                        name: After
+                        notify: { channel: "#x", message: "after the child" }
+                """.formatted(run);
+    }
+
+    @Test
+    void aChildTheRequesterMayNotInvokeFailsTheParentStepAsForbiddenAndNeverStarts() {
+        when(w.workflows.resolve(eq("t-secret"), any())).thenReturn(Mono.just(RunsTestWiring.record(yaml(SECRET))));
+        Job job = start(yaml(parent("{ workflow: t-secret, version: \"^1\" }")), Map.of(), SampleContent.ANA);
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("forbidden");
+        assertThat(failed.step("child").error().message()).isEqualTo("Ana may not invoke t-secret (needs one of [team-secret])");
+        assertThat(failed.step("after")).isNull();
+        assertThat(w.projection.children(job.id())).isEmpty();
+        assertThat(published.stream().filter(e -> e.type().equals("job.started"))).as("only the parent started").hasSize(1);
+    }
+
+    @Test
+    void aChildThePolicyEngineDeniesFailsTheParentStepAsForbidden() {
+        when(w.policy.evaluate(argThat(in -> in != null && "create-vm".equals(in.workflow()))))
+                .thenReturn(Mono.just(new PolicyDecision("deny", List.of(new Rule("no-vms", "deny", "no VMs under a parent")), "mock")));
+        Job job = start(yaml(parent("{ workflow: create-vm, version: \"^2\", input: { name: web-1, image: img-1 } }")), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("forbidden");
+        assertThat(failed.step("child").error().message()).isEqualTo("Policy denies running create-vm: no VMs under a parent");
+        ArgumentCaptor<PolicyInput> asked = ArgumentCaptor.forClass(PolicyInput.class);
+        verify(w.policy, atLeastOnce()).evaluate(asked.capture());
+        PolicyInput in = asked.getAllValues().stream().filter(i -> "create-vm".equals(i.workflow())).findFirst().orElseThrow();
+        assertThat(in.phase()).isEqualTo(PolicyPort.Phase.INVOKE);
+        assertThat(in.who()).isEqualTo(SampleContent.GONZALO);
+        assertThat(in.input().path("size").asText()).as("judged with its defaults filled in").isEqualTo("small");
+        assertThat(in.context().path("parentId").asText()).isEqualTo(job.id());
+        assertThat(in.context().path("environment").asText()).isEqualTo("dev");
+        assertThat(w.projection.children(job.id())).isEmpty();
+    }
+
+    @Test
+    void aChildWhoseInputDoesNotFitItsSchemaFailsTheParentStepNamingTheField() {
+        Job job = start(yaml(parent("{ workflow: create-vm, version: \"^2\", input: { image: img-1 } }")), Map.of());
+
+        awaitStatus(job.id(), JobStatus.FAILED);
+        Job failed = job(job.id());
+        assertThat(failed.errorClass()).isEqualTo("invalid_input");
+        assertThat(failed.step("child").error().message()).startsWith("The input of create-vm does not fit its schema: ").contains("name");
+        assertThat(w.projection.children(job.id())).isEmpty();
     }
 
     @Test

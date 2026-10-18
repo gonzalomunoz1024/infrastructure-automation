@@ -276,8 +276,20 @@ timeout (the interpreter does the retrying), and every event goes through `JobEv
 projection, the audit log and the streams cannot tell the engines apart. Approvals, attention
 decisions and cancels are the signals `approve`, `attention` and `cancel`; `status` and `waitingOn`
 are queries. Waits, timeouts, retry backoffs and `use … waitUntil: ready` polls are timers; `run`
-steps and batch rows are child workflows whose ids are the child job ids. A cancel from the
-Temporal UI or CLI ends the job as cancelled by `temporal`. Without the `postgres` profile the job
+steps and batch rows are child workflows whose ids are the child job ids. A run step's child is
+resolved and checked by the parent's `childJob` activity through `ChildStarts`, the same code the
+in-memory engine runs: the range as written, else the workflow's current major; then the child's
+schema defaults, its schema, the requester's right to invoke it and the policy engine's decision,
+which the child carries. The child records itself (`started`, its own first activity: the job
+with its definition snapshot into the projection, then `job.started`), so a child whose start
+never happened leaves no queued job behind; a batch row is built from the batch's `JobRef` alone
+and gets the batch's snapshot from the workflow, so the activity reads nothing from the
+projection of the instance it runs on. A child that did not succeed reaches the parent's step as
+a `ChildFailure` on both engines, so `onFailure: continue` means the same there. Executions
+recorded before children recorded themselves (fixture `before-child-records-itself`) still
+replay: the change is gated with `Workflow.getVersion` (`child-records-itself`), as the
+team-worker change was. A cancel from the Temporal UI or CLI ends the job as cancelled by
+`temporal`. Without the `postgres` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
 history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in

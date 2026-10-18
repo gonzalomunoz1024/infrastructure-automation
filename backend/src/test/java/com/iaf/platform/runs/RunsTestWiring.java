@@ -118,7 +118,7 @@ public final class RunsTestWiring {
         prices.load();
         runner = new DemoAutomationRunner(providers, telemetry, projection, clock);
         runners = new AutomationRunners(List.of(runner));
-        executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, clock);
+        executors = new StepExecutors(providers, calls, runners, workflows, resources, resourceCommands, events, policy, clock);
         execution = new InMemoryWorkflowExecution(executors, projection, events, changes, clock);
         queries = new RunsQueryHandler(projection, execution);
     }

@@ -84,7 +84,7 @@ class AutomationProgressTest {
         w.bus.register(published::add);
         slow = new SlowRunner();
         StepExecutors executors = new StepExecutors(w.providers, w.calls, new AutomationRunners(List.of(slow, w.runner)), w.workflows,
-                w.resources, w.resourceCommands, w.events, w.clock);
+                w.resources, w.resourceCommands, w.events, w.policy, w.clock);
         execution = new InMemoryWorkflowExecution(executors, w.projection, w.events, w.changes, w.clock);
     }
 

@@ -344,13 +344,8 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
     }
 
     @Override
-    public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
+    public JsonNode runChild(JobContext ctx, Step step, Job childJob, Duration timeout) {
         Execution parent = executions.get(ctx.jobId());
-        Job parentJob = parent == null ? projection.get(ctx.jobId()).orElse(null) : parent.job;
-        if (parentJob == null) {
-            throw new StepFailure(step.id(), "engine_error", "Parent job " + ctx.jobId() + " is unknown to the engine", false);
-        }
-        Job childJob = JobFactory.child(parentJob, child, input, clock.instant());
         Execution cexec = new Execution(childJob);
         projection.put(childJob);
         events.started(childJob);
@@ -375,7 +370,7 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
             throw new JobCancelled(ctx.jobId());
         }
         if (!outcome.succeeded()) {
-            throw ChildFailure.of(step.id(), childJob.id(), child.name(), outcome);
+            throw ChildFailure.of(step.id(), childJob.id(), childJob.workflow(), outcome);
         }
         return ChildResults.of(childJob.id(), outcome, cexec.context);
     }

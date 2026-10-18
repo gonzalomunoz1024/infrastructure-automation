@@ -14,9 +14,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
 import com.iaf.platform.runs.domain.AttentionDecision;
+import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.workflows.domain.Step;
-import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
 /** The engine seam of the port executor. */
 class PortStepExecutorTest {
@@ -46,7 +46,7 @@ class PortStepExecutorTest {
         }
 
         @Override
-        public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
+        public JsonNode runChild(JobContext ctx, Step step, Job child, Duration timeout) {
             throw new UnsupportedOperationException();
         }
 

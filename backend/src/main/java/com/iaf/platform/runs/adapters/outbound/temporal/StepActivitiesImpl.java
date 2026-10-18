@@ -11,19 +11,19 @@ import java.util.function.Supplier;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.runs.application.ChildStarts;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
 import com.iaf.platform.runs.application.PortStepExecutor;
+import com.iaf.platform.runs.application.PortStepExecutor.Ports;
 import com.iaf.platform.runs.application.StepExecutors;
-import com.iaf.platform.runs.domain.InputDefaults;
 import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.Attention;
@@ -43,7 +43,6 @@ import com.iaf.platform.runs.domain.StepFailure;
 import com.iaf.platform.runs.ports.outbound.ChangeTicketPort;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
-import com.iaf.platform.workflows.domain.WorkflowRecord;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -89,7 +88,7 @@ public class StepActivitiesImpl implements StepActivities {
         }
 
         @Override
-        public JsonNode runChild(JobContext ctx, Step step, WorkflowDefinition child, JsonNode input, Duration timeout) {
+        public JsonNode runChild(JobContext ctx, Step step, Job child, Duration timeout) {
             throw new UnsupportedOperationException("children run as child workflows");
         }
 
@@ -187,37 +186,32 @@ public class StepActivitiesImpl implements StepActivities {
     // ---------------------------------------------------------------- records and ids
 
     @Override
-    public Job childJob(JobRef parent, String stepId, String workflow, String range, JsonNode input) {
-        WorkflowDefinition child;
+    public Job childJob(JobRef parent, String stepId, String workflow, String version, JsonNode input) {
+        Ports ports = executors.ports();
+        Job parentJob = parent.toJob();
         try {
-            child = executors.ports().workflows().resolve(workflow, range)
-                    .map(WorkflowRecord::definition)
-                    .blockOptional(PortStepExecutor.LOOKUP_TIMEOUT)
-                    .orElseThrow(() -> new StepFailure(stepId, "unknown_workflow", "No published version of '" + workflow + "' satisfies " + range, false));
+            String range = ChildStarts.range(ports, stepId, workflow, version, message -> events.log(parent.id(), message));
+            WorkflowDefinition child = ChildStarts.resolve(ports, stepId, workflow, range);
+            return ChildStarts.prepare(ports, parentJob, stepId, child, input, clock.instant());
         } catch (StepFailure f) {
             throw StepFailureData.of(f).toApplicationFailure();
-        } catch (RuntimeException e) {
-            String msg = e.getMessage() == null ? e.toString() : e.getMessage();
-            boolean timeout = e instanceof IllegalStateException && msg.contains("Timeout");
-            throw new StepFailureData(stepId, timeout ? "timeout" : "error", timeout ? "Step " + stepId + " timed out" : msg, true, false)
-                    .toApplicationFailure();
         }
-        // the child gets its schema's defaults, as a start through its own route would
-        JsonNode in = InputDefaults.apply(child.inputSchema(), input == null || input.isMissingNode() ? JsonNodeFactory.instance.objectNode() : input);
-        Job job = JobFactory.child(parent.toJob(), child, in, clock.instant());
-        projection.put(job);
-        events.started(job);
-        return job;
+    }
+
+    /** The row's definition is the workflow's own (attached there), so this reads nothing from the projection of the instance it runs on. */
+    @Override
+    public Job rowJob(JobRef batch, BatchRow row) {
+        return JobFactory.row(batch.toJob(), row, clock.instant()).withDefinition(null);
     }
 
     @Override
-    public Job rowJob(JobRef batch, BatchRow row) {
-        // the projection keeps each row's definition snapshot (a row can be rerun from its own page)
-        WorkflowDefinition definition = projection.get(batch.id()).map(Job::definition).orElse(null);
-        Job job = JobFactory.row(batch.toJob().withDefinition(definition), row, clock.instant());
+    public void started(Job job) {
+        if (projection.has(job.id())) {
+            log.info("job {} is already recorded; its start is not published again", job.id());
+            return;
+        }
         projection.put(job);
         events.started(job);
-        return job.withDefinition(null);
     }
 
     @Override
