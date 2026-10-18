@@ -78,6 +78,8 @@ s, pv = call('POST', A + '/providers:validate', {'yaml': yaml_p}, expect=200)
 print('provider validate ->', [(c['id'], c['status']) for c in pv.get('checks', [])], [p['code'] for p in pv.get('problems', [])])
 s, tr = call('POST', A + '/providers:try', {'yaml': yaml_p, 'action': 'vm.get', 'environment': 'dev', 'input': {'id': 'vm-1'}}, expect=200, timeout=60)
 print('try ->', str(tr)[:300])
+# the connection test resolves the provider's credential as a real call would: a reference that is not in the vault fails it
+s, _ = call('POST', A + '/credentials', {'name': 'fleet/token', 'type': 'token', 'value': 'e2e-fleet-token', 'owner': 'team-compute'}, expect=202, note='store the fleet token the provider names')
 s, tested = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': lib.BASE + '/actuator/health'}, 'auth': {'type': 'bearer', 'credential': 'vault:fleet/token'}, 'provider': 'fleet'}, expect=200, timeout=60, note='test fleet before publishing')
 check(all(r.get('ok') for r in tested.get('results', [])), f'fleet connection test: {tested}')
 s, pub = call('POST', A + '/providers:publish', {'yaml': yaml_p}, expect=202)
@@ -200,7 +202,8 @@ s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://g
 s, _ = call('POST', A + '/providers:import-ansible', {'git': {'repo': 'https://github.com/acme/ops-playbooks'}, 'credential': 'vault:e2e/data-token'}, user='mateo', expect=403, note='mateo drafts with a team-data machine credential')
 s, _ = call('POST', A + '/providers:import-terraform', {'registry': {'module': 'acme/lb/aws', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports with a team-data registry token')
 s, _ = call('POST', A + '/providers:import-spec', {'type': 'openapi', 'git': {'repo': 'https://github.com/acme/fleet-api', 'path': 'openapi.yaml', 'credential': 'vault:e2e/data-token'}}, user='mateo', expect=403, note='mateo imports a spec with a team-data read token')
-s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/nope'}}, user='mateo', expect=200, timeout=60, note='unknown credential is judged where it is resolved')
+s, nope = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': 'vault:e2e/nope'}}, user='mateo', expect=200, timeout=60, note='unknown credential is judged where it is resolved')
+check(isinstance(nope, dict) and all(not r.get('ok') and 'vault:e2e/nope' in r.get('message', '') for r in nope.get('results', [])), f'an unknown reference fails the test naming it: {nope}')
 seeded = (pd.get('auth') or {}).get('credential') if isinstance(pd, dict) else None
 if seeded:
     s, _ = call('POST', A + '/providers:test-connection', {'endpoints': {'dev': 'http://127.0.0.1:9'}, 'auth': {'type': 'bearer', 'credential': seeded}}, user='mateo', expect=200, timeout=60, note='a seeded credential is any team\'s')
