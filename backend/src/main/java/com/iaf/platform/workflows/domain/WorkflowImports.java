@@ -26,7 +26,6 @@ public final class WorkflowImports {
 
     public static final Set<String> SOURCES = Set.of("idp", "ansible", "terraform", "openapi");
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
-    private static final String PLACEHOLDER_TYPE = "your-resource-type";
 
     public record ImportedWorkflow(String yaml, List<String> notes) {
     }
@@ -62,10 +61,11 @@ public final class WorkflowImports {
                 .orElseThrow(() -> new IllegalArgumentException("No IDP tile '" + tile + "'; known tiles: "
                         + idps.stream().flatMap(d -> d.actions().stream()).map(Action::id).sorted().toList()));
         Action a = p.action(tile).orElseThrow();
-        String name = Ids.slug(tile);
-        String noun = name.endsWith("-request") ? name.substring(0, name.length() - "-request".length()) : name;
-        String title = a.title() == null ? tile : a.title();
         List<String> notes = new ArrayList<>();
+        String slug = Ids.slug(tile);
+        String name = free(slug, "from-" + p.name(), existing, notes);
+        String noun = slug.endsWith("-request") ? slug.substring(0, slug.length() - "-request".length()) : slug;
+        String title = a.title() == null ? tile : a.title();
         JsonNode input = a.input() == null ? emptySchema() : a.input();
 
         Doc doc = new Doc(name, title, noun, "request", p.owner(), "Request through the IDP tile " + tile + ". The tile is a mock until the IDP tiles API is wired.", List.of("idp", "imported"))
@@ -82,18 +82,19 @@ public final class WorkflowImports {
         request.put("timeout", "1h");
         request.put("notes", "The tile's input is mapped from the workflow input one to one; adjust the mapping if the tile expects other names.");
         String type = guessType(noun, resourceTypes, notes);
-        ObjectNode register = doc.step("register", "Register what the tile delivered");
-        ObjectNode reg = register.putObject("register");
-        reg.put("type", type);
-        reg.put("id", "{{ $result.id }}");
-        ObjectNode attrs = reg.putObject("attributes");
-        attrs.put("requester", "{{ $job.requester }}");
-        attrs.put("ticket", "{{ $result.ticket }}");
-        register.put("notes", "Fill in: the attributes the resource type's schema requires.");
+        if (type != null) {
+            ObjectNode register = doc.step("register", "Register what the tile delivered");
+            ObjectNode reg = register.putObject("register");
+            reg.put("type", type);
+            reg.put("id", "{{ $result.id }}");
+            ObjectNode attrs = reg.putObject("attributes");
+            attrs.put("requester", "{{ $job.requester }}");
+            attrs.put("ticket", "{{ $result.ticket }}");
+            register.put("notes", "Fill in: the attributes the resource type's schema requires.");
+        }
         doc.output("id", "{{ $result.id }}");
         notes.add("The input schema was copied from the tile " + tile + " of provider " + p.name() + "; review titles and defaults.");
         notes.add("The IDP tile runs as a mock until the IDP tiles API is wired.");
-        collision(name, existing, notes);
         return new ImportedWorkflow(doc.yaml(), notes);
     }
 
@@ -110,6 +111,7 @@ public final class WorkflowImports {
         String executionEnvironment = null;
         String owner = "your-team";
         String actionTitle = null;
+        String from = "from-git";
         int hash = ref.indexOf('#');
         if (hash > 0) {
             // <repo>#<ref>:<path>
@@ -129,6 +131,7 @@ public final class WorkflowImports {
                 throw new IllegalArgumentException("ref is <provider>/<action> or <repo>#<ref>:<path>, like github.com/acme/ops#v1.0.0:site.yml");
             }
             String providerName = ref.substring(0, slash);
+            from = "from-" + providerName;
             String actionId = ref.substring(slash + 1);
             List<ProviderDefinition> ansibles = providers.stream().filter(p -> p.type() == ProviderType.ANSIBLE).toList();
             ProviderDefinition p = ansibles.stream().filter(d -> d.name().equals(providerName)).findFirst()
@@ -155,7 +158,7 @@ public final class WorkflowImports {
         String[] nounVerb = nounVerbOfPlaybook(ref, path);
         String noun = nounVerb[0];
         String verb = nounVerb[1];
-        String name = Ids.slug(noun + "-" + verb);
+        String name = free(Ids.slug(noun + "-" + verb), from, existing, notes);
         String title = actionTitle != null ? actionTitle : "Run " + (path == null ? ref : path);
 
         ObjectNode input = vars != null && vars.isObject() ? vars.deepCopy() : emptySchema();
@@ -211,7 +214,6 @@ public final class WorkflowImports {
             notes.add("The playbook's variables are unknown: add them to api.input and extraVars.");
         }
         notes.add("Add an approval step before the playbook when it changes production.");
-        collision(name, existing, notes);
         return new ImportedWorkflow(doc.yaml(), notes);
     }
 
@@ -260,7 +262,7 @@ public final class WorkflowImports {
         }
         String credential = p.spec().auth() == null ? null : p.spec().auth().credential();
         String noun = Ids.slug(p.name());
-        String name = noun + "-apply";
+        String name = free(noun + "-apply", "from-" + p.name(), existing, notes);
         String title = "Apply " + p.title();
         JsonNode input = vars != null && vars.isObject() ? vars : emptySchema();
 
@@ -301,7 +303,6 @@ public final class WorkflowImports {
             notes.add("Set the credential of both Terraform steps as a vault:<path> reference.");
         }
         notes.add("The input schema is the module's variables" + (vars == null ? ", which the provider does not declare: add them to api.input" : "") + ".");
-        collision(name, existing, notes);
         return new ImportedWorkflow(doc.yaml(), notes);
     }
 
@@ -315,7 +316,7 @@ public final class WorkflowImports {
         List<String> notes = new ArrayList<>();
         int dot = a.id().indexOf('.');
         String noun = Ids.slug(dot > 0 ? a.id().substring(0, dot) : p.name());
-        String name = "create-" + noun;
+        String name = free("create-" + noun, "from-" + p.name(), existing, notes);
         String title = a.title() == null ? "Create " + noun : a.title();
         JsonNode input = a.input() == null ? (a.vars() == null ? emptySchema() : a.vars()) : a.input();
         String type = guessType(noun, resourceTypes, notes);
@@ -335,36 +336,45 @@ public final class WorkflowImports {
         create.putObject("retry").put("maxAttempts", a.retrySafe() ? 2 : 1);
         create.put("timeout", "20m");
         create.put("notes", "The input is mapped from the workflow input one to one; the schema was copied from the action.");
-        ObjectNode register = doc.step("register", "Register");
-        ObjectNode reg = register.putObject("register");
-        reg.put("type", type);
-        reg.put("id", "{{ $created.id }}");
-        ObjectNode attrs = reg.putObject("attributes");
-        input.path("properties").fieldNames().forEachRemaining(f -> attrs.put(f, "{{ $input." + f + " }}"));
-        register.put("notes", "Fill in: the attributes the resource type's schema requires; add a wait step before this one when the create is asynchronous.");
+        if (type != null) {
+            ObjectNode register = doc.step("register", "Register");
+            ObjectNode reg = register.putObject("register");
+            reg.put("type", type);
+            reg.put("id", "{{ $created.id }}");
+            ObjectNode attrs = reg.putObject("attributes");
+            input.path("properties").fieldNames().forEachRemaining(f -> attrs.put(f, "{{ $input." + f + " }}"));
+            register.put("notes", "Fill in: the attributes the resource type's schema requires; add a wait step before this one when the create is asynchronous.");
+        }
         doc.output("id", "{{ $created.id }}");
         notes.add("The input schema was copied from action " + a.id() + " of provider " + p.name() + "; review titles, defaults and what the catalog form should show.");
         if (a.approvalRequired()) {
             notes.add("Action " + a.id() + " requires an approval: add an approval step before it.");
         }
-        collision(name, existing, notes);
         return new ImportedWorkflow(doc.yaml(), notes);
     }
 
     // ---------------------------------------------------------------- helpers
 
+    /** The registered type named like the noun, or null with a note: the file stays valid, and the register step is the author's to add. */
     private static String guessType(String noun, Collection<String> resourceTypes, List<String> notes) {
         if (resourceTypes != null && resourceTypes.contains(noun)) {
             return noun;
         }
-        notes.add("Set the resource type of the register step (no registered type is named '" + noun + "').");
-        return PLACEHOLDER_TYPE;
+        notes.add("Add a register step once you know which resource type this delivers (no registered type is named '" + noun + "').");
+        return null;
     }
 
-    private static void collision(String name, Collection<String> existing, List<String> notes) {
-        if (existing != null && existing.contains(name)) {
-            notes.add("A workflow named " + name + " already exists; change metadata.name before saving.");
+    /** {@code base} unless a workflow already has that name; then {@code base-suffix}, numbered if that is taken too, with a note. */
+    private static String free(String base, String suffix, Collection<String> existing, List<String> notes) {
+        if (existing == null || !existing.contains(base)) {
+            return base;
         }
+        String candidate = Ids.slug(base + "-" + suffix);
+        for (int n = 2; existing.contains(candidate); n++) {
+            candidate = Ids.slug(base + "-" + suffix + "-" + n);
+        }
+        notes.add("A workflow named " + base + " already exists, so this draft is named " + candidate + "; change metadata.name if you prefer another.");
+        return candidate;
     }
 
     private static ObjectNode emptySchema() {

@@ -29,19 +29,19 @@ class WorkflowImportsTest {
         WorkflowDefinition d = WorkflowYaml.parse(i.yaml());
         assertThat(d.name()).isEqualTo("block-storage-request");
         assertThat(d.noun()).isEqualTo("block-storage");
-        assertThat(d.allSteps()).extracting(Step::type).containsExactly(StepType.IDP, StepType.REGISTER);
+        assertThat(d.allSteps()).as("no registered type is named block-storage, so the register step is left to the author").extracting(Step::type).containsExactly(StepType.IDP);
         assertThat(d.steps().get(0).withText("tile")).isEqualTo("block-storage-request");
         assertThat(d.steps().get(0).withNode("input").path("sizeGb").asText()).isEqualTo("{{ $input.sizeGb }}");
         assertThat(d.inputSchema().path("required").get(0).asText()).isEqualTo("sizeGb");
-        assertThat(i.notes()).anyMatch(n -> n.contains("resource type"));
-        assertThat(errors(i.yaml())).as("only the placeholder resource type is left to fill").containsExactly("resource.unknownType");
+        assertThat(i.notes()).anyMatch(n -> n.contains("register step"));
+        assertThat(errors(i.yaml())).as("an imported draft is a valid file").isEmpty();
     }
 
     @Test
     void ansibleImportsALibraryPlaybookWithItsVarsAndCommit() {
         ImportedWorkflow i = WorkflowImports.build("ansible", "ops-playbooks/vm.restart", PROVIDERS, TYPES, EXISTING);
         WorkflowDefinition d = WorkflowYaml.parse(i.yaml());
-        assertThat(d.name()).isEqualTo("vm-restart");
+        assertThat(d.name()).as("vm-restart exists, so the draft gets a name of its own").isEqualTo("vm-restart-from-ops-playbooks");
         Step run = d.steps().get(0);
         assertThat(run.type()).isEqualTo(StepType.ANSIBLE);
         assertThat(run.withNode("playbook").path("git").path("repo").asText()).isEqualTo("github.com/acme/ops-playbooks");
@@ -88,7 +88,7 @@ class WorkflowImportsTest {
     void openapiImportsTheFirstCreateActionWithItsInputSchema() {
         ImportedWorkflow i = WorkflowImports.build("openapi", "vsphere", PROVIDERS, TYPES, EXISTING);
         WorkflowDefinition d = WorkflowYaml.parse(i.yaml());
-        assertThat(d.name()).isEqualTo("create-vm");
+        assertThat(d.name()).isEqualTo("create-vm-from-vsphere");
         assertThat(d.inputSchema().path("required").toString()).isEqualTo("[\"name\",\"templateId\"]");
         Step create = d.steps().get(0);
         assertThat(create.withText("provider")).isEqualTo("vsphere");

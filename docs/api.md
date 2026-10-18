@@ -71,7 +71,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
 | POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary) |
 | POST   | `/change-requests/{id}:close`                | → `CommandAccepted` |
-| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200) |
+| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name of its own when a workflow already has the natural one (`create-vm-from-vsphere`), registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
 | GET    | `/templates`                                 | `{ id; title; description; yaml }[]` |
 
 ```ts
