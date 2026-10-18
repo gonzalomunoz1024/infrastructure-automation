@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { ownChange } from '../lib/api'
 import { readableDetail } from '../pages/ChangeRequestPage'
 
 describe('change request check details', () => {
@@ -46,5 +47,17 @@ describe('change request check details', () => {
     expect(d.lists[0].items).toEqual(['replayed: 42', 'divergences: []'])
     expect(readableDetail(undefined)).toEqual({ text: null, lists: [] })
     expect(readableDetail('7 steps')).toEqual({ text: '7 steps', lists: [] })
+  })
+})
+
+describe('who merges', () => {
+  it('is never the author, as the backend judges it, though an admin may merge their own', () => {
+    const junior = { id: 'junior', admin: false }
+    expect(ownChange(junior, 'junior')).toBe(true)
+    expect(ownChange(junior, 'gonzalo')).toBe(false)
+    expect(ownChange({ id: 'gonzalo', admin: true }, 'gonzalo')).toBe(false)
+    // until the caller and the request are known, nothing is held back
+    expect(ownChange(undefined, 'junior')).toBe(false)
+    expect(ownChange(junior, undefined)).toBe(false)
   })
 })

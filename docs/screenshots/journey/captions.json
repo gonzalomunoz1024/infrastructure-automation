@@ -1,0 +1,98 @@
+[
+  {
+    "name": "01-providers",
+    "caption": "The junior engineer opens Providers: the systems workflows may call. Add provider starts the wizard."
+  },
+  {
+    "name": "02-wizard-type",
+    "caption": "Type: the VM API publishes an OpenAPI document, so the provider is OpenAPI. The name is what workflows call it by; the owner is the junior engineer’s team."
+  },
+  {
+    "name": "03-credential",
+    "caption": "Connect: the API token is stored once as a credential. The provider names it as vault:acme-cloud/token; nobody can read the value back."
+  },
+  {
+    "name": "04-connect",
+    "caption": "Connect: the spec is imported from its URL, each environment’s base URL comes from it, and Test connection probes dev and prod with the token. The result is kept as review evidence."
+  },
+  {
+    "name": "05-actions",
+    "caption": "Actions: each operation becomes an action. Effect and retry come from the HTTP method, and a delete needs an approval. The ids are renamed vm.create, vm.get and so on, and vm.get previews vm.delete."
+  },
+  {
+    "name": "06-errors",
+    "caption": "Actions: error classes say which failures are retried. Start from the usual ones adds not_found, conflict, rate_limited and unavailable."
+  },
+  {
+    "name": "07-try-confirm",
+    "caption": "Try it: one real call in dev, with a form generated from the operation. A create changes something, so the wizard asks first."
+  },
+  {
+    "name": "08-try-create",
+    "caption": "Try it: the API created the VM and its answer matches the schema. The answer is kept as review evidence and recorded as the sample that dry runs answer with."
+  },
+  {
+    "name": "09-try-delete",
+    "caption": "Try it: the delete removes the test VM again, so dev is left as it was."
+  },
+  {
+    "name": "10-review-checks",
+    "caption": "Review: the provider file the wizard wrote, and the checks the change request will run again. Plain http is allowed only because the API is on this machine."
+  },
+  {
+    "name": "11-review-evidence",
+    "caption": "Review: the automated review of what happened in the wizard: spec pinned, connection tested, every action tried in dev, errors classified, an owner and an alert channel."
+  },
+  {
+    "name": "12-provider-cr",
+    "caption": "The change request: the new provider file, the checks and the review evidence the wizard kept. The author cannot merge it."
+  },
+  {
+    "name": "13-provider-cr-review",
+    "caption": "A reviewer from the owner team opens the same change request, reads the file and the evidence, and merges."
+  },
+  {
+    "name": "14-provider-page",
+    "caption": "Acme Cloud is published: its actions, the SLO it is held to, and the health the platform computes from every call workflows make."
+  },
+  {
+    "name": "15-workflow-import",
+    "caption": "Workflows, New workflow, Import: the provider’s create operation becomes a draft workflow, with its form taken from the operation, a create step and a step that registers the VM."
+  },
+  {
+    "name": "16-designer",
+    "caption": "The designer: the draft on the n8n-style canvas. The API trigger is the generated endpoint; the steps call vm.create and register what it made."
+  },
+  {
+    "name": "17-designer-step",
+    "caption": "A step’s parameters: the provider action and its input, mapped from the workflow’s input with {{ }} expressions. Fields can be dragged in from the left."
+  },
+  {
+    "name": "18-designer-test",
+    "caption": "Test workflow: a dry run with the samples recorded in the wizard. Nothing is created; every step shows what it would send and get back."
+  },
+  {
+    "name": "19-workflow-cr",
+    "caption": "Publish opens a change request with the workflow’s checks: schema, policy, a replay of recent jobs, the contracts with other workflows and the routes. The author waits for a teammate."
+  },
+  {
+    "name": "20-workflow-merged",
+    "caption": "The reviewer merges it. Version 0.1.0 is published: it has its endpoint, its MCP tool and a run form in the catalog."
+  },
+  {
+    "name": "21-run-preview",
+    "caption": "The catalog’s run form, generated from the workflow’s input. Preview shows the blast radius before anything runs: the steps, what each one changes and the policy decision."
+  },
+  {
+    "name": "22-job",
+    "caption": "The job: both steps succeeded. Create a VM called the Acme Cloud API for real, and Register put the VM it made in the registry. Each step opens to show its input and output."
+  },
+  {
+    "name": "23-resources",
+    "caption": "Resources: the new VM is in the registry, owned by the junior engineer’s team, where other workflows can find it."
+  },
+  {
+    "name": "24-resource",
+    "caption": "The VM’s page: its attributes, the workflow and job that created it, its audit record and its lineage. A delete or another workflow picks it from here."
+  }
+]

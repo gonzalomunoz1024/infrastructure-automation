@@ -59,9 +59,9 @@ describe('PreviewCard', () => {
     for (const r of PREVIEW.affectedResources) expect(html).toContain(`href="#/resources/${r.id}"`)
   })
 
-  it('counts only the effects of steps that run', () => {
+  it('counts only the effects of steps that run, each count kept on one line with its effect', () => {
     const html = text(renderToString(<PreviewCard preview={PREVIEW} />))
-    expect(html).toContain('1 create, 1 delete')
+    expect(html).toContain('1\u00a0create, 1\u00a0delete')
   })
 
   it('shows the note once when the backend already put it in the detail', () => {

@@ -5,7 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { api, useCurrentUser } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { EvidenceEntry, HealthStatus, Me, ProviderSummary } from '../lib/types'
-import { HealthBand } from '../components/HealthBand'
+import { HealthBand, measured } from '../components/HealthBand'
 import { PlatformEntryDetails, PlatformEventTag, PlatformSubject, PlatformVerification, platformEvent, platformSummary } from '../components/PlatformAudit'
 import { ErrorState, Mono, TextLink, When } from '../components/common'
 
@@ -23,9 +23,9 @@ const TYPE_LABEL: Record<string, string> = { openapi: 'OpenAPI', http: 'HTTP', a
 
 export const tabOf = (q: string | undefined): ProvidersTab => (q === 'performance' || q === 'audit' ? q : 'providers')
 
-/** Where a provider stands against its SLO: null where it declares none. */
+/** Where a provider stands against its SLO: null where it declares none, or where nothing has called it yet. */
 export function sloVerdict(p: Pick<ProviderSummary, 'health' | 'slo'>): { success: boolean | null; p95: boolean | null; within: boolean | null } {
-  if (!p.slo) return { success: null, p95: null, within: null }
+  if (!p.slo || p.health.calls === 0) return { success: null, p95: null, within: null }
   const success = p.health.successRate >= p.slo.successRate
   const p95 = p.health.p95Ms <= p.slo.p95Ms
   return { success, p95, within: success && p95 }
@@ -101,9 +101,9 @@ export const LIST_COLUMNS: TableColumn<ProviderSummary>[] = [
     sortable: true,
     accessor: (p) => p.health.successRate,
     width: '6rem',
-    render: (p) => <span className={sloVerdict(p).success === false ? 'font-medium text-critical' : 'text-primary'}>{percent(p.health.successRate, { digits: 1 })}</span>,
+    render: (p) => <span className={sloVerdict(p).success === false ? 'font-medium text-critical' : p.health.calls === 0 ? 'text-tertiary' : 'text-primary'}>{measured(p.health, percent(p.health.successRate, { digits: 1 }))}</span>,
   },
-  { key: 'p50', header: 'p50', numeric: true, sortable: true, accessor: (p) => p.health.p50Ms, width: '5.5rem', render: (p) => <span className="text-primary">{duration(p.health.p50Ms)}</span> },
+  { key: 'p50', header: 'p50', numeric: true, sortable: true, accessor: (p) => p.health.p50Ms, width: '5.5rem', render: (p) => <span className={p.health.calls === 0 ? 'text-tertiary' : 'text-primary'}>{measured(p.health, duration(p.health.p50Ms))}</span> },
   {
     key: 'p95',
     header: 'p95',
@@ -111,7 +111,7 @@ export const LIST_COLUMNS: TableColumn<ProviderSummary>[] = [
     sortable: true,
     accessor: (p) => p.health.p95Ms,
     width: '5.5rem',
-    render: (p) => <span className={sloVerdict(p).p95 === false ? 'font-medium text-warning' : 'text-primary'}>{duration(p.health.p95Ms)}</span>,
+    render: (p) => <span className={sloVerdict(p).p95 === false ? 'font-medium text-warning' : p.health.calls === 0 ? 'text-tertiary' : 'text-primary'}>{measured(p.health, duration(p.health.p95Ms))}</span>,
   },
   { key: 'calls', header: 'Calls', numeric: true, sortable: true, accessor: (p) => p.health.calls, width: '6rem', render: (p) => <span className="text-primary">{formatNumber(p.health.calls, { compact: true })}</span> },
   { key: 'trend', header: 'Errors', width: '8rem', render: (p) => <ErrorTrend trend={p.health.errorTrend} /> },
@@ -160,9 +160,9 @@ export const PERFORMANCE_COLUMNS: TableColumn<ProviderSummary>[] = [
     sortable: true,
     accessor: (p) => p.health.successRate,
     width: '7.5rem',
-    render: (p) => <AgainstSlo value={percent(p.health.successRate, { digits: 2 })} slo={p.slo && `≥ ${percent(p.slo.successRate, { digits: 1 })}`} ok={sloVerdict(p).success} tone="critical" />,
+    render: (p) => <AgainstSlo value={measured(p.health, percent(p.health.successRate, { digits: 2 }))} slo={p.slo && `≥ ${percent(p.slo.successRate, { digits: 1 })}`} ok={sloVerdict(p).success} tone="critical" />,
   },
-  { key: 'p50', header: 'p50', numeric: true, sortable: true, accessor: (p) => p.health.p50Ms, width: '5.5rem', render: (p) => <span className="text-primary">{duration(p.health.p50Ms)}</span> },
+  { key: 'p50', header: 'p50', numeric: true, sortable: true, accessor: (p) => p.health.p50Ms, width: '5.5rem', render: (p) => <span className={p.health.calls === 0 ? 'text-tertiary' : 'text-primary'}>{measured(p.health, duration(p.health.p50Ms))}</span> },
   {
     key: 'p95',
     header: 'p95',
@@ -170,7 +170,7 @@ export const PERFORMANCE_COLUMNS: TableColumn<ProviderSummary>[] = [
     sortable: true,
     accessor: (p) => p.health.p95Ms,
     width: '7rem',
-    render: (p) => <AgainstSlo value={duration(p.health.p95Ms)} slo={p.slo && `≤ ${duration(p.slo.p95Ms)}`} ok={sloVerdict(p).p95} tone="warning" />,
+    render: (p) => <AgainstSlo value={measured(p.health, duration(p.health.p95Ms))} slo={p.slo && `≤ ${duration(p.slo.p95Ms)}`} ok={sloVerdict(p).p95} tone="warning" />,
   },
   {
     key: 'slo',

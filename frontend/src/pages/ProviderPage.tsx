@@ -6,7 +6,7 @@ import { api, errorMessage, isApiError } from '../lib/api'
 import { invalidate, useQuery } from '../lib/queries'
 import type { ActionInfo, ChangeRequest, OverrideRequest, ProviderActionStats, ProviderAlert, ProviderDetail, Release, TryResult } from '../lib/types'
 import { useChangeRequestToast } from '../components/ChangeRequestToast'
-import { HealthBand } from '../components/HealthBand'
+import { HealthBand, measured } from '../components/HealthBand'
 import { SchemaForm, defaultsFor, type SchemaValue } from '../components/SchemaForm'
 import { EffectTag, ErrorState, Mono, TextLink, When, shortJobId } from '../components/common'
 import { currentRelease, gateDot, isActiveRelease, stageLabel } from './ReleasesPage'
@@ -247,22 +247,22 @@ export default function ProviderPage({ route }: PageProps) {
               <Stat label="Calls" value={formatNumber(data.health.calls, { compact: true })} icon="pulse" sparkline={daily.map((d) => d.calls)} delta={last && prev ? { value: last.calls - prev.calls, label: 'vs the day before' } : undefined} />
               <Stat
                 label="Success rate"
-                value={percent(data.health.successRate, { digits: 1 })}
+                value={measured(data.health, percent(data.health.successRate, { digits: 1 }))}
                 icon="check"
                 hint={data.slo ? `target ${percent(data.slo.successRate, { digits: 1 })}` : undefined}
                 delta={rateDelta(change(last?.successRate, prev?.successRate))}
               />
-              <Stat label="p50" value={duration(data.health.p50Ms)} icon="clock" delta={msDelta(change(last?.p50Ms, prev?.p50Ms))} />
+              <Stat label="p50" value={measured(data.health, duration(data.health.p50Ms))} icon="clock" delta={msDelta(change(last?.p50Ms, prev?.p50Ms))} />
               <Stat
                 label="p95"
-                value={duration(data.health.p95Ms)}
+                value={measured(data.health, duration(data.health.p95Ms))}
                 icon="clock"
                 hint={data.slo ? `target ${duration(data.slo.p95Ms)}` : undefined}
                 delta={msDelta(change(last?.p95Ms, prev?.p95Ms))}
               />
             </div>
 
-            {daily.length === 0 ? (
+            {daily.every((d) => !d.calls) ? (
               <Card flush>
                 <EmptyState compact icon="chart" title="No calls recorded yet" message="The charts fill in as workflows call this provider." />
               </Card>

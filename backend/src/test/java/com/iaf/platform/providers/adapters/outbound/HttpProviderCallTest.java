@@ -429,6 +429,20 @@ class HttpProviderCallTest {
     }
 
     @Test
+    void aReviewCallReportsTheStatusTheSystemAnsweredWith() {
+        AtomicInteger created = new AtomicInteger();
+        StepVerifier.create(call.call(callOf("vm.create", "{\"name\":\"web\",\"cpu\":2}", false)).contextWrite(c -> ReviewCall.with(c, created)))
+                .expectNextCount(1)
+                .verifyComplete();
+        assertThat(created).hasValue(201);
+        AtomicInteger read = new AtomicInteger();
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)).contextWrite(c -> ReviewCall.with(c, read))).expectNextCount(1).verifyComplete();
+        assertThat(read).hasValue(200);
+        // a run's call has no holder, and a review without one is answered all the same
+        StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)).contextWrite(ReviewCall::with)).expectNextCount(1).verifyComplete();
+    }
+
+    @Test
     void aReviewCallReachesTheSystemButRecordsNoSample() {
         StepVerifier.create(call.call(callOf("vm.get", "{\"id\":\"vm-1\"}", false)).contextWrite(ReviewCall::with))
                 .assertNext(r -> assertThat(r.path("name").asText()).isEqualTo("web"))

@@ -13,6 +13,8 @@ python3 scripts/api-flows/flows3.py                 # providers, wizard imports,
 python3 scripts/api-flows/flows4.py                 # dependencies, previews, create forms, replay, publish checks
 node scripts/api-flows/smoke.cjs                    # every page in a browser: console errors, failed calls, error states
 node scripts/api-flows/tour.cjs                     # the README's screenshots into docs/screenshots
+node scripts/api-flows/fake-vm-api.cjs 18090        # a stand-in VM API with an OpenAPI spec (FAKE_VM_TOKEN)
+node scripts/api-flows/journey-vm-provider.cjs      # docs/onboard-a-vm-provider.md's pictures, on the demo,live profiles
 ```
 
 `IAF_BASE` points the flows at another backend (`IAF_BASE=http://localhost:18080`); the two

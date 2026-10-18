@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
+import java.util.function.IntConsumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -132,7 +133,7 @@ public class HttpProviderCall implements ProviderCallPort {
                 return Mono.error(new ProviderCallException("unsupported", "HttpProviderCall runs openapi and http providers; " + p.name() + " is " + p.type().key(), false, 0));
             }
             String base = endpoint(p, call.environment());
-            return operation(p, a).flatMap(op -> headers(p.spec().auth()).flatMap(h -> execute(call, base, op, h, !ReviewCall.in(ctx))));
+            return operation(p, a).flatMap(op -> headers(p.spec().auth()).flatMap(h -> execute(call, base, op, h, !ReviewCall.in(ctx), status -> ReviewCall.answered(ctx, status))));
         });
     }
 
@@ -256,7 +257,7 @@ public class HttpProviderCall implements ProviderCallPort {
 
     // ---------------------------------------------------------------- the call
 
-    private Mono<JsonNode> execute(ProviderCall call, String base, Operation op, HttpHeaders headers, boolean recorded) {
+    private Mono<JsonNode> execute(ProviderCall call, String base, Operation op, HttpHeaders headers, boolean recorded, IntConsumer answered) {
         ProviderDefinition p = call.provider();
         Action a = call.action();
         ObjectNode remaining = call.input() != null && call.input().isObject() ? ((ObjectNode) call.input()).deepCopy() : F.objectNode();
@@ -272,6 +273,7 @@ public class HttpProviderCall implements ProviderCallPort {
                 .flatMap(raw -> {
                     long ms = elapsed(started);
                     if (raw.status() >= 200 && raw.status() < 300) {
+                        answered.accept(raw.status());
                         JsonNode json = parseBody(raw.body());
                         record(call, recorded, at, ms, true, null);
                         compare(p, a, json);

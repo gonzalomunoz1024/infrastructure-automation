@@ -55,7 +55,8 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
     },
     {} as Record<string, number>,
   )
-  const summary = (['create', 'change', 'delete', 'read'] as const).filter((e) => counts[e]).map((e) => `${counts[e]} ${e}`)
+  // a count never breaks from its effect when the subtitle wraps in a narrow column ("2 / create")
+  const summary = (['create', 'change', 'delete', 'read'] as const).filter((e) => counts[e]).map((e) => `${counts[e]}\u00a0${e}`)
 
   return (
     <Card

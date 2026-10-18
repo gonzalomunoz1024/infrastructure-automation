@@ -451,6 +451,9 @@ test.describe('providers', () => {
     await expect(before).toContainText('license_exhausted: rate_limited above it matches every call it would, and the first match wins.')
     await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
     await rows.nth(4).getByRole('textbox', { name: 'Status' }).fill('403')
+    // a delete needs a plan step or a line on what it removes: the preview says it before a run
+    await expect(before).toContainText('deleteVm deletes something: pick a plan step that previews it, or say in one line what it removes.')
+    await page.getByRole('list', { name: 'Delete previews' }).getByRole('textbox', { name: 'What deleteVm removes' }).fill('The VM and its disks')
     await expect(before).toHaveCount(0)
     await page.getByRole('button', { name: 'Next' }).click()
 
@@ -479,7 +482,7 @@ test.describe('providers', () => {
     // 5 · Review: the file has the chosen operations and the error classes
     await expect(current).toContainText('Review')
     const file = page.locator('pre').first()
-    for (const line of ['operation: deleteVm', 'errors:', 'class: not_found', 'body: license', 'class: license_exhausted', 'status: 403']) await expect(file).toContainText(line)
+    for (const line of ['operation: deleteVm', 'effectDetail: The VM and its disks', 'errors:', 'class: not_found', 'body: license', 'class: license_exhausted', 'status: 403']) await expect(file).toContainText(line)
     await expect(file).not.toContainText('listSnapshots')
   })
 

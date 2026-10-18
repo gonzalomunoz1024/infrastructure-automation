@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { Button, CopyIconButton, EmptyState, Tag, cx, longDate, relativeTime, type DotKind, type Tone } from '@iaf/ui'
 import { Link } from '../app/router'
 import { errorMessage, isApiError } from '../lib/api'
@@ -155,7 +155,12 @@ export function titleCase(s: string): string {
 /** The current time, refreshed every `intervalMs`, for countdowns and relative times that must move. */
 export function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now())
+  const mounted = useRef(false)
   useEffect(() => {
+    // a new pace (a job that just ended slows its clock down) starts from the current time, not
+    // from the last tick of the old one, which is older than what the job just reported
+    if (mounted.current) setNow(Date.now())
+    mounted.current = true
     const t = setInterval(() => setNow(Date.now()), intervalMs)
     return () => clearInterval(t)
   }, [intervalMs])

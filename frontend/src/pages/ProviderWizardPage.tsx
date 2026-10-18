@@ -42,6 +42,8 @@ export interface ActionRow {
   retry: RetryPolicy
   approval: boolean
   plan: string
+  /** a delete's line for the preview when no plan step reads its target: what it removes */
+  effectDetail: string
   description: string
   /** JSON schema text: input (openapi/http/idp/sdk) or vars (ansible/terraform) */
   inputText: string
@@ -114,6 +116,8 @@ const NAME_RE = /^[a-z][a-z0-9-]*$/
 const ID_RE = /^[a-z][a-zA-Z0-9._-]*$/
 const VERSION_RE = /^\d+\.\d+\.\d+$/
 const HTTPS_RE = /^https:\/\/\S+$/
+/** An endpoint the platform may call: https, or plain http to a loopback host for local development, as the backend's checks allow (with a warning). */
+const ENDPOINT_RE = /^(https:\/\/\S+|http:\/\/(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])(:\d+)?(\/\S*)?)$/
 const TASK_QUEUE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/
 const DURATION_RE = /^(P(?!$)(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?|\d+(ms|s|m|h|d))$/
 const CLASS_RE = /^[a-z][a-z0-9_]*$/
@@ -154,19 +158,25 @@ export const kebab = (s: string): string =>
     .replace(/^-+|-+$/g, '')
 
 export function blankAction(partial: Partial<ActionRow> = {}): ActionRow {
-  return { key: nextKey(), selected: true, id: '', title: '', operation: '', method: 'GET', path: '', playbook: '', effect: 'read', retry: 'safe', approval: false, plan: '', description: '', inputText: '', outputText: '', exampleText: '', sloSuccessRate: '', sloP95Ms: '', ...partial }
+  return { key: nextKey(), selected: true, id: '', title: '', operation: '', method: 'GET', path: '', playbook: '', effect: 'read', retry: 'safe', approval: false, plan: '', effectDetail: '', description: '', inputText: '', outputText: '', exampleText: '', sloSuccessRate: '', sloP95Ms: '', ...partial }
+}
+
+/** The actions with one renamed: the plan steps that named it follow the new id. */
+export function renameAction(actions: readonly ActionRow[], key: number, id: string): ActionRow[] {
+  const old = actions.find((a) => a.key === key)?.id
+  return actions.map((a) => (a.key === key ? { ...a, id } : old && a.plan === old ? { ...a, plan: id } : a))
 }
 
 export function blankError(partial: Partial<ErrorRow> = {}): ErrorRow {
   return { key: nextKey(), status: '', body: '', class: '', retry: false, ...partial }
 }
 
-function starterActions(type: ProviderType): ActionRow[] {
+export function starterActions(type: ProviderType): ActionRow[] {
   if (type === 'terraform')
     return [
       blankAction({ id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' }),
       blankAction({ id: 'apply', title: 'Apply', effect: 'create', retry: 'unsafe', plan: 'plan' }),
-      blankAction({ id: 'destroy', title: 'Destroy', effect: 'delete', retry: 'unsafe', approval: true }),
+      blankAction({ id: 'destroy', title: 'Destroy', effect: 'delete', retry: 'unsafe', approval: true, effectDetail: 'Destroys what the module manages for these variables' }),
     ]
   if (type === 'openapi') return []
   return [blankAction()]
@@ -333,6 +343,7 @@ export function stateFromProvider(d: ProviderDetail): WizardState {
         retry: a.retry,
         approval: a.approval === true || a.approval === 'required',
         plan: a.plan ?? '',
+        effectDetail: a.effectDetail ?? '',
         inputText: a.input ? JSON.stringify(a.input, null, 2) : '',
         outputText: a.output ? JSON.stringify(a.output, null, 2) : '',
         sloSuccessRate: a.slo ? String(a.slo.successRate) : '',
@@ -416,7 +427,7 @@ function actionDocument(type: ProviderType, a: ActionRow, s: WizardState): Recor
   const input = parseSchema(a.inputText)
   const output = parseSchema(a.outputText)
   const head = { id: a.id, title: a.title.trim() || a.id, description: a.description.trim() || undefined }
-  const policy = { effect: a.effect, retry: a.retry, approval: a.approval ? 'required' : undefined, plan: a.plan || undefined, slo: actionSlo(a) }
+  const policy = { effect: a.effect, retry: a.retry, approval: a.approval ? 'required' : undefined, plan: a.plan || undefined, effectDetail: a.effectDetail.trim() || undefined, slo: actionSlo(a) }
   const sample = s.samples[a.id]
   switch (type) {
     case 'openapi':
@@ -516,9 +527,9 @@ export function stepIssues(s: WizardState, step: number): string[] {
       if (s.specMode === 'git' && !HTTPS_RE.test(s.specGit.repo.trim())) out.push('Name the https repository the spec lives in.')
       if (s.specMode === 'git' && s.specGit.credential && !s.specGit.credential.startsWith('vault:')) out.push('The read token is a vault: reference.')
     }
-    if ((s.type === 'openapi' || s.type === 'http') && !s.environments.some((e) => e.name.trim() && HTTPS_RE.test(e.url.trim()))) out.push('Add at least one environment with an https URL.')
-    const plain = s.environments.find((e) => e.url.trim() && !HTTPS_RE.test(e.url.trim()))
-    if ((s.type === 'openapi' || s.type === 'http') && plain) out.push(`${plain.name || 'An environment'}: endpoints are https URLs.`)
+    if ((s.type === 'openapi' || s.type === 'http') && !s.environments.some((e) => e.name.trim() && ENDPOINT_RE.test(e.url.trim()))) out.push('Add at least one environment with an https URL.')
+    const plain = s.environments.find((e) => e.url.trim() && !ENDPOINT_RE.test(e.url.trim()))
+    if ((s.type === 'openapi' || s.type === 'http') && plain) out.push(`${plain.name || 'An environment'}: endpoints are https URLs; only localhost may use plain http, for local development.`)
     if (s.type === 'ansible' && !s.editing && !s.ansible.repo.trim()) out.push('Name the Git repository.')
     if (s.type === 'terraform' && !s.editing && !s.terraform.source.trim()) out.push('Name the module source.')
     if (s.type === 'idp' && !s.editing && !s.idp.tileId.trim()) out.push('Name the tile.')
@@ -536,6 +547,7 @@ export function stepIssues(s: WizardState, step: number): string[] {
     for (const a of sel) {
       const label = a.id || '(unnamed)'
       if (!ID_RE.test(a.id)) out.push(`${label}: an id like vm.get.`)
+      if (a.effect === 'delete' && !a.plan && !a.effectDetail.trim()) out.push(`${label} deletes something: pick a plan step that previews it, or say in one line what it removes.`)
       if (s.type === 'openapi' && !a.operation.trim()) out.push(`${label}: the operationId.`)
       if (s.type === 'http' && !a.path.trim()) out.push(`${label}: a path.`)
       if (s.type === 'ansible' && !a.playbook.trim()) out.push(`${label}: the playbook path.`)
@@ -1053,7 +1065,7 @@ function ConnectStep({ state, update }: StepProps) {
             {state.environments.map((e) => (
               <div key={e.key} className="grid grid-cols-[7rem_minmax(0,1fr)_auto] items-center gap-2">
                 <Input mono size="sm" value={e.name} onChange={(ev) => setEnv(e.key, { name: ev.target.value })} placeholder="dev" aria-label="Environment name" />
-                <Input mono size="sm" value={e.url} onChange={(ev) => setEnv(e.key, { url: ev.target.value })} placeholder="https://system-dev.example.com/api" aria-label="Environment URL" invalid={!!e.url && !HTTPS_RE.test(e.url.trim())} />
+                <Input mono size="sm" value={e.url} onChange={(ev) => setEnv(e.key, { url: ev.target.value })} placeholder="https://system-dev.example.com/api" aria-label="Environment URL" invalid={!!e.url && !ENDPOINT_RE.test(e.url.trim())} />
                 <IconButton label="Remove environment" size="sm" disabled={state.environments.length === 1} onClick={() => update({ environments: state.environments.filter((x) => x.key !== e.key), tested: null })}>
                   <Icon name="trash" size={14} />
                 </IconButton>
@@ -1119,6 +1131,7 @@ function ActionsStep({ state, update }: StepProps) {
   // a spec can have hundreds of operations: the search narrows the table, and "select all" takes what it shows
   const [query, setQuery] = useState('')
   const patch = (key: number, p: Partial<ActionRow>) => update({ actions: state.actions.map((a) => (a.key === key ? { ...a, ...p } : a)) })
+  const rename = (key: number, id: string) => update({ actions: renameAction(state.actions, key, id) })
   const remove = (key: number) => update({ actions: state.actions.filter((a) => a.key !== key) })
   const add = () => update({ actions: [...state.actions, blankAction()] })
   const selected = state.actions.filter((a) => a.selected)
@@ -1141,7 +1154,7 @@ function ActionsStep({ state, update }: StepProps) {
         width: '2.5rem',
         render: (a) => <Checkbox checked={a.selected} onChange={(v) => patch(a.key, { selected: v })} label={<span className="sr-only">Include {a.operation}</span>} />,
       },
-      { key: 'id', header: 'Action id', width: '12rem', render: (a) => <Input size="sm" mono value={a.id} onChange={(e) => patch(a.key, { id: e.target.value })} aria-label={`Id of ${a.operation}`} invalid={a.selected && !ID_RE.test(a.id)} disabled={!a.selected} /> },
+      { key: 'id', header: 'Action id', width: '12rem', render: (a) => <Input size="sm" mono value={a.id} onChange={(e) => rename(a.key, e.target.value)} aria-label={`Id of ${a.operation}`} invalid={a.selected && !ID_RE.test(a.id)} disabled={!a.selected} /> },
       {
         key: 'op',
         header: 'Operation',
@@ -1198,6 +1211,7 @@ function ActionsStep({ state, update }: StepProps) {
             </>
           )}
         </Card>
+        <DeletePreviews actions={state.actions} onChange={(key, effectDetail) => patch(key, { effectDetail })} />
         <ErrorClasses state={state} update={update} />
       </div>
     )
@@ -1230,7 +1244,7 @@ function ActionsStep({ state, update }: StepProps) {
         >
           <div className={cx('grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3', !a.selected && 'opacity-60')}>
             <Field label="Id" htmlFor={`act-${a.key}-id`} required error={a.id && !ID_RE.test(a.id) ? 'Like vm.get' : undefined}>
-              <Input id={`act-${a.key}-id`} mono value={a.id} onChange={(e) => patch(a.key, { id: e.target.value })} placeholder="jobs.create" aria-label="Action id" />
+              <Input id={`act-${a.key}-id`} mono value={a.id} onChange={(e) => rename(a.key, e.target.value)} placeholder="jobs.create" aria-label="Action id" />
             </Field>
             <Field label="Title" htmlFor={`act-${a.key}-title`}>
               <Input id={`act-${a.key}-title`} value={a.title} onChange={(e) => patch(a.key, { title: e.target.value })} placeholder="Start a backup" aria-label="Action title" />
@@ -1262,6 +1276,11 @@ function ActionsStep({ state, update }: StepProps) {
             <Field label="Plan via" hint="Another action that previews this one">
               <Select ariaLabel="Plan via" value={a.plan} onChange={(v) => patch(a.key, { plan: v })} options={planOptions(a)} mono disabled={a.effect === 'read'} />
             </Field>
+            {a.effect === 'delete' && (
+              <Field label="What it removes" htmlFor={`act-${a.key}-detail`} hint="The preview's line when no plan step reads the target" className="sm:col-span-2">
+                <Input id={`act-${a.key}-detail`} value={a.effectDetail} onChange={(e) => patch(a.key, { effectDetail: e.target.value })} placeholder="The backup and its snapshots" aria-label={`What ${a.id || `action ${i + 1}`} removes`} />
+              </Field>
+            )}
             <Field label="Own SLO" hint="Its calls are judged against it; empty takes the provider's">
               <ActionSloInputs action={a} provider={state.slo} label={a.id || `action ${i + 1}`} onChange={(p) => patch(a.key, p)} />
             </Field>
@@ -1330,6 +1349,24 @@ function ActionSloInputs({ action, provider, label, size = 'md', disabled, onCha
 }
 
 /** `spec.errors`: what a failed call is called and whether it is retried, matched by status and body text. */
+/** What the preview before a run says each delete removes: its plan step reads the target for real; without one, a line written here. */
+function DeletePreviews({ actions, onChange }: { actions: readonly ActionRow[]; onChange: (key: number, effectDetail: string) => void }) {
+  const deletes = actions.filter((a) => a.selected && a.effect === 'delete')
+  if (deletes.length === 0) return null
+  return (
+    <Card title="What a delete removes" subtitle="The preview before a run says it. A plan step that reads the target (Plan via, above) shows it for real; without one, say it in one line.">
+      <ul className="space-y-2" aria-label="Delete previews">
+        {deletes.map((a) => (
+          <li key={a.key} className="grid gap-1.5 sm:grid-cols-[12rem_1fr] sm:items-center">
+            <Mono className="truncate text-primary">{a.id || a.operation}</Mono>
+            <Input size="sm" value={a.effectDetail} onChange={(e) => onChange(a.key, e.target.value)} placeholder={a.plan ? `Previewed by ${a.plan}; a line here is optional` : 'The VM and its disks'} aria-label={`What ${a.id || a.operation} removes`} />
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
 export function ErrorClasses({ state, update }: StepProps) {
   const http = state.type === 'openapi' || state.type === 'http'
   const set = (key: number, p: Partial<ErrorRow>) => update({ errors: state.errors.map((e) => (e.key === key ? { ...e, ...p } : e)) })

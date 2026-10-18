@@ -15,6 +15,11 @@ describe('relativeTime', () => {
   })
   it('handles the future', () => {
     expect(relativeTime(NOW + 10 * 60_000, NOW)).toBe('in 10m')
+    expect(relativeTime(NOW + 30_000, NOW)).toBe('in a moment')
+  })
+  it('reads a time a few seconds ahead as just now, the server clock running ahead of this one', () => {
+    expect(relativeTime(NOW + 800, NOW)).toBe('just now')
+    expect(relativeTime(NOW + 4_000, NOW)).toBe('just now')
   })
   it('accepts ISO strings', () => {
     expect(relativeTime(new Date(NOW - 60_000).toISOString(), NOW)).toBe('1m ago')

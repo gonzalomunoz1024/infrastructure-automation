@@ -148,6 +148,11 @@ export function useCurrentUser(): string | null {
   return useSyncExternalStore(subscribeUser, getCurrentUser, () => null)
 }
 
+/** Whether `me` opened the change: nobody merges their own change request, admins excepted, as the backend judges it. */
+export function ownChange(me: Pick<Me, 'id' | 'admin'> | undefined, author: string | undefined): boolean {
+  return !!me && !!author && me.id === author && !me.admin
+}
+
 /* ----------------------------------------------------------------------------
    Errors
    ------------------------------------------------------------------------- */

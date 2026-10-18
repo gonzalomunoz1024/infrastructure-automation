@@ -6,10 +6,11 @@
  */
 import { useState } from 'react'
 import { Button, cx, DiffView, Drawer, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Skeleton, SkeletonRows, Spinner, StateTag, Textarea, useOverlayClose, useToast } from '@iaf/ui'
-import { api, errorMessage } from '../../lib/api'
+import { api, errorMessage, ownChange, useCurrentUser } from '../../lib/api'
 import { invalidate, useQuery } from '../../lib/queries'
 import type { ChangeRequestDetail, Check, Release, Strategy } from '../../lib/types'
 import { Link, pathFor } from '../../app/router'
+import { checksSummary } from '../../components/ChangeRequestTable'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
 
 function parseStages(text: string): number[] | null {
@@ -189,6 +190,10 @@ function DrawerBody({ id, workflow }: { id: string; workflow: string }) {
   const failed = checks.filter((c) => c.status === 'failed').length
   const passed = checks.length > 0 && failed === 0
   const open = cr?.status === 'open'
+  const user = useCurrentUser()
+  const me = useQuery(['me', user ?? 'default'], () => api.me())
+  // the author waits for a teammate: the backend refuses their own merge
+  const own = ownChange(me.data, cr?.author)
 
   const act = async (kind: 'merge' | 'close') => {
     setActing(kind)
@@ -235,7 +240,7 @@ function DrawerBody({ id, workflow }: { id: string; workflow: string }) {
                 <h3 className="text-caption2 font-semibold uppercase tracking-wide text-tertiary">Checks</h3>
                 {open && q.fetching && <Spinner size={10} />}
                 <span className="flex-1" />
-                <span className={cx('text-caption', failed > 0 ? 'text-critical' : passed ? 'text-healthy' : 'text-tertiary')}>{checks.length === 0 ? 'Waiting for checks…' : failed > 0 ? `${failed} failed` : `${checks.length} passed`}</span>
+                <span className={cx('text-caption', failed > 0 ? 'text-critical' : passed ? 'text-healthy' : 'text-tertiary')}>{checks.length === 0 ? 'Waiting for checks…' : failed > 0 ? `${failed} failed` : checksSummary(checks)}</span>
               </div>
               <ul className="divide-y divide-stroke-light" data-testid="cr-checks">
                 {checks.map((c) => (
@@ -259,8 +264,8 @@ function DrawerBody({ id, workflow }: { id: string; workflow: string }) {
           <Button variant="ghost" onClick={() => void act('close')} loading={acting === 'close'} disabled={acting !== null}>
             Close request
           </Button>
-          <Button variant="primary" onClick={() => void act('merge')} loading={acting === 'merge'} disabled={!passed || acting !== null} data-testid="cr-merge">
-            {passed ? 'Merge and publish' : failed > 0 ? 'Checks failed' : 'Waiting for checks'}
+          <Button variant="primary" onClick={() => void act('merge')} loading={acting === 'merge'} disabled={!passed || own || acting !== null} title={own ? 'You opened it: someone else on the team merges it' : undefined} data-testid="cr-merge">
+            {own ? 'A teammate merges it' : passed ? 'Merge and publish' : failed > 0 ? 'Checks failed' : 'Waiting for checks'}
           </Button>
         </OverlayFooter>
       )}

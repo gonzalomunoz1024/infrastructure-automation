@@ -481,9 +481,9 @@ public final class ProviderChecks {
                         warning(ACTIONS, "action.verifyExpect", a.id(), field + ".verify.expect", "verify.expect is notFound, ok or exists");
                     }
                 }
-                schema(a.input(), a.id(), field + ".input");
-                schema(a.output(), a.id(), field + ".output");
-                schema(a.vars(), a.id(), field + ".vars");
+                schema(a.input(), a.id(), field + ".input", false);
+                schema(a.output(), a.id(), field + ".output", true);
+                schema(a.vars(), a.id(), field + ".vars", false);
             }
             if (def.spec().overrides() != null) {
                 for (String target : def.spec().overrides().keySet()) {
@@ -497,12 +497,14 @@ public final class ProviderChecks {
             }
         }
 
-        void schema(JsonNode schema, String action, String field) {
+        /** {@code list}: an output, which may also be an array, the answer of an operation that lists (GET /vms answers [{ ... }]). */
+        void schema(JsonNode schema, String action, String field, boolean list) {
             if (schema == null || schema.isNull()) {
                 return;
             }
-            if (!schema.isObject() || (schema.has("type") && !"object".equals(schema.path("type").asText()))) {
-                error(ACTIONS, "action.schema", action, field, field.substring(field.lastIndexOf('.') + 1) + " is a JSON Schema of type object");
+            String type = schema.path("type").asText();
+            if (!schema.isObject() || (schema.has("type") && !"object".equals(type) && !(list && "array".equals(type)))) {
+                error(ACTIONS, "action.schema", action, field, field.substring(field.lastIndexOf('.') + 1) + " is a JSON Schema of type object" + (list ? " or array" : ""));
             }
         }
 

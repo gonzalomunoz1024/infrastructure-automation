@@ -15,8 +15,10 @@ import {
   initialState,
   matchesOperation,
   metadataOf,
+  renameAction,
   resourceFields,
   sandboxEnvironment,
+  starterActions,
   stepIssues,
   type WizardState,
 } from '../pages/ProviderWizardPage'
@@ -103,6 +105,55 @@ describe('an action’s own SLO', () => {
     expect(actionsOf(s)[0].slo).toBeUndefined()
     expect(actionSlo({ sloSuccessRate: 'abc', sloP95Ms: '' })).toBeUndefined()
     expect(actionSlo({ sloSuccessRate: '0', sloP95Ms: '800' })).toEqual({ p95Ms: 800 })
+  })
+})
+
+describe('the environments', () => {
+  const connect = (...urls: string[]) => stepIssues(http({ environments: urls.map((url, i) => ({ key: i, name: i ? 'prod' : 'dev', url })) }), 1)
+
+  it('are https, or plain http to localhost for a provider under local development, as the backend allows', () => {
+    expect(connect('https://backup-dev.example.com/api')).toEqual([])
+    expect(connect('http://localhost:18090/dev', 'http://127.0.0.1:18090/prod')).toEqual([])
+    expect(connect('http://[::1]:8080')).toEqual([])
+  })
+
+  it('say which one is plain http to a host that is not local', () => {
+    expect(connect('https://backup-dev.example.com/api', 'http://backup.example.com/api')).toEqual(['prod: endpoints are https URLs; only localhost may use plain http, for local development.'])
+    expect(connect('http://localhost.example.com/api')).toEqual([
+      'Add at least one environment with an https URL.',
+      'dev: endpoints are https URLs; only localhost may use plain http, for local development.',
+    ])
+  })
+})
+
+describe('a delete', () => {
+  const remove = (patch: Partial<Parameters<typeof blankAction>[0]> = {}) =>
+    http({ actions: [blankAction({ id: 'vm.get', method: 'GET', path: '/vms/{id}' }), blankAction({ id: 'vm.delete', method: 'DELETE', path: '/vms/{id}', effect: 'delete', retry: 'unsafe', approval: true, ...patch })] })
+
+  it('needs a plan step or a line on what it removes before the Actions step goes on, as the review judges it', () => {
+    expect(stepIssues(remove(), 2)).toEqual(['vm.delete deletes something: pick a plan step that previews it, or say in one line what it removes.'])
+    expect(stepIssues(remove({ plan: 'vm.get' }), 2)).toEqual([])
+    expect(stepIssues(remove({ effectDetail: '  ' }), 2)).toHaveLength(1)
+    expect(stepIssues(remove({ effectDetail: 'The VM and its disks' }), 2)).toEqual([])
+  })
+
+  it('writes its line as effectDetail, and leaves it out when there is none', () => {
+    const actions = (s: WizardState) => (buildProviderDocument(s).spec as { actions: Record<string, unknown>[] }).actions
+    expect(actions(remove({ effectDetail: ' The VM and its disks ' }))[1]).toMatchObject({ id: 'vm.delete', effect: 'delete', effectDetail: 'The VM and its disks' })
+    expect(actions(remove({ plan: 'vm.get' }))[1].effectDetail).toBeUndefined()
+  })
+
+  it('keeps its plan step when that action is renamed', () => {
+    const [get, del] = remove({ plan: 'vm.get' }).actions
+    const renamed = renameAction([get, del], get.key, 'vm.read')
+    expect(renamed.map((a) => [a.id, a.plan])).toEqual([['vm.read', ''], ['vm.delete', 'vm.read']])
+    // renaming the delete itself leaves the plans of the others alone
+    expect(renameAction(renamed, del.key, 'vm.remove').map((a) => [a.id, a.plan])).toEqual([['vm.read', ''], ['vm.remove', 'vm.read']])
+  })
+
+  it("starts a Terraform provider's destroy with a line, so a new module passes the review", () => {
+    const s: WizardState = { ...initialState(), type: 'terraform', actions: starterActions('terraform') }
+    expect(stepIssues(s, 2)).not.toContainEqual(expect.stringContaining('deletes something'))
   })
 })
 

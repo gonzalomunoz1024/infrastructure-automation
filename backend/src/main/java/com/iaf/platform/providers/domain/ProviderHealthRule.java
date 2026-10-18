@@ -36,6 +36,8 @@ public final class ProviderHealthRule {
     public static final int FAILING_P95_FACTOR = 3;
     public static final Duration WINDOW = Duration.ofHours(24);
     public static final int TREND_DAYS = 14;
+    /** What the reasons of the actions judged by the provider's SLO begin with, beside actions with their own. */
+    static final String OTHER_ACTIONS = "Other actions";
 
     private ProviderHealthRule() {
     }
@@ -68,7 +70,8 @@ public final class ProviderHealthRule {
             return band(window, def.slo(), trend, null);
         }
         List<Health> parts = new ArrayList<>();
-        parts.add(band(window.stream().filter(s -> !own.containsKey(s.action())).toList(), def.slo(), trend, null));
+        // the rest is judged on its own calls, so its reasons say so: its p95 is not the provider's
+        parts.add(band(window.stream().filter(s -> !own.containsKey(s.action())).toList(), def.slo(), trend, OTHER_ACTIONS));
         own.forEach((id, slo) -> parts.add(band(window.stream().filter(s -> id.equals(s.action())).toList(), slo, trend, id)));
         List<Health> known = parts.stream().filter(Health::known).toList();
         if (known.isEmpty()) {

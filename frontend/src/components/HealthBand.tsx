@@ -6,6 +6,9 @@ import type { Health, HealthStatus } from '../lib/types'
  * it gave. The UI never computes the band; it renders it.
  */
 
+/** A figure of a provider's calls, or a dash while there are none: 0% and 0ms would read as measured. */
+export const measured = (health: Pick<Health, 'calls'>, text: string): string => (health.calls === 0 ? '—' : text)
+
 const BAND: Record<HealthStatus, { dot: DotKind; label: string; text: string }> = {
   healthy: { dot: 'healthy', label: 'Healthy', text: 'text-healthy' },
   degraded: { dot: 'warning', label: 'Degraded', text: 'text-warning' },

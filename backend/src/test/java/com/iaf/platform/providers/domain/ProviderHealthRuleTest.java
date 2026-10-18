@@ -191,7 +191,8 @@ class ProviderHealthRuleTest {
 
         Health h = ProviderHealthRule.judge(samples, FLEET, NOW);
         assertThat(h.status()).isEqualTo(Status.FAILING);
-        assertThat(h.reasons()).containsExactly("Success rate 95% is below the 99.5% SLO", "vm.wait: Success rate 90% is below the 95% floor");
+        assertThat(h.reasons()).as("the rest's figures are its own, not the provider's, so its reason names it too")
+                .containsExactly("Other actions: Success rate 95% is below the 99.5% SLO", "vm.wait: Success rate 90% is below the 95% floor");
         assertThat(h.successRate()).as("the rate shown is over every call").isEqualTo(92.5);
     }
 

@@ -8,6 +8,7 @@ export type DateInput = string | number | Date
 const MINUTE = 60_000
 const HOUR = 3_600_000
 const DAY = 86_400_000
+const SKEW_MS = 5_000
 
 function toMs(input: DateInput): number {
   if (input instanceof Date) return input.getTime()
@@ -24,7 +25,8 @@ export function relativeTime(input: DateInput, now: DateInput = Date.now()): str
   const abs = Math.abs(diff)
   const past = diff >= 0
   const fmt = (v: number, unit: string) => (past ? `${v}${unit} ago` : `in ${v}${unit}`)
-  if (abs < 45_000) return past ? 'just now' : 'in a moment'
+  // a few seconds ahead is the server's clock running ahead of this one, not the future
+  if (abs < 45_000) return past || abs < SKEW_MS ? 'just now' : 'in a moment'
   if (abs < HOUR) return fmt(Math.max(1, Math.round(abs / MINUTE)), 'm')
   if (abs < DAY) return fmt(Math.round(abs / HOUR), 'h')
   if (abs < 7 * DAY) return fmt(Math.round(abs / DAY), 'd')

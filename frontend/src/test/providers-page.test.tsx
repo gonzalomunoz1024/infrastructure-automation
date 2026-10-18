@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import { Table } from '@iaf/ui'
 import { AUDIT_COLUMNS, LIST_COLUMNS, PERFORMANCE_COLUMNS, emptyProviders, errorTotals, providerEvents, sloVerdict, tabOf } from '../pages/ProvidersPage'
+import { measured } from '../components/HealthBand'
 import type { EvidenceEntry, ProviderSummary } from '../lib/types'
 
 /*
@@ -62,6 +63,13 @@ describe('sloVerdict', () => {
 
   it('has no verdict for a provider without an SLO', () => {
     expect(sloVerdict(LEGACY)).toEqual({ success: null, p95: null, within: null })
+  })
+
+  it('has none for a provider nothing has called yet, whose figures are a dash rather than 0% and 0ms', () => {
+    const fresh = { health: { ...VSPHERE.health, successRate: 0, p50Ms: 0, p95Ms: 0, calls: 0 }, slo: VSPHERE.slo }
+    expect(sloVerdict(fresh)).toEqual({ success: null, p95: null, within: null })
+    expect(measured(fresh.health, '0.0%')).toBe('—')
+    expect(measured(VSPHERE.health, '99.7%')).toBe('99.7%')
   })
 })
 

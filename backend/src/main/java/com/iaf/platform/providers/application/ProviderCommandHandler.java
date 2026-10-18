@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import org.springframework.context.annotation.Primary;
@@ -490,14 +491,16 @@ public class ProviderCommandHandler implements ProviderCommands {
             // draft's credentials: only once the caller may use them
             return blocking(() -> Optional.ofNullable(requireReviewer(who, def.name(), def.owner()))).flatMap(team -> CredentialUse.guarded(credentials, who, () -> {
                 long started = System.nanoTime();
+                // the status the system answered with, where the adapter speaks HTTP; 200 for one that does not
+                AtomicInteger answered = new AtomicInteger(200);
                 // a review call: it reaches the system, but records no sample under a published provider's name
-                return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false)).contextWrite(ReviewCall::with)
+                return providerCalls.call(new ProviderCall(null, 1, def, action, environment, input, false)).contextWrite(c -> ReviewCall.with(c, answered))
                         .flatMap(response -> {
                             long ms = elapsedMs(started);
                             List<Mismatch> mismatches = Schemas.mismatches(def.effectiveOutput(action), response);
                             return verify(def, action, environment, input).map(v -> {
                                 Instant at = clock.instant();
-                                return new TryResult(true, 200, ms, response, mismatches, v.orElse(null), environment, at,
+                                return new TryResult(true, answered.get(), ms, response, mismatches, v.orElse(null), environment, at,
                                         withSample(command.yaml(), action.id(), response, environment, at, secrets::known));
                             });
                         })

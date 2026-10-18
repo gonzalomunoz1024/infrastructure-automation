@@ -91,7 +91,7 @@ function About({ entry, catalog }: { entry: CatalogEntry; catalog?: CatalogEntry
             <Tag size="sm" mono outline>
               {entry.method.toUpperCase()}
             </Tag>
-            <Mono className="break-all text-primary">{entry.path}</Mono>
+            <Mono className="wrap-anywhere text-primary">{entry.path}</Mono>
           </span>
         </CardRow>
         <CardRow label="Version">
@@ -116,7 +116,7 @@ function About({ entry, catalog }: { entry: CatalogEntry; catalog?: CatalogEntry
               <Tag size="sm" mono outline>
                 POST
               </Tag>
-              <Mono className="break-all text-primary">{entry.batchPath}</Mono>
+              <Mono className="wrap-anywhere text-primary">{entry.batchPath}</Mono>
             </span>
           </CardRow>
         )}

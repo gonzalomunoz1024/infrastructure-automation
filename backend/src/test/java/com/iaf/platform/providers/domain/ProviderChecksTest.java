@@ -57,6 +57,18 @@ class ProviderChecksTest {
     }
 
     @Test
+    void anOperationThatListsMayAnswerWithAnArrayButAnInputIsAnObject() {
+        String list = "{ id: vm.get, title: Get VM, operation: getVm, effect: read, retry: safe }";
+        Result r = ProviderChecks.check(VALID.replace(list, "{ id: vm.get, title: Get VM, operation: getVm, effect: read, retry: safe, output: { type: array, items: { type: object } } }"));
+        assertThat(r.problems()).isEmpty();
+        Result scalar = ProviderChecks.check(VALID.replace(list, "{ id: vm.get, title: Get VM, operation: getVm, effect: read, retry: safe, output: { type: string } }"));
+        assertThat(codes(scalar)).containsExactly("error action.schema");
+        assertThat(problem(scalar, "action.schema").orElseThrow().message()).isEqualTo("output is a JSON Schema of type object or array");
+        Result input = ProviderChecks.check(VALID.replace(list, "{ id: vm.get, title: Get VM, operation: getVm, effect: read, retry: safe, input: { type: array } }"));
+        assertThat(problem(input, "action.schema").orElseThrow().message()).isEqualTo("input is a JSON Schema of type object");
+    }
+
+    @Test
     void nameMustBeKebabCase() {
         Result r = ProviderChecks.check(VALID.replace("name: fleet", "name: Fleet_API"));
         assertThat(codes(r)).containsExactly("error name.format");

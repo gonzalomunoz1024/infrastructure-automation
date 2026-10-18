@@ -2,10 +2,11 @@ import { lazy, Suspense, useState } from 'react'
 import { Button, Card, CodeBlock, ConfirmDialog, DiffView, Icon, PageHeader, Skeleton, SkeletonRows, StateTag, StatusDot, Table, Tabs, Tag, useToast, type IconName, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage } from '../lib/api'
+import { api, errorMessage, ownChange, useCurrentUser } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
 import type { ChangeRequestDetail, Check } from '../lib/types'
 import { ErrorState, ExternalLink, Facts, Mono, TextLink, When, checkDot } from '../components/common'
+import { checksSummary } from '../components/ChangeRequestTable'
 import { ProblemList } from '../components/ProblemList'
 
 /** The read-only canvas is the designer's (it brings @xyflow/react): its own chunk, loaded when the tab opens. */
@@ -179,6 +180,8 @@ export default function ChangeRequestPage({ route }: PageProps) {
   // every 3 s while the request is open (its checks run on the branch), then at rest
   const cr = useQuery(['change-request', id], () => api.changeRequest(id), { refetchInterval: polling ? 3000 : undefined })
   const data = cr.data
+  const user = useCurrentUser()
+  const me = useQuery(['me', user ?? 'default'], () => api.me())
   const shouldPoll = !data || data.status === 'open'
   if (shouldPoll !== polling) setPolling(shouldPoll)
 
@@ -221,7 +224,9 @@ export default function ChangeRequestPage({ route }: PageProps) {
   const tabs = data ? contentTabs(data.kind) : []
   const tab: ContentTab = chosen && tabs.includes(chosen) ? chosen : (tabs[0] ?? 'diff')
   const diagram = data ? diagramSourceOf(data) : null
-  const canMerge = !!data && data.status === 'open' && checksPassed
+  // the author waits for a teammate: the backend refuses their own merge
+  const own = ownChange(me.data, data?.author)
+  const canMerge = !!data && data.status === 'open' && checksPassed && !own
   const targetHref = data ? (data.kind === 'provider' ? pathFor('provider', { name: data.name }) : pathFor('workflow', { name: data.name })) : '#'
   const releaseHref = releaseId ? (releaseId.startsWith('/') ? releaseId : pathFor('release', { id: releaseId })) : null
 
@@ -256,7 +261,8 @@ export default function ChangeRequestPage({ route }: PageProps) {
                   <Button variant="ghost" icon="close" onClick={() => setConfirm('close')} disabled={merge.loading || close.loading}>
                     Close
                   </Button>
-                  <Button variant="primary" icon="git-branch" disabled={!canMerge} loading={merge.loading} onClick={() => setConfirm('merge')} title={canMerge ? undefined : 'Every check must pass first'}>
+                  {own && <span className="text-footnote text-secondary">A teammate reviews and merges it</span>}
+                  <Button variant="primary" icon="git-branch" disabled={!canMerge} loading={merge.loading} onClick={() => setConfirm('merge')} title={own ? 'You opened it: someone else on the team merges it' : canMerge ? undefined : 'Every check must pass first'}>
                     Merge
                   </Button>
                 </>
@@ -281,7 +287,7 @@ export default function ChangeRequestPage({ route }: PageProps) {
                 { label: 'Strategy', value: <Tag size="sm">{data.strategy}</Tag> },
                 { label: 'Opened', value: <When at={data.createdAt} /> },
                 { label: 'Merged', value: data.mergedAt ? <When at={data.mergedAt} /> : <span className="text-tertiary">not yet</span> },
-                { label: 'Checks', value: `${data.checks.filter((c) => c.status === 'passed').length} of ${data.checks.length} passed` },
+                { label: 'Checks', value: checksSummary(data.checks) },
               ]}
             />
           </Card>

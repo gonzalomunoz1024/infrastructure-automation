@@ -13,7 +13,8 @@ scripts/dev.sh        # backend on http://localhost:8080, frontend on http://loc
 Open <http://localhost:3000>. You are `gonzalo`, an admin. The demo keeps everything in memory
 and seeds two weeks of history (jobs, releases, change requests, resources) that agrees with
 itself. To see the platform as a less privileged person, open **Settings** and change **Act as**:
-`ana` edits the data team's workflows, `mateo` runs the compute team's, `junior` can only run.
+`ana` is on the data team, `mateo` and `junior` on the compute team. Each designs, publishes and
+runs their own team's workflows and providers; a teammate merges what they publish.
 
 The pages, left to right in the sidebar:
 
@@ -76,7 +77,8 @@ are the same thing.
 ## 4. Onboard a provider
 
 A provider is a system workflows may call. Nobody writes code for one; the platform makes the
-calls from the provider's own description.
+calls from the provider's own description. [Onboard a VM provider, end to end](onboard-a-vm-provider.md)
+follows every step below in pictures, through to a workflow that creates a VM.
 
 1. **Providers → Add provider**. Choose the type: *OpenAPI* (import a spec and every operation
    can become an action), *HTTP* (a few endpoints described by example), *Ansible* (playbooks
