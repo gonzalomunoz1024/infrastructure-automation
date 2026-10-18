@@ -22,9 +22,10 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * The demo registry: resource types read from {@code <content dir>/resource-types}, and, when
  * {@code platform.demo.seed-history} is on, a few resources per type with lineage between them.
+ * With the {@code mongo} profile, {@link MongoResourceStore} keeps the registry instead.
  */
 @Slf4j
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryResourceStore implements ResourceStorePort {
 
