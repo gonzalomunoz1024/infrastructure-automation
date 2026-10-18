@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 import com.iaf.platform.identity.domain.ServiceAccount;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 
-@Profile("!postgres")
+@Profile("!mongo")
 @Component
 public class InMemoryServiceAccounts implements ServiceAccountStore {
 
