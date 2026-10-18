@@ -81,7 +81,7 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
     { id: 'settings', label: 'Settings' },
   ]
   return (
-    <header className="relative z-20 flex h-14 shrink-0 items-center gap-3 border-b border-stroke-light bg-surface px-3">
+    <header className="@container relative z-20 flex h-14 shrink-0 items-center gap-3 border-b border-stroke-light bg-surface px-3">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <IconButton label="Back to workflows" size="sm" onClick={onBack}>
           <Icon name="arrow-left" size={16} />
@@ -94,15 +94,20 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
             }, 'title')
           }
         />
-        <StateTag status={status} size="sm">
-          {status === 'published' && version ? `published ${version}` : status}
-        </StateTag>
+        {/* sized by the header, not the window (the shell sidebar may be collapsed or not): the tags give way first, then the title truncates */}
+        <span className="hidden shrink-0 @4xl:inline-flex">
+          <StateTag status={status} size="sm">
+            {status === 'published' && version ? `published ${version}` : status}
+          </StateTag>
+        </span>
         {owner && (
-          <Tag size="sm" icon="users" outline className="hidden min-[1400px]:inline-flex">
-            {owner}
-          </Tag>
+          <span className="hidden shrink-0 @6xl:inline-flex">
+            <Tag size="sm" icon="users" outline>
+              {owner}
+            </Tag>
+          </span>
         )}
-        {s.dirty && !s.saving && <span className="hidden truncate text-caption text-tertiary 2xl:inline">Unsaved changes</span>}
+        {s.dirty && !s.saving && <span className="hidden truncate text-caption text-tertiary @7xl:inline">Unsaved changes</span>}
       </div>
 
       <Tabs<DesignerTab> tabs={tabs} value={s.tab} onChange={(t) => store.setTab(t)} ariaLabel="Designer views" className="shrink-0 flex-nowrap" />
@@ -121,18 +126,18 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
             )}
           >
             <Icon name={s.problems.length === 0 ? 'check' : 'alert-triangle'} size={13} strokeWidth={2} />
-            Issues
+            <span className="hidden @3xl:inline">Issues</span>
             <Badge count={s.problems.length} tone={errors > 0 ? 'critical' : 'neutral'} showZero />
           </button>
         </Tooltip>
         <Tooltip label="The workflow as YAML" side="bottom">
           <Button variant="ghost" size="sm" icon="document" onClick={onYaml} aria-label="YAML">
-            <span className="hidden min-[1400px]:inline">YAML</span>
+            <span className="hidden @6xl:inline">YAML</span>
           </Button>
         </Tooltip>
         <Tooltip label="Build or change the workflow by describing it" side="bottom">
           <Button variant="ghost" size="sm" icon="sparkles" onClick={onAssistant} aria-label="Assistant" aria-pressed={assistantOpen} className={cx(assistantOpen && 'bg-accent-tint text-accent')}>
-            <span className="hidden min-[1400px]:inline">Assistant</span>
+            <span className="hidden @6xl:inline">Assistant</span>
           </Button>
         </Tooltip>
         <span className="mx-1 h-5 w-px bg-stroke-light" aria-hidden="true" />
@@ -142,8 +147,8 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
           </Button>
         </Tooltip>
         <Tooltip label={s.isNew ? 'Save the workflow first' : 'Open a change request to publish'} side="bottom">
-          <Button variant="primary" size="sm" icon="release" onClick={onPublish} disabled={s.isNew}>
-            Publish
+          <Button variant="primary" size="sm" icon="release" onClick={onPublish} disabled={s.isNew} aria-label="Publish">
+            <span className="hidden @3xl:inline">Publish</span>
           </Button>
         </Tooltip>
       </div>

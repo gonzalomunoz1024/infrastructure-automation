@@ -9,7 +9,7 @@
  */
 import '@xyflow/react/dist/base.css'
 import '../designer.css'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import {
   applyNodeChanges,
   MiniMap,
@@ -17,6 +17,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
+  useNodesInitialized,
   useReactFlow,
   type Connection,
   type EdgeChange,
@@ -38,6 +39,7 @@ import { insertPointOfHandle, mergeNodes, PLACEHOLDER_ID, STICKY_PREFIX, stickyN
 import { UiGlyph } from './glyphs'
 import { NODE_TYPES } from './nodes'
 import { RenameDialog } from './RenameDialog'
+import { FIT, openingViewport } from './viewport'
 
 export interface CanvasProps {
   graph: Graph
@@ -55,7 +57,13 @@ export interface CanvasProps {
 }
 
 const GRID = 20
-const FIT = { padding: 0.25, maxZoom: 1, minZoom: 0.2 }
+// props xyflow compares by identity: module constants, so a render never looks like a change
+const SNAP_GRID: [number, number] = [10, 10]
+/** the middle button pans; a left drag on the pane draws a selection, as in n8n */
+const PAN_BUTTONS = [1]
+const MULTI_SELECT_KEYS = ['Meta', 'Control', 'Shift']
+const CONNECTION_LINE = { stroke: 'var(--color-neutral)', strokeWidth: 2 }
+const MINIMAP_SIZE = { width: 180, height: 112 }
 
 /** Steps copied in this tab, for the menu's Paste (the system clipboard needs a paste event). */
 let clipboard: StepDocument[] | null = null
@@ -210,6 +218,19 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
     el.style.backgroundSize = `${size}px ${size}px`
     el.style.backgroundPosition = `${vp.x}px ${vp.y}px`
   }, [])
+
+  // xyflow fits the graph once its nodes are measured; a graph too long for that opens at its start
+  const nodesInitialized = useNodesInitialized()
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    if (!nodesInitialized || opened.current) return
+    opened.current = true
+    const el = wrapRef.current
+    const all = flowApi.getNodes()
+    if (!el || all.length === 0) return
+    const vp = openingViewport(flowApi.getNodesBounds(all), { width: el.clientWidth, height: el.clientHeight })
+    if (vp) void flowApi.setViewport(vp)
+  }, [nodesInitialized, flowApi])
 
   const fit = useCallback(() => void flowApi.fitView({ ...FIT, duration: 250 }), [flowApi])
   const zoomIn = useCallback(() => void flowApi.zoomIn({ duration: 200 }), [flowApi])
@@ -561,6 +582,44 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
 
   const closeMenu = useCallback(() => store.closeMenu(), [store])
 
+  /*
+   * xyflow hands the node handlers to every node as props, and its store takes the rest: a new
+   * function on each render (each drag tick is one) would re-render all the nodes. They stay the
+   * same functions and call the latest closures.
+   */
+  const latest = useRef({ onOpen, selectedIds, selectOnly, openMenuAt, syncBackground })
+  useLayoutEffect(() => {
+    latest.current = { onOpen, selectedIds, selectOnly, openMenuAt, syncBackground }
+  })
+  const onNodeDoubleClick = useCallback((_: ReactMouseEvent, node: FlowNode) => {
+    if (node.type === 'step' || node.type === 'trigger' || node.type === 'undo') latest.current.onOpen(node.id)
+  }, [])
+  const onNodeContextMenu = useCallback((e: ReactMouseEvent, node: FlowNode) => {
+    e.preventDefault()
+    if (node.type === 'end' || node.type === 'placeholder') return
+    const { selectedIds: selected, selectOnly: only, openMenuAt: open } = latest.current
+    const sel = selected()
+    if (sel.length > 1 && sel.includes(node.id)) open({ kind: 'selection', ids: sel }, e.clientX, e.clientY)
+    else {
+      only(node.id)
+      open({ kind: 'node', id: node.id }, e.clientX, e.clientY)
+    }
+  }, [])
+  const onSelectionContextMenu = useCallback((e: ReactMouseEvent, sel: FlowNode[]) => {
+    e.preventDefault()
+    latest.current.openMenuAt({ kind: 'selection', ids: sel.map((n) => n.id) }, e.clientX, e.clientY)
+  }, [])
+  const onPaneContextMenu = useCallback(
+    (e: ReactMouseEvent | MouseEvent) => {
+      e.preventDefault()
+      const p = flowApi.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      latest.current.openMenuAt({ kind: 'pane', flowX: p.x, flowY: p.y }, e.clientX, e.clientY)
+    },
+    [flowApi],
+  )
+  const onMove = useCallback((_: MouseEvent | TouchEvent | null, vp: Viewport) => latest.current.syncBackground(vp), [])
+  const onInit = useCallback((inst: { getViewport: () => Viewport }) => latest.current.syncBackground(inst.getViewport()), [])
+
   return (
     <section
       ref={wrapRef}
@@ -585,53 +644,35 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
         onNodeDragStop={onNodeDragStop}
-        onNodeDoubleClick={(_, node) => {
-          if (node.type === 'step' || node.type === 'trigger' || node.type === 'undo') onOpen(node.id)
-        }}
-        onNodeContextMenu={(e, node) => {
-          e.preventDefault()
-          if (node.type === 'end' || node.type === 'placeholder') return
-          const sel = selectedIds()
-          if (sel.length > 1 && sel.includes(node.id)) openMenuAt({ kind: 'selection', ids: sel }, e.clientX, e.clientY)
-          else {
-            selectOnly(node.id)
-            openMenuAt({ kind: 'node', id: node.id }, e.clientX, e.clientY)
-          }
-        }}
-        onSelectionContextMenu={(e, sel) => {
-          e.preventDefault()
-          openMenuAt({ kind: 'selection', ids: sel.map((n) => n.id) }, e.clientX, e.clientY)
-        }}
-        onPaneContextMenu={(e) => {
-          e.preventDefault()
-          const p = flowApi.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-          openMenuAt({ kind: 'pane', flowX: p.x, flowY: p.y }, e.clientX, e.clientY)
-        }}
-        onPaneClick={() => store.closeMenu()}
-        onMove={(_, vp) => syncBackground(vp)}
-        onInit={(inst) => syncBackground(inst.getViewport())}
+        onNodeDoubleClick={onNodeDoubleClick}
+        onNodeContextMenu={onNodeContextMenu}
+        onSelectionContextMenu={onSelectionContextMenu}
+        onPaneContextMenu={onPaneContextMenu}
+        onPaneClick={closeMenu}
+        onMove={onMove}
+        onInit={onInit}
         fitView
         fitViewOptions={FIT}
         minZoom={0.15}
         maxZoom={4}
         snapToGrid
-        snapGrid={[10, 10]}
+        snapGrid={SNAP_GRID}
         nodeDragThreshold={2}
         selectionOnDrag
         selectionMode={SelectionMode.Partial}
-        panOnDrag={[1]}
+        panOnDrag={PAN_BUTTONS}
         panOnScroll
         zoomOnScroll={false}
         zoomOnDoubleClick={false}
         deleteKeyCode={null}
-        multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
+        multiSelectionKeyCode={MULTI_SELECT_KEYS}
         disableKeyboardA11y
         edgesFocusable={false}
         nodesConnectable={!readOnly}
         nodesDraggable={!readOnly}
         elementsSelectable
         connectionRadius={28}
-        connectionLineStyle={{ stroke: 'var(--color-neutral)', strokeWidth: 2 }}
+        connectionLineStyle={CONNECTION_LINE}
         attributionPosition="top-right"
         className={cx(readOnly && 'iaf-readonly')}
       >
@@ -656,7 +697,7 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
             )}
           </div>
         </Panel>
-        <MiniMap<FlowNode> position="bottom-right" pannable zoomable ariaLabel="Mini map" nodeClassName={MINI_CLASS} nodeBorderRadius={8} style={{ width: 180, height: 112 }} />
+        <MiniMap<FlowNode> position="bottom-right" pannable zoomable ariaLabel="Mini map" nodeClassName={MINI_CLASS} nodeBorderRadius={8} style={MINIMAP_SIZE} />
       </ReactFlow>
       {children}
       {menu && !readOnly && <ContextMenu x={menu.x} y={menu.y} entries={entriesFor(menu.target)} onClose={closeMenu} />}
