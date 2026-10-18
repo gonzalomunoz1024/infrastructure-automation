@@ -156,11 +156,11 @@ and their events), the gateway's quotas and idempotency keys, the inbox, and the
 table below lists. Temporal keeps its own database: the dev server's SQLite file in
 `docker-compose.yml`, or a PostgreSQL of its own with `docker-compose.temporal-postgres.yml`. The
 platform reaches Temporal through its API only and never reads that database. Git is the source
-of truth for workflows and providers: every
-start seeds them from the content repository in `platform.content.dir`, and with
-`platform.content.git` on that repository is the workflow store itself (`GitWorkflowStore`, below,
-which commits every draft and publish) and a provider saved through the platform is written back
-to its file there, uncommitted. Object storage, through `ArtifactStorePort` (a bucket under the
+of truth for workflows and providers: every start seeds them from the content repository in
+`platform.content.dir`, and with `platform.content.git` on that repository is the workflow store
+itself (`GitWorkflowStore`, below, which commits every draft and publish) and a provider saved
+through the platform is written back to its file there, uncommitted. Object storage, through
+`ArtifactStorePort` (a bucket under the
 `s3` profile, else files under `platform.artifacts.dir`), holds playbook uploads and Terraform's
 saved plans by SHA-256, and each ended job's archive: its log lines (`jobs/<id>/logs.ndjson`) and
 the plan it was started with (`jobs/<id>/plan.json`). WORM evidence goes to object storage under
@@ -197,7 +197,7 @@ MongoDB adapter (`@Profile("mongo") @Primary`, over the small `Mongo` helper in
 | `ProjectionStore` (runs)         | `MongoProjectionStore`  | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 | `IdempotencyStore` (gateway)     | `MongoIdempotencyStore` | `idempotency_keys` (one document per caller and key; a claim is one conditional upsert that inserts the key or takes over an expired or stale one; replay from the stored status, headers and body; a release deletes an unanswered key; a TTL index on `expiresAt` deletes expired keys) |
 | `QuotaStore` (gateway)           | `MongoQuotaStore`       | `quota_buckets` (one document per team bucket, refilled and drawn on the server by atomic updates, a token taken only while the bucket holds one, so every replica draws from the same bucket; a TTL index deletes a bucket idle for 24 hours, which would be full again) |
-| `InboxStore` (notifications)     | `MongoInboxStore`       | `inbox_notifications` (the newest `platform.notifications.keep`, each with its audience and who read it embedded) |
+| `InboxStore` (notifications)     | `MongoInboxStore`       | `inbox_notifications` (the newest `platform.notifications.keep`, in the order of arrival that one counter in `store_sequences` hands out to every replica, each with its audience and who read it embedded) |
 
 Under that profile the in-memory twins of these stores are not created at all
 (`@Profile("!mongo")`), so nothing seeds the content twice and the MongoDB adapters are the only
@@ -219,7 +219,8 @@ rounded), and reads back as that integer; a null inside a JSON value or a map is
 so a job's input or an evidence entry's hashed data comes back exactly, while a null record
 component is left out. Each adapter creates the indexes it relies on in its constructor, so every
 start makes the missing ones and leaves the others as they are. The adapters' tests run on a real
-MongoDB, a fresh database per test (see `docs/contributing.md`).
+MongoDB when `PLATFORM_TEST_MONGO_URI` names one, a fresh database per test (see
+`docs/contributing.md`).
 
 There are no multi-document transactions. A write that must be atomic is one document's, and
 single-document writes stand in for locks and constraints: a unique `_id` or index refuses a second
@@ -370,9 +371,9 @@ backend pod (`api.replicas: 1` and `worker.enabled: false`, so the API pod runs 
 worker too), its clone on a volume (`content.gitStore.existingClaim`; cloned once with its history,
 then kept), replaced with `Recreate` so that two pods never hold it at once. More replicas need
 `content.gitStore.enabled: false`: the workflows then live in MongoDB (`workflow_versions`, with
-`mongo.enabled`), seeded from a fresh shallow clone at every start, and change requests can still be pull requests on
-the repository (`github`). Sharing the Git store between replicas would take a push after each
-commit, and a fetch and a reindex whenever the remote moves.
+`mongo.enabled`), seeded from a fresh shallow clone at every start, and change requests can still
+be pull requests on the repository (`github`). Sharing the Git store between replicas would take a
+push after each commit, and a fetch and a reindex whenever the remote moves.
 
 ### Reactive boundaries
 
@@ -384,9 +385,8 @@ The store ports are synchronous, and the MongoDB stores of the `mongo` profile b
 driver's synchronous client). So under that profile `BlockingStoresWebFilter` subscribes each
 request's whole chain on `boundedElastic` and delivers the request body there too, first in the
 filter chain (`RoleWebFilter` comes next, then the identity, scope, idempotency and generated-route
-filters). The evidence stores of the `worm` and `worm-s3` profiles block on files
-and the S3 client under any profile, so the audit handlers read and write them on `boundedElastic`
-themselves.
+filters). The evidence stores of the `worm` and `worm-s3` profiles block on files and the S3 client
+under any profile, so the audit handlers read and write them on `boundedElastic` themselves.
 The demo adapters that simulate latency (`RecordedProviderCall`, `DemoAutomationRunner`) also wait
 there, so the job events that follow are stored from there. `Mongo` counts any call that still
 runs on a non-blocking thread (a Netty event loop or a Reactor timer) and logs the first, and the
@@ -429,13 +429,13 @@ wiring test expects none.
   their last checkpoint, never their entries), so a run costs the open records, not the history.
   The MongoDB store answers it from the headers without a `seal` (a scan of the headers, which no
   index serves, never of the entries) and first brings a header that lags behind its entries up to
-  date; the WORM stores skip every
-  record named in their `sealed/` index (one write-once object per sealed record, written with the
-  seal; a record sealed before the index existed is indexed the first time a run finds it). On
-  demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
-  member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
-  them, the workflow's owner team) or an admin, and each link is published as `audit.shared`
-  (record, who, expiry; never the token). An evidence pack is written to a temporary file as it
+  date; the WORM stores skip every record named in their `sealed/` index (one write-once object per
+  sealed record, written with the seal; a record sealed before the index existed is indexed the
+  first time a run finds it). On demand (`POST /audit:seal`) only an admin seals. A record is
+  shared by the job's requester, a member of the teams it ran for (`RecordOwners`: the
+  requester's teams as the runs index kept them, the workflow's owner team) or an admin, and each
+  link is published as `audit.shared` (record, who, expiry; never the token). An evidence pack
+  is written to a temporary file as it
   is built (the store lists the matching ids; each record is read, serialised straight into the
   zip with its sha256 taken on the way, and let go, so one record is in memory at a time), streamed in
   64 KiB chunks and deleted once sent, failed or abandoned; a pack whose client left before its
@@ -615,8 +615,8 @@ so a retry never creates a second one. A cancel from the Temporal UI or CLI ends
 `temporal`. Without the `mongo` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
-history are read back from MongoDB, never from Temporal's own database, which the platform does
-not read. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
+history are read back from MongoDB; the platform never reads Temporal's own database. With
+`platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
 `docker-compose.yml`), each job's view carries `links.temporal`, its execution there
 (`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
 "Open in Temporal".
