@@ -556,7 +556,12 @@ the backend merges onto the job's input (a list or a scalar is refused before it
 still running or a batch, both refused by the backend, gets a sentence instead of the form. A
 batch offers its retry once it has ended, counting the rows
 `POST /jobs/{id}:retry-failed-rows` runs again in a new wave (the failed, cancelled and skipped
-ones, named when not all of them failed). The resource page draws the lineage's whole graph
+ones, named when not all of them failed). The job page reads the job's events over SSE
+(`GET /jobs/{id}/events`), polling every 5 s as a safety net while the job is active; the server
+ends the stream after the job's last event (`job.finished` or `job.cancelled`), and the page stops
+there instead of letting EventSource reconnect and replay a finished job, until a batch that runs
+its failed rows again is listened to again. The shell has no WebSocket client for
+`/ws/jobs/{id}`. The resource page draws the lineage's whole graph
 (`nodes` and `edges`, a column per hop on the longest chain, so every edge points right), and the
 direct lists alone from a backend that sends no graph. The providers page has three tabs, kept in
 its address (`?tab=`): the list, with p50 beside p95; each provider's performance against its SLO

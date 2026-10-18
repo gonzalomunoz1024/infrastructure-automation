@@ -91,12 +91,12 @@ export interface ApiMock {
 /** A reply with a status other than 200, or no body; `headers` for what the client reads (Retry-After). */
 export const reply = (status: number, json?: unknown, headers?: Record<string, string>): Reply => ({ [REPLY]: true, status, json, headers })
 
-/** A server-sent event stream that tells the browser not to reconnect for ten minutes. */
-export const sse = (events: { event: string; data: unknown; id?: number }[]): Reply => ({
+/** A server-sent event stream that tells the browser not to reconnect for ten minutes, or for `retryMs`. */
+export const sse = (events: { event: string; data: unknown; id?: number }[], retryMs = 600_000): Reply => ({
   [REPLY]: true,
   status: 200,
   contentType: 'text/event-stream',
-  body: 'retry: 600000\n\n' + events.map((e) => `${e.id !== undefined ? `id: ${e.id}\n` : ''}event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`).join(''),
+  body: `retry: ${retryMs}\n\n` + events.map((e) => `${e.id !== undefined ? `id: ${e.id}\n` : ''}event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`).join(''),
 })
 
 const isReply = (v: unknown): v is Reply => typeof v === 'object' && v !== null && REPLY in v

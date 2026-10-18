@@ -208,9 +208,11 @@ test.describe('job: built inputs, continued failures and the replay', () => {
 test.describe('job: a stopped batch', () => {
   test('retrying runs the failed and skipped rows again in a new wave, and the panel follows', async ({ page }) => {
     let retried = false
+    // the job's stream ends after its last event, and asks a browser that reconnects to do so at once
+    const finished = { seq: 1, at: BATCH_JOB.endedAt, jobId: BATCH_JOB.id, type: 'job', data: { jobId: BATCH_JOB.id, event: 'job.finished', status: 'failed' } }
     const api = await mockApi(page, {
       'GET /jobs/{id}': () => (retried ? BATCH_RETRIED : BATCH_JOB),
-      'GET /jobs/{id}/events': sse([]),
+      'GET /jobs/{id}/events': sse([{ id: 1, event: 'job', data: finished }], 100),
       'POST /jobs/{id}:retry-failed-rows': () => {
         retried = true
         return reply(202, { id: BATCH_JOB.id, status: 'queued' })
@@ -220,6 +222,13 @@ test.describe('job: a stopped batch', () => {
     await page.goto('/#/jobs/job-b4d2e9a1')
     // a batch opens on its rows
     await expect(page.getByRole('tab', { name: /Batch/ })).toHaveAttribute('aria-selected', 'true')
+    // the stream ended with the job: nothing reconnects to replay it
+    const streams = () => api.callsTo('GET', '/jobs/job-b4d2e9a1/events').length
+    await expect.poll(streams).toBeGreaterThan(0)
+    await page.waitForTimeout(300)
+    const read = streams()
+    await page.waitForTimeout(1000)
+    expect(streams()).toBe(read)
     await expect(page.getByRole('alert').filter({ hasText: 'Stopped: stopped after wave 1: 2 of 3 rows failed (more than 20%)' })).toBeVisible()
     const rows = page.getByRole('table', { name: 'Batch rows' })
     await expect(rows).toContainText('package_conflict at apply')
@@ -237,6 +246,8 @@ test.describe('job: a stopped batch', () => {
     await expect(page.getByRole('button', { name: /^Retry/ })).toHaveCount(0)
     await expect(page.getByRole('alert').filter({ hasText: 'Stopped:' })).toHaveCount(0)
     await expect(rows).not.toContainText('package_conflict at apply')
+    // running again, the job is listened to again
+    await expect.poll(streams).toBeGreaterThan(read)
   })
 
   test('a batch still running offers no retry, even with a failed row', async ({ page }) => {

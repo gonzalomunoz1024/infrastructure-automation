@@ -67,12 +67,17 @@ export default function JobPage({ route }: PageProps) {
   const now = useNow(polling ? 1000 : 60_000)
   const [live, setLive] = useState<'connecting' | 'open'>('connecting')
   const [events, setEvents] = useState<JobEvent[]>([])
+  // the stream ends with the job; a job that runs again (a batch retrying its failed rows) is listened to again
+  const [round, setRound] = useState(0)
 
   const job = useQuery(['job', id], () => api.job(id), { refetchInterval: polling ? 5000 : undefined })
   const data = job.data
   // the stream is the fast path; the 5 s poll is the safety net while the job is active
   const active = !data || isActiveJob(data.status)
-  if (active !== polling) setPolling(active)
+  if (active !== polling) {
+    setPolling(active)
+    if (active) setRound((r) => r + 1)
+  }
 
   const refetchRef = useRef(job.refetch)
   useEffect(() => {
@@ -96,7 +101,7 @@ export default function JobPage({ route }: PageProps) {
       sub.close()
       if (timer) clearTimeout(timer)
     }
-  }, [id])
+  }, [id, round])
 
   const after = (title: string, message?: string) => {
     invalidate('job')
