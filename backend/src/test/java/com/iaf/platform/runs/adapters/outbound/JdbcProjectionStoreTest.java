@@ -61,7 +61,7 @@ class JdbcProjectionStoreTest {
             RunsTestWiring w = new RunsTestWiring(new Mirror(reference, newStore()));
             PlatformProperties props = new PlatformProperties();
             props.getContent().setDir("..");
-            new DemoRunsSeeder(props, w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock).seed();
+            new DemoRunsSeeder(props, new ChangeProperties(), w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock).seed();
 
             ProjectionStore restarted = reopen();
             List<Job> all = reference.jobs(JobQuery.ALL);

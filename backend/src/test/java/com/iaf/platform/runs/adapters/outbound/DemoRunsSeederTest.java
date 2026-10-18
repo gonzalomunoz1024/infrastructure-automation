@@ -35,7 +35,7 @@ class DemoRunsSeederTest {
         WorkflowExecutionPort engine = RunsTestWiring.idleEngine();
         PlatformProperties props = new PlatformProperties();
         props.getContent().setDir("..");
-        DemoRunsSeeder seeder = new DemoRunsSeeder(props, w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, engine, w.clock);
+        DemoRunsSeeder seeder = new DemoRunsSeeder(props, new ChangeProperties(), w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, engine, w.clock);
 
         DemoRunsSeeder.Report report = seeder.seed();
 
@@ -61,6 +61,9 @@ class DemoRunsSeederTest {
         assertThat(failed).anyMatch(j -> j.workflow().equals("mongodb-upgrade") && "3.1.0".equals(j.version())
                 && "replica_set_not_ready".equals(j.errorClass()) && "verify".equals(j.failedStep()));
         assertThat(history).anyMatch(j -> j.change() != null && j.change().id().startsWith("CHG00") && "closed".equals(j.change().state()));
+        assertThat(history).filteredOn(j -> j.change() != null)
+                .as("every seeded change links back to its job's evidence")
+                .allMatch(j -> j.change().evidenceUrl() != null && j.change().evidenceUrl().endsWith("/" + j.id()));
         assertThat(history).anyMatch(j -> j.approvals().stream().anyMatch(a -> a.status() == Approval.Status.APPROVED && a.decidedBy() != null));
         assertThat(history).anyMatch(j -> j.preview() != null);
 
@@ -130,7 +133,7 @@ class DemoRunsSeederTest {
         RunsTestWiring w = new RunsTestWiring();
         PlatformProperties props = new PlatformProperties();
         props.getContent().setDir("..");
-        DemoRunsSeeder seeder = new DemoRunsSeeder(props, w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock);
+        DemoRunsSeeder seeder = new DemoRunsSeeder(props, new ChangeProperties(), w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock);
         assertThat(seeder.alreadySeeded()).isFalse();
 
         seeder.onReady();
@@ -148,8 +151,8 @@ class DemoRunsSeederTest {
         RunsTestWiring a = new RunsTestWiring();
         RunsTestWiring b = new RunsTestWiring();
         PlatformProperties props = new PlatformProperties();
-        DemoRunsSeeder.Report ra = new DemoRunsSeeder(props, a.workflows, a.providers, a.resources, a.projection, a.events, a.telemetry, RunsTestWiring.idleEngine(), a.clock).seed();
-        DemoRunsSeeder.Report rb = new DemoRunsSeeder(props, b.workflows, b.providers, b.resources, b.projection, b.events, b.telemetry, RunsTestWiring.idleEngine(), b.clock).seed();
+        DemoRunsSeeder.Report ra = new DemoRunsSeeder(props, new ChangeProperties(), a.workflows, a.providers, a.resources, a.projection, a.events, a.telemetry, RunsTestWiring.idleEngine(), a.clock).seed();
+        DemoRunsSeeder.Report rb = new DemoRunsSeeder(props, new ChangeProperties(), b.workflows, b.providers, b.resources, b.projection, b.events, b.telemetry, RunsTestWiring.idleEngine(), b.clock).seed();
         assertThat(ra.failed()).isEqualTo(rb.failed());
         assertThat(ra.cancelled()).isEqualTo(rb.cancelled());
         assertThat(ra.calls()).isEqualTo(rb.calls());

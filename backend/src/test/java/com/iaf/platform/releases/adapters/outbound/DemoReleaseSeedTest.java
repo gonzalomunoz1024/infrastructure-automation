@@ -18,6 +18,7 @@ import com.iaf.platform.releases.domain.Release.Gate;
 import com.iaf.platform.releases.domain.ReleaseGates;
 import com.iaf.platform.releases.domain.ReleaseStatus;
 import com.iaf.platform.runs.RunsTestWiring;
+import com.iaf.platform.runs.adapters.outbound.ChangeProperties;
 import com.iaf.platform.runs.adapters.outbound.DemoRunsSeeder;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
@@ -34,7 +35,7 @@ class DemoReleaseSeedTest {
     @BeforeEach
     void seedTheJobsFirst() {
         props.getContent().setDir("..");
-        new DemoRunsSeeder(props, w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock).seed();
+        new DemoRunsSeeder(props, new ChangeProperties(), w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock).seed();
         seed = new DemoReleaseSeed(store, w.workflows, w.queries, props, w.clock);
         now = w.clock.instant();
     }

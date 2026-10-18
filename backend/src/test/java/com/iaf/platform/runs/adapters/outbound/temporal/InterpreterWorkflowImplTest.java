@@ -22,6 +22,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
+import com.iaf.platform.runs.adapters.outbound.ChangeProperties;
 import com.iaf.platform.runs.adapters.outbound.DemoRunsSeeder;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.domain.Approval;
@@ -526,7 +527,7 @@ class InterpreterWorkflowImplTest {
         t = new TemporalTestEngine();
         PlatformProperties props = new PlatformProperties();
         props.getContent().setDir("..");
-        DemoRunsSeeder seeder = new DemoRunsSeeder(props, t.w.workflows, t.w.providers, t.w.resources, t.w.projection, t.w.events, t.w.telemetry,
+        DemoRunsSeeder seeder = new DemoRunsSeeder(props, new ChangeProperties(), t.w.workflows, t.w.providers, t.w.resources, t.w.projection, t.w.events, t.w.telemetry,
                 t.execution, t.w.clock);
         DemoRunsSeeder.Report report = seeder.seed();
         String waitingId = report.waitingApproval();

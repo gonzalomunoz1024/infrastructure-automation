@@ -130,6 +130,7 @@ public class DemoRunsSeeder {
             "request-storage", 5, "build-vm-image", 3, "web-environment", 2, "mongodb-upgrade", 3);
 
     private final PlatformProperties props;
+    private final ChangeProperties changes;
     private final WorkflowQueries workflows;
     private final ProviderQueries providers;
     private final ResourceQueries resources;
@@ -139,9 +140,11 @@ public class DemoRunsSeeder {
     private final WorkflowExecutionPort execution;
     private final Clock clock;
 
-    public DemoRunsSeeder(PlatformProperties props, WorkflowQueries workflows, ProviderQueries providers, ResourceQueries resources,
-            JobProjection projection, JobEvents events, TelemetryPort telemetry, WorkflowExecutionPort execution, Clock clock) {
+    public DemoRunsSeeder(PlatformProperties props, ChangeProperties changes, WorkflowQueries workflows, ProviderQueries providers,
+            ResourceQueries resources, JobProjection projection, JobEvents events, TelemetryPort telemetry, WorkflowExecutionPort execution,
+            Clock clock) {
         this.props = props;
+        this.changes = changes;
         this.workflows = workflows;
         this.providers = providers;
         this.resources = resources;
@@ -347,8 +350,8 @@ public class DemoRunsSeeder {
     private Seeded walk(Catalog catalog, Run run, Random rnd) {
         WorkflowDefinition def = run.def();
         SampleStepExecutor ex = executor(catalog, run.startedAt(), rnd);
-        Job job = JobFactory.newJob(def, def.version(), run.input(), run.who(), run.channel(), null, null, preview(catalog, def, run.input()),
-                PolicyDecision.allow("mock"), change(def, rnd), run.startedAt());
+        Job job = withEvidence(JobFactory.newJob(def, def.version(), run.input(), run.who(), run.channel(), null, null,
+                preview(catalog, def, run.input()), PolicyDecision.allow("mock"), change(def, rnd), run.startedAt()));
         Map<String, ApprovalDecision> approvals = new LinkedHashMap<>();
         Map<String, Decision> attentions = new LinkedHashMap<>();
         ex.approver(request -> {
@@ -525,8 +528,8 @@ public class DemoRunsSeeder {
         for (int attempt = 0; attempt < 10 && waiting == null; attempt++) {
             JsonNode input = inputs.inputFor(def, rnd);
             ex = executor(catalog, startedAt, rnd);
-            Job candidate = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
-                    PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(WAITING_APPROVAL_ID);
+            Job candidate = withEvidence(JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null,
+                    preview(catalog, def, input), PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(WAITING_APPROVAL_ID));
             ex.approver(request -> {
                 throw new JobCancelled(candidate.id());
             });
@@ -579,8 +582,8 @@ public class DemoRunsSeeder {
         WorkflowDefinition def = published.withVersion(DemoReleases.versionAt(published.name(), startedAt, now, rnd).orElse(published.version()));
         SampleStepExecutor ex = executor(catalog, startedAt, rnd);
         JsonNode input = inputs.inputFor(def, rnd);
-        Job job = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
-                PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(NEEDS_ATTENTION_ID);
+        Job job = withEvidence(JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null,
+                preview(catalog, def, input), PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(NEEDS_ATTENTION_ID));
         Map<String, ApprovalDecision> approvals = new LinkedHashMap<>();
         ex.approver(request -> {
             ex.sleep(null, Duration.ofMinutes(4));
@@ -645,8 +648,8 @@ public class DemoRunsSeeder {
         List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
         Instant startedAt = now.minus(Duration.ofMinutes(9));
         Preview preview = preview(catalog, def, rows.get(0));
-        Job batch = JobFactory.newBatch(def, def.version(), rows, defaults, rollout, waves, owner(def, rnd), "batch", preview,
-                PolicyDecision.allow("mock"), change(def, rnd), startedAt);
+        Job batch = withEvidence(JobFactory.newBatch(def, def.version(), rows, defaults, rollout, waves, owner(def, rnd), "batch", preview,
+                PolicyDecision.allow("mock"), change(def, rnd), startedAt));
         projection.put(batch);
         events.started(batch, null, startedAt);
         if (batch.change() != null) {
@@ -785,6 +788,15 @@ public class DemoRunsSeeder {
         }
         String id = String.format("CHG%07d", 40_000 + rnd.nextInt(1_200));
         return new ChangeTicket(id, MockServiceNowChangeTickets.BASE_URL + id, "implement");
+    }
+
+    /** A seeded change links back to its job's evidence, as the change adapters do once the job has an id. */
+    private Job withEvidence(Job job) {
+        ChangeTicket c = job.change();
+        if (c == null || c.evidenceUrl() != null) {
+            return job;
+        }
+        return job.withChange(new ChangeTicket(c.id(), c.url(), c.state(), changes.evidenceUrlOf(job.id())));
     }
 
     private static Preview preview(Catalog catalog, WorkflowDefinition def, JsonNode input) {
