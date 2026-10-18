@@ -1,23 +1,33 @@
 /** A form for a JSON object against its schema: the workflow input of a test run, a trigger's input. */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Field, Input, Select, Switch, Textarea } from '@iaf/ui'
 import type { JsonObject, JsonValue } from '@iaf/workflow-checks'
 import type { Schema } from '../../lib/types'
 import { fieldsOf, type FieldSpec } from '../model/schema'
 
+function serialize(value: JsonValue | undefined): string {
+  return value === undefined ? '' : JSON.stringify(value, null, 2)
+}
+
+/** Whether the text already says the value, or is mid-edit (not valid JSON yet, so it must not be lost). */
+function describes(text: string, value: JsonValue | undefined): boolean {
+  if (!text.trim()) return false
+  try {
+    return JSON.stringify(JSON.parse(text)) === JSON.stringify(value ?? null)
+  } catch {
+    return true
+  }
+}
+
 export function JsonField({ id, label, value, onChange, required, hint, rows = 4 }: { id: string; label: string; value: JsonValue | undefined; onChange: (v: JsonValue | undefined) => void; required?: boolean; hint?: string; rows?: number }) {
-  const [text, setText] = useState(() => (value === undefined ? '' : JSON.stringify(value, null, 2)))
+  const [text, setText] = useState(() => serialize(value))
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    setText((t) => {
-      try {
-        if (t.trim() && JSON.stringify(JSON.parse(t)) === JSON.stringify(value ?? null)) return t
-      } catch {
-        return t
-      }
-      return value === undefined ? '' : JSON.stringify(value, null, 2)
-    })
-  }, [value])
+  // a value changed from outside replaces the text (adjusted during render, React's derived-state pattern)
+  const [shown, setShown] = useState(value)
+  if (value !== shown) {
+    setShown(value)
+    if (!describes(text, value)) setText(serialize(value))
+  }
   return (
     <Field label={label} required={required} hint={hint} error={error} htmlFor={id}>
       <Textarea

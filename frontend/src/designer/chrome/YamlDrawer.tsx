@@ -3,7 +3,7 @@
  * browser never reads or writes YAML itself); leaving the editor applies the edit to the
  * canvas as one undoable change.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, CopyIconButton, cx, Drawer, Icon, OverlayBody, OverlayHeader, Skeleton, Textarea, useToast } from '@iaf/ui'
 import type { Problem } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
@@ -19,15 +19,17 @@ function Body() {
   const [error, setError] = useState<string | null>(null)
   const [problems, setProblems] = useState<Problem[]>([])
   const [applying, setApplying] = useState(false)
-  const edited = useRef(false)
+  const [edited, setEdited] = useState(false)
 
+  // the file follows the canvas until the user edits it; an edit that starts while a render is
+  // in flight re-runs this and drops that answer
   useEffect(() => {
-    if (edited.current) return
+    if (edited) return
     let cancelled = false
     api
       .renderWorkflow({ definition: doc })
       .then((r) => {
-        if (cancelled || edited.current) return
+        if (cancelled) return
         setRendered(r.yaml)
         setText(r.yaml)
         setError(null)
@@ -38,11 +40,11 @@ function Body() {
     return () => {
       cancelled = true
     }
-  }, [doc])
+  }, [doc, edited])
 
   const apply = async () => {
-    if (!edited.current || text === rendered) {
-      edited.current = false
+    if (!edited || text === rendered) {
+      setEdited(false)
       return
     }
     setApplying(true)
@@ -50,7 +52,7 @@ function Body() {
       const r = await api.parseWorkflow({ yaml: text })
       setProblems(r.problems)
       if (r.definition) {
-        edited.current = false
+        setEdited(false)
         store.setDocument(r.definition)
         toast.toast({ title: 'YAML applied', message: r.problems.length === 0 ? 'The canvas follows the file' : `${r.problems.length} ${r.problems.length === 1 ? 'problem' : 'problems'}, see Issues`, tone: r.problems.length === 0 ? 'healthy' : 'warning', duration: 2500 })
       }
@@ -86,7 +88,7 @@ function Body() {
             spellCheck={false}
             value={text}
             onChange={(e) => {
-              edited.current = true
+              setEdited(true)
               setText(e.target.value)
             }}
             onBlur={() => void apply()}
@@ -109,7 +111,7 @@ function Body() {
             ))}
           </ul>
         )}
-        {edited.current && (
+        {edited && (
           <div className="flex justify-end">
             <Button size="sm" variant="primary" loading={applying} onClick={() => void apply()}>
               Apply YAML

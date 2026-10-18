@@ -4,7 +4,7 @@
  * hover toolbar, issue and run badges, the End and compensation nodes, the "Add first step"
  * placeholder and the sticky notes.
  */
-import { memo, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { memo, useState, type MouseEvent, type ReactNode } from 'react'
 import { Handle, NodeResizer, NodeToolbar, Position, type NodeProps } from '@xyflow/react'
 import { cx, Icon, Spinner, type IconName } from '@iaf/ui'
 import { NODE_SIZE } from '../model/graph'
@@ -296,8 +296,8 @@ export const StickyNode = memo(function StickyNode({ data, selected }: NodeProps
   const store = useDesignerStore()
   const s = data.sticky
   const [editing, setEditing] = useState(false)
+  // the draft exists only while editing; it starts from the note's text when editing begins
   const [text, setText] = useState(s.text)
-  useEffect(() => setText(s.text), [s.text])
   const update = (patch: Partial<Sticky>) => store.setStickies(store.getState().stickies.map((x) => (x.id === s.id ? { ...x, ...patch } : x)))
   const remove = () => store.setStickies(store.getState().stickies.filter((x) => x.id !== s.id))
   const tone = STICKY_TONES[(s.color - 1 + STICKY_TONES.length) % STICKY_TONES.length]
@@ -325,7 +325,10 @@ export const StickyNode = memo(function StickyNode({ data, selected }: NodeProps
         className={cx('iaf-sticky-drag relative h-full w-full overflow-hidden rounded-md border p-3 shadow-sm', tone, selected && 'border-accent')}
         onDoubleClick={(e) => {
           e.stopPropagation()
-          if (!data.readOnly) setEditing(true)
+          if (!data.readOnly) {
+            setText(s.text)
+            setEditing(true)
+          }
         }}
       >
         <span className="absolute right-2 top-2 text-tertiary" title="Sticky notes are kept in this browser only: a workflow file has no field for them">

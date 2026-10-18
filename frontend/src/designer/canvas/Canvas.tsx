@@ -64,6 +64,8 @@ const PAN_BUTTONS = [1]
 const MULTI_SELECT_KEYS = ['Meta', 'Control', 'Shift']
 const CONNECTION_LINE = { stroke: 'var(--color-neutral)', strokeWidth: 2 }
 const MINIMAP_SIZE = { width: 180, height: 112 }
+const SEPARATOR: MenuEntry[] = ['separator']
+const NO_ENTRIES: MenuEntry[] = []
 
 /** Steps copied in this tab, for the menu's Paste (the system clipboard needs a paste event). */
 let clipboard: StepDocument[] | null = null
@@ -109,6 +111,11 @@ function ControlButton({ label, onClick, children }: { label: string; onClick: (
 }
 
 const MINI_CLASS = (n: FlowNode): string => (n.type === 'trigger' ? 'iaf-mini-trigger' : n.type === 'sticky' ? 'iaf-mini-sticky' : '')
+
+/** The nodes with only `id` selected; the same array when that is already so. */
+function withOnlySelected(nds: FlowNode[], id: string | null): FlowNode[] {
+  return nds.every((n) => !!n.selected === (n.id === id)) ? nds : nds.map((n) => (!!n.selected === (n.id === id) ? n : { ...n, selected: n.id === id }))
+}
 
 function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnly = false, onOpen, children, label = 'Workflow canvas' }: CanvasProps) {
   const store = useDesignerStore()
@@ -193,7 +200,7 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
 
   const selectOnly = useCallback(
     (id: string | null, show = false) => {
-      setNodes((nds) => (nds.every((n) => !!n.selected === (n.id === id)) ? nds : nds.map((n) => (!!n.selected === (n.id === id) ? n : { ...n, selected: n.id === id }))))
+      setNodes((nds) => withOnlySelected(nds, id))
       setEdgeSel((prev) => (prev.size === 0 ? prev : new Set()))
       if (id && show) requestAnimationFrame(() => reveal(id))
     },
@@ -204,10 +211,15 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
     setNodes((nds) => nds.map((n) => (n.selected || n.selectable === false ? n : { ...n, selected: true })))
   }, [])
 
-  // the node detail view's node is the selected one
-  useEffect(() => {
-    if (ndv) selectOnly(ndv)
-  }, [ndv, selectOnly])
+  // the node detail view's node is the selected one (adjusted during render, React's derived-state pattern)
+  const [shownNdv, setShownNdv] = useState(ndv)
+  if (ndv !== shownNdv) {
+    setShownNdv(ndv)
+    if (ndv) {
+      setNodes((nds) => withOnlySelected(nds, ndv))
+      setEdgeSel((prev) => (prev.size === 0 ? prev : new Set()))
+    }
+  }
 
   // ------------------------------------------------------------------ viewport
 
@@ -538,7 +550,14 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
 
   // ------------------------------------------------------------------ the menu
 
-  const entriesFor = (target: CanvasMenuTarget): MenuEntry[] => {
+  /*
+   * The open menu's entries. They are literals built right here, and only handed on: several of the
+   * actions read refs when they run (on a click), so to the refs rule a helper that returned them,
+   * or a look at the array (its length, its truth), would be a read of the refs during render.
+   */
+  let menuEntries: MenuEntry[] = NO_ENTRIES
+  if (menu && !readOnly) {
+    const target = menu.target
     const m = modKeyLabel()
     const common: MenuEntry[] = [
       { id: 'select-all', label: 'Select all', icon: 'grid', shortcut: `${m}A`, run: selectAll },
@@ -546,38 +565,51 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
       { id: 'tidy', label: 'Tidy up workflow', glyph: 'tidy', shortcut: '⇧⌥T', run: tidy },
     ]
     if (target.kind === 'pane' || target.kind === 'edge') {
-      return [
+      menuEntries = [
         { id: 'add', label: 'Add step', icon: 'plus', shortcut: 'Tab', run: () => store.openCreator(null) },
         { id: 'paste', label: 'Paste', icon: 'copy', shortcut: `${m}V`, disabled: !clipboard, run: () => clipboard && paste(clipboard) },
         'separator',
         ...common,
         { id: 'fit', label: 'Zoom to fit', glyph: 'fit', shortcut: '1', run: fit },
       ]
+    } else {
+      const ids = target.kind === 'node' ? [target.id] : target.ids
+      const single = ids.length === 1 ? ids[0] : null
+      const stepId = single ? store.stepOf(single) : null
+      const steps = ids.filter((id) => store.stepOf(id) !== null)
+      const node = single ? nodes.find((n) => n.id === single) : undefined
+      const deletable = ids.some((id) => {
+        const n = nodes.find((x) => x.id === id)
+        return !!n && (n.type === 'step' || n.type === 'sticky' || n.type === 'undo' || (n.type === 'trigger' && n.data.triggerType !== 'api'))
+      })
+      const openId = single && node && node.type !== 'sticky' ? single : null
+      const opening: MenuEntry[] = openId !== null ? [{ id: 'open', label: 'Open', icon: 'arrow-right', shortcut: '↵', run: () => onOpen(openId) }] : []
+      const stepActions: MenuEntry[] =
+        stepId && single
+          ? [
+              { id: 'test', label: 'Test step', icon: 'play', run: () => testStep(stepId) },
+              { id: 'rename', label: 'Rename', icon: 'edit', shortcut: 'F2', run: () => store.startRename(stepId) },
+              { id: 'pin', label: pins[stepId] !== undefined ? 'Unpin output' : 'Pin output', glyph: 'pin', shortcut: 'P', run: () => togglePin(single) },
+            ]
+          : []
+      const copying: MenuEntry[] =
+        steps.length > 0
+          ? [
+              { id: 'copy', label: 'Copy', icon: 'copy', shortcut: `${m}C`, run: () => copy(steps) },
+              { id: 'duplicate', label: 'Duplicate', icon: 'layers', shortcut: `${m}D`, run: () => duplicate(steps) },
+            ]
+          : []
+      const hasOwn = openId !== null || stepId !== null || steps.length > 0
+      menuEntries = [
+        ...opening,
+        ...stepActions,
+        ...copying,
+        ...(hasOwn ? SEPARATOR : NO_ENTRIES),
+        ...common,
+        'separator',
+        { id: 'delete', label: 'Delete', icon: 'trash', shortcut: 'Del', danger: true, disabled: !deletable, run: () => deleteNodes(ids) },
+      ]
     }
-    const ids = target.kind === 'node' ? [target.id] : target.ids
-    const single = ids.length === 1 ? ids[0] : null
-    const stepId = single ? store.stepOf(single) : null
-    const steps = ids.filter((id) => store.stepOf(id) !== null)
-    const node = single ? nodesRef.current.find((n) => n.id === single) : undefined
-    const deletable = ids.some((id) => {
-      const n = nodesRef.current.find((x) => x.id === id)
-      return !!n && (n.type === 'step' || n.type === 'sticky' || n.type === 'undo' || (n.type === 'trigger' && n.data.triggerType !== 'api'))
-    })
-    const out: MenuEntry[] = []
-    if (single && node && node.type !== 'sticky') out.push({ id: 'open', label: 'Open', icon: 'arrow-right', shortcut: '↵', run: () => onOpen(single) })
-    if (stepId && single) {
-      const pinned = store.getState().pins[stepId] !== undefined
-      out.push({ id: 'test', label: 'Test step', icon: 'play', run: () => testStep(stepId) })
-      out.push({ id: 'rename', label: 'Rename', icon: 'edit', shortcut: 'F2', run: () => store.startRename(stepId) })
-      out.push({ id: 'pin', label: pinned ? 'Unpin output' : 'Pin output', glyph: 'pin', shortcut: 'P', run: () => togglePin(single) })
-    }
-    if (steps.length > 0) {
-      out.push({ id: 'copy', label: 'Copy', icon: 'copy', shortcut: `${m}C`, run: () => copy(steps) })
-      out.push({ id: 'duplicate', label: 'Duplicate', icon: 'layers', shortcut: `${m}D`, run: () => duplicate(steps) })
-    }
-    if (out.length > 0) out.push('separator')
-    out.push(...common, 'separator', { id: 'delete', label: 'Delete', icon: 'trash', shortcut: 'Del', danger: true, disabled: !deletable, run: () => deleteNodes(ids) })
-    return out
   }
 
   const closeMenu = useCallback(() => store.closeMenu(), [store])
@@ -700,7 +732,7 @@ function CanvasInner({ graph, problems, runs, pins, stickies, providers, readOnl
         <MiniMap<FlowNode> position="bottom-right" pannable zoomable ariaLabel="Mini map" nodeClassName={MINI_CLASS} nodeBorderRadius={8} style={MINIMAP_SIZE} />
       </ReactFlow>
       {children}
-      {menu && !readOnly && <ContextMenu x={menu.x} y={menu.y} entries={entriesFor(menu.target)} onClose={closeMenu} />}
+      {menu && !readOnly && <ContextMenu x={menu.x} y={menu.y} entries={menuEntries} onClose={closeMenu} />}
       {renaming && !readOnly && <RenameDialog stepId={renaming} onClose={() => store.stopRename()} />}
       {confirm && (
         <ConfirmDialog
