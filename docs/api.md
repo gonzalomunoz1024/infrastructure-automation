@@ -200,7 +200,8 @@ workflow already has (`mcp.toolName`), since the list would keep only one of the
 
 A refused `tools/call` is a JSON-RPC error whose `message` says why; besides the standard codes
 (-32700 parse error, -32600 invalid request, -32601 method not found, -32602 invalid params with
-`data.problems` or `data.rows`, -32603 internal error) the platform answers with its own:
+`data.problems` or `data.rows`, -32603 internal error, whose `message` is always `unexpected error`
+and whose `data.correlationId` finds the cause in the API's log) the platform answers with its own:
 
 | Code     | When                                   | `data` |
 |----------|----------------------------------------|--------|
