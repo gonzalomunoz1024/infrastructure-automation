@@ -167,6 +167,11 @@ export type RegistryWorkflow = { name: string; title: string; version: string; i
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }
 
+/** POST /playbooks:upload: the stored archive a step refers to as `playbook.upload`. */
+export type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+/** GET /playbooks:resolve: the commit a git ref names right now. */
+export type ResolvedRef = { repo: string; ref: string; commit: string }
+
 /** How a workflow is tied to a resource type or to another workflow (GET /registry/dependencies). */
 export type DependencyVia = 'producedBy' | 'register' | 'input' | 'use' | 'run' | 'orCreateWith'
 export type DependencyLink = {

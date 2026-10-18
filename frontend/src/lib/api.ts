@@ -40,6 +40,7 @@ import type {
   Me,
   OverrideRequest,
   ParseResult,
+  PlaybookUpload,
   Preview,
   Problem,
   ProviderAlert,
@@ -56,6 +57,7 @@ import type {
   RenderResult,
   ReplayCheck,
   RerunRequest,
+  ResolvedRef,
   Resource,
   ResourceFilter,
   ResourceType,
@@ -254,6 +256,20 @@ export async function request<T>(method: string, path: string, body?: unknown, o
   } catch {
     return text as unknown as T
   }
+}
+
+/** A multipart POST (uploads): the browser sets the boundary, so no Content-Type here. */
+export async function requestForm<T>(path: string, form: FormData, opts: RequestOptions = {}): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(resolveUrl(path), { method: 'POST', headers: authHeaders(opts.headers), body: form, signal: opts.signal })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') throw e
+    throw new ApiError(0, null)
+  }
+  if (!res.ok) return fail(res)
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
 }
 
 /** A file response (exports). */
@@ -526,6 +542,17 @@ export const api = {
   registryCredentials: () => get<RegistryCredential[]>('/registry/credentials'),
   /** who produces and consumes each resource type, which published workflows run which, and the cycles among runs */
   registryDependencies: () => get<Dependencies>('/registry/dependencies'),
+
+  /* playbooks */
+  /** the commit a git ref names right now, to pin an ansible step to */
+  resolvePlaybook: (params: { repo: string; ref: string; credential?: string }) => get<ResolvedRef>(`/playbooks:resolve${qs(params)}`),
+  /** a playbook archive as multipart `file` (+ `path`); 413 when it is larger than the platform allows */
+  uploadPlaybook: (file: File, path?: string) => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    if (path) form.append('path', path)
+    return requestForm<PlaybookUpload>('/playbooks:upload', form)
+  },
 
   /* catalog (generated surface) */
   catalog: () => get<CatalogEntry[]>('/catalog'),

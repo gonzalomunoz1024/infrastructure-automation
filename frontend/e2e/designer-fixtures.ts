@@ -121,6 +121,12 @@ function stepIds(list: Json | undefined): string[] {
 }
 
 export interface MockApi {
+  /** bodies of POST /workflows:validate */
+  validations: Obj[]
+  /** query strings of GET /playbooks:resolve */
+  resolves: string[]
+  /** raw bodies of POST /playbooks:upload (multipart) */
+  uploads: string[]
   /** bodies of PUT /workflows/{name}/draft */
   drafts: Obj[]
   /** bodies of POST /workflows:dry-run */
@@ -208,7 +214,7 @@ function bodyOf(req: Request): Obj {
 
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
-  const calls: MockApi = { drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
+  const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
   const jobs = vmRestartJobs()
   const providers = registryProviders()
   const resourceTypes = registryResourceTypes()
@@ -338,6 +344,34 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
       calls.dryRuns.push(body)
       const ids = stepIds(asObj(asObj(body.definition).workflow).do)
       return json(route, { passed: true, path: ids, steps: ids.map((id) => ({ id, name: id, status: 'succeeded', input: {}, output: { ok: true, id } })) })
+    }
+    // the backend's checks plus the publish checks, as docs/config-as-code.md lists them
+    if (method === 'POST' && path === '/workflows:validate') {
+      const body = bodyOf(req)
+      calls.validations.push(body)
+      const v = String(asObj(asObj(body.definition).metadata).version ?? '')
+      return json(route, {
+        valid: false,
+        problems: [
+          { level: 'error', code: 'publish.ansibleLint', step: 'restart', field: 'playbook', message: 'The playbook is not pinned to a commit: every run would use whatever main points at' },
+          { level: 'error', code: 'publish.routes', field: 'api.path', message: 'POST /api/v1/vms/{vmId}:restart is already answered by vm-reboot 1.0.0' },
+          { level: 'error', code: 'publish.contracts', field: 'metadata.version', message: `${v} breaks the contract of 1.2.0 without a new major version: input.reason became required. Affected consumers: web-environment`, fix: { label: 'Publish as 2.0.0', kind: 'replace', value: '2.0.0' } },
+        ],
+      })
+    }
+    if (method === 'GET' && path === '/playbooks:resolve') {
+      calls.resolves.push(url.search)
+      const repo = url.searchParams.get('repo') ?? ''
+      const ref = url.searchParams.get('ref') ?? ''
+      if (ref === 'gone') return json(route, { error: `${repo} has no ref ${ref}` }, 400)
+      return json(route, { repo, ref, commit: '9fceb02d0ae598e95dc970b74767f19372d61af8' })
+    }
+    if (method === 'POST' && path === '/playbooks:upload') {
+      const raw = req.postData() ?? ''
+      calls.uploads.push(raw)
+      if (raw.includes('too-large')) return json(route, { error: 'The file is larger than 8 MB (platform.playbooks.max-upload-size)' }, 413)
+      if (raw.includes('not-an-archive')) return json(route, { error: 'The file is not a tar.gz, zip or YAML playbook' }, 400)
+      return json(route, { file: 'uploads/restart-3f1c.tar.gz', sha256: '3f1c7a2b'.repeat(8), size: 20480, entries: ['site.yml', 'roles/restart/tasks/main.yml'] }, 201)
     }
     return json(route, { error: `not mocked: ${method} ${path}` }, 404)
   })
