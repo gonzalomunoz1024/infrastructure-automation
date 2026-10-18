@@ -238,6 +238,25 @@ class RestControllerWorkflowAdapterTest {
     }
 
     @Test
+    void validateAndDryRunTakeDraftsOfProviders() {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck)).exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.valid").isEqualTo(false).jsonPath("$.problems[?(@.code == 'step.unknownProvider')]").exists();
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", List.of(SampleFixtures.TICKETING)))
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.valid").isEqualTo(true).jsonPath("$.problems[?(@.code == 'step.unknownProvider')]").doesNotExist();
+        String plain = SampleFixtures.TICKETING.replace("credential: vault:ticketing/api-key", "credential: example-token");
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", List.of(plain))).exchange()
+                .expectStatus().isBadRequest()
+                .expectBody().jsonPath("$.error").isEqualTo("The draft provider ticketing (providers[0]) has 1 problem to fix")
+                .jsonPath("$.problems[?(@.code == 'credential.plain')].field").isEqualTo(List.of("spec.auth.credential"));
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", List.of(SampleFixtures.TICKETING)))
+                .exchange().expectStatus().isOk().expectBody().jsonPath("$.passed").isEqualTo(true);
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", List.of(plain)))
+                .exchange().expectStatus().isBadRequest().expectBody().jsonPath("$.problems").isArray();
+    }
+
+    @Test
     void servesTheRegistryTemplatesAndImports() {
         client.get().uri("/api/v1/registry/step-types").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.length()").isEqualTo(19).jsonPath("$[0].type").isEqualTo("provider").jsonPath("$[0].schema.type").isEqualTo("object")

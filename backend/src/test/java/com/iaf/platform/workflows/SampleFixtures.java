@@ -81,8 +81,65 @@ public final class SampleFixtures {
     public static RunsCommands runs() {
         RunsCommands r = mock(RunsCommands.class);
         when(r.dryRun(any(), any(), any())).thenReturn(Mono.just(DRY_RUN_PASSED));
+        when(r.dryRun(any(), any(), any(), any())).thenReturn(Mono.just(DRY_RUN_PASSED));
         return r;
     }
+
+    /** A provider nobody published yet, as the designer sends its draft with a workflow that calls it. */
+    public static final String TICKETING = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: ticketing, title: Ticketing, owner: team-compute, version: 0.1.0, description: Tickets of the service desk. }
+            spec:
+              type: http
+              endpoints:
+                dev: https://tickets-dev.example.com/api
+              auth: { type: header, header: X-Api-Key, credential: vault:ticketing/api-key }
+              actions:
+                - id: ticket.get
+                  title: Get a ticket
+                  operation: { method: GET, path: "/tickets/{id}" }
+                  effect: read
+                  retry: safe
+                  input:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: string }
+                  output:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      state: { type: string }
+                  sample: { id: "{{ $input.id }}", state: open }
+              slo: { successRate: 99.0, p95Ms: 800 }
+              alerts: { channel: "#compute-alerts" }
+            """;
+
+    /** A new workflow that calls the {@link #TICKETING} provider. */
+    public static final String TICKET_CHECK = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: ticket-check, title: Check a ticket, noun: ticket, verb: check, owner: team-compute }
+            api:
+              method: POST
+              path: /api/v1/tickets:check
+              input:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, title: Ticket id }
+            policy: { rbac: [ops] }
+            workflow:
+              do:
+                - getTicket:
+                    name: Get the ticket
+                    call: provider
+                    with:
+                      provider: ticketing
+                      action: ticket.get
+                      input: { id: "{{ $input.id }}" }
+            """;
 
     public static RunsQueries runsQueries() {
         RunsQueries r = mock(RunsQueries.class);

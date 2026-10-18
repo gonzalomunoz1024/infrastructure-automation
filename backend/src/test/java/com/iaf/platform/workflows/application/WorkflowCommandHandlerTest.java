@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -41,10 +43,12 @@ import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
@@ -59,8 +63,10 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.DraftSaved;
+import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.DryRunRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.ImportRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.PublishWorkflow;
+import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.ValidateRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.WorkflowSource;
 
 import reactor.core.publisher.Mono;
@@ -1109,6 +1115,109 @@ class WorkflowCommandHandlerTest {
         events.publish("release.promoted", "release", "rel_1", "platform", F.objectNode().put("workflow", "vm-restart"));
         events.publish("release.rolled-back", "release", "rel_2", "platform", F.objectNode().put("workflow", "nope"));
         assertThat(store.published("vm-restart").orElseThrow().version()).as("nothing else changed").isEqualTo("1.2.0");
+    }
+
+    // ------------------------------------------------------------------ drafts of providers
+
+    static ValidateRequest validating(String yaml, String... drafts) {
+        return new ValidateRequest(yaml, null, drafts.length == 0 ? null : List.of(drafts));
+    }
+
+    /** vsphere as its owner may be editing it: vm.waitForPowerState renamed. */
+    static String renamedVsphere() {
+        String vsphere = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        assertThat(vsphere).contains("id: vm.waitForPowerState");
+        return vsphere.replace("id: vm.waitForPowerState", "id: vm.awaitPowerState");
+    }
+
+    @Test
+    void validateSeesTheDraftsOfProvidersItCarriesForThatCallOnly() {
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).extracting(Problem::code).contains("step.unknownProvider");
+                })
+                .verifyComplete();
+
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, SampleFixtures.TICKETING)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).as("%s", v.problems()).isTrue();
+                    assertThat(v.problems()).extracting(Problem::code).doesNotContain("step.unknownProvider", "step.unknownAction");
+                })
+                .verifyComplete();
+
+        // the draft served that call: nothing kept it
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK)))
+                .assertNext(v -> assertThat(v.problems()).extracting(Problem::code).contains("step.unknownProvider"))
+                .verifyComplete();
+        assertThat(queries.checkContext().block().provider("ticketing")).isEmpty();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.versions("ticket-check")).isEmpty();
+    }
+
+    @Test
+    void aDraftStandsInForThePublishedProviderOfItsName() {
+        StepVerifier.create(handler.validate(validating(vmRestart, renamedVsphere())))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).filteredOn(Problem::isError).extracting(Problem::code, Problem::step)
+                            .containsOnly(tuple("step.unknownAction", "validate"));
+                })
+                .verifyComplete();
+        String renamed = vmRestart.replace("action: vm.waitForPowerState", "action: vm.awaitPowerState");
+        StepVerifier.create(handler.validate(validating(renamed, renamedVsphere())))
+                .assertNext(v -> assertThat(v.valid()).as("%s", v.problems()).isTrue())
+                .verifyComplete();
+        StepVerifier.create(handler.validate(validating(renamed)))
+                .assertNext(v -> assertThat(v.problems()).extracting(Problem::code).contains("step.unknownAction"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aDraftWithAnErrorIsA400WithItsProblemsAndSoAreAnEmptyEntryAndASecondDraftOfOneProvider() {
+        String plain = SampleFixtures.TICKETING.replace("credential: vault:ticketing/api-key", "credential: example-token");
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, plain)))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessage("The draft provider ticketing (providers[0]) has 1 problem to fix");
+                    assertThat(((InvalidInputException) e).problems()).filteredOn(Problem::isError).extracting(Problem::code).containsExactly("credential.plain");
+                })
+                .verify();
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(plain))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("ticketing (providers[0])"))
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, "kind: Provider\nmetadata: [")))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageStartingWith("The draft provider in providers[0] has"))
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, " ")))
+                .expectErrorMessage("providers[0] is empty: each entry of providers is a provider file")
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, SampleFixtures.TICKETING,
+                        SampleFixtures.TICKETING.replace("version: 0.1.0", "version: 0.2.0"))))
+                .expectErrorMessage("providers[1] is a second draft of provider ticketing; send one file per provider")
+                .verify();
+        verify(runs, never()).dryRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void aDryRunHandsItsDraftsToTheRunsSlice() {
+        List<List<ProviderDefinition>> seen = new ArrayList<>();
+        when(runs.dryRun(any(), any(), any(), any())).thenAnswer(inv -> {
+            seen.add(inv.getArgument(3));
+            return Mono.just(SampleFixtures.DRY_RUN_PASSED);
+        });
+
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(SampleFixtures.TICKETING))))
+                .assertNext(r -> assertThat(r.passed()).isTrue())
+                .verifyComplete();
+
+        assertThat(seen).singleElement().satisfies(drafts -> assertThat(drafts).singleElement().satisfies(p -> {
+            assertThat(p.name()).isEqualTo("ticketing");
+            assertThat(p.action("ticket.get")).isPresent();
+        }));
+        // without drafts the dry run is the one it always was
+        handler.dryRun(new DryRunRequest(vmRestart, null, F.objectNode().put("vmId", "vm-1"))).block();
+        verify(runs).dryRun(any(), any(), any());
+        assertThat(seen).hasSize(1);
     }
 
     // ------------------------------------------------------------------ import

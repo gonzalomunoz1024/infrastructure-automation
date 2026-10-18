@@ -47,8 +47,24 @@ public interface WorkflowCommands {
         }
     }
 
-    /** Body of {@code POST /workflows:dry-run}: the document plus the job input to walk it with. */
-    record DryRunRequest(String yaml, JsonNode definition, JsonNode input) {
+    /**
+     * Body of {@code POST /workflows:dry-run}: the document plus the job input to walk it with.
+     * {@code providers} (optional): provider files that are not published yet (drafts), each
+     * checked as a provider publish checks it, which stand in for the published provider of
+     * their name in this dry run only.
+     */
+    record DryRunRequest(String yaml, JsonNode definition, JsonNode input, List<String> providers) {
+        public DryRunRequest(String yaml, JsonNode definition, JsonNode input) {
+            this(yaml, definition, input, null);
+        }
+
+        public WorkflowSource source() {
+            return new WorkflowSource(yaml, definition);
+        }
+    }
+
+    /** Body of {@code POST /workflows:validate}: the document, and drafts of providers as a dry run takes them, which the checks see for this call only. */
+    record ValidateRequest(String yaml, JsonNode definition, List<String> providers) {
         public WorkflowSource source() {
             return new WorkflowSource(yaml, definition);
         }
@@ -87,8 +103,15 @@ public interface WorkflowCommands {
     /** Deletes the draft version(s) of a workflow; published versions are never deleted (409). */
     Mono<Void> deleteDraft(String name);
 
-    Mono<Validation> validate(WorkflowSource source);
+    /** Every check of a document as the backend runs them, with the drafts of providers it carries; an invalid draft is a 400 with its problems. */
+    Mono<Validation> validate(ValidateRequest request);
 
+    /** {@link #validate(ValidateRequest)} of a document that carries no draft. */
+    default Mono<Validation> validate(WorkflowSource source) {
+        return validate(new ValidateRequest(source.yaml(), source.definition(), null));
+    }
+
+    /** Walks the document against the samples, with the drafts of providers it carries; an invalid draft is a 400 with its problems. */
     Mono<DryRunResult> dryRun(DryRunRequest request);
 
     /** Opens a change request for the draft; the accepted id is the change request id. */

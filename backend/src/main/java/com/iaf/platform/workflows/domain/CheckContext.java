@@ -98,6 +98,94 @@ public interface CheckContext {
         return Optional.empty();
     }
 
+    /**
+     * This context with provider files that are not published yet ({@link ProviderDrafts}) in
+     * front of its providers: a draft stands in for the provider of its name, or joins them under
+     * a new name, and everything else is this context's. A method added to this interface must be
+     * passed on here too.
+     */
+    default CheckContext withProviders(List<ProviderDefinition> drafts) {
+        if (drafts == null || drafts.isEmpty()) {
+            return this;
+        }
+        CheckContext base = this;
+        List<ProviderDefinition> own = List.copyOf(drafts);
+        Set<String> names = new TreeSet<>(base.providerNames());
+        own.forEach(d -> names.add(d.name()));
+        Set<String> allNames = Set.copyOf(names);
+        return new CheckContext() {
+            @Override
+            public Optional<ProviderDefinition> provider(String name) {
+                return ProviderDrafts.named(own, name).or(() -> base.provider(name));
+            }
+
+            @Override
+            public Set<String> providerNames() {
+                return allNames;
+            }
+
+            @Override
+            public Set<String> workflowNames() {
+                return base.workflowNames();
+            }
+
+            @Override
+            public Set<String> resourceTypes() {
+                return base.resourceTypes();
+            }
+
+            @Override
+            public boolean knowsCatalog() {
+                return base.knowsCatalog();
+            }
+
+            @Override
+            public Optional<JsonNode> workflowInput(String name) {
+                return base.workflowInput(name);
+            }
+
+            @Override
+            public Optional<List<String>> workflowOutputs(String name) {
+                return base.workflowOutputs(name);
+            }
+
+            @Override
+            public Optional<JsonNode> workflowInput(String name, String range) {
+                return base.workflowInput(name, range);
+            }
+
+            @Override
+            public Optional<List<String>> workflowOutputs(String name, String range) {
+                return base.workflowOutputs(name, range);
+            }
+
+            @Override
+            public Optional<JsonNode> resourceTypeSchema(String type) {
+                return base.resourceTypeSchema(type);
+            }
+
+            @Override
+            public Set<String> workflowRuns(String name) {
+                return base.workflowRuns(name);
+            }
+
+            @Override
+            public Set<String> mcpToolHolders(String tool) {
+                return base.mcpToolHolders(tool);
+            }
+
+            @Override
+            public boolean knowsCredentials() {
+                return base.knowsCredentials();
+            }
+
+            @Override
+            public Optional<String> credentialOwner(String reference) {
+                return base.credentialOwner(reference);
+            }
+        };
+    }
+
     CheckContext EMPTY = new CheckContext() {
         @Override
         public Optional<ProviderDefinition> provider(String name) {

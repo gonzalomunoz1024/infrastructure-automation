@@ -37,12 +37,15 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
+import com.iaf.platform.providers.domain.ProviderChecks;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
@@ -51,6 +54,7 @@ import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.PlaybookPins;
+import com.iaf.platform.workflows.domain.ProviderDrafts;
 import com.iaf.platform.workflows.domain.PublishChecks;
 import com.iaf.platform.workflows.domain.ReplayPaths;
 import com.iaf.platform.workflows.domain.ReplayResult;
@@ -226,16 +230,59 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     // ------------------------------------------------------------------ checks and the round trip
 
     @Override
-    public Mono<Validation> validate(WorkflowSource source) {
-        return Mono.zip(queries.checkContext(), resources.types().collectList()).flatMap(t -> blocking(() -> {
-            List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
-            List<Problem> problems = designer;
-            if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
-                List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
-                problems = PublishChecks.merge(designer, publish);
+    public Mono<Validation> validate(ValidateRequest request) {
+        WorkflowSource source = request.source();
+        return Mono.fromCallable(() -> drafts(request.providers()))
+                .flatMap(drafts -> Mono.zip(queries.checkContext().map(ctx -> ctx.withProviders(drafts)), resources.types().collectList()))
+                .flatMap(t -> blocking(() -> {
+                    List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
+                    List<Problem> problems = designer;
+                    if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
+                        List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
+                        problems = PublishChecks.merge(designer, publish);
+                    }
+                    return new Validation(!WorkflowChecks.hasErrors(problems), problems);
+                }));
+    }
+
+    /**
+     * The drafts of providers a dry run or a validate carries, each read and checked as a provider
+     * publish reads it ({@link ProviderChecks#publishable}): a draft with an error is a 400 with its
+     * problems, and so are an empty entry and a second draft of one name. They serve that call
+     * only; nothing is stored.
+     */
+    static List<ProviderDefinition> drafts(List<String> files) {
+        if (files == null || files.isEmpty()) {
+            return List.of();
+        }
+        List<ProviderDefinition> out = new ArrayList<>();
+        for (int i = 0; i < files.size(); i++) {
+            String yaml = files.get(i);
+            String which = "providers[" + i + "]";
+            if (yaml == null || yaml.isBlank()) {
+                throw new IllegalArgumentException(which + " is empty: each entry of providers is a provider file");
             }
-            return new Validation(!WorkflowChecks.hasErrors(problems), problems);
-        }));
+            ProviderDefinition def = ProviderChecks.publishable(yaml, checks -> {
+                int n = checks.errors().size();
+                return InvalidInputException.of("The draft provider " + draftLabel(yaml, which) + " has " + n + (n == 1 ? " problem" : " problems") + " to fix",
+                        checks.problems());
+            }).definition();
+            if (ProviderDrafts.named(out, def.name()).isPresent()) {
+                throw new IllegalArgumentException(which + " is a second draft of provider " + def.name() + "; send one file per provider");
+            }
+            out.add(def);
+        }
+        return List.copyOf(out);
+    }
+
+    /** {@code vsphere (providers[0])}, or {@code in providers[0]} when the file names no provider. */
+    private static String draftLabel(String yaml, String which) {
+        try {
+            String name = WorkflowYaml.readTree(yaml).path("metadata").path("name").asText("");
+            return name.isBlank() ? "in " + which : name + " (" + which + ")";
+        } catch (IllegalArgumentException e) {
+            return "in " + which;
+        }
     }
 
     /**
@@ -263,9 +310,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<DryRunResult> dryRun(DryRunRequest request) {
         return CurrentIdentity.current().flatMap(who -> {
             WorkflowDefinition def = request.source().parse();
+            List<ProviderDefinition> drafts = drafts(request.providers());
             JsonNode input = request.input() == null || request.input().isNull() ? F.objectNode() : request.input();
-            return runs.dryRun(def, input, who);
+            return dryRun(def, input, who, drafts);
         });
+    }
+
+    /** A dry run in the runs slice, with the drafts in front of the published providers when there are any. */
+    private Mono<DryRunResult> dryRun(WorkflowDefinition def, JsonNode input, Identity who, List<ProviderDefinition> drafts) {
+        return drafts.isEmpty() ? runs.dryRun(def, input, who) : runs.dryRun(def, input, who, drafts);
     }
 
     @Override

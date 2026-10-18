@@ -35,6 +35,11 @@ public class InvalidInputException extends IllegalArgumentException {
         this.rows = rows;
     }
 
+    /** Something else a request carries failed its checks, such as a draft provider file sent with a dry run: {@code { error, problems }}. */
+    public static InvalidInputException of(String message, List<Problem> problems) {
+        return new InvalidInputException(message, problems, null);
+    }
+
     /** The rows of a batch that failed validation, each with its problems. */
     public static InvalidInputException rows(String workflow, List<RowProblems> rows) {
         return new InvalidInputException("Invalid rows for " + workflow + ": rows: " + json(rowsJson(rows)), null, rows);
