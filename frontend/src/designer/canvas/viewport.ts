@@ -1,7 +1,7 @@
 /** How the canvas fits a workflow into view. */
 export const FIT = { padding: 0.25, maxZoom: 1, minZoom: 0.2 }
 /** Below this zoom a fitted workflow is too small to read. */
-export const READABLE_ZOOM = 0.5
+export const READABLE_ZOOM = 0.3
 /** The zoom a workflow too long to fit opens at. */
 export const START_ZOOM = 0.8
 const START_MARGIN = 64

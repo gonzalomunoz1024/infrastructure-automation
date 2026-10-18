@@ -7,6 +7,8 @@ describe('openingViewport', () => {
   it('leaves a workflow that fits at a readable zoom to fitView', () => {
     expect(openingViewport({ x: 0, y: 0, width: 1600, height: 400 }, PANE)).toBeNull()
     expect(openingViewport({ x: -200, y: 100, width: 600, height: 300 }, PANE)).toBeNull()
+    // vm-restart beside the executions list: small, but still the whole run at a glance
+    expect(openingViewport({ x: 0, y: 0, width: 1500, height: 500 }, { width: 908, height: 700 })).toBeNull()
   })
 
   it('opens a long chain at its start, readable and centred vertically', () => {
