@@ -278,7 +278,7 @@ export type JobStep = {
 }
 
 export type AttentionOption = 'retry' | 'edit-input' | 'skip' | 'abort'
-export type Attention = { step: string; error: string; options: AttentionOption[]; since: string; timeout: string }
+export type Attention = { step: string; error?: JobStepError; options: AttentionOption[]; since: string; timeout: string }
 
 export type BatchRow = { index: number; input: Record<string, unknown>; jobId?: string; status: string; error?: string }
 export type BatchWave = { index: number; percent: number; size: number; status: string; startedAt?: string; endedAt?: string }

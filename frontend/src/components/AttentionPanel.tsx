@@ -49,7 +49,13 @@ export function AttentionPanel({ attention, step, onRetry, onRetryWithInput, onS
           <p className="mt-0.5 text-sm text-secondary">
             Step <span className="font-medium text-primary">{step?.name ?? attention.step}</span> stopped the run.
           </p>
-          <p className="mt-2 rounded-md bg-surface px-3 py-2 font-mono text-caption text-critical">{attention.error}</p>
+          {attention.error && (
+            <p className="mt-2 rounded-md bg-surface px-3 py-2 font-mono text-caption text-critical" data-testid="attention-error">
+              <span className="font-medium">{attention.error.class}</span>
+              <span className="ml-2 text-primary">{attention.error.message}</span>
+              <span className="ml-2 text-tertiary">{attention.error.retryable ? 'retryable' : 'not retryable'}</span>
+            </p>
+          )}
           <p className="mt-2 text-caption text-tertiary">
             Waiting since <When at={attention.since} now={now} />
             {left && (

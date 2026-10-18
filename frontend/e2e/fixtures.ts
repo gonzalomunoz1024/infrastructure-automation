@@ -288,7 +288,7 @@ export const JOB: JobDetail = {
   ],
   approvals: [],
   preview: PREVIEW,
-  attention: { step: 'restart', error: 'vCenter did not answer in 30s', options: ['retry', 'edit-input', 'skip', 'abort'], since: ago(5), timeout: 'PT4H' },
+  attention: { step: 'restart', error: { class: 'timeout', message: 'vCenter did not answer in 30s', retryable: true }, options: ['retry', 'edit-input', 'skip', 'abort'], since: ago(5), timeout: 'PT4H' },
   traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
 }
 

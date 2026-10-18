@@ -218,7 +218,7 @@ type JobDetail = JobSummary & { input: object; output?: object; steps: JobStep[]
   links?: { temporal? } }   // temporal: the job's execution in the Temporal UI (temporal profile with platform.temporal.ui-url set)
 type JobStep = { id; name; type; status: 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped' | 'compensated';
   attempt; startedAt?; endedAt?; durationMs?; input?; output?; error?: { class; message; retryable } ; items?: number }
-type Attention = { step; error; options: ('retry' | 'edit-input' | 'skip' | 'abort')[]; since; timeout }
+type Attention = { step; error?: { class; message; retryable }; options: ('retry' | 'edit-input' | 'skip' | 'abort')[]; since; timeout }
 type Batch = { rows: BatchRow[]; waves: { index; percent; size; status; startedAt?; endedAt? }[]; rollout; stoppedReason? }
 type BatchRow = { index; input; jobId?; status; error? }
 type Approval = { id; jobId; workflow; step; group; message; requestedAt; timeout; status: 'pending' | 'approved' | 'rejected' | 'expired';
