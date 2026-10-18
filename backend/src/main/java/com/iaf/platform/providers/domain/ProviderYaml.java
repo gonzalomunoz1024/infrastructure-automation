@@ -18,6 +18,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Alerts;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
 import com.iaf.platform.providers.domain.ProviderDefinition.ErrorClass;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
 import com.iaf.platform.providers.domain.ProviderDefinition.Metadata;
 import com.iaf.platform.providers.domain.ProviderDefinition.Slo;
 import com.iaf.platform.providers.domain.ProviderDefinition.Spec;
@@ -63,7 +64,9 @@ public final class ProviderYaml {
         }
         ProviderType type = ProviderType.of(s.path("type").asText("openapi"));
         JsonNode ss = s.get("spec");
-        SpecSource specSource = ss != null && ss.isObject() ? new SpecSource(text(ss, "url"), text(ss, "sha256"), text(ss, "content")) : null;
+        JsonNode gs = ss == null ? null : ss.get("git");
+        GitRef git = gs != null && gs.isObject() ? new GitRef(text(gs, "repo"), text(gs, "ref"), text(gs, "path"), text(gs, "credential")) : null;
+        SpecSource specSource = ss != null && ss.isObject() ? new SpecSource(text(ss, "url"), text(ss, "sha256"), text(ss, "content"), git, text(ss, "commit")) : null;
         Map<String, String> endpoints = new LinkedHashMap<>();
         s.path("endpoints").fields().forEachRemaining(e -> endpoints.put(e.getKey(), e.getValue().asText()));
         JsonNode au = s.get("auth");
@@ -132,6 +135,14 @@ public final class ProviderYaml {
         if (sp.specSource() != null) {
             ObjectNode ss = s.putObject("spec");
             put(ss, "url", sp.specSource().url());
+            if (sp.specSource().git() != null) {
+                ObjectNode git = ss.putObject("git");
+                put(git, "repo", sp.specSource().git().repo());
+                put(git, "ref", sp.specSource().git().ref());
+                put(git, "path", sp.specSource().git().path());
+                put(git, "credential", sp.specSource().git().credential());
+            }
+            put(ss, "commit", sp.specSource().commit());
             put(ss, "sha256", sp.specSource().sha256());
             put(ss, "content", sp.specSource().content());
         }

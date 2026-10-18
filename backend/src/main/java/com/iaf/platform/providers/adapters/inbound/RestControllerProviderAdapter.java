@@ -88,6 +88,13 @@ public class RestControllerProviderAdapter implements ProviderCommands {
     }
 
     @Override
+    @PostMapping("/providers/{name}:refresh-spec")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public Mono<CommandAccepted> refreshSpec(@PathVariable String name, @RequestBody(required = false) RefreshSpec command) {
+        return commands.refreshSpec(name, command);
+    }
+
+    @Override
     @PostMapping("/providers/{name}/overrides")
     @ResponseStatus(HttpStatus.ACCEPTED)
     public Mono<CommandAccepted> overrides(@PathVariable String name, @RequestBody SetOverride command) {

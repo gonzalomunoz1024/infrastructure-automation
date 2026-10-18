@@ -39,6 +39,7 @@ import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.adapters.outbound.InMemoryReviewEvidence;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
 import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
@@ -50,6 +51,8 @@ import com.iaf.platform.providers.ports.inbound.ProviderCommands.SetSlo;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.TestConnection;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.TryAction;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands.Validate;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort.GitFile;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort.ProbeResult;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
@@ -115,6 +118,7 @@ class ProviderCommandHandlerTest {
     EventBus events;
     List<DomainEvent> published;
     InMemoryReviewEvidence evidence;
+    GitSourcePort gitSource;
     ProviderCommandHandler handler;
 
     @BeforeEach
@@ -128,7 +132,8 @@ class ProviderCommandHandlerTest {
         published = new ArrayList<>();
         events.register(published::add);
         evidence = new InMemoryReviewEvidence();
-        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence);
+        gitSource = mock(GitSourcePort.class);
+        handler = new ProviderCommandHandler(store, changeRequests, calls, assistant, http, events, CLOCK, evidence, gitSource);
         handler.listen();
     }
 
@@ -201,6 +206,44 @@ class ProviderCommandHandlerTest {
         StepVerifier.create(handler.importSpec(new ImportSpec("wsdl", "https://x", null))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, null))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, "swagger: '2.0'\npaths: {}\n"))).expectError(IllegalArgumentException.class).verify();
+    }
+
+    @Test
+    void importsASpecFromGitWithTheCommitItCameFrom() {
+        when(gitSource.file("https://github.com/acme/machines-api", "v2.4.0", "api/openapi.yaml", "vault:github/read-token"))
+                .thenReturn(Mono.just(new GitFile("api/openapi.yaml", spec(), "3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c")));
+        GitRef git = new GitRef(" https://github.com/acme/machines-api ", "v2.4.0", "api/openapi.yaml", "vault:github/read-token");
+        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, null, git)))
+                .assertNext(s -> {
+                    assertThat(s.title()).isEqualTo("Machines API");
+                    assertThat(s.commit()).isEqualTo("3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c");
+                    assertThat(s.sha256()).hasSize(64);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void aGitImportNamesTheFileAndTakesOnlyAVaultReferenceForTheToken() {
+        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, null, new GitRef("https://github.com/acme/x", "main", " ", null))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("git.path is required"))
+                .verify();
+        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, null, new GitRef("https://github.com/acme/x", "main", "openapi.yaml", "ghp_s3cr3t"))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("Vault reference")
+                        .hasMessageNotContaining("ghp_s3cr3t"))
+                .verify();
+        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", "https://x.example.com/spec", null, new GitRef("https://github.com/acme/x", "main", "openapi.yaml", null))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("one of them"))
+                .verify();
+        verify(gitSource, never()).file(any(), any(), any(), any());
+    }
+
+    @Test
+    void aRepositoryThatCannotBeReadIsABadRequest() {
+        when(gitSource.file(any(), any(), any(), any())).thenReturn(Mono.error(new IllegalStateException("connection reset")));
+        StepVerifier.create(handler.importSpec(new ImportSpec("openapi", null, null, new GitRef("https://github.com/acme/x", null, "openapi.yaml", null))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class)
+                        .hasMessage("Could not read openapi.yaml from https://github.com/acme/x: connection reset"))
+                .verify();
     }
 
     // ---------------------------------------------------------------- test connection

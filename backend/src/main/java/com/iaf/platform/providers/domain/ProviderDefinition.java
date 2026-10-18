@@ -38,7 +38,28 @@ public record ProviderDefinition(
             String executionEnvironment) {
     }
 
-    public record SpecSource(String url, String sha256, String content) {
+    /**
+     * Where the OpenAPI document is: a {@code url}, pasted {@code content}, or a file in a Git
+     * repository ({@code git}) pinned to the {@code commit} it was read from. {@code sha256} pins
+     * the document itself.
+     */
+    public record SpecSource(String url, String sha256, String content, GitRef git, String commit) {
+
+        public SpecSource(String url, String sha256, String content) {
+            this(url, sha256, content, null, null);
+        }
+
+        public boolean fromGit() {
+            return git != null;
+        }
+
+        public boolean pasted() {
+            return git == null && (url == null || url.isBlank()) && content != null && !content.isBlank();
+        }
+    }
+
+    /** A file in a Git repository: {@code ref} is a branch, tag or commit; {@code credential} a {@code vault:} reference to a read token. */
+    public record GitRef(String repo, String ref, String path, String credential) {
     }
 
     public record Auth(String type, String credential, String header) {

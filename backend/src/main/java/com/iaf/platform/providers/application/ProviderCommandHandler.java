@@ -23,6 +23,7 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
@@ -36,7 +37,10 @@ import com.iaf.platform.providers.domain.ProviderChecks;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDefinition.Action;
 import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
+import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
 import com.iaf.platform.providers.domain.ProviderReview;
+import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.domain.ReviewEvidence.ActionTry;
 import com.iaf.platform.providers.domain.ReviewEvidence.ConnectionTest;
@@ -44,6 +48,7 @@ import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TextDiff;
 import com.iaf.platform.providers.domain.TryResult;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 import com.iaf.platform.providers.ports.outbound.HttpProbePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
@@ -53,6 +58,7 @@ import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCall;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
+import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 
@@ -82,6 +88,12 @@ public class ProviderCommandHandler implements ProviderCommands {
     /** What a secret-looking field of a recorded sample becomes in the provider file. */
     public static final String REDACTED = "vault:redacted";
 
+    /** The change-request check of a spec refresh: what was read and what changed. */
+    public static final String SPEC_REFRESH = "spec-refresh";
+
+    /** How a provider change request rolls out when it does not say. */
+    static final String DEFAULT_STRATEGY = "all";
+
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
     private static final Set<String> STRATEGIES = Set.of("canary", "all");
 
@@ -93,6 +105,7 @@ public class ProviderCommandHandler implements ProviderCommands {
     private final EventBus events;
     private final Clock clock;
     private final ReviewEvidencePort evidence;
+    private final GitSourcePort git;
 
     @PostConstruct
     void listen() {
@@ -113,8 +126,15 @@ public class ProviderCommandHandler implements ProviderCommands {
             }
             boolean hasUrl = command.url() != null && !command.url().isBlank();
             boolean hasContent = command.content() != null && !command.content().isBlank();
+            if (command.git() != null) {
+                if (hasUrl || hasContent) {
+                    throw new IllegalArgumentException("Give the spec's url, its content or its file in Git, one of them");
+                }
+                GitRef g = requireGitRef(command.git());
+                return readFromGit(g, g.ref()).map(f -> OpenApiImporter.parse(f.content()).withCommit(f.commit()));
+            }
             if (!hasUrl && !hasContent) {
-                throw new IllegalArgumentException("Give the spec's url or paste its content");
+                throw new IllegalArgumentException("Give the spec's url, paste its content or name its file in Git");
             }
             if (hasContent) {
                 return Mono.fromCallable(() -> OpenApiImporter.parse(command.content()));
@@ -124,6 +144,209 @@ public class ProviderCommandHandler implements ProviderCommands {
                     .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not fetch " + url + ": " + reason(e)))
                     .map(OpenApiImporter::parse);
         });
+    }
+
+    /** A Git location names the repository and the file; a private repository's token is a Vault reference, never the token. */
+    static GitRef requireGitRef(GitRef g) {
+        if (g.repo() == null || g.repo().isBlank()) {
+            throw new IllegalArgumentException("git.repo is required: the repository's https URL, like https://github.com/acme/fleet-api");
+        }
+        if (g.path() == null || g.path().isBlank()) {
+            throw new IllegalArgumentException("git.path is required: the spec's file in the repository, like openapi.yaml");
+        }
+        if (g.credential() != null && !g.credential().isBlank() && !g.credential().trim().startsWith("vault:")) {
+            throw new IllegalArgumentException("git.credential is a Vault reference to a read token, like vault:github/read-token; the token itself never goes through the API");
+        }
+        return new GitRef(g.repo().trim(), g.ref() == null || g.ref().isBlank() ? null : g.ref().trim(), g.path().trim(),
+                g.credential() == null || g.credential().isBlank() ? null : g.credential().trim());
+    }
+
+    private Mono<GitSourcePort.GitFile> readFromGit(GitRef g, String ref) {
+        return git.file(g.repo(), ref, g.path(), g.credential())
+                .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not read " + g.path() + " from " + g.repo() + ": " + reason(e)));
+    }
+
+    // ---------------------------------------------------------------- refresh the spec
+
+    /** The document a refresh read, with the commit and ref of a spec read from Git. */
+    record LatestSpec(String raw, String commit, String ref) {
+    }
+
+    @Override
+    public Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command) {
+        RefreshSpec c = command == null ? new RefreshSpec(null, null) : command;
+        return CurrentIdentity.current().flatMap(who -> blocking(() -> {
+            StoredProvider current = store.get(name).orElseThrow(() -> new NotFoundException("Provider", name));
+            ProviderDefinition def = current.definition();
+            AccessRules.requireEdit(who, def.owner(), "provider " + name);
+            SpecSource source = def.spec().specSource();
+            boolean hasSpec = source != null && (source.fromGit() || !blank(source.url()) || !blank(source.content()));
+            if (def.type() != ProviderType.OPENAPI || !hasSpec) {
+                throw new IllegalArgumentException("Provider " + name + " has no OpenAPI spec to refresh");
+            }
+            if (source.fromGit()) {
+                requireGitRef(source.git());
+            }
+            if (!blank(c.ref()) && !source.fromGit()) {
+                throw new IllegalArgumentException("ref only applies to a spec read from Git; provider " + name + " reads its spec from " + where(source));
+            }
+            if (!blank(c.content()) && !source.pasted()) {
+                throw new IllegalArgumentException("content only replaces a pasted spec; provider " + name + " reads its spec from " + where(source));
+            }
+            if (source.pasted() && blank(c.content())) {
+                throw new IllegalArgumentException("The spec of provider " + name + " was pasted; paste the new document as content");
+            }
+            requireNoOpenChange(name);
+            return current;
+        }).flatMap(current -> latestSpec(current.definition().spec().specSource(), c)
+                .flatMap(latest -> blocking(() -> refreshed(who, current, latest, c)))));
+    }
+
+    private Mono<LatestSpec> latestSpec(SpecSource source, RefreshSpec c) {
+        if (source.fromGit()) {
+            GitRef g = requireGitRef(source.git());
+            String ref = blank(c.ref()) ? g.ref() : c.ref().trim();
+            return readFromGit(g, ref).map(f -> new LatestSpec(f.content(), f.commit(), ref));
+        }
+        if (source.pasted()) {
+            return Mono.just(new LatestSpec(c.content(), null, null));
+        }
+        String url = source.url().trim();
+        return http.fetch(url)
+                .onErrorMap(e -> !(e instanceof IllegalArgumentException), e -> new IllegalArgumentException("Could not fetch " + url + ": " + reason(e)))
+                .map(raw -> new LatestSpec(raw, null, null));
+    }
+
+    /**
+     * The provider file moved to the new document: the schemas of the actions that call its
+     * operations, the overrides the new spec no longer needs dropped (it agrees with the real
+     * response), the pin, and the next minor version. Refused when an operation an action calls is gone.
+     */
+    private CommandAccepted refreshed(Identity who, StoredProvider current, LatestSpec latest, RefreshSpec c) {
+        ProviderDefinition def = current.definition();
+        SpecSource source = def.spec().specSource();
+        String sha = WorkflowYaml.sha256(latest.raw());
+        if (sha.equalsIgnoreCase(source.sha256() == null ? "" : source.sha256())) {
+            return CommandAccepted.of(def.name(), "unchanged", Map.of("provider", "/api/v1/providers/" + def.name()));
+        }
+        SpecImport imported = OpenApiImporter.parse(latest.raw());
+        ObjectNode tree = tree(current.yaml());
+        ObjectNode spec = child(tree, "spec");
+        JsonNode actionNodes = spec.path("actions");
+        List<Problem> gone = new ArrayList<>();
+        List<String> changed = new ArrayList<>();
+        List<String> dropped = new ArrayList<>();
+        List<String> kept = new ArrayList<>();
+        int compared = 0;
+        List<Action> actions = def.actions();
+        for (int i = 0; i < actions.size(); i++) {
+            Action a = actions.get(i);
+            if (blank(a.operation()) || (a.method() != null && a.path() != null)) {
+                continue;
+            }
+            compared++;
+            Optional<SpecImport.Operation> op = imported.operation(a.operation());
+            if (op.isEmpty()) {
+                gone.add(Problem.error("refresh.operationGone", a.id(), "spec.actions[" + i + "].operation", "The new spec has no operation " + a.operation()
+                        + ", which " + a.id() + " calls; publish the provider without that action first, or refresh to a ref that still has it"));
+                continue;
+            }
+            ObjectNode node = (ObjectNode) actionNodes.get(i);
+            boolean updated = false;
+            if (op.get().input() != null && !op.get().input().equals(a.input())) {
+                node.set("input", op.get().input());
+                updated = true;
+            }
+            JsonNode output = op.get().output() != null ? op.get().output() : a.output();
+            if (op.get().output() != null && !op.get().output().equals(a.output())) {
+                node.set("output", output);
+                updated = true;
+            }
+            if (updated) {
+                changed.add(a.id());
+            }
+            JsonNode override = def.override(a.id());
+            if (override != null && override.has("response")) {
+                JsonNode real = realResponse(def, a);
+                if (real != null && Schemas.mismatches(output, real).isEmpty()) {
+                    // a newer spec keeps the override unless it now agrees with the real response
+                    dropOverride(spec, a.id());
+                    dropped.add(a.id());
+                } else {
+                    kept.add(a.id());
+                }
+            }
+        }
+        if (!gone.isEmpty()) {
+            throw new ConflictException("The new spec drops " + gone.size() + (gone.size() == 1 ? " operation" : " operations")
+                    + " that provider " + def.name() + "'s actions call", gone);
+        }
+        String version = Semver.parse(def.metadata().version()).bumpMinor().toString();
+        child(tree, "metadata").put("version", version);
+        ObjectNode pin = child(spec, "spec");
+        pin.put("sha256", sha);
+        if (source.fromGit()) {
+            pin.put("commit", latest.commit());
+            if (!blank(c.ref())) {
+                child(pin, "git").put("ref", latest.ref());
+            }
+        } else if (pin.has("content")) {
+            pin.put("content", latest.raw());
+        }
+        String yaml = ProviderYaml.toYaml(tree);
+        String detail = "Read " + where(source) + (latest.commit() == null ? "" : " at " + shortCommit(latest.commit()))
+                + (imported.version() == null ? "" : " (spec version " + imported.version() + ")") + ": "
+                + changed.size() + " of " + compared + (compared == 1 ? " action's schemas changed" : " actions' schemas changed")
+                + (dropped.isEmpty() ? "" : "; override dropped for " + String.join(", ", dropped) + " (the spec now agrees with the real response)")
+                + (kept.isEmpty() ? "" : "; override kept for " + String.join(", ", kept));
+        List<Check> extra = new ArrayList<>();
+        extra.add(new Check(SPEC_REFRESH, "Spec refreshed", "passed", detail));
+        // the real responses judged against the new schemas: a refresh that breaks one cannot merge
+        ProviderReview.review(ProviderYaml.parse(yaml), evidence.evidence(def.name())).checks().stream()
+                .filter(k -> ProviderReview.RESPONSES.equals(k.id()))
+                .forEach(extra::add);
+        return openChange(who, current, yaml, "Provider " + def.title() + " " + version + ": spec refreshed", SPEC_REFRESH, extra);
+    }
+
+    /** The newest real answer of an action: a Try it call the platform recorded, else a sample the wizard recorded. */
+    private JsonNode realResponse(ProviderDefinition def, Action a) {
+        Optional<ActionTry> answer = evidence.evidence(def.name()).lastAnswer(a.id(), ProviderReview.sandbox(def));
+        if (answer.isPresent()) {
+            return answer.get().response();
+        }
+        return a.sample() != null && a.recorded() != null ? a.sample() : null;
+    }
+
+    private static void dropOverride(ObjectNode spec, String action) {
+        JsonNode overrides = spec.get("overrides");
+        if (overrides == null || !overrides.isObject()) {
+            return;
+        }
+        JsonNode block = overrides.get(action);
+        if (block != null && block.isObject()) {
+            ((ObjectNode) block).remove("response");
+            if (block.isEmpty()) {
+                ((ObjectNode) overrides).remove(action);
+            }
+        }
+        if (overrides.isEmpty()) {
+            spec.remove("overrides");
+        }
+    }
+
+    private static String where(SpecSource source) {
+        if (source.fromGit()) {
+            return source.git().path() + " in " + source.git().repo();
+        }
+        return source.pasted() ? "the pasted document" : source.url().trim();
+    }
+
+    private static String shortCommit(String commit) {
+        return commit.length() > 12 ? commit.substring(0, 12) : commit;
+    }
+
+    private static boolean blank(String s) {
+        return s == null || s.isBlank();
     }
 
     @Override
@@ -137,12 +360,15 @@ public class ProviderCommandHandler implements ProviderCommands {
                 ContentFiles.requireSlug("The provider name", provider);
             }
             Auth auth = authOf(command.auth());
-            return Flux.fromIterable(command.endpoints().entrySet()).flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth)
-                    .flatMap(r -> provider == null ? Mono.just(r) : blocking(() -> {
-                        evidence.recordConnection(provider, new ConnectionTest(r.environment(), e.getValue() == null ? null : e.getValue().trim(),
+            // probed at once, recorded in the order of the environments
+            return Flux.fromIterable(command.endpoints().entrySet())
+                    .flatMapSequential(e -> probe(e.getKey(), e.getValue(), auth).map(r -> Map.entry(e.getValue() == null ? "" : e.getValue().trim(), r)))
+                    .concatMap(t -> provider == null ? Mono.just(t.getValue()) : blocking(() -> {
+                        ConnectionResult r = t.getValue();
+                        evidence.recordConnection(provider, new ConnectionTest(r.environment(), t.getKey().isEmpty() ? null : t.getKey(),
                                 auth.credential(), r.ok(), r.durationMs(), r.message(), clock.instant(), who.id()));
                         return r;
-                    })));
+                    }));
         }).collectList().map(ConnectionResult.Results::new));
     }
 
@@ -417,6 +643,46 @@ public class ProviderCommandHandler implements ProviderCommands {
             saveEdited(current, tree, who, "slo");
             return CommandAccepted.of(name, "updated", Map.of("provider", "/api/v1/providers/" + name));
         });
+    }
+
+    /** One change at a time per provider: two open change requests would publish over each other. */
+    private void requireNoOpenChange(String name) {
+        changeRequests.all().stream()
+                .filter(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.status() == ChangeRequest.Status.OPEN && name.equals(cr.name()))
+                .findFirst()
+                .ifPresent(cr -> {
+                    throw new ConflictException("Change request " + cr.id() + " for provider " + name + " " + cr.version() + " is still open; merge or close it first");
+                });
+    }
+
+    /**
+     * Opens a change request that publishes {@code yaml} as the provider's next version, with the
+     * file checks and {@code extra} checks; refused while the file has errors.
+     */
+    private CommandAccepted openChange(Identity who, StoredProvider current, String yaml, String title, String change, List<Check> extra) {
+        ProviderChecks.Result checks = ProviderChecks.check(yaml);
+        if (checks.hasErrors()) {
+            int n = checks.errors().size();
+            throw new ConflictException("The changed provider has " + n + (n == 1 ? " problem" : " problems") + " to fix", checks.problems());
+        }
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        String version = def.metadata().version();
+        List<Check> all = new ArrayList<>(checks.checks());
+        all.addAll(extra);
+        String path = current.path() == null ? pathOf(def) : current.path();
+        String diff = TextDiff.unified(current.yaml(), yaml, path);
+        String id = Ids.next("cr");
+        ChangeRequest cr = new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, def.name(), version, "change/provider-" + def.name() + "-" + version,
+                title, who.id(), ChangeRequest.Status.OPEN, List.copyOf(all), DEFAULT_STRATEGY, yaml, diff, clock.instant(), null, null, null);
+        changeRequests.save(cr);
+        ObjectNode data = F.objectNode();
+        data.put("name", def.name());
+        data.put("version", version);
+        data.put("changeRequestId", id);
+        data.put("by", who.id());
+        data.put("change", change);
+        events.publish(CHANGE_REQUESTED_EVENT, "provider", def.name(), who.id(), data);
+        return CommandAccepted.of(id, "open", Map.of("changeRequest", "/api/v1/change-requests/" + id, "provider", "/api/v1/providers/" + def.name()));
     }
 
     private void saveEdited(StoredProvider current, ObjectNode tree, Identity who, String change) {

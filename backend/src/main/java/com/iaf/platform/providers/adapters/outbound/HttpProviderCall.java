@@ -19,6 +19,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpHeaders;
@@ -47,6 +48,7 @@ import com.iaf.platform.providers.domain.ProviderDefinition.Auth;
 import com.iaf.platform.providers.domain.ProviderDefinition.ErrorClass;
 import com.iaf.platform.providers.domain.ProviderDefinition.SpecSource;
 import com.iaf.platform.providers.domain.ProviderType;
+import com.iaf.platform.providers.ports.outbound.GitSourcePort;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 
@@ -57,7 +59,8 @@ import reactor.netty.http.client.HttpClient;
 
 /**
  * The production {@link ProviderCallPort} for openapi and http providers: the endpoint of the
- * environment, the operation from the pinned spec (fetched once, cached by its sha256) or the
+ * environment, the operation from the pinned spec (fetched once from its URL, or read from Git at
+ * the pinned commit, and cached by its sha256) or the
  * action's method and path, {@code {param}} segments and query parameters filled from the input
  * and the rest sent as the JSON body, auth resolved through the {@link CredentialsPort} at call
  * time, errors classified by the provider's {@code errors} table, every call recorded on the
@@ -82,9 +85,16 @@ public class HttpProviderCall implements ProviderCallPort {
     private final CredentialsPort credentials;
     private final TelemetryPort telemetry;
     private final Clock clock;
+    private final GitSourcePort git;
     private final Map<String, Mono<JsonNode>> specs = new ConcurrentHashMap<>();
 
     public HttpProviderCall(WebClient.Builder builder, CredentialsPort credentials, TelemetryPort telemetry, Clock clock) {
+        this(builder, credentials, telemetry, clock, null);
+    }
+
+    /** {@code git} reads specs pinned to a commit of a repository ({@code spec: { git, commit }}). */
+    @Autowired
+    public HttpProviderCall(WebClient.Builder builder, CredentialsPort credentials, TelemetryPort telemetry, Clock clock, GitSourcePort git) {
         HttpClient http = OutboundAddresses.guard(HttpClient.create()
                 .responseTimeout(CALL_TIMEOUT)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000));
@@ -95,6 +105,7 @@ public class HttpProviderCall implements ProviderCallPort {
         this.credentials = credentials;
         this.telemetry = telemetry;
         this.clock = clock;
+        this.git = git;
     }
 
     /** The HTTP shape of an action: method, path template and the names of its query parameters. */
@@ -167,10 +178,12 @@ public class HttpProviderCall implements ProviderCallPort {
 
     private Mono<JsonNode> spec(ProviderDefinition p) {
         SpecSource s = p.spec().specSource();
-        if (s == null || ((s.url() == null || s.url().isBlank()) && (s.content() == null || s.content().isBlank()))) {
+        if (s == null || (!s.fromGit() && (s.url() == null || s.url().isBlank()) && (s.content() == null || s.content().isBlank()))) {
             return Mono.error(new ProviderCallException("misconfigured", "Provider " + p.name() + " has no spec to look operations up in", false, 0));
         }
-        String key = s.sha256() != null && !s.sha256().isBlank() ? s.sha256().toLowerCase() : (s.url() != null ? s.url() : "content:" + WorkflowYaml.sha256(s.content()));
+        String key = s.sha256() != null && !s.sha256().isBlank() ? s.sha256().toLowerCase()
+                : s.fromGit() ? "git:" + s.git().repo() + "@" + (s.commit() == null ? s.git().ref() : s.commit()) + ":" + s.git().path()
+                : (s.url() != null ? s.url() : "content:" + WorkflowYaml.sha256(s.content()));
         // a loaded spec is kept for a day; a failed load is not cached, so the next call retries
         return specs.computeIfAbsent(key, k -> load(p, s).cache(doc -> Duration.ofHours(24), e -> Duration.ZERO, () -> Duration.ZERO));
     }
@@ -178,6 +191,22 @@ public class HttpProviderCall implements ProviderCallPort {
     private Mono<JsonNode> load(ProviderDefinition p, SpecSource s) {
         if (s.content() != null && !s.content().isBlank()) {
             return Mono.fromCallable(() -> OpenApiImporter.read(s.content()));
+        }
+        if (s.fromGit()) {
+            if (git == null) {
+                return Mono.error(new ProviderCallException("spec_unavailable", "Provider " + p.name() + " reads its spec from Git, and this platform has no Git reader", false, 0));
+            }
+            // the pinned commit, never the moving ref: the reviewed spec is the one that runs
+            String at = s.commit() != null && !s.commit().isBlank() ? s.commit() : s.git().ref();
+            return git.file(s.git().repo(), at, s.git().path(), s.git().credential())
+                    .map(f -> {
+                        if (s.sha256() != null && !s.sha256().isBlank() && !s.sha256().equalsIgnoreCase(WorkflowYaml.sha256(f.content()))) {
+                            log.warn("the spec of provider {} at {} differs from the pinned sha256", p.name(), f.commit());
+                        }
+                        return OpenApiImporter.read(f.content());
+                    })
+                    .onErrorMap(e -> !(e instanceof ProviderCallException),
+                            e -> new ProviderCallException("spec_unavailable", "Could not load the spec of " + p.name() + ": " + reason(e), true, 0));
         }
         return Mono.defer(() -> client.get().uri(OutboundAddresses.requireAllowed(URI.create(s.url().trim()))).retrieve().bodyToMono(String.class).timeout(SPEC_TIMEOUT))
                 .map(raw -> {

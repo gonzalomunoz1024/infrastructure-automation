@@ -179,6 +179,22 @@ answered when tried against dev, every error class has a match rule, every delet
 or an `effectDetail`, and no real response still disagrees with its schema after the
 `overrides`. It also suggests an SLO from the tried calls' p95 (docs/api.md, Providers).
 
+The spec can also live in a Git repository. The file then names the repository, the ref and the
+path, and pins the commit it was read from; calls look operations up in that commit, never in
+whatever the ref points at today:
+
+```yaml
+  spec:
+    git: { repo: https://github.com/acme/vcenter-api, ref: v8.0.2, path: openapi/vcenter.yaml, credential: vault:github/read-token }
+    commit: 3f2a9c1d0e4b5a6c7d8e9f0a1b2c3d4e5f6a7b8c   # filled by Import spec and Refresh spec
+    sha256: "9f2c…"
+```
+
+Only https repositories are read; a private one names a Vault reference to a read token. Refresh
+spec (`POST /providers/{name}:refresh-spec`) reads the spec again (from the URL, from Git at the
+file's ref or at a new one) and opens a change request for the next minor version with the new
+pin and schemas. A newer spec keeps an override unless it now agrees with the action's real response.
+
 Type-specific `spec` blocks:
 
 - `ansible`: `source: { git: { repo, ref, path }, commit }` or `upload: { file, sha256 }` or

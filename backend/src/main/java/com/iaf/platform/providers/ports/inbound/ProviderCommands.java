@@ -8,6 +8,7 @@ import com.iaf.platform.assistant.domain.ProviderDraft;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.providers.domain.ConnectionResult;
+import com.iaf.platform.providers.domain.ProviderDefinition.GitRef;
 import com.iaf.platform.providers.domain.ProviderReview;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TryResult;
@@ -21,8 +22,22 @@ import reactor.core.publisher.Mono;
  */
 public interface ProviderCommands {
 
-    /** {@code type} is openapi; one of {@code url} or {@code content} carries the document. */
-    record ImportSpec(String type, String url, String content) {
+    /**
+     * {@code type} is openapi; one of {@code url}, {@code content} or {@code git} (a file in a
+     * repository at a branch, tag or commit; a private one names a {@code vault:} token) carries the document.
+     */
+    record ImportSpec(String type, String url, String content, GitRef git) {
+        public ImportSpec(String type, String url, String content) {
+            this(type, url, content, null);
+        }
+    }
+
+    /**
+     * Read the provider's spec again from where its file says it is. {@code ref} reads a Git spec
+     * at another branch, tag or commit (default: the file's ref); {@code content} is the new
+     * document of a pasted spec.
+     */
+    record RefreshSpec(String ref, String content) {
     }
 
     /**
@@ -82,6 +97,12 @@ public interface ProviderCommands {
 
     /** "Ask Devin" in the wizard. */
     Mono<ProviderDraft> draft(Draft command);
+
+    /**
+     * Opens a change request that moves the provider to its spec's newest content (status
+     * {@code open}), or answers {@code unchanged} when the document is the one already pinned.
+     */
+    Mono<CommandAccepted> refreshSpec(String name, RefreshSpec command);
 
     Mono<CommandAccepted> overrides(String name, SetOverride command);
 

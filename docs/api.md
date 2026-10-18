@@ -164,7 +164,9 @@ type ProviderDetail = ProviderSummary & { yaml; actions: ActionInfo[]; daily: { 
 type ActionInfo = { id; title; operation; effect; retry; approval; plan?; input: Schema; output: Schema; sample?: object; overridden: boolean;
   effectDetail?; recorded?: { environment; at } }
 type SpecImport = { title; version; sha256; auth: { type; where? }; servers: string[];
-  operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[] }
+  operations: { operationId; method; path; summary; effect; retry; input: Schema; output: Schema }[];
+  commit? }   // commit: the commit a spec read from Git came from; it goes in the file's spec.commit
+type GitRef = { repo; ref?; path; credential? }   // repo: https URL; ref: branch, tag or commit (default main); credential: vault:<path> of a read token
 type TryResult = { ok: boolean; status; durationMs; response; mismatches: { field; expected; actual }[]; verified?: boolean;
   environment; at; yaml? }   // yaml: the draft with the response saved as the action's sample, when the call went through
 type ProviderReview = { ready: boolean; checks: Check[]; problems: Problem[];
@@ -189,12 +191,13 @@ come after the file's own checks on the change request:
 | GET    | `/providers`                              | `ProviderSummary[]` |
 | GET    | `/providers/{name}`                       | `ProviderDetail` |
 | GET    | `/providers/{name}/alerts`                | `{ id; at; action; message; severity; jobId?; channel? }[]` |
-| POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? }` → `SpecImport` (200) |
+| POST   | `/providers:import-spec`                  | `{ type: 'openapi'; url? ; content? ; git?: GitRef }` → `SpecImport` (200). With `git` the file is read from the repository at the ref and `commit` says which commit that was; a `credential` that is not a `vault:` reference is a 400 (the token never goes through the API). Only https repositories are read, ssh URLs and credentials in the URL are refused |
 | POST   | `/providers:test-connection`              | `{ endpoints; auth; provider? }` → `{ results: { environment; ok; durationMs; message }[] }` (200). With `provider` (the provider's name) the results are kept as review evidence. Link-local and cloud metadata addresses (169.254.0.0/16, fe80::/10, metadata.google.internal and the like) are refused here, in spec fetches and in provider calls, including through redirects and DNS |
 | POST   | `/providers:try`                          | `{ yaml; action; environment; input }` → `TryResult` (200). Every try is kept as review evidence; one that went through comes back with `yaml`, the draft whose action has the response as its `sample` and `recorded: { environment, at }`. Fields named like secrets (token, password, api key...) are saved as `vault:redacted` |
 | POST   | `/providers:validate`                     | `{ yaml }` → `{ checks: Check[]; problems: Problem[]; review: ProviderReview }` (200). `checks` and `problems` judge the file; `review` is null when the file is not a provider |
 | POST   | `/providers:publish`                      | `{ yaml; strategy? }` → `CommandAccepted` (change request id). 409 with the problems when the file has errors or the review is not ready; the change request carries both sets of checks |
 | POST   | `/providers:draft`                        | `{ description }` → `{ yaml; summary; assumptions[] }` (Ask Devin, `!provider-draft`) |
+| POST   | `/providers/{name}:refresh-spec`          | `{ ref? ; content? }` (optional) → `CommandAccepted` (202). Reads the spec again from where the file says: the URL, Git at the file's ref (or at `ref`, which is then written to the file), or `content` for a pasted spec. The same document answers `status: 'unchanged'`. Otherwise it opens a change request for the next minor version: new `sha256` (and `commit`), the input and output schemas of the actions that call its operations, and each override dropped only when the new spec agrees with the action's real response (its last Try it answer, else a recorded sample). Checks: the file's, `spec-refresh` (what was read and what changed) and the review's `responses`. 409 when an operation an action calls is gone (problems `refresh.operationGone`) or another change request for the provider is open; 400 when `ref` or `content` do not fit the spec's source; owner team or admin |
 | POST   | `/providers/{name}/overrides`             | `{ action; response }` → `CommandAccepted` |
 | PUT    | `/providers/{name}/slo`                   | `{ successRate; p95Ms; channel }` → `CommandAccepted` |
 

@@ -54,6 +54,10 @@ platform:
     sync-playbooks-on-startup: false   # create or update the Devin playbooks from devin/*.md at startup
     platform-api-url: ""               # what the agent calls back; blank = http://localhost:<server.port>
     max-rounds: 3                      # times the platform sends its own check results back to the agent
+  providers:
+    git-allow-local: false             # read file: repositories (tests and local demos only)
+    git-timeout: PT60S                 # one fetch of a spec, playbook or module repository
+    terraform-registry-url: https://registry.terraform.io
   audit:
     retention-years: 7
     seal-every: PT1H

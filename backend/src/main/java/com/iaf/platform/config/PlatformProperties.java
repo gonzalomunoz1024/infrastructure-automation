@@ -20,6 +20,7 @@ public class PlatformProperties {
     private Policy policy = new Policy();
     private Credentials credentials = new Credentials();
     private Assistant assistant = new Assistant();
+    private Providers providers = new Providers();
     private Audit audit = new Audit();
     private Demo demo = new Demo();
 
@@ -91,6 +92,16 @@ public class PlatformProperties {
         private String platformApiUrl = "";
         /** How many times the platform sends its own check results back to the agent before it settles a draft. */
         private int maxRounds = 3;
+    }
+
+    @Data
+    public static class Providers {
+        /** Read Git repositories on this machine (file: URLs and paths): tests and local demos only. */
+        private boolean gitAllowLocal = false;
+        /** How long one fetch of a spec, playbook or module repository may take. */
+        private Duration gitTimeout = Duration.ofSeconds(60);
+        /** Where registry modules ({@code namespace/name/provider}) of a Terraform import are looked up. */
+        private String terraformRegistryUrl = "https://registry.terraform.io";
     }
 
     @Data
