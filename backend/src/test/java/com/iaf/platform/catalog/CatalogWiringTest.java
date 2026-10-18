@@ -21,6 +21,7 @@ import com.iaf.platform.catalog.application.McpServer;
 import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
+import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.gateway.adapters.inbound.IdempotencyWebFilter;
 import com.iaf.platform.gateway.adapters.outbound.InMemoryIdempotencyStore;
@@ -46,7 +47,7 @@ class CatalogWiringTest {
     @Configuration
     @ComponentScan(basePackageClasses = {CatalogQueryHandler.class, GeneratedRouteWebFilter.class, RestControllerCatalogAdapter.class,
             ResourceQueryHandler.class, RestControllerResourceAdapter.class, InMemoryResourceStore.class,
-            JobQuotas.class, InMemoryIdempotencyStore.class, IdempotencyWebFilter.class})
+            JobQuotas.class, InMemoryIdempotencyStore.class, IdempotencyWebFilter.class, Traces.class})
     static class Slices {
     }
 

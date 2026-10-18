@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.inbound;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -21,6 +23,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.tracing.TraceIds;
+import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.gateway.application.JobQuotas;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.runs.application.RunsCommandHandler;
@@ -32,6 +36,7 @@ import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
 
+import io.micrometer.observation.Observation;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -48,25 +53,35 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     private final RunsCommandHandler commands;
     private final RunsQueryHandler queries;
     private final JobQuotas quotas;
+    private final Traces traces;
 
     public RestControllerRunsAdapter(RunsCommandHandler commands, RunsQueryHandler queries) {
         this(commands, queries, JobQuotas.unlimited());
     }
 
-    /** {@code quotas}: {@code POST /jobs} and {@code /jobs:batch} take a token from the caller's team first. */
-    @Autowired
     public RestControllerRunsAdapter(RunsCommandHandler commands, RunsQueryHandler queries, JobQuotas quotas) {
+        this(commands, queries, quotas, Traces.off());
+    }
+
+    /**
+     * {@code quotas}: {@code POST /jobs} and {@code /jobs:batch} take a token from the caller's team
+     * first. {@code traces}: the job they start runs in the request's trace, under its span.
+     */
+    @Autowired
+    public RestControllerRunsAdapter(RunsCommandHandler commands, RunsQueryHandler queries, JobQuotas quotas, Traces traces) {
         this.commands = commands;
         this.queries = queries;
         this.quotas = quotas;
+        this.traces = traces == null ? Traces.off() : traces;
     }
 
     /** {@code POST /api/v1/jobs}: {@code { workflow, version?, input, channel?, traceId?, changeId? }}. */
     public record StartJobRequest(String workflow, String version, JsonNode input, String channel, String traceId, String changeId) {
     }
 
-    /** {@code POST /api/v1/jobs:batch}: {@code { workflow, version?, items, defaults?, rollout? }}. */
-    public record StartBatchRequest(String workflow, String version, List<JsonNode> items, JsonNode defaults, RolloutPolicy rollout, String channel) {
+    /** {@code POST /api/v1/jobs:batch}: {@code { workflow, version?, items, defaults?, rollout?, channel?, traceId? }}. */
+    public record StartBatchRequest(String workflow, String version, List<JsonNode> items, JsonNode defaults, RolloutPolicy rollout, String channel,
+            String traceId) {
     }
 
     public record RetryRequest(String step, JsonNode input) {
@@ -133,16 +148,52 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
 
     @PostMapping("/jobs")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public Mono<CommandAccepted> start(@RequestBody StartJobRequest body) {
-        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> commands.startJob(new StartJob(body.workflow(), body.version(),
-                body.input(), null, body.channel() == null ? "rest" : body.channel(), null, body.traceId(), null, body.changeId()))));
+    public Mono<CommandAccepted> start(@RequestBody StartJobRequest body,
+            @RequestHeader(name = TraceIds.TRACEPARENT, required = false) String traceparent) {
+        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
+                traceId -> commands.startJob(new StartJob(body.workflow(), body.version(), body.input(), null,
+                        body.channel() == null ? "rest" : body.channel(), null, traceId, null, body.changeId())))));
     }
 
     @PostMapping("/jobs:batch")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public Mono<CommandAccepted> batch(@RequestBody StartBatchRequest body) {
-        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> commands.startBatch(new StartBatch(body.workflow(), body.version(),
-                body.items() == null ? List.of() : body.items(), body.defaults(), body.rollout(), null, body.channel() == null ? "batch" : body.channel(), null))));
+    public Mono<CommandAccepted> batch(@RequestBody StartBatchRequest body,
+            @RequestHeader(name = TraceIds.TRACEPARENT, required = false) String traceparent) {
+        return CurrentIdentity.current().flatMap(quotas::take).then(Mono.defer(() -> inTrace(requestedTraceId(body.traceId()), traceparent,
+                traceId -> commands.startBatch(new StartBatch(body.workflow(), body.version(), body.items() == null ? List.of() : body.items(),
+                        body.defaults(), body.rollout(), null, body.channel() == null ? "batch" : body.channel(), null, traceId)))));
+    }
+
+    /** A {@code traceId} in a body is a W3C trace id (32 hex characters, not all zeros); null when none is given. */
+    static String requestedTraceId(String traceId) {
+        if (traceId == null || traceId.isBlank()) {
+            return null;
+        }
+        String id = traceId.trim().toLowerCase();
+        if (!TraceIds.isTraceId(id)) {
+            throw new IllegalArgumentException("traceId must be a W3C trace id: 32 hex characters, not all zeros");
+        }
+        return id;
+    }
+
+    /**
+     * Start a job in the request's trace: the trace id the body names, else the request span's
+     * (which continues an incoming {@code traceparent}), else the {@code traceparent}'s; null lets
+     * the job start a trace of its own. While it starts, the request span is remembered under its
+     * trace id, so the job's span hangs under it.
+     */
+    private Mono<CommandAccepted> inTrace(String asked, String traceparent, Function<String, Mono<CommandAccepted>> start) {
+        return Mono.deferContextual(ctx -> {
+            Observation request = Traces.current(ctx);
+            String spanTrace = traces.traceId(request);
+            String traceId = asked != null ? asked
+                    : spanTrace != null ? spanTrace : TraceIds.parse(traceparent).map(TraceIds.Parent::traceId).orElse(null);
+            if (traceId == null || !traceId.equals(spanTrace)) {
+                return start.apply(traceId);
+            }
+            traces.remember(traceId, request);
+            return start.apply(traceId).doFinally(signal -> traces.forget(traceId, request));
+        });
     }
 
     @Override

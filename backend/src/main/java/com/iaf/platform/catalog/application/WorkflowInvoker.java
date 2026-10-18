@@ -174,6 +174,12 @@ public class WorkflowInvoker {
 
     /** {@code version}: every row runs that version, bypassing the canary split; null lets the release router pick. */
     public Mono<BatchStarted> batch(WorkflowRecord workflow, JsonNode body, Map<String, String> params, Identity who, String channel, String version) {
+        return batch(workflow, body, params, who, channel, version, null);
+    }
+
+    /** {@code traceId}: the trace the batch and its rows run in (the request's); null starts a new one. */
+    public Mono<BatchStarted> batch(WorkflowRecord workflow, JsonNode body, Map<String, String> params, Identity who, String channel, String version,
+            String traceId) {
         return quotas.take(who).then(Mono.defer(() -> pinned(workflow, version))).flatMap(rec -> {
             WorkflowDefinition d = rec.definition();
             BatchPlan plan = plan(d, body, params);
@@ -182,9 +188,10 @@ public class WorkflowInvoker {
             policyInput.set("defaults", plan.defaults());
             ArrayNode rows = policyInput.putArray("items");
             plan.rows().forEach(rows::add);
-            return decide(d, rec.version(), who, policyInput, pinContext(context(channel, null, plan.rows().size()), version))
+            return decide(d, rec.version(), who, policyInput, pinContext(context(channel, traceId, plan.rows().size()), version))
                     .then(preview(d, plan.rows().get(0), who))
-                    .flatMap(p -> runs.startBatch(new StartBatch(d.name(), version, plan.rows(), plan.defaults(), plan.rollout(), who, channel, p.orElse(null))))
+                    .flatMap(p -> runs.startBatch(new StartBatch(d.name(), version, plan.rows(), plan.defaults(), plan.rollout(), who, channel,
+                            p.orElse(null), traceId)))
                     .map(a -> BatchStarted.of(a, plan.rows().size()));
         });
     }

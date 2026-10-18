@@ -119,7 +119,7 @@ class GeneratedRouteWebFilterTest {
         ArgumentCaptor<StartJob> captor = ArgumentCaptor.forClass(StartJob.class);
         verify(runs).startJob(captor.capture());
         assertThat(captor.getValue().input().path("vmId").asText()).isEqualTo("vm 7");
-        assertThat(captor.getValue().traceId()).startsWith("trace_");
+        assertThat(captor.getValue().traceId()).matches("[0-9a-f]{32}");
     }
 
     @Test

@@ -144,7 +144,7 @@ class RunsQueryHandlerTest {
         assertThat(d.path("approvals").get(0).path("id").asText()).isEqualTo("apr_a");
         assertThat(d.path("children").get(0).path("id").asText()).isEqualTo("job_c");
         assertThat(d.path("input").path("vmId").asText()).isEqualTo("vm-1");
-        assertThat(d.path("traceId").asText()).startsWith("trc_");
+        assertThat(d.path("traceId").asText()).matches("[0-9a-f]{32}");
         assertThat(queries.job("job_zzz").blockOptional()).isEmpty();
         assertThat(queries.approvals("pending").collectList().block()).hasSize(1);
         assertThat(queries.approvals("approved").collectList().block()).isEmpty();

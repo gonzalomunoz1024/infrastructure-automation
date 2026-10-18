@@ -16,6 +16,12 @@ management:
     web:
       exposure:
         include: health, info, prometheus, metrics
+  tracing:
+    sampling:
+      probability: 1.0    # every request and job is traced (spans for the gateway, MCP calls, jobs, steps and provider calls)
+  # otlp:
+  #   tracing:
+  #     endpoint: http://localhost:4318/v1/traces   # set it (or MANAGEMENT_OTLP_TRACING_ENDPOINT) to export spans; unset, nothing leaves the process
 
 platform:
   # the content repo: workflows, providers and resource types as config as code

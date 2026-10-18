@@ -180,7 +180,7 @@ public class RunsCommandHandler implements RunsCommands {
                     .flatMap(decision -> previewFor(cmd.preview(), def, rows, decision, true)
                             .flatMap(preview -> {
                                 Job job = JobFactory.newBatch(def, rec.version(), rows, cmd.defaults(), rollout, waves, who, channel,
-                                        preview.orElse(null), decision, null, now());
+                                        preview.orElse(null), decision, null, cmd.traceId(), now());
                                 return openChange(job, def, null);
                             }))
                     .flatMap(job -> launch(job, null))

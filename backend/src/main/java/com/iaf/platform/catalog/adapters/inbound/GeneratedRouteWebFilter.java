@@ -3,8 +3,9 @@ package com.iaf.platform.catalog.adapters.inbound;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -41,16 +42,17 @@ import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
-import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.common.domain.TooManyRequestsException;
+import com.iaf.platform.common.tracing.TraceIds;
+import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
-import lombok.RequiredArgsConstructor;
+import io.micrometer.observation.Observation;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
 
@@ -60,23 +62,40 @@ import reactor.core.publisher.Mono;
  * {@code :batch}, {@code :preview}) and the resource reads of every type. Platform routes win:
  * a path whose first segment is a reserved noun is never matched, and everything that matches
  * nothing continues down the chain to the controllers (404). {@code X-Workflow-Version} (or
- * {@code ?version=}) pins a workflow operation to one version.
+ * {@code ?version=}) pins a workflow operation to one version. Every matched request is a
+ * {@code iaf.gateway} span under the request's own (which continues an incoming
+ * {@code traceparent}); the job it starts carries that trace id.
  */
 @Slf4j
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
-@RequiredArgsConstructor
 public class GeneratedRouteWebFilter implements WebFilter {
 
     public static final String CHANNEL = "rest";
-    public static final String TRACEPARENT = "traceparent";
+    public static final String TRACEPARENT = TraceIds.TRACEPARENT;
+    public static final String SPAN = "iaf.gateway";
+    /** The exchange attribute holding the trace id of the gateway span. */
+    static final String TRACE_ID_ATTRIBUTE = "platform.traceId";
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
-    private static final Pattern TRACEPARENT_FORMAT = Pattern.compile("^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$");
 
     private final CatalogQueries catalog;
     private final WorkflowInvoker invoker;
     private final ResourceQueries resources;
     private final ObjectMapper json;
+    private final Traces traces;
+
+    public GeneratedRouteWebFilter(CatalogQueries catalog, WorkflowInvoker invoker, ResourceQueries resources, ObjectMapper json) {
+        this(catalog, invoker, resources, json, Traces.off());
+    }
+
+    @Autowired
+    public GeneratedRouteWebFilter(CatalogQueries catalog, WorkflowInvoker invoker, ResourceQueries resources, ObjectMapper json, Traces traces) {
+        this.catalog = catalog;
+        this.invoker = invoker;
+        this.resources = resources;
+        this.json = json;
+        this.traces = traces;
+    }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -88,7 +107,7 @@ public class GeneratedRouteWebFilter implements WebFilter {
         return catalog.routes().flatMap(table -> {
             var match = table.match(method, path);
             if (match.isPresent()) {
-                return handle(exchange, decoded(match.get())).onErrorResume(e -> error(exchange, e));
+                return traced(exchange, decoded(match.get()));
             }
             var allowed = table.allowedMethods(path);
             if (!allowed.isEmpty()) {
@@ -97,6 +116,46 @@ public class GeneratedRouteWebFilter implements WebFilter {
             }
             return chain.filter(exchange);
         });
+    }
+
+    /**
+     * One matched request as an {@code iaf.gateway} span: under the request's observation (which
+     * continues an incoming {@code traceparent}), tagged with the operation and its workflow or
+     * resource type; its trace id is the one the started job carries, and it stays the current
+     * observation downstream so the job's own span hangs under it. Only a 5xx marks it failed.
+     */
+    private Mono<Void> traced(ServerWebExchange exchange, RouteMatch match) {
+        return Mono.deferContextual(ctx -> {
+            RouteTable.Route route = match.route();
+            String kind = route.kind().name().toLowerCase();
+            String target = route.isWorkflow() ? route.workflow().name() : route.type().name();
+            Observation span = traces.start(SPAN, "gateway " + kind + " " + target, Traces.current(ctx),
+                    Map.of("operation", kind, "target", target), Map.of("http.route", route.path()));
+            String traceId = traces.traceId(span);
+            if (traceId == null) {
+                traceId = TraceIds.parse(exchange.getRequest().getHeaders().getFirst(TRACEPARENT)).map(TraceIds.Parent::traceId)
+                        .orElseGet(TraceIds::newTraceId);
+            }
+            String id = traceId;
+            exchange.getAttributes().put(TRACE_ID_ATTRIBUTE, id);
+            traces.remember(id, span);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            return handle(exchange, match)
+                    .doOnError(failure::set)
+                    .onErrorResume(e -> error(exchange, e))
+                    .contextWrite(c -> Traces.with(c, span))
+                    .doFinally(signal -> {
+                        traces.forget(id, span);
+                        int status = statusOf(exchange);
+                        span.lowCardinalityKeyValue("status", String.valueOf(status));
+                        Traces.stop(span, status >= 500 ? failure.get() : null);
+                    });
+        });
+    }
+
+    private static int statusOf(ServerWebExchange exchange) {
+        HttpStatusCode status = exchange.getResponse().getStatusCode();
+        return status == null ? 200 : status.value();
     }
 
     private Mono<Void> handle(ServerWebExchange exchange, RouteMatch match) {
@@ -108,7 +167,7 @@ public class GeneratedRouteWebFilter implements WebFilter {
                     .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange), pinnedVersion(exchange, route)))
                     .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
             case BATCH -> identity(exchange).flatMap(who -> body(exchange)
-                    .flatMap(b -> invoker.batch(route.workflow(), b, params, who, CHANNEL, pinnedVersion(exchange, route)))
+                    .flatMap(b -> invoker.batch(route.workflow(), b, params, who, CHANNEL, pinnedVersion(exchange, route), traceId(exchange)))
                     .flatMap(started -> write(exchange, HttpStatus.ACCEPTED, started)));
             case PREVIEW -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
                     .flatMap(in -> invoker.preview(route.workflow(), in, who, pinnedVersion(exchange, route)))
@@ -201,16 +260,14 @@ public class GeneratedRouteWebFilter implements WebFilter {
                 });
     }
 
-    /** The W3C trace id from {@code traceparent}, else a fresh one. */
+    /** The trace id of this request's gateway span; outside one, the W3C trace id from {@code traceparent}, else a fresh one. */
     static String traceId(ServerWebExchange exchange) {
-        String header = exchange.getRequest().getHeaders().getFirst(TRACEPARENT);
-        if (header != null) {
-            var m = TRACEPARENT_FORMAT.matcher(header.trim().toLowerCase());
-            if (m.matches()) {
-                return m.group(1);
-            }
+        String traced = exchange.getAttribute(TRACE_ID_ATTRIBUTE);
+        if (traced != null) {
+            return traced;
         }
-        return Ids.next("trace");
+        return TraceIds.parse(exchange.getRequest().getHeaders().getFirst(TRACEPARENT)).map(TraceIds.Parent::traceId)
+                .orElseGet(TraceIds::newTraceId);
     }
 
     // ---------------------------------------------------------------- responses
