@@ -166,6 +166,13 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
   artifact store under its SHA-256; `path` names the playbook to run inside a `.zip` or `.tar.gz`.
+  An upload is unpacked and checked before it is kept: every text file is scanned for secrets (a
+  private key block, a `password`/`token`/`secret`/`api_key` with a literal value instead of a
+  `vault:` reference or an expression, AWS, GitHub and Slack token shapes) and refused naming the
+  file and line, never the value; then `platform.playbooks.lint-command` (blank by default, which
+  skips the lint and the answer says so) runs a linter such as `ansible-lint --offline {playbook}`
+  in the unpacked upload and refuses it on a non-zero exit with the linter's output. The pin
+  checks at publish therefore skip uploads: they were checked when uploaded.
 - `library: <provider>/<playbook>` (or the plain string): an action of an ansible provider,
   pinned by the provider's `source.commit`.
 

@@ -13,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +33,8 @@ import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.playbooks.domain.PlaybookUpload;
 import com.iaf.platform.playbooks.ports.inbound.PlaybookCommands.UploadPlaybook;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
 import com.iaf.platform.testing.Archives;
 
 import reactor.core.publisher.Mono;
@@ -47,12 +51,14 @@ class PlaybookCommandHandlerTest {
     final ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
     final EventBus events = mock(EventBus.class);
     final PlaybooksProperties props = new PlaybooksProperties();
+    final PlaybookLintPort lint = mock(PlaybookLintPort.class);
     PlaybookCommandHandler handler;
 
     @BeforeEach
     void setUp() {
         when(artifacts.put(any(Path.class))).thenAnswer(inv -> Mono.just(new Artifact(SHA, Files.size(inv.<Path>getArgument(0)))));
-        handler = new PlaybookCommandHandler(artifacts, props, events);
+        when(lint.lint(any(), any())).thenReturn(Optional.empty());
+        handler = new PlaybookCommandHandler(artifacts, props, events, lint);
     }
 
     Mono<PlaybookUpload> upload(Identity who, String fileName, Path content, String path) {
@@ -71,14 +77,73 @@ class PlaybookCommandHandlerTest {
         Path file = Files.writeString(dir.resolve("upload.part"), PLAY);
 
         StepVerifier.create(upload(SampleCatalog.OPS, "C:\\fakepath\\restart.yml", file, null))
-                .expectNext(new PlaybookUpload("restart.yml", SHA, PLAY.length(), null))
+                .expectNext(new PlaybookUpload("restart.yml", SHA, PLAY.length(), null, "skipped"))
                 .verifyComplete();
 
         verify(artifacts).put(file);
+        verify(lint).lint(any(), eq("restart.yml"));
         ArgumentCaptor<JsonNode> data = ArgumentCaptor.forClass(JsonNode.class);
         verify(events).publish(eq(PlaybookCommandHandler.UPLOADED_EVENT), eq("playbook"), eq(SHA), eq("mateo"), data.capture());
         assertThat(data.getValue().path("file").asText()).isEqualTo("restart.yml");
         assertThat(data.getValue().has("entries")).isFalse();
+        assertThat(data.getValue().path("lint").asText()).isEqualTo("skipped");
+    }
+
+    @Test
+    void aLiteralSecretInAnyFileOfTheArchiveIsRefusedNamingTheFileAndLineNeverTheValue() throws Exception {
+        Map<String, String> files = bundle();
+        files.put("roles/db/vars/main.yml", "---\ndb_user: app\ndb_password: hunter2-s3cret\n");
+        files.put("files/deploy_key", "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU=\n-----END OPENSSH PRIVATE KEY-----\n");
+        Path zip = Archives.zip(dir.resolve("upload.part"), files);
+
+        StepVerifier.create(upload(SampleCatalog.OPS, "web.zip", zip, "site.yml"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("web.zip holds what looks like a secret: roles/db/vars/main.yml:3 db_password has a literal value; files/deploy_key:1 a private key block")
+                        .hasMessageNotContaining("hunter2").hasMessageNotContaining("b3BlbnNzaC"))
+                .verify();
+        verify(artifacts, never()).put(any(Path.class));
+        verify(lint, never()).lint(any(), any());
+        verify(events, never()).publish(anyString(), anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void aSinglePlaybookIsScannedToo() throws Exception {
+        Path file = Files.writeString(dir.resolve("upload.part"), "- hosts: all\n  vars:\n    ansible_password: hunter2\n");
+
+        StepVerifier.create(upload(SampleCatalog.OPS, "restart.yml", file, null))
+                .expectErrorSatisfies(e -> assertThat(e).hasMessageContaining("restart.yml:3 ansible_password has a literal value").hasMessageNotContaining("hunter2"))
+                .verify();
+        verify(artifacts, never()).put(any(Path.class));
+    }
+
+    @Test
+    void theLinterJudgesTheUnpackedUploadAndTheAnswerSaysSo() throws Exception {
+        props.setLintCommand("ansible-lint --offline {playbook}");
+        Path zip = Archives.zip(dir.resolve("upload.part"), bundle());
+        AtomicReference<Path> unpacked = new AtomicReference<>();
+        when(lint.lint(any(), eq("site.yml"))).thenAnswer(inv -> {
+            Path d = inv.getArgument(0);
+            unpacked.set(d);
+            assertThat(d.resolve("site.yml")).content().isEqualTo(PLAY);
+            assertThat(d.resolve("roles/web/tasks/main.yml")).exists();
+            return Optional.of(new LintResult(true, "Passed: 0 failure(s)\n"));
+        });
+
+        StepVerifier.create(upload(SampleCatalog.OPS, "web.zip", zip, "site.yml"))
+                .assertNext(u -> assertThat(u.lint()).isEqualTo("passed"))
+                .verifyComplete();
+        assertThat(unpacked.get()).isNotNull();
+        assertThat(Files.exists(unpacked.get())).as("the unpacked upload is removed").isFalse();
+        ArgumentCaptor<JsonNode> data = ArgumentCaptor.forClass(JsonNode.class);
+        verify(events).publish(anyString(), anyString(), anyString(), anyString(), data.capture());
+        assertThat(data.getValue().path("lint").asText()).isEqualTo("passed");
+
+        when(lint.lint(any(), eq("site.yml"))).thenReturn(Optional.of(new LintResult(false, "site.yml:1: yaml[truthy]: Truthy value should be one of [false, true]\n")));
+        StepVerifier.create(upload(SampleCatalog.OPS, "web.zip", zip, "site.yml"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalArgumentException.class)
+                        .hasMessage("web.zip fails the lint (ansible-lint --offline {playbook}):\nsite.yml:1: yaml[truthy]: Truthy value should be one of [false, true]"))
+                .verify();
+        verify(artifacts).put(any(Path.class));
     }
 
     @Test

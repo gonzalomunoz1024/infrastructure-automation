@@ -60,6 +60,8 @@ platform:
       credential: ""      # vault:<path> holding <access key id>:<secret access key>; blank uses the AWS default chain
   playbooks:
     max-upload-size: 20MB
+    lint-command: ""    # e.g. ansible-lint --offline {playbook}: runs in the unpacked upload, a non-zero exit refuses it; blank skips the lint (the upload answers lint: skipped)
+    lint-timeout: PT60S
     git:
       cache-dir: ${java.io.tmpdir}/iaf-platform/git
   runners:                # profile live: ansible, terraform, script and http steps run for real

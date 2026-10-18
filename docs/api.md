@@ -484,11 +484,11 @@ never says whether a credential exists for another team.
 ## Playbooks
 
 ```ts
-type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[] }
+type PlaybookUpload = { file: string; sha256: string; size: number; entries?: string[]; lint: 'passed' | 'skipped' }
 type ResolvedRef = { repo: string; ref: string; commit: string }
 ```
 
-| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload` |
+| POST `/playbooks:upload` | multipart `file` (`.yml`, `.yaml`, `.zip`, `.tar.gz`) and optional `path` (the playbook to run inside an archive) → 201 `PlaybookUpload`; 400 naming the file and line when a text file of the upload holds what looks like a secret (never the value), or with the linter's output when `platform.playbooks.lint-command` refuses it |
 | GET `/playbooks:resolve?repo=&ref=&credential=` | → `ResolvedRef`: the commit a tag (annotated tags peeled), branch, `HEAD` or full commit id names now. 403 naming the credential and its team when the caller may not use `credential` (see Credentials); the same rule judges the publishing identity when a publish pins a git playbook with a credential |
 
 Both need a team (or admin), 403 otherwise. An upload is checked before it is kept: every
@@ -496,9 +496,18 @@ archive entry is a relative path without `..`, backslashes or control characters
 devices and duplicate names are refused; the entry count and the bytes it unpacks to are
 capped while reading (`platform.playbooks.max-entries`, `max-unpacked-size`); `path` must be a
 `.yml`/`.yaml` file in the archive; a single playbook, and the one `path` names, must parse as a
-YAML list of plays. A file over `platform.playbooks.max-upload-size` is a 413. The bytes are
-kept once in the artifact store under their SHA-256, which a workflow pins as
-`playbook: { upload: { file, sha256, path? } }`; each upload is a `playbook.uploaded` event.
+YAML list of plays. Every text file of the upload is then scanned for secrets: a private key
+block; a key named like a secret (`password`, `token`, `secret`, `api_key`, `access_key`,
+`credentials`, `authorization`, ...) with a literal value that is neither a `vault:<name>`
+reference, an expression (`{{ ... }}`, `${...}`) nor an ansible-vault block; a long high-entropy
+value after a weaker key (`key`, `auth`, `pass`, `cert`); and the shapes of AWS, GitHub and Slack
+tokens anywhere. A finding is a 400 that names the file and the line, never the value. When
+`platform.playbooks.lint-command` is set (for example `ansible-lint --offline {playbook}`) it
+runs in the unpacked upload and a non-zero exit is a 400 with its output; the answer's `lint`
+says `passed`, or `skipped` when no linter is configured. A file over
+`platform.playbooks.max-upload-size` is a 413. The bytes are kept once in the artifact store under
+their SHA-256, which a workflow pins as `playbook: { upload: { file, sha256, path? } }`; each
+upload is a `playbook.uploaded` event.
 
 `repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
 URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding
