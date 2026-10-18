@@ -6,7 +6,7 @@ import java.util.Optional;
 /**
  * Where the provider alert evaluator keeps the instant of its last evaluation, so the first
  * evaluation after a restart starts from there instead of raising again an alert for every failed
- * call of the last day. The demo keeps it in memory; the {@code postgres} profile in a table.
+ * call of the last day. The demo keeps it in memory; the {@code mongo} profile in MongoDB.
  */
 public interface ProviderAlertStatePort {
 
