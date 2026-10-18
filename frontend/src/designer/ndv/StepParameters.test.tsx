@@ -1,9 +1,11 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
-import { findStepNode } from '../model/graph'
+import { bodyFor } from '../model/edits'
+import { documentToGraph, findStepNode, graphToDocument } from '../model/graph'
 import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
+import { checkAccessOn, checkAccessValue, writeField } from './fields'
 import { credentialOptions, gitResolveQuery, StepParameters } from './StepParameters'
 
 /*
@@ -38,13 +40,13 @@ function field(html: string, name: string): string {
   return html.slice(start, next < 0 ? undefined : next)
 }
 
-function render(doc: WorkflowDocument): string {
+function render(doc: WorkflowDocument, stepId = 'restart'): string {
   const store = new DesignerStore({ name: 'vm-restart', doc, registry: REGISTRY })
-  const node = findStepNode(store.getState().graph, 'restart')
-  if (!node) throw new Error('no restart step')
+  const node = findStepNode(store.getState().graph, stepId)
+  if (!node) throw new Error(`no ${stepId} step`)
   return renderToString(
     <DesignerContext.Provider value={store}>
-      <StepParameters stepId="restart" body={node.data.body} step={node.data.step} registry={REGISTRY} doc={store.getState().doc} />
+      <StepParameters stepId={stepId} body={node.data.body} step={node.data.step} registry={REGISTRY} doc={store.getState().doc} />
     </DesignerContext.Provider>,
   )
 }
@@ -88,5 +90,51 @@ describe('the git credential of a playbook', () => {
     expect(open).toContain('Leave it empty for a public repository')
     expect(render(restartWith('ops/vm-restart'))).not.toContain('data-field="playbook.git.credential"')
     expect(render(restartWith({ upload: { file: 'playbooks/abc.tar.gz', sha256: 'abc' } }))).not.toContain('data-field="playbook.git.credential"')
+  })
+})
+
+/*
+ * A use step asks policy whether the requester may use its resource unless it opts out
+ * (`checkAccess: false`): the switch is on for a step that says nothing, and the canvas never
+ * writes `checkAccess: true`.
+ */
+const useVm = (use: Record<string, unknown>): WorkflowDocument =>
+  ({
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: { name: 'vm-use', noun: 'vm', verb: 'use', owner: 'team-compute', version: '1.0.0' },
+    workflow: { do: [{ vm: { name: 'Use the VM', use } }] },
+  }) as WorkflowDocument
+
+describe('the check access of a use step', () => {
+  it('is on unless the step opts out', () => {
+    expect(checkAccessOn(undefined)).toBe(true)
+    expect(checkAccessOn(true)).toBe(true)
+    expect(checkAccessOn(false)).toBe(false)
+    expect(checkAccessValue(false)).toBe(false)
+    expect(checkAccessValue(true)).toBeUndefined()
+    expect(checkAccessValue(undefined)).toBeUndefined()
+  })
+
+  it('shows the switch on for a step that says nothing and off for checkAccess: false', () => {
+    const quiet = field(render(useVm({ type: 'vm', id: '{{ $input.vmId }}' }), 'vm'), 'checkAccess')
+    expect(quiet).toContain('Check access')
+    expect(quiet).toContain('role="switch" aria-checked="true"')
+    const out = field(render(useVm({ type: 'vm', id: '{{ $input.vmId }}', checkAccess: false }), 'vm'), 'checkAccess')
+    expect(out).toContain('role="switch" aria-checked="false"')
+  })
+
+  it('writes checkAccess: false to opt out and removes the key to opt back in', () => {
+    const store = new DesignerStore({ name: 'vm-use', doc: useVm({ type: 'vm', id: '{{ $input.vmId }}' }), registry: REGISTRY })
+    store.updateStep('vm', (b) => writeField(b, 'checkAccess', checkAccessValue(false)))
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ vm: { name: 'Use the VM', use: { type: 'vm', id: '{{ $input.vmId }}', checkAccess: false } } })
+    store.updateStep('vm', (b) => writeField(b, 'checkAccess', checkAccessValue(true)))
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ vm: { name: 'Use the VM', use: { type: 'vm', id: '{{ $input.vmId }}' } } })
+  })
+
+  it('round-trips an opt-out through the canvas, and a new use step carries no checkAccess', () => {
+    const doc = useVm({ type: 'vm', id: '{{ $input.vmId }}', checkAccess: false })
+    expect(graphToDocument(documentToGraph(doc), doc)).toEqual(doc)
+    expect(JSON.stringify(bodyFor('use', { resourceType: 'vm' }))).not.toContain('checkAccess')
   })
 })

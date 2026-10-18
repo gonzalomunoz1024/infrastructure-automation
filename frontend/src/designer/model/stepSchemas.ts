@@ -71,7 +71,7 @@ export const FALLBACK_STEP_SCHEMAS: Record<StepType, S> = {
     id: str('The resource id; may be an expression'),
     selector: obj('Attributes to match when there is no id'),
     waitUntil: en(['ready']),
-    checkAccess: { type: 'boolean', description: 'Ask policy whether the requester may use it' },
+    checkAccess: { type: 'boolean', description: 'Ask policy whether the requester may use it (default true; false opts out)' },
   }),
   register: object(['type'], {
     type: str('A resource type'),

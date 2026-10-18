@@ -15,7 +15,7 @@ import { fieldsOf, type FieldType } from '../model/schema'
 import { useDesignerStore } from '../model/store'
 import { effectTags } from '../creator/catalog'
 import { useNdv } from './context'
-import { asObject, asString, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
+import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
 
 interface StepEdit {
@@ -628,6 +628,7 @@ function ResourceTypeParam() {
 }
 
 function UseParams() {
+  const { get, set } = useStepEdit()
   return (
     <>
       <ResourceTypeParam />
@@ -635,7 +636,16 @@ function UseParams() {
       <KeyValueParam field="selector" label="Selector" description="Attributes to match when there is no id" addLabel="Add attribute" keyPlaceholder="attribute" />
       <div className="grid grid-cols-2 gap-3">
         <P field="waitUntil" label="Wait until" options={[{ value: 'ready', label: 'ready' }]} expression={false} />
-        <P field="checkAccess" label="Check access" type="boolean" expression={false} description="Ask policy whether the requester may use it" />
+        {/* on by default: switching it off writes `checkAccess: false`, back on removes the key */}
+        <P
+          field="checkAccess"
+          label="Check access"
+          type="boolean"
+          expression={false}
+          description="Ask policy whether the requester may use it; on unless the step opts out"
+          value={checkAccessOn(get('checkAccess'))}
+          onChange={(on) => set('checkAccess', checkAccessValue(on))}
+        />
       </div>
     </>
   )

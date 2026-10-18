@@ -57,6 +57,16 @@ export function rootOf(field: string): string {
   return m ? m[0] : field
 }
 
+/** A `use` step asks policy about its resource unless it opts out: on unless the file says `checkAccess: false`. */
+export function checkAccessOn(value: JsonValue | undefined): boolean {
+  return value !== false
+}
+
+/** What the file keeps for the Check access switch: `false` to opt out, nothing for the default (never `checkAccess: true`). */
+export function checkAccessValue(on: JsonValue | undefined): false | undefined {
+  return on === false ? false : undefined
+}
+
 /** The keys the Settings tab edits; their problems are counted there. */
 export const SETTINGS_KEYS = ['name', 'output', 'assert', 'retry', 'timeout', 'pauseOnFailure', 'notes', 'compensate', 'position'] as const
 
