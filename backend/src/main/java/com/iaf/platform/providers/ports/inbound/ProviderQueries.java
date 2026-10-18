@@ -1,6 +1,9 @@
 package com.iaf.platform.providers.ports.inbound;
 
+import com.iaf.platform.providers.domain.ProviderAlert;
 import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.domain.ProviderDetail;
+import com.iaf.platform.providers.domain.ProviderSummary;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -30,4 +33,13 @@ public interface ProviderQueries {
     Mono<ProviderDefinition> provider(String name);
 
     Flux<ProviderDefinition> all();
+
+    /** Every provider with its health over the last day ({@code GET /providers}). */
+    Flux<ProviderSummary> list();
+
+    /** One provider in full: definition, file, actions, call statistics and change requests ({@code GET /providers/{name}}); 404 when unknown. */
+    Mono<ProviderDetail> detail(String name);
+
+    /** The provider's open alerts ({@code GET /providers/{name}/alerts}); 404 when unknown. */
+    Flux<ProviderAlert> alerts(String name);
 }

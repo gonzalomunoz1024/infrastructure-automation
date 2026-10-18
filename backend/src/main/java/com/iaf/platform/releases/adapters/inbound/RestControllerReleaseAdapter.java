@@ -14,32 +14,51 @@ import com.iaf.platform.releases.application.ReleaseCommandHandler;
 import com.iaf.platform.releases.application.ReleaseQueryHandler;
 import com.iaf.platform.releases.domain.Release;
 import com.iaf.platform.releases.ports.inbound.ReleaseCommands;
+import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
- * {@code /api/v1/releases}. POST maps to {@link ReleaseCommands}; GET reads the query handler.
- * ({@code ReleaseQueries.route} is a programmatic port for the catalog, not an endpoint.)
+ * {@code /api/v1/releases}. POST maps to {@link ReleaseCommands}, GET to {@link ReleaseQueries}
+ * ({@code route}, {@code routeProvider} and {@code providerCandidate} are programmatic, for the
+ * catalog and the providers slice, not endpoints).
  */
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1")
-public class RestControllerReleaseAdapter implements ReleaseCommands {
+public class RestControllerReleaseAdapter implements ReleaseCommands, ReleaseQueries {
 
     private final ReleaseCommandHandler commands;
     private final ReleaseQueryHandler queries;
 
+    @Override
     @GetMapping("/releases")
     public Flux<Release> list(@RequestParam(required = false) String workflow, @RequestParam(required = false) String provider,
             @RequestParam(required = false) String kind) {
         return queries.list(workflow, provider, kind);
     }
 
+    @Override
     @GetMapping("/releases/{id}")
     public Mono<Release> get(@PathVariable String id) {
         return queries.get(id);
+    }
+
+    @Override
+    public Mono<String> route(String workflow, String publishedVersion) {
+        return queries.route(workflow, publishedVersion);
+    }
+
+    @Override
+    public Mono<String> routeProvider(String provider, String jobId, String environment, boolean dryRun) {
+        return queries.routeProvider(provider, jobId, environment, dryRun);
+    }
+
+    @Override
+    public Mono<String> providerCandidate(String provider) {
+        return queries.providerCandidate(provider);
     }
 
     @Override

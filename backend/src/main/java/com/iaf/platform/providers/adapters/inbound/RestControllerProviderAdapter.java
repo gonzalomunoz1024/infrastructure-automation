@@ -16,11 +16,13 @@ import com.iaf.platform.providers.application.ProviderCommandHandler;
 import com.iaf.platform.providers.application.ProviderQueryHandler;
 import com.iaf.platform.providers.domain.ConnectionResult;
 import com.iaf.platform.providers.domain.ProviderAlert;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderDetail;
 import com.iaf.platform.providers.domain.ProviderSummary;
 import com.iaf.platform.providers.domain.SpecImport;
 import com.iaf.platform.providers.domain.TryResult;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Flux;
@@ -30,24 +32,37 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1")
-public class RestControllerProviderAdapter implements ProviderCommands {
+public class RestControllerProviderAdapter implements ProviderCommands, ProviderQueries {
 
     private final ProviderCommandHandler commands;
     private final ProviderQueryHandler queries;
 
+    @Override
     @GetMapping("/providers")
-    public Flux<ProviderSummary> providers() {
+    public Flux<ProviderSummary> list() {
         return queries.list();
     }
 
+    @Override
     @GetMapping("/providers/{name}")
-    public Mono<ProviderDetail> provider(@PathVariable String name) {
+    public Mono<ProviderDetail> detail(@PathVariable String name) {
         return queries.detail(name);
     }
 
+    @Override
     @GetMapping("/providers/{name}/alerts")
     public Flux<ProviderAlert> alerts(@PathVariable String name) {
         return queries.alerts(name);
+    }
+
+    @Override
+    public Mono<ProviderDefinition> provider(String name) {
+        return queries.provider(name);
+    }
+
+    @Override
+    public Flux<ProviderDefinition> all() {
+        return queries.all();
     }
 
     @Override

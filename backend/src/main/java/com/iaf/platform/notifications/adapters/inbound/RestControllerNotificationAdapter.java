@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.iaf.platform.notifications.application.NotificationHandler;
+import com.iaf.platform.notifications.domain.Notification;
+import com.iaf.platform.notifications.ports.inbound.NotificationCommands;
 import com.iaf.platform.notifications.ports.inbound.NotificationQueries;
 import com.iaf.platform.notifications.ports.inbound.NotificationQueries.NotificationView;
 
@@ -19,7 +21,7 @@ import reactor.core.publisher.Mono;
  */
 @RestController
 @RequestMapping("/api/v1")
-public class RestControllerNotificationAdapter implements NotificationQueries {
+public class RestControllerNotificationAdapter implements NotificationQueries, NotificationCommands {
 
     private final NotificationHandler handler;
 
@@ -33,8 +35,15 @@ public class RestControllerNotificationAdapter implements NotificationQueries {
         return handler.inbox(unread);
     }
 
+    @Override
     @PostMapping("/notifications/{id}:read")
     public Mono<NotificationView> markRead(@PathVariable String id) {
         return handler.markRead(id);
+    }
+
+    /** Programmatic (the notify step and the platform's listeners send); not an endpoint. */
+    @Override
+    public Mono<Delivery> send(Notification notification) {
+        return handler.send(notification);
     }
 }
