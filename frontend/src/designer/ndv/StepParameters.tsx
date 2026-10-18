@@ -5,10 +5,11 @@
  * loop, wait, set). Every field writes straight into the step body through the store.
  *
  * As n8n has it beside a credential, a provider step's provider field ends with "New provider…"
- * and has an "Edit provider" pencil, both opening the Provider sheet for this step.
+ * and has an "Edit provider" pencil, both opening the Provider sheet for this step; an HTTP step
+ * can Import cURL (curl.ts) and be saved as a provider action (httpProvider.ts).
  */
-import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react'
-import { Button, cx, Icon, Input, Segmented, Tag, type SelectOption } from '@iaf/ui'
+import { createContext, useContext, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Button, cx, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Tag, Textarea, useOverlayClose, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
@@ -19,6 +20,8 @@ import { findAction, findProvider, knownGroups, type Registry } from '../model/r
 import { fieldsOf, type FieldType } from '../model/schema'
 import { useDesignerSelector, useDesignerStore, type ProviderSheetOptions } from '../model/store'
 import { DRAFT_TAG, effectTags, providersWithDrafts, type ListedProvider } from '../creator/catalog'
+import { httpWithFromCurl, parseCurl, type CredentialKind, type CurlRequest } from './curl'
+import { httpActionPlan, saveAsProviderAction } from './httpProvider'
 import { useNdv } from './context'
 import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
@@ -257,14 +260,145 @@ function ProviderParams() {
   )
 }
 
+/** What the last Import cURL left out, for the note at the credential field: names only, never a value. */
+interface CurlImported {
+  dropped: string[]
+  warnings: string[]
+  kind?: CredentialKind
+  /** the credential the step had then: the note stays until another is picked */
+  credential: string
+}
+
+const SIGNED_IN: Record<CredentialKind, string> = {
+  bearer: 'a bearer token',
+  basic: 'a user and password',
+  header: 'a key or a cookie',
+}
+
+/** The note under the credential field after an import dropped what signed in. */
+export function curlCredentialNote(imported: Pick<CurlImported, 'dropped' | 'kind'>): string {
+  const how = imported.kind ? SIGNED_IN[imported.kind] : 'a secret'
+  const what = imported.dropped.join(', ')
+  return `The command signed in with ${how} (${what}); it was not imported and is not kept anywhere. Pick a credential, or create one, for the step to sign in with.`
+}
+
+/** n8n's "Import cURL command": the command is read in this dialog, and nothing that signs in leaves it. */
+function ImportCurlForm({ onImport }: { onImport: (request: CurlRequest) => void }) {
+  const close = useOverlayClose()
+  const [text, setText] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    const parsed = parseCurl(text)
+    if (!parsed.ok) return setError(parsed.error)
+    setText('')
+    onImport(parsed.request)
+    close()
+  }
+  return (
+    <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+      <OverlayHeader title="Import cURL command" subtitle="Its method, URL, headers and body fill in the step." icon="terminal" />
+      <OverlayBody className="space-y-3">
+        <Textarea
+          aria-label="cURL command"
+          mono
+          rows={8}
+          value={text}
+          spellCheck={false}
+          autoFocus
+          autoComplete="off"
+          placeholder={`curl -X POST https://api.example.com/things \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name": "web-01"}'`}
+          onChange={(e) => {
+            setText(e.target.value)
+            setError(null)
+          }}
+        />
+        <p className="text-caption text-tertiary">An Authorization header, a -u user and password, cookies and API keys are not imported: the step signs in with a credential instead.</p>
+        {error && (
+          <p role="alert" className="text-caption text-critical">
+            {error}
+          </p>
+        )}
+      </OverlayBody>
+      <OverlayFooter>
+        <Button type="button" variant="ghost" onClick={close}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" icon="download" disabled={!text.trim()}>
+          Import
+        </Button>
+      </OverlayFooter>
+    </form>
+  )
+}
+
+/** Import cURL: the step takes the request's method, URL, headers and body in one undo step, and keeps its credential. */
+export function importCurl(update: StepEdit['update'], request: CurlRequest): void {
+  update((b) => {
+    b.with = httpWithFromCurl(request, asObject(b.with as JsonValue | undefined))
+  })
+}
+
 function HttpParams() {
+  const store = useDesignerStore()
+  const { stepId, body, get, update, readOnly } = useStepEdit()
+  const [importing, setImporting] = useState(false)
+  const [imported, setImported] = useState<CurlImported | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const credential = asString(get('credential'))
+  const askCredential = imported !== null && imported.dropped.length > 0 && credential === imported.credential
+  const plan = httpActionPlan(asObject(body.with as JsonValue | undefined))
+  const onImport = (request: CurlRequest) => {
+    importCurl(update, request)
+    setImported({ dropped: request.dropped, warnings: request.warnings, kind: request.credentialKind, credential })
+    setSaveError(null)
+  }
+  const save = () => {
+    const saved = saveAsProviderAction(store, stepId)
+    setSaveError(saved.ok ? null : saved.error)
+  }
   return (
     <>
+      {!readOnly && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button size="sm" variant="secondary" icon="terminal" onClick={() => setImporting(true)}>
+            Import cURL
+          </Button>
+          <Button size="sm" variant="secondary" icon="provider" onClick={save} disabled={!plan.ok} title={plan.ok ? 'Make this request an action of a provider draft: it gets a review, samples, health and an SLO' : plan.error}>
+            Save as provider action
+          </Button>
+        </div>
+      )}
+      {saveError && (
+        <p role="alert" className="text-caption text-critical">
+          {saveError}
+        </p>
+      )}
+      {imported && imported.warnings.length > 0 && (
+        <ul className="space-y-0.5 rounded-md bg-surface-secondary px-3 py-2 text-caption text-secondary" data-testid="curl-warnings">
+          {imported.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
       <P field="method" label="Method" options={METHODS} expression={false} />
       <P field="url" label="URL" required placeholder="https://api.example.com/things/{{ $input.id }}" mono />
-      <CredentialParam kinds={['token', 'basic', 'bearer']} />
+      <div className={cx(askCredential && '-mx-2 rounded-md border border-warning/40 bg-warning-tint/40 px-2 pb-2')} data-testid="http-credential" data-attention={askCredential ? 'true' : undefined}>
+        <CredentialParam kinds={['token', 'basic', 'bearer']} />
+        {askCredential && imported && (
+          <p role="status" className="mt-1.5 flex items-start gap-1.5 text-caption text-warning" data-testid="curl-credential-note">
+            <Icon name="key" size={12} className="mt-0.5 shrink-0" />
+            <span>{curlCredentialNote(imported)}</span>
+          </p>
+        )}
+      </div>
       <KeyValueParam field="headers" label="Headers" addLabel="Add header" keyPlaceholder="Header" />
       <P field="body" label="Body" type="any" description="JSON, or an expression" />
+      {importing && (
+        <Modal onClose={() => setImporting(false)} width="max-w-xl" label="Import cURL command" raised>
+          <ImportCurlForm onImport={onImport} />
+        </Modal>
+      )}
     </>
   )
 }

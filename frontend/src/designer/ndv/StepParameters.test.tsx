@@ -1,15 +1,17 @@
 import { renderToString } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { blankAction } from '../../components/provider-editor/state'
 import { providersWithDrafts } from '../creator/catalog'
 import { bodyFor } from '../model/edits'
 import { documentToGraph, findStepNode, graphToDocument } from '../model/graph'
-import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
+import { draftYaml, newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
+import { parseCurl } from './curl'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
-import { credentialFieldOptions, credentialOptions, editProviderOptions, gitResolveQuery, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, StepParameters } from './StepParameters'
+import { actionIdFor, httpActionPlan, providerNameFor, saveAsProviderAction } from './httpProvider'
+import { credentialFieldOptions, credentialOptions, curlCredentialNote, editProviderOptions, gitResolveQuery, importCurl, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, StepParameters } from './StepParameters'
 import { hostsValue, withGroupKey } from './inventory'
 
 /*
@@ -346,5 +348,193 @@ describe('the provider field of a provider step', () => {
       </DesignerContext.Provider>,
     )
     expect(readOnly).not.toContain('Edit provider')
+  })
+})
+
+/*
+ * The HTTP step's Import cURL and Save as provider action. The fixtures' secrets are fake; each
+ * test checks they reach neither the step, the workflow, the undo history nor stored drafts.
+ */
+function memoryStorage(): Storage & { data: Map<string, string> } {
+  const data = new Map<string, string>()
+  return {
+    data,
+    get length() {
+      return data.size
+    },
+    clear: () => data.clear(),
+    getItem: (k) => data.get(k) ?? null,
+    key: (i) => [...data.keys()][i] ?? null,
+    removeItem: (k) => void data.delete(k),
+    setItem: (k, v) => void data.set(k, String(v)),
+  }
+}
+
+describe("the HTTP step's Import cURL", () => {
+  it('offers Import cURL and Save as provider action, never on a read-only step', () => {
+    const html = render(fetchThings(), 'fetch')
+    expect(html).toContain('Import cURL')
+    expect(html).toContain('Save as provider action')
+    const store = new DesignerStore({ name: 'things-sync', doc: fetchThings(), registry: REGISTRY })
+    const node = findStepNode(store.getState().graph, 'fetch')
+    if (!node) throw new Error('no fetch step')
+    const readOnly = renderToString(
+      <DesignerContext.Provider value={store}>
+        <StepParameters stepId="fetch" body={node.data.body} step={node.data.step} registry={REGISTRY} doc={store.getState().doc} readOnly />
+      </DesignerContext.Provider>,
+    )
+    expect(readOnly).not.toContain('Import cURL')
+  })
+
+  it('fills the step in one undo step, keeps its credential, and the dropped secret is nowhere', () => {
+    const store = new DesignerStore({ name: 'things-sync', doc: fetchThings('vault:example/api-token'), registry: REGISTRY })
+    const parsed = parseCurl(`curl -X POST 'https://api.example.com/things?api_key=example-key' -H 'Authorization: Bearer example-token' -H 'X-Trace: 1' -u ops:example-password -d '{"name":"web","password":"example-pw"}'`)
+    if (!parsed.ok) throw new Error(parsed.error)
+    importCurl((fn) => store.updateStep('fetch', fn), parsed.request)
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({
+      fetch: { name: 'Fetch the things', call: 'http', with: { method: 'POST', url: 'https://api.example.com/things', headers: { 'X-Trace': '1' }, body: { name: 'web' }, credential: 'vault:example/api-token' } },
+    })
+    const secrets = ['example-token', 'example-key', 'example-password', 'example-pw']
+    const seen = [JSON.stringify(store.getState().doc)]
+    store.undo()
+    seen.push(JSON.stringify(store.getState().doc))
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual(fetchThings('vault:example/api-token').workflow?.do?.[0])
+    store.redo()
+    seen.push(JSON.stringify(store.getState().doc), renderStep(store, 'fetch'))
+    for (const s of secrets) for (const text of seen) expect(text).not.toContain(s)
+    // the note at the credential field names what was dropped, never a value
+    const note = curlCredentialNote({ dropped: parsed.request.dropped, kind: parsed.request.credentialKind })
+    expect(note).toBe(
+      'The command signed in with a bearer token (Authorization header, the user and password (-u), api_key in the URL, password in the body); it was not imported and is not kept anywhere. Pick a credential, or create one, for the step to sign in with.',
+    )
+    for (const s of secrets) expect(note).not.toContain(s)
+  })
+})
+
+describe('saving an HTTP step as a provider action', () => {
+  let storage: ReturnType<typeof memoryStorage>
+  beforeEach(() => {
+    storage = memoryStorage()
+    vi.stubGlobal('localStorage', storage)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const vmPower = (w: Record<string, unknown>): WorkflowDocument =>
+    ({
+      apiVersion: 'iaf.platform/v1',
+      kind: 'Workflow',
+      metadata: { name: 'vm-power', noun: 'vm', verb: 'power', owner: 'team-compute', version: '1.0.0' },
+      workflow: {
+        do: [
+          { getVm: { name: 'Get the VM', call: 'http', with: w } },
+          { powerOn: { name: 'Power it on', call: 'http', with: { method: 'POST', url: 'https://api.example.com/vms/{{ $input.vmId }}/power', body: { state: 'on', force: false }, credential: 'vault:example/api-token' } } },
+        ],
+      },
+    }) as WorkflowDocument
+
+  const GET_VM = { method: 'GET', url: 'https://api.example.com/vms/{{ $input.vmId }}?verbose=true', credential: 'vault:example/api-token', headers: { Accept: 'application/json', 'X-Trace': '{{ $input.trace }}' } }
+
+  it("plans the action from the step: the origin, the path with the expressions as parameters, the body's fields", () => {
+    const plan = httpActionPlan(GET_VM)
+    expect(plan).toEqual({
+      ok: true,
+      plan: {
+        endpoint: 'https://api.example.com',
+        method: 'GET',
+        path: '/vms/{vmId}?verbose=true',
+        input: { vmId: '{{ $input.vmId }}' },
+        effect: 'read',
+        retry: 'safe',
+        auth: { type: 'bearer', credential: 'vault:example/api-token', header: '' },
+        notes: ['The header X-Trace is not part of a provider action and was left out.'],
+      },
+    })
+    const post = httpActionPlan({ method: 'POST', url: 'https://api.example.com/vms/{{ $json.id }}/disks/{{ $json.id }}', body: { size: 20, id: 'x' }, headers: { 'X-API-Key': 'vault:example/key' } })
+    expect(post.ok && post.plan).toMatchObject({ path: '/vms/{id}/disks/{id2}', input: { id: '{{ $json.id }}', id2: '{{ $json.id }}', size: 20 }, effect: 'create', retry: 'unsafe', auth: { type: 'header', header: 'X-API-Key', credential: 'vault:example/key' } })
+    expect(post.ok && post.plan.notes).toEqual(["The body's id has the name of a path parameter: it was left out."])
+    expect(httpActionPlan({ method: 'DELETE', url: 'https://api.example.com/x', headers: { Authorization: 'Basic vault:example/basic' } })).toMatchObject({ ok: true, plan: { effect: 'delete', auth: { type: 'basic', credential: 'vault:example/basic' } } })
+    expect(httpActionPlan({ url: 'http://legacy.example.com' })).toMatchObject({ ok: true, plan: { path: '/', notes: ['http://legacy.example.com is not https: a provider\'s endpoints are https URLs (plain http only to localhost).'] } })
+    expect(httpActionPlan({ url: '' })).toEqual({ ok: false, error: 'Fill in the URL first.' })
+    expect(httpActionPlan({ url: '{{ $vars.base }}/things' })).toEqual({ ok: false, error: 'The URL has to start with the address of the system (https://…), not an expression.' })
+    expect(httpActionPlan({ method: 'HEAD', url: 'https://h.example.com' })).toEqual({ ok: false, error: "A provider action is a GET, POST, PUT, PATCH or DELETE; this step's method is HEAD." })
+  })
+
+  it('names the provider after the host and the action after the route, never twice', () => {
+    expect(providerNameFor('api.example.com', new Set())).toBe('example')
+    expect(providerNameFor('www.status.example.io:8443', new Set())).toBe('status-example')
+    expect(providerNameFor('api.example.com', new Set(['example']))).toBe('example-api')
+    expect(providerNameFor('api.example.com', new Set(['example', 'example-api']))).toBe('example-2')
+    expect(providerNameFor('localhost:8080', new Set())).toBe('localhost')
+    expect(providerNameFor('10.0.0.7', new Set())).toBe('api-10-0-0-7')
+    expect(actionIdFor('GET', '/vms/{id}', new Set())).toBe('vms.get')
+    expect(actionIdFor('GET', '/vms?limit=5', new Set())).toBe('vms.list')
+    expect(actionIdFor('POST', '/vms/{id}/power', new Set())).toBe('power.create')
+    expect(actionIdFor('PATCH', '/vms/{id}', new Set(['vms.update']))).toBe('vms.update-2')
+    expect(actionIdFor('DELETE', '/', new Set())).toBe('delete')
+  })
+
+  it('makes an http provider draft, turns the step into a call of it (one undo), and opens the sheet on it', () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
+    // the last test output: an HTTP answer, whose body is the example
+    store.setPin('getVm', { status: 200, body: { id: 'vm-1', name: 'web-01', powerState: 'off' } })
+    const saved = saveAsProviderAction(store, 'getVm')
+    if (!saved.ok) throw new Error(saved.error)
+    expect(saved).toMatchObject({ provider: 'example', action: 'vms.get', notes: ['The header X-Trace is not part of a provider action and was left out.'] })
+    const d = store.getState().providerDrafts[saved.draft.id]
+    expect(d).toMatchObject({ origin: 'new', type: 'http', name: 'example', title: 'api.example.com', owner: 'team-compute', auth: { type: 'bearer', credential: 'vault:example/api-token', header: '' } })
+    expect(d.environments.map((e) => [e.name, e.url])).toEqual([['dev', 'https://api.example.com']])
+    expect(d.actions).toHaveLength(1)
+    expect(d.actions[0]).toMatchObject({ id: 'vms.get', title: 'Get the VM', method: 'GET', path: '/vms/{vmId}?verbose=true', effect: 'read', retry: 'safe', approval: false })
+    expect(JSON.parse(d.actions[0].exampleText)).toEqual({ id: 'vm-1', name: 'web-01', powerState: 'off' })
+    expect(JSON.parse(d.actions[0].inputText)).toEqual({ type: 'object', properties: { vmId: { type: 'string' } } })
+    // the step calls the action, keeping its id and name
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ getVm: { name: 'Get the VM', call: 'provider', with: { provider: 'example', action: 'vms.get', input: { vmId: '{{ $input.vmId }}' } } } })
+    expect(store.getState().providerSheet).toEqual({ entry: 'step', draft: d.id, provider: null, target: { kind: 'step', step: 'getVm' } })
+    // the provider file has the endpoint and the route, and the step's form lists the draft
+    const yaml = draftYaml(d)
+    expect(yaml).toContain('dev: https://api.example.com')
+    expect(yaml).toMatch(/method: GET/)
+    expect(yaml).toContain('path: /vms/{vmId}?verbose=true')
+    const html = renderStep(store, 'getVm')
+    expect(html).toContain('>api.example.com<')
+    expect(html).toMatch(/>draft</)
+    // kept in this browser as a draft, with only the credential's reference
+    expect(storage.getItem('iaf-designer-provider-drafts:vm-power')).toContain('vault:example/api-token')
+    // one undo gives the HTTP step back; the draft stays for the sheet
+    store.undo()
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ getVm: { name: 'Get the VM', call: 'http', with: GET_VM } })
+    expect(Object.keys(store.getState().providerDrafts)).toEqual([d.id])
+  })
+
+  it("adds a second request to the same endpoint's draft, with the body as its input", () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
+    const first = saveAsProviderAction(store, 'getVm')
+    store.closeProviderSheet()
+    const second = saveAsProviderAction(store, 'powerOn')
+    if (!first.ok || !second.ok) throw new Error('not saved')
+    expect(second.draft.id).toBe(first.draft.id)
+    // the sheet closing on the action the step already calls keeps the step's input
+    expect(store.closeProviderSheet({ type: 'provider', params: { provider: 'example', action: 'power.create' } })).toBe('powerOn')
+    expect(store.getState().providerSheet).toBeNull()
+    const d = store.getState().providerDrafts[first.draft.id]
+    expect(d.actions.map((a) => [a.id, a.method, a.path, a.effect])).toEqual([
+      ['vms.get', 'GET', '/vms/{vmId}?verbose=true', 'read'],
+      ['power.create', 'POST', '/vms/{vmId}/power', 'create'],
+    ])
+    // no test output yet: no example
+    expect(d.actions[1].exampleText).toBe('')
+    expect(store.getState().doc.workflow?.do?.[1]).toEqual({ powerOn: { name: 'Power it on', call: 'provider', with: { provider: 'example', action: 'power.create', input: { vmId: '{{ $input.vmId }}', state: 'on', force: false } } } })
+  })
+
+  it('says why a step cannot be saved, and changes nothing', () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower({ method: 'GET', url: '{{ $vars.base }}/vms' }), registry: REGISTRY })
+    const before = JSON.stringify(store.getState().doc)
+    expect(saveAsProviderAction(store, 'getVm')).toEqual({ ok: false, error: 'The URL has to start with the address of the system (https://…), not an expression.' })
+    expect(JSON.stringify(store.getState().doc)).toBe(before)
+    expect(store.getState().providerDrafts).toEqual({})
+    expect(store.getState().providerSheet).toBeNull()
+    expect(saveAsProviderAction(store, 'nope')).toEqual({ ok: false, error: 'Only an HTTP request step can be saved as a provider action.' })
   })
 })
