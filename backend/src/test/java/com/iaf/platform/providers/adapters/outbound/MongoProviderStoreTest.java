@@ -1,6 +1,7 @@
 package com.iaf.platform.providers.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -23,6 +24,7 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.mongodb.MongoSocketReadException;
 import com.mongodb.client.model.Filters;
 
 @EnabledIfEnvironmentVariable(named = TestMongo.MONGO_URI, matches = ".+")
@@ -122,6 +124,22 @@ class MongoProviderStoreTest extends ProviderStoreContract {
         store.saveVersion(candidate);
         assertThat(other.version("echo", "1.1.0")).contains(candidate);
         assertThat(other.get("echo").map(StoredProvider::updatedBy)).contains("content");
+    }
+
+    @Test
+    void aWriteThatThrowsAfterLandingStillMovesTheRevision() throws Exception {
+        write(ECHO);
+        ProviderStorePort other = newStore(props(content, false));
+        assertThat(other.get("echo").map(StoredProvider::updatedBy)).contains("content");
+        long before = db.mongo().revision(MongoProviderStore.STORE);
+        ProviderStorePort saving = new MongoProviderStore(db.landingThenFailing(MongoProviderStore.PROVIDERS, "replaceOne"), props(content, false),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        String yaml = ECHO.replace("https://echo.example", "https://echo2.example");
+        StoredProvider changed = new StoredProvider(ProviderYaml.parse(yaml), yaml, "providers/team-a/echo.yaml", NOW, "ana");
+
+        assertThatThrownBy(() -> saving.save(changed)).isInstanceOf(MongoSocketReadException.class);
+        assertThat(db.mongo().revision(MongoProviderStore.STORE)).isEqualTo(before + 1);
+        assertThat(other.get("echo")).as("another instance sees the provider's document at once").contains(changed);
     }
 
     @Test

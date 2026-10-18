@@ -47,7 +47,8 @@ import lombok.extern.slf4j.Slf4j;
  * startup each {@code kind: Provider} file under the content dir that the database does not hold
  * yet is added, as in memory; a provider changed through the platform is never reset by its file,
  * and one still as seeded takes its file's new content. Reads come from a copy of both collections
- * reloaded whenever any instance has written to them. With {@code platform.content.git} on, a save
+ * reloaded whenever any instance has written to them ({@link Revisioned}: every write moves the
+ * store's revision, also one that throws, and a copy is at most 30 seconds old). With {@code platform.content.git} on, a save
  * also writes the file back, as the in-memory store does; a kept version is not written until it
  * is current.
  *
@@ -115,8 +116,7 @@ public class MongoProviderStore implements ProviderStorePort {
             writes.add(new StoredProvider(def, f.yaml(), f.relative(root), modifiedAt(f.path()), InMemoryProviderStore.SEED_AUTHOR));
         }
         if (!writes.isEmpty()) {
-            writes.forEach(this::upsert);
-            table.bump();
+            table.write(() -> writes.forEach(this::upsert));
         }
         log.info("provider store: {} provider(s) seeded and {} refreshed from {}", added, writes.size() - added, root);
         return writes.size();
@@ -139,8 +139,7 @@ public class MongoProviderStore implements ProviderStorePort {
 
     @Override
     public void save(StoredProvider provider) {
-        upsert(provider);
-        table.bump();
+        table.write(() -> upsert(provider));
         if (props.getContent().isGit()) {
             write(provider);
         }
@@ -148,8 +147,9 @@ public class MongoProviderStore implements ProviderStorePort {
 
     @Override
     public void saveVersion(StoredProvider provider) {
-        if (keep(provider, mongo.doc(provider))) {
-            table.bump();
+        if (provider.definition().metadata().version() != null) {
+            Document doc = mongo.doc(provider);
+            table.write(() -> keep(provider, doc));
         }
     }
 
@@ -159,9 +159,10 @@ public class MongoProviderStore implements ProviderStorePort {
         if (removed == null) {
             return;
         }
-        mongo.collection(VERSIONS).deleteMany(Filters.eq("name", name));
-        mongo.collection(PROVIDERS).deleteOne(Filters.eq("_id", name));
-        table.bump();
+        table.write(() -> {
+            mongo.collection(VERSIONS).deleteMany(Filters.eq("name", name));
+            mongo.collection(PROVIDERS).deleteOne(Filters.eq("_id", name));
+        });
         if (props.getContent().isGit()) {
             Path file = fileOf(removed);
             try {
@@ -183,17 +184,16 @@ public class MongoProviderStore implements ProviderStorePort {
         keep(p, doc);
     }
 
-    /** Keeps a version by its number, as in memory; a provider without one is only ever current. Returns whether a document was written. */
-    private boolean keep(StoredProvider p, Document doc) {
+    /** Keeps a version by its number, as in memory; a provider without one is only ever current. */
+    private void keep(StoredProvider p, Document doc) {
         String version = p.definition().metadata().version();
         if (version == null) {
-            return false;
+            return;
         }
         String name = p.definition().name();
         String key = key(name, version);
         mongo.collection(VERSIONS).replaceOne(Filters.eq("_id", key), new Document("_id", key).append("name", name).append("version", version)
                 .append("updatedAt", Mongo.date(p.updatedAt())).append(Mongo.DOC, doc), new ReplaceOptions().upsert(true));
-        return true;
     }
 
     /** The key of a kept version: provider names are slugs, without an {@code @}, so no two versions share one. */

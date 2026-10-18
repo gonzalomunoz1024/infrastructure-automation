@@ -1,14 +1,20 @@
 package com.iaf.platform.common.adapters.mongo;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.UUID;
 
+import org.bson.Document;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
 import com.mongodb.ConnectionString;
+import com.mongodb.MongoSocketReadException;
+import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 
 /**
@@ -76,6 +82,38 @@ public final class TestMongo implements BeforeEachCallback, AfterEachCallback {
 
     public Mongo mongo() {
         return mongo;
+    }
+
+    /**
+     * A {@link Mongo} on this test's database whose {@code operation} (a method of
+     * {@link MongoCollection}, such as {@code replaceOne}) on {@code collection} is applied by the
+     * server and then throws, as a write does whose answer was lost on the way back.
+     */
+    public Mongo landingThenFailing(String collection, String operation) {
+        return new Mongo(database) {
+            @Override
+            public MongoCollection<Document> collection(String name) {
+                MongoCollection<Document> real = super.collection(name);
+                return name.equals(collection) ? landingThenFailing(real, operation) : real;
+            }
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static MongoCollection<Document> landingThenFailing(MongoCollection<Document> real, String operation) {
+        return (MongoCollection<Document>) Proxy.newProxyInstance(MongoCollection.class.getClassLoader(), new Class<?>[] {MongoCollection.class},
+                (proxy, method, args) -> {
+                    Object result;
+                    try {
+                        result = method.invoke(real, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                    if (method.getName().equals(operation)) {
+                        throw new MongoSocketReadException("the answer to " + operation + " was lost", new ServerAddress());
+                    }
+                    return result;
+                });
     }
 
     public MongoDatabase database() {

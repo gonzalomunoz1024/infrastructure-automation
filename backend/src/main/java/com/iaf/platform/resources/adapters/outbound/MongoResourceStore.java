@@ -70,9 +70,10 @@ public class MongoResourceStore implements ResourceStorePort {
 
     /**
      * The types of the content dir that differ from the stored ones are written, then the
-     * revision moves once, so another instance reloads them together. A start that stops between
-     * the two leaves those instances on the old types until the next write to the types moves the
-     * revision; the instances started after it read the collection afresh.
+     * revision moves once (also when a write throws), so another instance reloads them together.
+     * A start that stops between the two leaves those instances on the old types until their copy
+     * is {@link Revisioned#MAX_AGE} old or the next write to the types moves the revision; the
+     * instances started after it read the collection afresh.
      */
     @PostConstruct
     public void seed() {
@@ -80,8 +81,7 @@ public class MongoResourceStore implements ResourceStorePort {
         Map<String, ResourceTypeDefinition> stored = types().stream().collect(Collectors.toMap(ResourceTypeDefinition::name, Function.identity()));
         List<ResourceTypeDefinition> changed = ResourceSeeds.types(root).stream().filter(t -> !t.equals(stored.get(t.name()))).toList();
         if (!changed.isEmpty()) {
-            changed.forEach(this::upsertType);
-            types.bump();
+            types.write(() -> changed.forEach(this::upsertType));
         }
         log.info("resource registry: {} types ({} written from {})", types().size(), changed.size(), root.resolve("resource-types"));
         if (props.getDemo().isSeedHistory() && !types().isEmpty()) {
@@ -107,8 +107,7 @@ public class MongoResourceStore implements ResourceStorePort {
 
     @Override
     public void saveType(ResourceTypeDefinition type) {
-        upsertType(type);
-        types.bump();
+        types.write(() -> upsertType(type));
     }
 
     @Override

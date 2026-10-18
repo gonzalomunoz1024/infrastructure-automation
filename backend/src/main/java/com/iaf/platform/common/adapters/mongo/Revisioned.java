@@ -6,10 +6,11 @@ import java.util.function.Supplier;
 
 /**
  * An in-memory copy of a small, read-mostly collection (the workflow versions, the providers, the
- * resource types) that stays right across backend instances: every write moves the collection's
- * number in {@code store_revisions} once the write is done, and a read reloads the copy when that
- * number moved. A read costs one single-document query instead of the whole collection, which
- * matters for the generated routes, rebuilt from the registry on every call.
+ * resource types) that stays right across backend instances: every write ({@link #write}) moves the
+ * collection's number in {@code store_revisions} once the write is done, also when it throws, and a
+ * read reloads the copy when that number moved. A read costs one single-document query instead of
+ * the whole collection, which matters for the generated routes, rebuilt from the registry on every
+ * call.
  *
  * <p>The write and its move are two writes, with no transaction around them. A copy older than
  * {@link #MAX_AGE} is reloaded even when the number did not move, so a write whose move was lost
@@ -56,8 +57,28 @@ public final class Revisioned<T> {
         return s.value();
     }
 
-    /** Record a write; call it once the write is done. */
-    public void bump() {
-        mongo.bump(store);
+    /**
+     * Runs a write to the collection, then moves its revision, in a {@code finally}: a write that
+     * throws may still have landed (the server applied it and the answer was lost, or the first of
+     * its writes went through), so it moves the revision too; a move that records nothing costs one
+     * reload. When the write threw, a failed move is added to its exception rather than replacing it.
+     */
+    public void write(Runnable write) {
+        Throwable failed = null;
+        try {
+            write.run();
+        } catch (RuntimeException | Error e) {
+            failed = e;
+            throw e;
+        } finally {
+            try {
+                mongo.bump(store);
+            } catch (RuntimeException e) {
+                if (failed == null) {
+                    throw e;
+                }
+                failed.addSuppressed(e);
+            }
+        }
     }
 }

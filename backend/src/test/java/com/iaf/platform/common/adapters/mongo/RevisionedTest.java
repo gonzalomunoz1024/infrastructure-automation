@@ -1,6 +1,7 @@
 package com.iaf.platform.common.adapters.mongo;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -9,6 +10,8 @@ import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.extension.RegisterExtension;
+
+import com.mongodb.MongoException;
 
 @EnabledIfEnvironmentVariable(named = TestMongo.MONGO_URI, matches = ".+")
 class RevisionedTest {
@@ -37,11 +40,23 @@ class RevisionedTest {
     void aMovedRevisionReloadsAtOnceAndAStillOneServesTheCopy() {
         Revisioned<Long> things = things();
         assertThat(things.get()).isZero();
-        add("a");
-        things.bump();
+        things.write(() -> add("a"));
         assertThat(things.get()).isEqualTo(1);
         assertThat(things.get()).isEqualTo(1);
         assertThat(loads).hasValue(2);
+    }
+
+    @Test
+    void aWriteThatThrowsAfterLandingStillMovesTheRevision() {
+        Revisioned<Long> things = things();
+        Revisioned<Long> other = things();
+        assertThat(other.get()).isZero();
+        assertThatThrownBy(() -> things.write(() -> {
+            add("a");
+            throw new MongoException("the answer was lost");
+        })).hasMessage("the answer was lost");
+        assertThat(db.mongo().revision(STORE)).isEqualTo(1);
+        assertThat(other.get()).as("another instance reloads at once").isEqualTo(1);
     }
 
     @Test

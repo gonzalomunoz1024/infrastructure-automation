@@ -1,6 +1,7 @@
 package com.iaf.platform.resources.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 
@@ -14,6 +15,7 @@ import com.iaf.platform.common.adapters.mongo.TestMongo;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.outbound.ResourceStorePort;
+import com.mongodb.MongoSocketReadException;
 
 @EnabledIfEnvironmentVariable(named = TestMongo.MONGO_URI, matches = ".+")
 class MongoResourceStoreTest extends ResourceStoreContract {
@@ -46,6 +48,20 @@ class MongoResourceStoreTest extends ResourceStoreContract {
         store.saveType(bucket);
         assertThat(other.type("bucket")).contains(bucket);
         assertThat(other.types()).hasSize(6);
+    }
+
+    @Test
+    void aWriteThatThrowsAfterLandingStillMovesTheRevision() {
+        ResourceStorePort other = store(false);
+        assertThat(other.type("bucket")).isEmpty();
+        long before = db.mongo().revision(MongoResourceStore.TYPES);
+        ResourceStorePort saving = new MongoResourceStore(db.landingThenFailing(MongoResourceStore.TYPES, "replaceOne"),
+                props(SampleCatalog.ROOT.toString(), false), CLOCK);
+        ResourceTypeDefinition bucket = new ResourceTypeDefinition("bucket", "buckets", "team-storage", null, List.of("ready"), null, "Object storage", "team");
+
+        assertThatThrownBy(() -> saving.saveType(bucket)).isInstanceOf(MongoSocketReadException.class);
+        assertThat(db.mongo().revision(MongoResourceStore.TYPES)).isEqualTo(before + 1);
+        assertThat(other.type("bucket")).as("another instance sees the type at once").contains(bucket);
     }
 
     @Test
