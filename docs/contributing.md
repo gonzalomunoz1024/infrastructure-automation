@@ -12,6 +12,7 @@ cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=demo,postgres   # s
 npm install                                             # workspaces: packages/ui, packages/workflow-checks, frontend
 npm run dev                                             # http://localhost:3000, proxies /api and /ws to :8080
 npm run lint && npm run typecheck && npm run build && npm test
+cd frontend && npx playwright test                      # mocked end-to-end suite; E2E_PORT=3100 serves it on another port
 
 # both
 scripts/dev.sh
