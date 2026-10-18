@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api, errorMessage, newIdempotencyKey, request, retryAfterSeconds, retryIn, runHeaders } from '../lib/api'
+import type { WorkflowDefinition } from '../lib/types'
 
 /*
  * The client's side of docs/api.md "Calls that start jobs": the headers that pin a version and
@@ -151,5 +152,49 @@ describe('the calls of this wave', () => {
       '/api/v1/providers/vsphere:refresh-spec',
     ])
     expect(JSON.parse(String(calls[9].init?.body))).toEqual({})
+  })
+})
+
+/*
+ * The designer's provider drafts: a workflow's dry run and checks carry the YAML of the drafts it
+ * uses, and its publish names the provider change requests that must merge first. A call without
+ * any sends exactly what it always sent.
+ */
+describe('provider drafts and the change requests a publish requires', () => {
+  const definition = { apiVersion: 'iaf.platform/v1', kind: 'Workflow', metadata: { name: 'vm-restart' } } as WorkflowDefinition
+  const DRAFT = 'apiVersion: iaf.platform/v1\nkind: Provider\nmetadata:\n  name: backup\n'
+
+  it('go with validate and the dry run only when there are drafts', async () => {
+    const { calls } = mockFetch(() => answer(200, { valid: true, problems: [] }))
+    await api.validateWorkflow({ definition })
+    await api.validateWorkflow({ definition }, [])
+    await api.validateWorkflow({ definition }, [DRAFT])
+    await api.dryRunWorkflow({ definition }, { vm: 'web-1' })
+    await api.dryRunWorkflow({ definition }, { vm: 'web-1' }, [])
+    await api.dryRunWorkflow({ definition }, { vm: 'web-1' }, [DRAFT])
+    expect(calls.map((c) => c.url)).toEqual([...Array(3).fill('/api/v1/workflows:validate'), ...Array(3).fill('/api/v1/workflows:dry-run')])
+    expect(calls.map((c) => c.init?.body)).toEqual([
+      JSON.stringify({ definition }),
+      JSON.stringify({ definition }),
+      JSON.stringify({ definition, providers: [DRAFT] }),
+      JSON.stringify({ definition, input: { vm: 'web-1' } }),
+      JSON.stringify({ definition, input: { vm: 'web-1' } }),
+      JSON.stringify({ definition, input: { vm: 'web-1' }, providers: [DRAFT] }),
+    ])
+  })
+
+  it('names the change requests a publish requires only when there are some', async () => {
+    const { calls } = mockFetch(() => answer(202, { id: 'cr-9', status: 'open' }))
+    await api.publishWorkflow('vm-restart')
+    await api.publishWorkflow('vm-restart', { strategy: 'canary', notes: undefined })
+    await api.publishWorkflow('vm-restart', { strategy: 'canary', requires: [] })
+    await api.publishWorkflow('vm-restart', { strategy: 'all', notes: 'With the backup provider', requires: ['cr-1', 'cr-2'] })
+    expect(calls.every((c) => c.url === '/api/v1/workflows/vm-restart:publish')).toBe(true)
+    expect(calls.map((c) => c.init?.body)).toEqual([
+      JSON.stringify({}),
+      JSON.stringify({ strategy: 'canary' }),
+      JSON.stringify({ strategy: 'canary' }),
+      JSON.stringify({ strategy: 'all', notes: 'With the backup provider', requires: ['cr-1', 'cr-2'] }),
+    ])
   })
 })
