@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, Card, ConfirmDialog, EmptyState, Field, Icon, JsonView, PageHeader, Select, SkeletonRows, StateTag, StatusDot, Table, Tabs, Tag, cx, duration, useToast, type DotKind, type TableColumn } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
-import { api, errorMessage, jobEvents } from '../lib/api'
+import { api, errorMessage, isApiError, jobEvents } from '../lib/api'
 import { apiExtra } from '../lib/api-extra'
 import { invalidate, useQuery } from '../lib/queries'
 import type { JobEvent, JobReplay, JobStepStatus, JobSummary, StepDiff } from '../lib/types'
@@ -304,10 +304,56 @@ function ChildJobs({ jobs }: { jobs: JobSummary[] }) {
    Time travel: replay the recorded run, compare it with another, re-run from a step
    ------------------------------------------------------------------------- */
 
+/** What a replay answered, compared with another run, in words: who it was compared with and how much differs. */
+export function ReplayComparison({ replay }: { replay: JobReplay }) {
+  if (!replay.comparedTo) {
+    return <p className="text-caption text-secondary">Not compared: this workflow has no earlier successful run to compare with. Pick another job above.</p>
+  }
+  const stepsDiffering = replay.steps.filter((s) => s.diff?.length).length
+  const inputDiff = replay.inputDiff ?? []
+  const nothing = stepsDiffering === 0 && inputDiff.length === 0
+  return (
+    <div className="space-y-3" data-testid="replay-comparison">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-secondary">
+        <span>Compared with</span>
+        <TextLink to={pathFor('job', { id: replay.comparedTo })} mono>
+          {shortJobId(replay.comparedTo)}
+        </TextLink>
+        {replay.comparedVersion && <Mono title="The version the compared run used">{replay.comparedVersion}</Mono>}
+        {replay.comparedStatus && <StateTag status={replay.comparedStatus} size="sm" />}
+        {replay.version && replay.comparedVersion && replay.version !== replay.comparedVersion && (
+          <Tag size="sm" tone="warning">
+            different version
+          </Tag>
+        )}
+        <span>
+          {nothing
+            ? '— nothing differs.'
+            : `— ${inputDiff.length ? `${inputDiff.length} input ${inputDiff.length === 1 ? 'field' : 'fields'}` : ''}${inputDiff.length && stepsDiffering ? ' and ' : ''}${stepsDiffering ? `${stepsDiffering} ${stepsDiffering === 1 ? 'step' : 'steps'}` : ''} differ.`}
+        </span>
+      </p>
+      {inputDiff.length > 0 && (
+        <div>
+          <div className="mb-1 text-caption font-medium text-secondary">Input</div>
+          <Table columns={DIFF_COLUMNS} rows={inputDiff} rowKey={(d) => d.field} dense caption="Differences in the input" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A diff row: the compared run's value, then this run's. */
+const DIFF_COLUMNS: TableColumn<StepDiff>[] = [
+  { key: 'field', header: 'Field', render: (d) => <Mono className="text-primary">{d.field}</Mono> },
+  { key: 'before', header: 'Compared run', render: (d) => <Mono className="text-secondary">{summarize(d.before, 80)}</Mono> },
+  { key: 'after', header: 'This run', render: (d) => <Mono className="text-primary">{summarize(d.after, 80)}</Mono> },
+]
+
 function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow: string; steps: { id: string; name: string; status: string }[]; input: Record<string, unknown> }) {
   const toast = useToast()
   const [compareTo, setCompareTo] = useState('')
   const [replay, setReplay] = useState<JobReplay | null>(null)
+  const [replayError, setReplayError] = useState<string | null>(null)
   const [busy, setBusy] = useState<'replay' | 'rerun' | null>(null)
   const [fromStep, setFromStep] = useState(steps[0]?.id ?? '')
   const [inputText, setInputText] = useState('')
@@ -317,10 +363,14 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
 
   const runReplay = async () => {
     setBusy('replay')
+    setReplayError(null)
     try {
       setReplay(await apiExtra.jobReplay(jobId, compareTo || undefined))
     } catch (e) {
-      toast.error('Replay failed', errorMessage(e))
+      // an unknown compareTo answers 404: say which job is missing rather than that the replay failed
+      const message = isApiError(e) && e.status === 404 && compareTo ? `There is no job ${compareTo} to compare with.` : errorMessage(e)
+      setReplayError(message)
+      toast.error('Replay failed', message)
     } finally {
       setBusy(null)
     }
@@ -340,15 +390,9 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
     }
   }
 
-  const diffColumns: TableColumn<StepDiff>[] = [
-    { key: 'field', header: 'Field', render: (d) => <Mono className="text-primary">{d.field}</Mono> },
-    { key: 'before', header: 'This run', render: (d) => <Mono className="text-secondary">{summarize(d.before, 80)}</Mono> },
-    { key: 'after', header: 'Compared run', render: (d) => <Mono className="text-primary">{summarize(d.after, 80)}</Mono> },
-  ]
-
   return (
     <div className="space-y-4">
-      <Card title="Replay" subtitle="Walk the run again from its recorded inputs and outputs; compare it with another run of the same workflow to see where they diverged.">
+      <Card title="Replay" subtitle="Walk the run again from its recorded inputs and outputs, compared with the last successful run of the workflow, or with any other run you pick, to see where they diverged.">
         <div className="flex flex-wrap items-end gap-3">
           <Field label="Compare with" className="min-w-64">
             <Select
@@ -356,22 +400,22 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
               value={compareTo}
               onChange={setCompareTo}
               mono
-              placeholder="This run only"
-              options={[{ value: '', label: 'This run only' }, ...others.map((j) => ({ value: j.id, label: shortJobId(j.id), hint: `${j.status} · ${j.version} · ${j.requester}` }))]}
+              placeholder="Last successful run"
+              options={[{ value: '', label: 'Last successful run' }, ...others.map((j) => ({ value: j.id, label: shortJobId(j.id), hint: `${j.status} · ${j.version} · ${j.requester}` }))]}
             />
           </Field>
           <Button variant="primary" icon="history" loading={busy === 'replay'} onClick={() => void runReplay()}>
             Replay
           </Button>
         </div>
+        {replayError && !replay && (
+          <p className="mt-3 text-caption text-critical" role="alert">
+            {replayError}
+          </p>
+        )}
         {replay && (
           <div className="mt-4 animate-fade-in space-y-3">
-            {replay.comparedTo && (
-              <p className="text-caption text-secondary">
-                Compared with <TextLink to={pathFor('job', { id: replay.comparedTo })} mono>{shortJobId(replay.comparedTo)}</TextLink>
-                {replay.steps.every((s) => !s.diff?.length) && '. No step diverged.'}
-              </p>
-            )}
+            <ReplayComparison replay={replay} />
             <ol className="divide-y divide-stroke-light rounded-md border border-stroke-light">
               {replay.steps.map((s) => (
                 <li key={s.id} className={cx('px-4 py-3', s.diff?.length && 'bg-warning-tint/40')}>
@@ -389,7 +433,7 @@ function TimeTravel({ jobId, workflow, steps, input }: { jobId: string; workflow
                   </div>
                   {s.diff && s.diff.length > 0 && (
                     <div className="mt-2">
-                      <Table columns={diffColumns} rows={s.diff} rowKey={(d) => d.field} dense caption={`Differences at ${s.id}`} />
+                      <Table columns={DIFF_COLUMNS} rows={s.diff} rowKey={(d) => d.field} dense caption={`Differences at ${s.id}`} />
                     </div>
                   )}
                 </li>

@@ -53,6 +53,38 @@ export interface StepTimelineProps {
   className?: string
 }
 
+/** `image.create`: the build of the input `image` that a requester asked for with `{ create }`. */
+export function buildOf(step: Pick<JobStep, 'id' | 'name'>): { input: string; type: string } | null {
+  const m = /^(.+)\.create$/.exec(step.id)
+  if (!m) return null
+  // the interpreter names the step "Build <type>"
+  const type = /^Build (.+)$/.exec(step.name ?? '')?.[1] ?? 'resource'
+  return { input: m[1], type }
+}
+
+/** The child job id a run step's output carries. */
+export function childJobIdOf(step: Pick<JobStep, 'output'>): string | undefined {
+  const out = step.output
+  if (!out || typeof out !== 'object') return undefined
+  const o = out as Record<string, unknown>
+  const id = o.jobId ?? o.childJobId
+  return typeof id === 'string' ? id : undefined
+}
+
+/**
+ * A run step whose child failed while the step itself went on (`onFailure: continue`): the child's
+ * failure is the step's output, with its status and error.
+ */
+export function continuedAfterFailure(step: Pick<JobStep, 'type' | 'status' | 'output'>): { status: string; message?: string; errorClass?: string } | null {
+  if (step.type !== 'run' || step.status !== 'succeeded') return null
+  const out = step.output
+  if (!out || typeof out !== 'object') return null
+  const o = out as Record<string, unknown>
+  if (typeof o.status !== 'string' || o.status === 'succeeded') return null
+  const err = o.error && typeof o.error === 'object' ? (o.error as Record<string, unknown>) : null
+  return { status: o.status, message: typeof err?.message === 'string' ? err.message : undefined, errorClass: typeof err?.class === 'string' ? err.class : undefined }
+}
+
 /** Pairs a `run` step with its child job: by an id in its output, else by order. */
 function childOf(step: JobStep, runIndex: number, children: JobSummary[] | undefined): JobSummary | undefined {
   if (!children?.length) return undefined
@@ -90,6 +122,9 @@ export function StepTimeline({ steps, children, highlight, defaultOpen = [], cla
         const hasDetail = step.input !== undefined || step.output !== undefined || step.error !== undefined
         const last = i === steps.length - 1
         const highlighted = highlight === step.id
+        const build = step.type === 'run' ? buildOf(step) : null
+        const childId = child?.id ?? childJobIdOf(step)
+        const continued = continuedAfterFailure(step)
         return (
           <li key={step.id} className="relative flex gap-3">
             <div className="flex w-4 shrink-0 flex-col items-center">
@@ -112,10 +147,15 @@ export function StepTimeline({ steps, children, highlight, defaultOpen = [], cla
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="text-sm font-medium text-primary">{step.name || step.id}</span>
+                    <span className="text-sm font-medium text-primary">{build ? `Built ${build.type} for ${build.input}` : step.name || step.id}</span>
                     <Tag size="sm" outline mono>
-                      {KIND_LABEL[step.type] ?? step.type}
+                      {build ? 'build' : (KIND_LABEL[step.type] ?? step.type)}
                     </Tag>
+                    {continued && (
+                      <Tag size="sm" tone="warning" title={continued.message ? `${continued.errorClass ? `${continued.errorClass}: ` : ''}${continued.message}` : undefined}>
+                        failed, the workflow continued
+                      </Tag>
+                    )}
                     {step.attempt > 1 && (
                       <Tag size="sm" tone="warning">
                         attempt {step.attempt}
@@ -136,22 +176,25 @@ export function StepTimeline({ steps, children, highlight, defaultOpen = [], cla
                     )}
                     {step.durationMs !== undefined && <span className="tabular-nums">{duration(step.durationMs)}</span>}
                     {step.error && <span className="truncate text-critical">{step.error.message}</span>}
+                    {!step.error && continued?.message && <span className="truncate text-warning">{continued.message}</span>}
                   </div>
                 </div>
                 <StateTag status={step.status} size="sm" />
                 {hasDetail && <Icon name="chevron-down" size={14} className={cx('shrink-0 text-tertiary transition-transform duration-150', isOpen && 'rotate-180')} />}
               </button>
-              {child && (
+              {(child || childId) && (
                 <div className="flex flex-wrap items-center gap-2 px-2 pb-1 text-caption">
                   <Icon name="job" size={13} className="text-tertiary" />
-                  <span className="text-secondary">Child job</span>
-                  <TextLink to={pathFor('job', { id: child.id })} mono>
-                    {child.id}
+                  <span className="text-secondary">{build ? `The ${build.type} was built by job` : 'Child job'}</span>
+                  <TextLink to={pathFor('job', { id: child?.id ?? childId! })} mono>
+                    {child?.id ?? childId}
                   </TextLink>
-                  <StateTag status={child.status} size="sm" />
-                  <span className="text-tertiary">
-                    {child.title} · {child.version}
-                  </span>
+                  {child && <StateTag status={child.status} size="sm" />}
+                  {child && (
+                    <span className="text-tertiary">
+                      {child.title} · {child.version}
+                    </span>
+                  )}
                 </div>
               )}
 

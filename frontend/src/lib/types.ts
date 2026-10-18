@@ -311,8 +311,21 @@ export type JobDetail = JobSummary & {
 
 export type JobEventType = 'job' | 'step' | 'approval' | 'attention' | 'batch' | 'log'
 export type JobEvent = { seq: number; at: string; jobId: string; type: JobEventType; data: Record<string, unknown> }
+/** One field that differs: `before` is the compared run's value, `after` this run's. */
 export type StepDiff = { field: string; before: unknown; after: unknown }
-export type JobReplay = { steps: (JobStep & { diff?: StepDiff[] })[]; comparedTo?: string }
+export type JobReplay = {
+  jobId?: string
+  workflow?: string
+  version?: string
+  status?: JobStatus
+  steps: (JobStep & { diff?: StepDiff[] })[]
+  /** the run compared with: the last successful one of the workflow, or the one asked for */
+  comparedTo?: string
+  comparedVersion?: string
+  comparedStatus?: JobStatus
+  /** fields of the input that differ, `input.<field>` */
+  inputDiff?: StepDiff[]
+}
 export type RetryRequest = { step?: string; input?: Record<string, unknown> }
 export type RerunRequest = { fromStep: string; input?: Record<string, unknown> }
 
