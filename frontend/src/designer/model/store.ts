@@ -38,8 +38,8 @@ import {
 import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
-import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, type Registry } from './registry'
-import { findProviderDraft, loadProviderDrafts, saveProviderDrafts, type ProviderDraft } from './providerDrafts'
+import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, withUnpublished, type Registry } from './registry'
+import { draftFile, draftProvider, draftsUsedBy, findProviderDraft, loadProviderDrafts, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
 import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
@@ -105,6 +105,21 @@ export interface ProviderSheetStep {
   params: NewStepParams
 }
 
+/**
+ * A provider draft this session's Publish opened a change request for, not merged yet: the draft
+ * is gone, but until the change request merges the canvas still reads the provider (tagged "in
+ * review"), and a dry run, Validate and the next Publish take its file along (the next Publish
+ * also requires its change request).
+ */
+export interface ProviderInReview {
+  /** the provider change request's id */
+  changeRequest: string
+  /** the draft as it was published, under the owner it was published with */
+  draft: ProviderDraft
+  /** the file the change request publishes */
+  yaml: string
+}
+
 export interface DesignerState {
   name: string | null
   isNew: boolean
@@ -130,6 +145,8 @@ export interface DesignerState {
   providerDrafts: Record<string, ProviderDraft>
   /** the Provider sheet, when open */
   providerSheet: ProviderSheetState | null
+  /** the drafts published from this session whose change requests are not merged yet; this session only */
+  providersInReview: ProviderInReview[]
   saving: boolean
   /** bumps on every document change */
   version: number
@@ -249,12 +266,19 @@ export class DesignerStore {
   private eventSub: Subscription | null = null
   private refetchTimer: ReturnType<typeof setTimeout> | null = null
   private savedJson: string
+  /** the registry as loaded, without the workflow's unpublished providers (`state.registry` has them) */
+  private loaded: Registry | null
+  /** the provider change requests whose merge reloaded the registry */
+  private readonly mergedChanges = new Set<string>()
   private outputsCache: { version: number; testRun: TestRun | null; pins: Record<string, JsonValue>; execution: ExecutionView | null; value: StepOutputs } | null = null
 
   constructor(init: DesignerStoreInit) {
     const doc = clone(init.doc)
     this.savedJson = init.isNew ? '' : JSON.stringify(doc)
     const registry = init.registry === undefined ? null : init.registry
+    this.loaded = registry
+    const providerDrafts = init.name ? loadProviderDrafts(init.name) : {}
+    const merged = this.registryFor(doc, providerDrafts, [])
     this.state = {
       name: init.name,
       isNew: init.isNew ?? false,
@@ -262,9 +286,9 @@ export class DesignerStore {
       doc,
       dirty: init.isNew ?? false,
       graph: placeGraph(doc, this.overlay),
-      registry,
+      registry: merged,
       registryLoading: init.registry === undefined,
-      ctx: contextOf(registry),
+      ctx: contextOf(merged),
       problems: [],
       canUndo: false,
       canRedo: false,
@@ -275,8 +299,9 @@ export class DesignerStore {
       pins: {},
       execution: null,
       stickies: init.name ? loadStickies(init.name) : [],
-      providerDrafts: init.name ? loadProviderDrafts(init.name) : {},
+      providerDrafts,
       providerSheet: null,
+      providersInReview: [],
       saving: false,
       version: 0,
       ndvTab: 'parameters',
@@ -288,10 +313,13 @@ export class DesignerStore {
     if (init.registry === undefined) {
       void loadRegistry()
         .then((r) => {
-          this.set({ registry: r, registryLoading: false, ctx: contextOf(r) })
-          this.runChecks()
+          this.loaded = r
+          this.setRegistry({ registryLoading: false })
         })
-        .catch(() => this.set({ registry: EMPTY_REGISTRY, registryLoading: false }))
+        .catch(() => {
+          this.loaded = EMPTY_REGISTRY
+          this.setRegistry({ registryLoading: false })
+        })
     }
   }
 
@@ -319,6 +347,26 @@ export class DesignerStore {
     this.listeners.forEach((l) => l())
   }
 
+  /**
+   * What the canvas reads as the registry: the loaded one with the providers the workflow has not
+   * published, its drafts (under the workflow's owner when they name none) and the ones in review,
+   * each in place of a published provider of its name. Null while the registry loads.
+   */
+  private registryFor(doc: WorkflowDocument, drafts: Readonly<Record<string, ProviderDraft>>, review: readonly ProviderInReview[]): Registry | null {
+    if (!this.loaded) return null
+    const owner = doc.metadata?.owner
+    const unpublished = [...Object.values(drafts).map((d) => draftProvider(d, owner)), ...review.map((r) => ({ ...draftProvider(r.draft), unpublished: 'in review' as const }))]
+    return withUnpublished(this.loaded, unpublished)
+  }
+
+  /** Applies `patch` with the registry and the check context it leads to, and runs the checks again. */
+  private setRegistry(patch: Partial<DesignerState> = {}): void {
+    const next = { ...this.state, ...patch }
+    const registry = this.registryFor(next.doc, next.providerDrafts, next.providersInReview)
+    this.set({ ...patch, registry, ctx: contextOf(registry) })
+    this.runChecks()
+  }
+
   private runChecks(): void {
     if (this.checkTimer) clearTimeout(this.checkTimer)
     this.checkTimer = setTimeout(() => {
@@ -344,10 +392,12 @@ export class DesignerStore {
    * checks as the editor's, with its view of providers and credentials, plus the publish checks
    * (`publish.*`: an unpinned playbook, a route another workflow answers, a breaking change
    * without a new major). The answer replaces the live problems until the document changes.
+   * The files of the providers the workflow uses before they are published go along
+   * (`providerFiles`), so the backend judges the workflow with them.
    */
   async validate(): Promise<ValidationResult> {
     const version = this.state.version
-    const result = await api.validateWorkflow({ definition: this.state.doc })
+    const result = await api.validateWorkflow({ definition: this.state.doc }, this.providerFiles())
     if (this.state.version !== version) return result // edited meanwhile: the answer is about an older document
     this.validated = { version, problems: result.problems }
     if (this.checkTimer) {
@@ -393,6 +443,8 @@ export class DesignerStore {
   private apply(doc: WorkflowDocument, resetTest: boolean): void {
     const graph = placeGraph(doc, this.overlay)
     const json = JSON.stringify(doc)
+    // a draft that names no owner takes the workflow's: the registry follows a new owner
+    const owner = (doc.metadata?.owner ?? '') !== (this.state.doc.metadata?.owner ?? '')
     const patch: Partial<DesignerState> = {
       doc,
       graph,
@@ -411,6 +463,11 @@ export class DesignerStore {
       else pinsChanged = true
     }
     if (pinsChanged) patch.pins = pins
+    if (owner && Object.keys(this.state.providerDrafts).length > 0) {
+      const registry = this.registryFor(doc, this.state.providerDrafts, this.state.providersInReview)
+      patch.registry = registry
+      patch.ctx = contextOf(registry)
+    }
     this.set(patch)
     this.runChecks()
   }
@@ -783,8 +840,9 @@ export class DesignerStore {
   addCredential(credential: RegistryCredential): void {
     rememberCredential(credential)
     const add = () => {
-      const { registry } = this.state
-      if (registry) this.set({ registry: withCredential(registry, credential) })
+      if (!this.loaded) return
+      this.loaded = withCredential(this.loaded, credential)
+      this.setRegistry()
     }
     // a registry still loading takes it once it lands: by then the session's registry lists it
     if (this.state.registryLoading) void loadRegistry().catch(() => undefined).then(add)
@@ -818,14 +876,17 @@ export class DesignerStore {
 
   /**
    * Adds or replaces a provider draft (by its id), kept in this browser as the stickies are; not
-   * a document edit, so outside undo and the dirty flag. An open sheet without a draft takes it
-   * when it is a new provider's or the draft is of the sheet's provider.
+   * a document edit, so outside undo and the dirty flag. A draft whose owner nobody set takes the
+   * workflow's (`metadata.owner`), as the wizard's takes the signed-in user's team. An open sheet
+   * without a draft takes it when it is a new provider's or the draft is of the sheet's provider.
+   * The canvas reads the draft as a published provider at once.
    */
   upsertProviderDraft(draft: ProviderDraft): void {
-    const providerDrafts = { ...this.state.providerDrafts, [draft.id]: draft }
+    const d = draft.ownerTouched ? draft : withDefaultOwner(draft, this.state.doc.metadata?.owner)
+    const providerDrafts = { ...this.state.providerDrafts, [d.id]: d }
     const sheet = this.state.providerSheet
-    const takes = sheet !== null && sheet.draft === null && (sheet.provider === null || sheet.provider === draft.name)
-    this.set(takes ? { providerDrafts, providerSheet: { ...sheet, draft: draft.id } } : { providerDrafts })
+    const takes = sheet !== null && sheet.draft === null && (sheet.provider === null || sheet.provider === d.name)
+    this.setRegistry(takes ? { providerDrafts, providerSheet: { ...sheet, draft: d.id } } : { providerDrafts })
     this.persistProviderDrafts()
   }
 
@@ -834,8 +895,60 @@ export class DesignerStore {
     if (!(id in this.state.providerDrafts)) return
     const providerDrafts = { ...this.state.providerDrafts }
     delete providerDrafts[id]
-    this.set(this.state.providerSheet?.draft === id ? { providerDrafts, providerSheet: null } : { providerDrafts })
+    this.setRegistry(this.state.providerSheet?.draft === id ? { providerDrafts, providerSheet: null } : { providerDrafts })
     this.persistProviderDrafts()
+  }
+
+  /**
+   * A draft whose publish opened `changeRequest`: the draft is dropped (as `removeProviderDraft`),
+   * and the provider stays in review for this session until that change request merges.
+   */
+  providerDraftPublished(id: string, changeRequest: string): void {
+    const draft = this.state.providerDrafts[id]
+    if (!draft) return
+    const published = withDefaultOwner(draft, this.state.doc.metadata?.owner)
+    const providerDrafts = { ...this.state.providerDrafts }
+    delete providerDrafts[id]
+    const providersInReview = [...this.state.providersInReview.filter((r) => r.draft.name !== draft.name), { changeRequest, draft: published, yaml: draftFile(published, null) }]
+    this.setRegistry({ providerDrafts, providersInReview, ...(this.state.providerSheet?.draft === id ? { providerSheet: null } : {}) })
+    this.persistProviderDrafts()
+  }
+
+  /**
+   * A provider change request merged (the provider is published): the registry is loaded again so
+   * the canvas reads the published provider, and what this session kept in review for it goes.
+   * Once per change request.
+   */
+  async providerChangeMerged(changeRequest: string): Promise<void> {
+    if (this.mergedChanges.has(changeRequest)) return
+    this.mergedChanges.add(changeRequest)
+    try {
+      this.loaded = await loadRegistry(true)
+    } catch {
+      /* the registry as it was: what is in review stays the canvas's view of the provider */
+      return
+    }
+    this.setRegistry({ providersInReview: this.state.providersInReview.filter((r) => r.changeRequest !== changeRequest) })
+  }
+
+  /** The drafts the workflow uses, under its owner when they name none: the ones Publish opens a change request for. */
+  usedProviderDrafts(): ProviderDraft[] {
+    const owner = this.state.doc.metadata?.owner
+    return draftsUsedBy(this.state.doc, this.state.providerDrafts).map((d) => withDefaultOwner(d, owner))
+  }
+
+  /** The providers in review the workflow uses (none of its drafts has their name): the change requests its next Publish requires. */
+  usedProvidersInReview(): ProviderInReview[] {
+    const drafts = new Set(this.usedProviderDrafts().map((d) => d.name))
+    const byId = Object.fromEntries(this.state.providersInReview.map((r) => [r.draft.id, r.draft]))
+    const used = new Set(draftsUsedBy(this.state.doc, byId).map((d) => d.name))
+    return this.state.providersInReview.filter((r) => used.has(r.draft.name) && !drafts.has(r.draft.name))
+  }
+
+  /** The files of the providers the workflow uses before they are published (its drafts, then the ones in review): what a dry run and Validate send as `providers`. */
+  providerFiles(): string[] {
+    const owner = this.state.doc.metadata?.owner
+    return [...this.usedProviderDrafts().map((d) => draftFile(d, owner)), ...this.usedProvidersInReview().map((r) => r.yaml)]
   }
 
   /**
@@ -901,11 +1014,12 @@ export class DesignerStore {
     this.set({ dirty: false, detail: detail ?? this.state.detail })
   }
 
+  /** A dry run of the document (or of a step, `focus`), with the files of the providers it uses before they are published (`providerFiles`). */
   async testRun(input: JsonObject, focus: string | null = null): Promise<DryRunResult | null> {
     if (this.revealTimer) clearTimeout(this.revealTimer)
     this.set({ testRun: { status: 'running', input, result: null, revealed: 0, error: null, startedAt: Date.now(), finishedAt: null, focus }, lastInput: input })
     try {
-      const result = await api.dryRunWorkflow({ definition: this.state.doc }, input)
+      const result = await api.dryRunWorkflow({ definition: this.state.doc }, input, this.providerFiles())
       const run = this.state.testRun
       if (!run || run.status !== 'running') return result
       this.set({ testRun: { ...run, result, finishedAt: Date.now() } })
