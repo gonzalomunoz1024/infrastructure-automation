@@ -15,6 +15,7 @@ import org.springframework.web.server.WebFilterChain;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.identity.ports.outbound.ServiceAccountStore;
 import com.iaf.platform.identity.ports.outbound.TokenVerifier;
 import com.iaf.platform.identity.ports.outbound.UserDirectory;
@@ -29,7 +30,8 @@ import reactor.core.publisher.Mono;
  * dev header {@code X-User}, the configured default user. A bearer token that cannot be verified
  * is always a 401, in every mode: a caller who presents a credential never falls back to the dev
  * identity. In oidc mode a request without a token is a 401 too; in dev mode it is the
- * {@code X-User} header or the default user.
+ * {@code X-User} header or the default user. A service account's scopes go along with it
+ * ({@link ServiceScopes}) for the scope filter and the code behind it.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -52,7 +54,8 @@ public class IdentityWebFilter implements WebFilter {
         }
         Identity who = resolved.get();
         exchange.getAttributes().put(ATTRIBUTE, who);
-        return chain.filter(exchange).contextWrite(ctx -> CurrentIdentity.with(ctx, who));
+        List<String> scopes = exchange.getAttribute(ServiceScopes.ATTRIBUTE);
+        return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, who), scopes));
     }
 
     private Optional<Identity> resolve(ServerWebExchange exchange) {
@@ -60,7 +63,10 @@ public class IdentityWebFilter implements WebFilter {
         if (auth != null && auth.startsWith("Bearer ")) {
             String token = auth.substring(7).trim();
             if (token.startsWith("iaf_")) {
-                return serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> a.identity());
+                return serviceAccounts.byTokenHash(WorkflowYaml.sha256(token)).map(a -> {
+                    exchange.getAttributes().put(ServiceScopes.ATTRIBUTE, a.grantedScopes());
+                    return a.identity();
+                });
             }
             // an OIDC token when a verifier is configured; anything else presented as a bearer is rejected
             return tokens.isPresent() && !token.isEmpty() ? tokens.get().verify(token) : Optional.empty();

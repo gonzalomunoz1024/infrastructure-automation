@@ -42,6 +42,8 @@ import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.domain.NotFoundException;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
+import com.iaf.platform.identity.domain.Scopes;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
@@ -97,6 +99,14 @@ public class GeneratedRouteWebFilter implements WebFilter {
     private Mono<Void> handle(ServerWebExchange exchange, RouteMatch match) {
         RouteTable.Route route = match.route();
         Map<String, String> params = match.params();
+        // a service account starts jobs with jobs:start and reads the resource registry with registry:read
+        boolean read = route.kind() == RouteTable.Kind.LIST_RESOURCES || route.kind() == RouteTable.Kind.GET_RESOURCE;
+        try {
+            Scopes.check(exchange.getAttribute(ServiceScopes.ATTRIBUTE), read ? Scopes.REGISTRY_READ : Scopes.JOBS_START,
+                    read ? "read " + route.type().name() + " resources" : "start " + route.workflow().name());
+        } catch (ForbiddenException e) {
+            return Mono.error(e);
+        }
         return switch (route.kind()) {
             case INVOKE -> identity(exchange).flatMap(who -> input(exchange, route.workflow().definition(), params)
                     .flatMap(in -> invoker.invoke(route.workflow(), in, who, CHANNEL, traceId(exchange)))

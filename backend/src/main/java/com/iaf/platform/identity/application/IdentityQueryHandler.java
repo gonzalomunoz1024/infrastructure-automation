@@ -28,7 +28,7 @@ public class IdentityQueryHandler implements IdentityQueries {
     @Override
     public Mono<List<ServiceAccount>> serviceAccounts() {
         return Mono.fromSupplier(() -> store.all().stream()
-                .map(a -> new ServiceAccount(a.id(), a.name(), a.roles(), a.teams(), null, a.createdAt()))
+                .map(ServiceAccount::withoutSecret)
                 .toList());
     }
 }

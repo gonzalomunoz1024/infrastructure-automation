@@ -31,6 +31,7 @@ import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.identity.application.ServiceScopes;
 import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.Preview;
@@ -85,6 +86,37 @@ class GeneratedRouteWebFilterTest {
                 })
                 .webFilter(identity(who), filter)
                 .build();
+    }
+
+    /** What the identity filter does for a service account: its identity and its scopes. */
+    WebTestClient account(Identity who, List<String> scopes) {
+        WebFilter identity = (exchange, chain) -> {
+            exchange.getAttributes().put(IdentityWebFilter.ATTRIBUTE, who);
+            exchange.getAttributes().put(ServiceScopes.ATTRIBUTE, scopes);
+            return chain.filter(exchange).contextWrite(ctx -> ServiceScopes.with(CurrentIdentity.with(ctx, who), scopes));
+        };
+        return WebTestClient.bindToWebHandler(exchange -> {
+                    exchange.getResponse().setStatusCode(HttpStatus.NOT_FOUND);
+                    return exchange.getResponse().setComplete();
+                })
+                .webFilter(identity, filter)
+                .build();
+    }
+
+    @Test
+    void aServiceAccountStartsJobsWithJobsStartAndReadsResourcesWithRegistryRead() {
+        when(resources.list(eq("image"), any(), any())).thenReturn(Flux.empty());
+        WebTestClient reader = account(SampleCatalog.AGENT, List.of("registry:read"));
+        reader.post().uri("/api/v1/vms/vm-1:restart").exchange()
+                .expectStatus().isForbidden()
+                .expectBody().jsonPath("$.error").value(org.hamcrest.Matchers.containsString("jobs:start"));
+        reader.post().uri("/api/v1/vms/vm-1:restart:preview").exchange().expectStatus().isForbidden();
+        reader.get().uri("/api/v1/images").exchange().expectStatus().isOk();
+        verify(runs, never()).startJob(any());
+
+        WebTestClient starter = account(SampleCatalog.AGENT, List.of("jobs:start"));
+        starter.post().uri("/api/v1/vms/vm-1:restart").exchange().expectStatus().isAccepted();
+        starter.get().uri("/api/v1/images").exchange().expectStatus().isForbidden();
     }
 
     @Test
