@@ -186,8 +186,10 @@ export type TerraformModuleRef = { source: string; version?: string; ref?: strin
 /**
  * `module` is the terraform provider's `spec.module`. GET /registry/providers does not carry it;
  * the designer's registry reads it through the backend (registry.ts, `withTerraformModules`).
+ * `unpublished` is the designer's own: a provider draft of the workflow ('draft'), or one whose
+ * change request the designer opened and that is not merged yet ('in review'); the backend never sends it.
  */
-export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef }
+export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef; unpublished?: 'draft' | 'in review' }
 export type RegistryWorkflow = { name: string; title: string; version: string; input: Schema; output: Schema }
 export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
 export type RegistryCredential = { name: string; type: string }

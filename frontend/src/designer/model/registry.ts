@@ -3,7 +3,8 @@
  * workflows, resource types, playbooks and credential names, and for the checks alone what each
  * published workflow starts and the MCP tools they hold. Loaded once per session; every part
  * fails independently so the canvas works with whatever answered. A credential stored from a
- * step's credential field joins the loaded list instead of loading it all again.
+ * step's credential field joins the loaded list instead of loading it all again. The store merges
+ * the workflow's provider drafts into what the canvas reads (`withUnpublished`).
  */
 import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
@@ -161,6 +162,23 @@ export async function withTerraformModules(providers: RegistryProvider[], resolv
 /** The registry with one more credential, in place of one of the same name (storing a name again replaces it). */
 export function withCredential(registry: Registry, credential: RegistryCredential): Registry {
   return { ...registry, credentials: [...registry.credentials.filter((c) => c.name !== credential.name), credential] }
+}
+
+/**
+ * The registry with the providers the workflow uses before they are published (its drafts, the
+ * ones in review), each in place of a published provider of the same name, so the canvas reads
+ * them as published; the first of a name wins. The same registry when there are none.
+ */
+export function withUnpublished(registry: Registry, providers: readonly RegistryProvider[]): Registry {
+  const named = providers.filter((p, i) => p.name && providers.findIndex((x) => x.name === p.name) === i)
+  if (named.length === 0) return registry
+  const names = new Set(named.map((p) => p.name))
+  return { ...registry, providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named] }
+}
+
+/** How a provider is named wherever the designer shows it: its title, tagged when it is not published yet. */
+export function providerLabel(p: Pick<RegistryProvider, 'title' | 'unpublished'>): string {
+  return p.unpublished ? `${p.title} (${p.unpublished})` : p.title
 }
 
 /** A credential stored in this session: every registry loadRegistry hands out from now on lists it. */

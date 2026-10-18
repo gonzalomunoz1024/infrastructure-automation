@@ -7,7 +7,7 @@ import { fuzzyMatch, type Tone } from '@iaf/ui'
 import { STEP_TYPES, type JsonObject, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import type { RegistryAction, RegistryProvider } from '../../lib/types'
 import type { NewStepParams, TriggerKind } from '../model/edits'
-import type { Registry } from '../model/registry'
+import { providerLabel, type Registry } from '../model/registry'
 import { providerGlyph, triggerGlyph, typeGlyph, type Glyph } from '../canvas/glyphs'
 
 export type CreatorAction = { kind: 'step'; type: StepType; params?: NewStepParams } | { kind: 'trigger'; trigger: TriggerKind }
@@ -59,6 +59,11 @@ export function effectTags(a: Pick<RegistryAction, 'effect' | 'approval'>): Crea
   return tags
 }
 
+/** A provider the workflow has not published yet, tagged as such: one of its drafts ("draft"), or one in review. */
+export function unpublishedTags(p: Pick<RegistryProvider, 'unpublished'>): CreatorTag[] {
+  return p.unpublished ? [{ label: p.unpublished, tone: 'accent' }] : []
+}
+
 function stepItem(type: StepType, extra: Partial<CreatorItem> = {}, params?: NewStepParams): CreatorItem {
   const info = STEP_TYPES[type]
   return { id: `type:${type}`, title: info.title, description: info.description, glyph: typeGlyph(type), action: { kind: 'step', type, params }, keywords: `${type} ${info.category}`, ...extra }
@@ -98,7 +103,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
       {
         items:
           callProviders.length > 0
-            ? callProviders.map((p) => ({ id: `provider:${p.name}`, title: p.title, description: `${p.actions.length} ${p.actions.length === 1 ? 'action' : 'actions'}${p.owner ? ` · ${p.owner}` : ''}`, glyph: providerGlyph(p.type), view: `provider:${p.name}`, keywords: p.name }))
+            ? callProviders.map((p) => ({ id: `provider:${p.name}`, title: p.title, description: `${p.actions.length} ${p.actions.length === 1 ? 'action' : 'actions'}${p.owner ? ` · ${p.owner}` : ''}`, glyph: providerGlyph(p.type), tags: unpublishedTags(p), view: `provider:${p.name}`, keywords: p.name }))
             : [stepItem('provider', { description: 'No provider is registered yet; pick the provider in the step' })],
       },
       ...(runItems.length > 0 ? [{ title: 'Run workflow', items: runItems }] : []),
@@ -107,7 +112,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
   for (const p of callProviders) {
     add({
       id: `provider:${p.name}`,
-      title: p.title,
+      title: providerLabel(p),
       subtitle: p.name,
       sections: [
         {
@@ -117,7 +122,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
             title: a.title || a.id,
             description: `${p.title} · ${a.id}`,
             glyph: providerGlyph(p.type),
-            tags: effectTags(a),
+            tags: [...effectTags(a), ...unpublishedTags(p)],
             keywords: `${p.name} ${a.id} ${a.effect}`,
             action: { kind: 'step', type: 'provider', params: { provider: p.name, action: a.id, name: a.title || a.id } },
           })),
@@ -218,7 +223,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     subtitle: 'Plan, apply or destroy a pinned module',
     sections: [
       ...tf.map((p) => ({
-        title: p.title,
+        title: providerLabel(p),
         items: p.actions.map((a): CreatorItem => {
           const terraformAction = a.id === 'apply' || a.id === 'destroy' ? a.id : 'plan'
           const module: JsonObject = p.module ? { ...p.module } : { source: '', version: '' }
@@ -227,7 +232,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
             title: a.title || a.id,
             description: p.module ? `${p.title} · ${a.id} · ${[p.module.source, p.module.version].filter(Boolean).join(' @ ')}` : `${p.title} · ${a.id}`,
             glyph: providerGlyph('terraform'),
-            tags: effectTags(a),
+            tags: [...effectTags(a), ...unpublishedTags(p)],
             keywords: `terraform module ${p.name} ${a.id}`,
             action: { kind: 'step', type: 'terraform', params: { name: `${p.title}: ${a.title || a.id}`, module, terraformAction } },
           }
@@ -246,13 +251,13 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     sections:
       idp.length > 0
         ? idp.map((p) => ({
-            title: p.title,
+            title: providerLabel(p),
             items: p.actions.map((a) => ({
               id: `tile:${p.name}:${a.id}`,
               title: a.title || a.id,
               description: `${p.title} · ${a.id}`,
               glyph: providerGlyph('idp'),
-              tags: effectTags(a),
+              tags: [...effectTags(a), ...unpublishedTags(p)],
               keywords: `idp tile portal ${a.id}`,
               action: { kind: 'step' as const, type: 'idp' as const, params: { tile: a.id, name: a.title || a.id } },
             })),

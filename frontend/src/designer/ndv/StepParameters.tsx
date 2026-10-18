@@ -11,7 +11,7 @@ import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
-import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
+import { findAction, findProvider, knownGroups, providerLabel, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
 import { useDesignerStore } from '../model/store'
 import { effectTags } from '../creator/catalog'
@@ -179,7 +179,7 @@ function ProviderParams() {
     })
   return (
     <>
-      <P field="provider" label="Provider" required options={providers.map((p) => ({ value: p.name, label: p.title, hint: p.name }))} expression={false} onChange={setProvider} />
+      <P field="provider" label="Provider" required options={providers.map((p) => ({ value: p.name, label: providerLabel(p), hint: p.name }))} expression={false} onChange={setProvider} />
       <P field="action" label="Action" required options={(provider?.actions ?? []).map((a) => ({ value: a.id, label: a.title || a.id, hint: `${a.id} · ${a.effect}` }))} expression={false} />
       {action && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -544,7 +544,7 @@ function IdpParams() {
   const current = tiles.find((t) => t.action.id === tile)
   return (
     <>
-      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: t.provider.title }))} />
+      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: providerLabel(t.provider) }))} />
       <ParamSection title="Input">
         <SchemaFields schema={current?.action.input} prefix="input" emptyText="The tile's fields as JSON" />
       </ParamSection>
@@ -940,7 +940,7 @@ export function stepKindLabel(step: ParsedStep, registry: Registry | null): stri
   if (step.type === 'provider') {
     const p = findProvider(registry, asString(w.provider))
     const a = findAction(registry, asString(w.provider), asString(w.action))
-    return [p?.title ?? asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
+    return [p ? providerLabel(p) : asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
   }
   return STEP_TYPES[step.type].title
 }

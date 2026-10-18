@@ -5,12 +5,18 @@
  * browser only, in localStorage per workflow as the sticky notes do (stickies.ts), outside the
  * document and its undo history.
  *
+ * The designer reads a draft as a published provider (`draftProvider`, merged into the registry),
+ * sends its file with a dry run, Validate and Publish (`draftFile`) when the workflow calls it
+ * (`draftsUsedBy`), under the workflow's owner when it names none.
+ *
  * A draft never holds a secret value: its credentials are `vault:` references, as the credential
  * picker gives them. What is stored keeps no credential that is not one, no user or password
  * written into a URL, and none of the tries' live answers (the review's evidence is the server's).
  */
-import type { ProviderDetail, ProviderType } from '../../lib/types'
-import { initialState, nextKey, providerYaml, stateFromProvider, typeChange, type WizardState } from '../../components/provider-editor/state'
+import type { WorkflowDocument } from '@iaf/workflow-checks'
+import type { ProviderDetail, ProviderImport, ProviderType, RegistryAction, RegistryProvider, Schema, TerraformVariable } from '../../lib/types'
+import { initialState, nextKey, parseSchema, providerYaml, stateFromProvider, typeChange, type ActionRow, type WizardState } from '../../components/provider-editor/state'
+import { allStepLocations } from './graph'
 
 /** Where a draft came from: a provider not published yet, or the next patch of a published one. */
 export type ProviderDraftOrigin = 'new' | 'edit'
@@ -54,6 +60,139 @@ export function draftYaml(draft: ProviderDraft): string {
 /** The workflow's draft of the provider of that name, if it has one. */
 export function findProviderDraft(drafts: Readonly<Record<string, ProviderDraft>>, name: string | null | undefined): ProviderDraft | undefined {
   return name ? Object.values(drafts).find((d) => d.name === name) : undefined
+}
+
+/* ----------------------------------------------------------------------------
+   The workflow's owner, the file sent, the registry's view of a draft
+   ------------------------------------------------------------------------- */
+
+/**
+ * The draft under the workflow's owner (`metadata.owner`) when it names none: the team its file,
+ * its change request and the review's evidence (kept under the draft's name and owner) go under.
+ */
+export function withDefaultOwner(draft: ProviderDraft, owner: string | null | undefined): ProviderDraft {
+  const team = owner?.trim()
+  return !draft.owner.trim() && team ? { ...draft, owner: team } : draft
+}
+
+/** The file the designer sends for a draft (a dry run, Validate, the review, Publish): its YAML, under the workflow's owner when it names none. */
+export function draftFile(draft: ProviderDraft, owner: string | null | undefined): string {
+  return draftYaml(withDefaultOwner(draft, owner))
+}
+
+/** An action row as the registry lists an action: the effect, retry and approval the backend reads from the file (a delete needs an approval unless it says otherwise), the schemas, and the sample. */
+function rowAction(d: ProviderDraft, a: ActionRow): RegistryAction {
+  const sample = d.samples[a.id] ?? (d.type === 'http' ? parseSchema(a.exampleText) : undefined)
+  return {
+    id: a.id,
+    title: a.title.trim() || a.id,
+    effect: a.effect,
+    retry: a.retry,
+    approval: a.approval || a.effect === 'delete' ? 'required' : 'none',
+    input: parseSchema(a.inputText) ?? null,
+    // "Fix schema from response" writes the response schema the action answers with
+    output: d.overrides[a.id] ?? parseSchema(a.outputText) ?? null,
+    ...(sample !== undefined ? { sample } : {}),
+  }
+}
+
+/** A terraform variable's type as a JSON schema type: what the module's `vars` take. */
+function terraformSchema(v: TerraformVariable): Schema {
+  const t = v.type.trim()
+  const type = t === 'string' ? 'string' : t === 'number' ? 'number' : t === 'bool' ? 'boolean' : /^(list|set|tuple)\b/.test(t) ? 'array' : /^(map|object)\b/.test(t) ? 'object' : undefined
+  return { ...(type ? { type } : {}), ...(v.description ? { description: v.description } : {}), ...(v.default !== undefined ? { default: v.default } : {}) }
+}
+
+const COUNTS: Record<string, Schema> = { add: { type: 'integer' }, change: { type: 'integer' }, destroy: { type: 'integer' } }
+
+/**
+ * The actions an import drafted, for a draft that took the import's file (its rows are empty
+ * then): the chosen playbooks of an Ansible repository, a Terraform module's Plan and Apply, as
+ * the backend's import writes them (AnsiblePlaybooks, TerraformModule).
+ */
+function importedActions(imported: ProviderImport): RegistryAction[] {
+  if (imported.kind === 'ansible') {
+    const { playbooks, chosen } = imported.result
+    return playbooks
+      .filter((p) => chosen.length === 0 || chosen.includes(p.action))
+      .map((p) => ({ id: p.action, title: p.title || p.action, effect: p.effect, retry: p.effect === 'read' ? 'safe' : 'unsafe', approval: p.effect === 'delete' ? 'required' : 'none', input: p.vars, output: null }))
+  }
+  const variables = imported.result.variables.filter((v) => !v.secret)
+  const ordered = [...variables.filter((v) => v.required), ...variables.filter((v) => !v.required)]
+  const required = variables.filter((v) => v.required).map((v) => v.name)
+  const vars: Schema = { type: 'object', ...(required.length ? { required } : {}), properties: Object.fromEntries(ordered.map((v) => [v.name, terraformSchema(v)])) }
+  const outputs: Schema = { type: 'object', properties: Object.fromEntries(imported.result.outputs.filter((o) => !o.sensitive).map((o) => [o.name, o.description ? { description: o.description } : {}])) }
+  return [
+    { id: 'plan', title: 'Plan', effect: 'read', retry: 'safe', approval: 'none', input: vars, output: { type: 'object', properties: COUNTS } },
+    { id: 'apply', title: 'Apply', effect: 'create', retry: 'unsafe', approval: 'none', input: vars, output: { type: 'object', properties: { outputs, ...COUNTS } } },
+  ]
+}
+
+/**
+ * The draft as the registry lists a provider, so the node creator, the parameter forms, Expected
+ * output and the live checks read it as a published one: its selected actions (or, for a draft
+ * that took an import's file, the import's), a terraform draft's module, the workflow's owner when
+ * it names none, and `unpublished: 'draft'`.
+ */
+export function draftProvider(draft: ProviderDraft, owner?: string | null): RegistryProvider {
+  const d = withDefaultOwner(draft, owner)
+  const rows = d.actions.filter((a) => a.selected && a.id.trim())
+  const actions = rows.length === 0 && d.imported ? importedActions(d.imported) : rows.map((a) => rowAction(d, a))
+  const source = d.terraform.source.trim()
+  const version = d.terraform.version.trim()
+  return {
+    name: d.name,
+    title: d.title.trim() || d.name,
+    type: d.type,
+    ...(d.owner.trim() ? { owner: d.owner.trim() } : {}),
+    actions,
+    ...(d.type === 'terraform' && source ? { module: version ? { source, version } : { source } } : {}),
+    unpublished: 'draft',
+  }
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * Whether a step calls the draft's provider: a provider step that names it, an ansible step on a
+ * playbook of its repository (or of its library, `<name>/<action>`), a terraform step on its
+ * module, an IDP step on one of its tiles (the creator's IDP items name a tile by its action id).
+ */
+function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
+  const w = isRecord(body.with) ? body.with : {}
+  switch (body.call) {
+    case 'provider':
+      return w.provider === d.name
+    case 'ansible': {
+      if (d.type !== 'ansible') return false
+      const pb = w.playbook
+      if (typeof pb === 'string') return pb.startsWith(`${d.name}/`)
+      const repo = isRecord(pb) && isRecord(pb.git) ? pb.git.repo : undefined
+      return typeof repo === 'string' && !!d.ansible.repo.trim() && repo.trim() === d.ansible.repo.trim()
+    }
+    case 'terraform': {
+      const source = isRecord(w.module) ? w.module.source : undefined
+      return d.type === 'terraform' && typeof source === 'string' && !!d.terraform.source.trim() && source.trim() === d.terraform.source.trim()
+    }
+    case 'idp':
+      return d.type === 'idp' && typeof w.tile === 'string' && d.actions.some((a) => a.selected && a.id === w.tile)
+    default:
+      return false
+  }
+}
+
+/**
+ * The drafts the workflow uses, in the order its steps (nested ones and the catch flow's
+ * included) first call them: the providers a dry run, Validate and Publish take along. A draft
+ * without a name is called by nothing.
+ */
+export function draftsUsedBy(doc: WorkflowDocument, drafts: Readonly<Record<string, ProviderDraft>>): ProviderDraft[] {
+  const named = Object.values(drafts).filter((d) => d.name.trim())
+  const out: ProviderDraft[] = []
+  for (const { body } of allStepLocations(doc)) {
+    for (const d of named) if (!out.some((o) => o.name === d.name) && calls(body as Record<string, unknown>, d)) out.push(d)
+  }
+  return out
 }
 
 /* ----------------------------------------------------------------------------
