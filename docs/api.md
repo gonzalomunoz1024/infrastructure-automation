@@ -138,7 +138,7 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs?workflow=&status=&limit=&parent=` | `JobSummary[]` |
 | GET    | `/jobs/{id}`                           | `JobDetail` |
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
-| GET    | `/jobs/{id}/replay`                    | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }` |
+| GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count) |

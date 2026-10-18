@@ -119,14 +119,18 @@ public class RunsQueryHandler implements RunsQueries {
         });
     }
 
-    /** The previous finished run of the same workflow (same kind: top-level jobs compare with top-level jobs). */
+    /**
+     * The previous successful run of the same workflow (same kind: top-level jobs compare with
+     * top-level jobs). A failed or cancelled run in between is skipped: the point of the diff is
+     * what changed since the workflow last worked.
+     */
     private Optional<Job> previousOf(Job job) {
         Instant at = job.startedAt() == null ? Instant.EPOCH : job.startedAt();
         return projection.all().stream()
                 .filter(j -> !j.id().equals(job.id()))
                 .filter(j -> job.workflow().equals(j.workflow()))
                 .filter(j -> j.kind() == job.kind())
-                .filter(j -> j.status() != null && j.status().terminal())
+                .filter(j -> j.status() == JobStatus.SUCCEEDED)
                 .filter(j -> (j.parentId() == null) == (job.parentId() == null))
                 .filter(j -> j.startedAt() != null && j.startedAt().isBefore(at))
                 .findFirst();
