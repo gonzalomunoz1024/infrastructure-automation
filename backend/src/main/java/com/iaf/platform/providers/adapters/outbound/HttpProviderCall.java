@@ -328,6 +328,11 @@ public class HttpProviderCall implements ProviderCallPort {
         return pairs.isEmpty() ? full : full + "?" + String.join("&", pairs);
     }
 
+    /**
+     * A path parameter fills its segment and nothing more: a {@code /} in the value stays encoded
+     * ({@code %2F}), and a value with a {@code .} or {@code ..} segment is refused before anything is
+     * sent, so no input walks the call out of the operation's path with the provider's credential.
+     */
     private static String fill(String template, ObjectNode remaining, boolean pathSegment) {
         Matcher m = PARAM.matcher(template);
         StringBuilder sb = new StringBuilder();
@@ -335,16 +340,26 @@ public class HttpProviderCall implements ProviderCallPort {
             JsonNode v = remaining.get(m.group(1));
             String replacement = "";
             if (v != null && !v.isNull()) {
-                replacement = encode(text(v));
+                String value = text(v);
                 if (pathSegment) {
-                    replacement = replacement.replace("%2F", "/");
+                    requireInsideThePath(m.group(1), value);
                 }
+                replacement = encode(value);
                 remaining.remove(m.group(1));
             }
             m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
         m.appendTail(sb);
         return sb.toString();
+    }
+
+    private static void requireInsideThePath(String name, String value) {
+        for (String segment : value.split("[/\\\\]", -1)) {
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new ProviderCallException("invalid_input",
+                        "Path parameter " + name + " may not have a '.' or '..' segment; it fills one segment of the operation's path", false, 0);
+            }
+        }
     }
 
     static String text(JsonNode v) {
