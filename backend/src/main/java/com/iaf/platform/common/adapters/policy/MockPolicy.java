@@ -21,6 +21,12 @@ import reactor.core.publisher.Mono;
  * <p>The {@code context} of a {@link PolicyInput} may carry {@code policy.approval.required}
  * (the definition's policy block), {@code preview.steps[].effect} (the preview) and
  * {@code destructive} (a shortcut the caller already judged).</p>
+ *
+ * <p>Resource access (a {@code use} step, phase {@code RESOURCE_ACCESS}) reads the resource the
+ * registry puts in {@code input} ({@code owner}, {@code visibility}): a resource whose visibility
+ * is {@code public}, or that has no owner team, is any team member's; one whose visibility is
+ * {@code team} or unset is its owner team's only; an admin may use any. Publishing stays open to
+ * every team member.</p>
  */
 // TODO: wire the firm's OPA engine: the opa profile selects OpaPolicy, whose package names and
 // rule ids are Gonzalo's to provide; this mock stays the default for demos and tests.
@@ -28,6 +34,8 @@ import reactor.core.publisher.Mono;
 public class MockPolicy implements PolicyPort {
 
     public static final String ENGINE = "mock";
+    /** The visibility that opens a resource to every team. */
+    public static final String PUBLIC = "public";
 
     @Override
     public Mono<PolicyDecision> evaluate(PolicyInput input) {
@@ -51,9 +59,14 @@ public class MockPolicy implements PolicyPort {
         }
         JsonNode context = input.context() == null ? MissingNode.getInstance() : input.context();
         Phase phase = input.phase() == null ? Phase.INVOKE : input.phase();
-        if (phase == Phase.PUBLISH || phase == Phase.RESOURCE_ACCESS) {
-            rules.add(new Rule("phase." + phase.name().toLowerCase(), "pass", "Publishing and resource access are open to team members"));
+        if (phase == Phase.PUBLISH) {
+            rules.add(new Rule("phase.publish", "pass", "Publishing is open to team members"));
             return new PolicyDecision("allow", rules, ENGINE);
+        }
+        if (phase == Phase.RESOURCE_ACCESS) {
+            Rule owner = resourceOwner(who, input.input() == null ? MissingNode.getInstance() : input.input());
+            rules.add(owner);
+            return new PolicyDecision("deny".equals(owner.result()) ? "deny" : "allow", rules, ENGINE);
         }
         boolean policyApproval = context.path("policy").path("approval").path("required").asBoolean(false)
                 || context.path("approval").path("required").asBoolean(false);
@@ -63,6 +76,30 @@ public class MockPolicy implements PolicyPort {
         rules.add(new Rule("preview.destructive", destructive ? "needs-approval" : "pass",
                 destructive ? "The preview has a destructive step" : "No destructive step in the preview"));
         return new PolicyDecision(policyApproval || destructive ? "needs-approval" : "allow", rules, ENGINE);
+    }
+
+    /**
+     * The resource-access rule: a {@code public} resource or one without an owner team is any
+     * team member's, a {@code team} resource (the default, also when the visibility is unset) is
+     * its owner team's; an admin may use any.
+     */
+    static Rule resourceOwner(Identity who, JsonNode resource) {
+        String owner = resource.path("owner").asText(null);
+        String visibility = resource.path("visibility").asText(null);
+        String what = resource.path("type").asText("resource") + " " + resource.path("id").asText("?");
+        if (who.admin()) {
+            return new Rule("resource.owner", "pass", who.name() + " is an admin");
+        }
+        if (owner == null || owner.isBlank()) {
+            return new Rule("resource.owner", "pass", what + " has no owner team");
+        }
+        if (PUBLIC.equals(visibility)) {
+            return new Rule("resource.owner", "pass", what + " is public");
+        }
+        if (who.teams() != null && who.teams().contains(owner)) {
+            return new Rule("resource.owner", "pass", who.name() + " is in " + owner + ", which owns " + what);
+        }
+        return new Rule("resource.owner", "deny", what + " belongs to " + owner + " and is not public; " + who.name() + " acts for " + who.teams());
     }
 
     private static boolean destructiveStep(JsonNode steps) {

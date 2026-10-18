@@ -348,11 +348,18 @@ export function parseStep(id: string, body: JsonObject): ParsedStep {
         type = kind as StepType;
         break;
       }
+      case 'use':
+        type = k;
+        withValue = isObject(v) ? merge(v, withValue) : withValue;
+        // the interpreter's default: a use step asks policy about the resource unless it opts out
+        if (isObject(withValue) && withValue['checkAccess'] === undefined) {
+          withValue = { ...withValue, checkAccess: true };
+        }
+        break;
       case 'run':
       case 'approval':
       case 'set':
       case 'raise':
-      case 'use':
       case 'register':
       case 'notify':
       case 'script':

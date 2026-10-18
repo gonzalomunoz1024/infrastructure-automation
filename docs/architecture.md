@@ -77,7 +77,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `ArtifactStorePort`     | `S3ArtifactStore` (profile `s3`, any S3-compatible store) | `FilesystemArtifactStore` (content-addressed by SHA-256) |
 | `GitRemotePort`         | `JGitRemotes` (ls-remote, a mirror per repository, the files of each commit cached once) | same                            |
 | `CredentialsPort`       | `VaultCredentials` (KV v2 over HTTP; a credential's type, author and owner team live in its custom metadata, written before the value) | `InMemoryCredentials` (seeded from the content's providers, without an owner) |
-| `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine) |
+| `PolicyPort`            | `OpaPolicy` (data API over HTTP)       | `MockPolicy` (TODO: wire the firm's OPA engine; its resource-access rule: a `public` resource or one without an owner team is any team member's, a `team` resource its owner team's, an admin's always) |
 | `TelemetryPort`         | `MicrometerTelemetry` (+ OTel exporter) | same, in-memory registry        |
 | `ProjectionStore`       | `JdbcProjectionStore` (profile `postgres`) | `InMemoryProjectionStore`   |
 | `EvidenceStore`         | `JdbcEvidenceStore` (profile `postgres`, append-only); `FileSystemEvidenceStore` (profile `worm`, read-only files with retention sidecars); `S3ObjectLockEvidenceStore` (profile `worm-s3`, Object Lock in COMPLIANCE mode) | `InMemoryEvidenceStore` |
@@ -250,10 +250,20 @@ result through `ChildResults`, which carries those registrations. The same class
   child workflows, `Workflow.await` for approvals and pause-on-failure, and durable timers for
   waits. The definition snapshot travels in the workflow input.
 
-A `use` step that waits for a resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
+A `use` step asks the policy engine whether the requester may use the resource (phase
+`RESOURCE_ACCESS`, the resource's owner and visibility in the input) unless it says
+`checkAccess: false`; the YAML parsers of both twins apply that default. One that waits for a
+resource to be ready goes through `PortStepExecutor.Engine.awaitResource`:
 in process the registry's `resource.*` events on the EventBus wake it (`ResourceQueries.awaitState`),
 bounded by the step's timeout and ended by a cancel; on Temporal it maps to `Workflow.await` over a
 signal a registry listener sends to the waiting workflow.
+
+The registry judges its own writes (`resources.domain.ResourceRules`): a resource is its owner
+team's, so only that team, the job that created it or an admin may update it through a `register`
+step, and only the team or an admin may retire it. Retiring and lineage walk
+`ResourceStorePort.builtFrom` (`ResourceGraph`: depth-first in both directions, each resource once,
+at most 32 hops and 1000 resources) instead of reading the whole registry; the JDBC store finds a
+resource's dependents with a LIKE on the document text and judges the candidates' `builtFrom`.
 
 A preview (`Previews`, runs/application) runs the same interpreter as a dry run on the input and
 the recorded samples, in process whatever the engine, and judges the static walk of `PreviewRules`
