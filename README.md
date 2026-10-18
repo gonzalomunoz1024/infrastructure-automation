@@ -59,6 +59,7 @@ docs/               architecture, config as code, API, design language, contribu
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md): a first run, a first workflow, a first provider.
 - [Architecture](docs/architecture.md): slices, CQRS rules, ports and adapters, the interpreter.
 - [Config as code](docs/config-as-code.md): the `Workflow`, `Provider` and `ResourceType` files,
   step kinds and expressions.
