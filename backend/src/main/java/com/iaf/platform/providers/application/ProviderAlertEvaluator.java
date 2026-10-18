@@ -35,7 +35,8 @@ import lombok.extern.slf4j.Slf4j;
  * (degraded is a warning, failing is critical). A single failed call with a class other than
  * not_found raises a warning naming the job. The last {@value #KEEP} alerts per provider are kept
  * for {@code GET /providers/{name}/alerts}; every alert is also published as {@code provider.alert},
- * carrying the provider's {@code alerts.channel} so a notifier knows where to deliver it.
+ * carrying the provider's {@code alerts.channel} and owner so a notifier knows where to deliver it,
+ * and its {@code class} (the call's error class, or {@value #HEALTH_CLASS}) for alert triggers.
  */
 @Slf4j
 @Component
@@ -45,6 +46,8 @@ public class ProviderAlertEvaluator {
     public static final String ALERT_EVENT = "provider.alert";
     public static final int KEEP = 100;
     static final String IGNORED_ERROR_CLASS = "not_found";
+    /** The {@code class} of an alert about the health band rather than one failed call. */
+    public static final String HEALTH_CLASS = "health";
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
 
@@ -84,7 +87,7 @@ public class ProviderAlertEvaluator {
             if (health.status().rank() > before) {
                 String severity = health.status() == Health.Status.FAILING ? ProviderAlert.CRITICAL : ProviderAlert.WARNING;
                 String message = "Health is " + health.status().json() + ": " + String.join("; ", health.reasons());
-                raised.add(raise(def, null, message, severity, null, now));
+                raised.add(raise(def, null, message, severity, null, HEALTH_CLASS, now));
             }
             for (CallSample s : samples) {
                 if (s.ok() || s.at() == null || !s.at().isAfter(failuresFrom) || IGNORED_ERROR_CLASS.equals(s.errorClass())) {
@@ -93,7 +96,7 @@ public class ProviderAlertEvaluator {
                 String errorClass = s.errorClass() == null ? "error" : s.errorClass();
                 String message = "Call " + s.action() + " failed (" + errorClass + ")" + (s.jobId() == null ? "" : " in job " + s.jobId())
                         + (s.environment() == null ? "" : " on " + s.environment());
-                raised.add(raise(def, s.action(), message, ProviderAlert.WARNING, s.jobId(), now));
+                raised.add(raise(def, s.action(), message, ProviderAlert.WARNING, s.jobId(), errorClass, now));
             }
         }
         lastEvaluatedAt = now;
@@ -118,7 +121,7 @@ public class ProviderAlertEvaluator {
         return lastBand.get(provider);
     }
 
-    private ProviderAlert raise(ProviderDefinition def, String action, String message, String severity, String jobId, Instant at) {
+    private ProviderAlert raise(ProviderDefinition def, String action, String message, String severity, String jobId, String errorClass, Instant at) {
         String provider = def.name();
         String channel = channelOf(def);
         ProviderAlert alert = new ProviderAlert(Ids.next("alert"), at, provider, action, message, severity, jobId, channel);
@@ -144,6 +147,9 @@ public class ProviderAlertEvaluator {
         }
         if (def.owner() != null) {
             data.put("owner", def.owner());
+        }
+        if (errorClass != null) {
+            data.put("class", errorClass);
         }
         events.publish(ALERT_EVENT, "provider", provider, Identity.SYSTEM.id(), data);
         log.info("provider alert [{}] {}: {}", severity, provider, message);
