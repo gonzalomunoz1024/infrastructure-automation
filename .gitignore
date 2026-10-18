@@ -17,3 +17,4 @@ test-results/
 
 # agent worktrees
 .claude/
+__pycache__/

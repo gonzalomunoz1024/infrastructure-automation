@@ -1,10 +1,15 @@
 // Visits every page of the app against the real backend and reports console errors,
 // failed API calls and visible error states. Usage: node smoke.cjs [baseUrl] [apiUrl]
+// Screenshots go to $SMOKE_OUT (default: a smoke/ folder under the system temp directory).
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= '/opt/pw-browsers'
 const { chromium } = require('@playwright/test')
 const BASE = process.argv[2] || 'http://localhost:3000'
 const API = process.argv[3] || 'http://localhost:8080/api/v1'
-const OUT = __dirname
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const OUT = process.env.SMOKE_OUT || path.join(os.tmpdir(), 'iaf-smoke')
+fs.mkdirSync(OUT, { recursive: true })
 const get = async (p) => { const r = await fetch(API + p); if (!r.ok) throw new Error(p + ' ' + r.status); return r.json() }
 ;(async () => {
   const [workflows, jobs, providers, resources, releases, audit, crs, approvals] = await Promise.all([
