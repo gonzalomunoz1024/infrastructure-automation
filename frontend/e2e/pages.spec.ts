@@ -352,9 +352,12 @@ test.describe('providers', () => {
     await page.getByRole('option', { name: /backup\/api-key/ }).click()
     await page.getByRole('button', { name: 'Test connection' }).click()
     await expect(page.getByRole('list', { name: 'Connection results' })).toContainText('200 from GET /jobs')
+    // kept as the new provider's review evidence, for its owner team
     expect(api.callsTo('POST', '/providers:test-connection')[0].body).toEqual({
       endpoints: { dev: 'https://backup-dev.example.com/api', prod: 'https://backup.example.com/api' },
       auth: { type: 'header', credential: 'vault:backup/api-key', header: 'X-Api-Key' },
+      provider: 'backup-service',
+      owner: 'team-platform',
     })
     await page.getByRole('button', { name: 'Next' }).click()
 

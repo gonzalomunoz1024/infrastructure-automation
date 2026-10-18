@@ -501,7 +501,7 @@ export type TerraformImport = { source: string; version: string; commit?: string
 /** One of the two imports, as the wizard reviews it. */
 export type ProviderImport = { kind: 'ansible'; result: AnsibleImport } | { kind: 'terraform'; result: TerraformImport }
 /** `provider` (the provider's name) keeps the results as review evidence for its change request. */
-export type TestConnectionRequest = { endpoints: Record<string, string>; auth: ProviderAuth; provider?: string }
+export type TestConnectionRequest = { endpoints: Record<string, string>; auth: ProviderAuth; provider?: string; owner?: string }
 export type TestConnectionResult = { results: { environment: string; ok: boolean; durationMs: number; message: string }[] }
 export type TryRequest = { yaml: string; action: string; environment: string; input: Record<string, unknown> }
 export type TryResult = {

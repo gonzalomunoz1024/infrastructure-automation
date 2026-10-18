@@ -427,7 +427,7 @@ public class ProviderCommandHandler implements ProviderCommands {
             // results kept as evidence for a provider's review: only its team may add to them, judged before anything is probed;
             // the answer is the team the entries are recorded for
             Mono<Optional<String>> reviewer = provider == null ? Mono.just(Optional.empty())
-                    : blocking(() -> Optional.ofNullable(requireReviewer(who, provider, null)));
+                    : blocking(() -> Optional.ofNullable(requireReviewer(who, provider, command.owner())));
             // probed at once, recorded in the order of the environments; the credential goes to every endpoint named:
             // only once the caller may use it
             return reviewer.flatMapMany(team -> CredentialUse.require(credentials, who, auth.credential()).thenMany(Flux.fromIterable(command.endpoints().entrySet())

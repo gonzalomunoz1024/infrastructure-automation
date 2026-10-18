@@ -43,11 +43,16 @@ public interface ProviderCommands {
 
     /**
      * {@code auth} is the provider file's auth block: {@code { type, credential, header }}. With
-     * {@code provider} (the provider's name) the results are recorded as review evidence.
+     * {@code provider} (the provider's name) the results are recorded as review evidence; for a
+     * provider not published yet, {@code owner} is the draft's owner team, the team they are kept for.
      */
-    record TestConnection(Map<String, String> endpoints, JsonNode auth, String provider) {
+    record TestConnection(Map<String, String> endpoints, JsonNode auth, String provider, String owner) {
         public TestConnection(Map<String, String> endpoints, JsonNode auth) {
-            this(endpoints, auth, null);
+            this(endpoints, auth, null, null);
+        }
+
+        public TestConnection(Map<String, String> endpoints, JsonNode auth, String provider) {
+            this(endpoints, auth, provider, null);
         }
     }
 

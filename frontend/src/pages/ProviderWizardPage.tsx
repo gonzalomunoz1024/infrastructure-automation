@@ -879,8 +879,9 @@ function ConnectStep({ state, update }: StepProps) {
   const test = async () => {
     setBusy('test')
     try {
-      // editing: the results are kept as review evidence for the provider's change request
-      const result = await api.testConnection({ endpoints: endpointsOf(state), auth: authOf(state), ...(state.editing ? { provider: state.editing } : {}) })
+      // the results are kept as review evidence for the change request: an edit's, or a new provider's for its owner team
+      const evidence = state.editing ? { provider: state.editing } : state.name ? { provider: state.name, owner: state.owner } : {}
+      const result = await api.testConnection({ endpoints: endpointsOf(state), auth: authOf(state), ...evidence })
       update({ tested: result })
       const bad = result.results.filter((r) => !r.ok).length
       if (bad) toast.toast({ title: `${bad} of ${result.results.length} environments did not answer`, tone: 'warning' })

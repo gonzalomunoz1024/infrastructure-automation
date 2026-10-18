@@ -627,6 +627,28 @@ class ProviderCommandHandlerTest {
     }
 
     @Test
+    void aNewProvidersConnectionTestIsKeptForTheOwnerTeamItsDraftNames() {
+        when(http.probe(any(), any())).thenReturn(Mono.just(new ProbeResult(true, 12, "HEAD 200 in 12 ms")));
+        when(calls.call(any())).thenReturn(Mono.just(json("{\"id\":\"vm-1\",\"name\":\"web\",\"powerState\":\"poweredOn\"}")));
+        Map<String, String> endpoints = Map.of("dev", "https://fleet-dev.example.com");
+        JsonNode auth = json("{\"type\":\"none\"}");
+        Identity both = new Identity("lucia", "Lucia", null, List.of("team-data", "team-compute"), List.of("ops"), false, Identity.Kind.USER);
+
+        // the wizard names the draft's owner, so a member of several teams records for that one, not for their first
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "fleet", "team-compute")), both)).expectNextCount(1).verifyComplete();
+        assertThat(evidence.evidence("fleet").claim()).contains("team-compute");
+        assertThat(evidence.evidence("fleet").connections()).extracting(ConnectionTest::team).containsOnly("team-compute");
+        // the draft's tries name the same owner and add to the same evidence
+        StepVerifier.create(as(handler.tryAction(new TryAction(YAML, "vm.get", "dev", null)), both)).expectNextCount(1).verifyComplete();
+        assertThat(evidence.evidence("fleet").tries()).extracting(ActionTry::team).containsOnly("team-compute");
+        // an owner team the caller is not in is refused before anything is probed
+        StepVerifier.create(as(handler.testConnection(new TestConnection(endpoints, auth, "other-fleet", "team-compute")), OUTSIDER))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessageContaining("team-compute"))
+                .verify();
+        verify(http, org.mockito.Mockito.times(1)).probe(any(), any());
+    }
+
+    @Test
     void aSpecImportFromGitChecksTheReadTokenBeforeReadingTheRepository() {
         owned("vault:github/read-token", "team-data");
         GitRef git = new GitRef("https://github.com/acme/machines-api", "v2.4.0", "api/openapi.yaml", "vault:github/read-token");
