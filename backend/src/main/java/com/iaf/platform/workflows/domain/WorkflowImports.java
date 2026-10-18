@@ -125,7 +125,7 @@ public final class WorkflowImports {
             gitRef = rest.substring(0, colon);
             path = rest.substring(colon + 1);
             notes.add("The playbook comes straight from git: register it in an ansible provider to get its variables and a pinned commit.");
-            notes.add("Pin the playbook to a commit (playbook.commit) before publishing; the ansible-lint check requires it.");
+            notes.add("Pin the playbook to a commit (playbook.commit) before publishing; the playbooks check requires it.");
         } else {
             int slash = ref.indexOf('/');
             if (slash <= 0) {
@@ -150,7 +150,7 @@ public final class WorkflowImports {
             owner = p.owner() == null ? owner : p.owner();
             actionTitle = a.title();
             if (commit == null) {
-                notes.add("Provider " + providerName + " does not pin a commit: set playbook.commit before publishing; the ansible-lint check requires it.");
+                notes.add("Provider " + providerName + " does not pin a commit: set playbook.commit before publishing; the playbooks check requires it.");
             }
             if (repo == null) {
                 notes.add("Provider " + providerName + " has no git source; the step references the library playbook " + ref + ".");

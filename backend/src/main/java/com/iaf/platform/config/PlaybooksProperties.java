@@ -20,6 +20,14 @@ public class PlaybooksProperties {
     private int maxEntries = 2000;
     /** The most bytes an archive may unpack to (counted while reading, never from its headers). */
     private DataSize maxUnpackedSize = DataSize.ofMegabytes(100);
+    /**
+     * A linter to run on every upload once unpacked, such as {@code ansible-lint --offline {playbook}};
+     * {@code {dir}} and {@code {playbook}} are replaced, it runs in the unpacked directory and a
+     * non-zero exit refuses the upload with its output. Blank skips the lint, and the upload says so.
+     */
+    private String lintCommand = "";
+    /** How long the linter may take; a slower one is killed and the upload refused. */
+    private Duration lintTimeout = Duration.ofSeconds(60);
     private Git git = new Git();
 
     @Data

@@ -7,14 +7,18 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -33,7 +37,10 @@ import com.iaf.platform.common.ports.GitRemotePort.RemoteUnavailable;
 import com.iaf.platform.common.ports.GitRemotePort.Resolved;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -242,7 +249,7 @@ class WorkflowCommandHandlerTest {
         assertThat(cr.author()).isEqualTo("platform");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
-        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "contracts", "diff", "routes", "yaml");
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "playbooks", "policy", "replay", "contracts", "diff", "routes", "yaml");
         assertThat(cr.checks()).extracting(Check::status).containsOnly("passed");
         assertThat(cr.checksPassed()).isTrue();
         assertThat(cr.diff()).contains("--- a/workflows/team-compute/vm-restart.yaml").contains("+  description: Restart a virtual machine after safety checks (edited).");
@@ -273,7 +280,7 @@ class WorkflowCommandHandlerTest {
 
         assertThat(cr.yaml()).contains("commit: " + commit);
         assertThat(cr.diff()).containsPattern("\\n-\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d\\n").containsPattern("\\n\\+\\s+commit: " + commit + "\\n");
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
                 .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
                 .satisfies(c -> assertThat(c.detail()).endsWith("pinned at publish: restart to 9f2c0b7e1d4a"));
         assertThat(cr.checksPassed()).isTrue();
@@ -283,7 +290,7 @@ class WorkflowCommandHandlerTest {
     }
 
     @Test
-    void aRefThatDoesNotResolveAtPublishFailsTheAnsibleLintCheckWithTheReason() {
+    void aRefThatDoesNotResolveAtPublishFailsThePlaybooksCheckWithTheReason() {
         GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
         when(git.resolve(any(), any(), any())).thenReturn(Mono.error(new RemoteUnavailable("Could not read https://github.com/acme/ops-playbooks: connect timed out")));
         handler.setPlaybookPinning(new PlaybookPinning(git));
@@ -292,12 +299,49 @@ class WorkflowCommandHandlerTest {
         String crId = handler.publish("vm-restart", null).block().id();
         ChangeRequest cr = changeRequests.get(crId).orElseThrow();
 
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
                 .satisfies(c -> assertThat(c.status()).isEqualTo("failed"))
                 .satisfies(c -> assertThat(c.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve"
                         + " (Could not read https://github.com/acme/ops-playbooks: connect timed out)"));
         assertThat(cr.yaml()).doesNotContain("commit:");
         StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
+    }
+
+    @Test
+    void aLinterThatRefusesAPinnedPlaybookFailsThePlaybooksCheckAndOneThatAcceptsItPasses(@TempDir Path checkout) throws Exception {
+        Files.createDirectories(checkout.resolve("vm"));
+        Files.writeString(checkout.resolve("vm/restart.yml"), "- hosts: all\n");
+        GitRemotePort git = mock(GitRemotePort.class);
+        when(git.checkout("github.com/acme/ops-playbooks", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", null)).thenReturn(Mono.just(checkout));
+        PlaybooksProperties props = new PlaybooksProperties();
+        props.setLintCommand("ansible-lint --offline {playbook}");
+        List<Path> linted = new ArrayList<>();
+        PlaybookLintPort refusing = (dir, playbook) -> {
+            linted.add(dir);
+            return Optional.of(new LintResult(false, dir + "/" + playbook + ":1: name[play]: All plays should be named\n"));
+        };
+        handler.setPlaybookLinting(new PlaybookLinting(git, refusing, props));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        String crId = handler.publish("vm-restart", null).block().id();
+
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("failed");
+            assertThat(c.detail()).isEqualTo("the linter found problems: step restart (github.com/acme/ops-playbooks@4e1d9a2c7b0f vm/restart.yml): "
+                    + "vm/restart.yml:1: name[play]: All plays should be named");
+        });
+        assertThat(linted).singleElement().satisfies(dir -> {
+            assertThat(dir).as("a copy of the shared checkout").isNotEqualTo(checkout);
+            assertThat(Files.exists(dir)).as("and gone afterwards").isFalse();
+        });
+        StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
+
+        handler.closeChangeRequest(crId).block();
+        handler.setPlaybookLinting(new PlaybookLinting(git, (dir, playbook) -> Optional.of(new LintResult(true, "")), props));
+        ChangeRequest again = changeRequests.get(handler.publish("vm-restart", null).block().id()).orElseThrow();
+        assertThat(again.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit, 1 linted"));
     }
 
     static String unpinned(String yaml) {
@@ -350,7 +394,7 @@ class WorkflowCommandHandlerTest {
 
         when(artifacts.exists(DIGEST)).thenReturn(Mono.just(true));
         ChangeRequest cr = changeRequests.get(handler.publish("site-deploy", null).block().id()).orElseThrow();
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
                 .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
                 .satisfies(c -> assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit"));
     }
@@ -675,7 +719,7 @@ class WorkflowCommandHandlerTest {
         StepVerifier.create(handler.validate(WorkflowSource.ofYaml(unpinned)))
                 .assertNext(v -> {
                     assertThat(v.valid()).isFalse();
-                    assertThat(v.problems()).extracting(Problem::code).contains("publish.ansibleLint").doesNotContain("ansible.unpinned");
+                    assertThat(v.problems()).extracting(Problem::code).contains("publish.playbooks").doesNotContain("ansible.unpinned");
                 })
                 .verifyComplete();
     }
@@ -941,7 +985,7 @@ class WorkflowCommandHandlerTest {
         String crId = handler.publish("thing-refresh", null).block().id();
         ChangeRequest cr = changeRequests.get(crId).orElseThrow();
         assertThat(cr.checks()).filteredOn(c -> c.id().equals("replay")).extracting(Check::status).containsExactly("skipped");
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).extracting(Check::status).containsExactly("skipped");
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).extracting(Check::status).containsExactly("skipped");
         assertThat(cr.checks()).filteredOn(c -> c.id().equals("diff")).extracting(Check::detail).first().asString().startsWith("new workflow");
         assertThat(cr.diff()).startsWith("--- /dev/null\n+++ b/workflows/team-compute/thing-refresh.yaml");
         handler.mergeChangeRequest(crId).block();

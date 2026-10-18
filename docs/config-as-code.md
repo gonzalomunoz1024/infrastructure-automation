@@ -162,8 +162,14 @@ Common keys: `name`, `with`, `output: { as }`, `assert`, `retry: { maxAttempts, 
   implies https), a tag or branch, the playbook inside it, and an optional `vault:<path>` for a
   private repository. When `commit` is left out, publishing resolves `ref` (an annotated tag is
   peeled to its commit) and writes the commit into the version before the change request's
-  checks run, so the diff shows the pin; a ref that does not resolve fails the `ansible-lint`
+  checks run, so the diff shows the pin; a ref that does not resolve fails the `playbooks`
   check with the reason. `GET /api/v1/playbooks:resolve` answers the same commit beforehand.
+  With `platform.playbooks.lint-command` set (the linter uploads go through, for example
+  `ansible-lint --offline {playbook}`), publishing runs it on each pinned git playbook: the
+  repository at the commit, copied to a directory of its own, with `{playbook}` the path. A
+  non-zero exit, or a playbook that cannot be fetched or is not at that path, fails the
+  `playbooks` check with the linter's output. Blank (the default) lints nothing at publish; CI
+  (`npm run lint:playbooks`) runs ansible-lint over the same pins either way.
 - `upload: { file, sha256, path? }`: a file kept by `POST /api/v1/playbooks:upload` in the
   artifact store under its SHA-256, `sha256` exactly as the upload answered it (64 lowercase hex
   digits; anything else is `playbook.digest`); `path` names the playbook to run inside a `.zip`

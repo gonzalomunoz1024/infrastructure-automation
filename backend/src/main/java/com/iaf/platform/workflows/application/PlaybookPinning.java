@@ -22,7 +22,7 @@ import reactor.core.publisher.Mono;
 /**
  * Resolves the git playbooks of a version that name a ref but no commit (one ls-remote per
  * repository, ref and credential) and writes the commits into a copy of the definition. A ref
- * that cannot be resolved is a failure of the ansible-lint check, with the reason.
+ * that cannot be resolved is a failure of the playbooks check, with the reason.
  */
 @Component
 @RequiredArgsConstructor

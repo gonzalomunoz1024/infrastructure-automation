@@ -20,15 +20,20 @@ import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.ContractRules.Consumer;
 
 /**
- * The pure CI checks of a change request: schema, checks (lint), ansible-lint, policy, replay,
- * diff, yaml. The command handler gathers what the policy and replay checks need and hands it
- * here; everything else is judged from the definition alone.
+ * The pure CI checks of a change request: schema, checks (lint), playbooks, policy, replay,
+ * contracts, diff, routes, yaml. The command handler gathers what the policy, replay and
+ * playbooks checks need (the engine's verdict, the jobs, the pins and the linter's findings)
+ * and hands it here; everything else is judged from the definition alone.
  */
 public final class PublishChecks {
 
     public static final String PASSED = "passed";
     public static final String FAILED = "failed";
     public static final String SKIPPED = "skipped";
+    /** The id of the playbooks check (pins resolved, digests present, the linter's findings). */
+    public static final String PLAYBOOKS = "playbooks";
+    /** The longest a linter's output gets in the check's detail; the rest is cut. */
+    static final int LINT_OUTPUT = 2000;
 
     private PublishChecks() {
     }
@@ -66,27 +71,28 @@ public final class PublishChecks {
     }
 
     /**
-     * Passes when every ansible step is pinned: a git playbook to a commit, an upload to a digest
-     * of 64 hex digits, a library playbook through its provider's commit. Skipped when the
-     * workflow has no ansible step.
+     * The playbooks check, pins resolved and digests present: passes when every ansible step is
+     * pinned, a git playbook to a commit, an upload to a digest of 64 hex digits, a library
+     * playbook through its provider's commit. Skipped when the workflow has no ansible step.
      */
-    public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx) {
-        return ansibleLint(def, ctx, null);
+    public static Check playbooks(WorkflowDefinition def, CheckContext ctx) {
+        return playbooks(def, ctx, null, null);
     }
 
     /**
-     * As {@link #ansibleLint(WorkflowDefinition, CheckContext)}, after the publish pinned git
-     * playbooks: a ref that did not resolve fails the check with the reason; the pinned steps
-     * are named in the detail.
+     * As {@link #playbooks(WorkflowDefinition, CheckContext)}, after the publish pinned git
+     * playbooks (a ref that did not resolve fails the check with the reason; the pinned steps
+     * are named in the detail) and ran the configured linter on them: each finding fails the
+     * check with the linter's output.
      */
-    public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins) {
+    public static Check playbooks(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins, PlaybookPins.Lint lint) {
         List<Step> ansible = def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE).toList();
         if (ansible.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", SKIPPED, "no ansible step");
+            return new Check(PLAYBOOKS, "Playbooks", SKIPPED, "no ansible step");
         }
         if (pins != null && !pins.failures().isEmpty()) {
             // the step whose ref did not resolve is unpinned as well; the reason is the message
-            return new Check("ansible-lint", "ansible-lint", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
+            return new Check(PLAYBOOKS, "Playbooks", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
         }
         List<String> failures = new ArrayList<>();
         List<String> unpinned = ansible.stream().filter(s -> pinState(s, ctx) == PinState.UNPINNED).map(Step::id).toList();
@@ -97,15 +103,27 @@ public final class PublishChecks {
         if (!badDigests.isEmpty()) {
             failures.add("upload digest is not 64 hex digits (playbook.digest): " + String.join(", ", badDigests));
         }
+        if (lint != null && !lint.findings().isEmpty()) {
+            failures.add("the linter found problems: " + lint.findings().stream().map(PublishChecks::capped).collect(Collectors.joining("; ")));
+        }
         if (!failures.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", FAILED, String.join("; ", failures));
+            return new Check(PLAYBOOKS, "Playbooks", FAILED, String.join("; ", failures));
         }
         String detail = ansible.size() + " playbook(s) pinned to a commit";
+        if (lint != null && !lint.linted().isEmpty()) {
+            detail += ", " + lint.linted().size() + " linted";
+        }
         if (pins != null && !pins.pinned().isEmpty()) {
             detail += "; pinned at publish: " + pins.pinned().entrySet().stream()
                     .map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length()))).collect(Collectors.joining(", "));
         }
-        return new Check("ansible-lint", "ansible-lint", PASSED, detail);
+        return new Check(PLAYBOOKS, "Playbooks", PASSED, detail);
+    }
+
+    /** A finding with the linter's output on one line and cut at {@link #LINT_OUTPUT} characters. */
+    private static String capped(String finding) {
+        String line = finding.strip().replaceAll("\\s*\\R\\s*", " | ");
+        return line.length() <= LINT_OUTPUT ? line : line.substring(0, LINT_OUTPUT - 1) + "…";
     }
 
     /** How an ansible step's playbook is pinned: to a commit or a digest, not at all, or to a digest that is not one. */
@@ -298,10 +316,10 @@ public final class PublishChecks {
     }
 
     /**
-     * The change-request checks judged from the files alone (ansible-lint, routes, contracts) as
+     * The change-request checks judged from the files alone (playbooks, routes, contracts) as
      * problems, so the validate endpoint reports what the change request would fail on, and the
-     * {@link #registryProblems} publishing refuses. Policy and replay need the engine and stay
-     * with the change request.
+     * {@link #registryProblems} publishing refuses. Policy and replay need the engine, and the
+     * linter a checkout of each playbook, so they stay with the change request.
      *
      * @param def       the definition with the version it would be published as
      * @param previous  the current published version of the same workflow, null when there is none
@@ -311,8 +329,8 @@ public final class PublishChecks {
         List<Problem> out = new ArrayList<>();
         // a digest that is not one is already playbook.digest from the designer checks
         def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && pinState(s, ctx) == PinState.UNPINNED)
-                .forEach(s -> out.add(Problem.error("publish.ansibleLint", s.id(), "playbook",
-                        "The ansible-lint check of the change request fails: pin the playbook to a commit")));
+                .forEach(s -> out.add(Problem.error("publish.playbooks", s.id(), "playbook",
+                        "The playbooks check of the change request fails: pin the playbook to a commit")));
         if (def.path() != null) {
             routeClashes(def, published).forEach(c -> out.add(Problem.error("publish.routes", null, "api.path", "The routes check of the change request fails: " + c)));
         }

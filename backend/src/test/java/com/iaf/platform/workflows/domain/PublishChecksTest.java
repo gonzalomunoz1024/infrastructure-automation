@@ -52,23 +52,23 @@ class PublishChecksTest {
     }
 
     @Test
-    void ansibleLintIsSkippedWithoutAnsibleSteps() {
+    void thePlaybooksCheckIsSkippedWithoutAnsibleSteps() {
         WorkflowDefinition d = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/create-vm.yaml"));
-        assertThat(PublishChecks.ansibleLint(d, ctx()).status()).isEqualTo("skipped");
+        assertThat(PublishChecks.playbooks(d, ctx())).extracting(Check::id, Check::label, Check::status).containsExactly("playbooks", "Playbooks", "skipped");
     }
 
     @Test
-    void ansibleLintPassesWhenEveryPlaybookIsPinned() {
+    void thePlaybooksCheckPassesWhenEveryPlaybookIsPinned() {
         WorkflowDefinition d = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
-        Check c = PublishChecks.ansibleLint(d, ctx());
+        Check c = PublishChecks.playbooks(d, ctx());
         assertThat(c.status()).isEqualTo("passed");
-        assertThat(c.detail()).contains("1 playbook(s)");
+        assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit");
     }
 
     @Test
-    void ansibleLintFailsOnAnUnpinnedGitPlaybookAndPassesOnAPinnedLibrary() {
+    void thePlaybooksCheckFailsOnAnUnpinnedGitPlaybookAndPassesOnAPinnedLibrary() {
         String unpinned = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml").replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "");
-        Check failed = PublishChecks.ansibleLint(WorkflowYaml.parse(unpinned), ctx());
+        Check failed = PublishChecks.playbooks(WorkflowYaml.parse(unpinned), ctx());
         assertThat(failed.status()).isEqualTo("failed");
         assertThat(failed.detail()).contains("restart");
 
@@ -83,25 +83,45 @@ class PublishChecksTest {
                         with: { playbook: ops-playbooks/vm.restart, inventory: dynamic }
                         retry: { maxAttempts: 1 }
                 """;
-        assertThat(PublishChecks.ansibleLint(WorkflowYaml.parse(library), ctx()).status()).as("the provider pins a commit").isEqualTo("passed");
-        assertThat(PublishChecks.ansibleLint(WorkflowYaml.parse(library.replace("ops-playbooks/", "unknown/")), ctx()).status()).isEqualTo("failed");
+        assertThat(PublishChecks.playbooks(WorkflowYaml.parse(library), ctx()).status()).as("the provider pins a commit").isEqualTo("passed");
+        assertThat(PublishChecks.playbooks(WorkflowYaml.parse(library.replace("ops-playbooks/", "unknown/")), ctx()).status()).isEqualTo("failed");
     }
 
     @Test
-    void ansibleLintNamesThePinsMadeAtPublishAndFailsWithTheReasonOfOneThatWasNot() {
+    void thePlaybooksCheckNamesThePinsMadeAtPublishAndFailsWithTheReasonOfOneThatWasNot() {
         WorkflowDefinition pinned = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
         String commit = "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d";
 
-        Check passed = PublishChecks.ansibleLint(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", commit), List.of()));
+        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", commit), List.of()), PlaybookPins.Lint.NONE);
         assertThat(passed.status()).isEqualTo("passed");
         assertThat(passed.detail()).isEqualTo("1 playbook(s) pinned to a commit; pinned at publish: restart to 4e1d9a2c7b0f");
 
-        Check failed = PublishChecks.ansibleLint(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of(),
-                List.of("step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)")));
+        Check failed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of(),
+                List.of("step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)")), PlaybookPins.Lint.NONE);
         assertThat(failed.status()).isEqualTo("failed");
         assertThat(failed.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)");
 
-        assertThat(PublishChecks.ansibleLint(pinned, ctx(), PlaybookPins.Outcome.NONE)).isEqualTo(PublishChecks.ansibleLint(pinned, ctx()));
+        assertThat(PublishChecks.playbooks(pinned, ctx(), PlaybookPins.Outcome.NONE, PlaybookPins.Lint.NONE)).isEqualTo(PublishChecks.playbooks(pinned, ctx()));
+    }
+
+    @Test
+    void thePlaybooksCheckFailsWithTheLintersFindingsAndCountsWhatItLinted() {
+        WorkflowDefinition pinned = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
+        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d"), List.of()),
+                new PlaybookPins.Lint(List.of("restart"), List.of()));
+        assertThat(passed.status()).isEqualTo("passed");
+        assertThat(passed.detail()).as("the pins stay last, where the change request page reads them")
+                .isEqualTo("1 playbook(s) pinned to a commit, 1 linted; pinned at publish: restart to 4e1d9a2c7b0f");
+
+        String finding = "step restart (github.com/acme/ops-playbooks@4e1d9a2c7b0f vm/restart.yml): vm/restart.yml:3: yaml[truthy]: Truthy value should be one of [false, true]\n"
+                + "vm/restart.yml:9: name[missing]: All tasks should be named\n";
+        Check failed = PublishChecks.playbooks(pinned, ctx(), PlaybookPins.Outcome.NONE, new PlaybookPins.Lint(List.of("restart"), List.of(finding)));
+        assertThat(failed.status()).isEqualTo("failed");
+        assertThat(failed.detail()).isEqualTo("the linter found problems: step restart (github.com/acme/ops-playbooks@4e1d9a2c7b0f vm/restart.yml): "
+                + "vm/restart.yml:3: yaml[truthy]: Truthy value should be one of [false, true] | vm/restart.yml:9: name[missing]: All tasks should be named");
+
+        Check cut = PublishChecks.playbooks(pinned, ctx(), PlaybookPins.Outcome.NONE, new PlaybookPins.Lint(List.of("restart"), List.of("x".repeat(5000))));
+        assertThat(cut.detail()).as("a long output is cut").hasSize("the linter found problems: ".length() + 2000).endsWith("x…");
     }
 
     static final String DIGEST = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
@@ -126,18 +146,18 @@ class PublishChecksTest {
 
     @Test
     void anUploadIsPinnedByADigestOf64HexDigitsAndNothingElse() {
-        Check passed = PublishChecks.ansibleLint(WorkflowYaml.parse(upload(DIGEST)), ctx());
+        Check passed = PublishChecks.playbooks(WorkflowYaml.parse(upload(DIGEST)), ctx());
         assertThat(passed.status()).isEqualTo("passed");
         assertThat(passed.detail()).isEqualTo("1 playbook(s) pinned to a commit");
 
-        Check failed = PublishChecks.ansibleLint(WorkflowYaml.parse(upload("SHA256:9F2C0B7E")), ctx());
+        Check failed = PublishChecks.playbooks(WorkflowYaml.parse(upload("SHA256:9F2C0B7E")), ctx());
         assertThat(failed.status()).isEqualTo("failed");
         assertThat(failed.detail()).isEqualTo("upload digest is not 64 hex digits (playbook.digest): deploy");
 
-        // the designer checks already say playbook.digest; :validate does not add publish.ansibleLint on top
+        // the designer checks already say playbook.digest; :validate does not add publish.playbooks on top
         assertThat(WorkflowChecks.check(upload("SHA256:9F2C0B7E"), ctx())).extracting(Problem::code).containsExactly("playbook.digest");
         assertThat(PublishChecks.problems(WorkflowYaml.parse(upload("SHA256:9F2C0B7E")), ctx(), DependencyRulesTest.samples(), null, graph()))
-                .extracting(Problem::code).doesNotContain("publish.ansibleLint");
+                .extracting(Problem::code).doesNotContain("publish.playbooks");
         assertThat(WorkflowChecks.check(upload(DIGEST), ctx())).isEmpty();
     }
 
@@ -297,7 +317,7 @@ class PublishChecksTest {
                 .replace("name: vm-restart", "name: vm-reboot").replace("{vmId}", "{id}");
         List<Problem> problems = PublishChecks.problems(WorkflowYaml.parse(unpinned), ctx(), published, null, graph());
         // the invoke, batch and preview routes all clash, and so does the MCP tool
-        assertThat(problems).extracting(Problem::code).containsExactly("publish.ansibleLint", "publish.routes", "publish.routes", "publish.routes", "mcp.toolName");
+        assertThat(problems).extracting(Problem::code).containsExactly("publish.playbooks", "publish.routes", "publish.routes", "publish.routes", "mcp.toolName");
         assertThat(problems.get(0).step()).isEqualTo("restart");
         assertThat(problems.get(1).message()).contains("is served by vm-restart");
     }

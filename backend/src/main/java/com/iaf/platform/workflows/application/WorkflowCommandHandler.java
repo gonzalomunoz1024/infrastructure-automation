@@ -119,6 +119,14 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         this.pinning = pinning;
     }
 
+    /** Runs the configured playbook linter on the pinned git playbooks at publish; set by Spring, nothing is linted in handlers built by hand. */
+    private PlaybookLinting linting;
+
+    @Autowired(required = false)
+    void setPlaybookLinting(PlaybookLinting linting) {
+        this.linting = linting;
+    }
+
     /** Holds uploaded playbooks; a publish checks each upload the file names is still there. Set by Spring; without it the check is skipped. */
     private ArtifactStorePort artifacts;
 
@@ -231,7 +239,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     /**
      * What the change request would fail on beyond the designer checks, judged from the files
      * alone: the version is the one a save would give the draft, and the catalog is what is
-     * published now. An ansible-lint failure replaces the designer's unpinned warning.
+     * published now. A playbooks failure replaces the designer's unpinned warning.
      */
     private List<Problem> publishProblems(WorkflowDefinition parsed, CheckContext ctx, List<ResourceTypeDefinition> types, List<Problem> problems) {
         String name = parsed.name();
@@ -244,7 +252,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         WorkflowDefinition previous = store.published(name).map(WorkflowRecord::definition).orElse(null);
         List<Problem> out = PublishChecks.problems(def, ctx, published, previous, DependencyRules.of(published, WorkflowQueryHandler.producedBy(types)));
         Set<String> unpinned = new HashSet<>();
-        out.stream().filter(p -> "publish.ansibleLint".equals(p.code())).forEach(p -> unpinned.add(p.step()));
+        out.stream().filter(p -> "publish.playbooks".equals(p.code())).forEach(p -> unpinned.add(p.step()));
         problems.removeIf(p -> "ansible.unpinned".equals(p.code()) && unpinned.contains(p.step()));
         return out;
     }
@@ -347,8 +355,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                     : replay(name, def, c.previousVersion(), c.who())
                             .map(r -> PublishChecks.replay(r, c.previousVersion()))
                             .onErrorResume(e -> Mono.just(PublishChecks.replayUnavailable(String.valueOf(e.getMessage()))));
-            return Mono.zip(policyCheck, replayCheck, resources.types().collectList())
-                    .flatMap(t -> blocking(() -> open(c, ctx, problems, strategy, notes, t.getT1(), t.getT2(), contracts(c, t.getT3()))));
+            // the linter reads each pinned git playbook at its commit, so it runs beside policy and replay, once the file has no errors
+            Mono<PlaybookPins.Lint> lint = linting == null ? Mono.just(PlaybookPins.Lint.NONE) : linting.lint(def);
+            return Mono.zip(policyCheck, replayCheck, resources.types().collectList(), lint)
+                    .flatMap(t -> blocking(() -> open(c, ctx, problems, strategy, notes, t.getT1(), t.getT2(), contracts(c, t.getT3()), t.getT4())));
         }));
     }
 
@@ -396,7 +406,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     }
 
     private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck,
-            Check contractsCheck) {
+            Check contractsCheck, PlaybookPins.Lint lint) {
         WorkflowRecord draft = c.record();
         WorkflowDefinition def = draft.definition();
         String previousVersion = c.previousVersion();
@@ -404,7 +414,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         List<Check> checks = List.of(
                 PublishChecks.schema(def),
                 PublishChecks.checks(problems),
-                PublishChecks.ansibleLint(def, ctx, c.pins()),
+                PublishChecks.playbooks(def, ctx, c.pins(), lint),
                 policyCheck,
                 replayCheck,
                 contractsCheck,
