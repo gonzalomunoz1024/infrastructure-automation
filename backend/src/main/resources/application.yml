@@ -94,5 +94,9 @@ platform:
     mail:                 # profile mail: spring.mail.host/port/username name the server
       from: iaf@localhost
       password: ""        # a vault: reference to the SMTP password
+  gateway:                # guards on the requests that start jobs
+    idempotency:          # Idempotency-Key on POST generated routes, /jobs and /jobs:batch; idempotencyKey on MCP tools/call
+      ttl: PT24H          # a key gives back its first answer this long; per caller
+      keep: 100000        # keys kept at most, the oldest dropped first
   demo:
     seed-history: true    # generate recent jobs so health, releases and evidence have data

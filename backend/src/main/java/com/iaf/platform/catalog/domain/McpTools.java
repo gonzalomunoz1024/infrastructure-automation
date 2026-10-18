@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -75,12 +76,12 @@ public final class McpTools {
             }
             String description = CatalogEntry.description(d);
             ObjectNode annotations = annotations(d.method().equals("GET"), d.method().equals("DELETE") || "delete".equals(d.verb()) || "destroy".equals(d.verb()));
-            out.add(new Tool(name, d.title(), description, inputSchema(d.inputSchema()), annotations, Kind.INVOKE, w, null));
+            out.add(new Tool(name, d.title(), description, withCallArguments(inputSchema(d.inputSchema())), annotations, Kind.INVOKE, w, null));
             String batchName = name + BATCH_SUFFIX;
             if (names.add(batchName)) {
                 out.add(new Tool(batchName, d.title() + " (batch)",
                         "Run " + name + " for many items in waves. " + (description == null ? "" : description),
-                        batchSchema(d.inputSchema(), d.batchPolicy()), annotations, Kind.BATCH, w, null));
+                        withCallArguments(batchSchema(d.inputSchema(), d.batchPolicy())), annotations, Kind.BATCH, w, null));
             }
         }
         List<ResourceTypeDefinition> ts = new ArrayList<>(types == null ? List.of() : types);
@@ -123,6 +124,63 @@ public final class McpTools {
         ArrayNode arr = F.arrayNode();
         tools.forEach(t -> arr.add(t.toJson()));
         return arr;
+    }
+
+    // ---------------------------------------------------------------- arguments the platform reads itself
+
+    /** Repeating a call with the same key gives back its first answer instead of starting another job. */
+    public static final String IDEMPOTENCY_KEY = "idempotencyKey";
+
+    /** The call arguments of the workflow tools, by name, with what they mean. */
+    static final Map<String, String> CALL_ARGUMENTS = Map.of(
+            IDEMPOTENCY_KEY, "Optional. Repeat the call with the same key (up to 255 characters) to get its first answer back for 24 hours instead of starting another job");
+
+    /**
+     * Whether {@code argument} is read by the platform rather than passed to the workflow: always
+     * on a batch tool, and on a workflow tool unless the workflow's own input declares a field of
+     * that name.
+     */
+    public static boolean isCallArgument(Tool tool, String argument) {
+        if (tool == null || !CALL_ARGUMENTS.containsKey(argument)) {
+            return false;
+        }
+        if (tool.kind() == Kind.BATCH) {
+            return true;
+        }
+        if (tool.kind() != Kind.INVOKE || tool.workflow() == null || tool.workflow().definition() == null) {
+            return false;
+        }
+        JsonNode input = tool.workflow().definition().inputSchema();
+        return input == null || !input.path("properties").has(argument);
+    }
+
+    /** Takes a call argument out of {@code args} and returns its text (null when absent or not one). */
+    public static String takeCallArgument(Tool tool, ObjectNode args, String argument) {
+        if (args == null || !isCallArgument(tool, argument) || !args.has(argument)) {
+            return null;
+        }
+        JsonNode v = args.remove(argument);
+        if (v == null || v.isNull()) {
+            return null;
+        }
+        if (!v.isTextual() && !v.isNumber()) {
+            throw new IllegalArgumentException(argument + " must be a string");
+        }
+        return v.asText();
+    }
+
+    /** Adds the call arguments a workflow's input leaves free to a tool schema. */
+    static ObjectNode withCallArguments(ObjectNode schema) {
+        ObjectNode props = schema.has("properties") && schema.get("properties").isObject()
+                ? (ObjectNode) schema.get("properties") : schema.putObject("properties");
+        CALL_ARGUMENTS.forEach((name, description) -> {
+            if (!props.has(name)) {
+                ObjectNode p = props.putObject(name);
+                p.put("type", "string");
+                p.put("description", description);
+            }
+        });
+        return schema;
     }
 
     // ---------------------------------------------------------------- schemas

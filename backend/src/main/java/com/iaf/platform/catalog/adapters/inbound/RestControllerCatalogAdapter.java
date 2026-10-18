@@ -20,6 +20,7 @@ import com.iaf.platform.catalog.domain.CatalogEntry;
 import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.catalog.domain.RouteTable;
 import com.iaf.platform.catalog.ports.inbound.CatalogQueries;
+import com.iaf.platform.gateway.domain.IdempotencyKeys;
 import com.iaf.platform.identity.application.CurrentIdentity;
 
 import lombok.RequiredArgsConstructor;
@@ -68,7 +69,15 @@ public class RestControllerCatalogAdapter implements CatalogQueries {
                 .flatMap(who -> mcp.post(body, who))
                 .map(reply -> reply.body() == null
                         ? ResponseEntity.status(reply.status()).<JsonNode>build()
-                        : ResponseEntity.status(reply.status()).contentType(MediaType.APPLICATION_JSON).body(reply.body()));
+                        : replayed(ResponseEntity.status(reply.status()), reply.body()).contentType(MediaType.APPLICATION_JSON).body(reply.body()));
+    }
+
+    /** A single tool call answered again from its idempotency key says so in a header too. */
+    private static ResponseEntity.BodyBuilder replayed(ResponseEntity.BodyBuilder response, JsonNode body) {
+        if (body.isObject() && body.path("result").path("_meta").path(McpServer.REPLAY_META).asBoolean(false)) {
+            response.header(IdempotencyKeys.REPLAY_HEADER, "true");
+        }
+        return response;
     }
 
     /** The server never streams: there is no SSE channel to open with a GET. */
