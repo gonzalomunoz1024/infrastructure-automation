@@ -39,6 +39,7 @@ import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, type Registry } from './registry'
+import { findProviderDraft, loadProviderDrafts, saveProviderDrafts, type ProviderDraft } from './providerDrafts'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
 import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
@@ -74,6 +75,36 @@ export interface CreatorState {
   query: string
 }
 
+/**
+ * What the Provider sheet was opened from: a node creator entry (the six provider types and
+ * "Describe it"), a step's parameters ("New provider…", "Edit provider", "Save as provider
+ * action"), the node detail view, or the publish dialog.
+ */
+export type ProviderSheetEntry = 'openapi' | 'curl' | 'ansible' | 'terraform' | 'idp' | 'sdk' | 'describe' | 'step' | 'node' | 'publish'
+
+/** Where the action chosen in the Provider sheet goes as a step: a new step at a point (null: at the end), or an existing step it fills. */
+export type ProviderSheetTarget = { kind: 'insert'; point: InsertPoint | null } | { kind: 'step'; step: string }
+
+/** The open Provider sheet: the draft or published provider it shows, what it was opened from, and where its chosen action goes. */
+export interface ProviderSheetState {
+  entry: ProviderSheetEntry
+  /** the id of the draft it edits (a key of `providerDrafts`), null while it has none */
+  draft: string | null
+  /** the published provider it shows or edits, null for a new one */
+  provider: string | null
+  /** where the chosen action goes as a step, null when it is not inserted */
+  target: ProviderSheetTarget | null
+}
+
+/** What `openProviderSheet` takes: the entry, and the rest when there is one. */
+export type ProviderSheetOptions = Pick<ProviderSheetState, 'entry'> & Partial<Omit<ProviderSheetState, 'entry'>>
+
+/** The step `closeProviderSheet` makes of the chosen action, as the node creator's step items name one. */
+export interface ProviderSheetStep {
+  type: StepType
+  params: NewStepParams
+}
+
 export interface DesignerState {
   name: string | null
   isNew: boolean
@@ -95,6 +126,10 @@ export interface DesignerState {
   pins: Record<string, JsonValue>
   execution: ExecutionView | null
   stickies: Sticky[]
+  /** the providers this workflow uses before they are published, by draft id; kept in this browser, outside the document and undo */
+  providerDrafts: Record<string, ProviderDraft>
+  /** the Provider sheet, when open */
+  providerSheet: ProviderSheetState | null
   saving: boolean
   /** bumps on every document change */
   version: number
@@ -240,6 +275,8 @@ export class DesignerStore {
       pins: {},
       execution: null,
       stickies: init.name ? loadStickies(init.name) : [],
+      providerDrafts: init.name ? loadProviderDrafts(init.name) : {},
+      providerSheet: null,
       saving: false,
       version: 0,
       ndvTab: 'parameters',
@@ -777,6 +814,63 @@ export class DesignerStore {
     if (this.state.name) saveStickies(this.state.name, stickies)
   }
 
+  // ------------------------------------------------------------------ provider drafts, the Provider sheet
+
+  /**
+   * Adds or replaces a provider draft (by its id), kept in this browser as the stickies are; not
+   * a document edit, so outside undo and the dirty flag. An open sheet without a draft takes it
+   * when it is a new provider's or the draft is of the sheet's provider.
+   */
+  upsertProviderDraft(draft: ProviderDraft): void {
+    const providerDrafts = { ...this.state.providerDrafts, [draft.id]: draft }
+    const sheet = this.state.providerSheet
+    const takes = sheet !== null && sheet.draft === null && (sheet.provider === null || sheet.provider === draft.name)
+    this.set(takes ? { providerDrafts, providerSheet: { ...sheet, draft: draft.id } } : { providerDrafts })
+    this.persistProviderDrafts()
+  }
+
+  /** Drops a provider draft (once published, or discarded), and closes the sheet that edits it. */
+  removeProviderDraft(id: string): void {
+    if (!(id in this.state.providerDrafts)) return
+    const providerDrafts = { ...this.state.providerDrafts }
+    delete providerDrafts[id]
+    this.set(this.state.providerSheet?.draft === id ? { providerDrafts, providerSheet: null } : { providerDrafts })
+    this.persistProviderDrafts()
+  }
+
+  /**
+   * Opens the Provider sheet, closing the node creator and the canvas menu. On a published
+   * provider without a draft named, it opens the workflow's draft of that provider if there is one.
+   */
+  openProviderSheet(options: ProviderSheetOptions): void {
+    const provider = options.provider ?? null
+    const draft = options.draft ?? findProviderDraft(this.state.providerDrafts, provider)?.id ?? null
+    this.set({ providerSheet: { entry: options.entry, draft, provider, target: options.target ?? null }, creator: null, menu: null })
+  }
+
+  /**
+   * Closes the Provider sheet. With the chosen action as a step, it goes where the sheet was
+   * opened for: inserted at its point and opened (as `addStep`), or filling the step it was opened
+   * from (its `call` and `with`; the step keeps its id and name). Returns that step's id, else null.
+   */
+  closeProviderSheet(step?: ProviderSheetStep): string | null {
+    const target = this.state.providerSheet?.target ?? null
+    if (this.state.providerSheet) this.set({ providerSheet: null })
+    if (!step || !target) return null
+    if (target.kind === 'insert') return this.addStep(step.type, step.params, target.point)
+    if (!this.nodeOf(target.step)) return null
+    const body = bodyFor(step.type, step.params)
+    this.updateStep(target.step, (b) => {
+      b.call = body.call
+      b.with = body.with
+    })
+    return target.step
+  }
+
+  private persistProviderDrafts(): void {
+    if (this.state.name) saveProviderDrafts(this.state.name, this.state.providerDrafts)
+  }
+
   // ------------------------------------------------------------------ save, test, publish
 
   async save(): Promise<DraftSaved> {
@@ -789,6 +883,7 @@ export class DesignerStore {
         this.savedJson = JSON.stringify(doc)
         this.set({ isNew: false, name: newName, dirty: false, problems: this.checkNow() })
         if (this.state.stickies.length > 0) saveStickies(newName, this.state.stickies)
+        if (Object.keys(this.state.providerDrafts).length > 0) saveProviderDrafts(newName, this.state.providerDrafts)
         return { name: newName, version: doc.metadata?.version ?? '0.1.0', problems: this.state.problems }
       }
       const saved = await api.saveDraft(name, { definition: doc })

@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { DesignerStore, isAutoLayout } from './store'
 import { API_TRIGGER_ID, findStepNode, stepIds } from './graph'
 import { sampleDocuments } from './graph.test'
 import { EMPTY_REGISTRY, loadRegistry, setRegistryForTests } from './registry'
+import { api } from '../../lib/api'
+import { newProviderDraft } from './providerDrafts'
 
 const vmRestart = (): WorkflowDocument => sampleDocuments().find((s) => s.file.endsWith('vm-restart.yaml'))!.doc
 
@@ -168,5 +170,116 @@ describe('a credential stored from a credential field', () => {
     s.addCredential(TOKEN)
     await vi.waitFor(() => expect(s.getState().registry?.credentials).toEqual([VSPHERE, TOKEN]))
     expect((await loadRegistry()).credentials).toEqual([VSPHERE, TOKEN])
+  })
+})
+
+/*
+ * The workflow's provider drafts and the Provider sheet: kept in this browser per workflow, as the
+ * stickies are, outside the document, its undo history and the dirty flag.
+ */
+describe('provider drafts and the Provider sheet', () => {
+  const KEY = 'iaf-designer-provider-drafts:vm-restart'
+  let data: Map<string, string>
+
+  beforeEach(() => {
+    data = new Map()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('adds, replaces and drops a draft outside undo and the dirty flag, kept per workflow', () => {
+    const s = store()
+    const d = newProviderDraft('http', { name: 'backup', auth: { type: 'bearer', credential: 'vault:backup/token', header: '' } })
+    s.upsertProviderDraft(d)
+    s.upsertProviderDraft({ ...d, title: 'Backup API' })
+    expect(Object.keys(s.getState().providerDrafts)).toEqual([d.id])
+    expect(s.getState().providerDrafts[d.id].title).toBe('Backup API')
+    expect(s.getState()).toMatchObject({ dirty: false, canUndo: false })
+    expect(JSON.parse(data.get(KEY) ?? '[]')).toHaveLength(1)
+    // the next canvas of this workflow has it
+    expect(store().getState().providerDrafts[d.id]).toMatchObject({ name: 'backup', title: 'Backup API', auth: { credential: 'vault:backup/token' } })
+    s.removeProviderDraft(d.id)
+    s.removeProviderDraft('draft_none')
+    expect(s.getState().providerDrafts).toEqual({})
+    expect(data.has(KEY)).toBe(false)
+  })
+
+  it('opens the sheet in place of the node creator and the menu, on the draft of the provider it names', () => {
+    const s = store()
+    const d = newProviderDraft('openapi', { name: 'vsphere' })
+    s.upsertProviderDraft(d)
+    s.openCreator()
+    s.openMenu({ x: 1, y: 1, target: { kind: 'pane', flowX: 0, flowY: 0 } })
+    s.openProviderSheet({ entry: 'step', provider: 'vsphere', target: { kind: 'step', step: 'restart' } })
+    expect(s.getState()).toMatchObject({ creator: null, menu: null, providerSheet: { entry: 'step', provider: 'vsphere', draft: d.id, target: { kind: 'step', step: 'restart' } } })
+    s.openProviderSheet({ entry: 'node', provider: 'dns' })
+    expect(s.getState().providerSheet).toEqual({ entry: 'node', provider: 'dns', draft: null, target: null })
+    // dropping the draft it edits closes it
+    s.openProviderSheet({ entry: 'node', draft: d.id })
+    s.removeProviderDraft(d.id)
+    expect(s.getState().providerSheet).toBeNull()
+  })
+
+  it("a new provider's sheet takes the first draft saved from it", () => {
+    const s = store()
+    s.openProviderSheet({ entry: 'openapi', target: { kind: 'insert', point: null } })
+    const d = newProviderDraft('openapi', { name: 'backup' })
+    s.upsertProviderDraft(d)
+    expect(s.getState().providerSheet?.draft).toBe(d.id)
+    // a sheet on a published provider takes only that provider's draft
+    s.openProviderSheet({ entry: 'node', provider: 'dns' })
+    s.upsertProviderDraft(newProviderDraft('openapi', { name: 'other' }))
+    expect(s.getState().providerSheet?.draft).toBeNull()
+  })
+
+  it('closes with the chosen action as a new step where it was opened for, and opens it', () => {
+    const s = store()
+    s.openCreator()
+    s.openProviderSheet({ entry: 'curl', target: { kind: 'insert', point: { kind: 'after', step: 'approval', handle: 'main' } } })
+    const id = s.closeProviderSheet({ type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })
+    expect(id).not.toBeNull()
+    const st = s.getState()
+    expect(st.providerSheet).toBeNull()
+    expect(stepIds(st.graph).slice(0, 4)).toEqual(['checkVmExists', 'noBackupRunning', 'approval', id])
+    expect(st.ndv).toBe(`step:${id}`)
+    const entry = st.doc.workflow?.do?.find((e) => id! in e)
+    expect(entry?.[id!]).toMatchObject({ name: 'Create snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create' } })
+    s.undo()
+    expect(stepIds(s.getState().graph)).not.toContain(id)
+  })
+
+  it('closes filling the step it was opened from, which keeps its id and name', () => {
+    const s = store(minimal([{ a: { name: 'Back up', call: 'http', with: { method: 'GET', url: 'https://backup.example.com' } } }]))
+    s.openProviderSheet({ entry: 'step', target: { kind: 'step', step: 'a' } })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })).toBe('a')
+    expect(s.getState().doc.workflow?.do?.[0]?.a).toEqual({ name: 'Back up', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: {} } })
+    expect(s.getState().canUndo).toBe(true)
+  })
+
+  it('closes without a step, or without a target, or on a step gone, and changes nothing', () => {
+    const s = store()
+    const version = s.getState().version
+    s.openProviderSheet({ entry: 'describe', target: { kind: 'insert', point: null } })
+    expect(s.closeProviderSheet()).toBeNull()
+    s.openProviderSheet({ entry: 'node', provider: 'vsphere' })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'vsphere', action: 'vm.get' } })).toBeNull()
+    s.openProviderSheet({ entry: 'step', target: { kind: 'step', step: 'gone' } })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'vsphere', action: 'vm.get' } })).toBeNull()
+    expect(s.closeProviderSheet()).toBeNull()
+    expect(s.getState()).toMatchObject({ providerSheet: null, version, canUndo: false })
+  })
+
+  it("a new workflow's drafts are kept under its name once saved", async () => {
+    vi.spyOn(api, 'createWorkflow').mockResolvedValue({ id: 'cmd-1', status: 'accepted' } as Awaited<ReturnType<typeof api.createWorkflow>>)
+    const s = new DesignerStore({ name: null, doc: vmRestart(), registry: null, isNew: true })
+    const d = newProviderDraft('http', { name: 'backup' })
+    s.upsertProviderDraft(d)
+    expect(data.size).toBe(0)
+    await s.save()
+    expect(JSON.parse(data.get(KEY) ?? '[]').map((x: { id: string }) => x.id)).toEqual([d.id])
   })
 })
