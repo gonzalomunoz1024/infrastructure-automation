@@ -703,7 +703,9 @@ alone) and keeps the session in its address (`?session=`), so a reload or a shar
 from `GET /assistant/sessions/{id}`, in the session's mode. The settings page lists and creates service
 accounts with the presets and the grouped scopes of `docs/api.md`; only a platform admin may (the
 API answers anyone else 403), so anyone else sees a quiet "Only admins see service accounts" and
-no create button. Its identity card sends the dev
+no create button. The token dialog after a create says which teams the account acts for, the ones
+given or, when none were, its creator's with the backend's `note`, which warns when that leaves it
+none (the policy then refuses every job it starts). Its identity card sends the dev
 `X-User` header and says what production does instead: an auth proxy in front of the app and the
 API signs a person in and adds the bearer token the API verifies under the `oidc` profile, which
 ignores the header. The shell cannot tell which profile the API runs, so it claims none and links

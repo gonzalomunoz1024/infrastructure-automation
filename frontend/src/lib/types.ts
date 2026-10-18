@@ -51,7 +51,11 @@ export type ServiceAccountPreset = 'invoker' | 'assistant' | 'ci'
 export type ServiceAccount = { id: string; name: string; roles: string[]; teams?: string[]; createdAt: string; scopes?: ServiceAccountScope[] }
 /** `scopes` given with a `preset` must fit in it; neither means the `invoker` set. */
 export type CreateServiceAccount = { name: string; roles: string[]; teams?: string[]; scopes?: ServiceAccountScope[]; preset?: ServiceAccountPreset }
-export type ServiceAccountCreated = { id: string; token: string; scopes?: ServiceAccountScope[] }
+/**
+ * `teams` are the teams the account acts for: the ones given, or its creator's when none were; `note`
+ * says so then (or that the creator has none either, so the policy refuses every job it starts).
+ */
+export type ServiceAccountCreated = { id: string; token: string; scopes: ServiceAccountScope[]; teams: string[]; note?: string }
 
 /* ----------------------------------------------------------------------------
    Workflows

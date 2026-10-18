@@ -690,10 +690,13 @@ test.describe('service accounts', () => {
     const api = await mockApi(page, {
       'GET /service-accounts': () => reply(200, accounts),
       'POST /service-accounts': (req) => {
-        const body = req.body as { name: string; preset?: string; scopes?: string[] }
+        const body = req.body as { name: string; preset?: string; scopes?: string[]; teams?: string[] }
         const scopes = body.scopes ?? (body.preset === 'ci' ? ['registry:read', 'workflows:validate', 'workflows:dry-run', 'workflows:write', 'providers:write'] : ['registry:read', 'jobs:start', 'jobs:read'])
-        accounts = [...accounts, { id: 'sa-new', name: body.name, roles: ['ops'], teams: ['team-platform'], createdAt: new Date().toISOString(), scopes: scopes as ServiceAccount['scopes'] }]
-        return reply(201, { id: 'sa-new', token: 'iaf_sa_example_token_not_a_secret', scopes })
+        // no teams given: the account acts for its creator's, and the note says so
+        const teams = body.teams && body.teams.length > 0 ? body.teams : ['team-compute', 'team-platform']
+        const note = body.teams && body.teams.length > 0 ? undefined : "No teams were given: the account acts for Gonzalo's teams (team-compute, team-platform)"
+        accounts = [...accounts, { id: 'sa-new', name: body.name, roles: ['ops'], teams, createdAt: new Date().toISOString(), scopes: scopes as ServiceAccount['scopes'] }]
+        return reply(201, { id: 'sa-new', token: 'iaf_sa_example_token_not_a_secret', scopes, teams, ...(note ? { note } : {}) })
       },
     })
     await page.goto('/#/settings')
@@ -728,6 +731,11 @@ test.describe('service accounts', () => {
     const token = page.getByRole('dialog', { name: 'Service account token' })
     await expect(token).toContainText('iaf_sa_example_token_not_a_secret')
     await expect(token.getByLabel('Scopes')).toContainText('workflows:write')
+    // the teams it acts for: its creator's, since none were given
+    const actsFor = token.getByTestId('acts-for')
+    await expect(actsFor.getByLabel('Teams')).toContainText('team-compute')
+    await expect(actsFor.getByLabel('Teams')).toContainText('team-platform')
+    await expect(actsFor).toContainText("No teams were given: the account acts for Gonzalo's teams (team-compute, team-platform)")
     expect(api.callsTo('POST', '/service-accounts')[0].body).toEqual({
       name: 'release-bot',
       roles: ['ops'],

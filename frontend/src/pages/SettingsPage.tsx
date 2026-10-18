@@ -19,6 +19,7 @@ import {
   StatusDot,
   Table,
   Tag,
+  cx,
   longDate,
   relativeTime,
   useOverlayClose,
@@ -396,7 +397,7 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
               ))}
             </div>
           </Field>
-          <Field label="Teams" htmlFor="sa-teams" hint="Comma-separated. Scopes what the account can see.">
+          <Field label="Teams" htmlFor="sa-teams" hint="Comma-separated: the teams it acts for, which scope what it sees and the jobs it may start. Left empty, it takes yours.">
             <Input id="sa-teams" value={teams} onChange={(e) => setTeams(e.target.value)} placeholder="team-compute, team-platform" autoComplete="off" />
           </Field>
           <Field label="Preset" hint={presetText}>
@@ -438,6 +439,37 @@ function CreateServiceAccountModal({ onClose, onCreated }: { onClose: () => void
   )
 }
 
+/**
+ * The teams a new account acts for: the ones given, or its creator's when none were, which the
+ * backend's note says; a note on an account left with no team warns that the policy refuses
+ * every job it starts.
+ */
+export function ActsFor({ teams, note }: { teams: string[]; note?: string }) {
+  const none = teams.length === 0
+  return (
+    <div className="space-y-1" data-testid="acts-for">
+      <p className="text-caption text-secondary">It acts for:</p>
+      {none ? (
+        <p className="text-caption font-medium text-warning">No team</p>
+      ) : (
+        <div className="flex flex-wrap gap-1" aria-label="Teams">
+          {teams.map((t) => (
+            <Tag key={t} size="sm" mono outline>
+              {t}
+            </Tag>
+          ))}
+        </div>
+      )}
+      {note && (
+        <p className={cx('flex items-start gap-1.5 text-caption', none ? 'text-warning' : 'text-tertiary')} data-tone={none ? 'warning' : 'neutral'}>
+          <Icon name={none ? 'alert-triangle' : 'info'} size={13} className="mt-0.5 shrink-0" />
+          <span>{note}</span>
+        </p>
+      )}
+    </div>
+  )
+}
+
 function TokenModal({ created, onClose }: { created: ServiceAccountCreated; onClose: () => void }) {
   return (
     <Modal onClose={onClose} width="max-w-lg" label="Service account token">
@@ -453,6 +485,7 @@ function TokenModal({ created, onClose }: { created: ServiceAccountCreated; onCl
             <ScopeTags scopes={created.scopes} />
           </div>
         )}
+        <ActsFor teams={created.teams ?? []} note={created.note} />
       </OverlayBody>
       <OverlayFooter>
         <CopyButton text={created.token} label="Copy token" size="md" />
