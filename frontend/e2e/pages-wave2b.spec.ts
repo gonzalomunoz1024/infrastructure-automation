@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { ANSIBLE_IMPORT, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
+import { ANSIBLE_IMPORT, ASSISTANT_DRAFT_DEFINITION, ASSISTANT_DRAFT_YAML, ASSISTANT_PROBLEMS, ASSISTANT_SESSION_EVENTS, CATALOG, CONNECTION, CREDENTIALS, DEPRECATED_CATALOG, JOB, NOTIFICATIONS, PLATFORM_STREAM, PROVIDER, PROVIDERS, PROVIDER_ALERTS, PROVIDER_CR, PROVIDER_RELEASE, RELEASES, RESOURCE_TYPES, SPEC, SPEC_FROM_GIT, TERRAFORM_IMPORT, TRY_RESULT, TRY_RESULT_RECORDED, VALIDATION, VMS, VM_RESTART_VERSIONS, WORKFLOWS, inboxRoutes, mockApi, reply, sse } from './fixtures'
 
 /*
  * The pages against a mocked /api/v1: the inbox in the header, the platform audit stream, a
@@ -617,5 +617,67 @@ test.describe('editing a provider', () => {
     await expect(review).toContainText('Try vm.delete in dev before publishing')
     await expect(page.getByText('Ready to publish.')).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Publish as change request' })).toBeDisabled()
+  })
+})
+
+test.describe('assistant', () => {
+  test('the validation lists the problems on their steps, the timeline shows the session, and the draft becomes a change request', async ({ page }) => {
+    const api = await mockApi(page, {
+      'POST /assistant/sessions': { sessionId: 'as-77' },
+      'POST /assistant/sessions/{id}/messages': sse([
+        { event: 'status', data: { type: 'status', data: 'Drafting' } },
+        { event: 'message', data: { type: 'message', data: { text: 'Here is a first draft: it checks the backups, then restarts.' } } },
+        { event: 'draft', data: { type: 'draft', data: { status: 'ready', summary: 'Restarts a VM after a backup check.', workflowYaml: ASSISTANT_DRAFT_YAML, validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] } } } },
+        { event: 'validation', data: { type: 'validation', data: { valid: false, problems: ASSISTANT_PROBLEMS } } },
+        { event: 'done', data: { type: 'done', data: {} } },
+      ]),
+      'POST /workflows:parse': { definition: ASSISTANT_DRAFT_DEFINITION, problems: [] },
+      'GET /registry/providers': [],
+      'GET /audit/platform': { ...PLATFORM_STREAM, entries: [...PLATFORM_STREAM.entries, ...ASSISTANT_SESSION_EVENTS], total: 10 },
+      'POST /workflows': { id: 'vm-restart-safe', status: 'created' },
+      'POST /workflows/{name}:publish': { id: 'cr-120', status: 'open' },
+      'GET /change-requests/{id}': { ...PROVIDER_CR, id: 'cr-120', kind: 'workflow', name: 'vm-restart-safe', title: 'Add vm-restart-safe' },
+    })
+    await page.goto('/#/assistant')
+    const box = page.getByRole('textbox', { name: 'Message' })
+    await box.fill('Restart a VM after checking no backup is running.')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect(page.getByText('Here is a first draft: it checks the backups, then restarts.')).toBeVisible()
+
+    // the validation event, grouped on the steps as the designer's Issues drawer does, with the names the parse gives them
+    const issues = page.getByTestId('issues-list')
+    const restart = issues.getByRole('region', { name: 'Restart the VM' })
+    await expect(restart).toContainText('No provider called vcenter; vsphere is the closest')
+    await expect(restart.locator('[data-code="step.unknownProvider"]')).toBeVisible()
+    await expect(issues).toContainText('A change step runs without an approval')
+    expect(api.callsTo('POST', '/workflows:parse')[0].body).toEqual({ yaml: ASSISTANT_DRAFT_YAML })
+
+    // the session's own events, from the platform stream
+    const timeline = page.getByTestId('session-timeline')
+    await expect(timeline).toContainText('Session timeline · 3 events')
+    await timeline.locator('summary').click()
+    const items = timeline.getByRole('listitem')
+    await expect(items).toHaveCount(3)
+    await expect(items.nth(0)).toContainText('Session started · create · devin')
+    await expect(items.nth(1)).toContainText('Message · user: Restart a VM after checking no backup is running.')
+    await expect(items.nth(2)).toContainText('Draft updated · ready · not valid · 1 error')
+    expect(api.callsTo('GET', '/audit/platform')[0].query).toContain('aggregate=assistant-session')
+
+    // ask for changes: another message in the same session
+    await page.getByRole('button', { name: 'Ask for changes' }).click()
+    await expect(box).toBeFocused()
+    await expect(box).toHaveValue('Change the draft: ')
+    await box.fill('Change the draft: use vsphere')
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect.poll(() => api.callsTo('POST', '/assistant/sessions/as-77/messages').length).toBe(2)
+    expect(api.callsTo('POST', '/assistant/sessions')).toHaveLength(1)
+    expect(api.callsTo('POST', '/assistant/sessions/as-77/messages')[1].body).toEqual({ text: 'Change the draft: use vsphere' })
+
+    // the draft goes out as a change request: created, then published as a canary
+    await page.getByRole('button', { name: 'Submit as change request' }).click()
+    await expect(page.getByRole('status').filter({ hasText: 'Opened change request cr-120' })).toBeVisible()
+    await expect(page).toHaveURL(/#\/change-requests\/cr-120$/)
+    expect(api.callsTo('POST', '/workflows')[0].body).toEqual({ yaml: ASSISTANT_DRAFT_YAML })
+    expect(api.callsTo('POST', '/workflows/vm-restart-safe:publish')[0].body).toEqual({ strategy: 'canary' })
   })
 })

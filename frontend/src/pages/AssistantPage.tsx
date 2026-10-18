@@ -1,18 +1,23 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { Button, Card, CodeBlock, EmptyState, Icon, Input, Kbd, PageHeader, Skeleton, Spinner, StatusDot, Tag, Textarea, cx, modKeyLabel, nextId, useToast, type Tone } from '@iaf/ui'
 import type { PageProps } from '../app/router'
 import { navigate, pathFor } from '../app/router'
 import { api, errorMessage } from '../lib/api'
-import { useQuery } from '../lib/queries'
-import type { AssistantDraft, AssistantEvent, Problem } from '../lib/types'
-import { ProblemList } from '../components/ProblemList'
+import { invalidate, useQuery } from '../lib/queries'
+import type { AssistantDraft, AssistantEvent, EvidenceEntry, Problem } from '../lib/types'
+import { useChangeRequestToast } from '../components/ChangeRequestToast'
 import { Mono, TextLink, When } from '../components/common'
+import { IssuesList, groupsOf } from '../designer/chrome/IssuesDrawer'
+import { fixOf } from '../designer/model/fixes'
+import { documentToGraph, findStepNode, type Graph } from '../designer/model/graph'
 
 /*
  * The natural-language builder: a conversation at the left, the current draft at the right.
  * Every message streams status, message, draft, validation and done events over SSE; the draft
- * pane shows the latest draft with its assumptions, open questions, validation and YAML, and
- * hands it to the designer or saves it as a draft.
+ * pane shows the latest draft with its assumptions, open questions, the validation's problems on
+ * their steps (the designer's Issues list) and the YAML, and hands it to the designer, saves it as
+ * a draft or submits it as a change request. The session's own events of the platform stream
+ * (started, message, draft updated, ready) make its timeline.
  */
 
 interface Msg {
@@ -69,8 +74,35 @@ function normalizeDraft(data: unknown): AssistantDraft | null {
   }
 }
 
+export type TimelineItem = { seq: number; at: string; event: string; label: string; detail?: string; actor?: string }
+
+const SESSION_EVENTS: Record<string, string> = { 'assistant.started': 'Session started', 'assistant.message': 'Message', 'assistant.draft-updated': 'Draft updated', 'assistant.ready': 'Draft ready' }
+const clip = (text: string, max = 160): string => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+
+/** The session's own entries of the platform stream (aggregate assistant-session), oldest first, as timeline lines. */
+export function timelineOf(entries: readonly EvidenceEntry[], sessionId: string): TimelineItem[] {
+  return entries
+    .filter((e) => e.data.aggregate === 'assistant-session' && (e.data.aggregateId === sessionId || e.data.draftId === sessionId))
+    .sort((a, b) => a.seq - b.seq)
+    .map((e) => {
+      const d = e.data
+      const event = String(d.event ?? '')
+      let detail: string | undefined
+      if (event === 'assistant.started') detail = [d.mode, d.agent, d.workflow ? `editing ${String(d.workflow)}` : null].filter(Boolean).map(String).join(' · ')
+      else if (event === 'assistant.message') detail = `${String(d.role ?? 'assistant')}: ${clip(String(d.text ?? ''))}`
+      else if (event === 'assistant.draft-updated' || event === 'assistant.ready') {
+        const errors = typeof d.errors === 'number' ? d.errors : Array.isArray(d.errors) ? d.errors.length : undefined
+        detail = [d.status ? String(d.status) : null, d.valid === true ? 'valid' : d.valid === false ? 'not valid' : null, errors !== undefined ? `${errors} ${errors === 1 ? 'error' : 'errors'}` : null].filter(Boolean).join(' · ')
+      }
+      return { seq: e.seq, at: e.at, event, label: SESSION_EVENTS[event] ?? event.replace(/^assistant\./, ''), detail: detail || undefined, actor: e.actor }
+    })
+}
+
+const EMPTY_GRAPH: Graph = { nodes: [], edges: [], problems: [] }
+
 export default function AssistantPage({ route }: PageProps) {
   const toast = useToast()
+  const notify = useChangeRequestToast()
   const workflowName = route.query.workflow || undefined
   const existing = useQuery(['workflow', workflowName ?? ''], () => api.workflow(workflowName!), { enabled: !!workflowName })
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -80,9 +112,13 @@ export default function AssistantPage({ route }: PageProps) {
   const [validation, setValidation] = useState<Validation | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [text, setText] = useState('')
-  const [saving, setSaving] = useState<'open' | 'save' | null>(null)
+  const [saving, setSaving] = useState<'open' | 'save' | 'submit' | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+
+  // the session's events in the platform stream: refreshed after every answer and every 15 s meanwhile
+  const events = useQuery(['assistant-events', sessionId ?? ''], () => api.auditPlatform({ aggregate: 'assistant-session' }), { enabled: !!sessionId, refetchInterval: 15_000 })
+  const timeline = useMemo(() => (sessionId && events.data ? timelineOf(events.data.entries, sessionId) : []), [events.data, sessionId])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
@@ -151,7 +187,15 @@ export default function AssistantPage({ route }: PageProps) {
     } finally {
       setStreaming(false)
       setStatus(null)
+      // the mounted query, not this closure's: the session may have been created during this send
+      invalidate('assistant-events')
     }
+  }
+
+  // "Ask for changes": another message in the same session, started for the user
+  const askChanges = () => {
+    setText((t) => (t.trim() ? t : 'Change the draft: '))
+    document.getElementById('assistant-message')?.focus()
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -162,7 +206,7 @@ export default function AssistantPage({ route }: PageProps) {
   }
 
   const yaml = draft?.workflowYaml ?? ''
-  const handOff = async (how: 'open' | 'save') => {
+  const handOff = async (how: 'open' | 'save' | 'submit') => {
     if (!yaml) return
     setSaving(how)
     try {
@@ -170,19 +214,43 @@ export default function AssistantPage({ route }: PageProps) {
       if (workflowName) {
         const saved = await api.saveDraft(workflowName, { yaml })
         const errors = saved.problems.filter((p) => p.level === 'error').length
-        toast.success('Draft saved', errors ? `${saved.version} saved with ${errors} problem${errors === 1 ? '' : 's'} to fix.` : `${saved.version} saved.`)
+        if (how !== 'submit') toast.success('Draft saved', errors ? `${saved.version} saved with ${errors} problem${errors === 1 ? '' : 's'} to fix.` : `${saved.version} saved.`)
       } else {
         const accepted = await api.createWorkflow({ yaml })
         name = accepted.id
-        toast.success('Draft created', how === 'open' ? 'Opening it on the canvas.' : `${name} is in your workflows.`)
+        if (how !== 'submit') toast.success('Draft created', how === 'open' ? 'Opening it on the canvas.' : `${name} is in your workflows.`)
       }
       if (how === 'open' && name) navigate(pathFor('workflow', { name }))
+      if (how === 'submit' && name) {
+        // the draft goes through the same review as any workflow version: a change request, then a canary
+        const accepted = await api.publishWorkflow(name, { strategy: 'canary' })
+        const outcome = notify(accepted, 'The draft')
+        if (outcome.kind === 'opened') navigate(pathFor('change-request', { id: outcome.id }))
+      }
     } catch (e) {
-      toast.error(how === 'open' ? 'Could not open the draft' : 'Could not save the draft', errorMessage(e))
+      toast.error(how === 'open' ? 'Could not open the draft' : how === 'submit' ? 'Could not submit the draft' : 'Could not save the draft', errorMessage(e))
     } finally {
       setSaving(null)
     }
   }
+
+  // the validation's problems on their steps, as the designer's Issues list shows them: the draft is parsed by the backend for the step names and glyphs
+  const problems = useMemo(() => validation?.problems ?? [], [validation])
+  const parsed = useQuery(['assistant-parse', yaml], () => api.parseWorkflow({ yaml }), { enabled: !!yaml && problems.length > 0 })
+  const registry = useQuery(['registry-providers'], () => api.registryProviders(), { enabled: problems.length > 0 })
+  const graph = useMemo(() => {
+    const definition = parsed.data?.definition
+    if (!definition) return EMPTY_GRAPH
+    try {
+      return documentToGraph(definition)
+    } catch {
+      return EMPTY_GRAPH
+    }
+  }, [parsed.data])
+  const nameOf = (step: string) => findStepNode(graph, step)?.data.step.name ?? step
+  const groups = groupsOf(problems, nameOf)
+  // a fix here is a request to the assistant; opening a step means opening the draft on the canvas
+  const askFix = (p: Problem) => void send(`Apply this fix${p.step ? ` on step ${p.step}` : ''}: ${fixOf(p)?.label ?? p.message}`)
 
   const answer = (question: string, reply: string) => void send(`${question}\n${reply}`)
   const paneHeight = 'lg:h-[calc(100vh-15rem)] lg:min-h-[32rem]'
@@ -256,8 +324,33 @@ export default function AssistantPage({ route }: PageProps) {
               </ol>
             )}
           </div>
+          {sessionId && (
+            <details className="border-t border-stroke-light" data-testid="session-timeline">
+              <summary className="cursor-pointer px-4 py-2 text-caption text-secondary">
+                Session timeline · {timeline.length} {timeline.length === 1 ? 'event' : 'events'}
+                {events.fetching ? ' · refreshing' : ''}
+              </summary>
+              {timeline.length === 0 ? (
+                <p className="px-4 pb-3 text-caption text-tertiary">Nothing in the platform stream yet; it refreshes every 15 seconds.</p>
+              ) : (
+                <ol className="max-h-40 space-y-1.5 overflow-y-auto px-4 pb-3" aria-label="Session events">
+                  {timeline.map((t) => (
+                    <li key={t.seq} className="flex items-start gap-2 text-caption">
+                      <StatusDot kind={t.event === 'assistant.ready' ? 'healthy' : 'neutral'} className="mt-1" />
+                      <span className="min-w-0 flex-1">
+                        <span className="font-medium text-primary">{t.label}</span>
+                        {t.detail && <span className="text-secondary"> · {t.detail}</span>}
+                      </span>
+                      <When at={t.at} className="shrink-0 text-tertiary" />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </details>
+          )}
           <div className="border-t border-stroke-light p-4">
             <Textarea
+              id="assistant-message"
               rows={3}
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -339,8 +432,10 @@ export default function AssistantPage({ route }: PageProps) {
                     {validation && <StatusDot kind={validation.valid ? 'healthy' : 'critical'} label={validation.valid ? 'passes' : 'has problems'} />}
                     {validation?.rounds !== undefined && <span className="normal-case tracking-normal">· {validation.rounds} rounds</span>}
                   </h3>
-                  {validation?.problems && validation.problems.length > 0 ? (
-                    <ProblemList problems={validation.problems} compact />
+                  {groups.length > 0 ? (
+                    <div className="-mx-5 border-y border-stroke-light">
+                      <IssuesList groups={groups} graph={graph} providers={registry.data ?? []} nameOf={nameOf} onOpen={() => void handOff('open')} onFix={askFix} />
+                    </div>
                   ) : validation?.errors && validation.errors.length > 0 ? (
                     <ul className="space-y-1 rounded-md border border-stroke-light px-3 py-2 text-caption">
                       {validation.errors.map((e, i) => (
@@ -367,8 +462,14 @@ export default function AssistantPage({ route }: PageProps) {
                 </section>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2 border-t border-stroke-light px-5 py-3">
+                <Button variant="ghost" icon="edit" disabled={streaming} onClick={askChanges} title="Tell the assistant what to change; the same session goes on">
+                  Ask for changes
+                </Button>
                 <Button icon="document" disabled={!yaml || streaming} loading={saving === 'save'} onClick={() => void handOff('save')}>
                   Save as draft
+                </Button>
+                <Button icon="git-branch" disabled={!yaml || streaming || draft.status !== 'ready'} loading={saving === 'submit'} onClick={() => void handOff('submit')} title={draft.status === 'ready' ? 'Saves the draft and opens a change request for it, released as a canary' : 'Once the draft is ready'}>
+                  Submit as change request
                 </Button>
                 <Button variant="primary" iconRight="arrow-right" disabled={!yaml || streaming} loading={saving === 'open'} onClick={() => void handOff('open')}>
                   Open in designer

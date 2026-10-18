@@ -7,6 +7,7 @@ import type {
   ChangeRequestDetail,
   Credential,
   Dependencies,
+  EvidenceEntry,
   EvidenceRecord,
   JobDetail,
   JobReplay,
@@ -16,6 +17,7 @@ import type {
   Notification,
   PlatformStream,
   Preview,
+  Problem,
   ProviderAlert,
   ProviderDetail,
   ProviderSummary,
@@ -857,3 +859,36 @@ export const TERRAFORM_IMPORT: TerraformImport = {
     { name: 'arn', sensitive: false, file: 'outputs.tf' },
   ],
 }
+
+/* ----------------------------------------------------------------------------
+   The assistant: a session's draft, what the validation found, and the session's events
+   ------------------------------------------------------------------------- */
+
+/** The assistant's draft as the backend parses it (POST /workflows:parse): two provider calls, the second on a provider that does not exist. */
+export const ASSISTANT_DRAFT_DEFINITION = {
+  apiVersion: 'iaf.platform/v1',
+  kind: 'Workflow',
+  metadata: { name: 'vm-restart-safe', title: 'Safe VM restart', noun: 'vm', verb: 'restart-safely', owner: 'team-compute', version: '0.1.0' },
+  api: { method: 'POST', path: '/api/v1/vms/{vmId}:restart-safely', input: { type: 'object', required: ['vmId'], properties: { vmId: { type: 'string' } } } },
+  workflow: {
+    do: [
+      { check: { name: 'Check the backups', call: 'provider', with: { provider: 'backup', action: 'listJobs', input: { target: '{{ $input.vmId }}' } } } },
+      { restart: { name: 'Restart the VM', call: 'provider', with: { provider: 'vcenter', action: 'vm.restart', input: { id: '{{ $input.vmId }}' } } } },
+    ],
+  },
+}
+
+export const ASSISTANT_DRAFT_YAML = 'apiVersion: iaf.platform/v1\nkind: Workflow\nmetadata:\n  name: vm-restart-safe\n  version: 0.1.0\nworkflow:\n  do:\n    - check: { call: provider }\n    - restart: { call: provider }\n'
+
+export const ASSISTANT_PROBLEMS: Problem[] = [
+  { level: 'error', code: 'step.unknownProvider', step: 'restart', field: 'with.provider', message: 'No provider called vcenter; vsphere is the closest' },
+  { level: 'warning', code: 'workflow.noApproval', message: 'A change step runs without an approval' },
+]
+
+/** The platform stream's entries for session as-77 (and one of another session, which its timeline leaves out). */
+export const ASSISTANT_SESSION_EVENTS: EvidenceEntry[] = [
+  { seq: 7, at: ago(3), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', user: 'gonzalo', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a1'), previous: hash('p6') },
+  { seq: 8, at: ago(2), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.message', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', role: 'user', text: 'Restart a VM after checking no backup is running.' }, hash: hash('a2'), previous: hash('a1') },
+  { seq: 9, at: ago(1), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.draft-updated', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', status: 'ready', contentHash: 'sha256:d1', valid: false, errors: 1 }, hash: hash('a3'), previous: hash('a2') },
+  { seq: 10, at: ago(1), kind: 'decision', actor: 'ana', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-78', draftId: 'as-78', user: 'ana', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a4'), previous: hash('a3') },
+]
