@@ -1,6 +1,8 @@
+import { check, type Problem } from '@iaf/workflow-checks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { JsonObject, RegistryProvider, WorkflowDocument } from '../../lib/types'
-import { terraformModuleIn, terraformModuleOf, withTerraformModules } from './registry'
+import type { CatalogEntry, Dependencies, JsonObject, RegistryProvider, WorkflowDocument } from '../../lib/types'
+import { newDocument } from './edits'
+import { contextOf, EMPTY_REGISTRY, loadRegistry, mcpToolsOf, setRegistryForTests, terraformModuleIn, terraformModuleOf, withTerraformModules, workflowRunsOf, type Registry } from './registry'
 
 /*
  * A terraform provider's module, which GET /registry/providers does not carry: read from the plan
@@ -24,6 +26,7 @@ const imported = (module: JsonObject): WorkflowDocument => ({
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  setRegistryForTests(null)
 })
 
 describe("a terraform provider's module", () => {
@@ -67,5 +70,130 @@ describe("a terraform provider's module", () => {
     expect(asked).toEqual(['terraform-modules', 'broken'])
     expect(out.map((p) => p.module ?? null)).toEqual([null, LB, { source: 'git::https://github.com/acme/net', version: '1.0.0' }, null])
     expect(out[0]).toBe(providers[0])
+  })
+})
+
+/*
+ * What the checks read from the registry besides the lists the canvas shows: the published
+ * workflows' versions, what each one starts (GET /registry/dependencies) and the MCP tools they
+ * hold (GET /catalog), so the designer reports run.cycle, mcp.toolName and the contract of a run
+ * step as the backend's checks do.
+ */
+
+const DEPENDENCIES: Pick<Dependencies, 'workflows'> = {
+  workflows: [
+    { workflow: 'patch-cve', version: '1.0.0', produces: [], consumes: ['vm'], runs: [{ workflow: 'vm-restart', via: 'run', at: 'reboot', range: '^1' }], consumers: [] },
+    {
+      workflow: 'web-environment',
+      version: '1.1.0',
+      produces: [],
+      consumes: ['image'],
+      runs: [
+        { workflow: 'create-vm', via: 'run', at: 'vm', range: '^2' },
+        { workflow: 'build-vm-image', via: 'orCreateWith', at: 'image' },
+        { workflow: 'create-database', via: 'run', at: 'database', range: '^1' },
+        { workflow: 'create-vm', via: 'run', at: 'spare', range: '^2' },
+      ],
+      consumers: [],
+    },
+    { workflow: 'vm-restart', version: '1.2.0', produces: [], consumes: ['vm'], runs: [], consumers: [{ workflow: 'patch-cve', via: 'run', at: 'reboot', range: '^1' }] },
+  ],
+}
+
+const CATALOG: Pick<CatalogEntry, 'workflow' | 'mcpTool'>[] = [
+  { workflow: 'create-vm', mcpTool: 'vm_create' },
+  { workflow: 'vm-restart', mcpTool: 'vm_restart' },
+  { workflow: 'vm-reboot', mcpTool: 'vm_restart' },
+  { workflow: 'not-exposed' },
+  { workflow: 'nameless', mcpTool: '_' },
+]
+
+const registryWith = (extra: Partial<Registry> = {}): Registry => ({
+  ...EMPTY_REGISTRY,
+  workflows: [
+    { name: 'patch-cve', title: 'Patch a CVE', version: '1.0.0', input: { type: 'object', properties: { vmId: { type: 'string' } } }, output: {} },
+    { name: 'create-vm', title: 'Create VM', version: '2.1.0', input: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } }, output: {} },
+  ],
+  ...extra,
+})
+
+/** vm-restart as a draft, exposed to MCP, with the given steps. */
+const draft = (steps: NonNullable<WorkflowDocument['workflow']>['do'], verb = 'restart'): WorkflowDocument => ({
+  ...newDocument({ name: 'vm-restart', title: 'VM restart', noun: 'vm', verb, owner: 'team-compute', folder: 'Compute' }),
+  mcp: { expose: true },
+  workflow: { do: steps },
+})
+
+const only = (problems: Problem[], ...wanted: string[]) =>
+  problems.filter((p) => wanted.includes(p.code)).map((p) => ({ code: p.code, level: p.level, step: p.step ?? null, field: p.field ?? null, message: p.message }))
+
+const toolMessage = (tool: string, other: string) => `MCP tool ${tool} is already exposed by workflow ${other}; give this workflow another noun or verb, or set mcp.expose to false`
+
+describe('what the checks read from the registry', () => {
+  it('reads what each published workflow starts from the dependencies, each once and sorted', () => {
+    expect(workflowRunsOf(DEPENDENCIES)).toEqual({ 'patch-cve': ['vm-restart'], 'web-environment': ['build-vm-image', 'create-database', 'create-vm'] })
+    expect(workflowRunsOf({ workflows: [] })).toEqual({})
+  })
+
+  it("reads the MCP tools from the catalog: each exposed workflow's tool and its batch tool", () => {
+    expect(mcpToolsOf(CATALOG)).toEqual({
+      vm_create: ['create-vm'],
+      vm_create_batch: ['create-vm'],
+      vm_restart: ['vm-reboot', 'vm-restart'],
+      vm_restart_batch: ['vm-reboot', 'vm-restart'],
+    })
+  })
+
+  it('reports a run that comes back to the workflow through the ones the registry says it starts (run.cycle)', () => {
+    const doc = draft([{ reboot: { name: 'Patch first', run: { workflow: 'patch-cve', version: '^1', input: { vmId: 'vm-1' } } } }])
+    const message = 'Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart; a job would wait for itself and never finish'
+    expect(only(check(doc, contextOf(registryWith({ workflowRuns: workflowRunsOf(DEPENDENCIES) }))), 'run.cycle')).toEqual([{ code: 'run.cycle', level: 'error', step: 'reboot', field: 'workflow', message }])
+    // without the dependencies the cycle is left to the backend's checks
+    expect(only(check(doc, contextOf(registryWith())), 'run.cycle')).toEqual([])
+  })
+
+  it('warns when another published workflow holds the MCP tool the noun and verb give (mcp.toolName)', () => {
+    const withTools = contextOf(registryWith({ mcpTools: mcpToolsOf(CATALOG) }))
+    expect(only(check(draft([], 'create'), withTools), 'mcp.toolName')).toEqual([{ code: 'mcp.toolName', level: 'warning', step: null, field: 'mcp.expose', message: toolMessage('vm_create', 'create-vm') }])
+    // its own name is no clash, another workflow's under the same name is
+    expect(only(check(draft([]), withTools), 'mcp.toolName').map((p) => p.message)).toEqual([toolMessage('vm_restart', 'vm-reboot')])
+    expect(only(check(draft([], 'reboot'), withTools), 'mcp.toolName')).toEqual([])
+    // without the catalog nothing is judged
+    expect(only(check(draft([], 'create'), contextOf(registryWith())), 'mcp.toolName')).toEqual([])
+  })
+
+  it("judges a run step's contract only against the version its range starts", () => {
+    const run = (range: string) => draft([{ vm: { name: 'Create VM', run: { workflow: 'create-vm', version: range, input: { size: 'small' } } } }])
+    const ctx = contextOf(registryWith())
+    expect(ctx.workflowVersions).toEqual({ 'patch-cve': '1.0.0', 'create-vm': '2.1.0' })
+    expect(only(check(run('^2'), ctx), 'contract.missingInput', 'contract.unknownInput').map((p) => p.code)).toEqual(['contract.missingInput', 'contract.unknownInput'])
+    // ^1 starts an older major the registry does not describe: the backend judges it against that one
+    expect(only(check(run('^1'), ctx), 'contract.missingInput', 'contract.unknownInput')).toEqual([])
+  })
+
+  it('loads the dependencies and the catalog with the rest; when they do not answer, the canvas lists miss nothing', async () => {
+    const answer = (ok: boolean) =>
+      vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/registry/dependencies')) return ok ? Response.json(DEPENDENCIES) : new Response('{"error":"down"}', { status: 503 })
+        if (url.endsWith('/catalog')) return ok ? Response.json(CATALOG) : new Response('{"error":"down"}', { status: 503 })
+        if (url.includes('/registry/workflows')) return Response.json(registryWith().workflows)
+        return Response.json([])
+      })
+    answer(true)
+    const loaded = await loadRegistry(true)
+    expect(loaded.failed).toEqual([])
+    expect(loaded.workflowRuns).toEqual(workflowRunsOf(DEPENDENCIES))
+    expect(loaded.mcpTools).toEqual(mcpToolsOf(CATALOG))
+    expect(contextOf(loaded)).toMatchObject({ workflowRuns: loaded.workflowRuns, mcpTools: loaded.mcpTools, workflowVersions: { 'create-vm': '2.1.0' } })
+
+    answer(false)
+    const partial = await loadRegistry(true)
+    expect(partial.failed).toEqual([])
+    expect(partial.workflows.map((w) => w.name)).toEqual(['patch-cve', 'create-vm'])
+    expect('workflowRuns' in partial || 'mcpTools' in partial).toBe(false)
+    const ctx = contextOf(partial)
+    expect(ctx.workflowRuns).toBeUndefined()
+    expect(ctx.mcpTools).toBeUndefined()
   })
 })

@@ -1,11 +1,12 @@
 /**
  * The registry the designer browses: step types, providers and their actions, published
- * workflows, resource types, playbooks and credential names. Loaded once per session; every
- * part fails independently so the canvas works with whatever answered.
+ * workflows, resource types, playbooks and credential names, and for the checks alone what each
+ * published workflow starts and the MCP tools they hold. Loaded once per session; every part
+ * fails independently so the canvas works with whatever answered.
  */
 import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
-import type { RegistryAction, RegistryCredential, RegistryPlaybook, RegistryProvider, RegistryWorkflow, ResourceType, Schema, StepTypeInfo, TerraformModuleRef } from '../../lib/types'
+import type { CatalogEntry, Dependencies, RegistryAction, RegistryCredential, RegistryPlaybook, RegistryProvider, RegistryWorkflow, ResourceType, Schema, StepTypeInfo, TerraformModuleRef } from '../../lib/types'
 import { FALLBACK_STEP_SCHEMAS } from './stepSchemas'
 
 export interface Registry {
@@ -15,6 +16,17 @@ export interface Registry {
   resourceTypes: ResourceType[]
   playbooks: RegistryPlaybook[]
   credentials: RegistryCredential[]
+  /**
+   * The workflows each published workflow starts, by name (GET /registry/dependencies); absent
+   * when that did not answer, and a cycle through other workflows (`run.cycle`) is then left to
+   * the backend's checks.
+   */
+  workflowRuns?: Record<string, string[]>
+  /**
+   * The published workflows each MCP tool belongs to, by tool name (GET /catalog); absent when
+   * that did not answer, and `mcp.toolName` is then left to the backend's checks.
+   */
+  mcpTools?: Record<string, string[]>
   /** the parts that did not answer */
   failed: string[]
 }
@@ -32,20 +44,69 @@ async function part<T>(name: string, fn: () => Promise<T>, failed: string[], fal
   }
 }
 
+/** A part only the checks read: undefined when it does not answer; the lists the canvas shows do not miss it. */
+async function optional<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * What each published workflow starts, by name, as DependencyRules.runs reads it: the run steps
+ * and `orCreateWith` inputs GET /registry/dependencies lists under `runs`, each once, sorted.
+ */
+export function workflowRunsOf(deps: Pick<Dependencies, 'workflows'>): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const w of deps.workflows ?? []) {
+    const started = [...new Set((w.runs ?? []).map((l) => l.workflow).filter((n) => typeof n === 'string' && n !== ''))].sort()
+    if (started.length > 0) out[w.workflow] = started
+  }
+  return out
+}
+
+/**
+ * The published workflows the MCP server gives each tool, by tool name, as McpTools.toolNames
+ * spells them: an exposed catalog entry's tool (`vm_restart`) and its batch tool
+ * (`vm_restart_batch`). Two workflows may claim one name; the server lists the first.
+ */
+export function mcpToolsOf(catalog: readonly Pick<CatalogEntry, 'workflow' | 'mcpTool'>[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const e of catalog) {
+    const tool = e.mcpTool?.trim()
+    if (!tool || tool === '_') continue
+    for (const name of [tool, `${tool}_batch`]) out[name] = [...new Set([...(out[name] ?? []), e.workflow])].sort()
+  }
+  return out
+}
+
 /** Loads every registry endpoint once; a later call returns the same promise. */
 export function loadRegistry(force = false): Promise<Registry> {
   if (cached && !force) return cached
   cached = (async () => {
     const failed: string[] = []
-    const [stepTypes, providers, workflows, resourceTypes, playbooks, credentials] = await Promise.all([
+    const [stepTypes, providers, workflows, resourceTypes, playbooks, credentials, dependencies, catalog] = await Promise.all([
       part('step types', () => api.registryStepTypes(), failed, [] as StepTypeInfo[]),
       part('providers', () => api.registryProviders(), failed, [] as RegistryProvider[]),
       part('workflows', () => api.registryWorkflows(true), failed, [] as RegistryWorkflow[]),
       part('resource types', () => api.registryResourceTypes(), failed, [] as ResourceType[]),
       part('playbooks', () => api.registryPlaybooks(), failed, [] as RegistryPlaybook[]),
       part('credentials', () => api.registryCredentials(), failed, [] as RegistryCredential[]),
+      optional(() => api.registryDependencies()),
+      optional(() => api.catalog()),
     ])
-    return { stepTypes, providers: await withTerraformModules(providers), workflows, resourceTypes, playbooks, credentials, failed }
+    return {
+      stepTypes,
+      providers: await withTerraformModules(providers),
+      workflows,
+      resourceTypes,
+      playbooks,
+      credentials,
+      ...(dependencies ? { workflowRuns: workflowRunsOf(dependencies) } : {}),
+      ...(catalog ? { mcpTools: mcpToolsOf(catalog) } : {}),
+      failed,
+    }
   })()
   return cached
 }
@@ -127,16 +188,20 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /**
  * The check context: the catalog when the providers answered, the empty one otherwise. The
- * published workflows' inputs and outputs and the resource types' schemas come along, so a run
- * step's contract and the fields a step returns are judged as the backend judges them.
+ * published workflows' inputs, outputs and versions, what each one starts, the MCP tools they
+ * hold and the resource types' schemas come along, so a run step's contract, `run.cycle`,
+ * `mcp.toolName` and the fields a step returns are judged as the backend judges them.
  */
 export function contextOf(registry: Registry | null): CheckContext {
   if (!registry || registry.failed.includes('providers')) return EMPTY_CONTEXT
   const workflowInputs: Record<string, JsonSchema> = {}
   const workflowOutputs: Record<string, string[]> = {}
+  const workflowVersions: Record<string, string> = {}
   const resourceTypeSchemas: Record<string, JsonSchema> = {}
   for (const w of registry.workflows) {
     if (isObject(w.input) && Object.keys(w.input).length > 0) workflowInputs[w.name] = w.input as unknown as JsonSchema
+    // the version that input belongs to: a run step pinned to another major is judged by the backend
+    if (typeof w.version === 'string' && w.version.trim()) workflowVersions[w.name] = w.version
     // only an output schema that names its properties says what the workflow publishes
     const props = isObject(w.output) ? w.output.properties : undefined
     if (isObject(props)) workflowOutputs[w.name] = Object.keys(props)
@@ -146,7 +211,14 @@ export function contextOf(registry: Registry | null): CheckContext {
     registry.providers.map(toProviderDocument),
     registry.workflows.map((w) => w.name),
     registry.resourceTypes.map((r) => r.name),
-    { workflowInputs, workflowOutputs, resourceTypeSchemas },
+    {
+      workflowInputs,
+      workflowOutputs,
+      workflowVersions,
+      resourceTypeSchemas,
+      ...(registry.workflowRuns ? { workflowRuns: registry.workflowRuns } : {}),
+      ...(registry.mcpTools ? { mcpTools: registry.mcpTools } : {}),
+    },
   )
 }
 

@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { mockDesignerApi, pasteInto, yamlEditor, type MockApi } from './designer-fixtures'
+import { stringify } from 'yaml'
+import { mockDesignerApi, pasteInto, vmRestart, yamlEditor, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against the mocked backend: the Validate action and its "Before publishing"
@@ -113,6 +114,24 @@ test.describe('fixes', () => {
     await page.keyboard.press('Escape')
     await expect(node(page, 'step:forgotten')).toHaveCount(0)
     await expect(page.getByTestId('issues-button')).toHaveAccessibleName('Issues: 0')
+  })
+})
+
+test.describe('what the checks read from the registry', () => {
+  test('a run that comes back through another workflow is a cycle, and an MCP tool another workflow holds a warning', async ({ page }) => {
+    await openVmRestart(page)
+    const doc = vmRestart() as { metadata: Record<string, unknown>; workflow: { do: unknown[] } }
+    // patch-cve runs vm-restart (GET /registry/dependencies), so vm-restart running it goes round
+    doc.workflow.do.unshift({ patchFirst: { name: 'Patch first', run: { workflow: 'patch-cve', version: '^1', input: { vmId: '{{ $input.vmId }}', cve: 'CVE-2026-0001' } } } })
+    // create-vm holds vm_create (GET /catalog)
+    doc.metadata.verb = 'create'
+    await loadYaml(page, stringify(doc))
+
+    await page.getByTestId('issues-button').click()
+    const list = page.getByTestId('issues-list')
+    // listed under the step it sits on
+    await expect(list.getByRole('region', { name: 'Patch first' }).locator('[data-code="run.cycle"]')).toContainText('Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart')
+    await expect(list.locator('[data-code="mcp.toolName"]')).toContainText('MCP tool vm_create is already exposed by workflow create-vm')
   })
 })
 

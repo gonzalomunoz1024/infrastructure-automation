@@ -146,6 +146,69 @@ export function registryWorkflows(): Obj[] {
   })
 }
 
+/** Every `{ <step id>: { run: { workflow } } }` under a node, nested steps included: the run links DependencyRules reads. */
+function runSteps(node: Json | undefined, out: Obj[]): void {
+  if (Array.isArray(node)) {
+    for (const n of node) runSteps(n, out)
+    return
+  }
+  if (!node || typeof node !== 'object') return
+  for (const [key, value] of Object.entries(node)) {
+    const run = asObj(asObj(value).run)
+    if (typeof run.workflow === 'string') out.push({ workflow: run.workflow, via: 'run', at: key, ...(typeof run.version === 'string' ? { range: run.version } : {}) })
+    runSteps(value, out)
+  }
+}
+
+/**
+ * GET /registry/dependencies over the repository's workflows, the part the designer's checks read:
+ * what each workflow starts through its run steps and `orCreateWith` inputs (the types each one
+ * produces and consumes are left empty).
+ */
+export function registryDependencies(): Obj {
+  const workflows = yamlFiles('workflows').map((file) => {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const runs: Obj[] = []
+    for (const [field, p] of Object.entries(asObj(asObj(asObj(doc.api).input).properties))) {
+      const xr = asObj(asObj(p)['x-resource'])
+      if (typeof xr.type === 'string' && typeof xr.orCreateWith === 'string') runs.push({ workflow: xr.orCreateWith, via: 'orCreateWith', at: field })
+    }
+    runSteps(asObj(doc.workflow).do, runs)
+    return { workflow: String(meta.name), version: String(meta.version ?? '0.1.0'), produces: [], consumes: [], runs, consumers: [] }
+  })
+  return { resourceTypes: [], workflows, cycles: [] }
+}
+
+const slug = (v: Json | undefined) =>
+  String(v ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
+
+/**
+ * GET /catalog over the repository's workflows, the fields that name an entry and the MCP tool
+ * the designer's checks read: `<noun>_<verb>` as McpTools spells it, on an exposed workflow only.
+ */
+export function catalogEntries(): Obj[] {
+  return yamlFiles('workflows').map((file) => {
+    const doc = load(file)
+    const meta = asObj(doc.metadata)
+    const tool = `${slug(meta.noun)}_${slug(meta.verb)}`.replace(/-/g, '_')
+    return {
+      workflow: String(meta.name),
+      title: String(meta.title ?? meta.name),
+      noun: String(meta.noun ?? ''),
+      verb: String(meta.verb ?? ''),
+      owner: String(meta.owner ?? ''),
+      version: String(meta.version ?? '0.1.0'),
+      input: asObj(doc.api).input ?? {},
+      ...(asObj(doc.mcp).expose === true ? { mcpTool: tool } : {}),
+    }
+  })
+}
+
 export const VM_RESTART_FILE = 'workflows/team-compute/vm-restart.yaml'
 
 export function vmRestartYaml(): string {
@@ -314,6 +377,8 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
     if (method === 'GET' && path === '/registry/workflows') return json(route, workflows)
     if (method === 'GET' && path === '/registry/resource-types') return json(route, resourceTypes)
     if (method === 'GET' && path === '/registry/playbooks') return json(route, registryPlaybooks())
+    if (method === 'GET' && path === '/registry/dependencies') return json(route, registryDependencies())
+    if (method === 'GET' && path === '/catalog') return json(route, catalogEntries())
     if (method === 'GET' && path === '/registry/credentials')
       return json(route, [
         { name: 'ssh/ops-automation', type: 'ssh-key' },
