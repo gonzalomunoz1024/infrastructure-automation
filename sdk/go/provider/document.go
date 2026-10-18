@@ -203,7 +203,10 @@ func post(ctx context.Context, base, path string, body []byte, token string, exp
 		return err
 	}
 	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read the answer to POST %s (%d): %w", path, res.StatusCode, err)
+	}
 	if res.StatusCode != expected {
 		var e struct {
 			Error string `json:"error"`

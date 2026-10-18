@@ -5,7 +5,7 @@ import org.springframework.context.annotation.Configuration;
 
 import lombok.Data;
 
-/** {@code platform.artifacts}: the content-addressed store of uploads, plans and other run artifacts. */
+/** {@code platform.artifacts}: the store of uploads, plans, ended jobs' archives and other run artifacts. */
 @Data
 @Configuration
 @ConfigurationProperties(prefix = "platform.artifacts")
@@ -19,7 +19,7 @@ public class ArtifactsProperties {
     @Data
     public static class S3 {
         private String bucket = "";
-        /** Key prefix inside the bucket; objects live under {@code <prefix>sha256/<aa>/<digest>}. */
+        /** Key prefix inside the bucket; objects live under {@code <prefix>sha256/<aa>/<digest>}, a job's archive under {@code <prefix>jobs/<id>/}. */
         private String prefix = "artifacts/";
         /** Blank for AWS; the URL of MinIO, Ceph or any other S3-compatible store otherwise. */
         private String endpoint = "";

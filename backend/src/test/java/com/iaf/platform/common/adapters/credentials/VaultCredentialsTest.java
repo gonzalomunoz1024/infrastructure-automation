@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,6 +31,7 @@ class VaultCredentialsTest {
     AtomicInteger deniedDataWrites = new AtomicInteger();
     AtomicReference<String> posted = new AtomicReference<>();
     AtomicReference<String> postedMetadata = new AtomicReference<>();
+    PlatformProperties props;
     VaultCredentials vault;
 
     @BeforeEach
@@ -73,7 +75,7 @@ class VaultCredentialsTest {
                 default -> LocalHttp.respond(ex, 404, "{\"errors\":[\"unknown " + key + "\"]}");
             }
         });
-        PlatformProperties props = new PlatformProperties();
+        props = new PlatformProperties();
         props.getCredentials().setVaultUrl(LocalHttp.url(server) + "/");
         props.getCredentials().setVaultMount("secret");
         props.getCredentials().setVaultToken("tok");
@@ -167,5 +169,41 @@ class VaultCredentialsTest {
     void readsTheValueOutOfTheKvShape() {
         assertThat(VaultCredentials.valueOf(null)).isNull();
         assertThat(VaultCredentials.pathOf("vault:/a/b")).isEqualTo("a/b");
+    }
+
+
+    @Test
+    void expiredEntriesLeaveTheCacheOnTheNextMiss() {
+        AtomicReference<Instant> now = new AtomicReference<>(NOW);
+        Clock moving = new Clock() {
+            @Override
+            public ZoneId getZone() {
+                return ZoneOffset.UTC;
+            }
+
+            @Override
+            public Clock withZone(ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public Instant instant() {
+                return now.get();
+            }
+        };
+        VaultCredentials v = new VaultCredentials(WebClient.builder(), props, moving);
+
+        StepVerifier.create(v.resolve("vault:vsphere/token")).expectNext("s3cret").verifyComplete();
+        StepVerifier.create(v.resolve("vault:db/single")).expectNext("pw").verifyComplete();
+        assertThat(v.cached()).isEqualTo(2);
+
+        now.set(NOW.plusSeconds(VaultCredentials.CACHE_SECONDS - 1));
+        StepVerifier.create(v.resolve("vault:vsphere/token")).expectNext("s3cret").verifyComplete();
+        assertThat(dataHits.get()).as("still cached").isEqualTo(1);
+
+        now.set(NOW.plusSeconds(VaultCredentials.CACHE_SECONDS + 1));
+        StepVerifier.create(v.resolve("vault:vsphere/token")).expectNext("s3cret").verifyComplete();
+        assertThat(dataHits.get()).as("read again once expired").isEqualTo(2);
+        assertThat(v.cached()).as("the expired db/single entry went with the miss").isEqualTo(1);
     }
 }

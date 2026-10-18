@@ -1,0 +1,365 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workflow",
+  "description": "A kind: Workflow file of the platform, the shape docs/config-as-code.md describes. The designer, the checks (packages/workflow-checks and WorkflowChecks.java), POST /api/v1/workflows:validate and the publish judge a file against this schema first (schema.invalid, located by a JSON pointer); the parser and the rules follow. What the rules judge in detail stays loose here: api.input (a JSON Schema, meta-validated as api.input.invalid), the with block of a call step, the values of set, register.attributes and run.input. GET /api/v1/schemas/workflow.json serves this file.",
+  "type": "object",
+  "required": ["metadata"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "iaf.platform/v1" },
+    "kind": { "const": "Workflow" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "api": { "$ref": "#/$defs/api" },
+    "mcp": { "$ref": "#/$defs/mcp" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "triggers": {
+      "description": "Extra ways in besides the API and MCP: alerts and events; schedules are refused by the checks",
+      "type": "array",
+      "items": { "$ref": "#/$defs/trigger" }
+    },
+    "rollout": { "$ref": "#/$defs/rollout" },
+    "workflow": { "$ref": "#/$defs/flow" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Unique, kebab-case; the file is workflows/<team>/<name>.yaml" },
+        "title": { "type": "string" },
+        "noun": { "type": "string", "description": "With verb, drives the generated path and the MCP tool name" },
+        "verb": { "type": "string" },
+        "persona": { "type": "string" },
+        "owner": { "type": "string", "description": "The team that may edit and publish the workflow" },
+        "folder": { "type": "string" },
+        "tags": { "type": ["array", "string"], "items": { "type": "string" } },
+        "version": { "type": "string", "description": "The semantic version of this file, like 1.2.0" },
+        "description": { "type": "string" }
+      }
+    },
+    "api": {
+      "description": "The generated operation",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": { "type": "string", "description": "GET, POST, PUT, PATCH or DELETE; inferred from the verb when left out" },
+        "path": { "type": "string", "description": "Under /api/v<n>/, like /api/v1/vms/{vmId}:restart" },
+        "input": { "description": "A JSON Schema of type object: the operation's input, the MCP tool input and the catalog form" },
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": { "type": "integer" },
+            "body": { "description": "A JSON Schema of the job's output: an object with the keys of workflow.outputs" }
+          }
+        },
+        "preview": { "type": "boolean", "description": "Publish a :preview operation" },
+        "batch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max": { "type": "integer" },
+            "rollout": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "waves": { "type": "array", "items": { "type": "integer" } },
+                "maxParallel": { "type": "integer" },
+                "stopIfFailedPercent": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "deprecated": {
+          "description": "The operation still answers, with Deprecation, Sunset and Link headers",
+          "type": ["boolean", "object"],
+          "additionalProperties": false,
+          "properties": {
+            "since": { "type": "string", "description": "YYYY-MM-DD or an ISO date-time" },
+            "sunset": { "type": "string", "description": "After since" },
+            "replacement": { "type": "string", "description": "A path under /api/v<n>/ or a URL" },
+            "message": { "type": "string" }
+          }
+        }
+      }
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expose": { "type": "boolean" },
+        "description": { "type": "string" }
+      }
+    },
+    "policy": {
+      "description": "Who may run the workflow and what a run needs; rbac is required by the checks",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": { "type": "boolean" },
+            "group": { "type": "string" },
+            "timeout": { "type": "string", "description": "A duration like 4h" }
+          }
+        },
+        "rbac": { "type": "array", "items": { "type": "string" }, "description": "The roles that may invoke" },
+        "change": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "required": { "type": "boolean", "description": "A change is opened for every job" } }
+        }
+      }
+    },
+    "trigger": {
+      "description": "- alert: { match, input }, - event: { topic, input } or { type, ... }",
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "alert": {
+          "type": "object",
+          "properties": {
+            "match": { "type": "object", "description": "source and labels the alert must carry" },
+            "input": { "type": "object", "description": "The job input, from $alert" }
+          }
+        },
+        "event": {
+          "type": "object",
+          "properties": {
+            "topic": { "type": "string" },
+            "input": { "type": "object" }
+          }
+        },
+        "schedule": { "description": "Refused by the checks (trigger.schedule): schedules are not a feature" },
+        "type": { "type": "string" }
+      }
+    },
+    "rollout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": { "type": "string", "description": "canary or all" },
+        "stages": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "do": { "$ref": "#/$defs/steps" },
+        "catch": {
+          "description": "The error branch of the whole flow",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "do": { "$ref": "#/$defs/steps" } }
+        },
+        "outputs": {
+          "description": "What a succeeded job returns: each value an expression",
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number", "boolean", "null"] }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stepEntry" }
+    },
+    "stepEntry": {
+      "description": "- <stepId>: { <one step key>, ...common keys }",
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/step" }
+    },
+    "step": {
+      "description": "A step body: exactly one step key (call, run, approval, switch, fork, for, try, wait, set, raise, use, register, notify, script) plus the common keys; the parser refuses a second step key",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "What the canvas shows; defaults to the id" },
+        "call": {
+          "type": "string",
+          "enum": ["provider", "http", "ansible", "terraform", "idp", "activity", "approval"],
+          "description": "An integration step; with holds its parameters (approval here is the older spelling of the approval key)"
+        },
+        "with": { "type": "object", "description": "The parameters of a call step, as docs/config-as-code.md lists them per kind" },
+        "run": {
+          "description": "Run a published workflow as a child job",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "workflow": { "type": "string" },
+            "version": { "type": "string", "description": "A range like ^1, ~1.2 or 1.2.0" },
+            "input": { "description": "The child job's input" },
+            "onFailure": { "type": "string", "description": "fail (default) or continue" }
+          }
+        },
+        "approval": {
+          "description": "Human sign-off",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "group": { "type": "string" },
+            "message": { "type": "string" },
+            "timeout": { "type": "string", "description": "A duration like 4h" },
+            "escalation": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "after": { "type": "string" }, "to": { "type": "string" } }
+            }
+          }
+        },
+        "switch": {
+          "description": "[ { case: { when, then | do } }, { default: then | { do } } ]",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "when": { "type": "string" },
+                  "then": { "type": "string", "description": "A later step id or end" },
+                  "do": { "$ref": "#/$defs/steps" }
+                }
+              },
+              "default": {
+                "type": ["string", "object"],
+                "additionalProperties": false,
+                "properties": {
+                  "then": { "type": "string" },
+                  "do": { "$ref": "#/$defs/steps" }
+                }
+              }
+            }
+          }
+        },
+        "fork": {
+          "description": "Parallel branches, joined",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "branches": { "type": "array", "items": { "$ref": "#/$defs/steps" } } }
+        },
+        "for": {
+          "description": "A loop over a list",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "each": { "type": "string", "description": "The loop variable, reachable as $<each>" },
+            "in": { "type": "string", "description": "An expression yielding a list" },
+            "do": { "$ref": "#/$defs/steps" }
+          }
+        },
+        "try": {
+          "description": "Scoped error handling",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "do": { "$ref": "#/$defs/steps" },
+            "catch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "as": { "type": "string", "description": "The alias of the error, default error" },
+                "do": { "$ref": "#/$defs/steps" }
+              }
+            }
+          }
+        },
+        "wait": {
+          "description": "A duration (PT5M, 30m) or { duration } or { until: expression }",
+          "type": ["string", "object"],
+          "additionalProperties": false,
+          "properties": {
+            "duration": { "type": "string" },
+            "until": { "type": "string" }
+          }
+        },
+        "set": { "type": "object", "description": "Each key a variable reachable as $vars.<name>; each value an expression or literal" },
+        "raise": {
+          "description": "Fail the job",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "error": { "type": "string" },
+            "message": { "type": "string" }
+          }
+        },
+        "use": {
+          "description": "Resolve a registry resource",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string" },
+            "id": { "type": "string", "description": "May be an expression" },
+            "selector": { "type": "object", "description": "Attributes to match when there is no id" },
+            "waitUntil": { "type": "string", "description": "ready: hold the step until the registry reports the resource ready" },
+            "checkAccess": { "type": "boolean", "description": "Ask policy whether the requester may use it" }
+          }
+        },
+        "register": {
+          "description": "Record what the job created in the registry",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string" },
+            "id": { "type": "string", "description": "The registry mints one when absent" },
+            "state": { "type": "string", "description": "A state of the type, default ready" },
+            "attributes": { "description": "Values of the type's schema; each may be an expression" },
+            "builtFrom": { "type": ["string", "array"], "items": { "type": "string" } }
+          }
+        },
+        "notify": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "channel": { "type": "string", "description": "A channel like #ops" },
+            "message": { "type": "string", "description": "May contain expressions" }
+          }
+        },
+        "script": {
+          "description": "Sandboxed small logic",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "language": { "type": "string", "description": "javascript, python, bash or go" },
+            "code": { "type": "string" },
+            "input": { "description": "What the script sees as input" }
+          }
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "as": { "type": "string", "description": "An alias: the step's output is reachable as $<as>" } }
+        },
+        "assert": { "type": "string", "description": "An expression that must hold after the step" },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxAttempts": { "type": "integer" },
+            "backoff": { "type": "string", "description": "none, fixed or exponential" }
+          }
+        },
+        "timeout": { "type": "string", "description": "A duration like 10m or PT10M" },
+        "attentionTimeout": { "type": "string", "description": "A duration: how long the step may wait for a person before the job asks for attention" },
+        "pauseOnFailure": { "type": "boolean", "description": "Default true; false fails fast" },
+        "position": {
+          "description": "Where the canvas draws the step",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+        },
+        "notes": { "type": "string" },
+        "compensate": { "$ref": "#/$defs/steps", "description": "Steps run when a later step fails" }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.domain;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +11,7 @@ import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.catalog.domain.McpTools;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
@@ -18,24 +20,39 @@ import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.ContractRules.Consumer;
 
 /**
- * The pure CI checks of a change request: schema, checks (lint), ansible-lint, policy, replay,
- * diff, yaml. The command handler gathers what the policy and replay checks need and hands it
- * here; everything else is judged from the definition alone.
+ * The pure CI checks of a change request: schema, checks (lint), playbooks, policy, replay,
+ * contracts, diff, routes, yaml. The command handler gathers what the policy, replay and
+ * playbooks checks need (the engine's verdict, the jobs, the pins and the linter's findings)
+ * and hands it here; everything else is judged from the definition alone.
  */
 public final class PublishChecks {
 
     public static final String PASSED = "passed";
     public static final String FAILED = "failed";
     public static final String SKIPPED = "skipped";
+    /** The id of the playbooks check (pins resolved, digests present, the linter's findings). */
+    public static final String PLAYBOOKS = "playbooks";
+    /** The longest a linter's output gets in the check's detail; the rest is cut. */
+    static final int LINT_OUTPUT = 2000;
 
     private PublishChecks() {
     }
 
-    /** The file parses and its API input is a JSON Schema of an object. */
+    /**
+     * The stored file matches the Workflow schema (packages/workflow-checks/schemas/workflow.schema.json),
+     * and its API input is a JSON Schema of an object that the validator compiles and that refers
+     * to nothing outside itself.
+     */
     public static Check schema(WorkflowDefinition def) {
+        List<String> failures = new ArrayList<>(WorkflowSchema.validate(WorkflowYaml.toJson(def)).stream().map(Problem::message).toList());
         JsonNode input = def.inputSchema();
         if (input != null && (!input.isObject() || (input.has("type") && !"object".equals(input.path("type").asText())))) {
-            return new Check("schema", "Schema", FAILED, "api.input is not a JSON Schema of type object");
+            failures.add("api.input is not a JSON Schema of type object");
+        } else if (input != null) {
+            WorkflowChecks.inputSchemaProblems(input).forEach(p -> failures.add(p.message()));
+        }
+        if (!failures.isEmpty()) {
+            return new Check("schema", "Schema", FAILED, String.join("; ", failures));
         }
         int fields = input == null ? 0 : input.path("properties").size();
         return new Check("schema", "Schema", PASSED, "kind Workflow, " + def.allSteps().size() + " steps, " + fields + " input fields");
@@ -53,56 +70,93 @@ public final class PublishChecks {
         return new Check("checks", "Checks", errors > 0 ? FAILED : PASSED, detail);
     }
 
-    /** Passes when every ansible step is pinned to a commit; skipped when the workflow has none. */
-    public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx) {
-        List<Step> ansible = def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE).toList();
-        if (ansible.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", SKIPPED, "no ansible step");
-        }
-        List<String> unpinned = ansible.stream().filter(s -> !pinned(s, ctx)).map(Step::id).toList();
-        if (unpinned.isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", PASSED, ansible.size() + " playbook(s) pinned to a commit");
-        }
-        return new Check("ansible-lint", "ansible-lint", FAILED, "not pinned to a commit: " + String.join(", ", unpinned));
+    /**
+     * The playbooks check, pins resolved and digests present: passes when every ansible step is
+     * pinned, a git playbook to a commit, an upload to a digest of 64 hex digits, a library
+     * playbook through its provider's commit. Skipped when the workflow has no ansible step.
+     */
+    public static Check playbooks(WorkflowDefinition def, CheckContext ctx) {
+        return playbooks(def, ctx, null, null);
     }
 
     /**
-     * As {@link #ansibleLint(WorkflowDefinition, CheckContext)}, after the publish pinned git
-     * playbooks: a ref that did not resolve fails the check with the reason; the pinned steps
-     * are named in the detail.
+     * As {@link #playbooks(WorkflowDefinition, CheckContext)}, after the publish pinned git
+     * playbooks (a ref that did not resolve fails the check with the reason; the pinned steps
+     * are named in the detail) and ran the configured linter on them: each finding fails the
+     * check with the linter's output.
      */
-    public static Check ansibleLint(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins) {
-        Check check = ansibleLint(def, ctx);
-        if (pins == null || (pins.failures().isEmpty() && pins.pinned().isEmpty())) {
-            return check;
+    public static Check playbooks(WorkflowDefinition def, CheckContext ctx, PlaybookPins.Outcome pins, PlaybookPins.Lint lint) {
+        List<Step> ansible = def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE).toList();
+        if (ansible.isEmpty()) {
+            return new Check(PLAYBOOKS, "Playbooks", SKIPPED, "no ansible step");
         }
-        if (!pins.failures().isEmpty()) {
-            return new Check("ansible-lint", "ansible-lint", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
+        if (pins != null && !pins.failures().isEmpty()) {
+            // the step whose ref did not resolve is unpinned as well; the reason is the message
+            return new Check(PLAYBOOKS, "Playbooks", FAILED, "could not pin to a commit: " + String.join("; ", pins.failures()));
         }
-        String pinned = pins.pinned().entrySet().stream().map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length())))
-                .collect(Collectors.joining(", "));
-        return new Check(check.id(), check.label(), check.status(), check.detail() + "; pinned at publish: " + pinned);
+        List<String> failures = new ArrayList<>();
+        List<String> unpinned = ansible.stream().filter(s -> pinState(s, ctx) == PinState.UNPINNED).map(Step::id).toList();
+        if (!unpinned.isEmpty()) {
+            failures.add("not pinned to a commit: " + String.join(", ", unpinned));
+        }
+        List<String> badDigests = ansible.stream().filter(s -> pinState(s, ctx) == PinState.BAD_DIGEST).map(Step::id).toList();
+        if (!badDigests.isEmpty()) {
+            failures.add("upload digest is not 64 hex digits (playbook.digest): " + String.join(", ", badDigests));
+        }
+        if (lint != null && !lint.findings().isEmpty()) {
+            failures.add("the linter found problems: " + lint.findings().stream().map(PublishChecks::capped).collect(Collectors.joining("; ")));
+        }
+        if (!failures.isEmpty()) {
+            return new Check(PLAYBOOKS, "Playbooks", FAILED, String.join("; ", failures));
+        }
+        String detail = ansible.size() + " playbook(s) pinned to a commit";
+        if (lint != null && !lint.linted().isEmpty()) {
+            detail += ", " + lint.linted().size() + " linted";
+        }
+        if (pins != null && !pins.pinned().isEmpty()) {
+            detail += "; pinned at publish: " + pins.pinned().entrySet().stream()
+                    .map(e -> e.getKey() + " to " + e.getValue().substring(0, Math.min(12, e.getValue().length()))).collect(Collectors.joining(", "));
+        }
+        return new Check(PLAYBOOKS, "Playbooks", PASSED, detail);
+    }
+
+    /** A finding with the linter's output on one line and cut at {@link #LINT_OUTPUT} characters. */
+    private static String capped(String finding) {
+        String line = finding.strip().replaceAll("\\s*\\R\\s*", " | ");
+        return line.length() <= LINT_OUTPUT ? line : line.substring(0, LINT_OUTPUT - 1) + "…";
+    }
+
+    /** How an ansible step's playbook is pinned: to a commit or a digest, not at all, or to a digest that is not one. */
+    enum PinState {
+        PINNED, UNPINNED, BAD_DIGEST
     }
 
     static boolean pinned(Step s, CheckContext ctx) {
+        return pinState(s, ctx) == PinState.PINNED;
+    }
+
+    static PinState pinState(Step s, CheckContext ctx) {
         JsonNode pb = s.withNode("playbook");
         if (pb == null || pb.isNull()) {
-            return false;
+            return PinState.UNPINNED;
         }
         if (pb.isTextual()) {
-            return libraryPinned(pb.asText(), ctx);
+            return libraryPinned(pb.asText(), ctx) ? PinState.PINNED : PinState.UNPINNED;
         }
         if (!pb.isObject()) {
-            return false;
+            return PinState.UNPINNED;
         }
         if (pb.path("commit").asText(null) != null) {
-            return true;
+            return PinState.PINNED;
         }
-        if (pb.has("upload") && pb.path("upload").path("sha256").asText(null) != null) {
-            return true;
+        if (pb.path("upload").isObject()) {
+            String sha256 = pb.path("upload").path("sha256").asText(null);
+            if (sha256 != null) {
+                return PlaybookPins.DIGEST.matcher(sha256).matches() ? PinState.PINNED : PinState.BAD_DIGEST;
+            }
         }
         JsonNode library = pb.get("library");
-        return library != null && library.isTextual() && libraryPinned(library.asText(), ctx);
+        return library != null && library.isTextual() && libraryPinned(library.asText(), ctx) ? PinState.PINNED : PinState.UNPINNED;
     }
 
     private static boolean libraryPinned(String ref, CheckContext ctx) {
@@ -118,10 +172,6 @@ public final class PublishChecks {
         String rules = decision.rules() == null || decision.rules().isEmpty() ? ""
                 : ": " + decision.rules().stream().map(r -> r.id() + " " + r.result() + (r.message() == null ? "" : " (" + r.message() + ")")).collect(Collectors.joining("; "));
         return new Check("policy", "Policy", decision.allowed() ? PASSED : FAILED, decision.engine() + " says " + decision.decision() + rules);
-    }
-
-    public static Check policyUnavailable(String reason) {
-        return new Check("policy", "Policy", FAILED, "policy engine unavailable: " + reason);
     }
 
     /** @param previousVersion the version whose jobs were replayed, null when there was none */
@@ -178,6 +228,59 @@ public final class PublishChecks {
     }
 
     /**
+     * What the registry refuses beyond the change-request checks, as errors: publishing answers
+     * 409 with them and opens nothing, {@code :validate} reports them and merging judges them
+     * again (another workflow may have been published since). Each is judged against the other
+     * published workflows, with {@code def} in place of its own published version.
+     */
+    public static List<Problem> registryProblems(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        List<Problem> out = new ArrayList<>(mcpToolNames(def, published));
+        out.addAll(runCycles(def, published));
+        return out;
+    }
+
+    /**
+     * {@code run.cycle}: a run step or {@code orCreateWith} input of {@code def} whose workflow,
+     * through what the other published workflows start, ends up starting {@code def} again.
+     */
+    public static List<Problem> runCycles(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        Map<String, Set<String>> runs = DependencyRules.runs(published.stream()
+                .filter(o -> o != null && o.name() != null && !o.name().equals(def.name())).toList());
+        return DependencyRules.loops(def, n -> runs.getOrDefault(n, Set.of())).stream().map(WorkflowChecks::cycleProblem).toList();
+    }
+
+    /**
+     * {@code mcp.toolName}: another published workflow already has one of the MCP tools this one
+     * would get ({@code <noun>_<verb>} or its batch tool). The MCP server lists one tool per name,
+     * so one of the two would silently stop being a tool.
+     */
+    public static List<Problem> mcpToolNames(WorkflowDefinition def, List<WorkflowDefinition> published) {
+        List<String> mine = McpTools.toolNames(def);
+        if (mine.isEmpty()) {
+            return List.of();
+        }
+        Map<String, String> taken = new LinkedHashMap<>();
+        published.stream().filter(o -> o != null && o.name() != null && !o.name().equals(def.name()))
+                .sorted(Comparator.comparing(WorkflowDefinition::name))
+                .forEach(o -> McpTools.toolNames(o).forEach(t -> taken.putIfAbsent(t, o.name())));
+        return mine.stream().filter(taken::containsKey).findFirst()
+                .map(t -> List.of(Problem.error("mcp.toolName", null, "mcp.expose", WorkflowChecks.mcpToolMessage(t, taken.get(t)))))
+                .orElse(List.of());
+    }
+
+    /**
+     * The designer's problems with what publishing refuses: an error replaces the designer's
+     * warning of the same code (the designer judged the same thing from a context that can be
+     * older), and a problem both report is listed once.
+     */
+    public static List<Problem> merge(List<Problem> designer, List<Problem> publish) {
+        Set<String> refused = publish.stream().filter(Problem::isError).map(Problem::code).collect(Collectors.toSet());
+        List<Problem> out = new ArrayList<>(designer.stream().filter(p -> p.isError() || !refused.contains(p.code())).toList());
+        publish.stream().filter(p -> !out.contains(p)).forEach(out::add);
+        return out;
+    }
+
+    /**
      * Fails when this version breaks its consumers without a new major version ({@link
      * ContractRules#breakingChanges}). The detail lists every consumer the version reaches: run
      * steps whose range accepts it, {@code orCreateWith} inputs, and the workflows that use a
@@ -213,9 +316,10 @@ public final class PublishChecks {
     }
 
     /**
-     * The change-request checks judged from the files alone (ansible-lint, routes, contracts) as
-     * problems, so the validate endpoint reports what the change request would fail on. Policy
-     * and replay need the engine and stay with the change request.
+     * The change-request checks judged from the files alone (playbooks, routes, contracts) as
+     * problems, so the validate endpoint reports what the change request would fail on, and the
+     * {@link #registryProblems} publishing refuses. Policy and replay need the engine, and the
+     * linter a checkout of each playbook, so they stay with the change request.
      *
      * @param def       the definition with the version it would be published as
      * @param previous  the current published version of the same workflow, null when there is none
@@ -223,8 +327,10 @@ public final class PublishChecks {
     public static List<Problem> problems(WorkflowDefinition def, CheckContext ctx, List<WorkflowDefinition> published, WorkflowDefinition previous,
             DependencyRules.Graph graph) {
         List<Problem> out = new ArrayList<>();
-        def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && !pinned(s, ctx)).forEach(s -> out.add(Problem.error("publish.ansibleLint", s.id(), "playbook",
-                "The ansible-lint check of the change request fails: pin the playbook to a commit")));
+        // a digest that is not one is already playbook.digest from the designer checks
+        def.allSteps().stream().filter(s -> s.type() == StepType.ANSIBLE && pinState(s, ctx) == PinState.UNPINNED)
+                .forEach(s -> out.add(Problem.error("publish.playbooks", s.id(), "playbook",
+                        "The playbooks check of the change request fails: pin the playbook to a commit")));
         if (def.path() != null) {
             routeClashes(def, published).forEach(c -> out.add(Problem.error("publish.routes", null, "api.path", "The routes check of the change request fails: " + c)));
         }
@@ -234,6 +340,7 @@ public final class PublishChecks {
             out.add(Problem.error("publish.contracts", null, "metadata.version", "The contracts check of the change request fails: " + contracts.detail(),
                     Fix.replace("Publish as " + major, major)));
         }
+        out.addAll(registryProblems(def, published));
         return out;
     }
 

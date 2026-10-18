@@ -6,11 +6,13 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./cli": "./cli.ts"
+    "./cli": "./cli.ts",
+    "./schemas/workflow.schema.json": "./schemas/workflow.schema.json"
   },
   "files": [
     "src",
-    "cli.ts"
+    "cli.ts",
+    "schemas"
   ],
   "scripts": {
     "test": "vitest run",

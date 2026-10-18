@@ -7,13 +7,16 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
@@ -125,6 +128,40 @@ class GitWorkflowStoreTest {
     }
 
     @Test
+    void aRollbackIsACommitOnMainThatARestartReadsBack() throws Exception {
+        GitWorkflowStore store = new GitWorkflowStore(dir, clock);
+        store.init();
+        WorkflowRecord candidate = draft("hello again", "1.0.1");
+        store.save(candidate);
+        store.save(store.published("hello").orElseThrow().withStatus(WorkflowStatus.RETIRED));
+        store.save(candidate.withStatus(WorkflowStatus.CANDIDATE).published(NOW, "ana", "rel_1"));
+
+        // the release is rolled back: 1.0.0 is published again, 1.0.1 retired and marked (a second save marks nothing more)
+        store.save(store.get("hello", "1.0.0").orElseThrow().withStatus(WorkflowStatus.PUBLISHED));
+        store.save(store.get("hello", "1.0.1").orElseThrow().asRolledBack());
+        store.save(store.get("hello", "1.0.1").orElseThrow().asRolledBack());
+        assertThat(store.get("hello", "1.0.1").orElseThrow().rolledBack()).isTrue();
+        try (Git git = Git.open(dir.toFile()); RevWalk rw = new RevWalk(git.getRepository())) {
+            RevCommit head = rw.parseCommit(git.getRepository().resolve("refs/heads/main"));
+            RevCommit parent = rw.parseCommit(head.getParent(0));
+            assertThat(head.getFullMessage()).isEqualTo("Roll back hello 1.0.1\n\nRolled-back: hello 1.0.1\n");
+            assertThat(head.getTree().getId()).as("the mark changes no file").isEqualTo(parent.getTree().getId());
+            assertThat(parent.getFullMessage()).isEqualTo("Publish hello 1.0.0");
+            assertThat(git.status().call().isClean()).isTrue();
+        }
+        store.close();
+
+        GitWorkflowStore again = new GitWorkflowStore(dir, clock);
+        again.init();
+        assertThat(again.versions("hello")).extracting(WorkflowRecord::version, WorkflowRecord::status, WorkflowRecord::rolledBack)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("1.0.0", WorkflowStatus.PUBLISHED, false),
+                        org.assertj.core.groups.Tuple.tuple("1.0.1", WorkflowStatus.RETIRED, true));
+        again.close();
+        assertThat(GitWorkflowStore.rolledBackIn("Roll back a 1.0.0\n\nRolled-back: a 1.0.0\nRolled-back: b 2.0.0 \n")).containsExactly("a 1.0.0", "b 2.0.0");
+        assertThat(GitWorkflowStore.rolledBackIn("Publish a 1.0.0")).isEmpty();
+    }
+
+    @Test
     void deletingADraftRemovesItsBranchAndANewWorkflowGetsItsOwnFile() throws Exception {
         GitWorkflowStore store = new GitWorkflowStore(dir, clock);
         store.init();
@@ -145,6 +182,33 @@ class GitWorkflowStoreTest {
         assertThat(again.draft("other").orElseThrow().updatedBy()).isEqualTo("mateo");
         again.close();
         store.close();
+    }
+
+    @Test
+    void aVersionUnderReviewIsACandidateAgainAfterARestart() {
+        GitWorkflowStore store = new GitWorkflowStore(dir, clock);
+        store.init();
+        store.save(draft("review me", "1.0.1").withStatus(WorkflowStatus.CANDIDATE));
+        store.save(draft("not yet", "1.1.0"));
+        store.close();
+        InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
+        changeRequests.save(new ChangeRequest("cr_1", ChangeRequest.Kind.WORKFLOW, "hello", "1.0.1", "change/hello-1.0.1", "Update Hello 1.0.1", "ana",
+                ChangeRequest.Status.OPEN, List.of(), "all", "", "", NOW, null, null, null));
+
+        GitWorkflowStore restarted = new GitWorkflowStore(dir, clock);
+        restarted.setChangeRequests(changeRequests);
+        restarted.init();
+        assertThat(restarted.get("hello", "1.0.1").orElseThrow().status()).as("its change request is open").isEqualTo(WorkflowStatus.CANDIDATE);
+        assertThat(restarted.get("hello", "1.1.0").orElseThrow().status()).isEqualTo(WorkflowStatus.DRAFT);
+        assertThat(restarted.draft("hello").orElseThrow().version()).isEqualTo("1.1.0");
+        restarted.close();
+
+        changeRequests.save(changeRequests.get("cr_1").orElseThrow().withStatus(ChangeRequest.Status.CLOSED, NOW, "ana"));
+        GitWorkflowStore closed = new GitWorkflowStore(dir, clock);
+        closed.setChangeRequests(changeRequests);
+        closed.init();
+        assertThat(closed.get("hello", "1.0.1").orElseThrow().status()).as("its change request was closed").isEqualTo(WorkflowStatus.DRAFT);
+        closed.close();
     }
 
     @Test

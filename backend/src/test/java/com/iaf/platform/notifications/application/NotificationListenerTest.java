@@ -110,4 +110,53 @@ class NotificationListenerTest {
         assertThat(Optional.ofNullable(store.visibleTo(new Identity("mateo", "Mateo", null, List.of("team-compute"), List.of(), false,
                 Identity.Kind.USER)))).hasValueSatisfying(l -> assertThat(l).isEmpty());
     }
+
+
+    @Test
+    void aChangeRequestAsksTheOwnerTeamForAReview() {
+        ObjectNode d = F.objectNode().put("id", "cr_12").put("kind", "workflow").put("name", "vm-restart").put("version", "1.3.0")
+                .put("by", "ana").put("owner", "team-compute");
+
+        Notification n = listener.notificationFor(event("change-request.opened", "cr_12", NOW, d)).orElseThrow();
+
+        assertThat(n.kind()).isEqualTo(Notification.REVIEW_REQUESTED);
+        assertThat(n.severity()).isEqualTo("info");
+        assertThat(n.title()).isEqualTo("Review requested: vm-restart 1.3.0");
+        assertThat(n.message()).isEqualTo("ana opened a change request for workflow vm-restart 1.3.0");
+        assertThat(n.link()).isEqualTo("/change-requests/cr_12");
+        assertThat(n.teams()).containsExactly("team-compute");
+        assertThat(n.users()).isEmpty();
+        assertThat(n.workflow()).isEqualTo("vm-restart");
+        assertThat(n.provider()).isNull();
+
+        ObjectNode p = F.objectNode().put("name", "vsphere").put("version", "2.0.0").put("changeRequestId", "cr_13").put("by", "mateo")
+                .put("owner", "team-platform");
+
+        Notification m = listener.notificationFor(event("provider.change-requested", "vsphere", NOW, p)).orElseThrow();
+
+        assertThat(m.kind()).isEqualTo(Notification.REVIEW_REQUESTED);
+        assertThat(m.title()).isEqualTo("Review requested: vsphere 2.0.0");
+        assertThat(m.message()).isEqualTo("mateo opened a change request for provider vsphere 2.0.0");
+        assertThat(m.link()).isEqualTo("/change-requests/cr_13");
+        assertThat(m.teams()).containsExactly("team-platform");
+        assertThat(m.users()).isEmpty();
+        assertThat(m.provider()).isEqualTo("vsphere");
+    }
+
+    @Test
+    void aChangeRequestWithoutAnOwnerOrFromTheHistoryAsksNobody() {
+        ObjectNode unowned = F.objectNode().put("id", "cr_12").put("kind", "workflow").put("name", "vm-restart").put("version", "1.3.0").put("by", "ana");
+        ObjectNode unownedProvider = F.objectNode().put("name", "vsphere").put("version", "2.0.0").put("changeRequestId", "cr_13").put("by", "mateo");
+
+        assertThat(listener.notificationFor(event("change-request.opened", "cr_12", NOW, unowned))).isEmpty();
+        assertThat(listener.notificationFor(event("change-request.opened", "cr_12", NOW, unowned.deepCopy().put("owner", " ")))).isEmpty();
+        assertThat(listener.notificationFor(event("change-request.opened", "cr_12", NOW, null))).isEmpty();
+        assertThat(listener.notificationFor(event("provider.change-requested", "vsphere", NOW, unownedProvider))).isEmpty();
+        assertThat(listener.notificationFor(event("provider.change-requested", "vsphere", NOW, F.objectNode()))).isEmpty();
+
+        ObjectNode owned = unowned.deepCopy().put("owner", "team-compute");
+        assertThat(listener.notificationFor(event("change-request.opened", "cr_12", NOW.minus(Duration.ofHours(2)), owned))).isEmpty();
+        assertThat(listener.notificationFor(event("provider.change-requested", "vsphere", NOW.minus(Duration.ofHours(2)),
+                unownedProvider.deepCopy().put("owner", "team-platform")))).isEmpty();
+    }
 }

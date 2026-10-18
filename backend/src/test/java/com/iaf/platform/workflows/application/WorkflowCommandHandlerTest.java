@@ -1,17 +1,24 @@
 package com.iaf.platform.workflows.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -20,15 +27,21 @@ import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Problem;
+import com.iaf.platform.common.domain.ServiceUnavailableException;
 import com.iaf.platform.common.events.DomainEvent;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.ArtifactStorePort;
 import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.common.ports.GitRemotePort;
 import com.iaf.platform.common.ports.GitRemotePort.RemoteUnavailable;
 import com.iaf.platform.common.ports.GitRemotePort.Resolved;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
+import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
+import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
+import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
@@ -41,6 +54,7 @@ import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.ReplayResult;
+import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
@@ -129,6 +143,7 @@ class WorkflowCommandHandlerTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - say:
@@ -235,7 +250,7 @@ class WorkflowCommandHandlerTest {
         assertThat(cr.author()).isEqualTo("platform");
         assertThat(cr.strategy()).isEqualTo("canary");
         assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
-        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "ansible-lint", "policy", "replay", "contracts", "diff", "routes", "yaml");
+        assertThat(cr.checks()).extracting(Check::id).containsExactly("schema", "checks", "playbooks", "policy", "replay", "contracts", "diff", "routes", "yaml");
         assertThat(cr.checks()).extracting(Check::status).containsOnly("passed");
         assertThat(cr.checksPassed()).isTrue();
         assertThat(cr.diff()).contains("--- a/workflows/team-compute/vm-restart.yaml").contains("+  description: Restart a virtual machine after safety checks (edited).");
@@ -247,6 +262,8 @@ class WorkflowCommandHandlerTest {
         assertThat(opened.aggregateId()).isEqualTo(cr.id());
         assertThat(opened.data().path("kind").asText()).isEqualTo("workflow");
         assertThat(opened.data().path("version").asText()).isEqualTo("1.2.1");
+        assertThat(opened.data().path("by").asText()).isEqualTo("platform");
+        assertThat(opened.data().path("owner").asText()).as("the owner team of the version under review").isEqualTo("team-compute");
         // a second publish while the change request is open is refused
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart).replace("(edited)", "(again)"))).block();
         StepVerifier.create(handler.publish("vm-restart", null)).expectError(ConflictException.class).verify();
@@ -264,7 +281,7 @@ class WorkflowCommandHandlerTest {
 
         assertThat(cr.yaml()).contains("commit: " + commit);
         assertThat(cr.diff()).containsPattern("\\n-\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d\\n").containsPattern("\\n\\+\\s+commit: " + commit + "\\n");
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
                 .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
                 .satisfies(c -> assertThat(c.detail()).endsWith("pinned at publish: restart to 9f2c0b7e1d4a"));
         assertThat(cr.checksPassed()).isTrue();
@@ -274,7 +291,7 @@ class WorkflowCommandHandlerTest {
     }
 
     @Test
-    void aRefThatDoesNotResolveAtPublishFailsTheAnsibleLintCheckWithTheReason() {
+    void aRefThatDoesNotResolveAtPublishFailsThePlaybooksCheckWithTheReason() {
         GitRemotePort git = org.mockito.Mockito.mock(GitRemotePort.class);
         when(git.resolve(any(), any(), any())).thenReturn(Mono.error(new RemoteUnavailable("Could not read https://github.com/acme/ops-playbooks: connect timed out")));
         handler.setPlaybookPinning(new PlaybookPinning(git, credentials));
@@ -283,7 +300,7 @@ class WorkflowCommandHandlerTest {
         String crId = handler.publish("vm-restart", null).block().id();
         ChangeRequest cr = changeRequests.get(crId).orElseThrow();
 
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).singleElement()
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
                 .satisfies(c -> assertThat(c.status()).isEqualTo("failed"))
                 .satisfies(c -> assertThat(c.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve"
                         + " (Could not read https://github.com/acme/ops-playbooks: connect timed out)"));
@@ -291,8 +308,122 @@ class WorkflowCommandHandlerTest {
         StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
     }
 
+    @Test
+    void aLinterThatRefusesAPinnedPlaybookFailsThePlaybooksCheckAndOneThatAcceptsItPasses(@TempDir Path checkout) throws Exception {
+        Files.createDirectories(checkout.resolve("vm"));
+        Files.writeString(checkout.resolve("vm/restart.yml"), "- hosts: all\n");
+        GitRemotePort git = mock(GitRemotePort.class);
+        when(git.checkout("github.com/acme/ops-playbooks", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", null)).thenReturn(Mono.just(checkout));
+        PlaybooksProperties props = new PlaybooksProperties();
+        props.setLintCommand("ansible-lint --offline {playbook}");
+        List<Path> linted = new ArrayList<>();
+        PlaybookLintPort refusing = (dir, playbook) -> {
+            linted.add(dir);
+            return Optional.of(new LintResult(false, dir + "/" + playbook + ":1: name[play]: All plays should be named\n"));
+        };
+        handler.setPlaybookLinting(new PlaybookLinting(git, refusing, props));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        String crId = handler.publish("vm-restart", null).block().id();
+
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("failed");
+            assertThat(c.detail()).isEqualTo("the linter found problems: step restart (github.com/acme/ops-playbooks@4e1d9a2c7b0f vm/restart.yml): "
+                    + "vm/restart.yml:1: name[play]: All plays should be named");
+        });
+        assertThat(linted).singleElement().satisfies(dir -> {
+            assertThat(dir).as("a copy of the shared checkout").isNotEqualTo(checkout);
+            assertThat(Files.exists(dir)).as("and gone afterwards").isFalse();
+        });
+        StepVerifier.create(handler.mergeChangeRequest(crId)).expectError(ConflictException.class).verify();
+
+        handler.closeChangeRequest(crId).block();
+        handler.setPlaybookLinting(new PlaybookLinting(git, (dir, playbook) -> Optional.of(new LintResult(true, "")), props));
+        ChangeRequest again = changeRequests.get(handler.publish("vm-restart", null).block().id()).orElseThrow();
+        assertThat(again.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit, 1 linted"));
+    }
+
     static String unpinned(String yaml) {
         return yaml.replaceAll("\\s+commit: 4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "");
+    }
+
+    static final String DIGEST = "9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c0b7e1d4a9f2c";
+
+    static String uploadWorkflow(String sha256) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: site-deploy, title: Site deploy, noun: site, verb: deploy, owner: team-compute, version: 1.0.0 }
+                policy:
+                  rbac: [ops]
+                workflow:
+                  do:
+                    - deploy:
+                        call: ansible
+                        with:
+                          playbook: { upload: { file: site.zip, sha256: "%s", path: site.yml } }
+                          inventory: dynamic
+                        retry: { maxAttempts: 1 }
+                """.formatted(sha256);
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<Problem> problemsOf(Throwable e) {
+        assertThat(e).isInstanceOf(ConflictException.class).hasMessage("checks failed");
+        return (List<Problem>) ((ConflictException) e).detail();
+    }
+
+    @Test
+    void publishIsRefusedWhenTheArtifactStoreNoLongerHoldsAnUploadedPlaybook() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.just(false));
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow(DIGEST))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).singleElement().satisfies(p -> {
+                    assertThat(p.code()).isEqualTo("playbook.missing");
+                    assertThat(p.step()).isEqualTo("deploy");
+                    assertThat(p.field()).isEqualTo("playbook.upload.sha256");
+                    assertThat(p.message()).contains("upload the file again");
+                }))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("site-deploy")).as("the draft stays a draft").isPresent();
+
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.just(true));
+        ChangeRequest cr = changeRequests.get(handler.publish("site-deploy", null).block().id()).orElseThrow();
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).singleElement()
+                .satisfies(c -> assertThat(c.status()).isEqualTo("passed"))
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 playbook(s) pinned to a commit"));
+    }
+
+    @Test
+    void publishIsRefusedWhenAnUploadDigestIsNotOneWithoutAskingTheArtifactStore() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow("SHA256:9F2C0B7E"))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).containsExactly("playbook.digest"))
+                .verify();
+        verifyNoInteractions(artifacts);
+        assertThat(changeRequests.all()).isEmpty();
+    }
+
+    @Test
+    void anApiInputTheValidatorCannotCompileIsReportedAtSaveAndRefusedAtPublish() {
+        String badInput = vmRestart.replaceFirst("required: \\[([^]]*)\\]", "required: $1");
+        assertThat(badInput).isNotEqualTo(vmRestart);
+        DraftSaved saved = handler.saveDraft("vm-restart", WorkflowSource.ofYaml(badInput)).block();
+        assertThat(saved.problems()).extracting(Problem::code, Problem::field).containsExactly(tuple("api.input.invalid", "api.input.required"));
+
+        StepVerifier.create(handler.publish("vm-restart", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).containsExactly("api.input.invalid"))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
     }
 
     @Test
@@ -345,6 +476,169 @@ class WorkflowCommandHandlerTest {
         assertThat(event.data().path("strategy").asText()).isEqualTo("all");
         assertThat(event.data().path("by").asText()).isEqualTo("platform");
         StepVerifier.create(handler.mergeChangeRequest(crId)).as("merging twice").expectError(ConflictException.class).verify();
+    }
+
+    @Test
+    void aCredentialAnotherTeamOwnsIsReportedAtSaveAndRefusedAtPublish() {
+        // ana's team-data workflow names the ssh key team-compute owns
+        when(credentials.list()).thenReturn(Mono.just(List.of(
+                new CredentialsPort.CredentialInfo("ssh/ops-automation", "ssh-key", "vault:ssh/ops-automation", "team-compute", NOW))));
+        String borrowed = vmRestart.replace("name: vm-restart", "name: vm-restart-data").replace("owner: team-compute", "owner: team-data")
+                .replace("verb: restart", "verb: reboot");
+        String owner = "Credential vault:ssh/ops-automation belongs to team-compute; a workflow of team-data may use its own team's credentials and unowned ones";
+
+        StepVerifier.create(handler.saveDraft("vm-restart-data", WorkflowSource.ofYaml(borrowed)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .assertNext(saved -> assertThat(saved.problems()).extracting(Problem::code, Problem::step, Problem::message)
+                        .contains(tuple("credential.owner", "restart", owner)))
+                .verifyComplete();
+        StepVerifier.create(handler.publish("vm-restart-data", new PublishWorkflow("all", null)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::message).contains(tuple("credential.owner", owner)))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("vm-restart-data")).as("the draft stays a draft").isPresent();
+
+        // a vault that cannot list its credentials gives no verdict on whose they are: try again
+        when(credentials.list()).thenReturn(Mono.error(new IllegalStateException("vault sealed")));
+        StepVerifier.create(handler.publish("vm-restart-data", new PublishWorkflow("all", null)).contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("credential store unavailable, try again"))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+    }
+
+    static String thing(String name, String verb, String path) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: %s, title: Thing %s, noun: thing, verb: %s, owner: team-compute }
+                api:
+                  path: %s
+                  input: { type: object, required: [thingId], properties: { thingId: { type: string } } }
+                mcp: { expose: true }
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - say:
+                        notify: { channel: "#x", message: "hi {{ $input.thingId }}" }
+                """.formatted(name, verb, verb, path);
+    }
+
+    @Test
+    void aWorkflowWhoseMcpToolAnotherPublishedWorkflowHasIsRefusedAtPublishAndOpensNothing() {
+        // vm-bounce takes vm-restart's noun and verb: the MCP server would list one vm_restart tool for both
+        String bounce = vmRestart.replace("name: vm-restart", "name: vm-bounce").replace("{vmId}:restart", "{vmId}:bounce");
+        handler.createDraft(WorkflowSource.ofYaml(bounce)).block();
+        StepVerifier.create(handler.publish("vm-bounce", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).filteredOn(p -> p.code().equals("mcp.toolName"))
+                        .extracting(Problem::level, Problem::field, Problem::message)
+                        .containsExactly(tuple(Problem.Level.ERROR, "mcp.expose", "MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false")))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("vm-bounce")).as("the draft stays a draft").isPresent();
+        // :validate says the same, once, as the error
+        StepVerifier.create(handler.validate(WorkflowSource.ofYaml(bounce)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).filteredOn(p -> p.code().equals("mcp.toolName")).extracting(Problem::level).containsExactly(Problem.Level.ERROR);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void aMergeIsRefusedWhenAnotherWorkflowGotTheSameMcpToolSinceTheChangeRequestOpened() {
+        handler.createDraft(WorkflowSource.ofYaml(thing("thing-refresh", "refresh", "/api/v1/things/{thingId}:refresh"))).block();
+        handler.createDraft(WorkflowSource.ofYaml(thing("thing-renew", "refresh", "/api/v1/things/{thingId}:renew"))).block();
+        // neither is published yet, so both open
+        String first = handler.publish("thing-refresh", null).block().id();
+        String second = handler.publish("thing-renew", null).block().id();
+        handler.mergeChangeRequest(first).block();
+
+        StepVerifier.create(handler.mergeChangeRequest(second))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::message)
+                        .containsExactly(tuple("mcp.toolName", "MCP tool thing_refresh is already exposed by workflow thing-refresh; give this workflow another noun or verb, or set mcp.expose to false")))
+                .verify();
+        assertThat(changeRequests.get(second).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(store.published("thing-renew")).isEmpty();
+    }
+
+    static String ring(String name, String version, String runs) {
+        return """
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: %s, title: Ring %s, noun: ring, verb: %s, owner: team-compute, version: %s }
+                api:
+                  path: /api/v1/rings/{ringId}:%s
+                  input: { type: object, required: [ringId], properties: { ringId: { type: string } } }
+                policy: { rbac: [ops] }
+                workflow:
+                  do:
+                    - say:
+                        notify: { channel: "#x", message: "hi {{ $input.ringId }}" }
+                %s""".formatted(name, name, name.substring(5), version, name.substring(5),
+                runs == null ? "" : "    - next:\n        run: { workflow: " + runs + ", version: \"^1\", input: { ringId: \"{{ $input.ringId }}\" } }\n");
+    }
+
+    @Test
+    void aRunStepThatClosesACycleIsRefusedAtPublishAndOneThatClosedSinceAtMerge() {
+        // ring-a and ring-b are published and start nothing
+        for (String name : List.of("ring-a", "ring-b")) {
+            handler.createDraft(WorkflowSource.ofYaml(ring(name, "1.0.0", null))).block();
+            handler.mergeChangeRequest(handler.publish(name, null).block().id()).block();
+        }
+        // each change on its own is no cycle: a starts b, b starts a (as published, a starts nothing)
+        handler.saveDraft("ring-a", WorkflowSource.ofYaml(ring("ring-a", "1.1.0", "ring-b"))).block();
+        handler.saveDraft("ring-b", WorkflowSource.ofYaml(ring("ring-b", "1.1.0", "ring-a"))).block();
+        String first = handler.publish("ring-a", null).block().id();
+        String second = handler.publish("ring-b", null).block().id();
+        handler.mergeChangeRequest(first).block();
+
+        String loop = "Runs go round in a cycle: ring-b -> ring-a -> ring-b; a job would wait for itself and never finish";
+        StepVerifier.create(handler.mergeChangeRequest(second))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::step, Problem::message)
+                        .containsExactly(tuple("run.cycle", "next", loop)))
+                .verify();
+        assertThat(store.published("ring-b").orElseThrow().version()).isEqualTo("1.0.0");
+
+        // with ring-a 1.1.0 published, the same change is refused at publish and opens nothing
+        handler.closeChangeRequest(second).block();
+        StepVerifier.create(handler.publish("ring-b", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).filteredOn(p -> p.code().equals("run.cycle")).as("listed once")
+                        .extracting(Problem::step, Problem::message).containsExactly(tuple("next", loop)))
+                .verify();
+        assertThat(changeRequests.all()).filteredOn(cr -> cr.status() == ChangeRequest.Status.OPEN).isEmpty();
+    }
+
+    @Test
+    void aPolicyEngineThatCannotBeReachedAnswersTryAgainAndOpensNothing() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        // the engine errors, or the OPA adapter denies with its unreachable rule (fail closed for jobs)
+        for (Mono<PolicyDecision> down : List.of(Mono.<PolicyDecision>error(new IllegalStateException("Connection refused: opa:8181")),
+                Mono.just(new PolicyDecision("deny", List.of(new PolicyPort.Rule("opa.unreachable", "deny", "The policy engine could not be reached")), "opa")))) {
+            when(policy.evaluate(any())).thenReturn(down);
+            StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow("all", null)))
+                    .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("policy engine unavailable, try again"))
+                    .verify();
+            assertThat(changeRequests.all()).isEmpty();
+            assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.DRAFT);
+            assertThat(eventsOf("change-request.opened")).isEmpty();
+        }
+
+        when(policy.evaluate(any())).thenReturn(Mono.just(PolicyDecision.allow("opa")));
+        String crId = handler.publish("vm-restart", new PublishWorkflow("all", null)).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("policy")).extracting(Check::status).containsExactly("passed");
+    }
+
+    @Test
+    void anArtifactStoreThatCannotAnswerAnswersTryAgainAndOpensNothing() {
+        ArtifactStorePort artifacts = mock(ArtifactStorePort.class);
+        when(artifacts.exists(DIGEST)).thenReturn(Mono.error(new IllegalStateException("S3 timed out")));
+        handler.setArtifacts(artifacts);
+        handler.createDraft(WorkflowSource.ofYaml(uploadWorkflow(DIGEST))).block();
+
+        StepVerifier.create(handler.publish("site-deploy", null))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ServiceUnavailableException.class).hasMessage("artifact store unavailable, try again"))
+                .verify();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.draft("site-deploy")).isPresent();
     }
 
     @Test
@@ -426,7 +720,7 @@ class WorkflowCommandHandlerTest {
         StepVerifier.create(handler.validate(WorkflowSource.ofYaml(unpinned)))
                 .assertNext(v -> {
                     assertThat(v.valid()).isFalse();
-                    assertThat(v.problems()).extracting(Problem::code).contains("publish.ansibleLint").doesNotContain("ansible.unpinned");
+                    assertThat(v.problems()).extracting(Problem::code).contains("publish.playbooks").doesNotContain("ansible.unpinned");
                 })
                 .verifyComplete();
     }
@@ -528,6 +822,112 @@ class WorkflowCommandHandlerTest {
         assertThat(eventsOf("change-request.merged").get(0).data().path("by").asText()).isEqualTo("junior");
     }
 
+    static ChangeRequest providerChange(String id, String name, String author, String yaml) {
+        return new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, name, "1.4.0", "change/" + name + "-1.4.0", "Update " + name, author,
+                ChangeRequest.Status.OPEN, List.of(new Check("schema", "Schema", "passed", null)), "all", yaml, "", NOW, null, null, null);
+    }
+
+    @Test
+    void aProviderChangeIsJudgedByTheStoredProvidersOwnerNotByTheOwnerItsFileNames() {
+        // a team-data change to team-compute's vsphere that names team-data as the owner
+        String taken = SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("owner: team-compute", "owner: team-data");
+        assertThat(taken).contains("owner: team-data");
+        changeRequests.save(providerChange("cr_take", "vsphere", "mateo", taken));
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessage("Ana may not change provider vsphere (owned by team-compute)"))
+                .verify();
+        StepVerifier.create(handler.closeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .expectError(ForbiddenException.class)
+                .verify();
+        assertThat(changeRequests.get("cr_take").orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(eventsOf("change-request.merged")).isEmpty();
+
+        StepVerifier.create(handler.closeChangeRequest("cr_take").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aNewProviderIsJudgedByTheOwnerItsFileNames() {
+        String lab = SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("name: vsphere\n", "name: vsphere-lab\n").replace("owner: team-compute", "owner: team-data");
+        assertThat(lab).contains("name: vsphere-lab");
+        changeRequests.save(providerChange("cr_lab", "vsphere-lab", "mateo", lab));
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_lab").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class).hasMessage("Junior may not change provider vsphere-lab (owned by team-data)"))
+                .verify();
+        StepVerifier.create(handler.mergeChangeRequest("cr_lab").contextWrite(ctx -> CurrentIdentity.with(ctx, ANA)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aMergedProviderChangeIsPublishedThroughTheProvidersSliceBeforeTheMergeIsAnnounced() {
+        changeRequests.save(providerChange("cr_prov", "vsphere", "mateo", SampleFixtures.yaml("providers/team-compute/vsphere.yaml")));
+        ProviderCommands providerCommands = mock(ProviderCommands.class);
+        List<String> seen = new ArrayList<>();
+        when(providerCommands.publishMerged("cr_prov")).thenAnswer(inv -> Mono.fromRunnable(() -> {
+            seen.add(changeRequests.get("cr_prov").orElseThrow().status().json());
+            seen.add("announced: " + eventsOf("change-request.merged").size());
+        }));
+        handler.setProviderCommands(providerCommands);
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(seen).as("published once the change request is merged, before anyone hears of it").containsExactly("merged", "announced: 0");
+        assertThat(eventsOf("change-request.merged")).hasSize(1);
+        assertThat(changeRequests.get("cr_prov").orElseThrow().mergedBy()).isEqualTo("junior");
+    }
+
+    @Test
+    void aProviderThatCannotBePublishedLeavesItsChangeRequestOpen() {
+        changeRequests.save(providerChange("cr_prov", "vsphere", "mateo", SampleFixtures.yaml("providers/team-compute/vsphere.yaml")));
+        ProviderCommands providerCommands = mock(ProviderCommands.class);
+        when(providerCommands.publishMerged("cr_prov")).thenReturn(Mono.error(new ConflictException("change request cr_prov carries no provider file to publish")));
+        handler.setProviderCommands(providerCommands);
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_prov").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(IllegalStateException.class)
+                        .hasMessage("change request cr_prov stays open: publishing provider vsphere failed: change request cr_prov carries no provider file to publish"))
+                .verify();
+        ChangeRequest cr = changeRequests.get("cr_prov").orElseThrow();
+        assertThat(cr.status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(cr.mergedBy()).isNull();
+        assertThat(eventsOf("change-request.merged")).isEmpty();
+    }
+
+    @Test
+    void aChangeRequestWhoseOwnerCannotBeNamedIsDecidedByAnAdminOnly() {
+        // a workflow change request whose version is no longer in the store
+        changeRequests.save(new ChangeRequest("cr_gone", ChangeRequest.Kind.WORKFLOW, "gone", "1.0.0", "change/gone-1.0.0", "Publish gone", "mateo",
+                ChangeRequest.Status.OPEN, List.of(new Check("schema", "Schema", "passed", null)), "all", "", "", NOW, null, null, null));
+        StepVerifier.create(handler.closeChangeRequest("cr_gone").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ForbiddenException.class)
+                        .hasMessage("Junior may not decide on workflow gone: no owner team can be named for it, so only an admin may"))
+                .verify();
+        assertThat(changeRequests.get("cr_gone").orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        StepVerifier.create(handler.closeChangeRequest("cr_gone").contextWrite(ctx -> CurrentIdentity.with(ctx, ROOT)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aDraftUnderReviewIsNotDeleted() {
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String crId = handler.publish("vm-restart", new PublishWorkflow("all", null)).block().id();
+        // a store that forgot the candidate (a restart before candidates were restored) shows it as a draft
+        store.save(store.get("vm-restart", "1.2.1").orElseThrow().withStatus(WorkflowStatus.DRAFT));
+
+        StepVerifier.create(handler.deleteDraft("vm-restart"))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class)
+                        .hasMessage("workflow vm-restart 1.2.1 is under review in change request " + crId + "; close it before deleting the draft"))
+                .verify();
+        assertThat(store.get("vm-restart", "1.2.1")).isPresent();
+        assertThat(eventsOf("workflow.deleted")).isEmpty();
+    }
+
     @Test
     void theAuthorMayStillCloseTheirOwnChange() {
         handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)).block();
@@ -570,12 +970,97 @@ class WorkflowCommandHandlerTest {
         StepVerifier.create(handler.replayCheck("vm-restart", "9.9.9")).expectError(com.iaf.platform.common.domain.NotFoundException.class).verify();
     }
 
+    /** A dry run that takes the definition's own steps, in order, each with what it is written with. */
+    static DryRunResult walk(WorkflowDefinition def) {
+        List<DryRunResult.DryRunStep> steps = def.steps().stream()
+                .map(s -> new DryRunResult.DryRunStep(s.id(), s.displayName(), "succeeded", s.with() == null ? F.objectNode() : s.with(), null, null)).toList();
+        return new DryRunResult(true, steps.stream().map(DryRunResult.DryRunStep::id).toList(), steps, null);
+    }
+
+    /** The steps a job of {@code def} recorded when it took every step, as the runs slice serves them. */
+    static List<JsonNode> recorded(WorkflowDefinition def) {
+        return def.steps().stream().<JsonNode>map(s -> F.objectNode().put("id", s.id()).put("name", s.displayName()).put("status", "succeeded")
+                .set("input", s.with() == null ? F.objectNode() : s.with())).toList();
+    }
+
+    /** vm-restart with the backup check after the approval instead of before it. */
+    static String swapped(String yaml) {
+        int backup = yaml.indexOf("    - noBackupRunning:");
+        int approval = yaml.indexOf("    - approval:");
+        int restart = yaml.indexOf("    - restart:");
+        assertThat(backup).isPositive().isLessThan(approval);
+        assertThat(approval).isLessThan(restart);
+        return yaml.substring(0, backup) + yaml.substring(approval, restart) + yaml.substring(backup, approval) + yaml.substring(restart);
+    }
+
+    static JobOutcome outcome(String id, String status, String failedStep) {
+        return new JobOutcome(id, "vm-restart", "1.2.0", status, NOW.minusSeconds(3600), NOW.minusSeconds(3000), 600_000, failedStep == null ? null : "provider_error",
+                failedStep, F.objectNode().put("vmId", "vm-1"));
+    }
+
+    @Test
+    void aReorderedStepIsADivergenceAndARenamedTitleIsNot() {
+        when(runs.dryRun(any(), any(), any())).thenAnswer(inv -> Mono.just(walk(inv.getArgument(0))));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        when(runsQueries.steps("job_1")).thenReturn(Mono.just(recorded(store.published("vm-restart").orElseThrow().definition())));
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(vmRestart.replace("name: Check VM exists", "name: Look the VM up"))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r).isEqualTo(new ReplayResult(true, 1, List.of())))
+                .verifyComplete();
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(swapped(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r.divergences()).containsExactly(new ReplayResult.Divergence("job_1", "noBackupRunning",
+                        "the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval")))
+                .verifyComplete();
+
+        String otherAction = vmRestart.replace("action: vm.waitForPowerState\n          input: { id: \"{{ $input.vmId }}\", state: poweredOn, timeout: 600 }",
+                "action: vm.get\n          input: { id: \"{{ $input.vmId }}\" }");
+        assertThat(otherAction).doesNotContain("vm.waitForPowerState");
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(otherAction)).block();
+        String crId = handler.publish("vm-restart", null).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("replay")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("failed");
+            assertThat(c.detail()).isEqualTo("1 of 1 replayed job(s) diverge: job_1 at validate: the job ran validate (vsphere vm.waitForPowerState)"
+                    + " where 1.2.1 runs validate (vsphere vm.get)");
+        });
+    }
+
+    @Test
+    void aJobThatStoppedEarlyOrTookARouteTheSamplesDoNotIsComparedAsFarAsItCanBe() {
+        WorkflowDefinition published = store.published("vm-restart").orElseThrow().definition();
+        when(runs.dryRun(any(), any(), any())).thenAnswer(inv -> Mono.just(walk(inv.getArgument(0))));
+        // job_1 failed at the restart and ran the catch block; job_2 skipped the backup check, a route the samples never take
+        List<JsonNode> failed = new ArrayList<>(recorded(published).subList(0, 4));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) failed.get(3)).put("status", "failed");
+        failed.add(F.objectNode().put("id", "notifyOwner").put("status", "succeeded"));
+        List<JsonNode> branched = recorded(published).stream().filter(s -> !s.path("id").asText().equals("noBackupRunning")).toList();
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "failed", "restart"), outcome("job_2", "succeeded", null))));
+        when(runsQueries.steps("job_1")).thenReturn(Mono.just(failed));
+        when(runsQueries.steps("job_2")).thenReturn(Mono.just(branched));
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r).isEqualTo(new ReplayResult(true, 2, List.of())))
+                .verifyComplete();
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(swapped(vmRestart))).block();
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1"))
+                .assertNext(r -> assertThat(r.divergences()).containsExactly(
+                        new ReplayResult.Divergence("job_1", "noBackupRunning", "the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval"),
+                        new ReplayResult.Divergence("job_2", "noBackupRunning",
+                                "1.2.0 on the samples ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval")))
+                .verifyComplete();
+    }
+
     @Test
     void theReplayCheckIsSkippedForAFirstVersion() {
         String yaml = """
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute, version: 1.0.0 }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - say:
@@ -585,7 +1070,7 @@ class WorkflowCommandHandlerTest {
         String crId = handler.publish("thing-refresh", null).block().id();
         ChangeRequest cr = changeRequests.get(crId).orElseThrow();
         assertThat(cr.checks()).filteredOn(c -> c.id().equals("replay")).extracting(Check::status).containsExactly("skipped");
-        assertThat(cr.checks()).filteredOn(c -> c.id().equals("ansible-lint")).extracting(Check::status).containsExactly("skipped");
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("playbooks")).extracting(Check::status).containsExactly("skipped");
         assertThat(cr.checks()).filteredOn(c -> c.id().equals("diff")).extracting(Check::detail).first().asString().startsWith("new workflow");
         assertThat(cr.diff()).startsWith("--- /dev/null\n+++ b/workflows/team-compute/thing-refresh.yaml");
         handler.mergeChangeRequest(crId).block();
@@ -607,7 +1092,15 @@ class WorkflowCommandHandlerTest {
                 F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));
 
         assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
-        assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.RETIRED);
+        WorkflowRecord rolledBack = store.get("vm-restart", "1.2.1").orElseThrow();
+        assertThat(rolledBack.status()).isEqualTo(WorkflowStatus.RETIRED);
+        assertThat(rolledBack.rolledBack()).isTrue();
+        // run steps and starts that resolve a range never pick it again; it stays readable, marked
+        assertThat(queries.resolve("vm-restart", "^1").block().version()).isEqualTo("1.2.0");
+        assertThat(queries.resolve("vm-restart", "~1.2.1").blockOptional()).isEmpty();
+        assertThat(queries.checkContext().block().workflowInput("vm-restart", "~1.2.1")).isEmpty();
+        assertThat(queries.versions("vm-restart").collectList().block()).extracting(v -> v.version(), v -> v.status(), v -> v.rolledBack())
+                .containsExactly(tuple("1.2.0", WorkflowStatus.PUBLISHED, null), tuple("1.2.1", WorkflowStatus.RETIRED, true));
         // a second rollback of the same release finds the candidate already retired and changes nothing
         events.publish("release.rolled-back", "release", "rel_1", "platform",
                 F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));
@@ -628,6 +1121,13 @@ class WorkflowCommandHandlerTest {
                     assertThat(i.notes()).isNotEmpty();
                 })
                 .verifyComplete();
+        // a draft imported next to a published workflow with the same noun and verb validates: its route and MCP tool are its own
+        for (ImportRequest request : List.of(new ImportRequest("ansible", "ops-playbooks/vm.restart"), new ImportRequest("openapi", "vsphere"))) {
+            String yaml = handler.importFrom(request).block().yaml();
+            StepVerifier.create(handler.validate(WorkflowSource.ofYaml(yaml)))
+                    .assertNext(v -> assertThat(v.problems()).as(request.source()).filteredOn(Problem::isError).isEmpty())
+                    .verifyComplete();
+        }
         StepVerifier.create(handler.importFrom(new ImportRequest("idp", "nope"))).expectError(IllegalArgumentException.class).verify();
         StepVerifier.create(handler.importFrom(new ImportRequest("svn", "x"))).expectError(IllegalArgumentException.class).verify();
     }

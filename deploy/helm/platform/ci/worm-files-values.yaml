@@ -1,0 +1,12 @@
+# Write-once evidence on a volume (audit.worm.mode files), which full-values.yaml (S3 Object Lock)
+# cannot show at the same time; for `helm lint`/`helm template` in CI.
+postgres:
+  enabled: true
+  passwordSecret: { name: platform-db, key: password }
+
+audit:
+  signingKeySecret: { name: platform-audit, key: signing-key }
+  worm:
+    mode: files
+    files:
+      existingClaim: platform-evidence

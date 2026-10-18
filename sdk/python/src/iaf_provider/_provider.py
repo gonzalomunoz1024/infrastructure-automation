@@ -30,12 +30,23 @@ _OPEN_OBJECT: dict[str, Any] = {"type": "object"}
 
 
 class Effect(str, enum.Enum):
-    """What an action does to the world; the platform derives previews, approvals and retry safety from it."""
+    """What an action does to the world; the platform derives previews, approvals and retry safety from it.
+
+    ``update``, the spelling of earlier versions of the SDKs, still reads as ``CHANGE`` (and
+    ``Effect.UPDATE`` is ``Effect.CHANGE``) in this version."""
 
     READ = "read"
     CREATE = "create"
-    UPDATE = "update"
+    CHANGE = "change"
     DELETE = "delete"
+    #: Deprecated: the old name of CHANGE; it writes ``change`` and goes away in the next version.
+    UPDATE = "change"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Effect | None:
+        if isinstance(value, str) and value.strip().lower() == "update":
+            return cls.CHANGE
+        return None
 
 
 @dataclass(frozen=True)

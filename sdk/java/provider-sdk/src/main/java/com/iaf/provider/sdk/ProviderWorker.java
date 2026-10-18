@@ -17,7 +17,6 @@ import io.temporal.client.WorkflowClientOptions;
 import io.temporal.common.converter.EncodedValues;
 import io.temporal.failure.ApplicationFailure;
 import io.temporal.serviceclient.WorkflowServiceStubs;
-import io.temporal.serviceclient.WorkflowServiceStubsOptions;
 import io.temporal.worker.Worker;
 import io.temporal.worker.WorkerFactory;
 
@@ -57,22 +56,24 @@ public final class ProviderWorker implements AutoCloseable {
         return start(provider, WorkerSettings.fromEnvironment());
     }
 
+    /**
+     * Connect with these settings (TLS and an API key when they say so) and start polling. A TLS
+     * file that cannot be read fails here, naming its variable.
+     */
     public static ProviderWorker start(Provider provider, WorkerSettings settings) {
-        WorkflowServiceStubs stubs = WorkflowServiceStubs.newServiceStubs(WorkflowServiceStubsOptions.newBuilder()
-                .setTarget(settings.address())
-                .build());
+        WorkflowServiceStubs stubs = WorkflowServiceStubs.newServiceStubs(TemporalConnection.options(settings));
         WorkflowClient client = WorkflowClient.newInstance(stubs, WorkflowClientOptions.newBuilder().setNamespace(settings.namespace()).build());
         WorkerFactory factory = WorkerFactory.newInstance(client);
         attach(factory.newWorker(provider.taskQueue()), provider);
         factory.start();
-        log.info("provider {} {} serves {} action(s) on task queue {} at {} (namespace {})", provider.name(), provider.version(), provider.actions().size(),
-                provider.taskQueue(), settings.address(), settings.namespace());
+        log.info("provider {} {} serves {} action(s) on task queue {} at {} (namespace {}, {})", provider.name(), provider.version(), provider.actions().size(),
+                provider.taskQueue(), settings.address(), settings.namespace(), TemporalConnection.describe(settings));
         return new ProviderWorker(provider, stubs, factory, settings.drainTimeout());
     }
 
     /**
-     * Serve the provider's actions on a worker you built yourself: your own client (TLS, API
-     * keys, interceptors) or a test environment. The worker must listen on {@link Provider#taskQueue()}.
+     * Serve the provider's actions on a worker you built yourself: your own client (interceptors,
+     * a data converter) or a test environment. The worker must listen on {@link Provider#taskQueue()}.
      */
     public static Worker attach(Worker worker, Provider provider) {
         if (!provider.taskQueue().equals(worker.getTaskQueue())) {

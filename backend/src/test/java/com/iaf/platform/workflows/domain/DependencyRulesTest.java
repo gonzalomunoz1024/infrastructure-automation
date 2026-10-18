@@ -1,10 +1,12 @@
 package com.iaf.platform.workflows.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -107,6 +109,30 @@ class DependencyRulesTest {
     }
 
     @Test
+    void theRunLinksOfAWorkflowThatLeadBackToItCloseTheShortestLoop() {
+        WorkflowDefinition a = workflow("a", "1.1.0", "thing: { type: string, x-resource: { type: thing, orCreateWith: a } }", """
+                - toB: { run: { workflow: b } }
+                - toFree: { run: { workflow: free } }
+                - again: { run: { workflow: a } }""");
+        Map<String, Set<String>> runs = DependencyRules.runs(List.of(
+                workflow("b", "1.0.0", "x: { type: string }", "- toC: { run: { workflow: c } }\n- toA: { run: { workflow: a } }"),
+                workflow("c", "1.0.0", "x: { type: string }", "- toA: { run: { workflow: a } }"),
+                workflow("free", "1.0.0", "x: { type: string }", "- note: { notify: { channel: '#x', message: hi } }"),
+                // the registry's own version of a starts nothing; the file's links count
+                workflow("a", "1.0.0", "x: { type: string }", "- note: { notify: { channel: '#x', message: hi } }")));
+        assertThat(runs).containsEntry("b", Set.of("a", "c")).containsEntry("c", Set.of("a")).doesNotContainKey("free");
+
+        List<DependencyRules.Loop> loops = DependencyRules.loops(a, n -> runs.getOrDefault(n, Set.of()));
+
+        // the orCreateWith of itself, then the run to b (b starts a directly, shorter than through c); run.self covers 'again'
+        assertThat(loops).extracting(l -> l.link().at(), DependencyRules.Loop::path).containsExactly(
+                tuple("thing", List.of("a", "a")),
+                tuple("toB", List.of("a", "b", "a")));
+        assertThat(DependencyRules.loops(workflow("free", "1.0.0", "x: { type: string }", "- toA: { run: { workflow: a } }"), n -> runs.getOrDefault(n, Set.of())))
+                .as("a starts nothing in the registry").isEmpty();
+    }
+
+    @Test
     void aTypeNobodyDeclaredStillShowsItsLinks() {
         WorkflowDefinition maker = workflow("maker", "1.0.0", "x: { type: string }", "- keep: { register: { type: widget, attributes: { size: 1 } } }");
         WorkflowDefinition taker = workflow("taker", "1.0.0", "w: { type: string, x-resource: { type: widget } }",
@@ -118,6 +144,24 @@ class DependencyRulesTest {
         assertThat(g.producersOf("widget")).containsExactly("maker");
         assertThat(g.consumersOfType("widget")).extracting(TypeLink::via).containsExactly(Via.INPUT, Via.USE);
         assertThat(g.typeDependencies()).isEmpty();
+    }
+
+    @Test
+    void aRunStepStartsTheHighestVersionInsideItsRange() {
+        String note = "- note: { notify: { channel: '#x', message: hi } }";
+        WorkflowDefinition older = workflow("maker", "1.2.3", "x: { type: string }", note);
+        WorkflowDefinition one = workflow("maker", "1.4.0", "x: { type: string }", note);
+        WorkflowDefinition two = workflow("maker", "2.0.1", "x: { type: string }", note);
+        List<WorkflowDefinition> versions = List.of(older, two, one);
+
+        assertThat(DependencyRules.resolve(versions, "^1")).containsSame(one);
+        assertThat(DependencyRules.resolve(versions, "~1.2")).containsSame(older);
+        assertThat(DependencyRules.resolve(versions, "1.2.3")).containsSame(older);
+        assertThat(DependencyRules.resolve(versions, "^2")).containsSame(two);
+        assertThat(DependencyRules.resolve(versions, "*")).containsSame(two);
+        assertThat(DependencyRules.resolve(versions, "^3")).isEmpty();
+        assertThat(DependencyRules.resolve(List.of(), "^1")).isEmpty();
+        assertThat(DependencyRules.resolve(null, "^1")).isEmpty();
     }
 
     @Test

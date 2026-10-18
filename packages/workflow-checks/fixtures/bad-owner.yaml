@@ -8,6 +8,8 @@ api:
     required: [vmId]
     properties:
       vmId: { type: string }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - restart:

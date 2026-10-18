@@ -2,7 +2,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse as parseYaml } from 'yaml';
 import { scan, type ContentFile } from '../cli.ts';
 import {
   buildContext,
@@ -10,6 +9,7 @@ import {
   parseDocument,
   parseProvider,
   parseResourceType,
+  parseYamlText,
   resourceTypeName,
   type CheckContext,
   type ParsedWorkflow,
@@ -21,7 +21,7 @@ export const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export const FIXTURES = fileURLToPath(new URL('../fixtures/', import.meta.url));
 
 export function readYaml(path: string): unknown {
-  return parseYaml(readFileSync(path, 'utf8'), { uniqueKeys: false }) ?? {};
+  return parseYamlText(readFileSync(path, 'utf8'));
 }
 
 export function contentFiles(): ContentFile[] {

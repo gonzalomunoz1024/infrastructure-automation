@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildContext, check, checkYaml, EMPTY_CONTEXT, hasErrors } from '../src/index.ts';
+import { buildContext, check, checkYaml, EMPTY_CONTEXT, hasErrors, mcpToolNames, parseDocument, parseYamlText } from '../src/index.ts';
 import { fixture, FIXTURES, repoContext } from './repo.ts';
 
 const expected = JSON.parse(readFileSync(join(FIXTURES, 'expected.json'), 'utf8')) as Record<string, string[]>;
@@ -67,6 +67,62 @@ describe('fixes', () => {
     expect(problems.find((p) => p.field === 'input.size')?.message).toBe('\'huge\' is not one of ["small","medium","large"] in workflow create-vm');
   });
 
+  it('a run step whose range starts another version than the published one is not judged against it', () => {
+    // maker 2.0.1 takes a word for size and returns fresh; a step pinned to ^1 starts a 1.x this context does not describe
+    const maker = buildContext([], ['maker'], [], {
+      workflowInputs: { maker: { type: 'object', properties: { size: { type: 'string', enum: ['small', 'large'] } } } },
+      workflowOutputs: { maker: ['fresh'] },
+      workflowVersions: { maker: '2.0.1' },
+    });
+    const consumer = (range: string | null) => `apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: user, title: User, noun: thing, verb: use, owner: team-a, version: 1.0.0 }
+policy: { rbac: [ops] }
+workflow:
+  do:
+    - make:
+        name: Make
+        run: { workflow: maker, ${range === null ? '' : `version: "${range}", `}input: { size: 4 } }
+    - tell:
+        notify: { channel: "#x", message: "{{ $('Make').json.outputs.old }}" }
+`;
+    const judged = (yaml: string) => checkYaml(yaml, maker).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`);
+    const against2 = ["contract.type @make.input.size: 'size' is string in workflow maker, not integer", "expr.unknownField @tell.message: The output of 'Make' has no field 'outputs.old'"];
+    expect(judged(consumer('^2'))).toEqual(against2);
+    expect(judged(consumer(null))).toEqual(against2);
+    expect(judged(consumer('^1'))).toEqual([]);
+    expect(judged(consumer('^3'))).toEqual([]);
+    // without the versions every range is judged against the published input
+    expect(checkYaml(consumer('^1'), { ...maker, workflowVersions: {} }).map((p) => p.code)).toEqual(['contract.type', 'expr.unknownField']);
+  });
+
+  it('a run step whose workflow ends up starting this one again is a cycle', () => {
+    const yaml = fixture('run-cycle.yaml');
+    expect(checkYaml(yaml, ctx).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`)).toEqual([
+      'run.cycle @patchFirst.workflow: Runs go round in a cycle: vm-restart -> patch-cve -> vm-restart; a job would wait for itself and never finish',
+    ]);
+    expect(ctx.workflowRuns?.['patch-cve']).toEqual(['vm-restart']);
+    expect(ctx.workflowRuns?.['web-environment']).toEqual(['build-vm-image', 'create-database', 'create-vm']);
+    // without what the published workflows start the cycle is not visible; an orCreateWith of the workflow itself is one either way
+    expect(checkYaml(yaml, EMPTY_CONTEXT)).toEqual([]);
+    const selfCreate = `apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: folder-create, title: Folder create, noun: folder, verb: create, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    properties:
+      parent: { type: string, x-resource: { type: vm, orCreateWith: folder-create } }
+policy: { rbac: [ops] }
+workflow:
+  do:
+    - say: { notify: { channel: "#x", message: hi } }
+`;
+    expect(checkYaml(selfCreate, EMPTY_CONTEXT).map((p) => `${p.code} @${p.step ?? ''}.${p.field ?? ''}: ${p.message}`)).toEqual([
+      'run.cycle @.api.input.parent: Runs go round in a cycle: folder-create -> folder-create; a job would wait for itself and never finish',
+    ]);
+  });
+
   it('steps a switch always jumps past never run', () => {
     const yaml = fixture('unreachable-step.yaml');
     const problems = checkYaml(yaml, ctx);
@@ -87,6 +143,7 @@ describe('fixes', () => {
       {
         kind: 'Workflow',
         metadata: { name: 'x', title: 'X', noun: 'a', verb: 'b', owner: 'team' },
+        policy: { rbac: ['ops'] },
         workflow: {
           do: [
             { getVm: { call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: { id: '1' } }, output: { as: 'vm' } } },
@@ -112,6 +169,7 @@ describe('catalog', () => {
     const yaml = `apiVersion: iaf.platform/v1
 kind: Workflow
 metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+policy: { rbac: [ops] }
 workflow:
   do:
     - getVm:
@@ -126,6 +184,32 @@ workflow:
     expect(checkYaml(yaml, ctx).map((p) => p.code)).toEqual(['step.unknownProvider', 'run.unknownWorkflow', 'resource.unknownType']);
   });
 
+  it('an MCP tool another published workflow has is a warning naming the tool and the workflow', () => {
+    const yaml = fixture('mcp-tool-name.yaml');
+    const told = (text: string, c = ctx) => checkYaml(text, c).map((p) => `${p.level} ${p.code} @${p.field ?? ''}: ${p.message}`);
+    expect(told(yaml)).toEqual([
+      'warning mcp.toolName @mcp.expose: MCP tool vm_restart is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false',
+    ]);
+    // the batch tool counts as well
+    expect(told(yaml.replace('verb: restart', 'verb: restart-batch'))).toEqual([
+      'warning mcp.toolName @mcp.expose: MCP tool vm_restart_batch is already exposed by workflow vm-restart; give this workflow another noun or verb, or set mcp.expose to false',
+    ]);
+    // a new version of the same workflow, a workflow that is no tool, a registry without that tool and no registry at all are fine
+    expect(told(yaml.replace('name: vm-bounce', 'name: vm-restart'))).toEqual([]);
+    expect(told(yaml.replace('expose: true', 'expose: false'))).toEqual([]);
+    expect(told(yaml, { ...ctx, mcpTools: {} })).toEqual([]);
+    expect(told(yaml, EMPTY_CONTEXT)).toEqual([]);
+    expect(mcpToolNames(parseDocument(parseYamlText(yaml)))).toEqual(['vm_restart', 'vm_restart_batch']);
+    expect(ctx.mcpTools?.['vm_restart']).toEqual(['vm-restart']);
+  });
+
+  it('a key written twice is one yaml.invalid problem naming the key, in the words of WorkflowYaml.java', () => {
+    expect(checkYaml(fixture('duplicate-key.yaml'), ctx)).toEqual([
+      { level: 'error', code: 'yaml.invalid', message: "YAML syntax: Duplicate field 'examples' at line 12, column 9" },
+    ]);
+    expect(checkYaml('kind: Workflow\nkind: Workflow\n', ctx)[0]?.message).toBe("YAML syntax: Duplicate field 'kind' at line 2, column 1");
+  });
+
   it('a broken YAML file is one yaml.invalid problem', () => {
     const problems = checkYaml(fixture('invalid-yaml.yaml'), ctx);
     expect(problems).toHaveLength(1);
@@ -138,8 +222,8 @@ workflow:
     expect(problems).toEqual([{ level: 'error', code: 'yaml.invalid', message: "Step 'a' has two step keys: call and run" }]);
   });
 
-  it('an empty document is missing its name', () => {
-    expect(checkYaml('', ctx)).toEqual([{ level: 'error', code: 'yaml.invalid', message: 'metadata.name is required' }]);
+  it('an empty document is missing its metadata', () => {
+    expect(checkYaml('', ctx)).toEqual([{ level: 'error', code: 'schema.invalid', message: "required property 'metadata' not found" }]);
     expect(check(null, ctx)).toEqual([{ level: 'error', code: 'yaml.invalid', message: 'A workflow file is a YAML mapping' }]);
   });
 });
@@ -149,18 +233,19 @@ describe('rules beyond the fixtures', () => {
     apiVersion: 'iaf.platform/v1',
     kind: 'Workflow',
     metadata: { name: 'vm-info', title: 'VM info', noun: 'vm', verb: 'read', owner: 'team-compute', version: '1.0.0' },
+    policy: { rbac: ['ops'] },
     ...extra,
     workflow: { do: steps },
   });
   const codes = (doc: unknown) => check(doc, ctx).map((p) => `${p.level} ${p.code}`);
 
   it('judges the metadata', () => {
-    expect(codes({ kind: 'Workflow', metadata: { name: 'ok' }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
+    expect(codes({ kind: 'Workflow', metadata: { name: 'ok' }, policy: { rbac: ['ops'] }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
       'warning metadata.title',
       'error metadata.nounVerb',
       'error metadata.owner',
     ]);
-    expect(codes({ kind: 'Workflow', metadata: { name: 'ok', title: 'T', owner: 'o' }, api: { path: '/api/v1/things' }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
+    expect(codes({ kind: 'Workflow', metadata: { name: 'ok', title: 'T', owner: 'o' }, api: { path: '/api/v1/things' }, policy: { rbac: ['ops'] }, workflow: { do: [{ a: { set: { x: 1 } } }] } })).toEqual([
       'warning metadata.nounVerb',
     ]);
   });
@@ -196,9 +281,13 @@ describe('rules beyond the fixtures', () => {
 
   it('judges policy, rollout and triggers', () => {
     expect(codes(base([{ a: { set: { x: 1 } } }], { policy: { approval: { required: true, timeout: 'soon' } } }))).toEqual([
+      'error policy.missing',
       'error approval.group',
       'error duration.format',
     ]);
+    expect(codes(base([{ a: { set: { x: 1 } } }], { policy: { rbac: [] } }))).toEqual(['error policy.missing']);
+    expect(check(base([{ a: { set: { x: 1 } } }], { policy: undefined }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['policy.missing @policy']);
+    expect(check(base([{ a: { set: { x: 1 } } }], { policy: null }), ctx).map((p) => `${p.code} @${p.field ?? ''}`)).toEqual(['schema.invalid @/policy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'big-bang' } }))).toEqual(['error rollout.strategy']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 50] } }))).toEqual(['error rollout.stages']);
     expect(codes(base([{ a: { set: { x: 1 } } }], { rollout: { strategy: 'canary', stages: [10, 150] } }))).toEqual(['error rollout.stages']);
@@ -209,7 +298,7 @@ describe('rules beyond the fixtures', () => {
           triggers: [{ alert: { input: { vmId: '{{ $alert.labels.vm }}' } } }, { event: { topic: 'vm.created' } }, { schedule: { cron: '* * * * *' } }, { type: 'webhook' }, { alert: { match: { source: 'x' }, input: { id: '{{ $json.id }}' } } }],
         }),
       ),
-    ).toEqual(['error trigger.match', 'warning trigger.schedule', 'error trigger.type', 'error expr.noPredecessor']);
+    ).toEqual(['error trigger.match', 'error trigger.schedule', 'error trigger.type', 'error expr.noPredecessor']);
   });
 
   it('judges each step kind', () => {

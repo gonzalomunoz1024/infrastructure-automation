@@ -7,6 +7,8 @@ api:
     properties:
       vmId: { type: string }
       image: { type: string }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - getVm:

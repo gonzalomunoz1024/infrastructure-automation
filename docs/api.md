@@ -4,12 +4,16 @@ Every platform endpoint lives under `/api/v1`. Generated workflow endpoints live
 `/api/v<n>/<noun>s…` and resource read endpoints under `/api/v1/<plural>`. The nouns `workflows`,
 `jobs`, `approvals`, `providers`, `releases`, `audit`, `resources`, `resource-types`,
 `credentials`, `registry`, `catalog`, `assistant`, `triggers`, `change-requests`, `templates`,
-`service-accounts`, `me`, `mcp`, `openapi.json`, `playbooks` are reserved for the platform.
+`service-accounts`, `me`, `mcp`, `openapi.json`, `openapi`, `batches`, `evidence`, `ws`,
+`actuator`, `playbooks`, `notifications`, `schemas` are reserved for the platform
+(`ReservedNouns.java`, the one list the gateway and both check twins use; a workflow path that
+starts with one of them is `api.reservedPath`).
 
 Shapes below are TypeScript. Dates are ISO strings. Enums are lowercase strings. Errors are
 `{ error: string }` with 400 (bad input), 401 (a bearer token that does not verify), 403 (RBAC),
 404 (unknown id), 409 (state conflict), 429 (over the team's job-start quota, with `Retry-After`
-and `retryAfter` in seconds), 500. Input that fails a workflow's schema or names a
+and `retryAfter` in seconds), 500 (`error` is always `unexpected error`; `correlationId` is the
+request's trace id, which finds the cause in the API's log). Input that fails a workflow's schema or names a
 resource the registry does not know adds `problems: Problem[]` (one job) or
 `rows: { index; problems }[]` (a batch). Commands return 202 with `CommandAccepted` unless noted.
 
@@ -67,7 +71,7 @@ type WorkflowSummary = { name; title; noun; verb; persona?; folder; owner; tags:
 type WorkflowDetail = WorkflowSummary & { yaml: string; definition: WorkflowDefinition;
   versions: WorkflowVersion[]; problems: Problem[]; changeRequests: ChangeRequest[] }
 type WorkflowVersion = { version; status: 'draft' | 'candidate' | 'published' | 'retired';
-  contentHash; publishedAt?; publishedBy?; releaseId?; notes? }
+  contentHash; publishedAt?; publishedBy?; releaseId?; notes?; rolledBack?: true }   // rolledBack: a release rollback took it out
 type WorkflowDefinition = { apiVersion; kind: 'Workflow'; metadata; api; mcp; policy; triggers; rollout;
   workflow: { do: StepEntry[]; catch?: { do: StepEntry[] }; outputs? } }   // the YAML document as JSON (docs/config-as-code.md)
 type StepEntry = { [stepId: string]: { name?; call?: StepType; with?: object; output?: { as }; assert?; retry?; timeout?;
@@ -90,18 +94,19 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | POST   | `/workflows`                                 | `{ yaml }` or `{ definition }` → `CommandAccepted` (creates a draft; name from metadata; 409 when it exists) |
 | POST   | `/workflows:render`                          | `{ definition }` → `{ yaml }` (200): the canonical YAML of a document; the browser never renders YAML itself |
 | POST   | `/workflows:parse`                           | `{ yaml }` → `{ definition; problems: Problem[] }` (200): the YAML document as JSON, same shape as `definition` everywhere |
-| DELETE | `/workflows/{name}`                          | drafts only → 204 |
-| POST   | `/workflows:validate`                        | `{ yaml }` → `{ valid; problems: Problem[] }` (200); also reports, as `publish.ansibleLint`, `publish.routes` and `publish.contracts` errors, the change-request checks the file would fail when published (docs/config-as-code.md, Checks) |
+| DELETE | `/workflows/{name}`                          | drafts only → 204; 409 when a version under review in an open change request would go with them (close the change request first) |
+| POST   | `/workflows:validate`                        | `{ yaml }` or `{ definition }` → `{ valid; problems: Problem[] }` (200). The document is judged as sent, the Workflow schema first (`schema.invalid` with JSON pointers; nothing else when it finds anything); also reports, as `publish.playbooks`, `publish.routes` and `publish.contracts` errors, the change-request checks the file would fail when published, and as errors what publishing refuses with the registry (`mcp.toolName`, which then replaces the designer's warning of that code, and `run.cycle`) (docs/config-as-code.md, Checks) |
 | POST   | `/workflows:dry-run`                         | `{ yaml; input }` → `DryRunResult` (200) |
-| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema, checks, ansible-lint, policy, replay, contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes |
-| POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200) |
+| POST   | `/workflows/{name}:publish`                  | `{ strategy?: 'canary' \| 'all'; notes? }` → `CommandAccepted` (id = change request id). A run step without a `version` is written with `^<major>` of the workflow it runs. Checks: schema (the stored file matches the Workflow schema; `api.input` compiles and refers to nothing outside itself), checks, playbooks (pins resolved, digests present: every ansible step's playbook is pinned, a git ref to the commit it names now, an upload to its digest, a library playbook through its provider's commit; with `platform.playbooks.lint-command` set, that linter also runs on each pinned git playbook at its commit and its findings fail the check), policy, replay (each job of the published version in the last seven days: its input dry-run on the new version, which diverges when that dry run fails or takes another path than the job did, meaning other steps, another order or another provider action; titles do not count, nor what only runs on a failure, a job that did not succeed is compared as far as it ran, and when the samples cannot reproduce a job's path the previous version's dry run stands in for it), contracts (a breaking change against the published version needs a new major version; the detail lists every affected consumer), diff, routes (no other published workflow answers the same invoke, batch or preview route) and yaml; merging re-checks the routes, and answers 409 `checks failed` with the registry's errors when what was published in the meantime makes them fail (`mcp.toolName`: another workflow got one of this one's MCP tools; `run.cycle`: the runs now go round in a cycle). 409 `checks failed` with the problems when the file has errors, among them `playbook.missing` for an uploaded playbook the artifact store no longer holds, `mcp.toolName` for an MCP tool (`<noun>_<verb>` or its batch tool) another published workflow already has, and `run.cycle` for a run step whose workflow, through the published ones, ends up starting this one again; nothing is opened then. 503 `policy engine unavailable, try again` when the policy engine cannot be reached, and 503 `artifact store unavailable, try again` when the artifact store cannot say whether an upload is there: neither is a verdict, so nothing is opened (an open change request would block the next publish) and the version stays a draft |
+| POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200): the replay check of the publish, against the highest published or retired version below this one; `step` is where the job and the version part, for example `the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval` |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
-| GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
-| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests |
-| POST   | `/change-requests/{id}:close`                | → `CommandAccepted` |
+| GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string; preview?: { mermaid: string } }`. `preview.mermaid` is the workflow the change request writes as a Mermaid `flowchart LR`: its ways in (the operation, the MCP tool, each trigger) lead to the first step, each step is labelled with its name and type (a provider call adds the provider and action, a run step the workflow and range), a fork's branches, a for loop, a try and a switch case's steps are subgraphs, a switch's cases label its edges (a jump goes to the step it names or to End), and dotted edges lead to what runs on an error (a try's catch, the workflow's catch) and to compensations. A provider change request has no preview |
+| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests. Merging and closing need edit rights over the owner team: the workflow version's `metadata.owner`; for a provider, the stored provider's owner (the owner the posted file names counts only for a provider that does not exist yet); only an admin when no owner team can be named (403 otherwise). A provider change request is published by the providers slice once saved merged and before `change-request.merged` is sent; when that fails it is open again and the merge answers 500 with the reason |
+| POST   | `/change-requests/{id}:close`                | → `CommandAccepted` (the same owner rule as a merge) |
 | POST   | `/change-requests:github-webhook`            | profile `github` only. GitHub's `pull_request` deliveries, signed with the webhook secret (`X-Hub-Signature-256: sha256=<HMAC-SHA256 of the body>`; the secret is the `vault:` reference `platform.github.webhook-secret`). A pull request merged on GitHub merges its change request, closed without merging closes it, as `github:<login>` → 200 `{ status; changeRequest }`. 401 when the signature is missing or wrong, 503 when the secret cannot be read, 409 when the platform refuses the merge (failed checks: the change request stays open). `ping` → 200 `{ status: 'pong' }`; other events and actions, and pull requests of no change request → 202 `{ status: 'ignored'; reason }`. No platform credential is needed or used |
-| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name and a route of its own when a workflow already has the natural ones (`create-vm-from-vsphere` on `POST /api/v1/vms:create-from-vsphere`), registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
+| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name, a route and a verb of its own when a workflow already has the natural name or a published workflow the natural MCP tool (`create-vm-from-vsphere` on `POST /api/v1/vms:create-from-vsphere`, the MCP tool `vm_create_from_vsphere`), so publishing it never meets `mcp.toolName`, registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
 | GET    | `/templates`                                 | `{ id; title; description; yaml }[]` |
+| GET    | `/schemas/workflow.json`                     | the JSON Schema (draft 2020-12) of a Workflow file, for editors: `packages/workflow-checks/schemas/workflow.schema.json`, the first line of the checks (docs/config-as-code.md, Checks). A caller is needed as for the rest of `/api/v1`; editors can also point at the file in the repository |
 
 ```ts
 type DryRunResult = { passed: boolean; path: string[]; steps: { id; name; status; input?; output?; error? }[]; error? }
@@ -109,13 +114,22 @@ type DryRunResult = { passed: boolean; path: string[]; steps: { id; name; status
 
 With the `github` profile a change request is a pull request on the content repository
 (`platform.github.repo`): opening it pushes the branch with its one file from `platform.github.base-branch`,
-opens the pull request (title, the checks and the rollout strategy in its body) and posts one commit
-status per check (`iaf/<check>`); `url` is the pull request. When GitHub cannot be reached the change
+opens the pull request (title; in its body the checks, the rollout strategy and, for a workflow, the
+`preview.mermaid` flowchart in a mermaid code block, which GitHub draws) and posts one commit
+status per check (`iaf/<check>`; a branch protection rule that required `iaf/ansible-lint` now
+needs `iaf/playbooks`); `url` is the pull request. When GitHub cannot be reached the change
 request is not opened (502). Merging or closing it on the platform merges (`platform.github.merge-method`)
 or closes the pull request; when GitHub refuses the merge (a required review or status missing) it is a
 409 and nothing is published. A decision taken on GitHub comes back through the webhook above and is
 never sent back to GitHub. Reviews of pull requests merged on GitHub are GitHub's to require (branch
 protection, code owners); the platform's checks still decide whether the version is published.
+
+Change requests publish platform events (aggregate `change-request`, id the change request):
+`change-request.opened` when a workflow version is put up for review, `{ id; kind; name; version;
+by; owner }`, `owner` being that version's owner team (`metadata.owner`), so a listener can tell its
+reviewers without reading the store; `change-request.merged` `{ id; kind; name; version; yaml; by }`
+and `change-request.closed` `{ id; kind; name; version; by }`, for workflow and provider change
+requests alike.
 
 Registry (read-only, used by the designer and the Devin playbook):
 
@@ -174,9 +188,27 @@ An `x-resource` input with `orCreateWith` shows both forms in `CatalogEntry.inpu
 request bodies and the MCP tool inputs: `anyOf` the id, or `{ create: <the producing workflow's
 input> }` to have the resource built first (docs/config-as-code.md, Resource inputs).
 
-MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`, input = `api.input`), one
-`<noun>_<verb>_batch` per workflow, `list_<plural>` and `get_<plural>` per resource type,
-`get_job_status`, `cancel_job`, and `draft_workflow` (the assistant).
+MCP tools: one per workflow with `mcp.expose` (name `<noun>_<verb>`; input: the workflow's
+`api.input` plus two optional call arguments the platform reads and the job never sees,
+`idempotencyKey` (the same key returns the first answer for 24 hours instead of starting another
+job) and `version` (run that published or retired version instead of the release router's pick),
+each left out when `api.input` declares a field of that name), one `<noun>_<verb>_batch` per
+workflow (which always takes both), `list_<plural>` and `get_<plural>` per resource type,
+`get_job_status`, `cancel_job`, and `draft_workflow` (the assistant). A tool name belongs to one
+workflow: publishing refuses a workflow whose `<noun>_<verb>` or batch tool another published
+workflow already has (`mcp.toolName`), since the list would keep only one of them.
+
+A refused `tools/call` is a JSON-RPC error whose `message` says why; besides the standard codes
+(-32700 parse error, -32600 invalid request, -32601 method not found, -32602 invalid params with
+`data.problems` or `data.rows`, -32603 internal error) the platform answers with its own:
+
+| Code     | When                                   | `data` |
+|----------|----------------------------------------|--------|
+| `-32001` | forbidden (RBAC, scopes)               | `{ forbidden: true }` |
+| `-32002` | denied by the policy engine            | `{ forbidden: true, rules, engine }` |
+| `-32003` | unknown workflow, resource or job      | |
+| `-32004` | state conflict, idempotency key reused | `{ conflict: true }` |
+| `-32005` | over the team's job-start quota        | `{ tooManyRequests: true, retryAfter }` |
 
 In the OpenAPI document every generated operation's 202 links to `get_job` (`id` from
 `$response.body#/jobId`), and its input schema is `<noun>_<verb>_input`. A workflow that declares
@@ -200,8 +232,10 @@ or a bucket of their own when they have none): `platform.gateway.quotas` sets 60
 burst of 60, and per-team overrides. A batch takes one token whatever its size. An empty bucket is
 429 with `Retry-After` and `{ error, retryAfter }` naming the team, the limit and when to retry
 (MCP: a JSON-RPC error with `data.tooManyRequests` and `data.retryAfter`). Jobs the platform
-starts itself (triggers, `run` steps, reruns) are not charged. Idempotency keys and buckets live in
-each instance's memory.
+starts itself (triggers, `run` steps, reruns) are not charged, and neither is a request that is
+rejected (400, 403, 404): the token is taken once the request is validated and allowed, or given
+back when the handler refuses it. With the `postgres` profile the keys and the buckets are in the
+database and shared by every API replica; without it they live in each instance's memory.
 
 Generated paths may live under any API version (`/api/v1/`, `/api/v2/`, …); the platform's
 nouns, and `notifications`, are reserved under every one. A workflow with `api.deprecated` still
@@ -237,6 +271,8 @@ type JobEvent = { seq; at; jobId; type: 'job' | 'step' | 'approval' | 'attention
 | GET    | `/jobs/{id}/events` (SSE), WS `/ws/jobs/{id}` | stream of `JobEvent`, replaying history first |
 | GET    | `/jobs/{id}/replay?compareTo=`         | `{ steps: (JobStep & { diff?: { field; before; after }[] })[]; comparedTo?: string }`; without `compareTo` the job is compared with the last successful run of the same workflow before it |
 | GET    | `/jobs/{id}/evidence`                  | `EvidenceRecord` (alias of `/audit/{jobId}`) |
+| GET    | `/jobs/{id}/logs`                      | the job's log lines, one log `JobEvent` per line (`application/x-ndjson` only): its archive once the job has ended (below), else the lines of its events; for a job still running the response starts at once with the lines so far and then follows each new one until the job ends |
+| GET    | `/jobs/{id}/plan`                      | `Preview`: the blast-radius plan the job was started with (its archive once the job has ended); 404 when it had none |
 | POST   | `/jobs`                                | `{ workflow; version?; input; channel?; traceId?; changeId? }` → `CommandAccepted` (the generic way to start a job; the catalog routes do the same with the workflow's own path) |
 | POST   | `/jobs:batch`                          | `{ workflow; version?; items; defaults?; rollout?; channel? }` → `CommandAccepted` (links.rows = row count); every row is validated and judged by the policy engine as the generated `:batch` routes do |
 | POST   | `/jobs/{id}:cancel`                    | → `CommandAccepted`; 403 for anyone who may not steer the job (below) |
@@ -266,6 +302,17 @@ one (`job.finished` or `job.cancelled`): the SSE response completes and the serv
 socket. A job that has already ended replays its history and ends. Frames a client sends on the
 socket are ignored; a client that closes it ends the stream. For a job that does not exist the
 SSE request is a 404 and the socket is closed without a frame.
+
+When a job ends (succeeded, failed, cancelled, rolled back) its log lines are archived as
+`jobs/<id>/logs.ndjson` and its preview, if it had one, as `jobs/<id>/plan.json` in the artifact
+store (the bucket of the `s3` profile, else files under `platform.artifacts.dir`), with secrets
+redacted as the API serves them; a batch or a parent job is archived after its ended children, and
+a job that ends again (a batch after `:retry-failed-rows`) is archived again over its earlier
+archive. An archive that could not be written is written at the next start, which archives every
+ended job among the latest 1,000 of each status (with its children) that has none; archiving never
+fails a job. `logs` and `plan` need `jobs:read` and look the job up as
+`GET /jobs/{id}` does, so whoever may read the job may read them, and a job it does not know is a
+404.
 
 A job's `traceId` is a W3C trace id (32 hex characters): the trace of the request that started it,
 or a new one. Its spans are `iaf.job` with an `iaf.step` per step attempt and an
@@ -429,6 +476,10 @@ of the other jobs on the candidate (every call of one job uses one version), and
 outside a job and every job while the release is paused use the current version. Promotion makes
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
+A rolled-back workflow release publishes `from` again and retires `to` as rolled back
+(`WorkflowVersion.rolledBack`): it stays readable, and a run step's version range never
+resolves to it again, when the job runs or in the checks (`^1` then picks the highest other
+published or retired 1.x).
 The commands need edit rights on the owner team of the release's workflow or provider; when it
 has none (the workflow or provider is gone, or names no owner) only an admin may. A rollback by
 hand says who, in the history and in the event's `reason` alike ("rolled back by Ana"). Release
@@ -485,7 +536,7 @@ on a bucket without Object Lock). With profile `siem`, every entry also goes to 
 ## Notifications
 
 ```ts
-type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated';
+type Notification = { id; at; kind: 'notify' | 'provider.alert' | 'approval.requested' | 'approval.escalated' | 'review.requested';
   severity: 'info' | 'warning' | 'critical'; title; message; link?; channel?; jobId?; workflow?; provider?;
   users: string[]; teams: string[]; read: boolean }   // read is the caller's own
 ```
@@ -499,6 +550,9 @@ incoming webhook per channel (profile `slack`, the URL a `vault:` reference) and
 `mail`). `platform.notifications.channels` and `teams` say who a channel or an approver group
 reaches; events older than `fresh-for` (seeded or replayed history) notify nobody. `notifications`
 is a reserved noun.
+
+A change request opened for a workflow or a provider notifies the team that owns it
+(`review.requested`, with a link to the change request); one without an owner notifies nobody.
 
 ## Resources
 
@@ -562,8 +616,9 @@ tokens anywhere. A finding is a 400 that names the file and the line, never the 
 runs in the unpacked upload and a non-zero exit is a 400 with its output; the answer's `lint`
 says `passed`, or `skipped` when no linter is configured. A file over
 `platform.playbooks.max-upload-size` is a 413. The bytes are kept once in the artifact store under
-their SHA-256, which a workflow pins as `playbook: { upload: { file, sha256, path? } }`; each
-upload is a `playbook.uploaded` event.
+their SHA-256, which a workflow pins as `playbook: { upload: { file, sha256, path? } }` with the `sha256` as answered (64 lowercase
+hex digits: `playbook.digest` refuses anything else, and a publish refuses a digest the store
+no longer holds: `playbook.missing`); each upload is a `playbook.uploaded` event.
 
 `repo` is an https URL or `host/path` (https is implied); ssh, plain http, credentials in the
 URL and link-local or cloud metadata hosts are 400. `credential` is a `vault:<path>` holding
@@ -638,7 +693,11 @@ Per workflow, for the jobs this instance runs (history seeded into the past coun
 
 Every span is also a timer: `iaf_gateway_seconds`, `iaf_mcp_seconds`, `iaf_job_seconds`,
 `iaf_step_seconds`, `iaf_provider_call_seconds`, with an `error_class` tag (`none` when it
-succeeded) and an `…_active_seconds` long-task timer for what is still running. Tracing samples
+succeeded) and an `…_active_seconds` long-task timer for what is still running. The provider call
+timer is also tagged `provider`, `action`, `environment` and `dry_run`, and has histogram buckets
+from 10 ms to an hour (`iaf_provider_call_seconds_bucket`, under `management.metrics.distribution`
+in `application.yml`), so its p95 can be computed across replicas.
+`deploy/grafana/platform-dashboard.json` reads the meters of this section and nothing else. Tracing samples
 every request and job (`management.tracing.sampling.probability: 1.0`); spans leave the process
 only when `management.otlp.tracing.endpoint` (`MANAGEMENT_OTLP_TRACING_ENDPOINT`) names an OTLP
 collector, which the demo leaves unset.

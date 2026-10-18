@@ -57,6 +57,7 @@ class PostgresProfileRestartTest {
             apiVersion: iaf.platform/v1
             kind: Workflow
             metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute }
+            policy: { rbac: [ops] }
             workflow:
               do:
                 - say:

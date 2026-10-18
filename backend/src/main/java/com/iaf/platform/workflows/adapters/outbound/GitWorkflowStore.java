@@ -9,9 +9,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.eclipse.jgit.api.Git;
@@ -41,12 +43,14 @@ import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 import com.iaf.platform.workflows.domain.Semver;
 import com.iaf.platform.workflows.domain.VersionRules;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
+import com.iaf.platform.workflows.ports.outbound.ChangeRequestPort;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
 
 import jakarta.annotation.PostConstruct;
@@ -57,7 +61,9 @@ import lombok.extern.slf4j.Slf4j;
  * The content repo as the store, through JGit. Published versions are the files on the main
  * branch; a draft or candidate is the file on its branch {@code change/<name>-<version>}; a merge
  * is a commit on main (a merge commit when the branch exists); retired versions stay readable
- * from main's history. Every version is read from a git ref into an in-memory index at startup
+ * from main's history. A release rollback adds a commit on main that changes no file and names
+ * the version it took out ({@code Rolled-back: <name> <version>}), so that version stays out of
+ * resolution after a restart. Every version is read from a git ref into an in-memory index at startup
  * and after each write, so reads never touch git. Writes are in-core commits (no checkout); when
  * the written branch is the one checked out, the working tree and index are refreshed too.
  */
@@ -70,6 +76,8 @@ public class GitWorkflowStore implements WorkflowStorePort {
     private static final String HEADS = "refs/heads/";
     private static final String WORKFLOWS_DIR = "workflows";
     private static final int MAX_HISTORY = 500;
+    /** The line of a commit message on main that marks a version a release rollback took out: {@code Rolled-back: <name> <version>}. */
+    static final String ROLLED_BACK = "Rolled-back: ";
 
     private final Path dir;
     private final Clock clock;
@@ -77,6 +85,17 @@ public class GitWorkflowStore implements WorkflowStorePort {
     private final Map<String, Map<String, WorkflowRecord>> index = new ConcurrentHashMap<>();
     private Repository repo;
     private String mainBranch = "main";
+    /**
+     * The change requests, read when the index is built: a version on its change branch is a
+     * candidate while an open change request reviews it, a draft otherwise. Set by Spring (before
+     * {@link #init()}); a store built by hand without it indexes every branch version as a draft.
+     */
+    private ChangeRequestPort changeRequests;
+
+    @Autowired(required = false)
+    public void setChangeRequests(ChangeRequestPort changeRequests) {
+        this.changeRequests = changeRequests;
+    }
 
     @Autowired
     public GitWorkflowStore(PlatformProperties props, Clock clock) {
@@ -170,7 +189,11 @@ public class GitWorkflowStore implements WorkflowStorePort {
                 case DRAFT, CANDIDATE -> saveOnBranch(stored);
                 case PUBLISHED -> publishOnMain(stored);
                 case RETIRED -> {
-                    // the file on main was replaced by the newer version; the content stays in history
+                    // the file on main was replaced by the newer version; the content stays in history.
+                    // A rollback is written down on main, so the index still knows it after a restart.
+                    if (record.rolledBack() && get(record.name(), record.version()).map(r -> !r.rolledBack()).orElse(true)) {
+                        markRolledBack(stored);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -240,6 +263,17 @@ public class GitWorkflowStore implements WorkflowStorePort {
         if (branchTip != null) {
             deleteBranch(branch);
         }
+    }
+
+    /** A commit on main that changes no file and says, in a {@link #ROLLED_BACK} line, that the version was rolled back. */
+    private void markRolledBack(WorkflowRecord record) throws IOException {
+        ObjectId mainTip = repo.resolve(HEADS + mainBranch);
+        if (mainTip == null) {
+            return;
+        }
+        String id = record.name() + " " + record.version();
+        commit(mainBranch, mainTip, List.of(mainTip), record.path(), read(mainTip, record.path()), "Roll back " + id + "\n\n" + ROLLED_BACK + id + "\n",
+                "platform", clock.instant());
     }
 
     /**
@@ -377,10 +411,12 @@ public class GitWorkflowStore implements WorkflowStorePort {
                 rw.reset();
                 rw.markStart(head);
                 int n = 0;
+                Set<String> rolledBack = new HashSet<>();
                 for (RevCommit c : rw) {
                     if (n++ > MAX_HISTORY) {
                         break;
                     }
+                    rolledBack.addAll(rolledBackIn(c.getFullMessage()));
                     if (c.getId().equals(head.getId())) {
                         continue;
                     }
@@ -390,8 +426,13 @@ public class GitWorkflowStore implements WorkflowStorePort {
                                 .ifPresent(p -> put(record(p, WorkflowStatus.RETIRED, e.getKey(), c)));
                     }
                 }
+                // a retired version a rollback took out stays out (a version on main again is published, not retired)
+                for (Map<String, WorkflowRecord> versions : index.values()) {
+                    versions.replaceAll((v, r) -> r.status() == WorkflowStatus.RETIRED && rolledBack.contains(r.name() + " " + r.version()) ? r.asRolledBack() : r);
+                }
             }
         }
+        Set<String> underReview = underReview();
         for (Ref ref : repo.getRefDatabase().getRefsByPrefix(HEADS + "change/")) {
             String branch = ref.getName().substring(HEADS.length());
             try (RevWalk rw = new RevWalk(repo)) {
@@ -400,11 +441,36 @@ public class GitWorkflowStore implements WorkflowStorePort {
                     parse(e.getKey(), e.getValue(), cache)
                             .filter(p -> branch.equals(VersionRules.branch(p.definition().name(), p.definition().version())))
                             .filter(p -> get(p.definition().name(), p.definition().version()).isEmpty())
-                            .ifPresent(p -> put(record(p, WorkflowStatus.DRAFT, e.getKey(), tip)));
+                            .ifPresent(p -> put(record(p, underReview.contains(branch) ? WorkflowStatus.CANDIDATE : WorkflowStatus.DRAFT, e.getKey(), tip)));
                 }
             }
         }
         log.info("indexed {} workflow version(s) from git at {}", index.values().stream().mapToInt(Map::size).sum(), dir);
+    }
+
+    /** The {@code <name> <version>} of every {@link #ROLLED_BACK} line of a commit message. */
+    static List<String> rolledBackIn(String message) {
+        List<String> out = new ArrayList<>();
+        for (String line : message == null ? new String[0] : message.split("\n")) {
+            if (line.startsWith(ROLLED_BACK)) {
+                out.add(line.substring(ROLLED_BACK.length()).trim());
+            }
+        }
+        return out;
+    }
+
+    /** The change branches of the workflow versions open change requests review. */
+    private Set<String> underReview() {
+        if (changeRequests == null) {
+            return Set.of();
+        }
+        Set<String> branches = new HashSet<>();
+        for (ChangeRequest cr : changeRequests.all()) {
+            if (cr.status() == ChangeRequest.Status.OPEN && cr.kind() == ChangeRequest.Kind.WORKFLOW) {
+                branches.add(VersionRules.branch(cr.name(), cr.version()));
+            }
+        }
+        return branches;
     }
 
     private WorkflowRecord record(Parsed p, WorkflowStatus status, String path, RevCommit commit) {
@@ -474,6 +540,6 @@ public class GitWorkflowStore implements WorkflowStorePort {
             return r;
         }
         return new WorkflowRecord(r.name(), r.version(), r.status(), r.yaml(), r.definition(), r.contentHash(), path, r.updatedAt(), r.updatedBy(),
-                r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes());
+                r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes(), r.rolledBack());
     }
 }

@@ -95,6 +95,26 @@ jobs:
         run: mvn -B -q test -Dtest=SampleWorkflowsDryRunTest -Dsurefire.failIfNoSpecifiedTests=false
         working-directory: backend
 
+  playbook-scan:
+    name: Playbook upload scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build the upload scan rule
+        run: mvn -B -q compile
+        working-directory: backend
+      - name: Scan the repository's playbooks
+        # the rule POST /playbooks:upload applies (playbooks.domain.SecretScan), over every file under a
+        # playbooks/ directory at the root, in workflows/ or in providers/ (the content keeps none today:
+        # it pins its playbooks in git, which the content job lints and scans, or uploads them); first
+        # over scripts/scan-playbooks/fixture, which must be flagged on exactly its marked lines
+        run: java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java .
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -186,6 +206,11 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           recursive: true
+      - name: Check the Grafana dashboard
+        # the JSON model parses, and the copy the chart ships as a ConfigMap is the same file
+        run: |
+          python3 -m json.tool deploy/grafana/platform-dashboard.json > /dev/null
+          cmp deploy/grafana/platform-dashboard.json deploy/helm/platform/dashboards/platform-dashboard.json
       - uses: azure/setup-helm@v4
       - uses: actions/setup-go@v5
         with:
@@ -195,8 +220,30 @@ jobs:
           go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
           chart=deploy/helm/platform
           crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          for values in "" "-f $chart/ci/full-values.yaml"; do
+          for values in "" "-f $chart/ci/full-values.yaml" "-f $chart/ci/worm-files-values.yaml" "-f $chart/ci/git-store-values.yaml"; do
             helm lint $chart $values
             helm template platform $chart $values | "$(go env GOPATH)/bin/kubeconform" -strict -summary \
               -kubernetes-version 1.30.0 -schema-location default -schema-location "$crds"
           done
+      - name: Check the workflow store switch
+        # without a repository the workflows live in the database; with one, in its clone (the Git
+        # workflow store), which the chart runs on one backend pod only, since the store pushes nothing
+        run: |
+          chart=deploy/helm/platform
+          helm template platform $chart | grep -qE '^ +git: false$'
+          helm template platform $chart -f $chart/ci/full-values.yaml | grep -qE '^ +git: false$'
+          helm template platform $chart -f $chart/ci/git-store-values.yaml | grep -qE '^ +git: true$'
+          if helm template platform $chart --set content.repository=https://git.example.com/platform/content.git > /dev/null 2>&1; then
+            echo "a repository with two API pods and the workers rendered the Git workflow store"
+            exit 1
+          fi
+      - name: Check the Temporal keys
+        # the backend takes its Temporal API key and payload key only as vault: references, so the
+        # chart renders them as such and refuses a key itself
+        run: |
+          chart=deploy/helm/platform
+          helm template platform $chart -f $chart/ci/full-values.yaml | grep -qE '^ +value: "vault:temporal/payload-key"$'
+          if helm template platform $chart --set temporal.payloadKey=not-a-reference > /dev/null 2>&1; then
+            echo "a payload key that is not a vault: reference rendered"
+            exit 1
+          fi

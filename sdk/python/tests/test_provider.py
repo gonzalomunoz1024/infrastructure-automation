@@ -108,6 +108,17 @@ def test_every_problem_is_listed_at_once():
         assert want in str(e.value)
 
 
+def test_an_action_that_changes_something_writes_change():
+    # CHANGE, and the old spelling update (the deprecated alias or the string) all write change.
+    for effect in (Effect.CHANGE, Effect.UPDATE, "update", "change"):
+        p = Provider("probe", owner="team-platform", version="1.0.0")
+        p.action("item.rename", effect=effect)(echo)
+
+        assert p.validate().document()["spec"]["actions"][0]["effect"] == "change"
+    assert Effect("update") is Effect.CHANGE
+    assert [e.value for e in Effect] == ["read", "create", "change", "delete"]
+
+
 def test_a_provider_offers_at_least_one_action():
     with pytest.raises(ValueError, match="A provider offers at least one action"):
         Provider("empty", owner="team-platform", version="1.0.0").validate()

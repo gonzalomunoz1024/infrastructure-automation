@@ -1,6 +1,9 @@
 The platform {{ .Chart.AppVersion }} is installed as {{ include "platform.fullname" . }}.
 
   API          {{ include "platform.fullname" . }}-api:{{ .Values.api.service.port }} ({{ .Values.api.replicas }} pods, roles {{ ternary "api" "api, worker" .Values.worker.enabled }})
+{{- if include "platform.gitStore" . }}
+  Workflows    the clone of {{ .Values.content.repository }} on {{ .Values.content.gitStore.existingClaim }} (the Git workflow store)
+{{- end }}
 {{- if .Values.worker.enabled }}
   Workers      {{ .Values.worker.replicas }} pods polling {{ .Values.temporal.taskQueue }} on {{ .Values.temporal.address }} (namespace {{ .Values.temporal.namespace }})
 {{- end }}
@@ -16,6 +19,17 @@ Open http{{ if .Values.ingress.tlsSecretName }}s{{ end }}://{{ .Values.ingress.h
 {{- else }}
 
 Try it: kubectl port-forward svc/{{ include "platform.fullname" . }}-{{ ternary "frontend" "api" .Values.frontend.enabled }} 8080:8080, then open http://localhost:8080/
+{{- end }}
+{{- if not (or .Values.audit.signingKeySecret.name (dig "platform" "audit" "signing-key" "" (.Values.backend.config | default dict))) }}
+
+Note: no audit signing key is set, so every pod signs evidence seals with a random key per run and
+a seal made before a restart can no longer be verified. Set platform.audit.signing-key in
+backend.config to a vault: reference, or name an existing Secret in audit.signingKeySecret.
+{{- end }}
+{{- if and (has "temporal" .Values.backend.profiles) (not (or .Values.temporal.payloadKey (dig "platform" "temporal" "payload-key" "" (.Values.backend.config | default dict)))) }}
+
+Note: temporal.payloadKey is blank, so Temporal's histories hold the jobs' inputs and the steps'
+results in clear. Set it to a vault: reference to a 32-byte AES key (openssl rand -base64 32).
 {{- end }}
 {{- if and .Values.worker.enabled (not .Values.postgres.enabled) }}
 

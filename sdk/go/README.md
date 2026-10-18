@@ -49,9 +49,13 @@ p := provider.New("ip-pool").                      // providers/<owner>/ip-pool.
 	Error("pool_exhausted", false, "The pool has no free address").
 	Action(provider.NewAction("address.reserve", reserve).
 		Title("Reserve an address").
-		Effect(provider.Create)).                  // Read, Create, Update or Delete
+		Effect(provider.Create)).                  // Read, Create, Change or Delete
 	MustBuild()                                    // checks it like the platform's provider checks
 ```
+
+An action that changes something in place says `provider.Change`, written `change` in the
+provider file as the platform spells it; `update`, the spelling of earlier SDK versions, still
+reads as `change` (`Effect("update")`, the deprecated `provider.Update`) until the next version.
 
 Run its worker. It listens on the provider's task queue (`provider-<name>` unless you name one
 with `TaskQueue(...)`) and stops gracefully on SIGINT or SIGTERM, letting calls in flight finish:
@@ -75,7 +79,7 @@ A handler is `func(ctx context.Context, call *provider.Call, in I) (O, error)`:
 | | |
 |---|---|
 | `call.IdempotencyKey` | the same for every retry of the step and for a worker that picks the call up again; new for a new run of it. Pass it to the system you call, or keep it with what you create. |
-| `call.Job`, `call.Step`, `call.Environment`, `call.Attempt` | the job (id, workflow, version, trace id), the step id, the environment and the step's attempt |
+| `call.Job`, `call.Step`, `call.Environment`, `call.Attempt`, `call.TraceParent` | the job (id, workflow, version, trace id), the step id, the environment, the step's attempt and the platform's W3C `traceparent` |
 | `call.Heartbeat(details...)` | tell the platform the call is alive; call it more often than the heartbeat timeout during long work, and watch `ctx.Done()`: a cancelled step cancels the context |
 | `provider.Retryable("pool_busy", "...")` | a failure the step's retry policy may retry |
 | `provider.Fatal("pool_exhausted", "...")` | a failure no retry fixes: the step fails at once |
@@ -89,18 +93,45 @@ An action can name another one as its preview with `Plan("address.preview")`, an
 the platform's demo mode returns for it with `Sample(...)`. `Input(schema)` and `Output(schema)`
 replace a derived schema.
 
+## Tracing
+
+Each call carries the platform's step span as a W3C `traceparent` (`call.TraceParent`). The SDK
+depends on no tracing library: give the provider a `SpanStarter` and each call that carries a valid
+traceparent runs in the span it starts, which the handler's `ctx` carries. With OpenTelemetry:
+
+```go
+p = p.WithTracing(func(ctx context.Context, name string, call *provider.Call) (context.Context, func(error)) {
+	ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": call.TraceParent})
+	ctx, span := otel.Tracer("ip-pool").Start(ctx, name, trace.WithSpanKind(trace.SpanKindServer))
+	return ctx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}
+})
+```
+
+`name` is `run <provider>.<action>`. Without a starter the worker writes the traceparent to the
+activity's debug log.
+
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
-| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend |
-| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in |
-| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish |
+| `TEMPORAL_ADDRESS` | `127.0.0.1:7233` | the Temporal frontend (on Temporal Cloud, the namespace's gRPC endpoint) |
+| `TEMPORAL_NAMESPACE` | `default` | the namespace the platform runs in (on Temporal Cloud, `<namespace>.<account>`) |
+| `WORKER_DRAIN_SECONDS` | `30` | how long a stopping worker lets calls in flight finish; a value that is not a whole number of seconds is logged and falls back to 30 |
+| `IAF_TEMPORAL_TLS_CA` | | a PEM file of the CA that signed the frontend's certificate; without it TLS trusts the system's CAs |
+| `IAF_TEMPORAL_TLS_CERT`, `IAF_TEMPORAL_TLS_KEY` | | PEM files of the worker's client certificate and its key, for mutual TLS |
+| `IAF_TEMPORAL_API_KEY` | | a Temporal Cloud API key, sent as a bearer token over TLS; never logged |
 | `IAF_PLATFORM_URL` | `http://localhost:8080` | the platform, for `Submit` |
 | `IAF_PLATFORM_TOKEN` | | a service-account token (`iaf_...`), for `Submit`; sent, never printed |
 
-To connect with TLS or an API key, dial your own `client.Client` and use
-`provider.NewWorker(c, p, worker.Options{})`.
+Any `IAF_TEMPORAL_*` variable turns TLS on (`Options.TLSCA`, `TLSCert`, `TLSKey` and `APIKey` in code); a
+file that cannot be read stops `Run`, naming its variable. For anything else (interceptors, a data
+converter), dial your own `client.Client` and use `provider.NewWorker(c, p, worker.Options{})`.
 
 ## Testing
 

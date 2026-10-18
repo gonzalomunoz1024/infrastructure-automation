@@ -199,4 +199,26 @@ class IdempotencyWebFilterTest {
         verify(commands, times(1)).startJob(any());
         verify(commands, times(1)).startBatch(any());
     }
+
+
+    @Test
+    void withoutAnIdentityTheKeyIsIgnored() {
+        AtomicInteger reached = new AtomicInteger();
+        WebTestClient anonymous = WebTestClient.bindToWebHandler(exchange -> {
+                    reached.incrementAndGet();
+                    exchange.getResponse().setStatusCode(HttpStatus.ACCEPTED);
+                    return exchange.getResponse().setComplete();
+                })
+                .webFilter(idempotency)
+                .build();
+
+        for (int i = 0; i < 2; i++) {
+            anonymous.post().uri(RESTART).header("Idempotency-Key", "k-1").contentType(MediaType.APPLICATION_JSON).bodyValue("{}").exchange()
+                    .expectStatus().isAccepted().expectHeader().doesNotExist("Idempotent-Replay");
+        }
+        assertThat(reached.get()).as("every request runs: there is nobody to scope the key to").isEqualTo(2);
+
+        restart(SampleCatalog.OPS, "k-1", "{}").expectStatus().isAccepted().expectHeader().doesNotExist("Idempotent-Replay");
+        verify(runs, times(1)).startJob(any());
+    }
 }

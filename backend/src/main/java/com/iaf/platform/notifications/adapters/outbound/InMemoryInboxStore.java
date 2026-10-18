@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.domain.Identity;
@@ -16,8 +17,12 @@ import com.iaf.platform.notifications.application.NotificationProperties;
 import com.iaf.platform.notifications.domain.Notification;
 import com.iaf.platform.notifications.ports.outbound.InboxStore;
 
-/** The demo inbox: the newest {@code platform.notifications.keep} notifications in memory, with their readers. */
+/**
+ * The demo inbox: the newest {@code platform.notifications.keep} notifications in memory, with
+ * their readers; gone on restart, so the {@code postgres} profile keeps them in the database.
+ */
 @Component
+@Profile("!postgres")
 public class InMemoryInboxStore implements InboxStore {
 
     private final int keep;
@@ -59,11 +64,14 @@ public class InMemoryInboxStore implements InboxStore {
 
     @Override
     public boolean markRead(String id, String userId) {
-        if (!byId.containsKey(id)) {
+        if (id == null || userId == null) {
             return false;
         }
-        readers.computeIfAbsent(id, k -> ConcurrentHashMap.newKeySet()).add(userId);
-        return true;
+        // under the entry's lock: a save dropping this notification waits, then removes the readers too
+        return byId.computeIfPresent(id, (k, n) -> {
+            readers.computeIfAbsent(k, x -> ConcurrentHashMap.newKeySet()).add(userId);
+            return n;
+        }) != null;
     }
 
     @Override

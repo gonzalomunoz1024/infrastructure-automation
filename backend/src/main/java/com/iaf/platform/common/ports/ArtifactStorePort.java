@@ -1,6 +1,7 @@
 package com.iaf.platform.common.ports;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -11,6 +12,11 @@ import reactor.core.publisher.Mono;
  * playbooks, Terraform plans. Content is named by its SHA-256; putting the same bytes twice
  * stores them once, and nothing is ever overwritten or deleted through this port. Reads check
  * the digest again, so a corrupted object never reaches a run.
+ *
+ * <p>A named object is kept under a name of its own instead, such as an ended job's archive
+ * ({@code jobs/<id>/logs.ndjson}), beside the content-addressed objects and never among them.
+ * Writing a name again replaces its content as a whole: a reader gets the old content or the new,
+ * never a mix, and its digest is checked on every read where the store keeps one.</p>
  */
 public interface ArtifactStorePort {
 
@@ -29,6 +35,27 @@ public interface ArtifactStorePort {
 
     Mono<Boolean> exists(String sha256);
 
+    /** Store {@code content} under {@code name}, replacing whatever was stored there. */
+    Mono<Void> putNamed(String name, byte[] content);
+
+    /** What is stored under {@code name}; empty when nothing is. */
+    Mono<byte[]> getNamed(String name);
+
+    Mono<Boolean> existsNamed(String name);
+
+    /**
+     * A name: segments of letters, digits, {@code .}, {@code _} and {@code -} (none starting with a
+     * dot) joined by {@code /}, at most 512 characters, outside the store's own {@code sha256/} and
+     * {@code staging/}; anything else is an IllegalArgumentException.
+     */
+    static String name(String name) {
+        if (name == null || name.length() > 512 || !NAME.matcher(name).matches()
+                || List.of("sha256", "staging").contains(name.split("/", 2)[0])) {
+            throw new IllegalArgumentException("'" + name + "' is not an artifact name (segments of letters, digits, '.', '_' and '-' joined by '/')");
+        }
+        return name;
+    }
+
     /** {@code sha256:9F2C…} or {@code 9f2c…} as 64 lowercase hex digits; anything else is an IllegalArgumentException. */
     static String digest(String sha256) {
         String d = sha256 == null ? "" : sha256.trim();
@@ -43,4 +70,6 @@ public interface ArtifactStorePort {
     }
 
     Pattern DIGEST = Pattern.compile("^[0-9a-f]{64}$");
+
+    Pattern NAME = Pattern.compile("^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$");
 }

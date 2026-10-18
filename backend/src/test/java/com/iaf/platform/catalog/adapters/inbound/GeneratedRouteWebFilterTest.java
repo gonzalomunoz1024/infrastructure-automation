@@ -340,4 +340,18 @@ class GeneratedRouteWebFilterTest {
         assertThat(captor.getValue().input().path("limit").asInt()).isEqualTo(5);
         assertThat(captor.getValue().input().path("verbose").asBoolean()).isTrue();
     }
+
+
+    @Test
+    void anUnexpectedFailureAnswersAGenericErrorWithTheTraceIdToFindIt() {
+        when(runs.startJob(any())).thenReturn(Mono.error(new IllegalStateException("could not reach jdbc:postgresql://db.internal:5432/platform")));
+        client(SampleCatalog.OPS).post().uri("/api/v1/vms/vm-1042:restart")
+                .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                .exchange()
+                .expectStatus().is5xxServerError()
+                .expectBody()
+                .jsonPath("$.error").isEqualTo("unexpected error")
+                .jsonPath("$.correlationId").isEqualTo("4bf92f3577b34da6a3ce929d0e0e4736")
+                .consumeWith(r -> assertThat(new String(r.getResponseBody(), java.nio.charset.StandardCharsets.UTF_8)).doesNotContain("db.internal"));
+    }
 }

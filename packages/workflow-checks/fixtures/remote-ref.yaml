@@ -1,0 +1,17 @@
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata: { name: vm-info, title: VM info, noun: vm, verb: read, owner: team-compute, version: 1.0.0 }
+api:
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId: { $ref: "https://169.254.169.254/latest/meta-data" }
+policy:
+  rbac: [ops]
+workflow:
+  do:
+    - getVm:
+        name: Get VM
+        call: provider
+        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.vmId }}" } }

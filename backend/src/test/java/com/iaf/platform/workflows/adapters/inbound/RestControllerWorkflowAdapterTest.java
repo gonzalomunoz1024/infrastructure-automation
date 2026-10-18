@@ -1,6 +1,8 @@
 package com.iaf.platform.workflows.adapters.inbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -21,6 +23,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.iaf.platform.common.events.EventBus;
+import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.config.GlobalExceptionHandler;
 import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
@@ -31,6 +34,8 @@ import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.application.WorkflowCommandHandler;
 import com.iaf.platform.workflows.application.WorkflowQueryHandler;
+
+import reactor.core.publisher.Mono;
 
 /**
  * The slice end to end over HTTP: the real handlers and in-memory adapters, the sample content,
@@ -46,6 +51,7 @@ class RestControllerWorkflowAdapterTest {
     InMemoryWorkflowStore store = InMemoryWorkflowStore.empty(clock);
     InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
     EventBus events = new EventBus(clock);
+    PolicyPort policy = SampleFixtures.policy();
     WebTestClient client;
 
     @BeforeEach
@@ -53,7 +59,7 @@ class RestControllerWorkflowAdapterTest {
         store.seed(SampleFixtures.ROOT);
         WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
         WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(),
-                SampleFixtures.runs(), SampleFixtures.runsQueries(), SampleFixtures.policy(), events, clock);
+                SampleFixtures.runs(), SampleFixtures.runsQueries(), policy, events, clock);
         commands.init();
         PlatformProperties props = new PlatformProperties();
         client = WebTestClient.bindToController(new RestControllerWorkflowAdapter(commands, queries))
@@ -69,6 +75,18 @@ class RestControllerWorkflowAdapterTest {
     static String edited(String yaml) {
         return yaml.replace("description: Restart a virtual machine after safety checks, with an approval for production.",
                 "description: Restart a virtual machine after safety checks (edited).");
+    }
+
+    @Test
+    void aPublishWhileThePolicyEngineIsDownAnswers503AndOpensNothing() {
+        String vmRestart = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
+        client.put().uri("/api/v1/workflows/vm-restart/draft").bodyValue(Map.of("yaml", edited(vmRestart))).exchange().expectStatus().isOk();
+        when(policy.evaluate(any())).thenReturn(Mono.error(new IllegalStateException("Connection refused")));
+
+        client.post().uri("/api/v1/workflows/vm-restart:publish").bodyValue(Map.of("strategy", "all")).exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody().jsonPath("$.error").isEqualTo("policy engine unavailable, try again");
+        client.get().uri("/api/v1/change-requests").exchange().expectStatus().isOk().expectBody().jsonPath("$.length()").isEqualTo(0);
     }
 
     @Test
@@ -128,7 +146,11 @@ class RestControllerWorkflowAdapterTest {
                 .jsonPath("$.checks[?(@.id == 'contracts')].status").isEqualTo(List.of("passed"))
                 .jsonPath("$.diff").value(d -> assertThat((String) d).contains("+  description: Restart a virtual machine after safety checks (edited)."))
                 .jsonPath("$.yaml").value(y -> assertThat((String) y).contains("(edited)"))
-                .jsonPath("$.createdAt").isEqualTo("2026-10-17T10:00:00Z");
+                .jsonPath("$.createdAt").isEqualTo("2026-10-17T10:00:00Z")
+                .jsonPath("$.changeRequest").doesNotExist()
+                .jsonPath("$.preview.mermaid").value(m -> assertThat((String) m).startsWith("flowchart LR\n")
+                        .contains("s1[\"Check VM exists<br/>provider: vsphere vm.get\"]").contains("main -.->|\"on error\"| onError"));
+        client.get().uri("/api/v1/change-requests").exchange().expectStatus().isOk().expectBody().jsonPath("$[0].preview").doesNotExist();
         client.get().uri("/api/v1/workflows/vm-restart").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.versions[1].status").isEqualTo("candidate").jsonPath("$.changeRequests[0].id").isEqualTo(crId);
 
@@ -186,6 +208,7 @@ class RestControllerWorkflowAdapterTest {
                 apiVersion: iaf.platform/v1
                 kind: Workflow
                 metadata: { name: thing-refresh, title: Refresh a thing, noun: thing, verb: refresh, owner: team-compute }
+                policy: { rbac: [ops] }
                 workflow:
                   do:
                     - say:
@@ -252,5 +275,29 @@ class RestControllerWorkflowAdapterTest {
                 .expectBody().jsonPath("$.yaml").value(y -> assertThat((String) y).contains("action: plan").contains("approval:"));
         client.post().uri("/api/v1/workflows:import").bodyValue(Map.of("source", "idp", "ref", "dns-record-request")).exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.notes").value(n -> assertThat((List<?>) n).isNotEmpty());
+    }
+
+    @Test
+    void servesTheWorkflowSchemaAndJudgesTheDesignersDocumentAgainstIt() throws Exception {
+        client.get().uri("/api/v1/schemas/workflow.json").exchange().expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith("application/json")
+                .expectBody()
+                .jsonPath("$.title").isEqualTo("Workflow")
+                .jsonPath("$.properties.kind.const").isEqualTo("Workflow")
+                .jsonPath("$.$defs.step.additionalProperties").isEqualTo(false);
+        // the designer posts its document as JSON: an unknown step key is a schema problem, not a 400
+        JsonNode definition = JSON.readTree("""
+                {"apiVersion": "iaf.platform/v1", "kind": "Workflow",
+                 "metadata": {"name": "thing-refresh", "title": "Refresh a thing", "noun": "thing", "verb": "refresh", "owner": "team-compute"},
+                 "policy": {"rbac": ["ops"]},
+                 "workflow": {"do": [{"say": {"notify": {"channel": "#x", "message": "hi"}, "loop": 3}}]}}
+                """);
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("definition", definition)).exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.valid").isEqualTo(false)
+                .jsonPath("$.problems.length()").isEqualTo(1)
+                .jsonPath("$.problems[0].code").isEqualTo("schema.invalid")
+                .jsonPath("$.problems[0].step").isEqualTo("say")
+                .jsonPath("$.problems[0].field").isEqualTo("/workflow/do/0/say/loop");
     }
 }

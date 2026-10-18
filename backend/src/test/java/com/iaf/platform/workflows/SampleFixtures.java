@@ -87,6 +87,7 @@ public final class SampleFixtures {
     public static RunsQueries runsQueries() {
         RunsQueries r = mock(RunsQueries.class);
         when(r.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of()));
+        when(r.steps(any())).thenReturn(Mono.just(List.of()));
         return r;
     }
 

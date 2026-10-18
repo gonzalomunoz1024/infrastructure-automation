@@ -9,21 +9,28 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.ServerWebInputException;
 
 import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.ForbiddenException;
 import com.iaf.platform.common.domain.NotFoundException;
+import com.iaf.platform.common.domain.ServiceUnavailableException;
 import com.iaf.platform.common.domain.TooManyRequestsException;
+import com.iaf.platform.common.tracing.TraceIds;
+import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.runs.domain.InvalidInputException;
 
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 /**
  * Central error mapping: IllegalArgumentException -> 400 (with problems or rows when the input
  * failed its schema), NotFound -> 404, Forbidden -> 403, Conflict -> 409 (with its detail),
- * ResponseStatusException -> its status, everything else -> 500.
+ * ServiceUnavailable -> 503, ResponseStatusException -> its status, everything else -> 500 with a
+ * generic message and a correlation id (the request's trace id when it has one) that finds the
+ * cause in the log.
  */
 @Slf4j
 @RestControllerAdvice
@@ -71,6 +78,11 @@ public class GlobalExceptionHandler {
         return Mono.just(ResponseEntity.status(HttpStatus.CONFLICT).body(b));
     }
 
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public Mono<ResponseEntity<Map<String, Object>>> unavailable(ServiceUnavailableException ex) {
+        return Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body(ex.getMessage())));
+    }
+
     /** Over a quota: 429 with {@code Retry-After} in seconds, and the same number in the body. */
     @ExceptionHandler(TooManyRequestsException.class)
     public Mono<ResponseEntity<Map<String, Object>>> tooManyRequests(TooManyRequestsException ex) {
@@ -86,10 +98,26 @@ public class GlobalExceptionHandler {
         return Mono.just(ResponseEntity.status(ex.getStatusCode()).body(body(ex.getReason())));
     }
 
+    /** A 500 says nothing of its cause (a message may name a host, a path or a query); the id finds it in the log. */
     @ExceptionHandler(Exception.class)
-    public Mono<ResponseEntity<Map<String, Object>>> generic(Exception ex) {
-        log.error("unhandled", ex);
-        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body(ex.getMessage())));
+    public Mono<ResponseEntity<Map<String, Object>>> generic(Exception ex, ServerWebExchange exchange) {
+        return Mono.deferContextual(ctx -> {
+            String correlationId = correlationId(ctx, exchange);
+            log.error("unhandled [{}]", correlationId, ex);
+            Map<String, Object> b = body("unexpected error");
+            b.put("correlationId", correlationId);
+            return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(b));
+        });
+    }
+
+    /** The request's trace id: of its observation, else of its {@code traceparent}; a fresh one when it has neither. */
+    static String correlationId(ContextView ctx, ServerWebExchange exchange) {
+        String traced = Traces.traceIdOf(Traces.current(ctx));
+        if (traced != null) {
+            return traced;
+        }
+        String traceparent = exchange == null ? null : exchange.getRequest().getHeaders().getFirst(TraceIds.TRACEPARENT);
+        return TraceIds.parse(traceparent).map(TraceIds.Parent::traceId).orElseGet(TraceIds::newTraceId);
     }
 
     private static Map<String, Object> body(String msg) {

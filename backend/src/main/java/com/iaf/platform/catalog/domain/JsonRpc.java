@@ -17,6 +17,12 @@ public final class JsonRpc {
     public static final int METHOD_NOT_FOUND = -32601;
     public static final int INVALID_PARAMS = -32602;
     public static final int INTERNAL_ERROR = -32603;
+    /** Implementation-defined codes (-32000 to -32099) for what the platform refuses; the message says why, {@code data} says more. */
+    public static final int FORBIDDEN = -32001;
+    public static final int POLICY_DENIED = -32002;
+    public static final int NOT_FOUND = -32003;
+    public static final int CONFLICT = -32004;
+    public static final int TOO_MANY_REQUESTS = -32005;
 
     private JsonRpc() {
     }

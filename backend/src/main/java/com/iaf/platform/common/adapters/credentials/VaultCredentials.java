@@ -29,7 +29,8 @@ import reactor.core.publisher.Mono;
 /**
  * HashiCorp Vault KV v2 over HTTP: {@code GET {vaultUrl}/v1/{mount}/data/{path}} with
  * {@code X-Vault-Token}, reading {@code data.data.value} (or the single field of the secret),
- * cached for {@value #CACHE_SECONDS} seconds. {@code store} writes the type, the author and the
+ * cached for {@value #CACHE_SECONDS} seconds (a miss drops the entries that have expired, and the
+ * cache holds at most {@value #MAX_CACHED}). {@code store} writes the type, the author and the
  * owner team into the secret's custom metadata first (a token that cannot write metadata stores
  * nothing, so a credential never loses its owner), then {@code { value, type }}; {@code list}
  * walks the mount's metadata tree and {@code info} reads one secret's metadata, owner included.
@@ -41,6 +42,7 @@ import reactor.core.publisher.Mono;
 public class VaultCredentials implements CredentialsPort {
 
     static final long CACHE_SECONDS = 60;
+    static final int MAX_CACHED = 1_000;
     static final Duration TIMEOUT = Duration.ofSeconds(5);
     static final int LIST_DEPTH = 4;
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
@@ -70,16 +72,30 @@ public class VaultCredentials implements CredentialsPort {
             return Mono.empty();
         }
         String path = pathOf(reference);
+        Instant now = clock.instant();
         Cached c = cache.get(path);
-        if (c != null && c.expiresAt().isAfter(clock.instant())) {
+        if (c != null && c.expiresAt().isAfter(now)) {
             return Mono.just(c.value());
         }
+        evictExpired(now);
         return client.get().uri(base + "/v1/" + mount + "/data/" + path).header("X-Vault-Token", token)
                 .retrieve().bodyToMono(JsonNode.class)
                 .timeout(TIMEOUT)
                 .flatMap(body -> Mono.justOrEmpty(valueOf(body)))
-                .doOnNext(v -> cache.put(path, new Cached(v, clock.instant().plusSeconds(CACHE_SECONDS))))
+                .doOnNext(v -> remember(path, v))
                 .onErrorResume(WebClientResponseException.NotFound.class, e -> Mono.empty());
+    }
+
+    /** A miss sweeps what has expired, so the cache only ever holds live entries. */
+    private void evictExpired(Instant now) {
+        cache.values().removeIf(c -> !c.expiresAt().isAfter(now));
+    }
+
+    /** Remembers a value for {@value #CACHE_SECONDS} seconds, unless the cache is full of live entries. */
+    private void remember(String path, String value) {
+        if (cache.size() < MAX_CACHED || cache.containsKey(path)) {
+            cache.put(path, new Cached(value, clock.instant().plusSeconds(CACHE_SECONDS)));
+        }
     }
 
     /** {@code data.data.value}, or the only field of the secret. */

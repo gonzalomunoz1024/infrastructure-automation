@@ -4,13 +4,22 @@
  * Pure: the only lookups go through the {@link CheckContext}. Every rule mirrors
  * WorkflowChecks.java, with the same codes, levels, fixes and messages; the shared fixtures under
  * ./fixtures prove both sides agree.
+ *
+ * What only the backend can know stays the backend's: whose a `vault:` credential is
+ * (`credential.owner`: the editor and CI see no vault, so this twin has no rule for it and the
+ * designer learns it from `:validate`) and whether the artifact store still holds an upload
+ * (`playbook.missing`).
  */
-import { parse as parseYaml } from 'yaml';
+import { loops, workflowRuns } from './cycles.ts';
 import { isTemplate, references, syntaxError, type Reference } from './expressions.ts';
 import { asText, asTextOr, elements, fieldNames, get, has, isArray, isBlank, isObject, isTextual, size, toJson, type Maybe } from './json.ts';
-import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
+import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, WORKFLOW_KIND, WorkflowParseError, type ParsedStep, type ParsedWorkflow } from './parse.ts';
 import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
-import { isClosed, mergeSchema, sameJson, schemaPaths } from './schemas.ts';
+import { describeRemoteRef, dotted, isClosed, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
+import { validateWorkflowDocument } from './workflow-schema.ts';
+import { parseYamlText, YamlSyntaxError } from './yaml-text.ts';
+import { satisfies } from './semver.ts';
+import { STEP_TYPES } from './step-types.ts';
 import { closest } from './suggest.ts';
 import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
 
@@ -27,33 +36,44 @@ const TERRAFORM_ACTIONS = new Set(['plan', 'apply', 'destroy']);
 const ON_FAILURE: readonly string[] = ['fail', 'continue'];
 const API_PREFIX = /^\/api\/v[1-9][0-9]*\//;
 const DATE = /^(\d{4})-(\d{2})-(\d{2})(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+/** An upload's digest as POST /playbooks:upload answers it: 64 lowercase hex digits. */
+const DIGEST = /^[0-9a-f]{64}$/;
 
 /** The roots an expression can always start from; an alias may not shadow them. */
 export const ROOTS: readonly string[] = ['json', 'input', 'vars', 'job', 'env', 'error'];
 
-/** The first path segments under /api/v1/ that belong to the platform. */
+/**
+ * The first path segments under /api/v<n>/ that belong to the platform: the gateway's list,
+ * ReservedNouns.java in the backend. The test reserved-nouns.test.ts keeps the two the same.
+ */
 export const RESERVED_NOUNS: readonly string[] = [
   'workflows',
   'jobs',
+  'approvals',
   'providers',
-  'catalog',
   'releases',
   'audit',
   'resources',
-  'me',
-  'service-accounts',
-  'approvals',
+  'resource-types',
   'credentials',
+  'registry',
+  'catalog',
   'assistant',
+  'triggers',
+  'change-requests',
+  'templates',
+  'service-accounts',
+  'me',
   'mcp',
+  'openapi.json',
+  'openapi',
   'batches',
   'evidence',
-  'resource-types',
-  'registry',
-  'triggers',
-  'openapi',
+  'ws',
+  'actuator',
   'playbooks',
   'notifications',
+  'schemas',
 ];
 
 /** A context without a catalog: unknown providers, workflows and resource types are not reported. */
@@ -79,19 +99,28 @@ export function buildContext(
 
 /**
  * The schemas {@link buildContext} takes, read from published workflows and resource types the
- * way CheckContext.of reads them in Java: each workflow's `api.input` and output names, each
- * type's attribute schema.
+ * way CheckContext.of reads them in Java: each workflow's `api.input` and output names, the MCP
+ * tools each one gets, each type's attribute schema.
  */
 export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceTypes: Iterable<ResourceTypeDocument>): Required<ContextSchemas> {
+  const all = [...workflows];
   const workflowInputs: Record<string, JsonSchema> = {};
   const workflowOutputs: Record<string, string[]> = {};
+  const workflowVersions: Record<string, string> = {};
   const resourceTypeSchemas: Record<string, JsonSchema> = {};
-  for (const w of workflows) {
+  const mcpTools: Record<string, string[]> = {};
+  for (const w of all) {
     const input = w.api === null ? undefined : w.api.input;
     if (isObject(input)) {
       workflowInputs[w.metadata.name] = input as JsonSchema;
     }
     workflowOutputs[w.metadata.name] = w.workflow.outputs === null ? [] : Object.keys(w.workflow.outputs);
+    if (w.metadata.version !== null) {
+      workflowVersions[w.metadata.name] = w.metadata.version;
+    }
+    for (const tool of mcpToolNames(w)) {
+      mcpTools[tool] = [...(mcpTools[tool] ?? []), w.metadata.name].sort();
+    }
   }
   for (const t of resourceTypes) {
     const schema = get(t, 'schema');
@@ -99,22 +128,66 @@ export function contextSchemas(workflows: Iterable<ParsedWorkflow>, resourceType
       resourceTypeSchemas[asText(get(get(t, 'metadata'), 'name'))] = schema as JsonSchema;
     }
   }
-  return { workflowInputs, workflowOutputs, resourceTypeSchemas };
+  return { workflowInputs, workflowOutputs, workflowVersions, workflowRuns: workflowRuns(all), resourceTypeSchemas, mcpTools };
 }
 
-/** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
+/**
+ * The MCP tools a published workflow gets, as McpTools.toolNames spells them: `<noun>_<verb>`
+ * and its batch tool when `mcp.expose` is set (vm + restart -> `vm_restart`, `vm_restart_batch`),
+ * none otherwise.
+ */
+export function mcpToolNames(def: ParsedWorkflow): string[] {
+  if (!mcpExposed(def)) {
+    return [];
+  }
+  const name = `${slug(def.metadata.noun)}_${slug(def.metadata.verb)}`.replace(/-/g, '_');
+  return name === '_' ? [] : [name, `${name}_batch`];
+}
+
+/** Ids.slug in Java: lowercase words joined by dashes. */
+function slug(s: string | null): string {
+  return (s ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+/** What `mcp.toolName` says, as WorkflowChecks.mcpToolMessage says it. */
+function mcpToolMessage(tool: string, other: string): string {
+  return `MCP tool ${tool} is already exposed by workflow ${other}; give this workflow another noun or verb, or set mcp.expose to false`;
+}
+
+/**
+ * Check YAML text: a syntax error, a key written twice among them, is one `yaml.invalid` problem;
+ * otherwise the document is checked as {@link check} says.
+ */
 export function checkYaml(yaml: string, ctx: CheckContext): Problem[] {
   let doc: unknown;
   try {
-    doc = parseYaml(yaml) ?? {};
+    doc = parseYamlText(yaml);
   } catch (e) {
-    return [problem('error', 'yaml.invalid', null, null, `YAML syntax: ${firstLine(e)}`)];
+    if (e instanceof YamlSyntaxError) {
+      return [problem('error', 'yaml.invalid', null, null, e.message)];
+    }
+    throw e;
   }
   return check(doc, ctx);
 }
 
-/** Check a document (the YAML already read into plain values). A structure error is one `yaml.invalid` problem. */
+/**
+ * Check a document (the YAML already read into plain values) in three lines: the Workflow schema
+ * first (schemas/workflow.schema.json: one `schema.invalid` per violation, and nothing else when
+ * there is one), then the parser (a structure error is one `yaml.invalid`), then the rules. A file
+ * of another kind goes straight to the parser, which names its kind.
+ */
 export function check(doc: unknown, ctx: CheckContext): Problem[] {
+  if (isObject(doc) && !(typeof doc['kind'] === 'string' && doc['kind'] !== WORKFLOW_KIND)) {
+    const schema = validateWorkflowDocument(doc);
+    if (schema.length > 0) {
+      return schema;
+    }
+  }
   let def: ParsedWorkflow;
   try {
     def = parseDocument(doc);
@@ -127,7 +200,7 @@ export function check(doc: unknown, ctx: CheckContext): Problem[] {
   return checkParsed(def, ctx);
 }
 
-/** The rule set over an already parsed workflow. */
+/** The rule set over an already parsed workflow: the document's schema is not judged again. */
 export function checkParsed(def: ParsedWorkflow, ctx: CheckContext): Problem[] {
   const c = new Checker(def, ctx);
   c.run();
@@ -138,10 +211,27 @@ export function hasErrors(problems: readonly Problem[]): boolean {
   return problems.some((p) => p.level === 'error');
 }
 
-function firstLine(e: unknown): string {
-  const message = e instanceof Error ? e.message : String(e);
-  const nl = message.indexOf('\n');
-  return nl < 0 ? message : message.substring(0, nl);
+/**
+ * api.input as the gateway, the MCP server and the catalog form will use it: a schema that refers
+ * outside itself is `schema.remoteRef` (nothing is fetched, so the reference never resolves), else
+ * one the validator does not compile is `api.input.invalid`, one problem per location with the
+ * validator's message. Empty for a usable schema. Mirrors WorkflowChecks.inputSchemaProblems.
+ */
+export function inputSchemaProblems(input: unknown): Problem[] {
+  const remote = remoteRefProblem(input, 'api.input');
+  if (remote !== null) {
+    return [remote];
+  }
+  return metaViolations(input).map((v) => {
+    const where = dotted(v.pointer);
+    return problem('error', 'api.input.invalid', null, `api.input${where}`, `api.input is not a valid JSON Schema: ${where === '' ? '' : `${where.substring(1)}: `}${v.message}`);
+  });
+}
+
+/** A `$ref` out of a schema the file carries (`field`): `schema.remoteRef` at the reference. */
+function remoteRefProblem(schema: unknown, field: string): Problem | null {
+  const r = remoteRef(schema);
+  return r === null ? null : problem('error', 'schema.remoteRef', null, `${field}${dotted(r.pointer)}`, describeRemoteRef(r, field));
 }
 
 function problem(level: ProblemLevel, code: string, step: string | null, field: string | null, message: string, fix?: Fix | null): Problem {
@@ -190,8 +280,9 @@ function epochSecond(s: string | null): number | null {
   return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
 }
 
+/** Steps that hold other steps: the containers (fork, for, try) and a switch, whose `do` cases are branches; WorkflowChecks.java names the same four. */
 function isContainerStep(s: ParsedStep): boolean {
-  return s.type === 'switch' || s.type === 'fork' || s.type === 'for' || s.type === 'try';
+  return STEP_TYPES[s.type].isContainer || s.type === 'switch';
 }
 
 /** What an expression can see at one point of the flow. */
@@ -257,6 +348,44 @@ class Checker {
     this.rollout();
     this.steps();
     this.triggers();
+    this.mcpToolName();
+    this.runCycles();
+  }
+
+  /**
+   * run.cycle: a run step (or an orCreateWith input) whose workflow, through the ones the registry
+   * says it starts, ends up starting this one again: the job would wait for itself and never
+   * finish. Without the registry's runs only an orCreateWith of the workflow itself is one.
+   */
+  runCycles(): void {
+    const runs = this.ctx.workflowRuns ?? {};
+    for (const l of loops(this.def, (n) => (Object.hasOwn(runs, n) ? (runs[n] ?? []) : []))) {
+      const message = `Runs go round in a cycle: ${l.path.join(' -> ')}; a job would wait for itself and never finish`;
+      if (l.link.via === 'run') {
+        this.error('run.cycle', l.link.at, 'workflow', message);
+      } else {
+        this.error('run.cycle', null, `api.input.${l.link.at}`, message);
+      }
+    }
+  }
+
+  /**
+   * mcp.toolName: the MCP server lists one tool per name and leaves out the second workflow whose
+   * noun and verb give the same one. A warning, judged when the context knows the registry's
+   * tools; publishing judges it with the registry and refuses it.
+   */
+  mcpToolName(): void {
+    const holders = this.ctx.mcpTools;
+    if (holders === undefined) {
+      return;
+    }
+    for (const tool of mcpToolNames(this.def)) {
+      const other = (holders[tool] ?? []).find((n) => n !== this.def.metadata.name);
+      if (other !== undefined) {
+        this.warning('mcp.toolName', null, 'mcp.expose', mcpToolMessage(tool, other));
+        return;
+      }
+    }
   }
 
   // ------------------------------------------------------------ definition level
@@ -311,6 +440,7 @@ class Checker {
       if (!isObject(input) || (has(input, 'type') && asText(get(input, 'type')) !== 'object')) {
         this.error('api.input', null, 'api.input', 'api.input is a JSON Schema of type object');
       } else {
+        this.problems.push(...inputSchemaProblems(input));
         const properties = get(input, 'properties');
         fieldNames(properties).forEach((f) => this.inputFields.add(f));
         for (const r of elements(get(input, 'required'))) {
@@ -394,6 +524,10 @@ class Checker {
       this.error('api.responseBody', null, 'api.response.body', "api.response.body is a JSON Schema of the job's output, of type object");
       return;
     }
+    const remote = remoteRefProblem(body, 'api.response.body');
+    if (remote !== null) {
+      this.problems.push(remote);
+    }
     const outputs = Object.keys(this.def.workflow.outputs ?? {});
     for (const name of fieldNames(get(body, 'properties'))) {
       if (!outputs.includes(name)) {
@@ -411,8 +545,11 @@ class Checker {
 
   policy(): void {
     const p = this.def.policy;
-    if (p === null) {
-      return;
+    if (p === null || p.rbac.length === 0) {
+      this.error('policy.missing', null, p === null ? 'policy' : 'policy.rbac', 'Every workflow says who may run it: add a policy block with rbac, the roles allowed to invoke it (for example [ops])');
+      if (p === null) {
+        return;
+      }
     }
     if (p.approval !== null && p.approval.required && (p.approval.group === null || isBlank(p.approval.group))) {
       this.error('approval.group', null, 'policy.approval.group', 'A required approval needs a group of approvers');
@@ -477,7 +614,7 @@ class Checker {
           break;
         }
         case 'schedule':
-          this.warning('trigger.schedule', null, field, 'Schedules are not supported; use an alert or the API');
+          this.error('trigger.schedule', null, field, 'Schedules are not supported; use an alert or the API');
           break;
         default:
           this.error('trigger.type', null, field, `Unknown trigger type '${t.type}' (alert, event)`);
@@ -807,7 +944,7 @@ class Checker {
     this.require(s, 'url', 'step.missing', 'An HTTP step needs a url');
     const url = withText(s, 'url');
     if (url !== null && !isTemplate(url) && !url.startsWith('http://') && !url.startsWith('https://')) {
-      this.error('http.url', s.id, 'url', 'url starts with https://');
+      this.error('http.url', s.id, 'url', 'url starts with http:// or https://');
     }
     if (method !== null && method.toUpperCase() === 'DELETE' && !this.policyApproval && !scope.approved) {
       this.warning('policy.approvalRequired', s.id, null, 'An HTTP DELETE is destructive; add an approval step before it or require one in policy', insertApprovalFix('Insert an approval before this step'));
@@ -843,8 +980,11 @@ class Checker {
         }
       }
       if (upload !== undefined) {
-        if (asTextOr(get(upload, 'file'), null) === null || asTextOr(get(upload, 'sha256'), null) === null) {
+        const sha256 = asTextOr(get(upload, 'sha256'), null);
+        if (asTextOr(get(upload, 'file'), null) === null || sha256 === null) {
           this.error('ansible.upload', s.id, 'playbook.upload', 'Uploaded playbooks need file and sha256');
+        } else if (!isTemplate(sha256) && !DIGEST.test(sha256)) {
+          this.error('playbook.digest', s.id, 'playbook.upload.sha256', "sha256 is the upload's digest as POST /playbooks:upload answered it: 64 lowercase hex digits");
         }
       }
     } else {
@@ -908,7 +1048,7 @@ class Checker {
    */
   contract(s: ParsedStep, wf: string): void {
     const schemas = this.ctx.workflowInputs;
-    const schema = schemas !== undefined && Object.hasOwn(schemas, wf) ? schemas[wf] : undefined;
+    const schema = schemas !== undefined && Object.hasOwn(schemas, wf) && this.startsKnownVersion(s, wf) ? schemas[wf] : undefined;
     const input = withNode(s, 'input');
     if (!isObject(schema) || (input !== undefined && input !== null && !isObject(input))) {
       return;
@@ -1201,7 +1341,7 @@ class Checker {
       case 'run': {
         const wf = withText(s, 'workflow');
         const outs = this.ctx.workflowOutputs;
-        if (wf === null || outs === undefined || !Object.hasOwn(outs, wf)) {
+        if (wf === null || outs === undefined || !Object.hasOwn(outs, wf) || !this.startsKnownVersion(s, wf)) {
           return null;
         }
         const outProps: JsonObject = {};
@@ -1310,6 +1450,20 @@ class Checker {
   }
 
   // ------------------------------------------------------------ helpers
+
+  /**
+   * Whether a run step starts the version of `wf` the context describes: its range (`version`)
+   * takes that version, or it names none, or the context knows no version. CheckContext.java
+   * resolves the highest version in range among all it knows; this context knows one.
+   */
+  startsKnownVersion(s: ParsedStep, wf: string): boolean {
+    const range = withText(s, 'version');
+    const versions = this.ctx.workflowVersions;
+    if (range === null || versions === undefined || !Object.hasOwn(versions, wf)) {
+      return true;
+    }
+    return satisfies(versions[wf] ?? '', range);
+  }
 
   suggest(wrong: string, candidates: Iterable<string>): Fix | null {
     const c = closest(wrong, candidates);

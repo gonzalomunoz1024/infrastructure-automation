@@ -30,7 +30,9 @@ import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.playbooks.application.PlaybookCommandHandler;
 import com.iaf.platform.playbooks.application.PlaybookQueryHandler;
 import com.iaf.platform.playbooks.domain.PlaybookUpload;
+import com.iaf.platform.playbooks.ports.inbound.PlaybookCommands;
 import com.iaf.platform.playbooks.ports.inbound.PlaybookCommands.UploadPlaybook;
+import com.iaf.platform.playbooks.ports.inbound.PlaybookQueries;
 
 import lombok.RequiredArgsConstructor;
 import reactor.core.publisher.Flux;
@@ -46,7 +48,7 @@ import reactor.core.scheduler.Schedulers;
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/v1")
-public class RestControllerPlaybookAdapter {
+public class RestControllerPlaybookAdapter implements PlaybookCommands, PlaybookQueries {
 
     /** Room for the multipart boundaries and part headers around the file itself. */
     static final long MULTIPART_SLACK = 64 * 1024;
@@ -76,6 +78,13 @@ public class RestControllerPlaybookAdapter {
         });
     }
 
+    /** The port's upload, for a caller that already holds the file; the endpoint above reads the multipart body into one. */
+    @Override
+    public Mono<PlaybookUpload> upload(UploadPlaybook command) {
+        return commands.upload(command);
+    }
+
+    @Override
     @GetMapping("/playbooks:resolve")
     public Mono<Resolved> resolve(@RequestParam(required = false) String repo, @RequestParam(required = false) String ref,
             @RequestParam(required = false) String credential) {

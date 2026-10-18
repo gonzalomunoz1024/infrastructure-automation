@@ -3,6 +3,7 @@ package com.iaf.platform.workflows.ports.inbound;
 import java.time.Instant;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Problem;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
@@ -44,8 +45,9 @@ public interface WorkflowQueries {
             List<String> tags, String status, String latestVersion, String publishedVersion, int stepCount, Instant updatedAt, boolean mcp) {
     }
 
+    /** One version of a workflow; {@code rolledBack} is true on a retired version a release rollback took out (nothing resolves to it). */
     record WorkflowVersion(String version, WorkflowStatus status, String contentHash, Instant publishedAt, String publishedBy,
-            String releaseId, String notes) {
+            String releaseId, String notes, Boolean rolledBack) {
     }
 
     /** {@code GET /workflows/{name}}: the summary plus the current file (the draft when there is one). */
@@ -56,6 +58,17 @@ public interface WorkflowQueries {
 
     /** {@code GET /workflows/{name}/versions/{version}}; {@code definition} is the YAML document as JSON. */
     record VersionDetail(String version, WorkflowStatus status, String yaml, JsonNode definition, String contentHash) {
+    }
+
+    /**
+     * {@code GET /change-requests/{id}}: the change request, with its diff and yaml, and for a
+     * workflow its {@code preview}.
+     */
+    record ChangeRequestDetail(@JsonUnwrapped ChangeRequest changeRequest, Preview preview) {
+    }
+
+    /** {@code mermaid}: the workflow the change request writes as a Mermaid flowchart ({@code WorkflowMermaid}). */
+    record Preview(String mermaid) {
     }
 
     record Template(String id, String title, String description, String yaml) {
@@ -117,10 +130,13 @@ public interface WorkflowQueries {
     /** {@code status} is open, merged, closed or null. Rows carry no yaml or diff. */
     Flux<ChangeRequest> changeRequests(String status);
 
-    /** With diff and yaml; 404 when unknown. */
-    Mono<ChangeRequest> changeRequest(String id);
+    /** With diff and yaml, and the preview of a workflow; 404 when unknown. */
+    Mono<ChangeRequestDetail> changeRequest(String id);
 
     Flux<Template> templates();
+
+    /** {@code GET /schemas/workflow.json}: the JSON Schema of a Workflow file, for editors. */
+    Mono<JsonNode> workflowSchema();
 
     Flux<StepTypeInfo> stepTypes();
 

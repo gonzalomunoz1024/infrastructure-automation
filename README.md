@@ -51,7 +51,7 @@ The generated surface:
 backend/            Spring Boot 3.5 · Java 21 · WebFlux · CQRS · ports and adapters · Temporal SDK · JGit
 frontend/           React 19 · Vite · TypeScript · Tailwind v4 · the n8n-style designer on @xyflow/react
 packages/ui         the Atlas design system (tokens, kit, hooks) used by every page but the canvas
-packages/workflow-checks   the editor's checks in TypeScript; the same rules run in Java and in CI
+packages/workflow-checks   the editor's checks in TypeScript, and the Workflow file's JSON Schema; the same rules run in Java and in CI
 workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType | PriceList)
 sdk/                provider SDKs (Java, Go, Python) for custom-code providers on a team's own worker
 devin/              the natural-language builder playbooks and their structured-output schemas
@@ -76,14 +76,22 @@ docs/               architecture, config as code, API, design language, contribu
 
 The demo adapters are plain Spring components. Each production adapter sits behind a profile and
 replaces its demo twin when the profile is on: `temporal` (the interpreter as a Temporal
-workflow), `git` (JGit over the content repo), `opa` (the policy engine), `vault` (KV v2
+workflow), `opa` (the policy engine), `vault` (KV v2
 credentials), `devin` (the natural-language builder), `oidc` (JWT identities), `live` (real HTTP
 provider calls, and Ansible, Terraform, script and http steps run for real, see
 [How automation steps run](docs/config-as-code.md#how-automation-steps-run)), `postgres` (the
 stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DATASOURCE_URL`,
-`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3), `github`
-(change requests as pull requests on the content repo).
-`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
+`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3:
+playbook uploads, saved plans and each ended job's log lines and plan, see
+[Data](docs/architecture.md#data)), `github`
+(change requests as pull requests on the content repo). The Git workflow store (JGit over the
+content repo, a branch per change request) is not a profile but the property
+`platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`); it commits to its own clone only, so
+it runs on one backend instance (see
+[The Git workflow store](docs/architecture.md#the-git-workflow-store)).
+`docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them; adding
+`-f docker-compose.temporal-postgres.yml` runs Temporal self-hosted on its own PostgreSQL
+(`temporalio/auto-setup`) instead of the dev server's SQLite file.
 
 ## Identity and OIDC
 
@@ -172,7 +180,25 @@ example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter'
 (`platform.roles`), the web app and one deployment per provider worker against an external
 Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
 agent annotations and never holds a value; `values.yaml` describes every setting and
-`ci/full-values.yaml` shows them all in use.
+`ci/full-values.yaml` shows them all in use. `content.repository` is cloned into the backend
+pods, and with it the workflows live in the repository (the Git workflow store,
+`content.gitStore`): the chart then runs one backend pod whose clone a volume keeps
+(`content.gitStore.existingClaim`, `ci/git-store-values.yaml`) and refuses more;
+`content.gitStore.enabled: false` keeps the workflows in PostgreSQL, seeded from the repository, for
+any number of replicas. `audit.signingKeySecret` names the Secret holding
+the key that signs evidence seals (without it every pod signs with a random key per run, and a
+seal cannot be verified after a restart), `audit.siem` turns on the SIEM export and
+`audit.worm.mode` write-once evidence (`files` on an existing volume claim, `s3` with Object
+Lock); each adds its profile. For Temporal Cloud or a server that requires mTLS,
+`temporal.tls.secretName` mounts the CA, certificate and key and points
+`platform.temporal.tls.ca`, `.cert` and `.key` at them. `temporal.apiKey` and
+`temporal.payloadKey` are `vault:` references to the Temporal Cloud API key and to the key that
+encrypts what the backend writes into Temporal's histories (`platform.temporal.api-key`,
+`platform.temporal.payload-key`); the chart refuses anything else, as the backend does. The
+provider workers get the same certificate files as the SDKs' `IAF_TEMPORAL_TLS_CA`,
+`IAF_TEMPORAL_TLS_CERT` and `IAF_TEMPORAL_TLS_KEY`, and the API key itself as
+`IAF_TEMPORAL_API_KEY` from the Secret `temporal.apiKeySecret` names, since they resolve no
+`vault:` reference.
 
 The Helm values point the backend at Temporal with `temporal.address` and `namespace`. Three
 more settings secure that connection, as environment variables or Spring properties of the
@@ -194,9 +220,27 @@ and so is `platform.audit.signing-key`, the HMAC key that signs seals and eviden
 random key per run, so seals cannot be verified after a restart; a literal key still works, with a
 warning at startup); the S3 store takes its credentials from the AWS SDK's default chain. Tracing is always on: set
 `MANAGEMENT_OTLP_TRACING_ENDPOINT` (for example `http://localhost:4318/v1/traces`) to ship the
-spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics.
-The API keeps idempotency keys and the per-team job quotas in memory, per instance: run one API
-replica, or route each caller to the same replica, until a shared store backs them.
+spans to an OTLP collector, and scrape `/actuator/prometheus` for the per-workflow job metrics;
+`deploy/grafana/platform-dashboard.json` is a Grafana dashboard over them (starts, finishes by
+status, duration percentiles, failed steps by workflow and error class, failed jobs by version and
+channel, and the provider calls' outcome, success rate and p95), which
+`metrics.grafanaDashboard.enabled` ships as a ConfigMap with the `grafana_dashboard` label for
+Grafana's sidecar.
+With the `postgres` profile the idempotency keys, the per-team job quotas and the in-app inbox
+live in the database too (`idempotency_keys`, `quota_buckets`, `inbox_*`), so every API replica
+sees the same keys and draws from the same buckets; without it they are in memory, per instance,
+so run one API replica or route each caller to the same replica.
+
+Signing in with SSO goes through an auth proxy: the web app acquires no token itself. Put a proxy
+such as oauth2-proxy in front of the web app and the API, which signs people in at the identity
+provider and adds `Authorization: Bearer <ID token>` to every request it lets through
+(oauth2-proxy's `--set-authorization-header=true`, passed on by ingress-nginx's `auth-url`,
+`auth-signin` and `auth-response-headers` annotations; `values.yaml` shows them under `ingress`).
+The API verifies the token under the `oidc` profile (`platform.identity.oidc-issuer`,
+`oidc-audience` and `oidc-jwks-uri`, all required): its audience is the client id the proxy signs
+in with, and the token must carry the teams claim. Service accounts
+and MCP clients call with their own `iaf_` tokens and no browser session, so route them to the API
+on a host the proxy does not guard; the API checks those tokens itself.
 
 ## Checks
 
@@ -206,6 +250,8 @@ cd backend && PLATFORM_TEST_POSTGRES_URL='jdbc:postgresql://localhost:5432/platf
                                     # the same, with the JDBC adapters also on PostgreSQL (CI does this)
 npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
+java -cp backend/target/classes scripts/scan-playbooks/ScanPlaybooks.java
+                                    # after a backend compile: the upload scan rule over the repo's playbooks (CI)
 npm run build
 (cd sdk/java && mvn -B -q test); (cd sdk/go && go test ./...); (cd sdk/python && pytest)   # the provider SDKs
 python3 scripts/api-flows/flows1.py   # ... flows4.py: the API end to end on a running demo stack (scripts/api-flows/README.md)

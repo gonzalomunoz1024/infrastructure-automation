@@ -19,13 +19,25 @@ public final class TokenBucket {
     private Instant last;
 
     public TokenBucket(int perMinute, int capacity, Instant now) {
+        this(perMinute, capacity, capacity, now);
+    }
+
+    private TokenBucket(int perMinute, int capacity, double tokens, Instant last) {
         if (perMinute < 1 || capacity < 1) {
             throw new IllegalArgumentException("A quota needs at least one start per minute and a burst of at least one");
         }
         this.perMinute = perMinute;
         this.capacity = capacity;
-        this.tokens = capacity;
-        this.last = now;
+        this.tokens = Math.max(0d, Math.min(capacity, tokens));
+        this.last = last;
+    }
+
+    /**
+     * A bucket as a store kept it: {@code tokens} as of {@code last}, clamped to the capacity of
+     * the limit it is restored under (a limit lowered since never leaves more than it allows).
+     */
+    public static TokenBucket restore(int perMinute, int capacity, double tokens, Instant last) {
+        return new TokenBucket(perMinute, capacity, tokens, last);
     }
 
     /** Takes one token: empty when it was there, else the wait until it will be. */
@@ -40,10 +52,25 @@ public final class TokenBucket {
         return Optional.of(Duration.ofNanos(Math.max(1, nanos)));
     }
 
+    /** Returns a token taken for a request that turned out to be rejected; never above the capacity. */
+    public void giveBack() {
+        tokens = Math.min(capacity, tokens + 1d);
+    }
+
     /** Tokens there now (refilled to {@code now}). */
     public double available(Instant now) {
         refill(now);
         return tokens;
+    }
+
+    /** Tokens as of {@link #last()}, without refilling: what a store keeps. */
+    public double tokens() {
+        return tokens;
+    }
+
+    /** When the bucket was last refilled: what a store keeps beside {@link #tokens()}. */
+    public Instant last() {
+        return last;
     }
 
     public int capacity() {

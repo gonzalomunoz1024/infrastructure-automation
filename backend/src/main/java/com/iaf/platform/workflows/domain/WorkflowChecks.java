@@ -26,6 +26,8 @@ import com.iaf.platform.common.domain.Problem.Fix;
 import com.iaf.platform.common.domain.Suggest;
 import com.iaf.platform.common.expressions.ExpressionEngine;
 import com.iaf.platform.common.expressions.Reference;
+import com.iaf.platform.catalog.domain.McpTools;
+import com.iaf.platform.catalog.domain.ReservedNouns;
 import com.iaf.platform.common.schema.Schemas;
 import com.iaf.platform.providers.domain.ActionInfo;
 import com.iaf.platform.providers.domain.ProviderDefinition;
@@ -49,9 +51,6 @@ public final class WorkflowChecks {
     private static final Pattern SEMVER_RANGE = Pattern.compile("^(\\*|[~^]?\\d+(\\.\\d+){0,2}(\\.x)?|latest)$");
     private static final Pattern DURATION = Pattern.compile("^(P(?!$)(\\d+D)?(T(\\d+H)?(\\d+M)?(\\d+S)?)?|\\d+(ms|s|m|h|d))$");
     private static final Pattern SECRET_KEY = Pattern.compile("(?i)(password|passwd|secret|token|apikey|api_key|credential|privateKey)");
-    private static final Set<String> RESERVED_NOUNS = Set.of("workflows", "jobs", "providers", "catalog", "releases", "audit", "resources",
-            "me", "service-accounts", "approvals", "credentials", "assistant", "mcp", "batches", "evidence", "resource-types", "registry", "triggers", "openapi", "playbooks",
-            "notifications");
     private static final Pattern API_PREFIX = Pattern.compile("^/api/v[1-9][0-9]*/");
     private static final Pattern DATE = Pattern.compile("^(\\d{4})-(\\d{2})-(\\d{2})(T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2}))?$");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE");
@@ -62,17 +61,44 @@ public final class WorkflowChecks {
     private WorkflowChecks() {
     }
 
-    /** Check YAML text: a syntax or structure error is one problem; otherwise the full rule set. */
+    /**
+     * Check YAML text: a syntax error is one {@code yaml.invalid} problem; otherwise the document
+     * is checked as {@link #check(JsonNode, CheckContext)} says.
+     */
     public static List<Problem> check(String yaml, CheckContext ctx) {
+        JsonNode doc;
+        try {
+            doc = WorkflowYaml.readTree(yaml);
+        } catch (IllegalArgumentException e) {
+            return List.of(Problem.error("yaml.invalid", null, null, e.getMessage()));
+        }
+        return check(doc, ctx);
+    }
+
+    /**
+     * Check a document (the YAML read into a tree, or the JSON the designer posts) in three lines:
+     * the Workflow schema first ({@link WorkflowSchema}: one {@code schema.invalid} per violation,
+     * and nothing else when there is one), then the parser (a structure error is one
+     * {@code yaml.invalid}), then the rules. A file of another kind goes straight to the parser,
+     * which names its kind.
+     */
+    public static List<Problem> check(JsonNode doc, CheckContext ctx) {
+        if (doc != null && doc.isObject() && !(doc.path("kind").isTextual() && !WorkflowDefinition.KIND.equals(doc.path("kind").asText()))) {
+            List<Problem> schema = WorkflowSchema.validate(doc);
+            if (!schema.isEmpty()) {
+                return schema;
+            }
+        }
         WorkflowDefinition def;
         try {
-            def = WorkflowYaml.parse(yaml);
+            def = WorkflowYaml.fromJson(doc);
         } catch (IllegalArgumentException e) {
             return List.of(Problem.error("yaml.invalid", null, null, e.getMessage()));
         }
         return check(def, ctx);
     }
 
+    /** The rules over a parsed definition (a stored version): the document's schema is not judged again. */
     public static List<Problem> check(WorkflowDefinition def, CheckContext ctx) {
         Checker c = new Checker(def, ctx);
         c.run();
@@ -81,6 +107,86 @@ public final class WorkflowChecks {
 
     public static boolean hasErrors(List<Problem> problems) {
         return problems.stream().anyMatch(Problem::isError);
+    }
+
+    /**
+     * api.input as the gateway, the MCP server and the catalog form will use it: a schema that
+     * refers outside itself is {@code schema.remoteRef} (nothing is fetched, so the reference
+     * never resolves), else one the validator does not compile is {@code api.input.invalid}, one
+     * problem per location with the validator's message. Empty for a usable schema.
+     */
+    public static List<Problem> inputSchemaProblems(JsonNode in) {
+        Optional<Problem> remote = remoteRefProblem(in, "api.input");
+        if (remote.isPresent()) {
+            return List.of(remote.get());
+        }
+        List<Problem> out = new ArrayList<>();
+        for (Schemas.Violation v : Schemas.metaViolations(in)) {
+            String where = Schemas.dotted(v.pointer());
+            out.add(Problem.error("api.input.invalid", null, "api.input" + where,
+                    "api.input is not a valid JSON Schema: " + (where.isEmpty() ? "" : where.substring(1) + ": ") + v.message()));
+        }
+        return out;
+    }
+
+    /** What {@code run.cycle} says, in the designer and at publish: the loop, at the run step or input that starts it. */
+    static Problem cycleProblem(DependencyRules.Loop loop) {
+        String message = "Runs go round in a cycle: " + String.join(" -> ", loop.path()) + "; a job would wait for itself and never finish";
+        DependencyRules.RunLink link = loop.link();
+        return link.via() == DependencyRules.Via.RUN
+                ? Problem.error("run.cycle", link.at(), "workflow", message)
+                : Problem.error("run.cycle", null, "api.input." + link.at(), message);
+    }
+
+    /** What {@code mcp.toolName} says, in the designer and at publish: the tool and the workflow that already has it. */
+    static String mcpToolMessage(String tool, String other) {
+        return "MCP tool " + tool + " is already exposed by workflow " + other + "; give this workflow another noun or verb, or set mcp.expose to false";
+    }
+
+    /** A {@code vault:} reference one of the steps names, and where ({@code credential}, {@code playbook.git.credential}, {@code headers.Authorization}). */
+    public record CredentialReference(String step, String field, String reference) {
+    }
+
+    /**
+     * Every credential the steps name, as the runners read them: a value that is a {@code vault:}
+     * reference, or a scheme and one ({@code Bearer vault:api/token}, as an http header). A
+     * templated value is resolved when the step runs and is not listed.
+     */
+    public static List<CredentialReference> credentialReferences(WorkflowDefinition def) {
+        List<CredentialReference> out = new ArrayList<>();
+        for (Step s : def.allSteps()) {
+            credentialReferences(s.with(), s.id(), "", out);
+        }
+        return out;
+    }
+
+    private static void credentialReferences(JsonNode node, String step, String path, List<CredentialReference> out) {
+        if (node == null) {
+            return;
+        }
+        if (node.isTextual()) {
+            String v = node.asText().trim();
+            if (ExpressionEngine.isTemplate(v)) {
+                return;
+            }
+            String[] parts = v.split(" ", 2);
+            String ref = v.startsWith("vault:") ? v : parts.length == 2 && parts[0].matches("[A-Za-z][A-Za-z0-9_-]*") ? parts[1].trim() : null;
+            if (ref != null && ref.startsWith("vault:") && ref.length() > "vault:".length()) {
+                out.add(new CredentialReference(step, path, ref));
+            }
+        } else if (node.isObject()) {
+            node.properties().forEach(e -> credentialReferences(e.getValue(), step, path.isEmpty() ? e.getKey() : path + "." + e.getKey(), out));
+        } else if (node.isArray()) {
+            int i = 0;
+            for (JsonNode v : node) {
+                credentialReferences(v, step, path + "[" + i++ + "]", out);
+            }
+        }
+    }
+
+    /** A {@code $ref} out of a schema the file carries ({@code field}): {@code schema.remoteRef} at the reference. */
+    static Optional<Problem> remoteRefProblem(JsonNode schema, String field) {
+        return Schemas.remoteRef(schema).map(r -> Problem.error("schema.remoteRef", null, field + Schemas.dotted(r.pointer()), r.describe(field)));
     }
 
     /** What an expression can see at one point of the flow. */
@@ -139,6 +245,49 @@ public final class WorkflowChecks {
             rollout();
             steps();
             triggers();
+            credentialOwners();
+            mcpToolName();
+            runCycles();
+        }
+
+        /**
+         * run.cycle: a run step (or an orCreateWith input) whose workflow, through the ones the
+         * registry says it starts, ends up starting this one again: the job would wait for itself
+         * and never finish. Judged when the context knows what the published workflows start.
+         */
+        void runCycles() {
+            DependencyRules.loops(def, ctx::workflowRuns).forEach(l -> problems.add(cycleProblem(l)));
+        }
+
+        /**
+         * mcp.toolName: the MCP server lists one tool per name and leaves out the second workflow
+         * whose noun and verb give the same one. A warning here, where the registry can change
+         * before the publish; publishing judges it with the registry and refuses it.
+         */
+        void mcpToolName() {
+            for (String tool : McpTools.toolNames(def)) {
+                Optional<String> other = ctx.mcpToolHolders(tool).stream().filter(n -> !n.equals(def.name())).findFirst();
+                if (other.isPresent()) {
+                    warning("mcp.toolName", null, "mcp.expose", mcpToolMessage(tool, other.get()));
+                    return;
+                }
+            }
+        }
+
+        /**
+         * credential.owner: a step that names a credential another team owns would hand that
+         * team's secret to this workflow's runs, which resolve any reference they are given. Judged
+         * only when the context read the vault; the TypeScript twin never does.
+         */
+        void credentialOwners() {
+            String owner = def.metadata().owner();
+            if (owner == null || owner.isBlank() || !ctx.knowsCredentials()) {
+                return;
+            }
+            for (CredentialReference r : credentialReferences(def)) {
+                ctx.credentialOwner(r.reference()).filter(o -> !o.equals(owner)).ifPresent(o -> error("credential.owner", r.step(), r.field(),
+                        "Credential " + r.reference() + " belongs to " + o + "; a workflow of " + owner + " may use its own team's credentials and unowned ones"));
+            }
         }
 
         // ------------------------------------------------------------ definition level
@@ -183,7 +332,7 @@ public final class WorkflowChecks {
                     error("api.path", null, "api.path", "Generated paths live under /api/v<n>/, like /api/v1/ or /api/v2/");
                 } else {
                     String first = a.path().substring(prefix.end()).split("[/:?]")[0];
-                    if (RESERVED_NOUNS.contains(first)) {
+                    if (ReservedNouns.NOUNS.contains(first)) {
                         error("api.reservedPath", null, "api.path", prefix.group() + first + " belongs to the platform; pick another noun");
                     }
                 }
@@ -193,6 +342,7 @@ public final class WorkflowChecks {
                 if (!in.isObject() || (in.has("type") && !"object".equals(in.path("type").asText()))) {
                     error("api.input", null, "api.input", "api.input is a JSON Schema of type object");
                 } else {
+                    problems.addAll(inputSchemaProblems(in));
                     in.path("properties").fieldNames().forEachRemaining(inputFields::add);
                     for (JsonNode r : in.path("required")) {
                         if (!inputFields.contains(r.asText())) {
@@ -276,6 +426,7 @@ public final class WorkflowChecks {
                 error("api.responseBody", null, "api.response.body", "api.response.body is a JSON Schema of the job's output, of type object");
                 return;
             }
+            remoteRefProblem(body, "api.response.body").ifPresent(problems::add);
             Set<String> outputs = def.workflow() == null || def.workflow().outputs() == null ? Set.of() : def.workflow().outputs().keySet();
             body.path("properties").fieldNames().forEachRemaining(name -> {
                 if (!outputs.contains(name)) {
@@ -306,8 +457,12 @@ public final class WorkflowChecks {
 
         void policy() {
             var p = def.policy();
-            if (p == null) {
-                return;
+            if (p == null || p.rbac() == null || p.rbac().isEmpty()) {
+                error("policy.missing", null, p == null ? "policy" : "policy.rbac",
+                        "Every workflow says who may run it: add a policy block with rbac, the roles allowed to invoke it (for example [ops])");
+                if (p == null) {
+                    return;
+                }
             }
             if (p.approval() != null && p.approval().required() && (p.approval().group() == null || p.approval().group().isBlank())) {
                 error("approval.group", null, "policy.approval.group", "A required approval needs a group of approvers");
@@ -372,7 +527,7 @@ public final class WorkflowChecks {
                         s.aliases.add("event");
                         expressions(t.spec() == null ? null : t.spec().get("input"), null, field + ".input", s);
                     }
-                    case "schedule" -> warning("trigger.schedule", null, field, "Schedules are not supported; use an alert or the API");
+                    case "schedule" -> error("trigger.schedule", null, field, "Schedules are not supported; use an alert or the API");
                     default -> error("trigger.type", null, field, "Unknown trigger type '" + t.type() + "' (alert, event)");
                 }
             }
@@ -678,7 +833,7 @@ public final class WorkflowChecks {
             require(s, "url", "step.missing", "An HTTP step needs a url");
             String url = s.withText("url");
             if (url != null && !ExpressionEngine.isTemplate(url) && !url.startsWith("http://") && !url.startsWith("https://")) {
-                error("http.url", s.id(), "url", "url starts with https://");
+                error("http.url", s.id(), "url", "url starts with http:// or https://");
             }
             if ("DELETE".equalsIgnoreCase(method) && !policyApproval && !scope.approved) {
                 warning("policy.approvalRequired", s.id(), null, "An HTTP DELETE is destructive; add an approval step before it or require one in policy",
@@ -715,8 +870,12 @@ public final class WorkflowChecks {
                     }
                 }
                 if (upload != null) {
-                    if (upload.path("file").asText(null) == null || upload.path("sha256").asText(null) == null) {
+                    String sha256 = upload.path("sha256").asText(null);
+                    if (upload.path("file").asText(null) == null || sha256 == null) {
                         error("ansible.upload", s.id(), "playbook.upload", "Uploaded playbooks need file and sha256");
+                    } else if (!ExpressionEngine.isTemplate(sha256) && !PlaybookPins.DIGEST.matcher(sha256).matches()) {
+                        error("playbook.digest", s.id(), "playbook.upload.sha256",
+                                "sha256 is the upload's digest as POST /playbooks:upload answered it: 64 lowercase hex digits");
                     }
                 }
             } else {
@@ -780,7 +939,8 @@ public final class WorkflowChecks {
          * workflow does not take is reported, and a literal must have the declared type.
          */
         void contract(Step s, String wf) {
-            Optional<JsonNode> schema = ctx.workflowInput(wf);
+            // the input of the version the step's range starts, not necessarily the current one
+            Optional<JsonNode> schema = ctx.workflowInput(wf, s.withText("version"));
             JsonNode input = s.withNode("input");
             if (schema.isEmpty() || schema.get() == null || !schema.get().isObject() || (input != null && !input.isNull() && !input.isObject())) {
                 return;
@@ -1049,7 +1209,7 @@ public final class WorkflowChecks {
                 }
                 case RUN -> {
                     String wf = s.withText("workflow");
-                    Optional<List<String>> outs = wf == null ? Optional.empty() : ctx.workflowOutputs(wf);
+                    Optional<List<String>> outs = wf == null ? Optional.empty() : ctx.workflowOutputs(wf, s.withText("version"));
                     if (outs.isEmpty()) {
                         yield null;
                     }

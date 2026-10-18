@@ -6,6 +6,8 @@ api:
     type: object
     properties:
       size: { type: string }
+policy:
+  rbac: [ops]
 workflow:
   do:
     - pick:

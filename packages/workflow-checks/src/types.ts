@@ -250,13 +250,33 @@ export interface CheckContext {
   workflowInputs?: Record<string, JsonSchema>;
   /** Published workflows' output names (the keys of `workflow.outputs`) by name. */
   workflowOutputs?: Record<string, string[]>;
+  /**
+   * Published workflows' versions by name: the version the input and outputs above belong to. A
+   * run step whose range it does not satisfy starts another version, so its contract is not
+   * judged here (the platform judges it against that version); without it every range is
+   * judged against the published input.
+   */
+  workflowVersions?: Record<string, string>;
+  /**
+   * The workflows each published workflow starts (run steps and `orCreateWith` inputs), sorted,
+   * by name; with them a run step whose workflow ends up starting this one again is `run.cycle`.
+   */
+  workflowRuns?: Record<string, string[]>;
   /** Resource types' attribute schemas by type. */
   resourceTypeSchemas?: Record<string, JsonSchema>;
+  /**
+   * The published workflows the MCP server gives each tool (`vm_restart`, the batch tool
+   * `vm_restart_batch`), sorted, by tool name; without it `mcp.toolName` is not judged.
+   */
+  mcpTools?: Record<string, string[]>;
 }
 
 /** The optional schemas of a {@link CheckContext}, as `buildContext` takes them. */
 export interface ContextSchemas {
   workflowInputs?: Record<string, JsonSchema>;
   workflowOutputs?: Record<string, string[]>;
+  workflowVersions?: Record<string, string>;
+  workflowRuns?: Record<string, string[]>;
   resourceTypeSchemas?: Record<string, JsonSchema>;
+  mcpTools?: Record<string, string[]>;
 }

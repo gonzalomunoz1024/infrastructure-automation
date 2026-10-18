@@ -96,5 +96,29 @@
   ],
   "duplicate-key.yaml": [
     "error yaml.invalid"
+  ],
+  "schedule-trigger.yaml": [
+    "error trigger.schedule"
+  ],
+  "bad-upload-digest.yaml": [
+    "error playbook.digest"
+  ],
+  "missing-policy.yaml": [
+    "error policy.missing"
+  ],
+  "bad-step-key.yaml": [
+    "error schema.invalid"
+  ],
+  "bad-api-input.yaml": [
+    "error api.input.invalid"
+  ],
+  "remote-ref.yaml": [
+    "error schema.remoteRef"
+  ],
+  "mcp-tool-name.yaml": [
+    "warning mcp.toolName"
+  ],
+  "run-cycle.yaml": [
+    "error run.cycle"
   ]
 }

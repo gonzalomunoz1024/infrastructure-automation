@@ -17,7 +17,7 @@ import io.temporal.client.ActivityCompletionException;
  * A broken contract is fatal ({@value #UNKNOWN_ACTION}, {@value #INVALID_REQUEST},
  * {@value #INVALID_INPUT}, {@value #INVALID_OUTPUT}); an unclassified exception from a handler is
  * the retryable class {@value #ERROR}. A cancel or timeout Temporal reports through a heartbeat
- * passes through untouched.
+ * passes through untouched. The call runs inside the platform's trace ({@link CallTracing}).
  */
 final class Dispatcher {
 
@@ -60,6 +60,20 @@ final class Dispatcher {
         Action<?, ?> action = provider.action(activityType)
                 .orElseThrow(() -> ProviderException.fatal(UNKNOWN_ACTION, "Provider " + provider.name() + " has no action '" + activityType + "'"));
         Envelope call = read(action.id(), payload);
+        try (CallTracing.Scope trace = CallTracing.start(provider, action.id(), call)) {
+            try {
+                return run(action, call, heartbeater);
+            } catch (ProviderException e) {
+                trace.failed(e, e.errorClass());
+                throw e;
+            } catch (RuntimeException e) {
+                trace.failed(e, e instanceof ActivityCompletionException ? "cancelled" : ERROR);
+                throw e;
+            }
+        }
+    }
+
+    private JsonNode run(Action<?, ?> action, Envelope call, Heartbeater heartbeater) {
         Context ctx = new Context(action.id(), call.idempotencyKey(), call.job(), call.step(), call.environment(), call.attempt(), heartbeater);
         JsonNode input = call.input();
         List<String> problems = Schemas.problems(action.inputCheck(), input);
@@ -75,7 +89,10 @@ final class Dispatcher {
         return json;
     }
 
-    /** The platform's envelope; a missing or null input is an empty object. */
+    /**
+     * The platform's envelope; a missing or null input is an empty object. The traceparent sits in
+     * the job next to the trace id; one at the top of the payload is read too.
+     */
     private static Envelope read(String action, JsonNode payload) {
         if (payload == null || !payload.isObject()) {
             throw ProviderException.fatal(INVALID_REQUEST, "The call to " + action + " is not the platform's envelope (a JSON object with input)");
@@ -87,7 +104,8 @@ final class Dispatcher {
         JsonNode job = payload.path("job");
         return new Envelope(input == null || input.isNull() ? F.objectNode() : input,
                 text(payload, "idempotencyKey"),
-                new JobInfo(text(job, "id"), text(job, "workflow"), text(job, "version"), text(job, "traceId")),
+                new JobInfo(text(job, "id"), text(job, "workflow"), text(job, "version"), text(job, "traceId"),
+                        text(job, "traceparent") != null ? text(job, "traceparent") : text(payload, "traceparent")),
                 text(payload, "step"),
                 text(payload, "environment"),
                 Math.max(1, payload.path("attempt").asInt(1)));

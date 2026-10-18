@@ -25,7 +25,7 @@ import reactor.core.publisher.Mono;
 /**
  * Resolves the git playbooks of a version that name a ref but no commit (one ls-remote per
  * repository, ref and credential) and writes the commits into a copy of the definition. A ref
- * that cannot be resolved is a failure of the ansible-lint check, with the reason. A pin's
+ * that cannot be resolved is a failure of the playbooks check, with the reason. A pin's
  * {@code vault:} credential goes to the remote only when the publishing identity (the current
  * one) may use it, judged by {@link CredentialAccess}: the publish is refused with 403 otherwise.
  */

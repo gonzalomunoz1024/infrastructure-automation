@@ -7,6 +7,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import com.iaf.platform.workflows.domain.PlaybookPins.Pin;
+import com.iaf.platform.workflows.domain.PlaybookPins.Source;
+import com.iaf.platform.workflows.domain.PlaybookPins.Upload;
 
 public class PlaybookPinsTest {
 
@@ -73,5 +75,35 @@ public class PlaybookPinsTest {
         assertThat(WorkflowYaml.toYaml(pinned)).contains("commit: " + COMMIT);
         assertThat(WorkflowYaml.toYaml(def)).as("the original is untouched").isEqualTo(before);
         assertThat(PlaybookPins.apply(def, Map.of())).isSameAs(def);
+    }
+
+    @Test
+    void theLinterReadsTheGitPlaybooksPinnedToACommit() {
+        WorkflowDefinition def = PlaybookPins.apply(WorkflowYaml.parse(YAML), Map.of("private", COMMIT));
+
+        assertThat(PlaybookPins.pinnedSources(def)).containsExactly(
+                new Source("private", "git.example.com/ops/private", COMMIT, "site.yml", "vault:git/ops"),
+                new Source("pinned", "github.com/acme/ops-playbooks", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d", "vm/restart.yml", null));
+        assertThat(PlaybookPins.pinnedSources(def).get(1).describe()).isEqualTo("github.com/acme/ops-playbooks@4e1d9a2c7b0f vm/restart.yml");
+        assertThat(PlaybookPins.pinnedSources(WorkflowYaml.parse(YAML.replace("path: vm/restart.yml", "path: \"{{ $input.playbook }}\""))))
+                .as("a templated path is judged when the step runs").isEmpty();
+        assertThat(PlaybookPins.insideRepository("vm/restart.yml")).isTrue();
+        assertThat(PlaybookPins.insideRepository("../site.yml")).isFalse();
+        assertThat(PlaybookPins.insideRepository("vm/../../site.yml")).isFalse();
+        assertThat(PlaybookPins.insideRepository("/etc/site.yml")).isFalse();
+        assertThat(PlaybookPins.insideRepository("vm\\restart.yml")).isFalse();
+        assertThat(PlaybookPins.insideRepository(" ")).isFalse();
+    }
+
+    @Test
+    void uploadsNameTheStepsRunningAnUploadedPlaybookAndJudgeTheDigest() {
+        WorkflowDefinition def = WorkflowYaml.parse(YAML);
+
+        assertThat(PlaybookPins.uploads(def)).containsExactly(new Upload("uploaded", "aaaa"));
+        assertThat(new Upload("uploaded", "aaaa").validDigest()).isFalse();
+        assertThat(new Upload("uploaded", "SHA256:" + COMMIT + "9f2c0b7e1d4a9f2c0b7e1d4a").validDigest()).as("as answered: no prefix, lower case").isFalse();
+        assertThat(new Upload("uploaded", COMMIT + "9f2c0b7e1d4a9f2c0b7e1d4a").validDigest()).isTrue();
+        assertThat(PlaybookPins.uploads(WorkflowYaml.parse(YAML.replace("sha256: aaaa", "sha256: \"{{ $input.sha256 }}\""))))
+                .as("a digest from an expression is judged when the step runs").isEmpty();
     }
 }
