@@ -5,6 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { api } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { CatalogEntry } from '../lib/types'
+import { ApiLinks } from '../components/ApiLinks'
 import { DeprecatedTag } from '../components/Deprecation'
 import { ErrorState, Mono } from '../components/common'
 
@@ -92,16 +93,19 @@ export default function CatalogPage(_: PageProps) {
       <PageHeader title="Catalog" subtitle="Every published workflow, ready to run from a form, the API or an MCP tool.">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Input leading="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the catalog" aria-label="Search the catalog" className="sm:max-w-xs" />
-          <Segmented
-            ariaLabel="View"
-            size="sm"
-            value={view}
-            onChange={setView}
-            options={[
-              { value: 'table', icon: 'list', title: 'Table' },
-              { value: 'cards', icon: 'grid', title: 'Cards' },
-            ]}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <ApiLinks lead="The same operations:" />
+            <Segmented
+              ariaLabel="View"
+              size="sm"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: 'table', icon: 'list', title: 'Table' },
+                { value: 'cards', icon: 'grid', title: 'Cards' },
+              ]}
+            />
+          </div>
         </div>
       </PageHeader>
 

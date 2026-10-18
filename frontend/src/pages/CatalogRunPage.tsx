@@ -5,6 +5,7 @@ import { navigate, pathFor } from '../app/router'
 import { API_BASE, api, errorMessage, isApiError, newIdempotencyKey } from '../lib/api'
 import { useQuery } from '../lib/queries'
 import type { BatchRowProblem, CatalogEntry, Preview, Problem, Rollout } from '../lib/types'
+import { ApiLinks } from '../components/ApiLinks'
 import { PreviewCard } from '../components/PreviewCard'
 import { ProblemList } from '../components/ProblemList'
 import { QuotaNotice, quotaMessage, useRetryAfter } from '../components/RetryAfter'
@@ -258,6 +259,7 @@ function OneRun({ entry }: { entry: CatalogEntry }) {
         <div className="px-5 pb-5">
           <CodeBlock code={curlFor(entry, value, undefined, pinned)} language="bash" />
           <p className="mt-2 text-caption text-tertiary">Answers 202 with the job id. The same input works as the MCP tool{entry.mcpTool ? ` ${entry.mcpTool}` : ''}. An Idempotency-Key header makes a resend answer with the same job.</p>
+          <ApiLinks lead="This operation, documented:" className="mt-2" />
         </div>
       </details>
     </div>

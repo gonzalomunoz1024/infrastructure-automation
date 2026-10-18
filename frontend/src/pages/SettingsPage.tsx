@@ -7,7 +7,6 @@ import {
   CodeBlock,
   CopyButton,
   Field,
-  Icon,
   Input,
   Modal,
   OverlayBody,
@@ -31,6 +30,7 @@ import type { PageProps } from '../app/router'
 import { API_BASE, api, errorMessage, isApiError, setCurrentUser, useCurrentUser } from '../lib/api'
 import { useMutation, useQuery } from '../lib/queries'
 import type { ActuatorHealth, Me, ServiceAccount, ServiceAccountCreated } from '../lib/types'
+import { ApiLinks } from '../components/ApiLinks'
 
 const DEV_USERS = ['gonzalo', 'ana', 'mateo', 'junior'] as const
 const ROLES = ['ops', 'sre', 'admin'] as const
@@ -195,11 +195,8 @@ export default function SettingsPage({ route }: PageProps) {
           <CardRow label="Design system" description="@iaf/ui">
             <span className="text-primary">Atlas</span>
           </CardRow>
-          <CardRow label="API reference" description="OpenAPI 3.1 of every published workflow and resource type">
-            <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-accent transition-opacity hover:opacity-70">
-              openapi.json
-              <Icon name="external" size={13} />
-            </a>
+          <CardRow label="API reference" description="OpenAPI 3.1 of every published workflow and resource type, and Swagger UI to try it">
+            <ApiLinks />
           </CardRow>
         </Card>
       </div>

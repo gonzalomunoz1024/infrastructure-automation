@@ -257,3 +257,23 @@ test.describe('job: a pinned run and the engine link', () => {
     expect(call.headers['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/)
   })
 })
+
+test.describe('the API documents itself', () => {
+  test('the catalog, a run page and the settings link Swagger UI and the OpenAPI document', async ({ page }) => {
+    await mockApi(page, { 'GET /catalog': CATALOG, 'GET /resource-types': RESOURCE_TYPES, 'GET /vms': VMS, 'GET /service-accounts': [] })
+    await page.goto('/#/catalog')
+    const links = page.getByTestId('api-links')
+    await expect(links.getByRole('link', { name: 'Swagger UI' })).toHaveAttribute('href', '/swagger-ui')
+    await expect(links.getByRole('link', { name: 'openapi.json' })).toHaveAttribute('href', '/api/v1/openapi.json')
+
+    await page.goto('/#/catalog/vm-restart')
+    await page.getByText('Call it from the API').click()
+    const panel = page.getByTestId('api-links')
+    await expect(panel.getByRole('link', { name: 'Swagger UI' })).toHaveAttribute('target', '_blank')
+
+    await page.goto('/#/settings')
+    const about = page.getByTestId('api-links')
+    await expect(about.getByRole('link', { name: 'Swagger UI' })).toHaveAttribute('href', '/swagger-ui')
+    await expect(about.getByRole('link', { name: 'openapi.json' })).toHaveAttribute('href', '/api/v1/openapi.json')
+  })
+})
