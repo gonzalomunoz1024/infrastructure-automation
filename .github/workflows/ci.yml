@@ -220,8 +220,20 @@ jobs:
           go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
           chart=deploy/helm/platform
           crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          for values in "" "-f $chart/ci/full-values.yaml" "-f $chart/ci/worm-files-values.yaml"; do
+          for values in "" "-f $chart/ci/full-values.yaml" "-f $chart/ci/worm-files-values.yaml" "-f $chart/ci/git-store-values.yaml"; do
             helm lint $chart $values
             helm template platform $chart $values | "$(go env GOPATH)/bin/kubeconform" -strict -summary \
               -kubernetes-version 1.30.0 -schema-location default -schema-location "$crds"
           done
+      - name: Check the workflow store switch
+        # without a repository the workflows live in the database; with one, in its clone (the Git
+        # workflow store), which the chart runs on one backend pod only, since the store pushes nothing
+        run: |
+          chart=deploy/helm/platform
+          helm template platform $chart | grep -qE '^ +git: false$'
+          helm template platform $chart -f $chart/ci/full-values.yaml | grep -qE '^ +git: false$'
+          helm template platform $chart -f $chart/ci/git-store-values.yaml | grep -qE '^ +git: true$'
+          if helm template platform $chart --set content.repository=https://git.example.com/platform/content.git > /dev/null 2>&1; then
+            echo "a repository with two API pods and the workers rendered the Git workflow store"
+            exit 1
+          fi

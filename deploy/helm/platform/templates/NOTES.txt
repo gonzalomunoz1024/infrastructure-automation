@@ -1,6 +1,9 @@
 The platform {{ .Chart.AppVersion }} is installed as {{ include "platform.fullname" . }}.
 
   API          {{ include "platform.fullname" . }}-api:{{ .Values.api.service.port }} ({{ .Values.api.replicas }} pods, roles {{ ternary "api" "api, worker" .Values.worker.enabled }})
+{{- if include "platform.gitStore" . }}
+  Workflows    the clone of {{ .Values.content.repository }} on {{ .Values.content.gitStore.existingClaim }} (the Git workflow store)
+{{- end }}
 {{- if .Values.worker.enabled }}
   Workers      {{ .Values.worker.replicas }} pods polling {{ .Values.temporal.taskQueue }} on {{ .Values.temporal.address }} (namespace {{ .Values.temporal.namespace }})
 {{- end }}

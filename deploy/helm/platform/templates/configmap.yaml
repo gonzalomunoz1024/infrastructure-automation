@@ -8,7 +8,11 @@
 {{- $_ := set $temporal "tls" $tls -}}
 {{- end -}}
 {{- end -}}
-{{- $platform := dict "content" (dict "dir" "/content/repo") "temporal" $temporal "demo" (dict "seed-history" (.Values.demo.seedHistory | default false)) -}}
+{{- if hasKey (dig "platform" "content" (dict) (.Values.backend.config | default dict)) "git" -}}
+{{- fail "set content.gitStore.enabled, not backend.config.platform.content.git: the chart places the pods and keeps the clone by it" -}}
+{{- end -}}
+{{- $git := eq (include "platform.gitStore" .) "true" -}}
+{{- $platform := dict "content" (dict "dir" "/content/repo" "git" $git) "temporal" $temporal "demo" (dict "seed-history" (.Values.demo.seedHistory | default false)) -}}
 {{- $audit := dict -}}
 {{- with .Values.audit.retentionYears }}{{ $_ := set $audit "retention-years" . }}{{ end -}}
 {{- $worm := .Values.audit.worm -}}

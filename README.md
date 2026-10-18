@@ -82,7 +82,9 @@ stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DAT
 `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3), `github`
 (change requests as pull requests on the content repo). The Git workflow store (JGit over the
 content repo, a branch per change request) is not a profile but the property
-`platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`).
+`platform.content.git: true` (`PLATFORM_CONTENT_GIT=true`); it commits to its own clone only, so
+it runs on one backend instance (see
+[The Git workflow store](docs/architecture.md#the-git-workflow-store)).
 `docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them; adding
 `-f docker-compose.temporal-postgres.yml` runs Temporal self-hosted on its own PostgreSQL
 (`temporalio/auto-setup`) instead of the dev server's SQLite file.
@@ -95,7 +97,12 @@ example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter'
 (`platform.roles`), the web app and one deployment per provider worker against an external
 Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
 agent annotations and never holds a value; `values.yaml` describes every setting and
-`ci/full-values.yaml` shows them all in use. `audit.signingKeySecret` names the Secret holding
+`ci/full-values.yaml` shows them all in use. `content.repository` is cloned into the backend
+pods, and with it the workflows live in the repository (the Git workflow store,
+`content.gitStore`): the chart then runs one backend pod whose clone a volume keeps
+(`content.gitStore.existingClaim`, `ci/git-store-values.yaml`) and refuses more;
+`content.gitStore.enabled: false` keeps the workflows in PostgreSQL, seeded from the repository, for
+any number of replicas. `audit.signingKeySecret` names the Secret holding
 the key that signs evidence seals (without it every pod signs with a random key per run, and a
 seal cannot be verified after a restart), `audit.siem` turns on the SIEM export and
 `audit.worm.mode` write-once evidence (`files` on an existing volume claim, `s3` with Object

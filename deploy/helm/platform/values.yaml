@@ -36,10 +36,10 @@ backend:
   # SPRING_PROFILES_ACTIVE; temporal runs the jobs on Temporal. Add opa, vault, oidc, live, github
   # as the install uses them; postgres, siem, worm and worm-s3 are added from postgres.enabled,
   # audit.siem.enabled and audit.worm.mode. There is no git profile: the Git workflow store is the
-  # property platform.content.git (config below).
+  # property platform.content.git, which content.gitStore sets (below).
   profiles: [temporal]
   # application.yml overrides for the API and the worker, merged over what the chart sets
-  # (platform.temporal.*, platform.content.dir, the health probes). Never put a secret here.
+  # (platform.temporal.*, platform.content.*, the health probes). Never put a secret here.
   config: {}
   # plain environment variables of the API and the worker
   env: []
@@ -137,6 +137,17 @@ content:
   gitImage:
     repository: alpine/git
     tag: "2.52.0"
+  # With a repository the workflows live in it (platform.content.git): the Git workflow store keeps
+  # a draft on a change/ branch of the clone and publishes a version as a commit on its main
+  # branch. It commits to that clone only (it pushes and fetches nothing) and reads it at start,
+  # so it runs on one backend pod (api.replicas 1 and worker.enabled false; the chart refuses
+  # more) whose clone lives on a volume (existingClaim, ReadWriteOnce is enough), cloned once with
+  # its history and kept across restarts. With enabled false the workflows live in the database
+  # (postgres.enabled; in memory without it), seeded from a fresh clone at every start, on any
+  # number of pods.
+  gitStore:
+    enabled: true
+    existingClaim: ""
 
 # ------------------------------------------------------------------ audit evidence
 

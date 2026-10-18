@@ -96,10 +96,26 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- end -}}
 
+{{/* "true" when the workflows live in the clone of the content repository (content.repository with content.gitStore.enabled); refuses what the Git workflow store cannot run on */}}
+{{- define "platform.gitStore" -}}
+{{- $c := .Values.content -}}
+{{- if and $c.repository $c.gitStore.enabled -}}
+{{- if gt (int .Values.api.replicas) 1 -}}
+{{- fail "content.gitStore keeps the workflows in one pod's clone of content.repository and pushes nothing, so another API pod would not see them: set api.replicas to 1, or content.gitStore.enabled to false to keep them in the database" -}}
+{{- end -}}
+{{- if .Values.worker.enabled -}}
+{{- fail "content.gitStore keeps the workflows in one pod's clone of content.repository, which the interpreter's worker reads too: set worker.enabled to false (the API pod then runs the worker), or content.gitStore.enabled to false to keep them in the database" -}}
+{{- end -}}
+{{- $_ := required "content.gitStore.existingClaim names the volume that keeps the clone the workflows live in (content.gitStore with content.repository), or set content.gitStore.enabled to false" $c.gitStore.existingClaim -}}
+true
+{{- end -}}
+{{- end -}}
+
 {{/* The pod spec of a backend instance: (dict "ctx" $ "roles" "api" "component" "api" "settings" .Values.api) */}}
 {{- define "platform.backendPod" -}}
 {{- $ctx := .ctx -}}
 {{- $v := $ctx.Values -}}
+{{- $gitStore := include "platform.gitStore" $ctx -}}
 metadata:
   labels:
     {{- include "platform.labels" $ctx | nindent 4 }}
@@ -155,7 +171,17 @@ spec:
           if [ -n "${GIT_PASSWORD:-}" ]; then
             git config --global credential.helper '!f() { echo "username=${GIT_USERNAME}"; echo "password=${GIT_PASSWORD}"; }; f'
           fi
+          {{- if $gitStore }}
+          # the Git workflow store's clone: made once, with the history its retired versions are
+          # read from, then kept on the volume with the store's commits
+          if [ -d /content/repo/.git ]; then
+            echo "keeping the clone in /content/repo"
+          else
+            git clone --quiet --branch "$CONTENT_REF" "$CONTENT_REPOSITORY" /content/repo
+          fi
+          {{- else }}
           git clone --quiet --depth 1 --branch "$CONTENT_REF" "$CONTENT_REPOSITORY" /content/repo
+          {{- end }}
       volumeMounts:
         - { name: content, mountPath: /content }
         - { name: tmp, mountPath: /tmp }
@@ -244,7 +270,12 @@ spec:
       configMap:
         name: {{ include "platform.fullname" $ctx }}-backend
     - name: content
+      {{- if $gitStore }}
+      persistentVolumeClaim:
+        claimName: {{ $v.content.gitStore.existingClaim | quote }}
+      {{- else }}
       emptyDir: {}
+      {{- end }}
     - name: tmp
       emptyDir: {}
     {{- with include "platform.temporalTlsVolume" $ctx }}

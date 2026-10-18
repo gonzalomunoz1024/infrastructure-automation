@@ -1,0 +1,18 @@
+# The workflows in the content repository (content.gitStore, the Git workflow store): one backend
+# pod whose clone lives on a volume, which full-values.yaml (several API and worker pods) cannot
+# show; for `helm lint`/`helm template` in CI.
+api:
+  replicas: 1
+
+worker:
+  enabled: false
+
+postgres:
+  enabled: true
+  passwordSecret: { name: platform-db, key: password }
+
+content:
+  repository: https://git.example.com/platform/content.git
+  credentialsSecret: { name: content-repo-credentials }
+  gitStore:
+    existingClaim: platform-content

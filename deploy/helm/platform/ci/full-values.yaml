@@ -7,8 +7,6 @@ backend:
   profiles: [temporal, vault, oidc, live]
   config:
     platform:
-      content:
-        git: true          # the Git workflow store over the cloned content repository
       identity:
         mode: oidc
         oidc-issuer: https://login.example.com/realms/platform
@@ -41,6 +39,9 @@ content:
   repository: https://git.example.com/platform/content.git
   ref: main
   credentialsSecret: { name: content-repo-credentials }
+  # several API and worker pods, so the workflows live in the database, seeded from the repository
+  # (git-store-values.yaml shows the Git workflow store)
+  gitStore: { enabled: false }
 
 audit:
   signingKeySecret: { name: platform-audit, key: signing-key }
