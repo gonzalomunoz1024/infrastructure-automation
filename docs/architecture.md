@@ -115,7 +115,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `WorkflowStorePort` (workflows)  | `JdbcWorkflowStore`   | `workflow_versions` |
 | `ChangeRequestPort` (workflows)  | `JdbcChangeRequests`  | `change_requests` |
 | `ProviderStorePort` (providers)  | `JdbcProviderStore`   | `providers`, `provider_versions` |
-| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` |
+| `ReleaseStore` (releases)        | `JdbcReleaseStore`    | `releases` (workflow and provider releases) |
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
 | `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
