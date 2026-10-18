@@ -61,7 +61,9 @@ import lombok.extern.slf4j.Slf4j;
  * The content repo as the store, through JGit. Published versions are the files on the main
  * branch; a draft or candidate is the file on its branch {@code change/<name>-<version>}; a merge
  * is a commit on main (a merge commit when the branch exists); retired versions stay readable
- * from main's history. Every version is read from a git ref into an in-memory index at startup
+ * from main's history. A release rollback adds a commit on main that changes no file and names
+ * the version it took out ({@code Rolled-back: <name> <version>}), so that version stays out of
+ * resolution after a restart. Every version is read from a git ref into an in-memory index at startup
  * and after each write, so reads never touch git. Writes are in-core commits (no checkout); when
  * the written branch is the one checked out, the working tree and index are refreshed too.
  */
@@ -74,6 +76,8 @@ public class GitWorkflowStore implements WorkflowStorePort {
     private static final String HEADS = "refs/heads/";
     private static final String WORKFLOWS_DIR = "workflows";
     private static final int MAX_HISTORY = 500;
+    /** The line of a commit message on main that marks a version a release rollback took out: {@code Rolled-back: <name> <version>}. */
+    static final String ROLLED_BACK = "Rolled-back: ";
 
     private final Path dir;
     private final Clock clock;
@@ -185,7 +189,11 @@ public class GitWorkflowStore implements WorkflowStorePort {
                 case DRAFT, CANDIDATE -> saveOnBranch(stored);
                 case PUBLISHED -> publishOnMain(stored);
                 case RETIRED -> {
-                    // the file on main was replaced by the newer version; the content stays in history
+                    // the file on main was replaced by the newer version; the content stays in history.
+                    // A rollback is written down on main, so the index still knows it after a restart.
+                    if (record.rolledBack() && get(record.name(), record.version()).map(r -> !r.rolledBack()).orElse(true)) {
+                        markRolledBack(stored);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -255,6 +263,17 @@ public class GitWorkflowStore implements WorkflowStorePort {
         if (branchTip != null) {
             deleteBranch(branch);
         }
+    }
+
+    /** A commit on main that changes no file and says, in a {@link #ROLLED_BACK} line, that the version was rolled back. */
+    private void markRolledBack(WorkflowRecord record) throws IOException {
+        ObjectId mainTip = repo.resolve(HEADS + mainBranch);
+        if (mainTip == null) {
+            return;
+        }
+        String id = record.name() + " " + record.version();
+        commit(mainBranch, mainTip, List.of(mainTip), record.path(), read(mainTip, record.path()), "Roll back " + id + "\n\n" + ROLLED_BACK + id + "\n",
+                "platform", clock.instant());
     }
 
     /**
@@ -392,10 +411,12 @@ public class GitWorkflowStore implements WorkflowStorePort {
                 rw.reset();
                 rw.markStart(head);
                 int n = 0;
+                Set<String> rolledBack = new HashSet<>();
                 for (RevCommit c : rw) {
                     if (n++ > MAX_HISTORY) {
                         break;
                     }
+                    rolledBack.addAll(rolledBackIn(c.getFullMessage()));
                     if (c.getId().equals(head.getId())) {
                         continue;
                     }
@@ -404,6 +425,10 @@ public class GitWorkflowStore implements WorkflowStorePort {
                                 .filter(p -> get(p.definition().name(), p.definition().version()).isEmpty())
                                 .ifPresent(p -> put(record(p, WorkflowStatus.RETIRED, e.getKey(), c)));
                     }
+                }
+                // a retired version a rollback took out stays out (a version on main again is published, not retired)
+                for (Map<String, WorkflowRecord> versions : index.values()) {
+                    versions.replaceAll((v, r) -> r.status() == WorkflowStatus.RETIRED && rolledBack.contains(r.name() + " " + r.version()) ? r.asRolledBack() : r);
                 }
             }
         }
@@ -421,6 +446,17 @@ public class GitWorkflowStore implements WorkflowStorePort {
             }
         }
         log.info("indexed {} workflow version(s) from git at {}", index.values().stream().mapToInt(Map::size).sum(), dir);
+    }
+
+    /** The {@code <name> <version>} of every {@link #ROLLED_BACK} line of a commit message. */
+    static List<String> rolledBackIn(String message) {
+        List<String> out = new ArrayList<>();
+        for (String line : message == null ? new String[0] : message.split("\n")) {
+            if (line.startsWith(ROLLED_BACK)) {
+                out.add(line.substring(ROLLED_BACK.length()).trim());
+            }
+        }
+        return out;
     }
 
     /** The change branches of the workflow versions open change requests review. */
@@ -504,6 +540,6 @@ public class GitWorkflowStore implements WorkflowStorePort {
             return r;
         }
         return new WorkflowRecord(r.name(), r.version(), r.status(), r.yaml(), r.definition(), r.contentHash(), path, r.updatedAt(), r.updatedBy(),
-                r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes());
+                r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes(), r.rolledBack());
     }
 }

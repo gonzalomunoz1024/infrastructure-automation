@@ -66,7 +66,7 @@ type WorkflowSummary = { name; title; noun; verb; persona?; folder; owner; tags:
 type WorkflowDetail = WorkflowSummary & { yaml: string; definition: WorkflowDefinition;
   versions: WorkflowVersion[]; problems: Problem[]; changeRequests: ChangeRequest[] }
 type WorkflowVersion = { version; status: 'draft' | 'candidate' | 'published' | 'retired';
-  contentHash; publishedAt?; publishedBy?; releaseId?; notes? }
+  contentHash; publishedAt?; publishedBy?; releaseId?; notes?; rolledBack?: true }   // rolledBack: a release rollback took it out
 type WorkflowDefinition = { apiVersion; kind: 'Workflow'; metadata; api; mcp; policy; triggers; rollout;
   workflow: { do: StepEntry[]; catch?: { do: StepEntry[] }; outputs? } }   // the YAML document as JSON (docs/config-as-code.md)
 type StepEntry = { [stepId: string]: { name?; call?: StepType; with?: object; output?: { as }; assert?; retry?; timeout?;
@@ -389,6 +389,10 @@ of the other jobs on the candidate (every call of one job uses one version), and
 outside a job and every job while the release is paused use the current version. Promotion makes
 the candidate the provider's current version; a rollback leaves the current version in place. A
 newer provider version ends a provider release still running (`rolled-back`, "superseded by").
+A rolled-back workflow release publishes `from` again and retires `to` as rolled back
+(`WorkflowVersion.rolledBack`): it stays readable, and a run step's version range never
+resolves to it again, when the job runs or in the checks (`^1` then picks the highest other
+published or retired 1.x).
 The commands need edit rights on the provider's owner team. Release events (`release.started`,
 `release.stage`, `release.promoted`, `release.paused`, `release.resumed`, `release.rolled-back`)
 carry `{ releaseId; workflow | provider; from; to }`.

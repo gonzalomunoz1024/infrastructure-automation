@@ -133,9 +133,15 @@ abstract class WorkflowStoreContract {
     void keepsWhatItWroteAcrossARestart() {
         WorkflowRecord saved = record("restart", "1.2.0", WorkflowStatus.PUBLISHED).withNotes("survives");
         store.save(saved);
+        // a version a release rollback took out stays marked, so nothing resolves to it after a restart either
+        WorkflowRecord rolledBack = record("restart", "1.3.0", WorkflowStatus.PUBLISHED).asRolledBack();
+        store.save(rolledBack);
+        assertThat(store.get("restart", "1.3.0")).contains(rolledBack);
         WorkflowStorePort after = reopen();
         assumeTrue(after != null, "this store does not outlive the process");
         assertThat(after.get("restart", "1.2.0")).contains(saved);
         assertThat(after.published("restart")).contains(saved);
+        assertThat(after.get("restart", "1.3.0")).contains(rolledBack);
+        assertThat(after.get("restart", "1.3.0").orElseThrow().isRunnable()).isFalse();
     }
 }

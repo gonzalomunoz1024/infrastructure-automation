@@ -629,9 +629,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     }
 
     /**
-     * A rolled-back release: its candidate ({@code to}) is retired and the version it was replacing
-     * ({@code from}) is published again. Nothing changes when the candidate is no longer the
-     * published version, for example when a newer version superseded it.
+     * A rolled-back release: its candidate ({@code to}) is retired as rolled back (nothing resolves
+     * to it any more) and the version it was replacing ({@code from}) is published again. Nothing
+     * changes when the candidate is no longer the published version, for example when a newer
+     * version superseded it.
      */
     private void rollBack(JsonNode data) {
         String name = data == null ? null : data.path("workflow").asText(null);
@@ -652,7 +653,8 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             return;
         }
         store.save(previous.get().withStatus(WorkflowStatus.PUBLISHED));
-        store.save(candidate.get().withStatus(WorkflowStatus.RETIRED));
+        // retired and marked, so run steps and starts that resolve a range never pick it again
+        store.save(candidate.get().asRolledBack());
         log.info("rolled back {} from {} to {}", name, to, from);
     }
 

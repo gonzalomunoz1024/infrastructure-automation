@@ -11,6 +11,7 @@ import java.util.List;
 
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -124,6 +125,40 @@ class GitWorkflowStoreTest {
         assertThat(again.get("hello", "1.0.0").orElseThrow().yaml()).isEqualTo(WorkflowYaml.toYaml(WorkflowYaml.parse(HELLO)));
         assertThat(again.get("hello", "1.0.1").orElseThrow().yaml()).isEqualTo(revised.yaml());
         again.close();
+    }
+
+    @Test
+    void aRollbackIsACommitOnMainThatARestartReadsBack() throws Exception {
+        GitWorkflowStore store = new GitWorkflowStore(dir, clock);
+        store.init();
+        WorkflowRecord candidate = draft("hello again", "1.0.1");
+        store.save(candidate);
+        store.save(store.published("hello").orElseThrow().withStatus(WorkflowStatus.RETIRED));
+        store.save(candidate.withStatus(WorkflowStatus.CANDIDATE).published(NOW, "ana", "rel_1"));
+
+        // the release is rolled back: 1.0.0 is published again, 1.0.1 retired and marked (a second save marks nothing more)
+        store.save(store.get("hello", "1.0.0").orElseThrow().withStatus(WorkflowStatus.PUBLISHED));
+        store.save(store.get("hello", "1.0.1").orElseThrow().asRolledBack());
+        store.save(store.get("hello", "1.0.1").orElseThrow().asRolledBack());
+        assertThat(store.get("hello", "1.0.1").orElseThrow().rolledBack()).isTrue();
+        try (Git git = Git.open(dir.toFile()); RevWalk rw = new RevWalk(git.getRepository())) {
+            RevCommit head = rw.parseCommit(git.getRepository().resolve("refs/heads/main"));
+            RevCommit parent = rw.parseCommit(head.getParent(0));
+            assertThat(head.getFullMessage()).isEqualTo("Roll back hello 1.0.1\n\nRolled-back: hello 1.0.1\n");
+            assertThat(head.getTree().getId()).as("the mark changes no file").isEqualTo(parent.getTree().getId());
+            assertThat(parent.getFullMessage()).isEqualTo("Publish hello 1.0.0");
+            assertThat(git.status().call().isClean()).isTrue();
+        }
+        store.close();
+
+        GitWorkflowStore again = new GitWorkflowStore(dir, clock);
+        again.init();
+        assertThat(again.versions("hello")).extracting(WorkflowRecord::version, WorkflowRecord::status, WorkflowRecord::rolledBack)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("1.0.0", WorkflowStatus.PUBLISHED, false),
+                        org.assertj.core.groups.Tuple.tuple("1.0.1", WorkflowStatus.RETIRED, true));
+        again.close();
+        assertThat(GitWorkflowStore.rolledBackIn("Roll back a 1.0.0\n\nRolled-back: a 1.0.0\nRolled-back: b 2.0.0 \n")).containsExactly("a 1.0.0", "b 2.0.0");
+        assertThat(GitWorkflowStore.rolledBackIn("Publish a 1.0.0")).isEmpty();
     }
 
     @Test

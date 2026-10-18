@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -133,6 +134,29 @@ class WorkflowQueryHandlerTest {
         assertThat(ctx.workflowInput("create-vm", "^2")).isEqualTo(ctx.workflowInput("create-vm"));
         assertThat(ctx.workflowInput("create-vm", "~2.1")).as("drafts never start").isEmpty();
         assertThat(ctx.workflowNames()).contains("create-vm");
+    }
+
+    @Test
+    void aRolledBackVersionNeverResolvesAndStaysReadable() {
+        WorkflowRecord v2 = store.published("create-vm").orElseThrow();
+        // 1.9.0 sized VMs by cores; 1.9.1, which a release rollback took out, by name again
+        String cores = SampleFixtures.yaml("workflows/team-compute/create-vm.yaml").replace("version: 2.0.1", "version: 1.9.0")
+                .replace("enum: [small, medium, large]", "enum: [2, 4, 8]");
+        store.save(WorkflowRecord.of(WorkflowYaml.parse(cores), WorkflowStatus.RETIRED, v2.path(), NOW, "t"));
+        store.save(WorkflowRecord.of(v2.definition().withVersion("1.9.1"), WorkflowStatus.PUBLISHED, v2.path(), NOW, "t").asRolledBack());
+
+        assertThat(queries.resolve("create-vm", "^1").block().version()).isEqualTo("1.9.0");
+        assertThat(queries.resolve("create-vm", "1.9.1").blockOptional()).isEmpty();
+        assertThat(queries.checkContext().block().workflowInput("create-vm", "^1").orElseThrow().path("properties").path("size").path("enum").toString())
+                .as("a run step on ^1 is judged against 1.9.0").isEqualTo("[2,4,8]");
+        WorkflowRecord rolledBack = queries.version("create-vm", "1.9.1").block();
+        assertThat(rolledBack.status()).isEqualTo(WorkflowStatus.RETIRED);
+        assertThat(rolledBack.isRunnable()).isFalse();
+        assertThat(queries.versions("create-vm").collectList().block()).extracting(v -> v.version(), v -> v.rolledBack())
+                .containsExactly(tuple("1.9.0", null), tuple("1.9.1", true), tuple("2.0.1", null));
+        // published again (a later rollback returning to it), it resolves again
+        store.save(rolledBack.withStatus(WorkflowStatus.PUBLISHED));
+        assertThat(queries.resolve("create-vm", "^1").block().version()).isEqualTo("1.9.1");
     }
 
     @Test

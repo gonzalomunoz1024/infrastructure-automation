@@ -371,7 +371,10 @@ monorepo for the samples). Publishing writes the file on a branch `change/<name>
 opens a change request; merging it publishes the version and starts its canary. The Git store
 indexes a version on its change branch as the candidate while an open change request reviews it
 and as a draft otherwise, so a restart keeps a version under review out of reach of a draft's
-delete (which also asks the change requests before it deletes anything). A provider
+delete (which also asks the change requests before it deletes anything). A rolled-back workflow
+release republishes the version it replaced and marks its own version rolled back, which nothing
+resolves to: the JDBC store keeps the mark in the version's `doc`, the Git store as a commit on
+main that changes no file (`Rolled-back: <name> <version>`) and that it reads back at startup. A provider
 version rolls out the same way: the providers slice keeps the candidate beside the current version
 (`ProviderStorePort.saveVersion`), the releases slice routes each job's calls (`ReleaseQueries.routeProvider`,
 asked by `ProviderQueries.provider` when the lookup carries the job's `ProviderQueries.Use` in its

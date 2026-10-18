@@ -44,8 +44,9 @@ public interface WorkflowQueries {
             List<String> tags, String status, String latestVersion, String publishedVersion, int stepCount, Instant updatedAt, boolean mcp) {
     }
 
+    /** One version of a workflow; {@code rolledBack} is true on a retired version a release rollback took out (nothing resolves to it). */
     record WorkflowVersion(String version, WorkflowStatus status, String contentHash, Instant publishedAt, String publishedBy,
-            String releaseId, String notes) {
+            String releaseId, String notes, Boolean rolledBack) {
     }
 
     /** {@code GET /workflows/{name}}: the summary plus the current file (the draft when there is one). */

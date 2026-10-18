@@ -963,7 +963,15 @@ class WorkflowCommandHandlerTest {
                 F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));
 
         assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.0");
-        assertThat(store.get("vm-restart", "1.2.1").orElseThrow().status()).isEqualTo(WorkflowStatus.RETIRED);
+        WorkflowRecord rolledBack = store.get("vm-restart", "1.2.1").orElseThrow();
+        assertThat(rolledBack.status()).isEqualTo(WorkflowStatus.RETIRED);
+        assertThat(rolledBack.rolledBack()).isTrue();
+        // run steps and starts that resolve a range never pick it again; it stays readable, marked
+        assertThat(queries.resolve("vm-restart", "^1").block().version()).isEqualTo("1.2.0");
+        assertThat(queries.resolve("vm-restart", "~1.2.1").blockOptional()).isEmpty();
+        assertThat(queries.checkContext().block().workflowInput("vm-restart", "~1.2.1")).isEmpty();
+        assertThat(queries.versions("vm-restart").collectList().block()).extracting(v -> v.version(), v -> v.status(), v -> v.rolledBack())
+                .containsExactly(tuple("1.2.0", WorkflowStatus.PUBLISHED, null), tuple("1.2.1", WorkflowStatus.RETIRED, true));
         // a second rollback of the same release finds the candidate already retired and changes nothing
         events.publish("release.rolled-back", "release", "rel_1", "platform",
                 F.objectNode().put("workflow", "vm-restart").put("from", "1.2.0").put("to", "1.2.1"));

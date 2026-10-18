@@ -328,7 +328,8 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     }
 
     static WorkflowVersion versionOf(WorkflowRecord r) {
-        return new WorkflowVersion(r.version(), r.status(), r.contentHash(), r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes());
+        return new WorkflowVersion(r.version(), r.status(), r.contentHash(), r.publishedAt(), r.publishedBy(), r.releaseId(), r.notes(),
+                r.rolledBack() ? Boolean.TRUE : null);
     }
 
     /** A list row: the change request without its yaml and diff. */
