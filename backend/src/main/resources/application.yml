@@ -31,6 +31,8 @@ platform:
     target: 127.0.0.1:7233
     namespace: default
     task-queue: platform-interpreter
+    heartbeat-timeout: 60s  # a step's call (provider, automation, script) without a heartbeat this long fails as worker-lost; 0 = never
+    heartbeat-interval: 15s # how often those calls heartbeat
   policy:
     mode: mock            # mock | opa
     opa-url: http://localhost:8181/v1/data/platform

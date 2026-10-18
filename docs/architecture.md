@@ -136,6 +136,43 @@ Temporal UI or CLI ends the job as cancelled by `temporal`. The job list is stil
 in-memory projection, so jobs started before a backend restart are not listed again, although their
 executions carry on.
 
+The platform's own step calls heartbeat while they run: a provider call, an automation run or a
+script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`
+after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one, so a backend that
+dies mid-call fails the step, which its retry policy can run again on another instance, instead of
+waiting out the step's timeout.
+
+### Custom-code providers
+
+A provider of type `sdk` is code a team owns, served by the team's own worker on its own task
+queue (`spec.worker.taskQueue`, default `provider-<name>`). The platform never runs that code:
+under the `temporal` profile the interpreter schedules each call of an action as one activity on
+that queue and the worker answers it. The provider SDKs (`sdk/java`, `sdk/go`, `sdk/python`)
+implement the worker's side of the contract, derive the action schemas from the handlers' types
+and write the provider file, so the code and the file cannot drift.
+
+- The activity type is the action id (`address.reserve`); a `call: activity` step names its own.
+- The one argument is a JSON object: `input` (the step's resolved input), `idempotencyKey`,
+  `job { id, workflow, version, traceId }`, `step`, `environment` and `attempt` (from 1). The
+  key is `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
+  of the step and when a restarted worker picks the call up again, new for a new run of the step.
+  The result is the action's output, a JSON object.
+- The activity runs once. Its start-to-close timeout is the step's `timeout` (10m by default),
+  its heartbeat timeout the provider's `worker.heartbeatTimeout` (none when absent), and Temporal
+  does not retry it: the step's `retry` policy does, with the same key.
+- A failure is an `ApplicationFailure` whose type is the error class (`spec.errors[].class`);
+  non-retryable means no retry fixes it, and the step fails at once. A start-to-close timeout fails
+  the step as `timeout` and a heartbeat timeout as `worker-lost`, both retryable. The SDKs report
+  a call that breaks the contract as `invalid_request`, `invalid_input`, `invalid_output` or
+  `unknown_action` (never retried) and any other exception as the retryable class `error`.
+- Cancelling the job cancels the activity; the worker learns of it through its heartbeats.
+
+The in-memory demo answers an `sdk` action from its `sample`, as it does for every provider; the
+`live` profile without Temporal fails it with a message saying it needs the `temporal` profile.
+Each worker is a deployment of its own, which the team that owns it scales and releases (the
+Helm chart's `providerWorkers`, the example workers in `docker-compose.yml`); a stopping worker
+stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default).
+
 ## Frontend
 
 See `docs/design-language.md`. The shell (every page but the canvas) is built from

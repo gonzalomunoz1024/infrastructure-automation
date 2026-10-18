@@ -68,7 +68,8 @@ export interface WizardState {
   ansible: { repo: string; ref: string; path: string; commit: string; executionEnvironment: string }
   terraform: { source: string; version: string }
   idp: { tileId: string }
-  sdk: { taskQueue: string }
+  /** Both optional: the queue defaults to provider-<name>, no heartbeat timeout when empty */
+  sdk: { taskQueue: string; heartbeatTimeout: string }
   actions: ActionRow[]
   tested: TestConnectionResult | null
   tries: Record<string, TryResult>
@@ -84,6 +85,8 @@ const NAME_RE = /^[a-z][a-z0-9-]*$/
 const ID_RE = /^[a-z][a-zA-Z0-9._-]*$/
 const VERSION_RE = /^\d+\.\d+\.\d+$/
 const HTTPS_RE = /^https:\/\/\S+$/
+const TASK_QUEUE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/
+const DURATION_RE = /^(P(?!$)(\d+D)?(T(\d+H)?(\d+M)?(\d+S)?)?|\d+(ms|s|m|h|d))$/
 const EFFECTS: Effect[] = ['read', 'create', 'change', 'delete']
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 const STEPS = [
@@ -147,7 +150,7 @@ export function initialState(): WizardState {
     ansible: { repo: '', ref: 'main', path: '', commit: '', executionEnvironment: '' },
     terraform: { source: '', version: '' },
     idp: { tileId: '' },
-    sdk: { taskQueue: '' },
+    sdk: { taskQueue: '', heartbeatTimeout: '' },
     actions: [],
     tested: null,
     tries: {},
@@ -225,7 +228,10 @@ export function buildProviderDocument(s: WizardState): Record<string, unknown> {
   }
   if (s.type === 'terraform') spec.module = { source: s.terraform.source.trim(), version: s.terraform.version.trim() || undefined }
   if (s.type === 'idp') spec.tile = { id: s.idp.tileId.trim() }
-  if (s.type === 'sdk') spec.taskQueue = s.sdk.taskQueue.trim()
+  if (s.type === 'sdk') {
+    const worker = { taskQueue: s.sdk.taskQueue.trim() || undefined, heartbeatTimeout: s.sdk.heartbeatTimeout.trim() || undefined }
+    if (worker.taskQueue || worker.heartbeatTimeout) spec.worker = worker
+  }
   spec.auth = authOf(s)
   spec.actions = s.actions.filter((a) => a.selected).map((a) => actionDocument(s.type, a, s))
   const overrides = Object.entries(s.overrides).filter(([id]) => s.actions.some((a) => a.selected && a.id === id))
@@ -258,7 +264,8 @@ export function stepIssues(s: WizardState, step: number): string[] {
     if (s.type === 'ansible' && !s.ansible.repo.trim()) out.push('Name the Git repository.')
     if (s.type === 'terraform' && !s.terraform.source.trim()) out.push('Name the module source.')
     if (s.type === 'idp' && !s.idp.tileId.trim()) out.push('Name the tile.')
-    if (s.type === 'sdk' && !s.sdk.taskQueue.trim()) out.push('Name the task queue.')
+    if (s.type === 'sdk' && s.sdk.taskQueue.trim() && !TASK_QUEUE_RE.test(s.sdk.taskQueue.trim())) out.push('The task queue is letters, digits, dots, dashes and underscores.')
+    if (s.type === 'sdk' && s.sdk.heartbeatTimeout.trim() && !DURATION_RE.test(s.sdk.heartbeatTimeout.trim())) out.push('The heartbeat timeout is a duration like 30s or 2m.')
     if (s.auth.type !== 'none' && !s.auth.credential) out.push('Pick the credential, or choose no authentication.')
     if (s.auth.type === 'header' && !s.auth.header.trim()) out.push('Name the header the credential goes in.')
   }
@@ -605,10 +612,15 @@ function ConnectStep({ state, update }: StepProps) {
       )}
 
       {state.type === 'sdk' && (
-        <Card title="Worker" subtitle="Your team runs the worker; the platform only schedules activities on its task queue.">
-          <Field label="Task queue" htmlFor="sdk-queue" required>
-            <Input id="sdk-queue" mono value={state.sdk.taskQueue} onChange={(e) => update({ sdk: { taskQueue: e.target.value } })} placeholder="team-data-activities" />
-          </Field>
+        <Card title="Worker" subtitle="Your team runs the worker, built with a provider SDK; the platform only schedules the actions on its task queue.">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Task queue" htmlFor="sdk-queue" hint="Leave empty for the default" error={state.sdk.taskQueue.trim() && !TASK_QUEUE_RE.test(state.sdk.taskQueue.trim()) ? 'Letters, digits, dots, dashes and underscores' : undefined}>
+              <Input id="sdk-queue" mono value={state.sdk.taskQueue} onChange={(e) => update({ sdk: { ...state.sdk, taskQueue: e.target.value } })} placeholder={`provider-${state.name || '<name>'}`} />
+            </Field>
+            <Field label="Heartbeat timeout" htmlFor="sdk-heartbeat" hint="A call is lost after this long without a heartbeat" error={state.sdk.heartbeatTimeout.trim() && !DURATION_RE.test(state.sdk.heartbeatTimeout.trim()) ? 'A duration like 30s or 2m' : undefined}>
+              <Input id="sdk-heartbeat" mono value={state.sdk.heartbeatTimeout} onChange={(e) => update({ sdk: { ...state.sdk, heartbeatTimeout: e.target.value } })} placeholder="30s" />
+            </Field>
+          </div>
         </Card>
       )}
 
