@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 
@@ -47,6 +48,11 @@ import reactor.core.publisher.Sinks;
  * carries) before publishing {@code job.started}; everything after that is folded from events,
  * so the Temporal engine, the in-memory engine and the demo seed all feed the same model. The
  * live fan-out (one replaying sink per running job) stays in memory and ends with the job.
+ *
+ * <p>{@link JobEvents} folds each event here before publishing it: when the store fails, the
+ * failure reaches the publisher (a Temporal activity then retries, a command fails) and the
+ * event is neither kept nor published, instead of being lost while the job carries on. An event
+ * published straight on the bus is folded by the bus listener, where a failure is logged.</p>
  */
 @Slf4j
 @Component
@@ -58,6 +64,9 @@ public class JobProjection {
     private final ProjectionStore store;
     private final Object lock = new Object();
     private final Map<String, Stream> streams = new ConcurrentHashMap<>();
+    /** Events {@link #fold} kept before their publication: the bus hands each back once, and it is skipped then. */
+    private final Set<String> folded = ConcurrentHashMap.newKeySet();
+    private volatile boolean registered;
 
     /** One live job's event numbering and its sink (a bounded replay closes the gap between history and live). */
     private static final class Stream {
@@ -77,6 +86,7 @@ public class JobProjection {
     @PostConstruct
     public void register() {
         bus.register(this::on);
+        registered = true;
     }
 
     // ---------------------------------------------------------------- writes from the handlers
@@ -161,34 +171,59 @@ public class JobProjection {
 
     // ---------------------------------------------------------------- event folding
 
-    void on(DomainEvent e) {
-        if (!JobEvents.AGGREGATE.equals(e.aggregate()) || e.aggregateId() == null) {
-            return;
-        }
-        if (!e.type().startsWith("job.") && !e.type().startsWith("batch.")) {
+    /**
+     * Fold an event before it is published ({@link JobEvents} does): a store failure throws to
+     * the caller, and the event is then not kept, so publishing it again later keeps it once.
+     */
+    public void fold(DomainEvent e) {
+        if (!folds(e)) {
             return;
         }
         synchronized (lock) {
-            Job job = null;
-            try {
-                job = store.job(e.aggregateId()).orElse(null);
-                Job next = apply(job, e);
-                if (next != null) {
-                    store.save(next);
-                    job = next;
-                    if (next.parentId() != null && next.row() != null) {
-                        updateParentRow(next, e);
-                    }
-                }
-            } catch (RuntimeException ex) {
-                log.warn("job projection could not apply {} to {}: {}", e.type(), e.aggregateId(), ex.toString());
-            }
-            try {
-                record(e, job != null && job.status() != null && job.status().terminal());
-            } catch (RuntimeException ex) {
-                log.warn("job projection could not keep {} of {}: {}", e.type(), e.aggregateId(), ex.toString());
+            foldNow(e);
+        }
+        if (registered) {
+            folded.add(e.id());
+        }
+    }
+
+    /** The bus listener: an event {@link #fold} already kept is skipped; a store failure here is logged by the bus. */
+    void on(DomainEvent e) {
+        if (!folds(e) || folded.remove(e.id())) {
+            return;
+        }
+        synchronized (lock) {
+            foldNow(e);
+        }
+    }
+
+    private static boolean folds(DomainEvent e) {
+        return JobEvents.AGGREGATE.equals(e.aggregate()) && e.aggregateId() != null
+                && (e.type().startsWith("job.") || e.type().startsWith("batch."));
+    }
+
+    /**
+     * Apply the event to its job and keep it in the history. A store failure propagates before
+     * the event is appended (a retry applies it again, which folds to the same job); an event
+     * that cannot be applied, a bug no retry would mend, is logged and kept without changing the
+     * job, so it does not hold the job up.
+     */
+    private void foldNow(DomainEvent e) {
+        Job job = store.job(e.aggregateId()).orElse(null);
+        Job next = null;
+        try {
+            next = apply(job, e);
+        } catch (RuntimeException ex) {
+            log.error("job projection could not apply {} to {}: {}", e.type(), e.aggregateId(), ex.toString());
+        }
+        if (next != null) {
+            store.save(next);
+            job = next;
+            if (next.parentId() != null && next.row() != null) {
+                updateParentRow(next, e);
             }
         }
+        record(e, job != null && job.status() != null && job.status().terminal());
     }
 
     /** Number the event, keep it, hand it to the live subscribers; an ended job's sink goes (its history stays in the store). */

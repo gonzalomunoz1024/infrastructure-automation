@@ -236,11 +236,16 @@ public class InMemoryWorkflowExecution implements WorkflowExecutionPort, PortSte
         Job job = exec.job;
         Instant now = clock.instant();
         long duration = job.startedAt() == null ? 0 : Math.max(0, now.toEpochMilli() - job.startedAt().toEpochMilli());
-        if (outcome.status() == JobStatus.CANCELLED) {
-            events.cancelled(job.id(), exec.cancelledBy == null ? Identity.SYSTEM.id() : exec.cancelledBy);
-        } else {
-            events.finished(job.id(), job.workflow(), job.version(), outcome.status(), duration, outcome.errorClass(), outcome.failedStep(),
-                    outcome.output(), outcome.message(), now);
+        try {
+            if (outcome.status() == JobStatus.CANCELLED) {
+                events.cancelled(job.id(), exec.cancelledBy == null ? Identity.SYSTEM.id() : exec.cancelledBy);
+            } else {
+                events.finished(job.id(), job.workflow(), job.version(), outcome.status(), duration, outcome.errorClass(), outcome.failedStep(),
+                        outcome.output(), outcome.message(), now);
+            }
+        } catch (RuntimeException e) {
+            // the store refused the final event: this engine has no activity to retry it (Temporal's does)
+            log.error("job {} ended {} but its final event could not be recorded: {}", job.id(), outcome.status().json(), e.toString());
         }
         if (job.change() != null && job.change().id() != null && !"linked".equals(job.change().state())) {
             changes.close(job.change().id(), outcome.succeeded())
