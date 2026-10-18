@@ -49,6 +49,7 @@ import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.domain.StepType;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 import com.iaf.platform.workflows.domain.WorkflowDefinition.RolloutPolicy;
+import com.iaf.platform.workflows.domain.WorkflowYaml;
 
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -482,13 +483,32 @@ class RunsCommandHandlerTest {
 
     @Test
     void dryRunReportsTheFailingStep() {
-        DryRunResult r = handler.dryRun(SampleContent.workflow("patch-cve"), SampleContent.json(Map.of("vmId", "vm-1042", "cve", "CVE-2026-9999")),
-                SampleContent.GONZALO).block();
+        // a verify step whose assertion the samples cannot satisfy
+        WorkflowDefinition def = WorkflowYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Workflow
+                metadata: { name: t-verify, title: Verify, noun: thing, verb: check, owner: team-x, version: 1.0.0 }
+                api: { method: POST, path: "/api/v1/things:check", input: { type: object, properties: { id: { type: string } } } }
+                workflow:
+                  do:
+                    - get:
+                        name: Get
+                        call: provider
+                        with: { provider: vsphere, action: vm.get, input: { id: "{{ $input.id }}" } }
+                    - verify:
+                        name: Verify
+                        script:
+                          language: javascript
+                          code: "return { fixed: false };"
+                        assert: "{{ $json.fixed == true }}"
+                """);
+        DryRunResult r = handler.dryRun(def, SampleContent.json(Map.of("id", "vm-1042")), SampleContent.GONZALO).block();
         assertThat(r.passed()).isFalse();
         assertThat(r.error()).contains("verify").contains("Assertion failed");
         DryRunResult.DryRunStep verify = r.steps().stream().filter(s -> s.id().equals("verify")).findFirst().orElseThrow();
         assertThat(verify.status()).isEqualTo("failed");
         assertThat(verify.error()).contains("Assertion failed");
+        assertThat(r.steps().stream().filter(s -> s.id().equals("get")).findFirst().orElseThrow().status()).isEqualTo("succeeded");
     }
 
     @Test

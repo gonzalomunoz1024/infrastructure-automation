@@ -24,11 +24,12 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition;
 /**
  * Demo resources for the registry, derived from the content itself so the platform stays
  * generic: a type depends on the types its producing workflow {@code use}s and on the types
- * produced by the workflows it {@code run}s. Root types get two resources, composite types
- * (two or more dependencies) one; a root type that other workflows pick from the registry with a
- * {@code use} step (a template) also gets an older, deprecated copy when it knows that state,
- * while a type created on demand only has live copies. Every resource is built from ready
- * resources of the types it depends on, so lineage has data on day one.
+ * produced by the workflows it {@code run}s. A type gets one resource per example name in its
+ * schema (at least two), a composite type (two or more dependencies) one built from the first two
+ * ready resources of each; a root type that other workflows pick from the registry with a
+ * {@code use} step (a template) has its second copy deprecated when it knows that state, while a
+ * type created on demand only has live copies. Every resource is built from ready resources of
+ * the types it depends on, so lineage has data on day one.
  */
 public final class DemoResources {
 
@@ -36,6 +37,8 @@ public final class DemoResources {
     private static final java.util.regex.Pattern REFERENCE_NAME = java.util.regex.Pattern.compile("(To|Id|Ref|From|Of)$");
     public static final String READY = "ready";
     public static final String DEPRECATED = "deprecated";
+    /** How many ready resources of each dependency a composite resource is built from. */
+    static final int COMPOSITE_PARTS = 2;
 
     private DemoResources() {
     }
@@ -134,7 +137,7 @@ public final class DemoResources {
         for (String name : order(deps)) {
             ResourceTypeDefinition t = byName.get(name);
             Set<String> d = deps.getOrDefault(name, Set.of());
-            int count = d.size() >= 2 ? 1 : 2;
+            int count = d.size() >= 2 ? 1 : Math.max(2, exampleNames(t));
             List<Resource> ofType = new ArrayList<>();
             for (int i = 1; i <= count; i++) {
                 serial++;
@@ -147,9 +150,9 @@ public final class DemoResources {
                         continue;
                     }
                     if (d.size() == 1) {
-                        from.put(dep, List.of(candidates.get(Math.min(i, candidates.size()) - 1)));
+                        from.put(dep, List.of(candidates.get((i - 1) % candidates.size())));
                     } else {
-                        from.put(dep, candidates);
+                        from.put(dep, candidates.subList(0, Math.min(COMPOSITE_PARTS, candidates.size())));
                     }
                 }
                 String id = name + "-demo" + String.format("%02d", i);
@@ -166,6 +169,12 @@ public final class DemoResources {
             created.put(name, ofType);
         }
         return out;
+    }
+
+    /** How many example names the type's schema gives ({@code properties.name.examples}). */
+    static int exampleNames(ResourceTypeDefinition t) {
+        JsonNode examples = t.schema() == null ? null : t.schema().path("properties").path("name").path("examples");
+        return examples != null && examples.isArray() ? examples.size() : 0;
     }
 
     /** Plausible attributes for the type's schema; properties named after a dependency get its id. */

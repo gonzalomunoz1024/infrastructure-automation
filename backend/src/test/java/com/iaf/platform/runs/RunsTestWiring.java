@@ -85,6 +85,9 @@ public final class RunsTestWiring {
                 SampleContent.providers().stream().filter(p -> p.name().equals(i.getArgument(0))).findFirst()));
         when(resources.types()).thenAnswer(i -> Flux.fromIterable(SampleContent.types()));
         when(resources.get(anyString())).thenAnswer(i -> registry(i.getArgument(0)));
+        when(resources.list(any(), any(), any())).thenAnswer(i -> Flux.fromIterable(READY)
+                .filter(r -> i.getArgument(0) == null || r.type().equals(i.getArgument(0)))
+                .filter(r -> i.getArgument(2) == null || r.status().equals(i.getArgument(2))));
         when(resources.use(any(), any(), any(), anyBoolean())).thenAnswer(i -> Mono.just(resource(i.getArgument(0), i.getArgument(1), "ready")));
         when(resourceCommands.register(any())).thenAnswer(i -> {
             RegisterResource r = i.getArgument(0);
@@ -131,6 +134,13 @@ public final class RunsTestWiring {
         return WorkflowRecord.of(d, WorkflowStatus.PUBLISHED, "workflows/" + d.name() + ".yaml", Instant.parse("2026-10-01T00:00:00Z"), "gonzalo")
                 .published(Instant.parse("2026-10-01T00:00:00Z"), "gonzalo", null);
     }
+
+    /** What the registry lists as ready: six VMs, two databases, an image, a volume and an environment. */
+    public static final List<Resource> READY = List.of(
+            resource("vm", "vm-201", "ready"), resource("vm", "vm-202", "ready"), resource("vm", "vm-203", "ready"),
+            resource("vm", "vm-204", "ready"), resource("vm", "vm-205", "ready"), resource("vm", "vm-206", "ready"),
+            resource("database", "db-201", "ready"), resource("database", "db-202", "ready"),
+            resource("image", "img-201", "ready"), resource("volume", "vol-201", "ready"), resource("environment", "env-201", "ready"));
 
     /** The registry the tests see: ids that start with {@code missing-} are unknown, the prefix names the type. */
     static Mono<Resource> registry(String id) {

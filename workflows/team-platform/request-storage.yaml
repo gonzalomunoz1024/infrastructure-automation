@@ -25,6 +25,7 @@ api:
       sizeGb:
         type: integer
         title: Size (GB)
+        examples: [100, 200, 500]
         default: 100
         minimum: 10
         maximum: 4000

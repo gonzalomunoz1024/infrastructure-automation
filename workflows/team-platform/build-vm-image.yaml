@@ -31,6 +31,7 @@ api:
       name:
         type: string
         title: Image name
+        examples: [base-ubuntu, hardened-rhel, web-golden, windows-build]
         description: Defaults to <os>-<hardening>-<date>
   response: { status: 202 }
   preview: false

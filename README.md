@@ -18,9 +18,12 @@ scripts/dev.sh --temporal      # the same, with the interpreter running on a loc
 ```
 
 Open <http://localhost:3000>. The demo profile keeps everything in memory, answers provider calls
-from the samples recorded in each provider file, and seeds two weeks of job history so that
-provider health, canary releases and audit evidence have data. Switch users in Settings
-(`gonzalo` is an admin and approver, `junior` can only run).
+from the samples recorded in each provider file, and seeds two weeks of history that agrees with
+itself: the jobs, the releases that put the current versions out (one rolled back by its gates,
+one promoted by hand, one canary still running), the change requests that published them and the
+resources the jobs worked on. Provider health, canary gates and audit evidence are computed from
+that history, not written into it. Switch users in Settings (`gonzalo` is an admin and approver,
+`junior` can only run).
 
 The generated surface:
 

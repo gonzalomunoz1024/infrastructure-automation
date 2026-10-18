@@ -81,6 +81,15 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 Every adapter is a `@Component`; the demo one carries `@ConditionalOnMissingBean` of the port or a
 profile guard so that the production adapter replaces it when its profile is active.
 
+The demo data follows one fixture, `common.demo.DemoReleases`: the release stories (versions,
+stages, outcomes, who decided). `DemoWorkflowHistory` keeps the versions those releases replaced
+and the change requests that published them, `DemoRunsSeeder` routes each seeded job to the
+version a story says was live and adds the canary traffic, `DemoResources` derives the registry
+from the resource types and workflows, and `DemoReleaseSeed` records the releases last and judges
+their gates with `ReleaseGates` over the seeded jobs. So every page in demo mode agrees with the
+others, the way the Atlas topology fixture does, and nothing scenario-specific lives in the
+platform code.
+
 ### Reactive boundaries
 
 Handlers return `Mono`/`Flux`. Blocking clients (Temporal, JGit, process runners) are wrapped in

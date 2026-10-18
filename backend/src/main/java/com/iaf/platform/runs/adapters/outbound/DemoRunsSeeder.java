@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -24,6 +25,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.content.ContentFiles;
+import com.iaf.platform.common.demo.DemoReleases;
+import com.iaf.platform.common.demo.DemoReleases.Story;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
@@ -33,6 +36,7 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
+import com.iaf.platform.resources.domain.Resource;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.application.JobEvents;
@@ -79,10 +83,13 @@ import lombok.extern.slf4j.Slf4j;
  * weeks across the sample workflows, walked for real on the recorded samples with a virtual
  * clock (so steps, outputs and durations are what the interpreter would produce), one in twelve
  * running into a failure with a realistic error class (some are retried after attention and
- * finish) and a few cancelled; a telemetry sample for every provider call; and three live states: a MongoDB upgrade waiting for approval, a VM
- * restart that needs attention, and a patch batch in its second wave. The live jobs are handed
- * to the execution engine so approving or retrying them continues the real walk. Everything is
- * published as events, so the audit, telemetry and release slices see the same history.
+ * finish) and a few cancelled; a telemetry sample for every provider call; and three live states:
+ * a job waiting for approval, one that needs attention, and a batch in its second wave. The live
+ * jobs are handed to the execution engine so approving or retrying them continues the real walk.
+ * Inputs come from the input schemas and the registry ({@link SeedInputs}), and each job runs the
+ * version the shared release history routed it to ({@link DemoReleases}), with the extra traffic
+ * each canary saw. Everything is published as events, so the audit, telemetry and release slices
+ * see the same history.
  */
 @Slf4j
 @Component
@@ -100,6 +107,13 @@ public class DemoRunsSeeder {
         PEOPLE.put("mateo", new Identity("mateo", "Mateo", "mateo@example.com", List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER));
         PEOPLE.put("junior", new Identity("junior", "Junior engineer", "junior@example.com", List.of("team-compute"), List.of("ops"), false, Identity.Kind.USER));
     }
+
+    /** The sample workflows the three live states use; a missing one leaves its state out. */
+    static final String WAITING_APPROVAL = "mongodb-upgrade";
+    static final String NEEDS_ATTENTION = "vm-restart";
+    static final String RUNNING_BATCH = "patch-cve";
+    /** How many rows the running batch has at most, one per ready resource of its target type. */
+    static final int BATCH_ROWS = 12;
 
     /** How often each sample workflow shows up; unknown workflows get weight 1. */
     private static final Map<String, Integer> WEIGHTS = Map.of(
@@ -133,8 +147,9 @@ public class DemoRunsSeeder {
     public record Report(int jobs, int failed, int cancelled, int calls, String waitingApproval, String needsAttention, String runningBatch) {
     }
 
+    /** Before the demo releases, which are judged on these jobs. */
     @EventListener(ApplicationReadyEvent.class)
-    @Order(Ordered.LOWEST_PRECEDENCE)
+    @Order(Ordered.LOWEST_PRECEDENCE - 5)
     public void onReady() {
         if (props.getDemo() == null || !props.getDemo().isSeedHistory()) {
             return;
@@ -156,6 +171,7 @@ public class DemoRunsSeeder {
         }
         Random rnd = new Random(SEED);
         Instant now = clock.instant();
+        SeedInputs inputs = new SeedInputs(readyIds());
         List<Run> runs = new ArrayList<>();
         List<WorkflowDefinition> weighted = new ArrayList<>();
         for (WorkflowDefinition d : catalog.workflows().values()) {
@@ -172,10 +188,13 @@ public class DemoRunsSeeder {
             Instant startedAt = now.minus(Duration.ofMinutes(45 + rnd.nextInt(14 * 24 * 60 - 60)));
             Identity who = pick(rnd, List.copyOf(PEOPLE.values()));
             String channel = pick(rnd, List.of("catalog", "catalog", "catalog", "rest", "mcp", "trigger", "catalog"));
-            boolean fail = i % 12 == 0;              // five of sixty run into a failure
-            boolean cancel = !fail && i % 20 == 10;  // three of sixty are cancelled
-            runs.add(new Run(def, SeedInputs.inputFor(def, rnd), who, channel, startedAt, fail, cancel));
+            String version = DemoReleases.versionAt(def.name(), startedAt, now, rnd).orElse(def.version());
+            boolean candidate = onCandidate(def.name(), version, startedAt, now);
+            boolean fail = i % 12 == 0 && !candidate;              // five of sixty run into a failure
+            boolean cancel = !fail && i % 20 == 10 && !candidate;  // three of sixty are cancelled
+            runs.add(new Run(def.withVersion(version), inputs.inputFor(def, rnd), who, channel, startedAt, fail, cancel, null));
         }
+        runs.addAll(canaryTraffic(catalog, inputs, now, rnd));
         runs.sort(Comparator.comparing(Run::startedAt));
         for (Run run : runs) {
             try {
@@ -191,15 +210,70 @@ public class DemoRunsSeeder {
                 log.warn("could not seed a {} job: {}", run.def().name(), e.toString());
             }
         }
-        String waiting = seedWaitingApproval(catalog, now, rnd);
-        String attention = seedNeedsAttention(catalog, now, rnd);
-        String batch = seedRunningBatch(catalog, now, rnd);
+        String waiting = seedWaitingApproval(catalog, inputs, now, rnd);
+        String attention = seedNeedsAttention(catalog, inputs, now, rnd);
+        String batch = seedRunningBatch(catalog, inputs, now, rnd);
         return new Report(runs.size(), failedCount, cancelledCount, calls, waiting, attention, batch);
     }
 
     // ---------------------------------------------------------------- one finished job
 
-    private record Run(WorkflowDefinition def, JsonNode input, Identity who, String channel, Instant startedAt, boolean fail, boolean cancel) {
+    /** {@code failure} is the error class and message a story forces on the job, null for a random one. */
+    private record Run(WorkflowDefinition def, JsonNode input, Identity who, String channel, Instant startedAt, boolean fail, boolean cancel,
+            String[] failure) {
+    }
+
+    /**
+     * The jobs each canary of the release history saw on top of the usual traffic, spread over
+     * its stages: the stage's share runs the candidate (the first job always does, so every
+     * canary has one), and a story that names a failure has its last candidate job fail with it.
+     */
+    private List<Run> canaryTraffic(Catalog catalog, SeedInputs inputs, Instant now, Random rnd) {
+        List<Run> out = new ArrayList<>();
+        for (Story s : DemoReleases.STORIES) {
+            WorkflowDefinition def = catalog.workflows().get(s.workflow());
+            if (def == null || !s.canary() || s.jobs() <= 0) {
+                continue;
+            }
+            Instant from = s.startedAt(now).plus(Duration.ofMinutes(2));
+            Instant to = s.active() ? now.minus(Duration.ofMinutes(10)) : s.endedAt(now).minus(Duration.ofMinutes(20));
+            long span = Math.max(1, Duration.between(from, to).toMillis());
+            List<Run> story = new ArrayList<>();
+            for (int k = 0; k < s.jobs(); k++) {
+                Instant at = from.plusMillis(span * k / s.jobs());
+                boolean candidate = k == 0 || rnd.nextInt(100) < s.stageAt(at, now).percent();
+                story.add(new Run(def.withVersion(candidate ? s.to() : s.from()), inputs.inputFor(def, rnd), pick(rnd, List.copyOf(PEOPLE.values())),
+                        pick(rnd, List.of("catalog", "rest", "mcp", "catalog")), at, false, false, null));
+            }
+            if (s.failure() != null) {
+                // the job the error-types gate rolled back on: the last of the story, on the candidate
+                Run last = story.remove(story.size() - 1);
+                story.add(new Run(def.withVersion(s.to()), last.input(), last.who(), last.channel(), to, true, false,
+                        new String[] {s.failure().errorClass(), s.failure().message()}));
+            }
+            out.addAll(story);
+        }
+        return out;
+    }
+
+    /** Whether a job of {@code version} started at {@code at} ran a release's candidate while its canary was splitting traffic. */
+    private static boolean onCandidate(String workflow, String version, Instant at, Instant now) {
+        return DemoReleases.of(workflow).stream().anyMatch(s -> s.splitting(at, now) && s.to().equals(version));
+    }
+
+    /** Ready resources per type, from the registry; empty when it cannot be read. */
+    private Map<String, List<String>> readyIds() {
+        try {
+            List<Resource> ready = resources.list(null, null, "ready").collectList().block(Duration.ofSeconds(15));
+            if (ready == null) {
+                return Map.of();
+            }
+            return ready.stream().collect(Collectors.groupingBy(Resource::type, LinkedHashMap::new,
+                    Collectors.mapping(Resource::id, Collectors.toList())));
+        } catch (RuntimeException e) {
+            log.warn("could not read the registry for the seed: {}", e.toString());
+            return Map.of();
+        }
     }
 
     /** A walked job: the record (with its definition), the executor that holds the events and calls, and how it ended. */
@@ -228,8 +302,8 @@ public class DemoRunsSeeder {
         if (run.fail()) {
             Step victim = victim(def, rnd);
             if (victim != null) {
-                String[] failure = failureFor(victim, rnd);
-                boolean retryable = !"not_found".equals(failure[0]);
+                String[] failure = run.failure() != null ? run.failure() : failureFor(victim, rnd);
+                boolean retryable = run.failure() == null && !"not_found".equals(failure[0]);
                 ex.failAt(victim.id(), failure[0], failure[1], retryable, 1);
                 boolean retryAfterAttention = retryable && rnd.nextInt(100) < 40;
                 ex.attender(a -> {
@@ -366,29 +440,33 @@ public class DemoRunsSeeder {
 
     // ---------------------------------------------------------------- live states
 
-    /** A MongoDB upgrade whose approval is pending: approve it and the walk continues. */
-    private String seedWaitingApproval(Catalog catalog, Instant now, Random rnd) {
-        WorkflowDefinition def = catalog.workflows().get("mongodb-upgrade");
-        if (def == null) {
+    /** A job whose approval is pending: approve it and the walk continues. Inputs are drawn until one reaches an approval. */
+    private String seedWaitingApproval(Catalog catalog, SeedInputs inputs, Instant now, Random rnd) {
+        WorkflowDefinition published = catalog.workflows().get(WAITING_APPROVAL);
+        if (published == null) {
             return null;
         }
         Instant startedAt = now.minus(Duration.ofMinutes(52));
-        SampleStepExecutor ex = executor(catalog, startedAt, rnd);
-        ObjectNode input = F.objectNode();
-        input.put("clusterId", "db-9");
-        input.put("targetVersion", "8.0");
-        input.put("maintenanceWindow", "Sat 02:00-04:00 UTC");
-        Job job = JobFactory.newJob(def, def.version(), input, PEOPLE.get("ana"), "catalog", null, null, preview(catalog, def, input),
-                PolicyDecision.allow("mock"), change(def, rnd), startedAt);
-        ex.approver(request -> {
-            throw new JobCancelled(job.id());
-        });
-        new WorkflowInterpreter(def, ex, JobContext.of(job)).run();
-        List<StepEvent> stepEvents = ex.events(job.id());
-        StepEvent waiting = stepEvents.stream().filter(e -> e.status() == StepStatus.WAITING).reduce((a, b) -> b).orElse(null);
+        WorkflowDefinition def = published.withVersion(DemoReleases.versionAt(published.name(), startedAt, now, rnd).orElse(published.version()));
+        Job job = null;
+        SampleStepExecutor ex = null;
+        StepEvent waiting = null;
+        for (int attempt = 0; attempt < 10 && waiting == null; attempt++) {
+            JsonNode input = inputs.inputFor(def, rnd);
+            ex = executor(catalog, startedAt, rnd);
+            Job candidate = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
+                    PolicyDecision.allow("mock"), change(def, rnd), startedAt);
+            ex.approver(request -> {
+                throw new JobCancelled(candidate.id());
+            });
+            new WorkflowInterpreter(def, ex, JobContext.of(candidate)).run();
+            job = candidate;
+            waiting = ex.events(candidate.id()).stream().filter(e -> e.status() == StepStatus.WAITING).reduce((a, b) -> b).orElse(null);
+        }
         if (waiting == null) {
             return null;
         }
+        List<StepEvent> stepEvents = ex.events(job.id());
         Approval a = approval(job, waiting, ex.approvals().get("apr_" + job.id() + "_" + waiting.id()));
         Job live = job.toBuilder()
                 .resume(new Job.Resume(waiting.id(), StepFolding.fold(stepEvents)))
@@ -410,34 +488,36 @@ public class DemoRunsSeeder {
         return live.id();
     }
 
-    /** A VM restart stuck on "Wait for power on": retry, skip or abort it and the walk continues. */
-    private String seedNeedsAttention(Catalog catalog, Instant now, Random rnd) {
-        WorkflowDefinition def = catalog.workflows().get("vm-restart");
-        if (def == null) {
+    /**
+     * A job whose last provider call times out after any approval was granted, parked as needs
+     * attention (steps pause on failure unless they opt out): retry, skip or abort it and the walk
+     * continues.
+     */
+    private String seedNeedsAttention(Catalog catalog, SeedInputs inputs, Instant now, Random rnd) {
+        WorkflowDefinition published = catalog.workflows().get(NEEDS_ATTENTION);
+        if (published == null) {
             return null;
         }
-        Step stuck = def.allSteps().stream()
-                .filter(s -> "Wait for power on".equals(s.name()) || "validate".equals(s.id()))
-                .findFirst().orElse(null);
+        Step stuck = published.allSteps().stream()
+                .filter(st -> st.pauseOnFailure() && (st.type() == StepType.PROVIDER || st.type() == StepType.HTTP))
+                .reduce((a, b) -> b).orElse(null);
         if (stuck == null) {
             return null;
         }
         Instant startedAt = now.minus(Duration.ofMinutes(31));
+        WorkflowDefinition def = published.withVersion(DemoReleases.versionAt(published.name(), startedAt, now, rnd).orElse(published.version()));
         SampleStepExecutor ex = executor(catalog, startedAt, rnd);
-        ObjectNode input = F.objectNode();
-        input.put("vmId", "vm-1042");
-        input.put("reason", "stuck after kernel update");
-        input.put("environment", "prod");
-        Job job = JobFactory.newJob(def, def.version(), input, PEOPLE.get("mateo"), "catalog", null, null, preview(catalog, def, input),
+        JsonNode input = inputs.inputFor(def, rnd);
+        Job job = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
                 PolicyDecision.allow("mock"), change(def, rnd), startedAt);
         Map<String, ApprovalDecision> approvals = new LinkedHashMap<>();
         ex.approver(request -> {
             ex.sleep(null, Duration.ofMinutes(4));
-            ApprovalDecision d = ApprovalDecision.approved("gonzalo", "go", ex.now());
+            ApprovalDecision d = ApprovalDecision.approved(approverFor(request, rnd).id(), "go", ex.now());
             approvals.put(request.message(), d);
             return Optional.of(d);
         });
-        ex.failAt(stuck.id(), "timeout", "VM did not reach poweredOn within 600s", true, 1);
+        ex.failAt(stuck.id(), "timeout", stuck.name() + " did not finish within its timeout", true, 1);
         List<Attention> seen = new ArrayList<>();
         ex.attender(a -> {
             seen.add(a);
@@ -470,28 +550,31 @@ public class DemoRunsSeeder {
         return live.id();
     }
 
-    /** A patch batch over twelve VMs in its second wave: two rows done, one running, nine to go. Projection only. */
-    private String seedRunningBatch(Catalog catalog, Instant now, Random rnd) {
-        WorkflowDefinition def = catalog.workflows().get("patch-cve");
-        if (def == null) {
+    /**
+     * A batch in its second wave over the ready resources its first {@code x-resource} field can
+     * target (at most {@value #BATCH_ROWS}): the first wave done, the last row of the second still
+     * inside its first automation step, the rest pending. Projection only.
+     */
+    private String seedRunningBatch(Catalog catalog, SeedInputs inputs, Instant now, Random rnd) {
+        WorkflowDefinition def = catalog.workflows().get(RUNNING_BATCH);
+        String[] target = def == null ? null : SeedInputs.resourceField(def);
+        List<String> ids = target == null ? List.of() : inputs.idsOf(target[1]);
+        if (ids.size() < 2) {
             return null;
         }
+        ObjectNode defaults = inputs.inputFor(def, rnd).deepCopy();
+        defaults.remove(target[0]);
         List<JsonNode> rows = new ArrayList<>();
-        for (int i = 0; i < 12; i++) {
-            ObjectNode in = F.objectNode();
-            in.put("vmId", "vm-11" + String.format("%02d", i + 1));
-            in.put("cve", "CVE-2026-1234");
-            in.put("severity", "high");
-            rows.add(in);
+        for (String id : ids.subList(0, Math.min(BATCH_ROWS, ids.size()))) {
+            ObjectNode row = defaults.deepCopy();
+            row.put(target[0], id);
+            rows.add(row);
         }
         var rollout = def.batchPolicy().rollout() == null ? WorkflowDefinition.RolloutPolicy.DEFAULT : def.batchPolicy().rollout();
         List<Wave> waves = WaveScheduler.plan(rows.size(), rollout);
         Instant startedAt = now.minus(Duration.ofMinutes(9));
-        ObjectNode defaults = F.objectNode();
-        defaults.put("cve", "CVE-2026-1234");
-        defaults.put("severity", "high");
         Preview preview = preview(catalog, def, rows.get(0));
-        Job batch = JobFactory.newBatch(def, def.version(), rows, defaults, rollout, waves, PEOPLE.get("gonzalo"), "batch", preview,
+        Job batch = JobFactory.newBatch(def, def.version(), rows, defaults, rollout, waves, owner(def, rnd), "batch", preview,
                 PolicyDecision.allow("mock"), change(def, rnd), startedAt);
         projection.put(batch);
         events.started(batch, null, startedAt);
@@ -522,14 +605,17 @@ public class DemoRunsSeeder {
         return batch.id();
     }
 
-    /** One row of the seeded batch: a finished child, or one still inside its patch step. */
+    /** One row of the seeded batch: a finished child, or one still inside its first automation step (its last step when it has none). */
     private Instant seedRow(Catalog catalog, Job batch, BatchRow row, Instant startedAt, Random rnd, boolean leaveRunning) {
         Job child = JobFactory.row(batch, row, startedAt);
         SampleStepExecutor ex = executor(catalog, startedAt, rnd);
         if (leaveRunning) {
+            List<Step> leaves = leaves(child.definition());
+            Step hold = leaves.stream().filter(st -> st.type() == StepType.ANSIBLE || st.type() == StepType.TERRAFORM).findFirst()
+                    .orElse(leaves.isEmpty() ? null : leaves.get(leaves.size() - 1));
             Function<Step, Duration> latency = latencyFor(rnd);
             ex.latency(step -> {
-                if (step.type() == StepType.ANSIBLE) {
+                if (hold != null && step.id().equals(hold.id())) {
                     throw new JobCancelled(child.id());
                 }
                 return latency.apply(step);
@@ -606,6 +692,13 @@ public class DemoRunsSeeder {
                     new String[] {"timeout", "Upstream did not answer within 30s"},
                     new String[] {"rate_limited", "429 Too Many Requests: quota exceeded for this minute"}));
         };
+    }
+
+    /** Someone from the workflow's owner team, or anyone when nobody is. */
+    private static Identity owner(WorkflowDefinition def, Random rnd) {
+        String team = def.metadata() == null ? null : def.metadata().owner();
+        List<Identity> members = PEOPLE.values().stream().filter(p -> team != null && p.teams().contains(team)).toList();
+        return pick(rnd, members.isEmpty() ? List.copyOf(PEOPLE.values()) : members);
     }
 
     private static Identity approverFor(ApprovalRequest request, Random rnd) {

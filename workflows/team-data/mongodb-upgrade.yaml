@@ -29,6 +29,7 @@ api:
       maintenanceWindow:
         type: string
         title: Maintenance window
+        examples: ["Sat 02:00-04:00 UTC", "Sun 01:00-03:00 UTC", "tonight 23:00 UTC"]
         description: Free text shown to the approver, for example "Sat 02:00-04:00 UTC"
   response: { status: 202 }
   preview: true

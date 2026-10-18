@@ -43,7 +43,9 @@ class DemoResourcesTest {
         List<Resource> images = all.stream().filter(r -> r.type().equals("image")).toList();
         assertThat(images).extracting(Resource::status).containsExactly("ready", "deprecated");
         List<Resource> vms = all.stream().filter(r -> r.type().equals("vm")).toList();
-        assertThat(vms).hasSize(2).allMatch(v -> v.status().equals("ready"));
+        // one per name example of the type, so batches and pickers have a fleet to work on
+        assertThat(vms).hasSize(DemoResources.exampleNames(SampleCatalog.type("vm"))).hasSizeGreaterThan(2)
+                .allMatch(v -> v.status().equals("ready"));
         Resource readyImage = images.get(0);
         assertThat(vms).allMatch(v -> v.builtFrom().equals(List.of(readyImage.id())));
         assertThat(vms.get(0).attributes().path("image").asText()).isEqualTo(readyImage.id());

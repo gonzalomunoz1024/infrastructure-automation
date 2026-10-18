@@ -11,6 +11,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.runs.SampleContent;
 import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.workflows.domain.Step;
@@ -233,14 +234,31 @@ class WorkflowInterpreterTest {
     }
 
     @Test
-    void patchCveSkipsTheRebootWhenThePatchDoesNotNeedIt() {
-        SampleStepExecutor ex = SampleContent.executor();
-        // the ops-playbooks sample says a reboot is required; make the ansible answer say otherwise through check mode on test
+    void patchCveFailsTheVerifyWhenThePlaybookDidNotFixTheCve() {
+        // the playbook ran but its packages carry another CVE than the one asked for
+        SampleStepExecutor ex = new SampleStepExecutor(SampleContent.providers(), SampleContent::child, SampleContent.types(),
+                Instant.parse("2026-10-17T10:00:00Z")) {
+            @Override
+            public JsonNode runAutomation(JobContext ctx, Step step, JsonNode with, Duration timeout) {
+                JsonNode out = super.runAutomation(ctx, step, with, timeout);
+                if (step.id().equals("patch")) {
+                    out.path("packages").forEach(p -> ((ObjectNode) p).set("cves", SampleContent.json(List.of("CVE-2026-0001"))));
+                }
+                return out;
+            }
+        };
         Outcome o = run("patch-cve", Map.of("vmId", "vm-1042", "cve", "CVE-2026-9999", "severity", "low"), ex);
         assertThat(o.status()).isEqualTo(JobStatus.FAILED);
-        // CVE-2026-9999 is not in the sample packages: the verify assertion fails
         assertThat(o.failedStep()).isEqualTo("verify");
         assertThat(o.errorClass()).isEqualTo("assertion_failed");
+    }
+
+    @Test
+    void patchCveVerifiesTheCveItWasAskedFor() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run("patch-cve", Map.of("vmId", "vm-1042", "cve", "CVE-2026-9999", "severity", "low"), ex);
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        assertThat(o.output().path("fixed").asBoolean()).isTrue();
     }
 
     // ---------------------------------------------------------------- delete-vm
