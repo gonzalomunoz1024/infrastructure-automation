@@ -27,7 +27,7 @@ CREATE TABLE store_seeds (
 CREATE TABLE workflow_versions (
     name        VARCHAR(200) NOT NULL,
     version     VARCHAR(100) NOT NULL,
-    status      VARCHAR(20)  NOT NULL,
+    status      VARCHAR(20),
     updated_at  TIMESTAMP WITH TIME ZONE,
     doc         TEXT         NOT NULL,
     PRIMARY KEY (name, version)
