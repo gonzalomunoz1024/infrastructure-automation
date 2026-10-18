@@ -345,7 +345,7 @@ export const PROVIDERS: ProviderSummary[] = [
     version: '1.3.0',
     environments: ['dev', 'test', 'prod'],
     actionCount: 3,
-    health: { status: 'healthy', successRate: 99.6, p50Ms: 190, p95Ms: 720, calls: 15_480, errorTrend: [1, 0, 2, 1, 0, 0, 1], reasons: [] },
+    health: { status: 'healthy', successRate: 99.6, p50Ms: 190, p95Ms: 720, calls: 15_480, errorTrend: [1, 0, 2, 1, 0, 0, 1, 0, 0, 2, 1, 0, 1, 0], reasons: [] },
     slo: { successRate: 99.5, p95Ms: 800 },
     alerts: { channel: '#compute-alerts' },
   },
@@ -357,7 +357,7 @@ export const PROVIDERS: ProviderSummary[] = [
     version: '1.0.0',
     environments: ['dev', 'test', 'prod'],
     actionCount: 2,
-    health: { status: 'degraded', successRate: 97.2, p50Ms: 420, p95Ms: 1900, calls: 2_210, errorTrend: [2, 3, 5, 8, 6, 9, 11], reasons: ['p95 1.9s is over the 1.2s SLO', 'rate_limited errors are rising'] },
+    health: { status: 'degraded', successRate: 97.2, p50Ms: 420, p95Ms: 1900, calls: 2_210, errorTrend: [0, 1, 0, 2, 1, 3, 2, 3, 5, 8, 6, 9, 11, 12], reasons: ['p95 1.9s is over the 1.2s SLO', 'rate_limited errors are rising'] },
     slo: { successRate: 99.0, p95Ms: 1200 },
     alerts: { channel: '#platform-alerts' },
   },
@@ -807,6 +807,18 @@ export const PLATFORM_STREAM: PlatformStream = {
   total: 6,
   latestHash: hash('p6'),
   verification: { valid: true, entries: 6, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 6, keyId: 'audit-2026-10', status: 'verified' }] },
+}
+
+/** GET /audit/platform?aggregate=provider: the provider events of the stream, its chain intact. */
+export const PROVIDER_STREAM: PlatformStream = {
+  entries: [
+    { seq: 4, at: ago(60 * 3), kind: 'decision', actor: 'ana', data: { event: 'provider.change-requested', aggregate: 'provider', aggregateId: 'vsphere', version: '2.1.1', changeRequest: 'cr-42', reason: 'slo' }, hash: hash('p4'), previous: hash('p3') },
+    { seq: 7, at: ago(60 * 2), kind: 'decision', actor: 'maria', data: { event: 'provider.published', aggregate: 'provider', aggregateId: 'vsphere', name: 'vsphere', version: '1.3.0', contentHash: 'sha256:v13' }, hash: hash('p7'), previous: hash('p6') },
+    { seq: 9, at: ago(40), kind: 'decision', actor: 'gonzalo', data: { event: 'provider.updated', aggregate: 'provider', aggregateId: 'backup', name: 'backup', reason: 'override vm.list' }, hash: hash('p9'), previous: hash('p8') },
+  ],
+  total: 9,
+  latestHash: hash('p9'),
+  verification: { valid: true, entries: 9, seal: 'verified', seals: [{ kind: 'checkpoint', at: ago(5), seq: 9, keyId: 'audit-2026-10', status: 'verified' }] },
 }
 
 /** vm-restart with a successor: the deprecation the catalog reports. */

@@ -392,7 +392,12 @@ batch offers its retry once it has ended, counting the rows
 `POST /jobs/{id}:retry-failed-rows` runs again in a new wave (the failed, cancelled and skipped
 ones, named when not all of them failed). The resource page draws the lineage's whole graph
 (`nodes` and `edges`, a column per hop on the longest chain, so every edge points right), and the
-direct lists alone from a backend that sends no graph.
+direct lists alone from a backend that sends no graph. The providers page has three tabs, kept in
+its address (`?tab=`): the list, with p50 beside p95; each provider's performance against its SLO
+with the 14-day error trend (`health.errorTrend`, a count a day); and the provider events of the
+platform audit stream (`GET /audit/platform?aggregate=provider`: the stream filters by aggregate,
+not by event type). The backend lists to someone outside the admins only their teams' providers
+and the ones no team owns, which an empty list says.
 
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:

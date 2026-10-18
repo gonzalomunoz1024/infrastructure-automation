@@ -11,10 +11,13 @@ import {
   IMAGE_LINEAGE,
   JOB,
   JOBS,
+  ME,
+  PLATFORM_STREAM,
   PREVIEW,
   PROVIDER,
   PROVIDER_ALERTS,
   PROVIDER_CR,
+  PROVIDER_STREAM,
   PROVIDERS,
   RELEASES,
   RESOURCE_TYPES,
@@ -219,6 +222,62 @@ test.describe('providers', () => {
     await expect(actions.getByRole('row', { name: /vm\.restart/ })).toContainText('timeout ×31')
     await page.getByRole('tab', { name: /Alerts/ }).click()
     await expect(page.getByText('3 timeouts in 10 minutes')).toBeVisible()
+  })
+
+  test('the admin view: the list with p50, performance against the SLO over 14 days, and the provider events', async ({ page }) => {
+    const api = await mockApi(page, { 'GET /providers': PROVIDERS, 'GET /audit/platform': (req) => (req.query.get('aggregate') === 'provider' ? PROVIDER_STREAM : PLATFORM_STREAM) })
+    await page.goto('/#/providers')
+    const views = page.getByRole('tablist', { name: 'Providers views' })
+    await expect(views.getByRole('tab', { name: /Providers/ })).toHaveAttribute('aria-selected', 'true')
+    const table = page.getByRole('table', { name: 'Providers' })
+    await expect(table.getByRole('columnheader', { name: 'p50' })).toBeVisible()
+    await expect(table.getByRole('row', { name: /VMware vSphere/ })).toContainText('190ms')
+    await expect(table.getByRole('row', { name: /Backup service/ })).toContainText('420ms')
+
+    await views.getByRole('tab', { name: /Performance/ }).click()
+    await expect(page).toHaveURL(/#\/providers\?tab=performance$/)
+    await expect(page.getByTestId('slo-summary')).toContainText('1 of 2 providers with an SLO is within it')
+    const perf = page.getByRole('table', { name: 'Provider performance' })
+    // what misses its SLO comes first
+    await expect(perf.getByRole('row').nth(1)).toContainText('Backup service')
+    const backup = perf.getByRole('row', { name: /Backup service/ })
+    await expect(backup).toContainText('2,210')
+    await expect(backup).toContainText('97.20%')
+    await expect(backup).toContainText('SLO ≥ 99.0%')
+    await expect(backup).toContainText('SLO ≤ 1.2s')
+    await expect(backup).toContainText('both missed')
+    await expect(backup).toContainText('63')
+    await expect(backup.getByRole('img', { name: 'Errors per day, last 14 days' })).toBeVisible()
+    await expect(perf.getByRole('row', { name: /VMware vSphere/ })).toContainText('within')
+    await expect(perf.getByRole('row', { name: /VMware vSphere/ })).toContainText('9')
+
+    await views.getByRole('tab', { name: /Audit/ }).click()
+    await expect(page).toHaveURL(/#\/providers\?tab=audit$/)
+    const audit = page.getByTestId('provider-audit')
+    await expect(audit.getByRole('status')).toContainText('Chain intact')
+    const events = audit.getByRole('table', { name: 'Provider events' })
+    await expect(events.getByRole('row')).toHaveCount(4)
+    await expect(events.getByRole('row').nth(1)).toContainText('provider.updated')
+    await expect(events.getByRole('row', { name: /provider\.published/ })).toContainText('maria')
+    await expect(events.getByRole('row', { name: /provider\.published/ }).getByRole('link', { name: 'vsphere' })).toHaveAttribute('href', '#/providers/vsphere')
+    expect(api.callsTo('GET', '/audit/platform').map((c) => c.query)).toContain('?aggregate=provider')
+    await events.getByRole('row', { name: /provider\.change-requested/ }).click()
+    await expect(page.getByRole('dialog', { name: 'Platform event 4' })).toContainText('cr-42')
+    await page.keyboard.press('Escape')
+    await expect(audit.getByRole('link', { name: 'Open in Audit' })).toHaveAttribute('href', '#/audit?tab=platform&aggregate=provider')
+
+    // a reload keeps the view
+    await page.reload()
+    await expect(page.getByRole('tablist', { name: 'Providers views' }).getByRole('tab', { name: /Audit/ })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('someone outside every provider team is told why the list is empty', async ({ page }) => {
+    await mockApi(page, { 'GET /me': { ...ME, id: 'ana', name: 'Ana', admin: false, roles: ['developer'], teams: ['team-data'] }, 'GET /providers': [] })
+    await page.goto('/#/providers')
+    await expect(page.getByText('No providers of your teams yet')).toBeVisible()
+    await expect(page.getByText('You see the providers your teams own (team-data) and the ones no team owns; an admin sees every provider.')).toBeVisible()
+    await page.getByRole('tab', { name: /Performance/ }).click()
+    await expect(page.getByText('No providers of your teams yet')).toBeVisible()
   })
 
   test('the Add provider wizard walks its five steps to a change request', async ({ page }) => {
