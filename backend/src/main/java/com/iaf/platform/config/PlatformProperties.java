@@ -109,6 +109,8 @@ public class PlatformProperties {
         private String platformApiUrl = "";
         /** How many times the platform sends its own check results back to the agent before it settles a draft. */
         private int maxRounds = 3;
+        /** Builder sessions not updated for this long are deleted (checked every hour). */
+        private Duration sessionRetention = Duration.ofDays(30);
     }
 
     @Data

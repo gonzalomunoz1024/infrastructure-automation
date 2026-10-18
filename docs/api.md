@@ -529,7 +529,9 @@ read 502.
 
 A session belongs to the identity that started it: only that identity reads it or sends it
 messages, plus an admin who is a person; anyone else gets 403 naming the session and who
-started it. A service account, admin or not, only uses the sessions it started itself.
+started it. A service account, admin or not, only uses the sessions it started itself. A session
+nothing happened on for `platform.assistant.session-retention` (default 30 days) is deleted, and
+then answers 404.
 
 The `draft` event carries the structured output in `devin/workflow-draft.schema.json` shape
 (`status`, `summary`, `workflowYaml`, `changes`, `assumptions`, `questions`, `missing`,

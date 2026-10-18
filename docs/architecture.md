@@ -151,7 +151,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `ResourceStorePort` (resources)  | `JdbcResourceStore`   | `resource_types`, `resources` |
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
 | `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
-| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
+| `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` (rows not updated within `platform.assistant.session-retention` are deleted every hour by `SessionRetention`) |
 | `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 

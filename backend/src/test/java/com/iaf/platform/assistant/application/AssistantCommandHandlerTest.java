@@ -388,6 +388,12 @@ class AssistantCommandHandlerTest {
             check("update");
             return inner.update(id, change);
         }
+
+        @Override
+        public int deleteUpdatedBefore(java.time.Instant cutoff) {
+            check("deleteUpdatedBefore");
+            return inner.deleteUpdatedBefore(cutoff);
+        }
     }
 
     @Test
