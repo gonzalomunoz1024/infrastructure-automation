@@ -41,8 +41,8 @@ public class JdbcTelemetry implements TelemetryPort {
     static final int BATCH = 500;
     static final long FLUSH_EVERY_MS = 250;
 
-    private static final String INSERT = "INSERT INTO telemetry_samples (at, at_ns, provider, action, environment, ok, duration_ms, error_class, job_id, workflow, version)"
-            + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    private static final String INSERT = "INSERT INTO telemetry_samples (at, at_ns, provider, action, environment, ok, duration_ms, error_class, job_id, workflow, version,"
+            + " provider_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     private final Jdbc jdbc;
     private final MeterRegistry registry;
@@ -73,7 +73,7 @@ public class JdbcTelemetry implements TelemetryPort {
             return;
         }
         CallSample s = sample.at() == null ? new CallSample(clock.instant(), sample.provider(), sample.action(), sample.environment(), sample.ok(),
-                sample.durationMs(), sample.errorClass(), sample.jobId(), sample.workflow(), sample.version()) : sample;
+                sample.durationMs(), sample.errorClass(), sample.jobId(), sample.workflow(), sample.version(), sample.providerVersion()) : sample;
         queued.add(s);
         String provider = tag(s.provider());
         String action = tag(s.action());
@@ -96,11 +96,11 @@ public class JdbcTelemetry implements TelemetryPort {
         flush();
         Instant floor = clock.instant().minus(retention);
         Instant from = since == null || since.isBefore(floor) ? floor : since;
-        String sql = "SELECT at_ns, provider, action, environment, ok, duration_ms, error_class, job_id, workflow, version FROM telemetry_samples WHERE at_ns >= ?"
-                + (provider == null ? "" : " AND provider = ?") + " ORDER BY at_ns, id";
+        String sql = "SELECT at_ns, provider, action, environment, ok, duration_ms, error_class, job_id, workflow, version, provider_version"
+                + " FROM telemetry_samples WHERE at_ns >= ?" + (provider == null ? "" : " AND provider = ?") + " ORDER BY at_ns, id";
         Object[] args = provider == null ? new Object[] {Jdbc.nanos(from)} : new Object[] {Jdbc.nanos(from), provider};
         return jdbc.query(sql, (rs, i) -> new CallSample(instant(rs.getLong(1)), rs.getString(2), rs.getString(3), rs.getString(4), rs.getBoolean(5),
-                rs.getLong(6), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10)), args);
+                rs.getLong(6), rs.getString(7), rs.getString(8), rs.getString(9), rs.getString(10), rs.getString(11)), args);
     }
 
     /** Writes every queued sample now. */
@@ -109,7 +109,7 @@ public class JdbcTelemetry implements TelemetryPort {
             List<Object[]> rows = new ArrayList<>();
             for (CallSample s = queued.poll(); s != null; s = queued.poll()) {
                 rows.add(new Object[] {Jdbc.time(s.at()), Jdbc.nanos(s.at()), s.provider(), s.action(), s.environment(), s.ok(), s.durationMs(), s.errorClass(),
-                        s.jobId(), s.workflow(), s.version()});
+                        s.jobId(), s.workflow(), s.version(), s.providerVersion()});
                 if (rows.size() == BATCH) {
                     jdbc.batch(INSERT, rows);
                     rows = new ArrayList<>();

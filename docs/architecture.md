@@ -120,7 +120,7 @@ on start, and a JDBC adapter (`@Profile("postgres") @Primary`, over the small `J
 | `EvidenceStore` (audit)          | `JdbcEvidenceStore`   | `evidence_records`, `evidence_entries`, `evidence_share_links` |
 | `ServiceAccountStore` (identity) | `JdbcServiceAccounts` | `service_accounts` |
 | `SessionStore` (assistant)       | `JdbcSessionStore`    | `assistant_sessions` |
-| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` |
+| `TelemetryPort` (common)         | `JdbcTelemetry`       | `telemetry_samples` (each call with the provider version that served it) |
 | `ProjectionStore` (runs)         | `JdbcProjectionStore` | `runs_jobs`, `runs_approvals`, `runs_events`, `runs_definitions` |
 
 A row keeps the record as JSON text in a `doc` column, next to real columns for what is queried
@@ -149,7 +149,9 @@ exact. The SQL is portable between PostgreSQL 16 and H2 in PostgreSQL mode, whic
   `/api/v1/jobs/{id}/events` replays the stored history and then follows the live tail. The live
   fan-out (SSE, WebSocket) stays in memory.
 - Provider-call samples are queued, and a background thread writes them in batches, so recording
-  never waits for the database (a read writes the queue first). Samples older than
+  never waits for the database (a read writes the queue first). Each row keeps the provider
+  version that served the call, so a provider canary's gates judge the candidate's calls against
+  the current version's after a restart too. Samples older than
   `platform.persistence.telemetry-retention` (30 days) are deleted every hour and never served.
 - The demo history (`platform.demo.seed-history`) is written once per database (`store_seeds`).
   A later start finds it claimed and turns the switch off before any seeder runs.
