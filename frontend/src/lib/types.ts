@@ -257,7 +257,7 @@ export type PolicyDecision = 'allow' | 'deny' | 'needs-approval'
 export type Preview = {
   workflow: string
   version: string
-  steps: { id: string; name: string; effect: Effect; detail?: string }[]
+  steps: { id: string; name: string; effect: Effect; detail?: string; skipped?: true }[]
   affectedResources: { id: string; type: string; name: string; via: string }[]
   cost?: { monthly: number; currency: string; detail: string }
   policy: { decision: PolicyDecision; rules: { id: string; result: string; message: string }[]; engine: 'mock' | 'opa' }
