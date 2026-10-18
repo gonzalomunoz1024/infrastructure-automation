@@ -54,26 +54,6 @@ public record Registry(List<ProviderDefinition> providers, List<WorkflowRecord> 
         return types.stream().filter(t -> Words.same(t.name(), noun) || Words.same(t.plural(), noun)).findFirst();
     }
 
-    /** The resource type whose description talks about these words (a "mongodb cluster" is a database). */
-    public Optional<ResourceTypeDefinition> typeMentioning(List<String> tokens) {
-        ResourceTypeDefinition best = null;
-        int bestScore = 0;
-        for (ResourceTypeDefinition t : types) {
-            List<String> words = Words.content(Words.tokens(t.description()));
-            int score = 0;
-            for (String w : words) {
-                if (Words.contains(tokens, w)) {
-                    score++;
-                }
-            }
-            if (score > bestScore) {
-                bestScore = score;
-                best = t;
-            }
-        }
-        return Optional.ofNullable(best);
-    }
-
     public Optional<WorkflowRecord> workflow(String name) {
         return workflows.stream().filter(w -> w.name().equals(name)).findFirst();
     }

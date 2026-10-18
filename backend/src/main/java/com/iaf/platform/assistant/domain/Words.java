@@ -152,9 +152,13 @@ public final class Words {
         return out;
     }
 
+    /** The main verb of a description and the index of the token it was read from. */
+    public record MainVerb(String verb, int at) {
+    }
+
     /** The main verb of a description: the earliest verb, with -ing forms and noun-like verbs ranked later. */
-    public static Optional<String> mainVerb(List<String> tokens) {
-        String best = null;
+    public static Optional<MainVerb> mainVerb(List<String> tokens) {
+        MainVerb best = null;
         int bestScore = Integer.MAX_VALUE;
         for (int i = 0; i < tokens.size(); i++) {
             String t = tokens.get(i);
@@ -171,7 +175,7 @@ public final class Words {
             }
             if (score < bestScore) {
                 bestScore = score;
-                best = v.get();
+                best = new MainVerb(v.get(), i);
             }
         }
         return Optional.ofNullable(best);

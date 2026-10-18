@@ -8,6 +8,9 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.domain.Problem;
@@ -20,6 +23,7 @@ import com.iaf.platform.workflows.domain.WorkflowDefinition;
  */
 public final class DraftRepairs {
 
+    private static final Logger log = LoggerFactory.getLogger(DraftRepairs.class);
     private static final Pattern QUOTED = Pattern.compile("'([^']+)'");
     private static final Pattern REFERENCE = Pattern.compile("\\$([A-Za-z_][A-Za-z0-9_]*)");
     private static final Set<String> BODY_FIELDS = Set.of("timeout", "retry", "output", "assert", "name", "pauseOnFailure", "switch", "fork", "for", "try");
@@ -123,6 +127,7 @@ public final class DraftRepairs {
                 }
             } catch (RuntimeException e) {
                 // a repair that cannot be applied is left for the person
+                log.debug("could not repair {} at step {}: {}", p.code(), p.step(), e.toString());
             }
         }
         return changes;
