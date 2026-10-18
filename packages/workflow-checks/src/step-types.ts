@@ -1,4 +1,9 @@
-/** The building blocks a workflow is made of, as StepType.java lists them; `yamlKey` is how the YAML spells the step. */
+/**
+ * The building blocks a workflow is made of, as StepType.java lists them; `yamlKey` is how the
+ * YAML spells the step. Titles and descriptions are StepTypeSchemas.java's, the ones
+ * GET /registry/step-types serves, so the designer reads the same words when it falls back to
+ * this table; test/step-types.test.ts reads both Java files and keeps the two the same.
+ */
 
 export type StepType =
   | 'provider'
@@ -32,7 +37,11 @@ export interface StepTypeInfo {
   title: string;
   description: string;
   isCall: boolean;
-  /** Container steps whose children are other steps. */
+  /**
+   * Container steps whose children are other steps: fork, for and try, as StepType.isContainer
+   * says. A switch holds steps only in the `do` of its cases, so code that walks nested steps
+   * adds it (the checks, the canvas and the interpreter do).
+   */
   isContainer: boolean;
   /** Steps that touch the world (become activities in Temporal). */
   isActivity: boolean;
@@ -53,25 +62,25 @@ function info(key: StepType, yamlKey: string, category: StepCategory, title: str
 }
 
 export const STEP_TYPES: Readonly<Record<StepType, StepTypeInfo>> = {
-  provider: info('provider', 'call', 'Providers', 'Provider action', 'Call an action of a registered provider with its input'),
-  http: info('http', 'call', 'Code', 'HTTP request', 'Call a URL with a method, headers, a body and a Vault credential'),
-  ansible: info('ansible', 'call', 'Ansible', 'Ansible playbook', 'Run a playbook from git, an upload or the library against an inventory'),
-  terraform: info('terraform', 'call', 'Terraform', 'Terraform module', 'Plan, apply or destroy a pinned module with variables'),
-  idp: info('idp', 'call', 'IDP tiles', 'IDP tile', 'Request something through a tile of the developer portal'),
-  activity: info('activity', 'call', 'Code', 'Activity', 'Run an activity a team-owned worker registers on a task queue'),
-  run: info('run', 'run', 'Flow', 'Run workflow', 'Run a published workflow as a child job'),
-  approval: info('approval', 'approval', 'Human', 'Approval', 'Wait for a group of people to sign off'),
-  switch: info('switch', 'switch', 'Flow', 'Switch', 'Branch on an expression: jump to a later step or run a nested branch'),
-  fork: info('fork', 'fork', 'Flow', 'Fork', 'Run branches in parallel and join them'),
-  for: info('for', 'for', 'Flow', 'Loop', 'Run a branch for each item of a list'),
-  try: info('try', 'try', 'Flow', 'Try and catch', 'Run a branch and handle its failure in catch'),
-  wait: info('wait', 'wait', 'Flow', 'Wait', 'Pause for a duration or until an expression holds'),
-  set: info('set', 'set', 'Code', 'Set variables', 'Compute values reachable as $vars.name'),
-  raise: info('raise', 'raise', 'Flow', 'Raise error', 'Fail the job with an error name and message'),
-  use: info('use', 'use', 'Resources', 'Use resource', 'Resolve a registry resource and check access to it'),
-  register: info('register', 'register', 'Resources', 'Register resource', 'Record what the job created in the registry'),
-  notify: info('notify', 'notify', 'Human', 'Notify', 'Send a message to a channel'),
-  script: info('script', 'script', 'Code', 'Script', 'Run a small sandboxed JavaScript function'),
+  provider: info('provider', 'call', 'Providers', 'Provider action', "Call one action of a registered provider; the output is the action's response."),
+  http: info('http', 'call', 'Code', 'HTTP request', 'Send a raw HTTP request when no provider action fits; the credential is a vault: reference.'),
+  ansible: info('ansible', 'call', 'Ansible', 'Ansible playbook', 'Run a playbook from git, an upload or the playbook library in an execution environment; pin it to a commit.'),
+  terraform: info('terraform', 'call', 'Terraform', 'Terraform module', 'Plan, apply or destroy a pinned Terraform module with the given variables.'),
+  idp: info('idp', 'call', 'IDP tiles', 'IDP tile', 'Run a tile of the developer portal with an input (mock until the IDP tiles API is wired).'),
+  activity: info('activity', 'call', 'Code', 'Activity', 'Run an activity a team-owned worker registers on its task queue.'),
+  run: info('run', 'run', 'Flow', 'Run workflow', 'Run a published workflow as a child job; version is a range like ^1.'),
+  approval: info('approval', 'approval', 'Human', 'Approval', 'Pause until someone of the group signs off, with a timeout and an optional escalation.'),
+  switch: info('switch', 'switch', 'Flow', 'Switch', 'Branch on expressions: each case jumps to a later step (then) or runs a nested branch (do).'),
+  fork: info('fork', 'fork', 'Flow', 'Fork', 'Run branches in parallel and continue when all of them are done.'),
+  for: info('for', 'for', 'Flow', 'For each', 'Run the body once per item of a list; the item is reachable as $<each>.'),
+  try: info('try', 'try', 'Flow', 'Try / catch', 'Run steps and, when one fails, the catch steps with the error as $<as>.'),
+  wait: info('wait', 'wait', 'Flow', 'Wait', 'Pause for a duration (PT5M) or until an expression is true.'),
+  set: info('set', 'set', 'Code', 'Set variables', 'Set variables reachable later as $vars.<name>.'),
+  raise: info('raise', 'raise', 'Flow', 'Raise error', 'Fail the job with a named error.'),
+  use: info('use', 'use', 'Resources', 'Use resource', 'Resolve a registry resource by id, optionally waiting until it is ready and checking access.'),
+  register: info('register', 'register', 'Resources', 'Register resource', 'Record what the job created in the registry, with what it was built from.'),
+  notify: info('notify', 'notify', 'Human', 'Notify', 'Send a message to a channel.'),
+  script: info('script', 'script', 'Code', 'Script', 'Run a small sandboxed script (JavaScript, Python, Bash or Go) over an input and return its result.'),
 };
 
 export const STEP_TYPE_KEYS: readonly StepType[] = Object.keys(STEP_TYPES) as StepType[];

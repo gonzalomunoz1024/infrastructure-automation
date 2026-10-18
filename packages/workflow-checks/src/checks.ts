@@ -12,6 +12,7 @@ import { allSteps, displayName, mcpExposed, parseDocument, withNode, withText, W
 import { actionApprovalRequired, actionEffect, actionIds, findAction, isDestructive, providerName } from './providers.ts';
 import { describeRemoteRef, dotted, isClosed, mergeSchema, metaViolations, remoteRef, sameJson, schemaPaths } from './schemas.ts';
 import { validateWorkflowDocument } from './workflow-schema.ts';
+import { STEP_TYPES } from './step-types.ts';
 import { closest } from './suggest.ts';
 import type { CheckContext, ContextSchemas, Fix, JsonObject, JsonSchema, JsonValue, Problem, ProblemLevel, ProviderDocument, ResourceTypeDocument } from './types.ts';
 
@@ -236,8 +237,9 @@ function epochSecond(s: string | null): number | null {
   return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
 }
 
+/** Steps that hold other steps: the containers (fork, for, try) and a switch, whose `do` cases are branches; WorkflowChecks.java names the same four. */
 function isContainerStep(s: ParsedStep): boolean {
-  return s.type === 'switch' || s.type === 'fork' || s.type === 'for' || s.type === 'try';
+  return STEP_TYPES[s.type].isContainer || s.type === 'switch';
 }
 
 /** What an expression can see at one point of the flow. */
