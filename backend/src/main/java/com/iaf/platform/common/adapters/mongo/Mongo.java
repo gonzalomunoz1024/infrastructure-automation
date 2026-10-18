@@ -7,6 +7,12 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.bson.Document;
+import org.bson.codecs.CollectionCodecProvider;
+import org.bson.codecs.DocumentCodecProvider;
+import org.bson.codecs.IterableCodecProvider;
+import org.bson.codecs.MapCodecProvider;
+import org.bson.codecs.configuration.CodecRegistries;
+import org.bson.codecs.configuration.CodecRegistry;
 import org.bson.conversions.Bson;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 
@@ -41,10 +47,12 @@ import reactor.core.scheduler.Schedulers;
  * the other top-level fields are copies of what the adapter queries, sorts and indexes on. The
  * mapping is the application's JSON (ISO instants to the nanosecond, lowercase enums, no nulls)
  * turned into a document field by field, never parsed as extended JSON, so a key such as
- * {@code $ref} in an imported schema stays a key. Unknown fields are ignored on the way back, so a
- * document written before a record grew a field still reads, and records are their components (no
- * is-getter discovery, so {@code Job.isBatch()} does not shadow {@code batch}). Instants that a
- * query compares are also kept as epoch nanoseconds ({@link #nanos}), which order exactly.
+ * {@code $ref} in an imported schema stays a key, and read back with {@link #codecs}, so a part of
+ * a schema that holds {@code $id} beside {@code $ref} stays a document. Unknown fields are ignored
+ * on the way back, so a document written before a record grew a field still reads, and records
+ * are their components (no is-getter discovery, so {@code Job.isBatch()} does not shadow
+ * {@code batch}). Instants that a query compares are also kept as epoch nanoseconds
+ * ({@link #nanos}), which order exactly.
  */
 @Slf4j
 public class Mongo {
@@ -67,7 +75,19 @@ public class Mongo {
     private final AtomicLong onNonBlockingThreads = new AtomicLong();
 
     public Mongo(MongoDatabase database) {
-        this.database = database;
+        this.database = database.withCodecRegistry(codecs(database.getCodecRegistry()));
+    }
+
+    /**
+     * The codecs documents are written and read with: the driver's, except that a sub-document
+     * stays a document. The driver reads one that has both {@code $ref} and {@code $id} keys as a
+     * DBRef, dropping its other keys, and a JSON schema may well have both.
+     */
+    static CodecRegistry codecs(CodecRegistry driver) {
+        return CodecRegistries.fromRegistries(
+                CodecRegistries.fromProviders(new DocumentCodecProvider(), new CollectionCodecProvider(), new IterableCodecProvider(),
+                        new MapCodecProvider()),
+                driver);
     }
 
     /** The mapper between records and their documents. */
