@@ -388,10 +388,11 @@ public final class OpenApiDocument {
         ObjectNode jobDetail = F.objectNode();
         ArrayNode allOf = jobDetail.putArray("allOf");
         allOf.add(ref("JobSummary"));
-        allOf.add(object(Map.of(
+        allOf.add(object(fields(
                 "input", freeObject(), "output", freeObject(), "steps", array(ref("JobStep")),
                 "approvals", array(freeObject()), "preview", ref("Preview"), "children", array(ref("JobSummary")),
-                "batch", freeObject(), "attention", freeObject(), "traceId", str(null)), List.of()));
+                "batch", freeObject(), "attention", freeObject(), "traceId", str(null),
+                "links", object(Map.of("temporal", str("The job's execution in the Temporal UI (platform.temporal.ui-url)")), List.of())), List.of()));
         s.set("JobDetail", jobDetail);
         s.set("JobEvent", object(Map.of(
                 "seq", integer(null), "at", dateTime(), "jobId", str(null),

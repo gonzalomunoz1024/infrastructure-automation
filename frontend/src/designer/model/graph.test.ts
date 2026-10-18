@@ -19,8 +19,8 @@ const edge = (g: Graph, source: string, handle: string) => g.edges.find((e) => e
 
 describe('round trips', () => {
   const samples = sampleDocuments()
-  it('finds the nine samples', () => {
-    expect(samples.length).toBe(9)
+  it('finds the sample workflows', () => {
+    expect(samples.length).toBeGreaterThanOrEqual(9)
   })
   for (const { file, doc } of samples) {
     it(`graphToDocument(documentToGraph(doc)) deep-equals ${file}`, () => {

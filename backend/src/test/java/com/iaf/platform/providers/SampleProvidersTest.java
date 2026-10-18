@@ -78,7 +78,8 @@ class SampleProvidersTest {
         InMemoryProviderStore store = new InMemoryProviderStore(props(), CLOCK);
         store.seed();
         assertThat(store.all()).extracting(p -> p.definition().name())
-                .containsExactly("backup", "idp-tiles", "image-builder", "mongodb", "ops-playbooks", "terraform-modules", "vault", "vsphere");
+                .containsExactly("backup", "dns-records", "idp-tiles", "image-builder", "ip-pool", "mongodb", "ops-playbooks", "terraform-modules", "vault",
+                        "vsphere");
         StoredProvider vsphere = store.get("vsphere").orElseThrow();
         assertThat(vsphere.path()).isEqualTo("providers/team-compute/vsphere.yaml");
         assertThat(vsphere.updatedBy()).isEqualTo("content");

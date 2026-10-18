@@ -71,7 +71,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped'; detail? }
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string }` |
 | POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary) |
 | POST   | `/change-requests/{id}:close`                | → `CommandAccepted` |
-| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name of its own when a workflow already has the natural one (`create-vm-from-vsphere`), registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
+| POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name and a route of its own when a workflow already has the natural ones (`create-vm-from-vsphere` on `POST /api/v1/vms:create-from-vsphere`), registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
 | GET    | `/templates`                                 | `{ id; title; description; yaml }[]` |
 
 ```ts
@@ -145,7 +145,8 @@ type JobSummary = { id; workflow; title; version; status: JobStatus; requester; 
   startedAt; endedAt?; durationMs?; parentId?; kind: 'single' | 'batch'; progress?: { done; total; failed } }
 type JobStatus = 'queued' | 'running' | 'waiting-approval' | 'needs-attention' | 'succeeded' | 'failed' | 'cancelled' | 'rolled-back'
 type JobDetail = JobSummary & { input: object; output?: object; steps: JobStep[]; approvals: Approval[];
-  preview?: Preview; change?: { id; url; state }; children?: JobSummary[]; batch?: Batch; attention?: Attention; traceId }
+  preview?: Preview; change?: { id; url; state }; children?: JobSummary[]; batch?: Batch; attention?: Attention; traceId;
+  links?: { temporal? } }   // temporal: the job's execution in the Temporal UI (temporal profile with platform.temporal.ui-url set)
 type JobStep = { id; name; type; status: 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped' | 'compensated';
   attempt; startedAt?; endedAt?; durationMs?; input?; output?; error?: { class; message; retryable } ; items?: number }
 type Attention = { step; error; options: ('retry' | 'edit-input' | 'skip' | 'abort')[]; since; timeout }

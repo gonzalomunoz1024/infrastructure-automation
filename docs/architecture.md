@@ -219,7 +219,80 @@ steps and batch rows are child workflows whose ids are the child job ids. A canc
 Temporal UI or CLI ends the job as cancelled by `temporal`. Without the `postgres` profile the job
 list is each instance's in-memory projection, so jobs started before a backend restart are not
 listed again, although their executions carry on. With it, the jobs, their steps and their event
-history are read back from PostgreSQL.
+history are read back from PostgreSQL. With `platform.temporal.ui-url` set (the Temporal web UI, `:8233` in
+`docker-compose.yml`), each job's view carries `links.temporal`, its execution there
+(`<ui-url>/namespaces/<namespace>/workflows/<job id>`, the latest run), and the job page shows
+"Open in Temporal".
+
+The platform's own step calls heartbeat while they run: a provider call, an automation run or a
+script heartbeats every `platform.temporal.heartbeat-interval` (15s) and fails as `worker-lost`
+after `platform.temporal.heartbeat-timeout` (60s; `0` turns it off) without one, so a backend that
+dies mid-call fails the step, which its retry policy can run again on another instance, instead of
+waiting out the step's timeout.
+
+`platform.roles` (`api, worker` by default) splits that work. An instance with the `api` role
+serves the REST API, the streams, MCP and the generated routes, and starts, signals and queries
+executions; one with the `worker` role runs the interpreter's worker. Without the `api` role an
+instance answers nothing but the actuator (health, metrics), so its probes and scrapes keep
+working. One role alone needs the `temporal` profile, and the context refuses to start without
+it. Since the worker that runs a job's steps is the instance that records them, API instances see
+that progress only through a shared job store (the Postgres adapters); with the in-memory
+projection every instance keeps both roles.
+
+### Custom-code providers
+
+A provider of type `sdk` is code a team owns, served by the team's own worker on its own task
+queue (`spec.worker.taskQueue`, default `provider-<name>`). The platform never runs that code:
+under the `temporal` profile the interpreter schedules each call of an action as one activity on
+that queue and the worker answers it. The provider SDKs (`sdk/java`, `sdk/go`, `sdk/python`)
+implement the worker's side of the contract, derive the action schemas from the handlers' types
+and write the provider file, so the code and the file cannot drift.
+
+- The activity type is the action id (`address.reserve`); a `call: activity` step names its own.
+- The one argument is a JSON object: `input` (the step's resolved input), `idempotencyKey`,
+  `job { id, workflow, version, traceId }`, `step`, `environment` and `attempt` (from 1). The
+  key is `<job id>:<step id>:<$job.seq of the step's first attempt>`: the same for every retry
+  of the step and when a restarted worker picks the call up again, new for a new run of the step.
+  The result is the action's output, a JSON object.
+- The activity runs once. The step's `timeout` (10m by default) is both its schedule-to-close and
+  its start-to-close timeout, so a call that no worker picks up fails the step instead of waiting
+  in the queue for good; its heartbeat timeout is the provider's `worker.heartbeatTimeout` (none
+  when absent), and Temporal does not retry it: the step's `retry` policy does, with the same key.
+- A failure is an `ApplicationFailure` whose type is the error class (`spec.errors[].class`);
+  non-retryable means no retry fixes it, and the step fails at once. Running out of the step's
+  timeout fails the step as `timeout` (saying so when no worker on the queue picked the call up)
+  and a heartbeat timeout as `worker-lost`, both retryable. The SDKs report
+  a call that breaks the contract as `invalid_request`, `invalid_input`, `invalid_output` or
+  `unknown_action` (never retried) and any other exception as the retryable class `error`.
+- Cancelling the job cancels the activity; the worker learns of it through its heartbeats.
+
+The in-memory demo answers an `sdk` action from its `sample`, as it does for every provider; the
+`live` profile without Temporal fails it with a message saying it needs the `temporal` profile.
+Each worker is a deployment of its own, which the team that owns it scales and releases (the
+Helm chart's `providerWorkers`, the example workers in `docker-compose.yml`); a stopping worker
+stops polling and lets the calls in flight finish (`WORKER_DRAIN_SECONDS`, 30 by default).
+
+### Verified against a real Temporal server
+
+Besides the test server of the backend's suite, these ran against a Temporal dev server
+(`temporal server start-dev`, Server 1.29.1, UI 2.42.1), with the backend jar on the `demo` and
+`temporal` profiles and the example workers of the three SDKs on their own queues:
+
+- The `vm-restart` sample through its generated route: two provider steps, the approval decided
+  through `POST /api/v1/approvals/{id}:approve` (a signal), an automation step, a provider step
+  and a notification, to `succeeded`; `links.temporal` opened the execution in the UI. A cancel
+  through `POST /jobs/{id}:cancel` ended a job waiting for its approval, which expired.
+- Restarts: a backend stopped while a team's worker ran a call, and started again only after the
+  call had finished, replayed the history and finished the job by itself. A job waiting for an
+  approval outlived a restart too; its approval went in as the `approve` signal through the
+  Temporal CLI, since the new instance's in-memory projection does not know the job (the
+  `postgres` profile fills that gap).
+- `reserve-ip-address` through `POST /api/v1/addresses` on the Go (`ip-pool`) and Python
+  (`dns-records`) example workers, alone and as a three-row batch whose rows ran as child
+  workflows; a scratch workflow added the Java example (`cmdb`) as a third step.
+- Failures: a worker killed mid-call failed its step as `worker-lost` after the heartbeat timeout,
+  and the step's retry ran it again on a fresh worker with the same idempotency key; a call to a
+  queue with no worker failed its step as `timeout` after the step's timeout, naming the queue.
 
 ## Frontend
 

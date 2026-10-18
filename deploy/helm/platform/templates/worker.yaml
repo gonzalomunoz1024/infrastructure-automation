@@ -1,0 +1,39 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "platform.fullname" . }}-worker
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "platform.selector" (dict "ctx" . "component" "worker") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    {{- include "platform.backendPod" (dict "ctx" . "component" "worker" "roles" "worker" "settings" .Values.worker) | nindent 4 }}
+---
+# The workers serve the actuator only (health, metrics); this Service is for scraping them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "platform.fullname" . }}-worker-metrics
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+    platform.metrics: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "platform.selector" (dict "ctx" . "component" "worker") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+{{- end }}

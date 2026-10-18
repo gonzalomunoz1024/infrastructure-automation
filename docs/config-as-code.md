@@ -310,7 +310,10 @@ Type-specific `spec` blocks:
   `library`; `actions[].playbook`, `actions[].vars` become inputs.
 - `terraform`: `module: { source, version }`; actions `plan`, `apply`, `destroy` with `vars`.
 - `idp`: `tile: { id }`; mock catalog until the IDP tiles API is wired.
-- `sdk`: `taskQueue`; actions are activities a team-owned worker registers.
+- `sdk`: `worker: { taskQueue, heartbeatTimeout }`, both optional (the queue defaults to
+  `provider-<name>`; a call is lost after `heartbeatTimeout` without a heartbeat); actions are
+  activities a team-owned worker registers, and the provider SDKs in `sdk/` write the whole file
+  from the code. The contract is "Custom-code providers" in `docs/architecture.md`.
 - `http`: `endpoints` plus per action `{ method, path, example }`; schemas are inferred from the example.
 
 Plans: `plan: <action>` names the action a preview asks what the step would do, with the step's

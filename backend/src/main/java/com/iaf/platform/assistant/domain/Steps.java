@@ -101,14 +101,8 @@ public final class Steps {
                 with.put("tile", a.id());
                 with.set("input", input);
             }
-            case SDK -> {
-                body.put("call", "activity");
-                ObjectNode with = body.putObject("with");
-                with.put("taskQueue", p.spec().taskQueue() == null ? p.name() : p.spec().taskQueue());
-                with.put("activity", a.id());
-                with.set("input", input);
-            }
             default -> {
+                // openapi, http and sdk: an sdk provider's actions run on its own worker, but a workflow calls them like any provider's
                 body.put("call", "provider");
                 ObjectNode with = body.putObject("with");
                 with.put("provider", p.name());

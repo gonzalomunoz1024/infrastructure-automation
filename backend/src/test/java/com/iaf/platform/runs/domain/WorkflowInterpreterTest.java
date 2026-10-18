@@ -593,6 +593,21 @@ class WorkflowInterpreterTest {
     }
 
     @Test
+    void reserveIpAddressPublishesTheRecordOfTheAddressItReserved() {
+        SampleStepExecutor ex = SampleContent.executor();
+        Outcome o = run("reserve-ip-address", Map.of("pool", "lab", "hostname", "web-01"), ex);
+        assertThat(o.status()).isEqualTo(JobStatus.SUCCEEDED);
+        String address = o.output().path("address").asText();
+        assertThat(address).matches("10\\.20\\.0\\.\\d+");
+        assertThat(o.output().path("fqdn").asText()).isEqualTo("web-01.lab.example.internal");
+        JsonNode record = last(ex, "job_test", "publishRecord", StepStatus.SUCCEEDED).input().path("input");
+        assertThat(record.path("zone").asText()).isEqualTo("lab.example.internal");
+        assertThat(record.path("value").asText()).isEqualTo(address);
+        assertThat(record.path("ttl").isInt()).as("a whole-string expression keeps its type").isTrue();
+        assertThat(record.path("ttl").asInt()).isEqualTo(300);
+    }
+
+    @Test
     void everySampleWorkflowRunsEndToEndOnTheSamples() {
         Map<String, Map<String, Object>> inputs = Map.of(
                 "vm-restart", Map.of("vmId", "vm-1042"),
@@ -603,8 +618,9 @@ class WorkflowInterpreterTest {
                 "build-vm-image", Map.of("os", "ubuntu-24.04"),
                 "patch-cve", Map.of("vmId", "vm-1042", "cve", "CVE-2026-1234"),
                 "request-storage", Map.of("vmId", "vm-1042", "sizeGb", 100),
-                "web-environment", Map.of("name", "shop", "environment", "test", "image", "img-1", "vmCount", 2));
-        assertThat(SampleContent.workflows()).hasSize(9);
+                "web-environment", Map.of("name", "shop", "environment", "test", "image", "img-1", "vmCount", 2),
+                "reserve-ip-address", Map.of("pool", "lab", "hostname", "web-01"));
+        assertThat(SampleContent.workflows()).hasSize(10);
         for (WorkflowDefinition d : SampleContent.workflows()) {
             SampleStepExecutor ex = SampleContent.executor();
             Outcome o = run(d.name(), inputs.get(d.name()), ex);

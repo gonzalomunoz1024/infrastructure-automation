@@ -203,6 +203,9 @@ export interface ProviderSpecDocument {
   source?: JsonValue;
   module?: JsonValue;
   tile?: JsonValue;
+  /** sdk: the team's worker; the queue defaults to provider-<name>, the heartbeat timeout to none. */
+  worker?: { taskQueue?: string; heartbeatTimeout?: string };
+  /** The older spelling of worker.taskQueue. */
   taskQueue?: string;
   executionEnvironment?: string;
 }

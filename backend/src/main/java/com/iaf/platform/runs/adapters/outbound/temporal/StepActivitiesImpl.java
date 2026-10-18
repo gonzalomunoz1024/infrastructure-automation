@@ -13,6 +13,9 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.Ids;
+import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.domain.ProviderType;
 import com.iaf.platform.runs.application.JobEvents;
 import com.iaf.platform.runs.application.JobFactory;
 import com.iaf.platform.runs.application.JobProjection;
@@ -25,6 +28,7 @@ import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Batch.BatchRow;
 import com.iaf.platform.runs.domain.Batch.Wave;
 import com.iaf.platform.runs.domain.ChangeTicket;
+import com.iaf.platform.runs.domain.Durations;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobContext;
 import com.iaf.platform.runs.domain.Outcome;
@@ -97,25 +101,29 @@ public class StepActivitiesImpl implements StepActivities {
     private final JobEvents events;
     private final ChangeTicketPort changes;
     private final Clock clock;
+    private final Duration heartbeatInterval;
 
-    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock) {
+    public StepActivitiesImpl(StepExecutors executors, JobProjection projection, JobEvents events, ChangeTicketPort changes, Clock clock,
+            PlatformProperties props) {
         this.executors = executors;
         this.projection = projection;
         this.events = events;
         this.changes = changes;
         this.clock = clock;
+        this.heartbeatInterval = props.getTemporal().getHeartbeatInterval();
     }
 
     // ---------------------------------------------------------------- the calls of a step
 
+    /** The calls that can take long heartbeat while they run ({@link TemporalConfig} sets their heartbeat timeout). */
     @Override
     public JsonNode callProvider(StepCall call, String provider, String action, JsonNode input) {
-        return step(call, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout()));
+        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.callProvider(ctx, call.step(), provider, action, input, call.timeout())));
     }
 
     @Override
     public JsonNode runAutomation(StepCall call, JsonNode with) {
-        return step(call, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout()));
+        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.runAutomation(ctx, call.step(), with, call.timeout())));
     }
 
     @Override
@@ -125,7 +133,7 @@ public class StepActivitiesImpl implements StepActivities {
 
     @Override
     public JsonNode script(StepCall call, String language, String code, JsonNode input) {
-        return step(call, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout()));
+        return Heartbeats.during(heartbeatInterval, () -> step(call, (ex, ctx) -> ex.script(ctx, call.step(), language, code, input, call.timeout())));
     }
 
     @Override
@@ -136,6 +144,29 @@ public class StepActivitiesImpl implements StepActivities {
     @Override
     public JsonNode registerResource(StepCall call, RegisterRequest request) {
         return step(call, (ex, ctx) -> ex.registerResource(ctx, call.step(), request));
+    }
+
+    @Override
+    public WorkerRoute providerRoute(String stepId, String provider, String action) {
+        if (provider == null || provider.isBlank()) {
+            return null;
+        }
+        // a lookup that fails is retried by the local activity's own policy, then fails the step as an error
+        ProviderDefinition p = executors.ports().providers().provider(provider).blockOptional(PortStepExecutor.LOOKUP_TIMEOUT).orElse(null);
+        if (p == null || p.type() != ProviderType.SDK) {
+            return null;
+        }
+        if (action == null || p.action(action).isEmpty()) {
+            throw new StepFailureData(stepId, "unknown_action", "Provider " + provider + " has no action '" + action + "'", false, false)
+                    .toApplicationFailure();
+        }
+        String heartbeat = p.spec().worker() == null ? null : p.spec().worker().heartbeatTimeout();
+        try {
+            return new WorkerRoute(p.taskQueue(), Durations.parse(heartbeat, null));
+        } catch (IllegalArgumentException e) {
+            throw new StepFailureData(stepId, "misconfigured", "Provider " + provider + ": worker.heartbeatTimeout " + e.getMessage(), false, false)
+                    .toApplicationFailure();
+        }
     }
 
     private JsonNode step(StepCall call, BiFunction<PortStepExecutor, JobContext, JsonNode> body) {

@@ -48,6 +48,7 @@ if $TEMPORAL; then
     echo "--temporal needs the temporal CLI or docker" >&2; exit 1
   fi
   SPRING_PROFILES="demo,temporal"
+  export PLATFORM_TEMPORAL_UI_URL="${PLATFORM_TEMPORAL_UI_URL:-http://localhost:8233}"   # each job's "Open in Temporal" link
 else
   SPRING_PROFILES="demo"
 fi

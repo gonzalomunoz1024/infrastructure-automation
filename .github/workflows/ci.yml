@@ -131,3 +131,72 @@ jobs:
           else
             "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 .
           fi
+
+  sdk-java:
+    name: Provider SDK (Java)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Test
+        run: mvn -B -q test
+        working-directory: sdk/java
+
+  sdk-go:
+    name: Provider SDK (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdk/go/go.mod
+          cache-dependency-path: sdk/go/go.sum
+      - name: Vet
+        run: go vet ./...
+        working-directory: sdk/go
+      - name: Test
+        run: go test ./...
+        working-directory: sdk/go
+
+  sdk-python:
+    name: Provider SDK (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: pip install -e '.[test]'
+        working-directory: sdk/python
+      - name: Test
+        run: pytest
+        working-directory: sdk/python
+
+  deploy:
+    name: Images and Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the Dockerfiles
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          recursive: true
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Lint the chart and validate what it renders
+        run: |
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
+          chart=deploy/helm/platform
+          crds='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          for values in "" "-f $chart/ci/full-values.yaml"; do
+            helm lint $chart $values
+            helm template platform $chart $values | "$(go env GOPATH)/bin/kubeconform" -strict -summary \
+              -kubernetes-version 1.30.0 -schema-location default -schema-location "$crds"
+          done

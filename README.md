@@ -50,6 +50,7 @@ frontend/           React 19 · Vite · TypeScript · Tailwind v4 · the n8n-sty
 packages/ui         the Atlas design system (tokens, kit, hooks) used by every page but the canvas
 packages/workflow-checks   the editor's checks in TypeScript; the same rules run in Java and in CI
 workflows/ providers/ resource-types/   sample content as config as code (kind: Workflow | Provider | ResourceType | PriceList)
+sdk/                provider SDKs (Java, Go, Python) for custom-code providers on a team's own worker
 devin/              the natural-language builder playbooks and their structured-output schemas
 docs/               architecture, config as code, API, design language, contributing
 ```
@@ -79,6 +80,16 @@ stores in PostgreSQL, migrated by Flyway on start; the connection is `SPRING_DAT
 `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`), `s3` (the artifact store on S3).
 `docker-compose.yml` starts a Temporal dev server, PostgreSQL and the stack on them.
 
+## Deployment
+
+`backend/Dockerfile` and `frontend/Dockerfile` (nginx serving the build and proxying `/api` and
+`/ws` to the backend) build images that run as a non-root user, and so does each provider SDK
+example. The Helm chart in `deploy/helm/platform` runs the API, the interpreter's workers
+(`platform.roles`), the web app and one deployment per provider worker against an external
+Temporal and PostgreSQL. It references secrets by the names of existing Secrets or through Vault
+agent annotations and never holds a value; `values.yaml` describes every setting and
+`ci/full-values.yaml` shows them all in use.
+
 ## Checks
 
 ```bash
@@ -88,4 +99,5 @@ cd backend && PLATFORM_TEST_POSTGRES_URL='jdbc:postgresql://localhost:5432/platf
 npm run lint && npm run typecheck && npm test   # ESLint, then the kit, checks package and frontend
 npm run check:workflows             # the config-as-code checks over the sample content (CI runs this too)
 npm run build
+(cd sdk/java && mvn -B -q test); (cd sdk/go && go test ./...); (cd sdk/python && pytest)   # the provider SDKs
 ```

@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.iaf.platform.runs.SampleContent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.codec.json.Jackson2JsonDecoder;
@@ -75,7 +76,7 @@ class RestControllerWorkflowAdapterTest {
         String vmRestart = SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml");
 
         client.get().uri("/api/v1/workflows").exchange().expectStatus().isOk()
-                .expectBody().jsonPath("$.length()").isEqualTo(9)
+                .expectBody().jsonPath("$.length()").isEqualTo(10)
                 .jsonPath("$[?(@.name == 'vm-restart')].status").isEqualTo("published")
                 .jsonPath("$[?(@.name == 'vm-restart')].publishedVersion").isEqualTo("1.2.0")
                 .jsonPath("$[?(@.name == 'vm-restart')].mcp").isEqualTo(true);
@@ -219,14 +220,14 @@ class RestControllerWorkflowAdapterTest {
                 .expectBody().jsonPath("$.length()").isEqualTo(19).jsonPath("$[0].type").isEqualTo("provider").jsonPath("$[0].schema.type").isEqualTo("object")
                 .jsonPath("$[0].category").isEqualTo("Providers");
         client.get().uri("/api/v1/registry/providers").exchange().expectStatus().isOk()
-                .expectBody().jsonPath("$.length()").isEqualTo(8)
+                .expectBody().jsonPath("$.length()").isEqualTo(10)
                 .jsonPath("$[?(@.name == 'vsphere')].actions[0].id").isEqualTo("vm.get")
                 .jsonPath("$[?(@.name == 'vsphere')].actions[0].effect").isEqualTo("read")
                 .jsonPath("$[?(@.name == 'vsphere')].actions[0].retry").isEqualTo("safe")
                 .jsonPath("$[?(@.name == 'vsphere')].actions[0].approval").isEqualTo("none")
                 .jsonPath("$[?(@.name == 'vsphere')].actions[0].input.type").isEqualTo("object");
         client.get().uri("/api/v1/registry/workflows?published=true").exchange().expectStatus().isOk()
-                .expectBody().jsonPath("$.length()").isEqualTo(9).jsonPath("$[?(@.name == 'create-vm')].output.properties.vmId").exists();
+                .expectBody().jsonPath("$.length()").isEqualTo(10).jsonPath("$[?(@.name == 'create-vm')].output.properties.vmId").exists();
         client.get().uri("/api/v1/registry/workflows/search?q=restart").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$[0].name").isEqualTo("vm-restart");
         client.get().uri("/api/v1/registry/resource-types").exchange().expectStatus().isOk()
@@ -235,7 +236,7 @@ class RestControllerWorkflowAdapterTest {
         client.get().uri("/api/v1/registry/playbooks").exchange().expectStatus().isOk()
                 .expectBody().jsonPath("$.length()").isEqualTo(3).jsonPath("$[0].name").isEqualTo("ops-playbooks/vm.restart").jsonPath("$[0].path").isEqualTo("vm/restart.yml");
         client.get().uri("/api/v1/registry/dependencies").exchange().expectStatus().isOk()
-                .expectBody().jsonPath("$.workflows.length()").isEqualTo(9)
+                .expectBody().jsonPath("$.workflows.length()").isEqualTo(SampleContent.workflows().size())
                 .jsonPath("$.resourceTypes[?(@.type == 'image')].producers[0].workflow").isEqualTo("build-vm-image")
                 .jsonPath("$.workflows[?(@.workflow == 'create-vm')].consumers[0].range").isEqualTo("^2")
                 .jsonPath("$.cycles.length()").isEqualTo(0);

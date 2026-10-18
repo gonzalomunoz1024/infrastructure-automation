@@ -1,0 +1,41 @@
+{{- if .Values.ingress.enabled }}
+{{- $api := printf "%s-api" (include "platform.fullname" .) -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "platform.fullname" . }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ .Values.ingress.host | quote }}]
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          # the API and its streams go to the API directly; the rest is the web app
+          {{- range list "/api" "/ws" }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $api }}
+                port: { name: http }
+          {{- end }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ ternary (printf "%s-frontend" (include "platform.fullname" .)) $api .Values.frontend.enabled }}
+                port: { name: http }
+{{- end }}

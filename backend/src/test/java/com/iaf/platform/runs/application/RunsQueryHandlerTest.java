@@ -1,6 +1,8 @@
 package com.iaf.platform.runs.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -19,6 +21,7 @@ import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobStatus;
 import com.iaf.platform.runs.domain.StepEvent;
 import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
+import com.iaf.platform.runs.ports.outbound.WorkflowExecutionPort;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
 
@@ -104,6 +107,20 @@ class RunsQueryHandlerTest {
         assertThat(queries.approvals("pending").collectList().block()).hasSize(1);
         assertThat(queries.approvals("approved").collectList().block()).isEmpty();
         assertThat(queries.approval("apr_a").block().path("message").asText()).isEqualTo("ok?");
+    }
+
+    @Test
+    void jobDetailLinksToTheJobInTheEnginesToolsWhenTheEngineHasALink() {
+        Instant t = Instant.parse("2026-10-17T10:00:00Z");
+        started("job_a", t, Map.of("vmId", "vm-1"));
+        assertThat(queries.job("job_a").block().has("links")).as("the in-memory engine has no tools to link to").isFalse();
+
+        WorkflowExecutionPort engine = mock(WorkflowExecutionPort.class);
+        when(engine.links("job_a")).thenReturn(Map.of("temporal", "http://localhost:8233/namespaces/default/workflows/job_a"));
+        JsonNode d = new RunsQueryHandler(w.projection, engine).job("job_a").block();
+        assertThat(d.path("links").path("temporal").asText()).isEqualTo("http://localhost:8233/namespaces/default/workflows/job_a");
+        assertThat(d.path("id").asText()).isEqualTo("job_a");
+        assertThat(queries.jobs(null, null, null, null).blockFirst().has("links")).as("lists stay light").isFalse();
     }
 
     @Test

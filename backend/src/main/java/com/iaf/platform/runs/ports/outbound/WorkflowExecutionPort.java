@@ -1,5 +1,7 @@
 package com.iaf.platform.runs.ports.outbound;
 
+import java.util.Map;
+
 import com.iaf.platform.runs.domain.ApprovalDecision;
 import com.iaf.platform.runs.domain.AttentionDecision;
 import com.iaf.platform.runs.domain.Job;
@@ -36,4 +38,12 @@ public interface WorkflowExecutionPort {
 
     /** Whether the engine currently holds the job (running or waiting). */
     Mono<Boolean> isRunning(String jobId);
+
+    /**
+     * Where the engine's own tools show the job, by name (the job view's {@code links}); none by
+     * default. Computed from configuration alone: no call to the engine.
+     */
+    default Map<String, String> links(String jobId) {
+        return Map.of();
+    }
 }

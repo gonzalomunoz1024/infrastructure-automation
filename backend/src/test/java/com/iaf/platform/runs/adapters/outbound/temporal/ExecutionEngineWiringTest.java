@@ -20,6 +20,7 @@ import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.TelemetryPort;
 import com.iaf.platform.config.PlatformProperties;
+import com.iaf.platform.config.Role;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.releases.ports.inbound.ReleaseQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands;
@@ -105,6 +106,32 @@ class ExecutionEngineWiringTest {
     }
 
     @Test
+    void anApiOnlyInstanceStartsJobsOnTemporalWithoutAWorker() {
+        PlatformProperties props = new PlatformProperties();
+        props.getExecution().setMode("temporal");
+        props.getTemporal().setTarget("127.0.0.1:1");
+        runner(props).withPropertyValues("spring.profiles.active=demo,temporal", "platform.roles=api").run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx.getBean(WorkflowExecutionPort.class)).isInstanceOf(TemporalWorkflowExecution.class);
+            assertThat(ctx).hasSingleBean(WorkflowClient.class);
+            assertThat(ctx).doesNotHaveBean(Worker.class);
+            assertThat(ctx).doesNotHaveBean(InterpreterWorkerLifecycle.class);
+        });
+    }
+
+    @Test
+    void aWorkerOnlyInstancePollsTheInterpretersTaskQueue() {
+        PlatformProperties props = new PlatformProperties();
+        props.getExecution().setMode("temporal");
+        props.getTemporal().setTarget("127.0.0.1:1");
+        runner(props).withPropertyValues("spring.profiles.active=demo,temporal", "platform.roles=worker").run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx.getBean(Worker.class).getTaskQueue()).isEqualTo("platform-interpreter");
+            assertThat(ctx).hasSingleBean(InterpreterWorkerLifecycle.class);
+        });
+    }
+
+    @Test
     void applicationYmlSetsTheExecutionModeWithTheTemporalProfile() {
         try (ConfigurableApplicationContext ctx = configOnly()) {
             assertThat(ctx.getEnvironment().getProperty("platform.execution.mode")).isEqualTo("in-memory");
@@ -113,6 +140,7 @@ class ExecutionEngineWiringTest {
             assertThat(ctx.getEnvironment().getProperty("platform.execution.mode")).isEqualTo("temporal");
             assertThat(ctx.getEnvironment().getProperty("platform.temporal.target")).isEqualTo("127.0.0.1:7233");
             assertThat(ctx.getEnvironment().getProperty("platform.temporal.task-queue")).isEqualTo("platform-interpreter");
+            assertThat(Role.of(ctx.getEnvironment())).containsExactly(Role.API, Role.WORKER);
         }
     }
 }

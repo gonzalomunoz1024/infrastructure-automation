@@ -112,12 +112,22 @@ public class HttpProviderCall implements ProviderCallPort {
             if (call.dryRun()) {
                 return Mono.just(dryRunAnswer(call));
             }
+            if (p.type() == ProviderType.SDK) {
+                return Mono.error(new ProviderCallException("unsupported", sdkNeedsTemporal(p), false, 0));
+            }
             if (p.type() != ProviderType.OPENAPI && p.type() != ProviderType.HTTP) {
                 return Mono.error(new ProviderCallException("unsupported", "HttpProviderCall runs openapi and http providers; " + p.name() + " is " + p.type().key(), false, 0));
             }
             String base = endpoint(p, call.environment());
             return operation(p, a).flatMap(op -> headers(p.spec().auth()).flatMap(h -> execute(call, base, op, h)));
         });
+    }
+
+    /** Custom-code providers are served by their team's worker, which only the Temporal engine schedules work on. */
+    static String sdkNeedsTemporal(ProviderDefinition p) {
+        return "Provider " + p.name() + " is a custom-code provider (type sdk): its actions run on the team's own Temporal worker (task queue "
+                + p.taskQueue() + "), so they only run on the Temporal engine. Start the backend with the temporal profile "
+                + "(platform.execution.mode: temporal) and the worker on that task queue.";
     }
 
     // ---------------------------------------------------------------- where and what

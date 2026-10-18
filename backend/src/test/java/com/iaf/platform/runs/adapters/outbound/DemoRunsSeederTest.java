@@ -126,6 +126,24 @@ class DemoRunsSeederTest {
     }
 
     @Test
+    void theLiveJobsKeepTheirIdsAndAStoreThatOutlivesTheProcessIsSeededOnce() {
+        RunsTestWiring w = new RunsTestWiring();
+        PlatformProperties props = new PlatformProperties();
+        props.getContent().setDir("..");
+        DemoRunsSeeder seeder = new DemoRunsSeeder(props, w.workflows, w.providers, w.resources, w.projection, w.events, w.telemetry, RunsTestWiring.idleEngine(), w.clock);
+        assertThat(seeder.alreadySeeded()).isFalse();
+
+        seeder.onReady();
+
+        assertThat(w.projection.get(DemoRunsSeeder.WAITING_APPROVAL_ID)).isPresent().get().satisfies(j -> assertThat(j.workflow()).isEqualTo(DemoRunsSeeder.WAITING_APPROVAL));
+        assertThat(w.projection.get(DemoRunsSeeder.NEEDS_ATTENTION_ID)).isPresent().get().satisfies(j -> assertThat(j.attention()).isNotNull());
+        assertThat(seeder.alreadySeeded()).isTrue();
+        int jobs = w.projection.all().size();
+        seeder.onReady();
+        assertThat(w.projection.all()).as("a second start finds the seed and leaves it alone").hasSize(jobs);
+    }
+
+    @Test
     void theSeedIsDeterministic() {
         RunsTestWiring a = new RunsTestWiring();
         RunsTestWiring b = new RunsTestWiring();

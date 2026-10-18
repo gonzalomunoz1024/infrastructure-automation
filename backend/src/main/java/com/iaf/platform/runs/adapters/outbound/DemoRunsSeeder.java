@@ -28,6 +28,7 @@ import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.demo.DemoReleases;
 import com.iaf.platform.common.demo.DemoReleases.Failure;
 import com.iaf.platform.common.demo.DemoReleases.Story;
+import com.iaf.platform.common.domain.ConflictException;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
 import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
@@ -113,6 +114,13 @@ public class DemoRunsSeeder {
     static final String WAITING_APPROVAL = "mongodb-upgrade";
     static final String NEEDS_ATTENTION = "vm-restart";
     static final String RUNNING_BATCH = "patch-cve";
+    /**
+     * The live seeded jobs keep the same ids from one start to the next, so a store that outlives
+     * the process (postgres) is seeded once, and an engine that does (temporal) refuses to start
+     * them again instead of piling up executions.
+     */
+    static final String WAITING_APPROVAL_ID = "job_demo_approval";
+    static final String NEEDS_ATTENTION_ID = "job_demo_attention";
     /** How many rows the running batch has at most, one per ready resource of its target type. */
     static final int BATCH_ROWS = 12;
 
@@ -155,6 +163,10 @@ public class DemoRunsSeeder {
         if (props.getDemo() == null || !props.getDemo().isSeedHistory()) {
             return;
         }
+        if (alreadySeeded()) {
+            log.info("demo history is already in the job store: not seeding it again");
+            return;
+        }
         try {
             Report r = seed();
             log.info("demo history seeded: {} jobs ({} failed, {} cancelled), {} provider calls; waiting approval {}, needs attention {}, running batch {}",
@@ -162,6 +174,11 @@ public class DemoRunsSeeder {
         } catch (RuntimeException e) {
             log.warn("demo history could not be seeded: {}", e.toString(), e);
         }
+    }
+
+    /** Whether a store that outlived the process still holds the seeded live jobs. */
+    public boolean alreadySeeded() {
+        return projection.get(WAITING_APPROVAL_ID).isPresent() || projection.get(NEEDS_ATTENTION_ID).isPresent();
     }
 
     public Report seed() {
@@ -192,20 +209,21 @@ public class DemoRunsSeeder {
             String version = DemoReleases.versionAt(def.name(), startedAt, now, rnd).orElse(def.version());
             boolean candidate = onCandidate(def.name(), version, startedAt, now);
             boolean fail = i % 12 == 0 && !candidate;              // five of sixty run into a failure
+            boolean rescue = fail && rnd.nextInt(100) < 40;        // some of those are retried after attention and succeed
             boolean cancel = !fail && i % 20 == 10 && !candidate;  // three of sixty are cancelled
-            runs.add(new Run(def.withVersion(version), inputs.inputFor(def, rnd), who, channel, startedAt, fail, cancel, null));
+            runs.add(new Run(def.withVersion(version), inputs.inputFor(def, rnd), who, channel, startedAt, fail, rescue, cancel, null));
         }
         runs.addAll(canaryTraffic(catalog, inputs, now, rnd));
         runs.sort(Comparator.comparing(Run::startedAt));
         for (Run run : runs) {
             try {
                 Seeded s = walk(catalog, run, rnd);
-                // a forced failure must reach its step: a switch may end the job before it, so try other inputs
-                for (int attempt = 1; run.failure() != null && !failedAs(s, run.failure()) && attempt < FORCED_FAILURE_TRIES; attempt++) {
+                // a failure must reach its step: a switch may end the job before it, so try other inputs (and victims)
+                for (int attempt = 1; run.mustFail() && !failedAs(s, run.failure()) && attempt < FORCED_FAILURE_TRIES; attempt++) {
                     s = walk(catalog, run.withInput(inputs.inputFor(run.def(), rnd)), rnd);
                 }
-                if (run.failure() != null && !failedAs(s, run.failure())) {
-                    log.warn("the seeded {} job never reached its forced failure at {}", run.def().name(), run.failure().step());
+                if (run.mustFail() && !failedAs(s, run.failure())) {
+                    log.warn("the seeded {} job never reached its failure{}", run.def().name(), run.failure() == null ? "" : " at " + run.failure().step());
                 }
                 publish(s);
                 calls += s.executor().calls().size();
@@ -226,12 +244,22 @@ public class DemoRunsSeeder {
 
     // ---------------------------------------------------------------- one finished job
 
-    /** {@code failure} is the failure a story forces on the job (at its step, with its error), null for a random one. */
-    private record Run(WorkflowDefinition def, JsonNode input, Identity who, String channel, Instant startedAt, boolean fail, boolean cancel,
-            Failure failure) {
+    /**
+     * {@code fail} plans a failure at a random step; {@code rescue} means someone retries it after
+     * attention and the job goes on to succeed, otherwise it is aborted and the job ends failed.
+     * {@code failure} is the failure a story forces on the job (at its step, with its error), null
+     * for a random one.
+     */
+    private record Run(WorkflowDefinition def, JsonNode input, Identity who, String channel, Instant startedAt, boolean fail, boolean rescue,
+            boolean cancel, Failure failure) {
 
         Run withInput(JsonNode other) {
-            return new Run(def, other, who, channel, startedAt, fail, cancel, failure);
+            return new Run(def, other, who, channel, startedAt, fail, rescue, cancel, failure);
+        }
+
+        /** Whether the walk must end failed: a planned failure nobody rescues, or a story's forced one. */
+        boolean mustFail() {
+            return failure != null || (fail && !rescue);
         }
     }
 
@@ -260,21 +288,32 @@ public class DemoRunsSeeder {
                 Instant at = from.plusMillis(span * k / s.jobs());
                 boolean candidate = k == 0 || rnd.nextInt(100) < s.stageAt(at, now).percent();
                 story.add(new Run(def.withVersion(candidate ? s.to() : s.from()), inputs.inputFor(def, rnd), pick(rnd, List.copyOf(PEOPLE.values())),
-                        pick(rnd, List.of("catalog", "rest", "mcp", "catalog")), at, false, false, null));
+                        pick(rnd, List.of("catalog", "rest", "mcp", "catalog")), at, false, false, false, null));
             }
             if (s.failure() != null) {
                 // the job the error-types gate rolled back on: the last of the story, on the candidate
                 Run last = story.remove(story.size() - 1);
-                story.add(new Run(def.withVersion(s.to()), last.input(), last.who(), last.channel(), to, true, false, s.failure()));
+                story.add(new Run(def.withVersion(s.to()), last.input(), last.who(), last.channel(), to, true, false, false, s.failure()));
             }
             out.addAll(story);
         }
         return out;
     }
 
-    /** Whether the walk ended on the story's failure. */
+    /** Hand a seeded live job to the engine; an engine that outlived the process already runs it, which is not a problem. */
+    private void resume(Job live) {
+        execution.start(live).subscribe(v -> { }, e -> {
+            if (e instanceof ConflictException) {
+                log.debug("seeded job {} is already running on the engine", live.id());
+            } else {
+                log.warn("could not resume seeded job {}: {}", live.id(), e.toString());
+            }
+        });
+    }
+
+    /** Whether the walk ended failed: on the story's failure when it names one, on any failure otherwise. */
     private static boolean failedAs(Seeded s, Failure f) {
-        return s.outcome().status() == JobStatus.FAILED && f.errorClass().equals(s.outcome().errorClass());
+        return s.outcome().status() == JobStatus.FAILED && (f == null || f.errorClass().equals(s.outcome().errorClass()));
     }
 
     /** Whether a job of {@code version} started at {@code at} ran a release's candidate while its canary was splitting traffic. */
@@ -337,7 +376,7 @@ public class DemoRunsSeeder {
                 String[] failure = failureFor(victim, rnd);
                 boolean retryable = !"not_found".equals(failure[0]);
                 ex.failAt(victim.id(), failure[0], failure[1], retryable, 1);
-                boolean retryAfterAttention = retryable && rnd.nextInt(100) < 40;
+                boolean retryAfterAttention = retryable && run.rescue();
                 ex.attender(a -> {
                     Duration after = Duration.ofMinutes(3 + rnd.nextInt(25));
                     ex.sleep(null, after);
@@ -487,7 +526,7 @@ public class DemoRunsSeeder {
             JsonNode input = inputs.inputFor(def, rnd);
             ex = executor(catalog, startedAt, rnd);
             Job candidate = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
-                    PolicyDecision.allow("mock"), change(def, rnd), startedAt);
+                    PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(WAITING_APPROVAL_ID);
             ex.approver(request -> {
                 throw new JobCancelled(candidate.id());
             });
@@ -516,7 +555,7 @@ public class DemoRunsSeeder {
         }
         recordCalls(ex);
         Job current = projection.get(live.id()).orElse(live);
-        execution.start(current).subscribe(v -> { }, e -> log.warn("could not resume seeded job {}: {}", live.id(), e.toString()));
+        resume(current);
         return live.id();
     }
 
@@ -541,7 +580,7 @@ public class DemoRunsSeeder {
         SampleStepExecutor ex = executor(catalog, startedAt, rnd);
         JsonNode input = inputs.inputFor(def, rnd);
         Job job = JobFactory.newJob(def, def.version(), input, owner(def, rnd), "catalog", null, null, preview(catalog, def, input),
-                PolicyDecision.allow("mock"), change(def, rnd), startedAt);
+                PolicyDecision.allow("mock"), change(def, rnd), startedAt).withId(NEEDS_ATTENTION_ID);
         Map<String, ApprovalDecision> approvals = new LinkedHashMap<>();
         ex.approver(request -> {
             ex.sleep(null, Duration.ofMinutes(4));
@@ -578,7 +617,7 @@ public class DemoRunsSeeder {
         pending.forEach(p -> p.publish().run());
         recordCalls(ex);
         Job current = projection.get(live.id()).orElse(live);
-        execution.start(current).subscribe(v -> { }, e -> log.warn("could not resume seeded job {}: {}", live.id(), e.toString()));
+        resume(current);
         return live.id();
     }
 

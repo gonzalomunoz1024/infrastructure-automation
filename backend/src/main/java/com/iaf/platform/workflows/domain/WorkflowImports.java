@@ -63,13 +63,14 @@ public final class WorkflowImports {
         Action a = p.action(tile).orElseThrow();
         List<String> notes = new ArrayList<>();
         String slug = Ids.slug(tile);
-        String name = free(slug, "from-" + p.name(), existing, notes);
         String noun = slug.endsWith("-request") ? slug.substring(0, slug.length() - "-request".length()) : slug;
+        Naming naming = free(slug, "from-" + p.name(), "/api/v1/" + noun + "s", "request", existing, notes);
+        String name = naming.name();
         String title = a.title() == null ? tile : a.title();
         JsonNode input = a.input() == null ? emptySchema() : a.input();
 
         Doc doc = new Doc(name, title, noun, "request", p.owner(), "Request through the IDP tile " + tile + ". The tile is a mock until the IDP tiles API is wired.", List.of("idp", "imported"))
-                .api("POST", "/api/v1/" + noun + "s", input, true)
+                .api("POST", naming.path(), input, true)
                 .mcp(title + " through the developer portal.")
                 .policy(List.of("developer", "ops"), null, null)
                 .rollout("all");
@@ -158,7 +159,8 @@ public final class WorkflowImports {
         String[] nounVerb = nounVerbOfPlaybook(ref, path);
         String noun = nounVerb[0];
         String verb = nounVerb[1];
-        String name = free(Ids.slug(noun + "-" + verb), from, existing, notes);
+        Naming naming = free(Ids.slug(noun + "-" + verb), from, "/api/v1/" + noun + "s:" + Ids.slug(verb), verb, existing, notes);
+        String name = naming.name();
         String title = actionTitle != null ? actionTitle : "Run " + (path == null ? ref : path);
 
         ObjectNode input = vars != null && vars.isObject() ? vars.deepCopy() : emptySchema();
@@ -171,7 +173,7 @@ public final class WorkflowImports {
         required.add("target");
 
         Doc doc = new Doc(name, title, noun, verb, owner, "Runs the playbook " + (path == null ? ref : path) + " on a target.", List.of("ansible", "imported"))
-                .api("POST", "/api/v1/" + noun + "s:" + Ids.slug(verb), input, true)
+                .api("POST", naming.path(), input, true)
                 .mcp(title + ".")
                 .policy(List.of("ops"), null, null)
                 .rollout("all");
@@ -262,12 +264,13 @@ public final class WorkflowImports {
         }
         String credential = p.spec().auth() == null ? null : p.spec().auth().credential();
         String noun = Ids.slug(p.name());
-        String name = free(noun + "-apply", "from-" + p.name(), existing, notes);
+        Naming naming = free(noun + "-apply", "from-" + p.name(), "/api/v1/" + noun + "s:apply", "apply", existing, notes);
+        String name = naming.name();
         String title = "Apply " + p.title();
         JsonNode input = vars != null && vars.isObject() ? vars : emptySchema();
 
         Doc doc = new Doc(name, title, noun, "apply", p.owner(), "Plan, approve and apply the Terraform module of " + p.name() + ".", List.of("terraform", "imported"))
-                .api("POST", "/api/v1/" + noun + "s:apply", input, true)
+                .api("POST", naming.path(), input, true)
                 .mcp(title + " after an approval of the plan.")
                 .policy(List.of("ops"), "your-approvers", "4h")
                 .rollout("canary");
@@ -316,13 +319,14 @@ public final class WorkflowImports {
         List<String> notes = new ArrayList<>();
         int dot = a.id().indexOf('.');
         String noun = Ids.slug(dot > 0 ? a.id().substring(0, dot) : p.name());
-        String name = free("create-" + noun, "from-" + p.name(), existing, notes);
+        Naming naming = free("create-" + noun, "from-" + p.name(), "/api/v1/" + noun + "s", "create", existing, notes);
+        String name = naming.name();
         String title = a.title() == null ? "Create " + noun : a.title();
         JsonNode input = a.input() == null ? (a.vars() == null ? emptySchema() : a.vars()) : a.input();
         String type = guessType(noun, resourceTypes, notes);
 
         Doc doc = new Doc(name, title, noun, "create", p.owner(), title + " through " + p.title() + " and register it.", List.of(p.name(), "imported"))
-                .api("POST", "/api/v1/" + noun + "s", input, true)
+                .api("POST", naming.path(), input, true)
                 .mcp(title + ". Returns a job id; the job output has the id of what was created.")
                 .policy(List.of("developer", "ops"), null, null)
                 .rollout("canary");
@@ -364,17 +368,28 @@ public final class WorkflowImports {
         return null;
     }
 
-    /** {@code base} unless a workflow already has that name; then {@code base-suffix}, numbered if that is taken too, with a note. */
-    private static String free(String base, String suffix, Collection<String> existing, List<String> notes) {
+    /** The draft's name and route: the natural ones, or ones of its own when a workflow already has the natural name. */
+    private record Naming(String name, String path) {
+    }
+
+    /**
+     * {@code base} with {@code naturalPath} unless a workflow already has that name; then
+     * {@code base-suffix} (numbered if that is taken too) and a route of its own, since the
+     * natural one is served by the existing workflow, with a note that says so.
+     */
+    private static Naming free(String base, String suffix, String naturalPath, String verb, Collection<String> existing, List<String> notes) {
         if (existing == null || !existing.contains(base)) {
-            return base;
+            return new Naming(base, naturalPath);
         }
         String candidate = Ids.slug(base + "-" + suffix);
         for (int n = 2; existing.contains(candidate); n++) {
             candidate = Ids.slug(base + "-" + suffix + "-" + n);
         }
-        notes.add("A workflow named " + base + " already exists, so this draft is named " + candidate + "; change metadata.name if you prefer another.");
-        return candidate;
+        String tail = candidate.substring(base.length());
+        String path = naturalPath.contains(":") ? naturalPath + tail : naturalPath + ":" + Ids.slug(verb) + tail;
+        notes.add("A workflow named " + base + " already exists and answers " + naturalPath + ", so this draft is named " + candidate
+                + " and answers " + path + "; change metadata.name and api.path if you prefer others.");
+        return new Naming(candidate, path);
     }
 
     private static ObjectNode emptySchema() {

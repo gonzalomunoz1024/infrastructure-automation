@@ -1,0 +1,52 @@
+# The web app and, on the same origin, the backend: nginx's entrypoint fills in API_UPSTREAM
+# (the backend's base URL, like http://backend:8080) and writes this to conf.d.
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    server_tokens off;
+
+    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # job events and the assistant stream as server-sent events
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        client_max_body_size 20m;
+    }
+
+    location /ws/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 1h;
+    }
+
+    # the settings page shows the backend's health and version; metrics stay inside the cluster
+    location ~ ^/actuator/(health|info)$ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_set_header Host $host;
+    }
+
+    # the container's own probe
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        add_header Cache-Control "no-cache";
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,16 @@
+{{- $temporal := dict "target" .Values.temporal.address "namespace" .Values.temporal.namespace "task-queue" .Values.temporal.taskQueue "ui-url" .Values.temporal.uiUrl -}}
+{{- $chart := dict
+      "platform" (dict "content" (dict "dir" "/content/repo") "temporal" $temporal)
+      "management" (dict "endpoint" (dict "health" (dict "probes" (dict "enabled" true)))) -}}
+{{- $config := mustMergeOverwrite $chart (deepCopy (.Values.backend.config | default dict)) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.fullname" . }}-backend
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+data:
+  # the backend's application.yml overrides (SPRING_CONFIG_ADDITIONAL_LOCATION); references only, no secrets
+  application.yml: |
+    {{- toYaml $config | nindent 4 }}

@@ -33,7 +33,8 @@ class CatalogQueryHandlerTest {
     void oneEntryPerPublishedWorkflowAsTheApiDocDescribesIt() {
         List<CatalogEntry> entries = handler.entries().collectList().block();
         assertThat(entries).extracting(CatalogEntry::workflow).containsExactly(
-                "build-vm-image", "create-database", "create-vm", "delete-vm", "mongodb-upgrade", "patch-cve", "request-storage", "vm-restart", "web-environment");
+                "build-vm-image", "create-database", "create-vm", "delete-vm", "mongodb-upgrade", "patch-cve", "request-storage", "reserve-ip-address", "vm-restart",
+                "web-environment");
         CatalogEntry restart = entries.stream().filter(e -> e.workflow().equals("vm-restart")).findFirst().orElseThrow();
         assertThat(restart.title()).isEqualTo("VM restart");
         assertThat(restart.noun()).isEqualTo("vm");

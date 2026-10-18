@@ -1,0 +1,78 @@
+# Every option on, for `helm lint`/`helm template` in CI and as an example of a full install.
+image:
+  registry: registry.example.com/platform
+imagePullSecrets: [registry-credentials]
+
+backend:
+  profiles: [temporal, git, vault, oidc, live]
+  config:
+    platform:
+      identity:
+        mode: oidc
+        oidc-issuer: https://login.example.com/realms/platform
+      credentials:
+        mode: vault
+        vault-url: https://vault.example.com
+  env:
+    - { name: LOGGING_LEVEL_COM_IAF, value: INFO }
+
+worker:
+  enabled: true
+  replicas: 3
+
+temporal:
+  address: temporal-frontend.temporal.svc.cluster.local:7233
+  namespace: platform
+  uiUrl: https://temporal.example.com
+
+postgres:
+  enabled: true
+  url: jdbc:postgresql://platform-db.data.svc.cluster.local:5432/platform
+  username: platform
+  passwordSecret: { name: platform-db, key: password }
+
+content:
+  repository: https://git.example.com/platform/content.git
+  ref: main
+  credentialsSecret: { name: content-repo-credentials }
+
+secrets:
+  envFrom: [platform-assistant]
+  env:
+    - { name: PLATFORM_CREDENTIALS_VAULTTOKEN, secretName: platform-vault, key: token }
+
+vaultAgent:
+  enabled: true
+  role: platform
+  configFile: platform.properties
+  annotations:
+    vault.hashicorp.com/agent-inject-secret-platform.properties: secret/data/platform/backend
+
+ingress:
+  enabled: true
+  className: nginx
+  host: platform.example.com
+  tlsSecretName: platform-tls
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    labels: { release: prometheus }
+
+providerWorkers:
+  - name: ip-pool
+    image: { repository: registry.example.com/team-platform/ip-pool-provider, tag: 1.0.0 }
+    replicas: 2
+  - name: dns-records
+    image: { repository: registry.example.com/team-platform/dns-records-provider, tag: 1.0.0 }
+    replicas: 2
+    drainSeconds: 60
+    envFrom: [dns-records-api]
+    podAnnotations:
+      vault.hashicorp.com/agent-inject: "true"
+      vault.hashicorp.com/role: dns-records
+  - name: cmdb
+    image: { repository: registry.example.com/team-data/cmdb-provider, tag: 2.3.1 }
+    resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { memory: 512Mi } }

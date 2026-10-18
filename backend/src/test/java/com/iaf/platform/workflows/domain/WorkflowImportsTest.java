@@ -42,6 +42,7 @@ class WorkflowImportsTest {
         ImportedWorkflow i = WorkflowImports.build("ansible", "ops-playbooks/vm.restart", PROVIDERS, TYPES, EXISTING);
         WorkflowDefinition d = WorkflowYaml.parse(i.yaml());
         assertThat(d.name()).as("vm-restart exists, so the draft gets a name of its own").isEqualTo("vm-restart-from-ops-playbooks");
+        assertThat(d.api().path()).as("and a route of its own, since vm-restart answers the natural one").isEqualTo("/api/v1/vms:restart-from-ops-playbooks");
         Step run = d.steps().get(0);
         assertThat(run.type()).isEqualTo(StepType.ANSIBLE);
         assertThat(run.withNode("playbook").path("git").path("repo").asText()).isEqualTo("github.com/acme/ops-playbooks");
@@ -89,6 +90,7 @@ class WorkflowImportsTest {
         ImportedWorkflow i = WorkflowImports.build("openapi", "vsphere", PROVIDERS, TYPES, EXISTING);
         WorkflowDefinition d = WorkflowYaml.parse(i.yaml());
         assertThat(d.name()).isEqualTo("create-vm-from-vsphere");
+        assertThat(d.api().path()).isEqualTo("/api/v1/vms:create-from-vsphere");
         assertThat(d.inputSchema().path("required").toString()).isEqualTo("[\"name\",\"templateId\"]");
         Step create = d.steps().get(0);
         assertThat(create.withText("provider")).isEqualTo("vsphere");

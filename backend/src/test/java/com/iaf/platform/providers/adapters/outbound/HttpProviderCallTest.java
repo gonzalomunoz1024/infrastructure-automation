@@ -303,6 +303,31 @@ class HttpProviderCallTest {
     }
 
     @Test
+    void aCustomCodeProviderFailsClearlyOutsideTemporalButStillPreviews() {
+        ProviderDefinition sdk = ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: ip-pool, owner: team-platform, version: 1.0.0 }
+                spec:
+                  type: sdk
+                  actions:
+                    - { id: address.reserve, effect: create, sample: { address: 10.0.0.7 } }
+                """);
+        StepVerifier.create(call.call(new ProviderCall("job_1", 1, sdk, sdk.action("address.reserve").orElseThrow(), "dev", json("{}"), false)))
+                .expectErrorSatisfies(e -> {
+                    ProviderCallException failure = (ProviderCallException) e;
+                    assertThat(failure.errorClass()).isEqualTo("unsupported");
+                    assertThat(failure.retryable()).isFalse();
+                    assertThat(failure.getMessage()).contains("custom-code provider", "Temporal worker", "provider-ip-pool", "temporal profile");
+                })
+                .verify();
+        assertThat(hits).isEmpty();
+        StepVerifier.create(call.call(new ProviderCall("job_1", 1, sdk, sdk.action("address.reserve").orElseThrow(), "dev", json("{}"), true)))
+                .assertNext(out -> assertThat(out.path("address").asText()).isEqualTo("10.0.0.7"))
+                .verifyComplete();
+    }
+
+    @Test
     void urlsAreBuiltFromTheTemplateTheQueryParametersAndTheRest() {
         ObjectNode input = (ObjectNode) json("{\"target\":\"a b\",\"state\":\"running\",\"page\":2,\"nested\":{\"x\":1}}");
         String url = HttpProviderCall.url("http://h/api", new Operation("GET", "/jobs?target={target}&state={state}", Set.of()), input);
