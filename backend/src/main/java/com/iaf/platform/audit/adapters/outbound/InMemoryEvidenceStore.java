@@ -15,6 +15,7 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -36,7 +37,7 @@ public class InMemoryEvidenceStore implements EvidenceStore {
         EvidenceEntry[] chained = new EvidenceEntry[1];
         records.compute(jobId, (id, current) -> {
             if (current != null && current.sealed() != null) {
-                throw new IllegalStateException("evidence record " + id + " is sealed; a late " + entry.kind().json() + " entry is not accepted");
+                throw new SealedRecordException(id, entry.kind());
             }
             int seq = current == null ? 1 : current.entries().size() + 1;
             String previous = current == null ? HashChain.GENESIS : current.latestHash();

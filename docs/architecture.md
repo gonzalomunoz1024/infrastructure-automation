@@ -237,7 +237,12 @@ runs on a non-blocking thread, and the wiring test expects none.
   `release:<id>` and every other recorded command into the platform stream. Each entry is
   redacted (`common/redaction`: secret-looking fields and the values resolved from Vault during
   the run) before it is chained, then queued for the SIEM by `SiemExporter` (bounded, batched,
-  retried with backoff). The scheduled seal seals closed records and checkpoints open ones; on
+  retried with backoff). A store that fails an append is tried once more; a second failure loses
+  that entry, counts it in `audit.append.failed` (tag `store`; `audit_append_failed_total` on
+  `/actuator/prometheus`) and logs an error naming the record. The job goes on: evidence never
+  stops a job, so alert on that counter. A sealed record refusing a late entry
+  (`SealedRecordException`) is a refusal, logged as a warning and not counted. The scheduled seal
+  seals closed records and checkpoints open ones; on
   demand (`POST /audit:seal`) only an admin seals. A record is shared by the job's requester, a
   member of the teams it ran for (`RecordOwners`: the requester's teams as the runs index kept
   them, the workflow's owner team) or an admin, and each link is published as `audit.shared`

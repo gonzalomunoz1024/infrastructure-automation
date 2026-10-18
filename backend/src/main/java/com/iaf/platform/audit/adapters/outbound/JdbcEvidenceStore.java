@@ -18,6 +18,7 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.adapters.jdbc.Jdbc;
@@ -72,7 +73,7 @@ public class JdbcEvidenceStore implements EvidenceStore {
             }
             Header current = locked.orElseThrow(() -> new IllegalStateException("evidence record " + jobId + " vanished while appending"));
             if (current.record().sealed() != null) {
-                throw new IllegalStateException("evidence record " + jobId + " is sealed; a late " + entry.kind().json() + " entry is not accepted");
+                throw new SealedRecordException(jobId, entry.kind());
             }
             EvidenceEntry chained = entry.chained(current.count() + 1, current.record().latestHash());
             EvidenceRecord grown = current.record().append(chained);

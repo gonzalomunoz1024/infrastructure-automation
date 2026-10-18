@@ -6,6 +6,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,8 @@ import com.iaf.platform.audit.ports.outbound.SiemPort;
 import com.iaf.platform.common.events.EventBus;
 import com.iaf.platform.common.redaction.SecretValues;
 import com.iaf.platform.config.PlatformProperties;
+
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 class AuditListenerTest {
 
@@ -360,6 +363,66 @@ class AuditListenerTest {
         assertThat(sent.get(0).hash()).isEqualTo(own.record("job_s").orElseThrow().latestHash());
         assertThat(sent.get(0).data().at("/input/token").asText()).isEqualTo("***");
         assertThat(sent.get(1).recordId()).isEqualTo(EvidenceRecord.PLATFORM);
+    }
+
+    /** A store whose appends fail while {@code failures} lasts. */
+    static final class FlakyStore extends InMemoryEvidenceStore {
+        final AtomicInteger failures;
+        final AtomicInteger calls = new AtomicInteger();
+
+        FlakyStore(int failures) {
+            this.failures = new AtomicInteger(failures);
+        }
+
+        @Override
+        public EvidenceEntry append(String jobId, EvidenceEntry entry) {
+            calls.incrementAndGet();
+            if (failures.getAndDecrement() > 0) {
+                throw new java.io.UncheckedIOException(new java.io.IOException("disk full"));
+            }
+            return super.append(jobId, entry);
+        }
+    }
+
+    @Test
+    void aFailedAppendIsRetriedOnceThenCountedAndTheJobGoesOn() {
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        FlakyStore once = new FlakyStore(1);
+        EventBus bus = new EventBus(clock);
+        new AuditListener(once, bus, props, clock, mapper, new SecretValues(), SiemExporter.none(), meters).subscribe();
+        bus.publish("job.started", "job", "job_f", "ana", node().put("jobId", "job_f").put("workflow", "vm-restart").put("version", "1.2.0"));
+
+        assertThat(once.calls.get()).as("tried twice").isEqualTo(2);
+        assertThat(once.record("job_f").orElseThrow().entries()).hasSize(1);
+        assertThat(meters.counter(AuditListener.APPEND_FAILED, "store", "FlakyStore").count()).isZero();
+
+        SimpleMeterRegistry failing = new SimpleMeterRegistry();
+        FlakyStore broken = new FlakyStore(2);
+        EventBus other = new EventBus(clock);
+        List<String> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        new AuditListener(broken, other, props, clock, mapper, new SecretValues(), SiemExporter.none(), failing).subscribe();
+        other.register(e -> seen.add(e.type()));
+        other.publish("job.started", "job", "job_g", "ana", node().put("jobId", "job_g").put("workflow", "vm-restart").put("version", "1.2.0"));
+        other.publish("job.step", "job", "job_g", "platform", node().put("jobId", "job_g").put("step", "s").put("status", "succeeded"));
+
+        assertThat(seen).as("the bus and the listeners after the audit carry on").containsExactly("job.started", "job.step");
+        assertThat(failing.counter(AuditListener.APPEND_FAILED, "store", "FlakyStore").count()).isEqualTo(1.0);
+        assertThat(broken.record("job_g").orElseThrow().entries()).extracting(EvidenceEntry::kind).containsExactly(EvidenceKind.STEP);
+    }
+
+    @Test
+    void aSealedRecordRefusingALateEntryIsNotAFailure() {
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        InMemoryEvidenceStore own = new InMemoryEvidenceStore();
+        EventBus bus = new EventBus(clock);
+        new AuditListener(own, bus, props, clock, mapper, new SecretValues(), SiemExporter.none(), meters).subscribe();
+        bus.publish("job.started", "job", "job_s", "ana", node().put("jobId", "job_s").put("workflow", "vm-restart").put("version", "1.2.0"));
+        own.seal("job_s", new EvidenceRecord.Seal(NOW, "sig", "key-1", 1, own.record("job_s").orElseThrow().latestHash()));
+
+        bus.publish("job.step", "job", "job_s", "platform", node().put("jobId", "job_s").put("step", "late").put("status", "succeeded"));
+
+        assertThat(own.record("job_s").orElseThrow().entries()).hasSize(1);
+        assertThat(meters.counter(AuditListener.APPEND_FAILED, "store", "InMemoryEvidenceStore").count()).isZero();
     }
 
     private void job(String type, String actor, JsonNode data) {

@@ -27,6 +27,7 @@ import com.iaf.platform.audit.domain.EvidenceEntry;
 import com.iaf.platform.audit.domain.EvidenceFilter;
 import com.iaf.platform.audit.domain.EvidenceRecord;
 import com.iaf.platform.audit.domain.HashChain;
+import com.iaf.platform.audit.domain.SealedRecordException;
 import com.iaf.platform.audit.domain.ShareToken;
 import com.iaf.platform.audit.ports.outbound.EvidenceStore;
 import com.iaf.platform.common.domain.NotFoundException;
@@ -104,7 +105,7 @@ public abstract class WormEvidenceStore implements EvidenceStore {
             for (int attempt = 1;; attempt++) {
                 EvidenceRecord current = current(id);
                 if (current != null && sealed(id, current)) {
-                    throw new IllegalStateException("evidence record " + id + " is sealed; a late " + entry.kind().json() + " entry is not accepted");
+                    throw new SealedRecordException(id, entry.kind());
                 }
                 int seq = current == null ? 1 : lastSeq(current) + 1;
                 String previous = current == null ? HashChain.GENESIS : current.latestHash();
