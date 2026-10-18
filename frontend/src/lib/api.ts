@@ -8,6 +8,7 @@ import type {
   Approval,
   ApprovalStatus,
   AssistantEvent,
+  AssistantEventType,
   AssistantSession,
   AssistantSessionCreated,
   AssistantSessionRequest,
@@ -527,6 +528,18 @@ function parseSseBlock(block: string): SseFrame | null {
   return frame
 }
 
+const ASSISTANT_EVENTS: readonly string[] = ['status', 'draft', 'message', 'validation', 'done'] satisfies AssistantEventType[]
+
+/**
+ * A frame of the assistant's message stream as an event: the backend names the event type in the
+ * SSE `event:` field (a frame without one is a `message`, as in any SSE stream) and sends the payload
+ * alone as the data. Null for an event type the page does not know.
+ */
+export function assistantEventOf(name: string | undefined, data: unknown): AssistantEvent | null {
+  const type = name ?? 'message'
+  return ASSISTANT_EVENTS.includes(type) ? { type: type as AssistantEventType, data } : null
+}
+
 /** POST a body and read the SSE response as it streams (EventSource cannot POST). */
 export async function streamSse<T>(path: string, body: unknown, onEvent: (event: T, frame: { event?: string; id?: string }) => void, opts: RequestOptions = {}): Promise<void> {
   const res = await send('POST', path, body, opts, 'text/event-stream')
@@ -718,13 +731,18 @@ export const api = {
 
   /* assistant */
   createAssistantSession: (body: AssistantSessionRequest) => post<AssistantSessionCreated>('/assistant/sessions', body),
-  /** streams `{ type, data }` events until `done` */
+  /** streams the events of one message until `done`: the SSE event name is the type, the data the payload */
   sendAssistantMessage: (sessionId: string, text: string, onEvent: (event: AssistantEvent) => void, opts?: RequestOptions) =>
-    streamSse<AssistantEvent | unknown>(`/assistant/sessions/${enc(sessionId)}/messages`, { text }, (parsed, frame) => {
-      const e = parsed as Partial<AssistantEvent>
-      if (e && typeof e === 'object' && typeof e.type === 'string') onEvent(e as AssistantEvent)
-      else onEvent({ type: (frame.event as AssistantEvent['type']) ?? 'message', data: parsed })
-    }, opts),
+    streamSse<unknown>(
+      `/assistant/sessions/${enc(sessionId)}/messages`,
+      { text },
+      (data, frame) => {
+        const event = assistantEventOf(frame.event, data)
+        if (event) onEvent(event)
+      },
+      opts,
+    ),
+  /** the session as the backend keeps it: mode, workflow, the latest draft and the exchange so far */
   assistantSession: (id: string) => get<AssistantSession>(`/assistant/sessions/${enc(id)}`),
 
   /* platform */

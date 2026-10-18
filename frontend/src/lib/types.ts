@@ -632,7 +632,14 @@ export type AssistantMode = 'create' | 'edit'
 export type AssistantSessionRequest = { mode: AssistantMode; workflow?: string; draftYaml?: string }
 export type AssistantSessionCreated = { sessionId: string }
 export type AssistantEventType = 'status' | 'draft' | 'message' | 'validation' | 'done'
+/** One event of the message stream: the SSE event name is the type and the SSE data the payload (see the payloads below). */
 export type AssistantEvent = { type: AssistantEventType; data: unknown }
+/** `status`: what the assistant is doing, with the agent's own session id when there is one. */
+export type AssistantStatusData = { status: string; externalId?: string }
+/** `message`: the assistant's prose (an explanation, a question, what it did). */
+export type AssistantMessageData = { role: 'assistant'; text: string }
+/** `done`: the end of the stream; `failed` with the reason when the assistant could not finish. */
+export type AssistantDoneData = { status: 'done' | 'failed'; error?: string }
 export type AssistantDraftStatus = 'working' | 'ready' | 'needs_input' | 'failed'
 export type AssistantDraft = {
   status: AssistantDraftStatus
@@ -647,8 +654,20 @@ export type AssistantDraft = {
 }
 /** The `validation` event: the platform's checks on the draft, on their steps, as the designer lists them. */
 export type AssistantValidation = { valid: boolean; problems: Problem[] }
-export type AssistantMessage = { role: 'user' | 'assistant'; text: string; at?: string }
-export type AssistantSession = { sessionId: string; mode?: AssistantMode; workflow?: string; status: string; draft?: AssistantDraft; history: AssistantMessage[]; createdAt?: string; updatedAt?: string }
+/** A turn of the exchange as the session keeps it. */
+export type AssistantTurn = { role: 'user' | 'assistant'; text: string; at: string }
+export type AssistantSessionStatus = 'idle' | 'working' | 'done' | 'failed'
+/** `GET /assistant/sessions/{id}`: the backend's SessionView; `workflow` only in edit mode, `draft` once there is one. */
+export type AssistantSession = {
+  sessionId: string
+  mode: AssistantMode
+  workflow?: string
+  status: AssistantSessionStatus
+  draft?: AssistantDraft
+  history: AssistantTurn[]
+  createdAt: string
+  updatedAt: string
+}
 
 /* ----------------------------------------------------------------------------
    Platform (actuator)

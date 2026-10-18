@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { mockDesignerApi, type MockApi } from './designer-fixtures'
+import { EXPLANATION, mockDesignerApi, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against a mocked backend (the backend does not run here): the real
@@ -190,9 +190,28 @@ test.describe('workflow designer', () => {
     await page.keyboard.press('Enter')
     await expect(panel.getByText('Announce the restart in #compute-ops first.')).toBeVisible()
     expect(api.assistant).toEqual(['Tell #compute-ops before restarting'])
+    // what the draft changes on the canvas, before anything is applied
+    const diff = panel.getByTestId('draft-diff')
+    await expect(diff).toContainText('Changes to the canvas')
+    await expect(diff).toContainText('name: Announce the restart')
+    await expect(node(page, 'step:announce')).toHaveCount(0)
     await panel.getByRole('button', { name: 'Apply to canvas' }).click()
     await expect(node(page, 'step:announce')).toBeVisible()
     await expect(panel.getByRole('button', { name: 'Applied' })).toBeDisabled()
+    await expect(panel.getByTestId('draft-diff')).toHaveCount(0)
+  })
+
+  test('the assistant explains the workflow in a message, with nothing to apply', async ({ page }) => {
+    const api = await openVmRestart(page)
+    await page.getByRole('button', { name: 'Assistant' }).click()
+    const panel = page.getByTestId('assistant-panel')
+    await panel.getByRole('button', { name: 'Explain what this workflow does' }).click()
+    await expect(panel.getByTestId('assistant-message')).toHaveText(EXPLANATION)
+    await expect(panel.getByTestId('assistant-answer')).toContainText('No change to the canvas')
+    // said once, as a message: the unchanged draft does not repeat it or offer to apply it
+    await expect(panel.getByText(EXPLANATION)).toHaveCount(1)
+    await expect(panel.getByRole('button', { name: 'Apply to canvas' })).toHaveCount(0)
+    expect(api.assistant).toEqual(['Explain what this workflow does'])
   })
 
   test('a new workflow starts from the dialog and the first save creates it', async ({ page }) => {

@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import type {
   AnsibleImport,
   Approval,
+  AssistantSession,
   AuditVerification,
   CatalogEntry,
   ChangeRequestDetail,
@@ -899,3 +900,25 @@ export const ASSISTANT_SESSION_EVENTS: EvidenceEntry[] = [
   { seq: 9, at: ago(1), kind: 'decision', actor: 'gonzalo', data: { event: 'assistant.draft-updated', aggregate: 'assistant-session', aggregateId: 'as-77', draftId: 'as-77', status: 'ready', contentHash: 'sha256:d1', valid: false, errors: 1 }, hash: hash('a3'), previous: hash('a2') },
   { seq: 10, at: ago(1), kind: 'decision', actor: 'ana', data: { event: 'assistant.started', aggregate: 'assistant-session', aggregateId: 'as-78', draftId: 'as-78', user: 'ana', kind: 'workflow-draft', agent: 'devin', mode: 'create' }, hash: hash('a4'), previous: hash('a3') },
 ]
+
+/** GET /assistant/sessions/as-90: an edit of vm-restart the backend kept (its SessionView), one exchange in, the draft not valid yet. */
+export const ASSISTANT_SESSION: AssistantSession = {
+  sessionId: 'as-90',
+  mode: 'edit',
+  workflow: 'vm-restart',
+  status: 'done',
+  draft: {
+    status: 'ready',
+    summary: 'Restarts the VM after a backup check, on vcenter.',
+    workflowYaml: ASSISTANT_DRAFT_YAML,
+    changes: ['Added "Check the backups" before the restart'],
+    validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] },
+    dryRun: { passed: false, path: ['check'], error: 'No provider called vcenter' },
+  },
+  history: [
+    { role: 'user', text: 'Check the backups before restarting.', at: ago(12) },
+    { role: 'assistant', text: 'I added a backup check before the restart.', at: ago(11) },
+  ],
+  createdAt: ago(13),
+  updatedAt: ago(11),
+}

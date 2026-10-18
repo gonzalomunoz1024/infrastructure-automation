@@ -625,12 +625,13 @@ test.describe('assistant', () => {
   test('the validation lists the problems on their steps, the timeline shows the session, and the draft becomes a change request', async ({ page }) => {
     const api = await mockApi(page, {
       'POST /assistant/sessions': { sessionId: 'as-77' },
+      // as the backend streams it: the type as the SSE event name, the payload alone as the data
       'POST /assistant/sessions/{id}/messages': sse([
-        { event: 'status', data: { type: 'status', data: 'Drafting' } },
-        { event: 'message', data: { type: 'message', data: { text: 'Here is a first draft: it checks the backups, then restarts.' } } },
-        { event: 'draft', data: { type: 'draft', data: { status: 'ready', summary: 'Restarts a VM after a backup check.', workflowYaml: ASSISTANT_DRAFT_YAML, validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] } } } },
-        { event: 'validation', data: { type: 'validation', data: { valid: false, problems: ASSISTANT_PROBLEMS } } },
-        { event: 'done', data: { type: 'done', data: {} } },
+        { id: 1, event: 'status', data: { status: 'Drafting' } },
+        { id: 2, event: 'message', data: { role: 'assistant', text: 'Here is a first draft: it checks the backups, then restarts.' } },
+        { id: 3, event: 'draft', data: { status: 'ready', summary: 'Restarts a VM after a backup check.', workflowYaml: ASSISTANT_DRAFT_YAML, validation: { valid: false, rounds: 2, errors: ['step.unknownProvider @restart: No provider called vcenter'] } } },
+        { id: 4, event: 'validation', data: { valid: false, problems: ASSISTANT_PROBLEMS } },
+        { id: 5, event: 'done', data: { status: 'done' } },
       ]),
       'POST /workflows:parse': { definition: ASSISTANT_DRAFT_DEFINITION, problems: [] },
       'GET /registry/providers': [],

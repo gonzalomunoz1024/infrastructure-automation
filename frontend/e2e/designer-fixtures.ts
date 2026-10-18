@@ -223,9 +223,13 @@ const DIFF = `--- a/workflows/team-compute/vm-restart.yaml
    description: Restart a virtual machine after safety checks, with an approval for production.
 `
 
-function sse(events: Obj[]): string {
-  return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('')
+/** An SSE body the way the backend writes the assistant's stream: the type as the event name, the payload alone as the data. */
+function sse(events: { type: string; data: unknown }[]): string {
+  return events.map((e, i) => `id:${i + 1}\nevent:${e.type}\ndata:${JSON.stringify(e.data)}\n\n`).join('')
 }
+
+/** The demo agent's answer to "Explain what this workflow does": prose, and the workflow unchanged. */
+export const EXPLANATION = 'VM restart takes a VM id, checks the VM exists and that no backup runs, asks compute-approvers to approve, restarts it with Ansible and waits for it to power on, then tells the owner.'
 
 const ME = { id: 'gonzalo', name: 'Gonzalo', email: 'gonzalo@example.com', teams: ['team-compute', 'team-platform'], roles: ['ops', 'admin'], admin: true, kind: 'user' }
 
@@ -244,6 +248,8 @@ function bodyOf(req: Request): Obj {
 /** Mocks every endpoint the designer calls; returns what the page sent. */
 export async function mockDesignerApi(page: Page): Promise<MockApi> {
   const calls: MockApi = { validations: [], resolves: [], uploads: [], drafts: [], dryRuns: [], created: [], publishes: [], merged: [], assistant: [] }
+  // the canvas the assistant session started from, which an explanation hands back unchanged
+  let sessionYaml = ''
   const jobs = vmRestartJobs()
   const providers = registryProviders()
   const resourceTypes = registryResourceTypes()
@@ -334,9 +340,26 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
           ? [{ id: 'rel_9', workflow: 'vm-restart', from: '1.2.0', to: '1.3.0', strategy: 'canary', status: 'canary', stageIndex: 0, stages: [10, 50, 100], stagePercent: 10, startedAt: '2026-10-17T10:05:00Z', stageStartedAt: '2026-10-17T10:05:00Z', gates: [], jobs: { current: 0, candidate: 0 }, history: [] }]
           : [],
       )
-    if (method === 'POST' && path === '/assistant/sessions') return json(route, { sessionId: 'as_1' })
+    if (method === 'POST' && path === '/assistant/sessions') {
+      sessionYaml = String(bodyOf(req).draftYaml ?? '')
+      return json(route, { sessionId: 'as_1' })
+    }
     if (method === 'POST' && path === '/assistant/sessions/as_1/messages') {
-      calls.assistant.push(String(bodyOf(req).text ?? ''))
+      const text = String(bodyOf(req).text ?? '')
+      calls.assistant.push(text)
+      if (/^explain/i.test(text)) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'text/event-stream',
+          body: sse([
+            { type: 'status', data: { status: 'Reading the workflow' } },
+            { type: 'draft', data: { status: 'ready', summary: EXPLANATION, workflowYaml: sessionYaml, validation: { valid: true, rounds: 1, errors: [] } } },
+            { type: 'validation', data: { valid: true, problems: [] } },
+            { type: 'message', data: { role: 'assistant', text: EXPLANATION } },
+            { type: 'done', data: { status: 'done' } },
+          ]),
+        })
+      }
       const draft = vmRestart()
       const flow = asObj(draft.workflow)
       const steps = Array.isArray(flow.do) ? flow.do : []
@@ -345,10 +368,11 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
         status: 200,
         contentType: 'text/event-stream',
         body: sse([
-          { type: 'status', data: { text: 'Reading the workflow and the registry' } },
-          { type: 'message', data: { text: 'I added a step that tells #compute-ops before anything happens.' } },
-          { type: 'draft', data: { status: 'ready', summary: 'Announce the restart in #compute-ops first.', workflowYaml: stringify(draft), changes: ['Added "Announce the restart" before "Check VM exists"'], validation: { valid: true }, dryRun: { passed: true } } },
-          { type: 'done', data: {} },
+          { type: 'status', data: { status: 'Reading the workflow and the registry' } },
+          { type: 'message', data: { role: 'assistant', text: 'I added a step that tells #compute-ops before anything happens.' } },
+          { type: 'draft', data: { status: 'ready', summary: 'Announce the restart in #compute-ops first.', workflowYaml: stringify(draft), changes: ['Added "Announce the restart" before "Check VM exists"'], validation: { valid: true, rounds: 1, errors: [] }, dryRun: { passed: true } } },
+          { type: 'validation', data: { valid: true, problems: [] } },
+          { type: 'done', data: { status: 'done' } },
         ]),
       })
     }

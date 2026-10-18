@@ -376,8 +376,11 @@ drafts, and edits an existing provider at `/providers/<name>/edit` on three step
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
 so an edit keeps the file as it is and bumps its version by a line edit of the metadata block. The
 assistant page shows the validation's problems as the designer's Issues list, the session's own
-events from the platform stream, and submits a ready draft as a change request. The settings page
-creates service accounts with the presets and the grouped scopes of `docs/api.md`.
+events from the platform stream, and submits a ready draft as a change request. It reads the
+message stream as the backend writes it (the SSE event name is the type, the data the payload
+alone) and keeps the session in its address (`?session=`), so a reload or a shared link goes on
+from `GET /assistant/sessions/{id}`, in the session's mode. The settings page creates service
+accounts with the presets and the grouped scopes of `docs/api.md`.
 
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
@@ -386,7 +389,10 @@ plan step `POST /workflows:import` drafts for the provider, parsed by `POST /wor
 An ansible step with a git playbook has two credential pickers fed by `GET /registry/credentials`:
 the Git credential (`playbook.git.credential`, the read token of a private repository) and the
 machine credential (`credential`, the SSH key of the hosts). "Pin to latest commit" sends the git
-credential to `GET /playbooks:resolve`, never the machine credential.
+credential to `GET /playbooks:resolve`, never the machine credential. The assistant panel shows a
+draft as a diff of the canvas against it, both rendered by `POST /workflows:render` (the draft
+after `POST /workflows:parse`), before "Apply to canvas"; an answer that leaves the workflow as it
+is, like an explanation, is a message with nothing to apply.
 
 ## Where things are in Git
 
