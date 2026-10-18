@@ -36,7 +36,7 @@ public final class Inventory {
         if (props == null || !props.isObject()) {
             return out;
         }
-        Iterator<Map.Entry<String, JsonNode>> it = props.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = props.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             JsonNode xr = e.getValue().get("x-resource");

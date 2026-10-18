@@ -63,7 +63,7 @@ public final class Schemas {
         if (example.isObject()) {
             s.put("type", "object");
             ObjectNode props = F.objectNode();
-            example.fields().forEachRemaining(e -> props.set(e.getKey(), infer(e.getValue())));
+            example.properties().forEach(e -> props.set(e.getKey(), infer(e.getValue())));
             s.set("properties", props);
             return s;
         }
@@ -102,7 +102,7 @@ public final class Schemas {
         }
         JsonNode props = schema.get("properties");
         if (props != null && props.isObject()) {
-            Iterator<Map.Entry<String, JsonNode>> it = props.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = props.properties().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, JsonNode> e = it.next();
                 String p = prefix.isEmpty() ? e.getKey() : prefix + "." + e.getKey();
@@ -128,7 +128,7 @@ public final class Schemas {
             return;
         }
         if (v.isObject()) {
-            v.fields().forEachRemaining(e -> {
+            v.properties().forEach(e -> {
                 String p = prefix.isEmpty() ? e.getKey() : prefix + "." + e.getKey();
                 out.add(p);
                 collectValuePaths(e.getValue(), p, out, depth + 1);
@@ -170,7 +170,7 @@ public final class Schemas {
         }
         if (value.isObject()) {
             JsonNode props = schema.path("properties");
-            value.fields().forEachRemaining(e -> {
+            value.properties().forEach(e -> {
                 String p = prefix.isEmpty() ? e.getKey() : prefix + "." + e.getKey();
                 JsonNode sub = props.get(e.getKey());
                 if (sub == null) {
@@ -212,7 +212,7 @@ public final class Schemas {
         if (override == null || !override.isObject()) {
             return out;
         }
-        override.fields().forEachRemaining(e -> {
+        override.properties().forEach(e -> {
             JsonNode existing = out.get(e.getKey());
             if (existing != null && existing.isObject() && e.getValue().isObject()) {
                 out.set(e.getKey(), merge(existing, e.getValue()));
@@ -242,7 +242,7 @@ public final class Schemas {
             case "object" -> {
                 ObjectNode o = F.objectNode();
                 JsonNode props = schema.path("properties");
-                props.fields().forEachRemaining(e -> o.set(e.getKey(), sample(e.getValue())));
+                props.properties().forEach(e -> o.set(e.getKey(), sample(e.getValue())));
                 yield o;
             }
             case "array" -> {
@@ -264,7 +264,7 @@ public final class Schemas {
     public static Map<String, JsonNode> properties(JsonNode schema) {
         Map<String, JsonNode> out = new LinkedHashMap<>();
         if (schema != null) {
-            schema.path("properties").fields().forEachRemaining(e -> out.put(e.getKey(), e.getValue()));
+            schema.path("properties").properties().forEach(e -> out.put(e.getKey(), e.getValue()));
         }
         return out;
     }

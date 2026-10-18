@@ -13,7 +13,7 @@ import com.iaf.platform.common.domain.Problem;
 /** The payload shapes of the builder's events, so every adapter speaks the same SSE dialect. */
 public final class Events {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+    private static final ObjectMapper MAPPER = new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL));
 
     private Events() {
     }

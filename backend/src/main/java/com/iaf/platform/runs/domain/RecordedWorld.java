@@ -89,7 +89,7 @@ public final class RecordedWorld {
             ObjectNode overlay = overlay(key);
             if (overlay != null) {
                 ObjectNode o = (ObjectNode) out;
-                overlay.fields().forEachRemaining(e -> {
+                overlay.properties().forEach(e -> {
                     if (o.has(e.getKey())) {
                         o.set(e.getKey(), e.getValue());
                     }
@@ -105,7 +105,7 @@ public final class RecordedWorld {
                 }
                 case CHANGE -> {
                     ObjectNode fields = changed.computeIfAbsent(key, k -> F.objectNode());
-                    Iterator<Map.Entry<String, JsonNode>> it = input.fields();
+                    Iterator<Map.Entry<String, JsonNode>> it = input.properties().iterator();
                     while (it.hasNext()) {
                         Map.Entry<String, JsonNode> e = it.next();
                         if (!"id".equals(e.getKey()) && e.getValue().isValueNode()) {

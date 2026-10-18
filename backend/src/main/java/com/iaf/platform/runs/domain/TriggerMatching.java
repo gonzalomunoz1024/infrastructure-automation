@@ -63,7 +63,7 @@ public final class TriggerMatching {
         JsonNode labels = match.get("labels");
         if (labels != null && labels.isObject()) {
             JsonNode actual = alert.path("labels");
-            var it = labels.fields();
+            var it = labels.properties().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, JsonNode> e = it.next();
                 JsonNode v = actual.get(e.getKey());

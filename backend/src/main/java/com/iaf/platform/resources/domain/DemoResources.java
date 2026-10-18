@@ -150,7 +150,7 @@ public final class DemoResources {
             return a;
         }
         Set<String> assigned = new LinkedHashSet<>();
-        Iterator<Map.Entry<String, JsonNode>> it = props.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = props.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             String p = e.getKey();
@@ -186,7 +186,7 @@ public final class DemoResources {
             }
             String array = null;
             String reference = null;
-            Iterator<Map.Entry<String, JsonNode>> again = props.fields();
+            Iterator<Map.Entry<String, JsonNode>> again = props.properties().iterator();
             while (again.hasNext()) {
                 Map.Entry<String, JsonNode> e = again.next();
                 if (assigned.contains(e.getKey())) {

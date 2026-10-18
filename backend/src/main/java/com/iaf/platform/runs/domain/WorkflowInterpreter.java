@@ -453,7 +453,7 @@ public final class WorkflowInterpreter {
             case APPROVAL -> approval(s, with, attempt);
             case WAIT -> wait(s, with, previous, timeout);
             case SET -> {
-                with.fields().forEachRemaining(e -> ctx.setVar(e.getKey(), e.getValue()));
+                with.properties().forEach(e -> ctx.setVar(e.getKey(), e.getValue()));
                 yield with;
             }
             case RAISE -> throw StepFailure.fatal(s.id(), text(with, "error") == null ? "Error" : text(with, "error"),
@@ -679,7 +679,7 @@ public final class WorkflowInterpreter {
                 JsonNode out = js.output() == null ? NullNode.getInstance() : js.output();
                 ctx.recordOutput(st, out);
                 if (st.type() == StepType.SET && out.isObject()) {
-                    out.fields().forEachRemaining(e -> ctx.setVar(e.getKey(), e.getValue()));
+                    out.properties().forEach(e -> ctx.setVar(e.getKey(), e.getValue()));
                 }
                 if (!st.type().isContainer() && st.type() != StepType.SWITCH) {
                     ctx.completed(st, js.input(), out);
@@ -771,7 +771,7 @@ public final class WorkflowInterpreter {
             return edit;
         }
         ObjectNode out = b.deepCopy();
-        edit.fields().forEachRemaining(e -> {
+        edit.properties().forEach(e -> {
             JsonNode existing = out.get(e.getKey());
             out.set(e.getKey(), existing != null && existing.isObject() && e.getValue().isObject() ? merge(existing, e.getValue()) : e.getValue());
         });

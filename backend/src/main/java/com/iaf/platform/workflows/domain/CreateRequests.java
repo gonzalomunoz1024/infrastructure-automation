@@ -112,7 +112,7 @@ public final class CreateRequests {
         ObjectNode out = create.deepCopy();
         JsonNode props = schema == null ? null : schema.get("properties");
         if (props != null && props.isObject()) {
-            props.fields().forEachRemaining(e -> {
+            props.properties().forEach(e -> {
                 JsonNode dflt = e.getValue().get("default");
                 if (dflt != null && !out.has(e.getKey())) {
                     out.set(e.getKey(), dflt);
@@ -134,7 +134,7 @@ public final class CreateRequests {
             return input;
         }
         ObjectNode copy = null;
-        Iterator<Map.Entry<String, JsonNode>> it = input.get("properties").fields();
+        Iterator<Map.Entry<String, JsonNode>> it = input.get("properties").properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             String producer = e.getValue().path("x-resource").path("orCreateWith").asText(null);
@@ -153,7 +153,7 @@ public final class CreateRequests {
     private static ObjectNode bothForms(JsonNode field, String producer, JsonNode producerInput) {
         ObjectNode out = F.objectNode();
         ObjectNode id = F.objectNode();
-        field.fields().forEachRemaining(e -> {
+        field.properties().forEach(e -> {
             if (ANNOTATIONS.contains(e.getKey()) || e.getKey().startsWith("x-")) {
                 out.set(e.getKey(), e.getValue());
             } else {

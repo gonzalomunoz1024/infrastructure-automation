@@ -337,7 +337,7 @@ public final class WorkflowDoc {
             return 0;
         }
         if (node.isObject()) {
-            Iterator<Map.Entry<String, JsonNode>> it = node.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = node.properties().iterator();
             List<Map.Entry<String, JsonNode>> entries = new ArrayList<>();
             it.forEachRemaining(entries::add);
             for (Map.Entry<String, JsonNode> e : entries) {

@@ -137,7 +137,7 @@ public class HttpStepRunner implements AutomationRunnerPort {
             if (!h.isObject()) {
                 throw new IllegalArgumentException("headers is an object of names to values");
             }
-            Iterator<Map.Entry<String, JsonNode>> it = h.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = h.properties().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, JsonNode> e = it.next();
                 String value = e.getValue().isValueNode() ? e.getValue().asText() : e.getValue().toString();

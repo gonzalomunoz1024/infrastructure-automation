@@ -112,7 +112,7 @@ public final class OpenApiImporter {
     /** Every operation of the document, in document order. */
     public static List<Located> operations(JsonNode doc) {
         List<Located> out = new ArrayList<>();
-        Iterator<Map.Entry<String, JsonNode>> paths = doc.path("paths").fields();
+        Iterator<Map.Entry<String, JsonNode>> paths = doc.path("paths").properties().iterator();
         while (paths.hasNext()) {
             Map.Entry<String, JsonNode> p = paths.next();
             if (p.getKey().startsWith("x-") || !p.getValue().isObject()) {
@@ -273,7 +273,7 @@ public final class OpenApiImporter {
             JsonNode bodySchema = content(doc, body.get("content"));
             if (bodySchema != null) {
                 if ("object".equals(bodySchema.path("type").asText("object")) && bodySchema.path("properties").isObject()) {
-                    bodySchema.path("properties").fields().forEachRemaining(e -> props.set(e.getKey(), e.getValue()));
+                    bodySchema.path("properties").properties().forEach(e -> props.set(e.getKey(), e.getValue()));
                     for (JsonNode r : bodySchema.path("required")) {
                         required.add(r.asText());
                     }
@@ -299,7 +299,7 @@ public final class OpenApiImporter {
         if (!responses.isObject()) {
             return null;
         }
-        Iterator<Map.Entry<String, JsonNode>> it = responses.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = responses.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             String code = e.getKey().toUpperCase(Locale.ROOT);
@@ -322,7 +322,7 @@ public final class OpenApiImporter {
         }
         JsonNode media = content.get("application/json");
         if (media == null) {
-            Iterator<Map.Entry<String, JsonNode>> it = content.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = content.properties().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, JsonNode> e = it.next();
                 if (e.getKey().contains("json")) {
@@ -331,7 +331,7 @@ public final class OpenApiImporter {
                 }
             }
             if (media == null) {
-                media = content.fields().next().getValue();
+                media = content.properties().iterator().next().getValue();
             }
         }
         JsonNode schema = media.get("schema");
@@ -361,7 +361,7 @@ public final class OpenApiImporter {
             }
             JsonNode resolved = resolve(target, doc, depth + 1, refs + 1);
             out = resolved.isObject() ? ((ObjectNode) resolved).deepCopy() : F.objectNode();
-            node.fields().forEachRemaining(e -> {
+            node.properties().forEach(e -> {
                 if (!"$ref".equals(e.getKey())) {
                     out.set(e.getKey(), e.getValue());
                 }
@@ -372,7 +372,7 @@ public final class OpenApiImporter {
         JsonNode props = out.get("properties");
         if (props != null && props.isObject()) {
             ObjectNode np = F.objectNode();
-            props.fields().forEachRemaining(e -> np.set(e.getKey(), resolve(e.getValue(), doc, depth + 1, refs)));
+            props.properties().forEach(e -> np.set(e.getKey(), resolve(e.getValue(), doc, depth + 1, refs)));
             out.set("properties", np);
         }
         for (String key : List.of("items", "additionalProperties", "not")) {
@@ -408,7 +408,7 @@ public final class OpenApiImporter {
         LinkedHashSet<String> required = new LinkedHashSet<>();
         out.path("required").forEach(r -> required.add(r.asText()));
         for (JsonNode part : allOf) {
-            part.path("properties").fields().forEachRemaining(e -> props.set(e.getKey(), e.getValue()));
+            part.path("properties").properties().forEach(e -> props.set(e.getKey(), e.getValue()));
             part.path("required").forEach(r -> required.add(r.asText()));
         }
         out.remove("allOf");

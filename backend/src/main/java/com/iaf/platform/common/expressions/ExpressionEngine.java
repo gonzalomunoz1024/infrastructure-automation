@@ -78,7 +78,7 @@ public final class ExpressionEngine {
         }
         if (value.isObject()) {
             ObjectNode out = F.objectNode();
-            value.fields().forEachRemaining(e -> out.set(e.getKey(), resolve(e.getValue(), ctx)));
+            value.properties().forEach(e -> out.set(e.getKey(), resolve(e.getValue(), ctx)));
             return out;
         }
         if (value.isArray()) {
@@ -1147,6 +1147,6 @@ public final class ExpressionEngine {
     }
 
     public static Iterator<Map.Entry<String, JsonNode>> fields(JsonNode n) {
-        return n.fields();
+        return n.properties().iterator();
     }
 }

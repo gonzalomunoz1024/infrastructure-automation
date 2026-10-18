@@ -78,7 +78,7 @@ public record PriceList(String name, String owner, String currency, List<Price> 
                 throw new IllegalArgumentException(at + ": a price per value needs by, the input field it depends on");
             }
             Map<String, Double> byValue = new LinkedHashMap<>();
-            monthly.fields().forEachRemaining(v -> {
+            monthly.properties().forEach(v -> {
                 if (!v.getValue().isNumber()) {
                     throw new IllegalArgumentException(at + ".monthly." + v.getKey() + " must be a number");
                 }

@@ -124,7 +124,7 @@ final class TerraformPlans {
     /** {@code { name: value }}; a sensitive output's value is never handed out. */
     static ObjectNode outputs(JsonNode outputJson) {
         ObjectNode out = F.objectNode();
-        Iterator<Map.Entry<String, JsonNode>> it = outputJson.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = outputJson.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             JsonNode o = e.getValue();

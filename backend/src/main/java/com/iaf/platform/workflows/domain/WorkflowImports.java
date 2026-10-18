@@ -164,7 +164,7 @@ public final class WorkflowImports {
         String title = actionTitle != null ? actionTitle : "Run " + (path == null ? ref : path);
 
         ObjectNode input = vars != null && vars.isObject() ? vars.deepCopy() : emptySchema();
-        ObjectNode props = input.with("properties");
+        ObjectNode props = input.withObjectProperty("properties");
         ObjectNode target = props.putObject("target");
         target.put("type", "string");
         target.put("title", "Target");

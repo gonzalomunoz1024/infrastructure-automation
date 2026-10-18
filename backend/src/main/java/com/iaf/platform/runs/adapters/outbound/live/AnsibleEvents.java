@@ -108,7 +108,7 @@ final class AnsibleEvents {
         for (JsonNode play : doc.path("plays")) {
             for (JsonNode task : play.path("tasks")) {
                 String name = task.path("task").path("name").asText("");
-                Iterator<Map.Entry<String, JsonNode>> it = task.path("hosts").fields();
+                Iterator<Map.Entry<String, JsonNode>> it = task.path("hosts").properties().iterator();
                 while (it.hasNext()) {
                     Map.Entry<String, JsonNode> h = it.next();
                     JsonNode res = h.getValue();
@@ -120,7 +120,7 @@ final class AnsibleEvents {
                 }
             }
         }
-        Iterator<Map.Entry<String, JsonNode>> it = doc.path("stats").fields();
+        Iterator<Map.Entry<String, JsonNode>> it = doc.path("stats").properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> h = it.next();
             JsonNode s = h.getValue();
@@ -226,7 +226,7 @@ final class AnsibleEvents {
         out.put("unreachable", unreachable);
         out.put("skipped", skipped);
         out.set("hosts", perHost);
-        Iterator<Map.Entry<String, JsonNode>> it = stats.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = stats.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             if (!RESERVED.contains(e.getKey())) {

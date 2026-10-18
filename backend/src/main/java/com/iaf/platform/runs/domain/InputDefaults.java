@@ -15,7 +15,7 @@ public final class InputDefaults {
         if (schema == null || !schema.isObject()) {
             return out;
         }
-        schema.path("properties").fields().forEachRemaining(e -> {
+        schema.path("properties").properties().forEach(e -> {
             JsonNode dflt = e.getValue().get("default");
             if (dflt != null && !out.has(e.getKey())) {
                 out.set(e.getKey(), dflt);

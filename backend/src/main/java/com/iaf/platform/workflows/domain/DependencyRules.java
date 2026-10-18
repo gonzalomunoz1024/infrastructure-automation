@@ -198,7 +198,7 @@ public final class DependencyRules {
         if (props == null || !props.isObject()) {
             return out;
         }
-        Iterator<Map.Entry<String, JsonNode>> it = props.fields();
+        Iterator<Map.Entry<String, JsonNode>> it = props.properties().iterator();
         while (it.hasNext()) {
             Map.Entry<String, JsonNode> e = it.next();
             JsonNode xr = e.getValue().get("x-resource");
@@ -310,7 +310,7 @@ public final class DependencyRules {
 
     private static void insertAfter(ObjectNode node, String after, String key, String value) {
         Map<String, JsonNode> fields = new LinkedHashMap<>();
-        node.fields().forEachRemaining(e -> fields.put(e.getKey(), e.getValue()));
+        node.properties().forEach(e -> fields.put(e.getKey(), e.getValue()));
         node.removeAll();
         fields.forEach((k, v) -> {
             if (!k.equals(key)) {

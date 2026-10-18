@@ -27,7 +27,7 @@ public record WorkflowDraft(
     public static final String NEEDS_INPUT = "needs_input";
     public static final String FAILED = "failed";
 
-    private static final ObjectMapper MAPPER = new ObjectMapper().setSerializationInclusion(JsonInclude.Include.NON_NULL);
+    private static final ObjectMapper MAPPER = new ObjectMapper().setDefaultPropertyInclusion(JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.NON_NULL));
 
     /** A question only the user can answer, with up to four options. */
     public record Question(String question, List<String> options) {

@@ -31,7 +31,7 @@ public final class JsonDiff {
             return;
         }
         if (v.isObject() && v.size() > 0) {
-            v.fields().forEachRemaining(e -> collect(e.getValue(), path.isEmpty() ? e.getKey() : path + "." + e.getKey(), out, depth + 1));
+            v.properties().forEach(e -> collect(e.getValue(), path.isEmpty() ? e.getKey() : path + "." + e.getKey(), out, depth + 1));
         } else if (v.isArray() && v.size() > 0) {
             for (int i = 0; i < v.size(); i++) {
                 collect(v.get(i), path + "[" + i + "]", out, depth + 1);

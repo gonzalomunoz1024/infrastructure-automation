@@ -68,7 +68,7 @@ final class StepSecrets {
             } catch (IOException e) {
                 throw new IllegalArgumentException("Credential " + reference + " is neither a JSON object nor NAME=value lines");
             }
-            Iterator<Map.Entry<String, JsonNode>> it = o.fields();
+            Iterator<Map.Entry<String, JsonNode>> it = o.properties().iterator();
             while (it.hasNext()) {
                 Map.Entry<String, JsonNode> e = it.next();
                 if (!e.getValue().isValueNode() || e.getValue().isNull()) {

@@ -319,7 +319,7 @@ public final class DraftBuilder {
         String apiVerb = td.verb() == null || td.verb().isBlank() ? verb : td.verb();
         JsonNode schema = td.inputSchema();
         if (schema != null && schema.isObject()) {
-            schema.path("properties").fields().forEachRemaining(e -> inputs.put(e.getKey(), e.getValue().deepCopy()));
+            schema.path("properties").properties().forEach(e -> inputs.put(e.getKey(), e.getValue().deepCopy()));
             schema.path("required").forEach(r -> requiredInputs.add(r.asText()));
         }
         tags.add("composite");
@@ -354,7 +354,7 @@ public final class DraftBuilder {
         if (schema != null) {
             Set<String> required = new LinkedHashSet<>();
             schema.path("required").forEach(r -> required.add(r.asText()));
-            schema.path("properties").fields().forEachRemaining(e -> {
+            schema.path("properties").properties().forEach(e -> {
                 String f = e.getKey();
                 if (!inputs.containsKey(f) && required.contains(f)) {
                     addInput(f, e.getValue().deepCopy(), true, "'" + td.title() + "' needs it");
@@ -883,7 +883,7 @@ public final class DraftBuilder {
         // the provider's own word for the thing being acted on (cluster in cluster.delete): its id is our id too
         String primaryNoun = primaryAction == null || primaryAction.id() == null || !primaryAction.id().contains(".") ? null
                 : primaryAction.id().substring(0, primaryAction.id().indexOf('.'));
-        schema.path("properties").fields().forEachRemaining(e -> {
+        schema.path("properties").properties().forEach(e -> {
             String f = e.getKey();
             JsonNode prop = e.getValue();
             boolean req = required.contains(f);

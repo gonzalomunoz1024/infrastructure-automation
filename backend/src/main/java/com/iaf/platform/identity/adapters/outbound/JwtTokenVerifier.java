@@ -1,6 +1,6 @@
 package com.iaf.platform.identity.adapters.outbound;
 
-import java.net.URL;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -34,7 +34,7 @@ public class JwtTokenVerifier implements TokenVerifier {
     private final DefaultJWTProcessor<SecurityContext> processor;
 
     public JwtTokenVerifier(PlatformProperties props) throws Exception {
-        this(JWKSourceBuilder.<SecurityContext>create(new URL(props.getIdentity().getOidcJwksUri())).build(),
+        this(JWKSourceBuilder.<SecurityContext>create(URI.create(props.getIdentity().getOidcJwksUri()).toURL()).build(),
                 props.getIdentity().getOidcIssuer(), props.getIdentity().getOidcAudience());
     }
 
