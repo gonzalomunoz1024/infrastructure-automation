@@ -26,6 +26,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.platform.common.content.ContentFiles;
 import com.iaf.platform.common.demo.DemoReleases;
+import com.iaf.platform.common.demo.DemoReleases.Failure;
 import com.iaf.platform.common.demo.DemoReleases.Story;
 import com.iaf.platform.common.domain.Identity;
 import com.iaf.platform.common.domain.Ids;
@@ -199,6 +200,13 @@ public class DemoRunsSeeder {
         for (Run run : runs) {
             try {
                 Seeded s = walk(catalog, run, rnd);
+                // a forced failure must reach its step: a switch may end the job before it, so try other inputs
+                for (int attempt = 1; run.failure() != null && !failedAs(s, run.failure()) && attempt < FORCED_FAILURE_TRIES; attempt++) {
+                    s = walk(catalog, run.withInput(inputs.inputFor(run.def(), rnd)), rnd);
+                }
+                if (run.failure() != null && !failedAs(s, run.failure())) {
+                    log.warn("the seeded {} job never reached its forced failure at {}", run.def().name(), run.failure().step());
+                }
                 publish(s);
                 calls += s.executor().calls().size();
                 if (s.outcome().status() == JobStatus.FAILED || s.outcome().status() == JobStatus.ROLLED_BACK) {
@@ -218,10 +226,19 @@ public class DemoRunsSeeder {
 
     // ---------------------------------------------------------------- one finished job
 
-    /** {@code failure} is the error class and message a story forces on the job, null for a random one. */
+    /** {@code failure} is the failure a story forces on the job (at its step, with its error), null for a random one. */
     private record Run(WorkflowDefinition def, JsonNode input, Identity who, String channel, Instant startedAt, boolean fail, boolean cancel,
-            String[] failure) {
+            Failure failure) {
+
+        Run withInput(JsonNode other) {
+            return new Run(def, other, who, channel, startedAt, fail, cancel, failure);
+        }
     }
+
+    /** How many inputs a forced failure may try before the seed gives up on reaching its step. */
+    static final int FORCED_FAILURE_TRIES = 10;
+    /** More attempts than any step retries, so a retry never rescues a forced failure. */
+    static final int FORCED_FAILURE_ATTEMPTS = 10;
 
     /**
      * The jobs each canary of the release history saw on top of the usual traffic, spread over
@@ -248,12 +265,16 @@ public class DemoRunsSeeder {
             if (s.failure() != null) {
                 // the job the error-types gate rolled back on: the last of the story, on the candidate
                 Run last = story.remove(story.size() - 1);
-                story.add(new Run(def.withVersion(s.to()), last.input(), last.who(), last.channel(), to, true, false,
-                        new String[] {s.failure().errorClass(), s.failure().message()}));
+                story.add(new Run(def.withVersion(s.to()), last.input(), last.who(), last.channel(), to, true, false, s.failure()));
             }
             out.addAll(story);
         }
         return out;
+    }
+
+    /** Whether the walk ended on the story's failure. */
+    private static boolean failedAs(Seeded s, Failure f) {
+        return s.outcome().status() == JobStatus.FAILED && f.errorClass().equals(s.outcome().errorClass());
     }
 
     /** Whether a job of {@code version} started at {@code at} ran a release's candidate while its canary was splitting traffic. */
@@ -299,11 +320,22 @@ public class DemoRunsSeeder {
             approvals.put(request.message(), d);
             return Optional.of(d);
         });
-        if (run.fail()) {
+        if (run.failure() != null) {
+            // the story's failure, at its step, on every attempt, and nobody retries it
+            Failure forced = run.failure();
+            ex.failAt(forced.step(), forced.errorClass(), forced.message(), false, FORCED_FAILURE_ATTEMPTS);
+            ex.attender(a -> {
+                Duration after = Duration.ofMinutes(3 + rnd.nextInt(25));
+                ex.sleep(null, after);
+                AttentionDecision d = AttentionDecision.abort(run.who().id());
+                attentions.put(a.step(), new Decision(d, after));
+                return Optional.of(d);
+            });
+        } else if (run.fail()) {
             Step victim = victim(def, rnd);
             if (victim != null) {
-                String[] failure = run.failure() != null ? run.failure() : failureFor(victim, rnd);
-                boolean retryable = run.failure() == null && !"not_found".equals(failure[0]);
+                String[] failure = failureFor(victim, rnd);
+                boolean retryable = !"not_found".equals(failure[0]);
                 ex.failAt(victim.id(), failure[0], failure[1], retryable, 1);
                 boolean retryAfterAttention = retryable && rnd.nextInt(100) < 40;
                 ex.attender(a -> {

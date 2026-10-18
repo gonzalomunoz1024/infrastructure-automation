@@ -73,7 +73,8 @@ class DemoReleaseSeedTest {
         // the job the gate saw is in the history, on the candidate, with that error
         List<Job> failed = w.projection.all().stream()
                 .filter(j -> j.workflow().equals("mongodb-upgrade") && "3.1.0".equals(j.version()) && j.status() == JobStatus.FAILED).toList();
-        assertThat(failed).anyMatch(j -> "replica_set_not_ready".equals(j.errorClass()) && j.startedAt().isBefore(r.endedAt()));
+        assertThat(failed).anyMatch(j -> "replica_set_not_ready".equals(j.errorClass()) && "verify".equals(j.failedStep())
+                && j.startedAt().isBefore(r.endedAt()));
     }
 
     @Test

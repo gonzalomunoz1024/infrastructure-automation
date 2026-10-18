@@ -31,8 +31,8 @@ public final class DemoReleases {
     public record Stage(Duration ago, int percent) {
     }
 
-    /** The error a candidate ran into: its error class, as a step reports it, and the message. */
-    public record Failure(String errorClass, String message) {
+    /** The error a candidate ran into: the step that failed, its error class as a step reports it, and the message. */
+    public record Failure(String step, String errorClass, String message) {
     }
 
     /**
@@ -97,7 +97,7 @@ public final class DemoReleases {
     public static final List<Story> STORIES = List.of(
             new Story("rel_demo_mongo_rollback", "mongodb-upgrade", "3.0.2", "3.1.0", CANARY, Outcome.ROLLED_BACK, Duration.ofDays(8),
                     List.of(new Stage(Duration.ofDays(8), 10)), Duration.ofDays(8).minus(Duration.ofMinutes(102)), "ana", null,
-                    new Failure("replica_set_not_ready", "The replica set did not elect a primary within 10m of the upgrade"), 8),
+                    new Failure("verify", "replica_set_not_ready", "The replica set did not elect a primary within 10m of the upgrade"), 8),
             new Story("rel_demo_mongo_republish", "mongodb-upgrade", "3.0.2", "3.1.0", ALL, Outcome.PROMOTED, Duration.ofDays(6),
                     List.of(), Duration.ofDays(6), "ana", "ana", null, 0),
             new Story("rel_demo_create_vm", "create-vm", "1.9.0", "2.0.1", CANARY, Outcome.PROMOTED, Duration.ofHours(31),

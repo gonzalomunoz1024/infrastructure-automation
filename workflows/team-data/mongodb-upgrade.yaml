@@ -26,6 +26,7 @@ api:
         type: string
         title: Target version
         enum: ["7.0", "8.0"]
+        default: "8.0"
       maintenanceWindow:
         type: string
         title: Maintenance window

@@ -57,6 +57,9 @@ class DemoRunsSeederTest {
                 .isSubsetOf(Set.of("rate_limited", "not_found", "timeout", "unreachable", "apply_failed", "verify_failed", "assertion_failed", "expression", "error",
                         "replica_set_not_ready"));
         assertThat(history.stream().filter(j -> j.status() == JobStatus.CANCELLED).count()).isBetween(1L, 8L);
+        // the failure the mongodb-upgrade canary was rolled back on, at the step the story names
+        assertThat(failed).anyMatch(j -> j.workflow().equals("mongodb-upgrade") && "3.1.0".equals(j.version())
+                && "replica_set_not_ready".equals(j.errorClass()) && "verify".equals(j.failedStep()));
         assertThat(history).anyMatch(j -> j.change() != null && j.change().id().startsWith("CHG00") && "closed".equals(j.change().state()));
         assertThat(history).anyMatch(j -> j.approvals().stream().anyMatch(a -> a.status() == Approval.Status.APPROVED && a.decidedBy() != null));
         assertThat(history).anyMatch(j -> j.preview() != null);

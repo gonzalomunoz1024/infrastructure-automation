@@ -41,6 +41,7 @@ class DemoReleasesTest {
             if (s.failure() != null) {
                 assertThat(s.outcome()).as(s.id()).isEqualTo(Outcome.ROLLED_BACK);
                 assertThat(s.failure().errorClass()).as(s.id()).matches("[a-z_]+");
+                assertThat(s.failure().step()).as(s.id()).isNotBlank();
             }
             if (!s.canary()) {
                 assertThat(s.jobs()).as(s.id()).isZero();
