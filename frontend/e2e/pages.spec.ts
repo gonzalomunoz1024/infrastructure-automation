@@ -223,7 +223,14 @@ test.describe('providers', () => {
 
     await page.getByRole('tab', { name: /Actions/ }).click()
     const actions = page.getByRole('table', { name: 'Actions' })
-    await expect(actions.getByRole('row', { name: /vm\.restart/ })).toContainText('timeout ×31')
+    const restart = actions.getByRole('row', { name: /vm\.restart/ })
+    await expect(restart).toContainText('timeout ×31')
+    // a restart is judged against an SLO of its own, and is healthy by it; the others take the provider's
+    await expect(restart).toContainText('Healthy')
+    await expect(restart).toContainText('own SLO 98.5% · p95 12s')
+    await expect(actions.getByRole('row', { name: /vm\.get/ })).toContainText('Healthy')
+    await expect(actions.getByRole('row', { name: /vm\.get/ })).not.toContainText('own SLO')
+    await expect(actions.getByRole('row', { name: /vm\.delete/ })).toContainText('Unknown')
     await page.getByRole('tab', { name: /Alerts/ }).click()
     await expect(page.getByText('3 timeouts in 10 minutes')).toBeVisible()
   })
@@ -326,6 +333,9 @@ test.describe('providers', () => {
     const ops = page.getByRole('table', { name: 'Operations' })
     await expect(ops).toContainText('listJobs')
     await expect(ops).toContainText('createJob')
+    // a backup takes longer than a list: it gets a p95 of its own, the success rate staying the provider's
+    await expect(ops.getByRole('textbox', { name: 'p95 SLO of createJob, milliseconds' })).toHaveAttribute('placeholder', '1000')
+    await ops.getByRole('textbox', { name: 'p95 SLO of createJob, milliseconds' }).fill('2000')
     await page.getByRole('button', { name: 'Next' }).click()
 
     // 4 · Try it
@@ -351,6 +361,7 @@ test.describe('providers', () => {
     expect(published.strategy).toBe('canary')
     expect(published.yaml).toContain('kind: Provider')
     expect(published.yaml).toContain('header: X-Api-Key')
+    expect(published.yaml).toMatch(/- id: createJob\n(?:\s{6}.*\n)*?\s{6}slo:\n\s{8}p95Ms: 2000\n/)
   })
 
   test('the wizard searches the operations, classifies errors and tries a delete in dev on a test resource', async ({ page }) => {

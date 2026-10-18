@@ -378,6 +378,8 @@ export type Health = {
   reasons: string[]
 }
 export type Slo = { successRate: number; p95Ms: number; channel?: string }
+/** What a band is judged against: a success rate in percent and a p95 in milliseconds. */
+export type SloTarget = { successRate: number; p95Ms: number }
 export type ProviderSummary = {
   name: string
   title: string
@@ -406,9 +408,12 @@ export type ActionInfo = {
   effectDetail?: string
   /** where the sample came from: the Try it call that recorded it */
   recorded?: { environment: string; at: string }
+  /** the action's own SLO, which its calls are judged against; absent (null) when it takes the provider's */
+  slo?: SloTarget | null
 }
 /** One 24-hour window, oldest first; `date` is when it starts. A window without calls has no rates. */
 export type ProviderDaily = { date: string; calls: number; successRate: number | null; p50Ms: number | null; p95Ms: number | null }
+/** One action's calls of the last 14 days. */
 export type ProviderActionStats = {
   action: string
   calls: number
@@ -416,6 +421,10 @@ export type ProviderActionStats = {
   p50Ms: number
   p95Ms: number
   topErrors: { class: string; count: number }[]
+  /** the SLO the action is judged by: its own, else the provider's */
+  slo: SloTarget
+  /** its band over the last 24 hours against that SLO ('unknown' under 5 calls) */
+  band: HealthStatus
 }
 export type ProviderDetail = ProviderSummary & {
   /** base URL per environment */

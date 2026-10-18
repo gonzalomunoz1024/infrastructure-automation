@@ -18,7 +18,8 @@ export function healthDot(status: HealthStatus | string): DotKind {
 }
 
 export interface HealthBandProps {
-  health: Health
+  /** a provider's health, or only a band (an action's) */
+  health: Pick<Health, 'status'> & Partial<Pick<Health, 'reasons'>>
   /** the reasons, as sentences under the band */
   showReasons?: boolean
   size?: 'sm' | 'md'

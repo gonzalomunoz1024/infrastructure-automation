@@ -4,6 +4,7 @@ import { parse } from 'yaml'
 import { emitYaml } from '../components/yaml-emit'
 import {
   ErrorClasses,
+  actionSlo,
   blankAction,
   blankError,
   buildProviderDocument,
@@ -65,6 +66,45 @@ function http(patch: Partial<WizardState> = {}): WizardState {
     ...patch,
   }
 }
+
+describe('an action’s own SLO', () => {
+  const actionsOf = (s: WizardState) => (buildProviderDocument(s).spec as { actions: Record<string, unknown>[] }).actions
+
+  it('is written into the action as typed, a field left empty taking the provider’s', () => {
+    const s = http({
+      actions: [
+        blankAction({ id: 'jobs.create', path: '/jobs', method: 'POST', effect: 'create', retry: 'unsafe', sloSuccessRate: ' 99.9 ', sloP95Ms: '300' }),
+        blankAction({ id: 'jobs.restore', path: '/restores', method: 'POST', effect: 'change', retry: 'unsafe', sloP95Ms: '12000' }),
+        blankAction({ id: 'jobs.list', path: '/jobs', method: 'GET' }),
+      ],
+    })
+    const [create, restore, list] = actionsOf(s)
+    expect(create.slo).toEqual({ successRate: 99.9, p95Ms: 300 })
+    expect(restore.slo).toEqual({ p95Ms: 12000 })
+    expect(list.slo).toBeUndefined()
+    expect(stepIssues(s, 2)).toEqual([])
+
+    // the file: under the action, after its policy and before its schemas; the provider's own SLO stays
+    const yaml = emitYaml(buildProviderDocument(s))
+    const doc = parse(yaml) as { spec: { actions: { id: string; slo?: unknown }[]; slo: unknown } }
+    expect(doc.spec.actions.map((a) => [a.id, a.slo])).toEqual([
+      ['jobs.create', { successRate: 99.9, p95Ms: 300 }],
+      ['jobs.restore', { p95Ms: 12000 }],
+      ['jobs.list', undefined],
+    ])
+    expect(doc.spec.slo).toEqual({ successRate: 99, p95Ms: 1000 })
+    const action = yaml.slice(yaml.indexOf('- id: jobs.create'), yaml.indexOf('- id: jobs.restore'))
+    expect(action.indexOf('slo:')).toBeGreaterThan(action.indexOf('retry:'))
+  })
+
+  it('says what is wrong with a value it cannot write, and writes nothing for it', () => {
+    const s = http({ actions: [blankAction({ id: 'jobs.create', path: '/jobs', method: 'POST', sloSuccessRate: '101', sloP95Ms: '0.5' })] })
+    expect(stepIssues(s, 2)).toEqual(["jobs.create: the SLO's success rate is a percent above 0, like 99.5.", "jobs.create: the SLO's p95 is whole milliseconds, like 800."])
+    expect(actionsOf(s)[0].slo).toBeUndefined()
+    expect(actionSlo({ sloSuccessRate: 'abc', sloP95Ms: '' })).toBeUndefined()
+    expect(actionSlo({ sloSuccessRate: '0', sloP95Ms: '800' })).toEqual({ p95Ms: 800 })
+  })
+})
 
 describe('the error classes', () => {
   it('are written to spec.errors as match, class and retry, in the order given', () => {

@@ -373,14 +373,15 @@ export const PROVIDER: ProviderDetail = {
   yaml: 'apiVersion: iaf.platform/v1\nkind: Provider\nmetadata:\n  name: vsphere\n  title: VMware vSphere\n  owner: team-compute\n  version: 1.3.0\nspec:\n  type: openapi\n',
   actions: [
     { id: 'vm.get', title: 'Get VM', operation: 'getVm', effect: 'read', retry: 'safe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object', properties: { id: { type: 'string' }, powerState: { type: 'string' } } }, sample: { id: 'vm-1042', powerState: 'poweredOn' }, overridden: false },
-    { id: 'vm.restart', title: 'Restart VM', operation: 'restartVm', effect: 'change', retry: 'unsafe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: false },
+    // a restart takes seconds: it is judged against an SLO of its own, not the provider's 800 ms
+    { id: 'vm.restart', title: 'Restart VM', operation: 'restartVm', effect: 'change', retry: 'unsafe', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: false, slo: { successRate: 98.5, p95Ms: 12_000 } },
     { id: 'vm.delete', title: 'Delete VM', operation: 'deleteVm', effect: 'delete', retry: 'unsafe', approval: 'required', plan: 'vm.get', input: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } }, output: { type: 'object' }, overridden: true },
   ],
   daily,
   perAction: [
-    { action: 'vm.get', calls: 11_200, successRate: 99.9, p50Ms: 120, p95Ms: 380, topErrors: [] },
-    { action: 'vm.restart', calls: 3_900, successRate: 98.9, p50Ms: 2_400, p95Ms: 9_800, topErrors: [{ class: 'timeout', count: 31 }] },
-    { action: 'vm.delete', calls: 380, successRate: 99.5, p50Ms: 1_800, p95Ms: 6_200, topErrors: [{ class: 'not_found', count: 2 }] },
+    { action: 'vm.get', calls: 11_200, successRate: 99.9, p50Ms: 120, p95Ms: 380, topErrors: [], slo: { successRate: 99.5, p95Ms: 800 }, band: 'healthy' },
+    { action: 'vm.restart', calls: 3_900, successRate: 98.9, p50Ms: 2_400, p95Ms: 9_800, topErrors: [{ class: 'timeout', count: 31 }], slo: { successRate: 98.5, p95Ms: 12_000 }, band: 'healthy' },
+    { action: 'vm.delete', calls: 380, successRate: 99.5, p50Ms: 180, p95Ms: 620, topErrors: [{ class: 'not_found', count: 2 }], slo: { successRate: 99.5, p95Ms: 800 }, band: 'unknown' },
   ],
   changeRequests: [
     { id: 'cr-88', kind: 'provider', name: 'vsphere', version: '1.4.0', branch: 'provider/vsphere-1.4.0', title: 'vsphere: add vm.snapshot', author: 'maria', status: 'open', checks: [], strategy: 'canary', createdAt: ago(60 * 3) },

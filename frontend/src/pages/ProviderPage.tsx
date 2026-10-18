@@ -19,6 +19,21 @@ const severityDot = (s: string): DotKind => (/crit|error|fail|page/i.test(s) ? '
 const rateDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: Math.round(v * 10) / 10, suffix: ' pts', label: 'vs the day before' })
 const msDelta = (v: number | undefined): StatDelta | undefined => (v === undefined ? undefined : { value: v, suffix: ' ms', betterWhen: 'down', label: 'vs the day before' })
 const approvalText = (a: ActionInfo['approval']): string => (a === true || a === 'required' ? 'required' : a === false || !a ? 'no' : String(a))
+const BAND_RANK: Record<string, number> = { failing: 3, degraded: 2, healthy: 1, unknown: 0 }
+
+/** An action's band against the SLO it is judged by, and that SLO when it is the action's own. */
+export function ActionBand({ action, stats }: { action: Pick<ActionInfo, 'slo'>; stats?: Pick<ProviderActionStats, 'band'> }) {
+  return (
+    <div className="min-w-0">
+      <HealthBand health={{ status: stats?.band ?? 'unknown' }} />
+      {action.slo && (
+        <div className="mt-0.5 whitespace-nowrap text-caption2 text-tertiary" title="The action's own SLO: its calls are judged against it, not against the provider's">
+          own SLO {percent(action.slo.successRate, { digits: 1 })} · p95 {duration(action.slo.p95Ms)}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function ProviderPage({ route }: PageProps) {
   const name = route.params.name
@@ -85,6 +100,7 @@ export default function ProviderPage({ route }: PageProps) {
       ),
     },
     { key: 'approval', header: 'Approval', width: '6rem', render: (a) => <span className={approvalText(a.approval) === 'no' ? 'text-tertiary' : 'text-primary'}>{approvalText(a.approval)}</span> },
+    { key: 'band', header: 'Band', width: '10rem', sortable: true, accessor: (a) => BAND_RANK[stats.get(a.id)?.band ?? 'unknown'] ?? 0, render: (a) => <ActionBand action={a} stats={stats.get(a.id)} /> },
     { key: 'calls', header: 'Calls', numeric: true, width: '5rem', sortable: true, accessor: (a) => stats.get(a.id)?.calls ?? 0, render: (a) => <span className="text-primary">{formatNumber(stats.get(a.id)?.calls ?? 0, { compact: true })}</span> },
     {
       key: 'success',
@@ -96,10 +112,23 @@ export default function ProviderPage({ route }: PageProps) {
       render: (a) => {
         const s = stats.get(a.id)
         if (!s) return <span className="text-tertiary">—</span>
-        return <span className={data?.slo && s.successRate < data.slo.successRate ? 'font-medium text-critical' : 'text-primary'}>{percent(s.successRate, { digits: 1 })}</span>
+        // against the SLO the action is judged by: its own, else the provider's
+        const slo = s.slo ?? data?.slo
+        return <span className={slo && s.successRate < slo.successRate ? 'font-medium text-critical' : 'text-primary'}>{percent(s.successRate, { digits: 1 })}</span>
       },
     },
-    { key: 'p95', header: 'p95', numeric: true, width: '5rem', render: (a) => <span className="text-primary">{stats.get(a.id) ? duration(stats.get(a.id)!.p95Ms) : '—'}</span> },
+    {
+      key: 'p95',
+      header: 'p95',
+      numeric: true,
+      width: '5rem',
+      render: (a) => {
+        const s = stats.get(a.id)
+        if (!s) return <span className="text-tertiary">—</span>
+        const slo = s.slo ?? data?.slo
+        return <span className={slo && s.p95Ms > slo.p95Ms ? 'font-medium text-critical' : 'text-primary'}>{duration(s.p95Ms)}</span>
+      },
+    },
     {
       key: 'errors',
       header: 'Top errors',

@@ -528,8 +528,10 @@ the commit read), imports an Ansible repository or a Terraform module through th
 drafts, and edits an existing provider at `/providers/<name>/edit` on three steps (Connect, Try
 it, Review) that collect the review evidence the reviewer sees; the browser still parses no YAML,
 so an edit keeps the file as it is and bumps its version by a line edit of the metadata block.
-Its Actions step searches a spec's operations and writes the error classes (`spec.errors`,
-matched by status and body text, checked for a class an earlier one shadows); Ask Devin is offered
+Its Actions step searches a spec's operations, sets an action's own SLO (a success rate and a
+p95, either left empty to take the provider's, written into the action as `slo`) and writes the
+error classes (`spec.errors`, matched by status and body text, checked for a class an earlier one
+shadows); Ask Devin is offered
 on the Type and the Review step, and a draft names the wizard's provider by a line read of its
 metadata block. Try it starts in the environment the review counts (`ProviderReview.sandbox`:
 dev, else the first), and a delete whose input has an `x-resource` field gets the registry picker
@@ -568,7 +570,10 @@ its address (`?tab=`): the list, with p50 beside p95; each provider's performanc
 with the 14-day error trend (`health.errorTrend`, a count a day); and the provider events of the
 platform audit stream (`GET /audit/platform?aggregate=provider`: the stream filters by aggregate,
 not by event type). The backend lists to someone outside the admins only their teams' providers
-and the ones no team owns, which an empty list says.
+and the ones no team owns, which an empty list says. A provider's actions table shows each
+action's band over the last 24 hours (`perAction[].band`, with the provider's `HealthBand`),
+judged against the action's own SLO when it has one, which the table shows, else the provider's,
+and colours the success rate and the p95 against that SLO.
 
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:

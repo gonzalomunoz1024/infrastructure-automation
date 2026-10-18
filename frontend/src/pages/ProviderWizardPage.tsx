@@ -48,6 +48,9 @@ export interface ActionRow {
   outputText: string
   /** http: one example response, JSON */
   exampleText: string
+  /** the action's own SLO as typed, success rate in percent and p95 in ms; empty takes the provider's */
+  sloSuccessRate: string
+  sloP95Ms: string
 }
 
 /**
@@ -151,7 +154,7 @@ export const kebab = (s: string): string =>
     .replace(/^-+|-+$/g, '')
 
 export function blankAction(partial: Partial<ActionRow> = {}): ActionRow {
-  return { key: nextKey(), selected: true, id: '', title: '', operation: '', method: 'GET', path: '', playbook: '', effect: 'read', retry: 'safe', approval: false, plan: '', description: '', inputText: '', outputText: '', exampleText: '', ...partial }
+  return { key: nextKey(), selected: true, id: '', title: '', operation: '', method: 'GET', path: '', playbook: '', effect: 'read', retry: 'safe', approval: false, plan: '', description: '', inputText: '', outputText: '', exampleText: '', sloSuccessRate: '', sloP95Ms: '', ...partial }
 }
 
 export function blankError(partial: Partial<ErrorRow> = {}): ErrorRow {
@@ -332,6 +335,8 @@ export function stateFromProvider(d: ProviderDetail): WizardState {
         plan: a.plan ?? '',
         inputText: a.input ? JSON.stringify(a.input, null, 2) : '',
         outputText: a.output ? JSON.stringify(a.output, null, 2) : '',
+        sloSuccessRate: a.slo ? String(a.slo.successRate) : '',
+        sloP95Ms: a.slo ? String(a.slo.p95Ms) : '',
       }),
     ),
     samples: Object.fromEntries(d.actions.filter((a) => a.sample !== undefined).map((a) => [a.id, a.sample])),
@@ -372,11 +377,46 @@ export function authOf(s: WizardState): ProviderAuth {
   return { type: s.auth.type, credential: s.auth.credential || undefined, header: s.auth.type === 'header' ? s.auth.header.trim() || undefined : undefined }
 }
 
+const SLO_RATE_RE = /^\d+(\.\d+)?$/
+const SLO_MS_RE = /^\d+$/
+
+/** A success rate typed as a percent: above 0, at most 100. */
+function sloRate(text: string): number | undefined {
+  const t = text.trim()
+  const n = Number(t)
+  return SLO_RATE_RE.test(t) && n > 0 && n <= 100 ? n : undefined
+}
+
+/** A p95 typed in whole milliseconds, above 0. */
+function sloMs(text: string): number | undefined {
+  const t = text.trim()
+  const n = Number(t)
+  return SLO_MS_RE.test(t) && n > 0 ? n : undefined
+}
+
+/**
+ * An action's own `slo`, from what was typed: a field left empty takes the provider's value
+ * (docs/config-as-code.md), and with both empty the action has none.
+ */
+export function actionSlo(a: Pick<ActionRow, 'sloSuccessRate' | 'sloP95Ms'>): { successRate?: number; p95Ms?: number } | undefined {
+  const successRate = sloRate(a.sloSuccessRate)
+  const p95Ms = sloMs(a.sloP95Ms)
+  return successRate === undefined && p95Ms === undefined ? undefined : { successRate, p95Ms }
+}
+
+/** What is wrong with an action's own SLO as typed. */
+export function actionSloIssues(label: string, a: Pick<ActionRow, 'sloSuccessRate' | 'sloP95Ms'>): string[] {
+  const out: string[] = []
+  if (a.sloSuccessRate.trim() && sloRate(a.sloSuccessRate) === undefined) out.push(`${label}: the SLO's success rate is a percent above 0, like 99.5.`)
+  if (a.sloP95Ms.trim() && sloMs(a.sloP95Ms) === undefined) out.push(`${label}: the SLO's p95 is whole milliseconds, like 800.`)
+  return out
+}
+
 function actionDocument(type: ProviderType, a: ActionRow, s: WizardState): Record<string, unknown> {
   const input = parseSchema(a.inputText)
   const output = parseSchema(a.outputText)
   const head = { id: a.id, title: a.title.trim() || a.id, description: a.description.trim() || undefined }
-  const policy = { effect: a.effect, retry: a.retry, approval: a.approval ? 'required' : undefined, plan: a.plan || undefined }
+  const policy = { effect: a.effect, retry: a.retry, approval: a.approval ? 'required' : undefined, plan: a.plan || undefined, slo: actionSlo(a) }
   const sample = s.samples[a.id]
   switch (type) {
     case 'openapi':
@@ -507,6 +547,7 @@ export function stepIssues(s: WizardState, step: number): string[] {
         const p = parseJsonText(text)
         if (!p.empty && p.error) out.push(`${label}: the ${what} is not valid JSON.`)
       }
+      out.push(...actionSloIssues(label, a))
     }
     out.push(...errorIssues(s.type, s.errors))
   }
@@ -1117,6 +1158,12 @@ function ActionsStep({ state, update }: StepProps) {
       { key: 'retry', header: 'Retry', width: '7rem', render: (a) => <Select size="sm" ariaLabel={`Retry of ${a.operation}`} value={a.retry} onChange={(v) => patch(a.key, { retry: v as RetryPolicy })} options={retryOptions} disabled={!a.selected} /> },
       { key: 'approval', header: 'Approval', width: '6rem', render: (a) => <Checkbox checked={a.approval} onChange={(v) => patch(a.key, { approval: v })} label={<span className="sr-only">Approval for {a.operation}</span>} disabled={!a.selected} /> },
       { key: 'plan', header: 'Plan via', width: '9rem', render: (a) => <Select size="sm" ariaLabel={`Plan step of ${a.operation}`} value={a.plan} onChange={(v) => patch(a.key, { plan: v })} options={planOptions(a)} disabled={!a.selected || a.effect === 'read'} mono /> },
+      {
+        key: 'slo',
+        header: <span title="An SLO of the action's own, which its calls are judged against; empty takes the provider's">Own SLO</span>,
+        width: '11rem',
+        render: (a) => <ActionSloInputs action={a} provider={state.slo} label={a.operation} size="sm" disabled={!a.selected} onChange={(p) => patch(a.key, p)} />,
+      },
     ]
     return (
       <div className="space-y-4">
@@ -1214,6 +1261,9 @@ function ActionsStep({ state, update }: StepProps) {
             <Field label="Plan via" hint="Another action that previews this one">
               <Select ariaLabel="Plan via" value={a.plan} onChange={(v) => patch(a.key, { plan: v })} options={planOptions(a)} mono disabled={a.effect === 'read'} />
             </Field>
+            <Field label="Own SLO" hint="Its calls are judged against it; empty takes the provider's">
+              <ActionSloInputs action={a} provider={state.slo} label={a.id || `action ${i + 1}`} onChange={(p) => patch(a.key, p)} />
+            </Field>
             <div className="sm:col-span-2 lg:col-span-3">
               <Checkbox checked={a.approval} onChange={(v) => patch(a.key, { approval: v })} label="Needs an approval" description="A person signs off before the step runs; delete defaults to this." />
             </div>
@@ -1241,6 +1291,39 @@ function ActionsStep({ state, update }: StepProps) {
         </div>
       )}
       <ErrorClasses state={state} update={update} />
+    </div>
+  )
+}
+
+/** An action's own SLO: a success rate and a p95, each left empty to take the provider's (shown as the placeholder). */
+function ActionSloInputs({ action, provider, label, size = 'md', disabled, onChange }: { action: ActionRow; provider: WizardState['slo']; label: string; size?: 'sm' | 'md'; disabled?: boolean; onChange: (p: Partial<ActionRow>) => void }) {
+  const unit = (u: string) => <span className="text-caption2 text-tertiary">{u}</span>
+  return (
+    <div className="grid grid-cols-2 gap-1.5">
+      <Input
+        size={size}
+        mono
+        inputMode="decimal"
+        value={action.sloSuccessRate}
+        onChange={(e) => onChange({ sloSuccessRate: e.target.value })}
+        placeholder={provider.successRate.trim() || '99'}
+        aria-label={`Success rate SLO of ${label}, percent`}
+        invalid={!!action.sloSuccessRate.trim() && actionSloIssues('', { sloSuccessRate: action.sloSuccessRate, sloP95Ms: '' }).length > 0}
+        disabled={disabled}
+        trailing={unit('%')}
+      />
+      <Input
+        size={size}
+        mono
+        inputMode="numeric"
+        value={action.sloP95Ms}
+        onChange={(e) => onChange({ sloP95Ms: e.target.value })}
+        placeholder={provider.p95Ms.trim() || '1000'}
+        aria-label={`p95 SLO of ${label}, milliseconds`}
+        invalid={!!action.sloP95Ms.trim() && actionSloIssues('', { sloSuccessRate: '', sloP95Ms: action.sloP95Ms }).length > 0}
+        disabled={disabled}
+        trailing={unit('ms')}
+      />
     </div>
   )
 }
