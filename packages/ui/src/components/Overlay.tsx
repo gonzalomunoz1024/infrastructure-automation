@@ -19,8 +19,9 @@ import { IconButton } from './Button'
  *   overlays stacked above a drawer z-[60] via `raised`.
  * - Spring scale-in for modals, slide for drawers; exit animations play
  *   before unmount (the `closing` state below), no motion library needed.
- * - Escape + scrim click close (only the topmost overlay reacts to Escape);
- *   Tab stays inside the panel; focus returns to the opener.
+ * - Escape + scrim click close (only the topmost overlay reacts to Escape and
+ *   Tab, and Escape first closes a list open inside it); Tab stays inside the
+ *   panel; focus returns to the opener.
  */
 
 const OverlayCtx = createContext<{ close: () => void } | null>(null)
@@ -74,8 +75,11 @@ export function useOverlayLifecycle(onClose: () => void): OverlayLifecycle {
     const id = Symbol('overlay')
     stack.push(id)
     const onKey = (e: KeyboardEvent) => {
+      // only the topmost overlay handles the keys: an overlay stacked above (a dialog over a drawer) keeps Escape and the focus
+      if (stack[stack.length - 1] !== id) return
       if (e.key === 'Escape') {
-        if (stack[stack.length - 1] !== id) return
+        // a list open inside the panel (a Select's, a menu's) closes on its own Escape; the overlay stays
+        if (panelRef.current?.querySelector('[aria-haspopup]:not([aria-haspopup="false"])[aria-expanded="true"]')) return
         e.stopPropagation()
         close()
       } else if (e.key === 'Tab' && panelRef.current) {
