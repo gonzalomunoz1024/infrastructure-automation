@@ -10,7 +10,7 @@
  * response (a change request). Test step stays a dry run, and pinned data stays the designer's own
  * mock: a call pins nothing.
  */
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Button, ConfirmDialog, Field, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, Select, Tag, Tooltip, duration, useToast } from '@iaf/ui'
 import { resolve, type ExpressionContext, type JsonValue, type ParsedStep } from '@iaf/workflow-checks'
 import { Link, pathFor } from '../../app/router'
@@ -66,12 +66,18 @@ export function tryLabel(info: ProviderStepInfo): string {
   return 'One real call to the provider, not a dry run'
 }
 
-/** The Try for real button, and the dialog that makes the call. */
-export function TryForReal({ info, stepId, prefill, onTried, disabled }: { info: ProviderStepInfo; stepId: string; prefill: SchemaValue; onTried: (tried: TriedCall) => void; disabled?: boolean }) {
+/** The Try for real button, and the dialog that makes the call; `onOpenChange` hears when the dialog opens and closes. */
+export function TryForReal({ info, stepId, prefill, onTried, onOpenChange, disabled }: { info: ProviderStepInfo; stepId: string; prefill: SchemaValue; onTried: (tried: TriedCall) => void; onOpenChange?: (open: boolean) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false)
   const yaml = tryYaml(info)
   const ready = !!yaml && !!info.action && info.state !== 'unknown'
   const why = tryLabel(info)
+  const shown = open && !!yaml
+  useEffect(() => {
+    if (!shown) return
+    onOpenChange?.(true)
+    return () => onOpenChange?.(false)
+  }, [shown, onOpenChange])
   return (
     <>
       <Tooltip label={why}>
@@ -117,7 +123,7 @@ function TryForm({ info, stepId, yaml, prefill, onTried, onClose }: { info: Prov
       const result = await api.tryAction({ yaml, action: info.action, environment, input })
       if (result.ok) toast.success('It answered', `HTTP ${result.status} in ${duration(result.durationMs)}.`)
       else toast.toast({ title: 'It did not answer as expected', message: `HTTP ${result.status}`, tone: 'warning' })
-      onTried({ stepId, action: info.action, environment, yaml, result })
+      onTried({ stepId, provider: info.provider, action: info.action, environment, yaml, result })
       onClose()
     } catch (e) {
       toast.error('The call did not go through', errorMessage(e))

@@ -21,7 +21,7 @@ import { DATA_MODES, DataView, type DataMode } from './DataView'
 import { asObject, asString, isSettingsField, jsonText, parseJsonText } from './fields'
 import { ProblemList } from './ParameterField'
 import { ProviderTab } from './ProviderTab'
-import { tryInputSchema, useProviderStep, type TriedCall } from './providerStep'
+import { triedFor, tryInputSchema, useProviderStep, type TriedCall } from './providerStep'
 import { looseProblems, StepParameters, stepKindLabel } from './StepParameters'
 import { StepSettings } from './StepSettings'
 import { prefillInput, TriedOutput, TryForReal } from './TryForReal'
@@ -179,9 +179,11 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest, tried }: 
   const runOutput = runStep?.output as JsonValue | undefined
   const shown: JsonValue | undefined = fixed !== undefined ? fixed : pinned !== undefined ? pinned : ran ? runOutput : undefined
   const count = itemsLabel(shown)
+  // while a real call's answer fills the pane, the header's controls (which act on the test output) step aside
+  const showingTried = !!tried && !editing
 
   let body: ReactNode
-  if (tried && !editing) {
+  if (showingTried) {
     body = tried
   } else if (editing && stepId) {
     body = (
@@ -267,8 +269,9 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest, tried }: 
   return (
     <section aria-label="Output" className="hidden min-w-0 flex-1 flex-col md:flex" data-testid="ndv-output">
       <PaneHeader title="Output">
-        {count && <span className="text-caption2 text-tertiary">{count}</span>}
-        {stepId && fixed === undefined && (
+        {showingTried && <span className="text-caption2 text-tertiary">Real call</span>}
+        {!showingTried && count && <span className="text-caption2 text-tertiary">{count}</span>}
+        {!showingTried && stepId && fixed === undefined && (
           <Tooltip label={pinned !== undefined ? 'Unpin the output' : 'Pin the output: tests and the steps after it use it'}>
             <button
               type="button"
@@ -282,7 +285,7 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest, tried }: 
             </button>
           </Tooltip>
         )}
-        <ModeSwitch value={mode} onChange={setMode} label="Output view" />
+        {!showingTried && <ModeSwitch value={mode} onChange={setMode} label="Output view" />}
       </PaneHeader>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pr-1">{body}</div>
     </section>
@@ -372,7 +375,9 @@ function StepDetail({ node }: { node: GraphNode & { data: StepNodeData } }) {
   const provider = useProviderStep(step)
   // the answer of the last real call, for this step only; never kept in the store or the draft
   const [tried, setTried] = useState<TriedCall | null>(null)
-  const triedHere = tried && provider && tried.stepId === stepId && tried.action === provider.action ? tried : null
+  const triedHere = triedFor(tried, stepId, provider)
+  // the Try for real dialog: while it is open, ⌘↵ is its own, not Test step's
+  const [tryOpen, setTryOpen] = useState(false)
   const prefill = useMemo(() => (provider ? prefillInput(step, sc.ctx, tryInputSchema(provider)) : {}), [provider, step, sc])
   const test = useCallback(() => {
     const st = store.getState()
@@ -380,7 +385,7 @@ function StepDetail({ node }: { node: GraphNode & { data: StepNodeData } }) {
     setTried(null)
     void store.testRun(st.lastInput ?? sampleInput(st.doc), stepId)
   }, [store, stepId])
-  useHotkey('mod+enter', test, { allowInInputs: true })
+  useHotkey('mod+enter', test, { allowInInputs: true, enabled: !tryOpen })
 
   const w = asObject(step.with as JsonValue | undefined)
   const action = step.type === 'provider' ? findAction(registry, asString(w.provider), asString(w.action)) : undefined
@@ -398,7 +403,7 @@ function StepDetail({ node }: { node: GraphNode & { data: StepNodeData } }) {
           onRename={(name) => store.setStepName(stepId, name)}
           onTest={test}
           testing={testing}
-          extra={provider ? <TryForReal info={provider} stepId={stepId} prefill={prefill} onTried={setTried} /> : undefined}
+          extra={provider ? <TryForReal info={provider} stepId={stepId} prefill={prefill} onTried={setTried} onOpenChange={setTryOpen} /> : undefined}
         />
         <div className="border-b border-stroke-light px-3 py-2">
           <Tabs<NdvTab>

@@ -7,7 +7,7 @@ import type { TryResult } from '../../lib/types'
 import { draftYaml } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
-import { changesSomething, fixableAnswer, realResponseOffer, sampleRefusal, sampleSaved, tryEnvironments, tryYaml, withFixedSchema, withSample, type TriedCall } from './providerStep'
+import { changesSomething, fixableAnswer, realResponseOffer, sampleRefusal, sampleSaved, triedFor, tryEnvironments, tryYaml, withFixedSchema, withSample, type TriedCall } from './providerStep'
 import { editDraft, loadingInfo, newDraft, newDraftInfo, providerStep, publishedInfo, settledDetail, unknownInfo, VSPHERE_YAML } from './testProviders'
 import { confirmMessage, prefillInput, testResourceFields, TriedOutput, TryForReal, tryLabel } from './TryForReal'
 
@@ -34,7 +34,7 @@ const RESULT: TryResult = {
 }
 const FAILED: TryResult = { ...RESULT, ok: false, status: 404, response: { error: { class: 'not_found', message: 'No VM vm-1042' } }, mismatches: [], yaml: undefined }
 
-const tried = (yaml: string, result: TryResult = RESULT, action = 'vm.get'): TriedCall => ({ stepId: 'check', action, environment: 'dev', yaml, result })
+const tried = (yaml: string, result: TryResult = RESULT, action = 'vm.get', provider = 'vsphere'): TriedCall => ({ stepId: 'check', provider, action, environment: 'dev', yaml, result })
 type Doc = { metadata: { version: string }; spec: { actions: Record<string, unknown>[]; overrides?: Record<string, unknown> } }
 
 const doc: WorkflowDocument = { apiVersion: 'iaf.platform/v1', kind: 'Workflow', metadata: { name: 'vm-check', owner: 'team-compute', version: '1.0.0' }, workflow: { do: [] } } as WorkflowDocument
@@ -86,6 +86,16 @@ describe('what a real call is made with', () => {
     expect(render(<TryForReal info={unknownInfo()} stepId="check" prefill={{}} onTried={() => {}} />)).toContain('disabled=""')
     expect(tryLabel(unknownInfo())).toBe('vspher is not a registered provider; pick one in Parameters')
   })
+
+  it('shows its answer only for the step, provider and action it was made for', () => {
+    const call = tried(VSPHERE_YAML)
+    expect(triedFor(call, 'check', { provider: 'vsphere', action: 'vm.get' })).toBe(call)
+    expect(triedFor(call, 'other', { provider: 'vsphere', action: 'vm.get' })).toBeNull()
+    expect(triedFor(call, 'check', { provider: 'vsphere', action: 'vm.list' })).toBeNull()
+    // another provider with an action of the same id
+    expect(triedFor(call, 'check', { provider: 'gitlab', action: 'vm.get' })).toBeNull()
+    expect(triedFor(null, 'check', { provider: 'vsphere', action: 'vm.get' })).toBeNull()
+  })
 })
 
 /** The opening tag of the button that shows this text. */
@@ -104,7 +114,7 @@ describe('the answer of a real call', () => {
     expect(button(published, 'Save as sample')).not.toContain('disabled=""')
     expect(button(published, 'Fix schema')).not.toContain('disabled=""')
     expect(published).toContain('Use the real response')
-    const draft = render(<TriedOutput info={newDraftInfo()} tried={tried(draftYaml(newDraft()), RESULT, 'invoices.get')} onClose={() => {}} />)
+    const draft = render(<TriedOutput info={newDraftInfo()} tried={tried(draftYaml(newDraft()), RESULT, 'invoices.get', 'billing')} onClose={() => {}} />)
     expect(draft).toContain('Save as sample')
     expect(draft).not.toContain('Use the real response')
     expect(draft).not.toContain('is left out')
@@ -165,7 +175,7 @@ describe('Save as sample', () => {
   it('makes a draft written from its state hold that file, as the wizard’s Use this does', () => {
     const draft = newDraft()
     const file = draftYaml(draft)
-    const out = withSample(draft, tried(file, { ...RESULT, yaml: `${file}# recorded, token: vault:redacted` }, 'invoices.get'))!
+    const out = withSample(draft, tried(file, { ...RESULT, yaml: `${file}# recorded, token: vault:redacted` }, 'invoices.get', 'billing'))!
     expect(out.draftYaml).toBe(`${file}# recorded, token: vault:redacted`)
     expect(out.samples).toEqual({})
     expect(JSON.stringify(out)).not.toContain('example-token')

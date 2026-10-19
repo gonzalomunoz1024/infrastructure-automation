@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 import { parse } from 'yaml'
-import { mockDesignerApi } from './designer-fixtures'
+import { mockDesignerApi, type MockApi } from './designer-fixtures'
 
 /*
  * A provider step's node detail view against a mocked backend: the health dot on the canvas, the
@@ -155,12 +155,12 @@ function node(page: Page, id: string): Locator {
   return page.locator(`.react-flow__node[data-id="${id}"]`)
 }
 
-async function openVmRestart(page: Page, options: { openChange?: boolean } = {}): Promise<ProviderCalls> {
-  await mockDesignerApi(page)
+async function openVmRestart(page: Page, options: { openChange?: boolean } = {}): Promise<ProviderCalls & { api: MockApi }> {
+  const api = await mockDesignerApi(page)
   const calls = await mockProviders(page, options)
   await page.goto('/#/workflows/vm-restart')
   await expect(node(page, 'step:checkVmExists')).toBeVisible()
-  return calls
+  return { ...calls, api }
 }
 
 /** The workflow's provider drafts as this browser keeps them. */
@@ -252,6 +252,10 @@ test.describe('a provider step in the node detail view', () => {
     await expect(dialog).toContainText('draft 1.3.1')
     await expect(dialog.getByRole('button', { name: 'Environment' })).toHaveText('dev')
     await dialog.getByLabel(/^id/).fill('vm-1042')
+    // ⌘↵ in the dialog is not Test step's: no dry run starts behind it
+    await page.keyboard.press('ControlOrMeta+Enter')
+    await expect(dialog).toBeVisible()
+    expect(calls.api.dryRuns).toHaveLength(0)
     await dialog.getByRole('button', { name: 'Try it' }).click()
     await expect(dialog).toBeHidden()
     expect(calls.tries).toHaveLength(1)
@@ -263,6 +267,11 @@ test.describe('a provider step in the node detail view', () => {
     await expect(out.getByTestId('try-outcome')).toContainText('HTTP 200')
     await expect(out.getByTestId('try-outcome')).toContainText('2 fields differ')
     await expect(out.getByTestId('try-outcome')).toContainText('POWERED_ON')
+    // the Output pane's header acts on the test output: it steps aside while the real answer shows
+    const output = ndv.getByTestId('ndv-output')
+    await expect(output.getByRole('button', { name: 'Pin output' })).toHaveCount(0)
+    await expect(output.getByRole('radiogroup', { name: 'Output view' })).toHaveCount(0)
+    await expect(output).toContainText('Real call')
 
     // Save as sample: the draft takes the file the call came back with
     await out.getByRole('button', { name: 'Save as sample' }).click()
@@ -289,6 +298,7 @@ test.describe('a provider step in the node detail view', () => {
     await out.getByRole('button', { name: 'Back to the test output' }).click()
     await expect(ndv.getByTestId('ndv-tried')).toBeHidden()
     await expect(ndv.getByRole('button', { name: 'Pin output' })).toBeDisabled()
+    await expect(output.getByRole('radiogroup', { name: 'Output view' })).toBeVisible()
   })
 
   test('uses the real response of a published provider through a change request, when no draft of it is in the workflow', async ({ page }) => {

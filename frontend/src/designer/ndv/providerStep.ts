@@ -50,13 +50,19 @@ export interface ProviderStepInfo {
   detailError: unknown
 }
 
-/** A real call made from the node detail view: the file it was made with, and what it answered. */
+/** A real call made from the node detail view: the provider and file it was made with, and what it answered. */
 export interface TriedCall {
   stepId: string
+  provider: string
   action: string
   environment: string
   yaml: string
   result: TryResult
+}
+
+/** The real call the Output pane shows for this step: the last one, when it was made for this step's provider and action (not one a renamed or switched step made before). */
+export function triedFor(tried: TriedCall | null, stepId: string, info: Pick<ProviderStepInfo, 'provider' | 'action'> | null): TriedCall | null {
+  return tried && info && tried.stepId === stepId && tried.provider === info.provider && tried.action === info.action ? tried : null
 }
 
 /** The provider and action a provider step calls, empty when it names none. */
