@@ -3,7 +3,7 @@ import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { blankAction, buildProviderDocument } from '../../components/provider-editor/state'
 import { emitYaml } from '../../components/yaml-emit'
 import type { ProviderDetail, TryResult } from '../../lib/types'
-import { draftFile, draftFromProvider, draftProvider, draftsUsedBy, draftYaml, findProviderDraft, loadProviderDrafts, newProviderDraft, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
+import { draftFile, draftFromProvider, draftPlaybooks, draftProvider, draftsUsedBy, draftYaml, findProviderDraft, loadProviderDrafts, newProviderDraft, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
 
 /** A localStorage of this test's own: vitest runs these in node, which has none. */
 function memoryStorage(): Storage & { data: Map<string, string> } {
@@ -268,6 +268,39 @@ describe('a draft as the canvas reads it', () => {
       ['hosts.patch', 'unsafe', 'none'],
       ['hosts.retire', 'unsafe', 'required'],
     ])
+  })
+
+  it("lists an Ansible draft's playbooks as the library names them, tagged draft", () => {
+    const rows = {
+      ...newProviderDraft('ansible', { name: 'ops', version: '1.0.0' }),
+      actions: [blankAction({ id: 'hosts.patch', playbook: ' patch.yml ' }), blankAction({ id: 'hosts.facts', playbook: 'facts.yml', selected: false }), blankAction({ id: '' })],
+    }
+    expect(draftPlaybooks(rows, 'team-compute')).toEqual([{ name: 'ops/hosts.patch', version: '1.0.0', path: 'patch.yml', owner: 'team-compute', unpublished: 'draft' }])
+    const imported: ProviderDraft = {
+      ...rows,
+      actions: [],
+      owner: 'team-ops',
+      imported: {
+        kind: 'ansible',
+        result: {
+          repo: 'https://example.com/acme/ops',
+          ref: 'main',
+          commit: 'abc',
+          chosen: ['hosts.retire'],
+          requirements: [],
+          skipped: [],
+          notes: [],
+          yaml: 'kind: Provider\n',
+          playbooks: [
+            { path: 'patch.yml', action: 'hosts.patch', title: 'Patch hosts', effect: 'change', roles: [], vars: { type: 'object' }, sources: {}, secrets: [], notes: [] },
+            { path: 'retire.yml', action: 'hosts.retire', title: 'Retire hosts', effect: 'delete', roles: [], vars: { type: 'object' }, sources: {}, secrets: [], notes: [] },
+          ],
+        },
+      },
+    }
+    expect(draftPlaybooks(imported, 'team-compute')).toEqual([{ name: 'ops/hosts.retire', version: '1.0.0', path: 'retire.yml', owner: 'team-ops', unpublished: 'draft' }])
+    expect(draftPlaybooks(http())).toEqual([])
+    expect(draftPlaybooks({ ...rows, name: '' })).toEqual([])
   })
 
   it("its file names the workflow's owner when it names none", () => {

@@ -10,6 +10,7 @@ import { STEP_TYPES, type JsonValue, type ParsedStep, type Problem } from '@iaf/
 import type { RegistryProvider } from '../../lib/types'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, NODE_SIZE, isStepNode, type EdgeRole, type Graph, type GraphEdge, type GraphNode, type OutputHandle, type TriggerType } from '../model/graph'
 import type { InsertPoint } from '../model/edits'
+import { libraryPlaybook } from '../model/providerDrafts'
 import type { Sticky } from '../model/stickies'
 import { stepGlyph, triggerGlyph, type Glyph } from './glyphs'
 
@@ -223,13 +224,23 @@ export interface Flow {
   edges: FlowEdge[]
 }
 
-/** A provider step's subtitle, led by a tag when the workflow calls a provider not published yet (draft, or in review), so a truncated subtitle still shows it. */
+/**
+ * The tag of the provider a step calls when the workflow has not published it (one of its drafts,
+ * or one in review): a provider step's provider, an ansible step's library playbook's
+ * (`<provider>/<playbook>`); undefined otherwise.
+ */
+export function unpublishedTag(step: Pick<ParsedStep, 'type' | 'with'>, providers: readonly RegistryProvider[]): RegistryProvider['unpublished'] {
+  if (!providers.some((p) => p.unpublished)) return undefined
+  const w = step.with && typeof step.with === 'object' && !Array.isArray(step.with) ? step.with : {}
+  const name = step.type === 'provider' ? w.provider : step.type === 'ansible' ? libraryPlaybook(w.playbook)?.split('/')[0] : undefined
+  const p = typeof name === 'string' ? providers.find((x) => x.name === name && (step.type !== 'ansible' || x.type === 'ansible')) : undefined
+  return p?.unpublished
+}
+
+/** A step's subtitle, led by its provider's tag when the workflow has not published it, so a truncated subtitle still shows it. */
 function tagged(subtitle: string, step: Pick<ParsedStep, 'type' | 'with'>, providers: readonly RegistryProvider[]): string {
-  if (step.type !== 'provider' || !providers.some((p) => p.unpublished)) return subtitle
-  const w = step.with
-  const name = w && typeof w === 'object' && !Array.isArray(w) ? w.provider : undefined
-  const p = providers.find((x) => x.name === name)
-  return p?.unpublished ? `${p.unpublished} · ${subtitle}` : subtitle
+  const tag = unpublishedTag(step, providers)
+  return tag ? `${tag} · ${subtitle}` : subtitle
 }
 
 function stepNodeData(n: GraphNode & { data: { kind: 'step' } }, edgesFrom: ReadonlyMap<string, Set<string>>, issues: Issues | undefined, run: RunInfo | undefined, input: FlowInput): StepNodeData {

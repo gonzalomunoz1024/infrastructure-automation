@@ -14,7 +14,7 @@
  * written into a URL, and none of the tries' live answers (the review's evidence is the server's).
  */
 import type { WorkflowDocument } from '@iaf/workflow-checks'
-import type { ProviderDetail, ProviderImport, ProviderType, RegistryAction, RegistryProvider, Schema, TerraformVariable } from '../../lib/types'
+import type { AnsibleImport, ImportedPlaybook, ProviderDetail, ProviderImport, ProviderType, RegistryAction, RegistryPlaybook, RegistryProvider, Schema, TerraformVariable } from '../../lib/types'
 import { initialState, nextKey, parseSchema, providerYaml, stateFromProvider, typeChange, type ActionRow, type WizardState } from '../../components/provider-editor/state'
 import { allStepLocations } from './graph'
 
@@ -105,6 +105,9 @@ function terraformSchema(v: TerraformVariable): Schema {
 
 const COUNTS: Record<string, Schema> = { add: { type: 'integer' }, change: { type: 'integer' }, destroy: { type: 'integer' } }
 
+/** The playbooks of an Ansible import the provider takes: the chosen ones, every one when none was chosen. */
+const chosenPlaybooks = ({ playbooks, chosen }: AnsibleImport): ImportedPlaybook[] => playbooks.filter((p) => chosen.length === 0 || chosen.includes(p.action))
+
 /**
  * The actions an import drafted, for a draft that took the import's file (its rows are empty
  * then): the chosen playbooks of an Ansible repository, a Terraform module's Plan and Apply, as
@@ -112,10 +115,7 @@ const COUNTS: Record<string, Schema> = { add: { type: 'integer' }, change: { typ
  */
 function importedActions(imported: ProviderImport): RegistryAction[] {
   if (imported.kind === 'ansible') {
-    const { playbooks, chosen } = imported.result
-    return playbooks
-      .filter((p) => chosen.length === 0 || chosen.includes(p.action))
-      .map((p) => ({ id: p.action, title: p.title || p.action, effect: p.effect, retry: p.effect === 'read' ? 'safe' : 'unsafe', approval: p.effect === 'delete' ? 'required' : 'none', input: p.vars, output: null }))
+    return chosenPlaybooks(imported.result).map((p) => ({ id: p.action, title: p.title || p.action, effect: p.effect, retry: p.effect === 'read' ? 'safe' : 'unsafe', approval: p.effect === 'delete' ? 'required' : 'none', input: p.vars, output: null }))
   }
   const variables = imported.result.variables.filter((v) => !v.secret)
   const ordered = [...variables.filter((v) => v.required), ...variables.filter((v) => !v.required)]
@@ -149,6 +149,20 @@ export function draftProvider(draft: ProviderDraft, owner?: string | null): Regi
     ...(d.type === 'terraform' && source ? { module: version ? { source, version } : { source } } : {}),
     unpublished: 'draft',
   }
+}
+
+/**
+ * An Ansible draft's playbooks as the library lists them (GET /registry/playbooks names a published
+ * provider's `<provider>/<action>`), so the step's Playbook picker and the node creator offer them:
+ * its selected actions' (or, for a draft that took an import's file, the import's chosen ones),
+ * under the workflow's owner when it names none, tagged `unpublished: 'draft'`. None for another type.
+ */
+export function draftPlaybooks(draft: ProviderDraft, owner?: string | null): RegistryPlaybook[] {
+  if (draft.type !== 'ansible' || !draft.name.trim()) return []
+  const d = withDefaultOwner(draft, owner)
+  const rows = d.actions.filter((a) => a.selected && a.id.trim())
+  const listed = rows.length === 0 && d.imported?.kind === 'ansible' ? chosenPlaybooks(d.imported.result).map((p) => ({ id: p.action, path: p.path })) : rows.map((a) => ({ id: a.id, path: a.playbook.trim() }))
+  return listed.map(({ id, path }) => ({ name: `${d.name}/${id}`, version: d.version.trim(), path, owner: d.owner.trim(), unpublished: 'draft' as const }))
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

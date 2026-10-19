@@ -8,6 +8,7 @@ import { api } from '../../lib/api'
 import type { RegistryProvider } from '../../lib/types'
 import { blankAction } from '../../components/provider-editor/state'
 import { buildCatalog } from '../creator/catalog'
+import { unpublishedTag } from '../canvas/flow'
 import { contextAt } from './expressions'
 import { newProviderDraft } from './providerDrafts'
 
@@ -343,6 +344,23 @@ describe('provider drafts on the canvas', () => {
     expect(action?.tags?.map((t) => t.label)).toEqual(['create', 'draft'])
     expect(action?.action).toEqual({ kind: 'step', type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })
     expect(contextAt(s.getState().doc, 'get', {}, s.getState().registry).outputs.snap).toEqual({ id: 'snap-1' })
+  })
+
+  it("offers an Ansible draft's playbooks in the library, tagged, and tags the steps that run one", () => {
+    const s = onCanvas()
+    const ops = { ...newProviderDraft('ansible', { name: 'ops', title: 'Ops playbooks' }), actions: [blankAction({ id: 'hosts.patch', title: 'Patch hosts', playbook: 'patch.yml', effect: 'change', retry: 'unsafe' })] }
+    s.upsertProviderDraft(ops)
+    const registry = s.getState().registry
+    expect(registry?.playbooks).toEqual([{ name: 'ops/hosts.patch', version: ops.version, path: 'patch.yml', owner: 'team-compute', unpublished: 'draft' }])
+    const library = buildCatalog(registry, s.getState().doc).get('ansible')?.sections[0]
+    expect(library?.items.map((i) => [i.title, i.tags])).toEqual([['ops/hosts.patch', [{ label: 'draft', tone: 'accent' }]]])
+    const providers = registry?.providers ?? []
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: 'ops/hosts.patch' } }, providers)).toBe('draft')
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: { library: 'ops/hosts.patch' } } }, providers)).toBe('draft')
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: { git: { repo: 'https://example.com/ops', path: 'ops/x.yml' } } } }, providers)).toBeUndefined()
+    expect(unpublishedTag({ type: 'provider', with: { provider: 'vsphere', action: 'vm.get' } }, providers)).toBeUndefined()
+    s.upsertProviderDraft(backup())
+    expect(unpublishedTag({ type: 'provider', with: { provider: 'backup', action: 'snapshot.create' } }, s.getState().registry?.providers ?? [])).toBe('draft')
   })
 
   it("keeps an owner someone set, or cleared, and follows the workflow's owner while the draft names none", () => {

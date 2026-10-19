@@ -164,27 +164,41 @@ export function withCredential(registry: Registry, credential: RegistryCredentia
   return { ...registry, credentials: [...registry.credentials.filter((c) => c.name !== credential.name), credential] }
 }
 
+/** The first of each name, without the unnamed. */
+const firstOfName = <T extends { name: string }>(list: readonly T[]): T[] => list.filter((x, i) => x.name && list.findIndex((y) => y.name === x.name) === i)
+
 /**
  * The registry with the providers the workflow uses before they are published (its drafts, the
- * ones in review), each in place of a published provider of the same name, so the canvas reads
- * them as published; the first of a name wins. One that names no module keeps the published
- * provider's (the draft of a terraform provider's next patch names none). The same registry when
- * there are none.
+ * ones in review) and their Ansible playbooks, each in place of a published one of the same name,
+ * so the canvas reads them as published; the first of a name wins. A provider that names no module
+ * keeps the published provider's (the draft of a terraform provider's next patch names none). The
+ * same registry when there are none.
  */
-export function withUnpublished(registry: Registry, providers: readonly RegistryProvider[]): Registry {
-  const named = providers.filter((p, i) => p.name && providers.findIndex((x) => x.name === p.name) === i)
-  if (named.length === 0) return registry
+export function withUnpublished(registry: Registry, providers: readonly RegistryProvider[], playbooks: readonly RegistryPlaybook[] = []): Registry {
+  const named = firstOfName(providers)
+  const books = firstOfName(playbooks)
+  if (named.length === 0 && books.length === 0) return registry
   const names = new Set(named.map((p) => p.name))
   const withModule = (p: RegistryProvider): RegistryProvider => {
     const module = p.module ?? registry.providers.find((x) => x.name === p.name)?.module
     return module ? { ...p, module } : p
   }
-  return { ...registry, providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named.map(withModule)] }
+  const bookNames = new Set(books.map((b) => b.name))
+  return {
+    ...registry,
+    providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named.map(withModule)],
+    playbooks: [...registry.playbooks.filter((b) => !bookNames.has(b.name)), ...books],
+  }
 }
 
 /** How a provider is named wherever the designer shows it: its title, tagged when it is not published yet. */
 export function providerLabel(p: Pick<RegistryProvider, 'title' | 'unpublished'>): string {
   return p.unpublished ? `${p.title} (${p.unpublished})` : p.title
+}
+
+/** How a library playbook is named in the step's picker: `<provider>/<playbook>`, tagged when its provider is not published yet. */
+export function playbookLabel(p: Pick<RegistryPlaybook, 'name' | 'unpublished'>): string {
+  return p.unpublished ? `${p.name} (${p.unpublished})` : p.name
 }
 
 /** A credential stored in this session: every registry loadRegistry hands out from now on lists it. */

@@ -39,7 +39,7 @@ import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, withUnpublished, type Registry } from './registry'
-import { draftFile, draftProvider, draftsUsedBy, findProviderDraft, loadProviderDrafts, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
+import { draftFile, draftPlaybooks, draftProvider, draftsUsedBy, findProviderDraft, loadProviderDrafts, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
 import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
@@ -355,8 +355,10 @@ export class DesignerStore {
   private registryFor(doc: WorkflowDocument, drafts: Readonly<Record<string, ProviderDraft>>, review: readonly ProviderInReview[]): Registry | null {
     if (!this.loaded) return null
     const owner = doc.metadata?.owner
-    const unpublished = [...Object.values(drafts).map((d) => draftProvider(d, owner)), ...review.map((r) => ({ ...draftProvider(r.draft), unpublished: 'in review' as const }))]
-    return withUnpublished(this.loaded, unpublished)
+    const inReview = 'in review' as const
+    const unpublished = [...Object.values(drafts).map((d) => draftProvider(d, owner)), ...review.map((r) => ({ ...draftProvider(r.draft), unpublished: inReview }))]
+    const playbooks = [...Object.values(drafts).flatMap((d) => draftPlaybooks(d, owner)), ...review.flatMap((r) => draftPlaybooks(r.draft).map((b) => ({ ...b, unpublished: inReview })))]
+    return withUnpublished(this.loaded, unpublished, playbooks)
   }
 
   /** Applies `patch` with the registry and the check context it leads to, and runs the checks again. */

@@ -191,7 +191,8 @@ export type TerraformModuleRef = { source: string; version?: string; ref?: strin
  */
 export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef; unpublished?: 'draft' | 'in review' }
 export type RegistryWorkflow = { name: string; title: string; version: string; input: Schema; output: Schema }
-export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
+/** `unpublished` is the designer's own, as a provider's: a playbook of an Ansible draft of the workflow, or of one in review. */
+export type RegistryPlaybook = { name: string; version: string; path: string; owner: string; unpublished?: 'draft' | 'in review' }
 export type RegistryCredential = { name: string; type: string }
 
 /** POST /playbooks:upload: the stored archive a step refers to as `playbook.upload`. */

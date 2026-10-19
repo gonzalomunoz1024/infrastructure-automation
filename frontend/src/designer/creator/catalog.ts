@@ -59,7 +59,7 @@ export function effectTags(a: Pick<RegistryAction, 'effect' | 'approval'>): Crea
   return tags
 }
 
-/** A provider the workflow has not published yet, tagged as such: one of its drafts ("draft"), or one in review. */
+/** A provider (or a playbook of one) the workflow has not published yet, tagged as such: one of its drafts ("draft"), or one in review. */
 export function unpublishedTags(p: Pick<RegistryProvider, 'unpublished'>): CreatorTag[] {
   return p.unpublished ? [{ label: p.unpublished, tone: 'accent' }] : []
 }
@@ -199,6 +199,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
                 title: pb.name,
                 description: [pb.path, pb.version, pb.owner].filter(Boolean).join(' · '),
                 glyph: typeGlyph('ansible'),
+                tags: unpublishedTags(pb),
                 keywords: `ansible playbook library ${pb.path}`,
                 action: { kind: 'step' as const, type: 'ansible' as const, params: { playbook: pb.name, name: pb.name.split('/').pop() ?? pb.name } },
               })),

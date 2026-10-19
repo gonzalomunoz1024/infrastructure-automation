@@ -11,7 +11,7 @@ import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
-import { findAction, findProvider, knownGroups, providerLabel, type Registry } from '../model/registry'
+import { findAction, findProvider, knownGroups, playbookLabel, providerLabel, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
 import { useDesignerStore } from '../model/store'
 import { effectTags } from '../creator/catalog'
@@ -465,7 +465,7 @@ function AnsibleParams() {
             expression={false}
             mono
             problemsExact={['playbook']}
-            options={playbooks.map((x) => ({ value: x.name, label: x.name, hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
+            options={playbooks.map((x) => ({ value: x.name, label: playbookLabel(x), hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
             description="A playbook of the library: <provider>/<playbook>"
           />
         )}

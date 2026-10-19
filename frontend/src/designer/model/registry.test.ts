@@ -2,7 +2,7 @@ import { check, type Problem } from '@iaf/workflow-checks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CatalogEntry, Dependencies, JsonObject, RegistryProvider, WorkflowDocument } from '../../lib/types'
 import { newDocument } from './edits'
-import { contextOf, EMPTY_REGISTRY, loadRegistry, mcpToolsOf, providerLabel, setRegistryForTests, terraformModuleIn, terraformModuleOf, withTerraformModules, withUnpublished, workflowRunsOf, type Registry } from './registry'
+import { contextOf, EMPTY_REGISTRY, loadRegistry, mcpToolsOf, playbookLabel, providerLabel, setRegistryForTests, terraformModuleIn, terraformModuleOf, withTerraformModules, withUnpublished, workflowRunsOf, type Registry } from './registry'
 
 /*
  * A terraform provider's module, which GET /registry/providers does not carry: read from the plan
@@ -235,6 +235,18 @@ describe('the unpublished providers of a workflow', () => {
     const own = { source: 'https://example.com/acme/tf-modules//network2' }
     expect(withUnpublished({ ...EMPTY_REGISTRY, providers: [network] }, [{ ...edit, module: own }]).providers[0].module).toEqual(own)
     expect(withUnpublished(EMPTY_REGISTRY, [edit]).providers[0].module).toBeUndefined()
+  })
+
+  it("bring an Ansible draft's playbooks into the library, each in place of a published one of its name", () => {
+    const published = { name: 'ops/hosts.patch', version: '1.0.0', path: 'patch.yml', owner: 'team-ops' }
+    const other = { name: 'db/backup', version: '2.0.0', path: 'backup.yml', owner: 'team-data' }
+    const next = { ...published, version: '1.0.1', unpublished: 'draft' as const }
+    const added = { name: 'ops/hosts.retire', version: '1.0.1', path: 'retire.yml', owner: 'team-ops', unpublished: 'draft' as const }
+    const merged = withUnpublished({ ...EMPTY_REGISTRY, playbooks: [published, other] }, [], [next, added, { ...added, path: 'again.yml' }])
+    expect(merged.playbooks).toEqual([other, next, added])
+    expect(merged.providers).toEqual([])
+    expect(playbookLabel(added)).toBe('ops/hosts.retire (draft)')
+    expect(playbookLabel(other)).toBe('db/backup')
   })
 
   it('are named with their tag wherever the designer names a provider', () => {
