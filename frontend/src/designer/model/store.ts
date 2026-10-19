@@ -934,14 +934,14 @@ export class DesignerStore {
   /** The drafts the workflow uses, under its owner when they name none: the ones Publish opens a change request for. */
   usedProviderDrafts(): ProviderDraft[] {
     const owner = this.state.doc.metadata?.owner
-    return draftsUsedBy(this.state.doc, this.state.providerDrafts).map((d) => withDefaultOwner(d, owner))
+    return draftsUsedBy(this.state.doc, this.state.providerDrafts, this.loaded?.providers).map((d) => withDefaultOwner(d, owner))
   }
 
   /** The providers in review the workflow uses (none of its drafts has their name): the change requests its next Publish requires. */
   usedProvidersInReview(): ProviderInReview[] {
     const drafts = new Set(this.usedProviderDrafts().map((d) => d.name))
     const byId = Object.fromEntries(this.state.providersInReview.map((r) => [r.draft.id, r.draft]))
-    const used = new Set(draftsUsedBy(this.state.doc, byId).map((d) => d.name))
+    const used = new Set(draftsUsedBy(this.state.doc, byId, this.loaded?.providers).map((d) => d.name))
     return this.state.providersInReview.filter((r) => used.has(r.draft.name) && !drafts.has(r.draft.name))
   }
 

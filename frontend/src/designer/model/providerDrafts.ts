@@ -154,6 +154,17 @@ export function draftProvider(draft: ProviderDraft, owner?: string | null): Regi
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
+ * A terraform draft's module source: its own, else, for the draft of a published provider's next
+ * patch (whose state names no module, `stateFromProvider`), the published provider's.
+ */
+function moduleSource(d: ProviderDraft, published: readonly RegistryProvider[]): string {
+  const own = d.terraform.source.trim()
+  if (own || d.origin !== 'edit') return own
+  const name = d.editing ?? d.name
+  return published.find((p) => p.name === name)?.module?.source.trim() ?? ''
+}
+
+/**
  * The library playbook an ansible step runs, `<provider>/<playbook>`: the plain string, or the
  * object's `library` (config-as-code.md); undefined for a git or uploaded playbook.
  */
@@ -168,7 +179,7 @@ export function libraryPlaybook(playbook: unknown): string | undefined {
  * repository, a terraform step on its module, an IDP step on one of its tiles (the creator's IDP
  * items name a tile by its action id).
  */
-function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
+function calls(body: Record<string, unknown>, d: ProviderDraft, published: readonly RegistryProvider[]): boolean {
   const w = isRecord(body.with) ? body.with : {}
   switch (body.call) {
     case 'provider':
@@ -183,7 +194,8 @@ function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
     }
     case 'terraform': {
       const source = isRecord(w.module) ? w.module.source : undefined
-      return d.type === 'terraform' && typeof source === 'string' && !!d.terraform.source.trim() && source.trim() === d.terraform.source.trim()
+      const own = d.type === 'terraform' ? moduleSource(d, published) : ''
+      return typeof source === 'string' && !!own && source.trim() === own
     }
     case 'idp':
       return d.type === 'idp' && typeof w.tile === 'string' && d.actions.some((a) => a.selected && a.id === w.tile)
@@ -195,13 +207,14 @@ function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
 /**
  * The drafts the workflow uses, in the order its steps (nested ones and the catch flow's
  * included) first call them: the providers a dry run, Validate and Publish take along. A draft
- * without a name is called by nothing.
+ * without a name is called by nothing. `published` is the registry's providers as loaded: the
+ * module of a terraform provider whose next patch a draft is.
  */
-export function draftsUsedBy(doc: WorkflowDocument, drafts: Readonly<Record<string, ProviderDraft>>): ProviderDraft[] {
+export function draftsUsedBy(doc: WorkflowDocument, drafts: Readonly<Record<string, ProviderDraft>>, published: readonly RegistryProvider[] = []): ProviderDraft[] {
   const named = Object.values(drafts).filter((d) => d.name.trim())
   const out: ProviderDraft[] = []
   for (const { body } of allStepLocations(doc)) {
-    for (const d of named) if (!out.some((o) => o.name === d.name) && calls(body as Record<string, unknown>, d)) out.push(d)
+    for (const d of named) if (!out.some((o) => o.name === d.name) && calls(body as Record<string, unknown>, d, published)) out.push(d)
   }
   return out
 }

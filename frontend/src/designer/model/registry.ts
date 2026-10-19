@@ -167,13 +167,19 @@ export function withCredential(registry: Registry, credential: RegistryCredentia
 /**
  * The registry with the providers the workflow uses before they are published (its drafts, the
  * ones in review), each in place of a published provider of the same name, so the canvas reads
- * them as published; the first of a name wins. The same registry when there are none.
+ * them as published; the first of a name wins. One that names no module keeps the published
+ * provider's (the draft of a terraform provider's next patch names none). The same registry when
+ * there are none.
  */
 export function withUnpublished(registry: Registry, providers: readonly RegistryProvider[]): Registry {
   const named = providers.filter((p, i) => p.name && providers.findIndex((x) => x.name === p.name) === i)
   if (named.length === 0) return registry
   const names = new Set(named.map((p) => p.name))
-  return { ...registry, providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named] }
+  const withModule = (p: RegistryProvider): RegistryProvider => {
+    const module = p.module ?? registry.providers.find((x) => x.name === p.name)?.module
+    return module ? { ...p, module } : p
+  }
+  return { ...registry, providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named.map(withModule)] }
 }
 
 /** How a provider is named wherever the designer shows it: its title, tagged when it is not published yet. */

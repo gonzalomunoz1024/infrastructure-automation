@@ -225,6 +225,18 @@ describe('the unpublished providers of a workflow', () => {
     expect(withUnpublished(registry, [])).toBe(registry)
   })
 
+  it("keep the published provider's module when they name none, as the draft of a terraform provider's next patch", () => {
+    const module = { source: 'https://example.com/acme/tf-modules//network', version: '1.0.0' }
+    const network: RegistryProvider = { name: 'network', title: 'Network', type: 'terraform', actions: [{ id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' }], module }
+    const edit: RegistryProvider = { name: 'network', title: 'Network next', type: 'terraform', actions: network.actions, unpublished: 'draft' }
+    const merged = withUnpublished({ ...EMPTY_REGISTRY, providers: [network] }, [edit])
+    expect(merged.providers).toEqual([{ ...edit, module }])
+    // a draft's own module stands
+    const own = { source: 'https://example.com/acme/tf-modules//network2' }
+    expect(withUnpublished({ ...EMPTY_REGISTRY, providers: [network] }, [{ ...edit, module: own }]).providers[0].module).toEqual(own)
+    expect(withUnpublished(EMPTY_REGISTRY, [edit]).providers[0].module).toBeUndefined()
+  })
+
   it('are named with their tag wherever the designer names a provider', () => {
     expect(providerLabel(draftOf('backup', 'Backup API'))).toBe('Backup API (draft)')
     expect(providerLabel({ ...draftOf('backup', 'Backup API'), unpublished: 'in review' })).toBe('Backup API (in review)')

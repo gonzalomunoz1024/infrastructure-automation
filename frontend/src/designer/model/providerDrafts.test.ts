@@ -318,4 +318,20 @@ describe('the drafts a workflow calls', () => {
     expect(used({ call: 'idp', with: { tile: 'namespace.request' } })).toEqual(['portal'])
     expect(used({ call: 'idp', with: { tile: 'other' } })).toEqual([])
   })
+
+  it("include the draft of a published terraform provider's next patch, by the published module", () => {
+    const source = 'https://example.com/acme/tf-modules//network'
+    // Edit provider names no module: the published provider's is the draft's
+    const edit = draftFromProvider({ ...DETAIL, name: 'network', title: 'Network', type: 'terraform', yaml: YAML.replace('vsphere', 'network') })
+    expect(edit.terraform.source).toBe('')
+    const drafts = { [edit.id]: edit }
+    const step = doc([{ net: { call: 'terraform', with: { module: { source, version: '1.0.0' }, action: 'plan' } } }])
+    const published = [{ name: 'network', title: 'Network', type: 'terraform' as const, actions: [], module: { source, version: '1.0.0' } }]
+    expect(draftsUsedBy(step, drafts, published).map((d) => d.name)).toEqual(['network'])
+    expect(draftsUsedBy(step, drafts)).toEqual([])
+    expect(draftsUsedBy(doc([{ vpc: { call: 'terraform', with: { module: { source: `${source}-vpc` }, action: 'plan' } } }]), drafts, published)).toEqual([])
+    // a new draft without a module is called by no terraform step
+    const fresh = newProviderDraft('terraform', { name: 'network' })
+    expect(draftsUsedBy(step, { [fresh.id]: fresh }, published)).toEqual([])
+  })
 })
