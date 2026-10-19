@@ -127,18 +127,18 @@ export function credentialOptions(credentials: readonly RegistryCredential[], ki
   return [...credentials].sort((a, b) => rank(a.type) - rank(b.type) || a.name.localeCompare(b.name)).map((c) => ({ value: `vault:${c.name}`, label: c.name, hint: c.type }))
 }
 
-/** The value of the entry that ends a credential field's options, n8n's "Create new credential". */
+/** The value of the entry that starts a credential field's options, n8n's "Create new credential". */
 export const NEW_CREDENTIAL = '__new-credential__'
 
 /**
- * A credential field's options: the credentials, then a reference the registry does not list, then
- * "New credential…" last unless the step is read-only.
+ * A credential field's options: "New credential…" first unless the step is read-only (first, as in
+ * n8n's credential select, so a long list of stored credentials never pushes it below the fold),
+ * then the credentials, then a reference the registry does not list.
  */
 export function credentialFieldOptions(credentials: readonly RegistryCredential[], kinds: readonly string[] | undefined, current: string, canCreate: boolean): SelectOption[] {
   const options = credentialOptions(credentials, kinds)
   if (current && !options.some((o) => o.value === current)) options.push({ value: current, label: current, hint: 'not in the list' })
-  if (canCreate) options.push({ value: NEW_CREDENTIAL, label: 'New credential…' })
-  return options
+  return canCreate ? [{ value: NEW_CREDENTIAL, label: 'New credential…' }, ...options] : options
 }
 
 /**

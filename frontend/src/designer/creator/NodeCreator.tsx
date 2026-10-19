@@ -7,8 +7,8 @@
  * place, so the action it ends on is inserted there, but for cURL: an HTTP step there, open on its
  * Import cURL dialog.
  */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { cx, Icon, SkeletonRows, Tag, useDismiss } from '@iaf/ui'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { cx, Icon, SkeletonRows, Tag } from '@iaf/ui'
 import { HealthBand } from '../../components/HealthBand'
 import { api } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
@@ -20,6 +20,34 @@ import { importCurlOnOpen } from '../ndv/StepParameters'
 import { NodeGlyph } from '../canvas/glyphs'
 import { revealIn } from '../scroll'
 import { buildCatalog, ROOT_VIEW, searchCatalog, type CreatorItem } from './catalog'
+
+/** The toast stack (ToastProvider's live region): toasts float over everything, the step list included. */
+const TOASTS = '[role="region"][aria-live][aria-label="Notifications"]'
+
+/**
+ * useDismiss for the step list: a mousedown outside it (in the capture phase, as useDismiss does,
+ * since the canvas stops propagation) or Escape closes it; but a click in the toasts (Dismiss,
+ * a toast's action) is not outside: dismissing a "Saved" toast used to close the list.
+ */
+function useDismissExceptToasts(ref: RefObject<HTMLElement | null>, onDismiss: () => void): void {
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (!ref.current || ref.current.contains(target)) return
+      if (target instanceof Element && target.closest(TOASTS)) return
+      onDismiss()
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') onDismiss()
+    }
+    document.addEventListener('mousedown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [ref, onDismiss])
+}
 
 /** Where the step lands, in words. */
 export function placementOf(point: InsertPoint | null, graph: Graph): string {
@@ -57,7 +85,7 @@ export function NodeCreator() {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const close = useMemo(() => () => store.closeCreator(), [store])
-  useDismiss(ref, true, close)
+  useDismissExceptToasts(ref, close)
 
   const view = catalog.get(stack[stack.length - 1]) ?? catalog.get(ROOT_VIEW)
   const searching = query.trim().length > 0

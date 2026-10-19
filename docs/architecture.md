@@ -939,8 +939,8 @@ ends with "Connect a new system": an API from an OpenAPI spec, an HTTP request (
 repository, a Terraform module, an IDP tile, an SDK worker and Describe it (Ask Devin), each of which
 opens the Provider sheet on the point the creator was opened for, but cURL, which adds an HTTP step
 there open on its Import cURL dialog. A provider step's provider field lists the drafts beside the
-published providers and ends with "New provider…", as a credential field ends with "New
-credential…"; its pencil, Edit provider, opens the sheet on the workflow's draft of the provider,
+published providers and ends with "New provider…" (a credential field leads with "New
+credential…" instead, so it stays in view with many stored); its pencil, Edit provider, opens the sheet on the workflow's draft of the provider,
 or on a published one's next patch, and the sheet closing on the action the step already calls
 keeps the step's input. An http step's Import cURL fills its method, URL, headers and body from a
 pasted cURL command, quoted for bash or for Windows cmd (`frontend/src/designer/ndv/curl.ts`): what
