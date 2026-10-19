@@ -2,6 +2,7 @@ package com.iaf.platform.common.adapters.mongo;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
+import java.util.Map;
 import java.util.UUID;
 
 import org.bson.Document;
@@ -9,7 +10,6 @@ import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
-import com.mongodb.ConnectionString;
 import com.mongodb.MongoSocketReadException;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoClient;
@@ -51,14 +51,17 @@ public final class TestMongo implements BeforeEachCallback, AfterEachCallback {
         return uri;
     }
 
-    /** {@value #MONGO_URI} with {@code database} as the database it names (for a Spring context's spring.data.mongodb.uri). */
-    public static String uriOf(String database) {
-        ConnectionString cs = new ConnectionString(uri());
-        String hosts = String.join(",", cs.getHosts());
-        String scheme = uri().startsWith("mongodb+srv://") ? "mongodb+srv://" : "mongodb://";
-        String credentials = cs.getUsername() == null ? "" : cs.getUsername() + ":" + new String(cs.getPassword()) + "@";
-        String query = uri().contains("?") ? uri().substring(uri().indexOf('?')) : "";
-        return scheme + credentials + hosts + "/" + database + query;
+    /**
+     * The properties that point a Spring context at {@code database} on {@value #MONGO_URI}: the
+     * URI as given, so its credentials, auth database and options stay exactly as written, and the
+     * database by name, which {@link MongoConfig} prefers over the one the URI names.
+     */
+    public static Map<String, String> springProperties(String database) {
+        return springProperties(uri(), database);
+    }
+
+    static Map<String, String> springProperties(String uri, String database) {
+        return Map.of("spring.data.mongodb.uri", uri, "spring.data.mongodb.database", database);
     }
 
     /** A new database name no other test uses. */
