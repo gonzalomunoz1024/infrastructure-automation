@@ -15,7 +15,7 @@ import type { HealthStatus, RegistryAction, RegistryPlaybook, RegistryProvider, 
 import { ID_RE, inferSchema, NAME_RE, parseSchema } from '../../components/provider-editor/state'
 import type { NewStepParams, TriggerKind } from '../model/edits'
 import type { ProviderDraft } from '../model/providerDrafts'
-import type { Registry } from '../model/registry'
+import { providerLabel, type Registry } from '../model/registry'
 import type { ProviderSheetEntry } from '../model/store'
 import { providerGlyph, triggerGlyph, typeGlyph, type Glyph } from '../canvas/glyphs'
 
@@ -178,6 +178,11 @@ export function effectTags(a: Pick<RegistryAction, 'effect' | 'approval'>): Crea
   return tags
 }
 
+/** A provider (or a playbook of one) the workflow has not published yet, tagged as such: one of its drafts ("draft"), or one in review. */
+export function unpublishedTags(p: Pick<RegistryProvider, 'unpublished'>): CreatorTag[] {
+  return p.unpublished ? [{ label: p.unpublished, tone: 'accent' }] : []
+}
+
 function stepItem(type: StepType, extra: Partial<CreatorItem> = {}, params?: NewStepParams): CreatorItem {
   const info = STEP_TYPES[type]
   return { id: `type:${type}`, title: info.title, description: info.description, glyph: typeGlyph(type), action: { kind: 'step', type, params }, keywords: `${type} ${info.category}`, ...extra }
@@ -195,7 +200,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
   const add = (v: CreatorView) => views.set(v.id, v)
   const listed = providersWithDrafts(registry, extras.drafts)
   const providersOf = (types: readonly string[]) => listed.filter((p) => types.includes(p.type)).sort((a, b) => a.title.localeCompare(b.title))
-  const draftTags = (p: ListedProvider) => (p.draft ? [DRAFT_TAG] : [])
+  const draftTags = (p: ListedProvider) => (p.draft ? [DRAFT_TAG] : unpublishedTags(p))
 
   // providers and their actions
   const callProviders = providersOf(CALL_PROVIDER_TYPES)
@@ -225,7 +230,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
                 glyph: providerGlyph(p.type),
                 view: `provider:${p.name}`,
                 keywords: `${p.name}${p.draft ? ' draft' : ''}`,
-                ...(p.draft ? { tags: [DRAFT_TAG] } : {}),
+                ...(draftTags(p).length ? { tags: draftTags(p) } : {}),
                 ...(extras.health?.[p.name] ? { health: extras.health[p.name] } : {}),
               }))
             : [stepItem('provider', { description: 'No provider is registered yet; connect a new system below, or pick the provider in the step' })],
@@ -237,8 +242,8 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
   for (const p of callProviders) {
     add({
       id: `provider:${p.name}`,
-      title: p.title,
-      subtitle: p.draft ? `${p.name} · draft, not published yet` : p.name,
+      title: providerLabel(p),
+      subtitle: p.draft ? `${p.name} · draft, not published yet` : p.unpublished ? `${p.name} · ${p.unpublished}, not merged yet` : p.name,
       sections: [
         {
           title: 'Actions',
@@ -325,8 +330,8 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
                 title: pb.name,
                 description: [pb.path, pb.version, pb.owner].filter(Boolean).join(' · '),
                 glyph: typeGlyph('ansible'),
-                keywords: `ansible playbook library ${pb.path}${pb.draft ? ' draft' : ''}`,
-                ...(pb.draft ? { tags: [DRAFT_TAG] } : {}),
+                keywords: `ansible playbook library ${pb.path}${pb.draft || pb.unpublished ? ' draft' : ''}`,
+                ...(pb.draft ? { tags: [DRAFT_TAG] } : pb.unpublished ? { tags: unpublishedTags(pb) } : {}),
                 action: { kind: 'step' as const, type: 'ansible' as const, params: { playbook: pb.name, name: pb.name.split('/').pop() ?? pb.name } },
               })),
             },
@@ -350,7 +355,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
     subtitle: 'Plan, apply or destroy a pinned module',
     sections: [
       ...tf.map((p) => ({
-        title: p.title,
+        title: providerLabel(p),
         items: p.actions.map((a): CreatorItem => {
           const terraformAction = a.id === 'apply' || a.id === 'destroy' ? a.id : 'plan'
           const module: JsonObject = p.module ? { ...p.module } : { source: '', version: '' }
@@ -378,7 +383,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
     sections:
       idp.length > 0
         ? idp.map((p) => ({
-            title: p.title,
+            title: providerLabel(p),
             items: p.actions.map((a) => ({
               id: `tile:${p.name}:${a.id}`,
               title: a.title || a.id,

@@ -17,7 +17,7 @@ import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
 import { findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
-import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
+import { findAction, findProvider, knownGroups, playbookLabel, providerLabel, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
 import { useDesignerSelector, useDesignerStore, type DesignerStore, type ProviderSheetOptions } from '../model/store'
 import { DRAFT_TAG, effectTags, providersWithDrafts, type ListedProvider } from '../creator/catalog'
@@ -178,7 +178,7 @@ export const NEW_PROVIDER = '__new-provider__'
 
 /** The provider field's options: the providers a step can call, the workflow's drafts marked, then "New provider…" unless the step is read-only. */
 export function providerFieldOptions(providers: readonly ListedProvider[], canCreate: boolean): SelectOption[] {
-  const options: SelectOption[] = providers.filter((p) => CALL_TYPES.includes(p.type)).map((p) => ({ value: p.name, label: p.title, hint: p.draft ? `${p.name} · draft` : p.name }))
+  const options: SelectOption[] = providers.filter((p) => CALL_TYPES.includes(p.type)).map((p) => ({ value: p.name, label: p.title, hint: p.draft ? `${p.name} · draft` : p.unpublished ? `${p.name} · ${p.unpublished}` : p.name }))
   if (canCreate) options.push({ value: NEW_PROVIDER, label: 'New provider…' })
   return options
 }
@@ -709,7 +709,7 @@ function AnsibleParams() {
             expression={false}
             mono
             problemsExact={['playbook']}
-            options={playbooks.map((x) => ({ value: x.name, label: x.name, hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
+            options={playbooks.map((x) => ({ value: x.name, label: playbookLabel(x), hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
             description="A playbook of the library: <provider>/<playbook>"
           />
         )}
@@ -788,7 +788,7 @@ function IdpParams() {
   const current = tiles.find((t) => t.action.id === tile)
   return (
     <>
-      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: t.provider.title }))} />
+      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: providerLabel(t.provider) }))} />
       <ParamSection title="Input">
         <SchemaFields schema={current?.action.input} prefix="input" emptyText="The tile's fields as JSON" />
       </ParamSection>
@@ -1184,7 +1184,7 @@ export function stepKindLabel(step: ParsedStep, registry: Registry | null): stri
   if (step.type === 'provider') {
     const p = findProvider(registry, asString(w.provider))
     const a = findAction(registry, asString(w.provider), asString(w.action))
-    return [p?.title ?? asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
+    return [p ? providerLabel(p) : asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
   }
   return STEP_TYPES[step.type].title
 }

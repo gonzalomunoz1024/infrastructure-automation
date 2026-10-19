@@ -910,6 +910,7 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+<<<<<<< HEAD
 The Provider sheet (`frontend/src/designer/chrome/ProviderSheet.tsx`) is Add provider inside the
 designer: a drawer over the canvas with a rail of sections, as n8n's credential modal has, hosting
 the wizard's own steps (`frontend/src/components/provider-editor/`) and imports. Connect holds the
@@ -957,6 +958,26 @@ endpoint takes the request when it can, as the action it has for that method and
 beside its others, but never a draft whose file is its own (a try's or Devin's) or that signs in
 with another credential, which gives the request a new draft; the step then calls that action and
 the Provider sheet opens on the draft.
+=======
+A provider drafted from the designer (kept in the browser per workflow, as the Provider sheet
+leaves it) reads like a published one: the store merges the drafts into the registry the canvas
+reads (`withUnpublished` in `frontend/src/designer/model/registry.ts`), so the node creator, the
+parameters (an Ansible draft's playbooks join the library), Expected output and the live checks
+treat it as published, tagged "draft" wherever its name shows, and a draft that names no owner
+takes the workflow's `metadata.owner`. Test workflow and Validate send the files of the drafts the
+workflow calls (`providers: [yaml]`), and the browser still parses no YAML; Save keeps the live
+checks for such a workflow, since the draft save checks against published providers only. Publish
+lists those drafts with their review from `POST /providers:validate` and holds until every review
+is ready, offering Open provider on one that is not; it then opens one provider change request per
+draft (`POST /providers:publish` with the draft's strategy), clears each draft whose change request
+opened, and opens the workflow's with `requires` naming them. A published draft stays on the
+canvas "in review", kept in the browser next to the drafts, and is still sent with a dry run,
+Validate and the next Publish until its change request merges and the registry reloads; when the
+workflow opens, and when Publish opens, each one's change request is asked how it stands. One
+closed instead of merged turns back into a draft to fix and publish again. The drawer lists the
+linked change requests with their status, says the provider ones merge first (or that one was
+closed, so this one cannot merge), holds Merge until they have, and follows each one there.
+>>>>>>> df-wp2
 
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`

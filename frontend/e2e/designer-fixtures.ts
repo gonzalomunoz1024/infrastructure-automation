@@ -536,3 +536,174 @@ export async function mockDesignerApi(page: Page): Promise<MockApi> {
   })
   return calls
 }
+
+/* ----------------------------------------------------------------------------
+   A provider draft of vm-restart, and the backend's provider review and publish
+   ------------------------------------------------------------------------- */
+
+/** Where the designer keeps vm-restart's provider drafts in this browser. */
+export const VM_RESTART_DRAFTS_KEY = 'iaf-designer-provider-drafts:vm-restart'
+
+/**
+ * A draft of an HTTP provider not published yet, as the designer stores one (the Add provider
+ * wizard's state): one action that creates a snapshot, its credential a vault: reference.
+ */
+export const SNAPSHOT_DRAFT = {
+  id: 'draft_snapshots',
+  origin: 'new',
+  publishedVersion: null,
+  type: 'http',
+  title: 'Snapshot API',
+  name: 'snapshots',
+  nameTouched: true,
+  owner: 'team-compute',
+  ownerTouched: true,
+  version: '1.0.0',
+  environments: [{ key: 1, name: 'dev', url: 'https://snapshots-dev.example.com' }],
+  auth: { type: 'bearer', credential: 'vault:snapshots/token', header: '' },
+  actions: [
+    {
+      key: 2,
+      selected: true,
+      id: 'snapshot.create',
+      title: 'Create snapshot',
+      operation: '',
+      method: 'POST',
+      path: '/snapshots',
+      playbook: '',
+      effect: 'create',
+      retry: 'unsafe',
+      approval: false,
+      plan: '',
+      effectDetail: '',
+      description: '',
+      inputText: '{"type":"object","properties":{"vm":{"type":"string"}}}',
+      outputText: '',
+      exampleText: '{"id":"snap-1","state":"ready"}',
+      sloSuccessRate: '',
+      sloP95Ms: '',
+    },
+  ],
+  errors: [],
+  strategy: 'canary',
+}
+
+export interface MockProviderPublish {
+  /** bodies of POST /workflows:validate that sent provider drafts */
+  validations: Obj[]
+  /** YAML bodies of POST /providers:validate */
+  reviews: string[]
+  /** bodies of POST /providers:publish */
+  publishes: Obj[]
+  /** ids of change requests closed without merging (POST :close, or pushed by a test as a reviewer closing one) */
+  closed: string[]
+}
+
+/** Where the designer keeps vm-restart's providers in review (a Publish opened their change requests) in this browser. */
+export const VM_RESTART_REVIEW_KEY = 'iaf-designer-providers-in-review:vm-restart'
+
+/** vm-restart with a step after validate that creates a snapshot through the snapshots provider (SNAPSHOT_DRAFT). */
+export function vmRestartCallingSnapshots(): Obj {
+  const definition = vmRestart()
+  const flow = asObj(definition.workflow)
+  const steps = Array.isArray(flow.do) ? [...flow.do] : []
+  const at = steps.findIndex((s) => Object.keys(asObj(s))[0] === 'validate') + 1
+  steps.splice(at, 0, { createSnapshot: { name: 'Create snapshot', call: 'provider', with: { provider: 'snapshots', action: 'snapshot.create', input: {} } } })
+  flow.do = steps
+  return definition
+}
+
+/** On top of mockDesignerApi: GET /workflows/vm-restart answers with this definition as the draft the designer opens. */
+export async function mockVmRestartDraft(page: Page, definition: Obj): Promise<void> {
+  const meta = asObj(definition.metadata)
+  await page.route('**/api/v1/workflows/vm-restart', (route) =>
+    route.request().method() !== 'GET'
+      ? route.fallback()
+      : json(route, {
+          name: 'vm-restart',
+          title: meta.title,
+          noun: meta.noun,
+          verb: meta.verb,
+          owner: meta.owner,
+          status: 'published',
+          latestVersion: '1.3.0',
+          publishedVersion: meta.version,
+          stepCount: stepIds(asObj(definition.workflow).do).length,
+          updatedAt: '2026-10-18T09:00:00Z',
+          mcp: true,
+          yaml: stringify(definition),
+          definition,
+          versions: [{ version: meta.version, status: 'published', contentHash: 'sha256:1', publishedAt: '2026-10-01T09:00:00Z', publishedBy: 'gonzalo' }],
+          problems: [],
+          changeRequests: [],
+        }),
+  )
+}
+
+/**
+ * On top of mockDesignerApi: the backend with draft providers. Validate with drafts finds nothing
+ * to fix; the review of a draft is ready; publishing it opens change request cr_8, which the
+ * workflow's change request cr_7 requires and which must merge first; once merged the registry
+ * lists the provider. Everything else falls through to mockDesignerApi.
+ */
+export async function mockProviderPublish(page: Page, api: MockApi): Promise<MockProviderPublish> {
+  const calls: MockProviderPublish = { validations: [], reviews: [], publishes: [], closed: [] }
+  const providers = registryProviders()
+  const snapshots = { name: 'snapshots', title: 'Snapshot API', type: 'http', owner: 'team-compute', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe', approval: 'none', input: { type: 'object', properties: { vm: { type: 'string' } } }, output: null, sample: { id: 'snap-1', state: 'ready' } }] }
+  const changeRequest = (id: string, kind: string, name: string, version: string, extra: Obj = {}): Obj => ({
+    id,
+    kind,
+    name,
+    version,
+    branch: `${kind}/${name}-${version}`,
+    title: `Publish ${name} ${version}`,
+    author: 'gonzalo',
+    status: api.merged.includes(id) ? 'merged' : calls.closed.includes(id) ? 'closed' : 'open',
+    strategy: 'canary',
+    createdAt: '2026-10-18T10:00:00Z',
+    checks: [
+      { id: 'checks', label: kind === 'provider' ? 'Provider checks' : 'Workflow checks', status: 'passed' },
+      { id: 'review', label: kind === 'provider' ? 'Review evidence' : 'Dry run', status: 'passed' },
+    ],
+    diff: `--- /dev/null\n+++ b/${kind}s/team-compute/${name}.yaml\n@@ -0,0 +1 @@\n+kind: ${kind === 'provider' ? 'Provider' : 'Workflow'}\n`,
+    yaml: '',
+    ...extra,
+  })
+  await page.route('**/api/v1/**', async (route) => {
+    const req = route.request()
+    const path = new URL(req.url()).pathname.replace(/^\/api\/v1/, '')
+    const method = req.method()
+    const body = bodyOf(req)
+    if (method === 'POST' && path === '/workflows:validate' && Array.isArray(body.providers)) {
+      calls.validations.push(body)
+      return json(route, { valid: true, problems: [] })
+    }
+    if (method === 'POST' && path === '/providers:validate') {
+      calls.reviews.push(String(body.yaml ?? ''))
+      return json(route, {
+        checks: [{ id: 'schema', label: 'Provider schema', status: 'passed' }],
+        problems: [],
+        review: { ready: true, checks: [{ id: 'connection', label: 'Connection tested', status: 'passed', detail: 'dev answered in 120 ms' }], problems: [] },
+      })
+    }
+    if (method === 'POST' && path === '/providers:publish') {
+      calls.publishes.push(body)
+      return json(route, { id: 'cr_8', status: 'accepted' }, 202)
+    }
+    if (method === 'GET' && path === '/registry/providers') return json(route, api.merged.includes('cr_8') ? [...providers, snapshots] : providers)
+    if (method === 'GET' && path === '/change-requests/cr_8') return json(route, changeRequest('cr_8', 'provider', 'snapshots', '1.0.0'))
+    if (method === 'GET' && path === '/change-requests/cr_7') return json(route, changeRequest('cr_7', 'workflow', 'vm-restart', '1.3.0', { requires: ['cr_8'] }))
+    if (method === 'POST' && path === '/change-requests/cr_8:merge') {
+      api.merged.push('cr_8')
+      return json(route, { id: 'cr_8', status: 'accepted' }, 202)
+    }
+    if (method === 'POST' && path === '/change-requests/cr_8:close') {
+      calls.closed.push('cr_8')
+      return json(route, { id: 'cr_8', status: 'accepted' }, 202)
+    }
+    // as the backend: the workflow merges once the change requests it requires have
+    if (method === 'POST' && path === '/change-requests/cr_7:merge' && !api.merged.includes('cr_8')) return json(route, { error: 'cr_7 requires cr_8, which is not merged' }, 409)
+    return route.fallback()
+  })
+  return calls
+}

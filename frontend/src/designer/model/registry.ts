@@ -3,7 +3,8 @@
  * workflows, resource types, playbooks and credential names, and for the checks alone what each
  * published workflow starts and the MCP tools they hold. Loaded once per session; every part
  * fails independently so the canvas works with whatever answered. A credential stored from a
- * step's credential field joins the loaded list instead of loading it all again.
+ * step's credential field joins the loaded list instead of loading it all again. The store merges
+ * the workflow's provider drafts into what the canvas reads (`withUnpublished`).
  */
 import { buildContext, EMPTY_CONTEXT, STEP_TYPES, type CheckContext, type JsonObject, type JsonSchema, type ProviderDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
@@ -161,6 +162,43 @@ export async function withTerraformModules(providers: RegistryProvider[], resolv
 /** The registry with one more credential, in place of one of the same name (storing a name again replaces it). */
 export function withCredential(registry: Registry, credential: RegistryCredential): Registry {
   return { ...registry, credentials: [...registry.credentials.filter((c) => c.name !== credential.name), credential] }
+}
+
+/** The first of each name, without the unnamed. */
+const firstOfName = <T extends { name: string }>(list: readonly T[]): T[] => list.filter((x, i) => x.name && list.findIndex((y) => y.name === x.name) === i)
+
+/**
+ * The registry with the providers the workflow uses before they are published (its drafts, the
+ * ones in review) and their Ansible playbooks, each in place of a published one of the same name,
+ * so the canvas reads them as published; the first of a name wins. A provider that names no module
+ * keeps the published provider's (the draft of a terraform provider's next patch names none). The
+ * same registry when there are none.
+ */
+export function withUnpublished(registry: Registry, providers: readonly RegistryProvider[], playbooks: readonly RegistryPlaybook[] = []): Registry {
+  const named = firstOfName(providers)
+  const books = firstOfName(playbooks)
+  if (named.length === 0 && books.length === 0) return registry
+  const names = new Set(named.map((p) => p.name))
+  const withModule = (p: RegistryProvider): RegistryProvider => {
+    const module = p.module ?? registry.providers.find((x) => x.name === p.name)?.module
+    return module ? { ...p, module } : p
+  }
+  const bookNames = new Set(books.map((b) => b.name))
+  return {
+    ...registry,
+    providers: [...registry.providers.filter((p) => !names.has(p.name)), ...named.map(withModule)],
+    playbooks: [...registry.playbooks.filter((b) => !bookNames.has(b.name)), ...books],
+  }
+}
+
+/** How a provider is named wherever the designer shows it: its title, tagged when it is not published yet. */
+export function providerLabel(p: Pick<RegistryProvider, 'title' | 'unpublished'>): string {
+  return p.unpublished ? `${p.title} (${p.unpublished})` : p.title
+}
+
+/** How a library playbook is named in the step's picker: `<provider>/<playbook>`, tagged when its provider is not published yet. */
+export function playbookLabel(p: Pick<RegistryPlaybook, 'name' | 'unpublished'>): string {
+  return p.unpublished ? `${p.name} (${p.unpublished})` : p.name
 }
 
 /** A credential stored in this session: every registry loadRegistry hands out from now on lists it. */
