@@ -3,9 +3,11 @@
  * "Copy as cURL" or an API's docs write it) becomes the step's method, URL, headers and body.
  *
  * What signs in never comes along: an Authorization header, `-u user:password`, a user and
- * password written into the URL, cookies, API-key headers and token-like query or body fields are
- * dropped here, before anything reaches the step, the workflow file, the undo history or storage.
- * The result names what it dropped (never its value), so the step can ask for a credential instead.
+ * password written into the URL, cookies, key and token headers, any header whose value is a
+ * scheme and its credential (`Bearer …`), and the query, body or form fields named like a
+ * password, a secret, a token or an API key are dropped here, before anything reaches the step,
+ * the workflow file, the undo history or storage. The result names what it dropped (never its
+ * value), so the step can ask for a credential instead.
  */
 import type { JsonObject, JsonValue } from '@iaf/workflow-checks'
 
@@ -36,16 +38,46 @@ export type CurlParse = { ok: true; request: CurlRequest } | { ok: false; error:
 const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
 
 /**
+ * A command copied for Windows cmd, as Chrome's "Copy as cURL (cmd)" and Firefox's "Copy as cURL
+ * (Windows)" write it: every argument quoted as `^"…^"`, or lines ended by ` ^`.
+ */
+const CMD_RE = /(^|\s)\^"|\s\^\n/
+
+/**
+ * What cmd hands curl.exe: outside cmd's own double quotes a `^` takes the next character as it
+ * is, and a `^` at a line's end goes on to the next line (so `^` and two line breaks are one line
+ * break in the text). What is left quotes a `"` as `\"` inside double quotes, which the POSIX
+ * reading of shellWords takes the same way.
+ */
+export function fromCmd(text: string): string {
+  let out = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '"') quoted = !quoted
+    else if (c === '^' && !quoted) {
+      if (text[i + 1] === '\n') i++
+      else if (i + 1 < text.length) out += text[++i]
+      continue
+    }
+    out += c
+  }
+  return out
+}
+
+/**
  * The words of a command line as a POSIX shell splits them: single quotes keep everything, double
  * quotes let `\` escape `"`, `\`, `$` and a backquote, `$'…'` reads C escapes, and a line may go
- * on after a `\` (bash), `^` (cmd) or backquote (PowerShell) at its end. Null when a quote is not closed.
+ * on after a `\` (bash), `^` (cmd) or backquote (PowerShell) at its end. A command copied for cmd
+ * is read as cmd reads it first (fromCmd). Null when a quote is not closed.
  */
 export function shellWords(text: string): string[] | null {
   const words: string[] = []
   let word = ''
   let inWord = false
   let i = 0
-  const s = text.replace(/\r\n?/g, '\n')
+  const lines = text.replace(/\r\n?/g, '\n')
+  const s = CMD_RE.test(lines) ? fromCmd(lines) : lines
   const atLineEnd = (j: number) => s[j] === '\n'
   while (i < s.length) {
     const c = s[i]
@@ -134,28 +166,84 @@ export function shellWords(text: string): string[] | null {
    Secrets
    ------------------------------------------------------------------------- */
 
-/** Header names that carry a credential. */
-const SECRET_HEADER = /^(authorization|proxy-authorization|cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|private-token|x-csrf-token|x-xsrf-token)$|token|secret|passw|api[-_]?key|session/i
+/** Header names that carry a credential, whole. */
+const SECRET_HEADER_NAME = /^(authorization|proxy-authorization|cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|private-token|x-csrf-token|x-xsrf-token)$/
+/** What in a header's name says it carries one: a token, a secret, a password, an API key, a session, an authorization, a credential or a signature. */
+const SECRET_HEADER_PART = /token|secret|passw|api[-_]?key|session|authorization|credential|signature/
+/** A header named …-Key is a key (X-Auth-Key, Ocp-Apim-Subscription-Key, DD-Application-Key), but for these. */
+const KEY_HEADER = /(^|[-_])key$/
+const NOT_A_KEY_HEADER = /^(x-)?idempotency-key$|^sec-websocket-key$/
+/** A value that signs in whatever its header is called: a scheme and its credential. */
+const SCHEME_VALUE = /^(bearer|basic|token|digest|apikey|negotiate|ntlm)\s+\S/i
 
-/** Query and body field names that carry a credential. */
-const SECRET_FIELD = /token|secret|passw|^pwd$|api[-_]?key|apikey|signature|^sig$|^key$|^auth$|^authorization$|session|credential/i
-
-export function isSecretHeader(name: string): boolean {
-  return SECRET_HEADER.test(name.trim())
+/**
+ * The kind of credential a header carries, judged by its name (only the characters a header name
+ * is made of, so a quote or caret left over from a pasted command changes nothing) and its value;
+ * null when it carries none.
+ */
+function secretHeaderKind(name: string, value: string): CredentialKind | null {
+  const n = name.replace(/[^A-Za-z0-9_-]/g, '').toLowerCase()
+  const v = value.trim()
+  const scheme = SCHEME_VALUE.exec(v)?.[1].toLowerCase()
+  const named = n !== '' && (SECRET_HEADER_NAME.test(n) || SECRET_HEADER_PART.test(n) || (KEY_HEADER.test(n) && !NOT_A_KEY_HEADER.test(n)))
+  if (!named && !scheme) return null
+  if (/authorization$/.test(n)) return /^basic\s/i.test(v) ? 'basic' : 'bearer'
+  if (scheme === 'basic') return 'basic'
+  if (scheme === 'bearer' || scheme === 'token') return 'bearer'
+  return 'header'
 }
 
-export function isSecretField(name: string): boolean {
-  return SECRET_FIELD.test(name.trim())
+export function isSecretHeader(name: string, value = ''): boolean {
+  return secretHeaderKind(name, value) !== null
+}
+
+/** The words of a field name: `clientSecret`, `client_secret`, `X-Client-Secret`, `user[password]` → client secret, user password. */
+function nameWords(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+/** A word that is a password or a credential wherever it is in the name. */
+const PASSWORD_WORD = /^(password|passwd|passphrase|pwd|credentials?)$/
+/** One word that is two run together: apikey, accesstoken, clientsecret, sessionid, PHPSESSID. */
+const RUN_TOGETHER = /^(api|access|secret|private|auth|app|client)(key|token|secret)$|^(access|auth|refresh|id|bearer|session|csrf|xsrf|oauth)token$|^(j|php)?sess(ion)?id$/
+/** The words before `token` that make it a place in a list of results, not a credential (pageToken, next_token). */
+const PAGE_WORDS = new Set(['page', 'next', 'prev', 'previous', 'continuation', 'cursor', 'sync', 'resume', 'start', 'max', 'more', 'pagination', 'delta', 'skip'])
+/** The words before `key` that make it a credential (api_key, privateKey, secret_access_key), not a key of the data (idempotency_key, partition_key). */
+const KEY_WORDS = new Set(['api', 'access', 'secret', 'private', 'auth', 'subscription', 'app', 'application', 'client', 'license', 'licence', 'master', 'shared', 'signing', 'encryption', 'consumer', 'developer', 'account', 'service', 'session', 'security', 'admin', 'personal', 'server', 'write', 'read'])
+
+/**
+ * Whether a query, form or body field carries a credential, by its name's words: a password or a
+ * credential anywhere in it; a name ending in secret, signature or authorization; a token (but a
+ * page's: pageToken, next_token); a key of a kind that signs in (api_key, privateKey), or `key`
+ * alone at the top of the query or body (not a tag's `key` deeper in); auth, sig or pass alone; a
+ * session's id. Not max_tokens, token_type, private or an idempotency key.
+ */
+export function isSecretField(name: string, topLevel = true): boolean {
+  const words = nameWords(name)
+  const last = words.at(-1)
+  if (!last) return false
+  const before = words.at(-2)
+  if (words.some((w) => PASSWORD_WORD.test(w))) return true
+  if (words.length === 1 && (last === 'pass' || last === 'auth' || last === 'sig')) return true
+  if (last === 'secret' || last === 'secrets' || last === 'signature' || last === 'authorization') return true
+  if (last === 'token') return !(before && PAGE_WORDS.has(before))
+  if (last === 'key') return before ? KEY_WORDS.has(before) : topLevel
+  if (words.includes('session') && ['session', 'id', 'token', 'key'].includes(last)) return true
+  return RUN_TOGETHER.test(last)
 }
 
 /** The value without the fields that carry a credential, at any depth, and the names it dropped. */
-function withoutSecretFields(v: JsonValue, dropped: Set<string>): JsonValue {
-  if (Array.isArray(v)) return v.map((x) => withoutSecretFields(x, dropped))
+function withoutSecretFields(v: JsonValue, dropped: Set<string>, topLevel = true): JsonValue {
+  if (Array.isArray(v)) return v.map((x) => withoutSecretFields(x, dropped, false))
   if (v && typeof v === 'object') {
     const out: JsonObject = {}
     for (const [k, x] of Object.entries(v)) {
-      if (isSecretField(k)) dropped.add(k)
-      else if (x !== undefined) out[k] = withoutSecretFields(x, dropped)
+      if (isSecretField(k, topLevel)) dropped.add(k)
+      else if (x !== undefined) out[k] = withoutSecretFields(x, dropped, false)
     }
     return out
   }
@@ -170,13 +258,22 @@ const decode = (s: string): string => {
   }
 }
 
-/** form-encoded text (`a=1&b=2`) without the fields that carry a credential. */
+/** What a form field's name looks like (`client_secret`, `user[password]`), as opposed to the text of a body that is not a form. */
+const FIELD_NAME_RE = /^[^\s<>{}"'=&]+$/
+
+/**
+ * Form-encoded text (`a=1&b=2`) without the fields that carry a credential, whatever their
+ * values hold (a space, brackets, anything): every `name=` pair whose name is a secret field's goes.
+ * Text that is not a form comes back as it was.
+ */
 function withoutSecretPairs(text: string, dropped: Set<string>): string {
   return text
     .split('&')
     .filter((pair) => {
-      const name = decode(pair.split('=')[0] ?? '')
-      if (name && isSecretField(name)) {
+      const eq = pair.indexOf('=')
+      if (eq <= 0) return true
+      const name = decode(pair.slice(0, eq))
+      if (FIELD_NAME_RE.test(name) && isSecretField(name)) {
         dropped.add(name)
         return false
       }
@@ -185,7 +282,8 @@ function withoutSecretPairs(text: string, dropped: Set<string>): string {
     .join('&')
 }
 
-const FORM_RE = /^[^\s={}[\]"]+=[^\s]*(&[^\s={}[\]"]+=[^\s]*)*$/
+/** Data that is form fields, which curl sends as application/x-www-form-urlencoded. */
+const FORM_RE = /^[^\s=&{}"<>]+=[^&]*(&[^\s=&{}"<>]+=[^&]*)*$/
 
 /* ----------------------------------------------------------------------------
    The URL
@@ -407,16 +505,22 @@ export function parseCurl(text: string): CurlParse {
           break
         }
         if (colon <= 0) {
-          warnings.push(`${written} ${value.split(/\s/)[0]}: not a header (Name: value).`)
+          // its text is never repeated: it may be a credential whose header's name was left off
+          const eq = value.indexOf('=')
+          const signsIn = secretHeaderKind(eq > 0 ? value.slice(0, eq) : '', value)
+          if (signsIn) {
+            dropped.push(`a ${written} value that is not a header`)
+            kind(signsIn)
+          } else warnings.push(`${written}: a value that is not a header (Name: value) was left out.`)
           break
         }
         const name = value.slice(0, colon).trim()
         const v = value.slice(colon + 1).trim()
         if (!v) break
-        if (isSecretHeader(name)) {
+        const signsIn = secretHeaderKind(name, v)
+        if (signsIn) {
           dropped.push(`${name} header`)
-          if (/^authorization$/i.test(name) || /^proxy-authorization$/i.test(name)) kind(/^basic\s/i.test(v) ? 'basic' : 'bearer')
-          else kind('header')
+          kind(signsIn)
           break
         }
         headers.push([name, v])
@@ -535,9 +639,9 @@ export function parseCurl(text: string): CurlParse {
     } catch {
       parsed = undefined
     }
+    // JSON without its secret fields; any other text without the form fields that are secret, whether or not all of it reads as a form
     if (parsed !== undefined && typeof parsed === 'object' && parsed !== null) body = withoutSecretFields(parsed, secretFields)
-    else if (FORM_RE.test(bodyText)) body = withoutSecretPairs(bodyText, secretFields)
-    else body = bodyText
+    else body = withoutSecretPairs(bodyText, secretFields)
   }
   for (const f of secretFields) dropped.push(`${f} in the ${get ? 'query' : 'body'}`)
   if (secretFields.size > 0) kind('header')
