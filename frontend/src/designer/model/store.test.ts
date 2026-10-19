@@ -414,6 +414,25 @@ describe('provider drafts on the canvas', () => {
     expect(codes(s)).toContain('step.unknownProvider')
   })
 
+  it("keeps the live checks on Save when the workflow calls a draft: the backend's save knows only published providers", async () => {
+    const unknown = { level: 'error' as const, code: 'step.unknownProvider', step: 'snap', field: 'with.provider', message: "Unknown provider 'backup'" }
+    const saveDraft = vi.spyOn(api, 'saveDraft').mockResolvedValue({ name: 'vm-backup', version: '1.0.0', problems: [unknown] })
+    const s = onCanvas()
+    s.upsertProviderDraft(backup())
+    s.update((doc) => void (doc.metadata!.title = 'VM backup'))
+    const live = s.checkNow()
+    expect(live.map((p) => p.code)).not.toContain('step.unknownProvider')
+    const saved = await s.save()
+    expect(saved.problems).toEqual(live)
+    expect(s.getState().problems).toEqual(live)
+    // a workflow without drafts (none kept for this one) takes the backend's answer, as before
+    const plain = new DesignerStore({ name: 'vm-plain', doc: withBackupStep(), registry: { ...EMPTY_REGISTRY, providers: [VSPHERE] } })
+    plain.update((doc) => void (doc.metadata!.title = 'VM backup'))
+    expect((await plain.save()).problems).toEqual([unknown])
+    expect(plain.getState().problems).toEqual([unknown])
+    expect(saveDraft).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps no Validate answer that comes back after the providers changed', async () => {
     let answer: (v: { valid: boolean; problems: [] }) => void = () => undefined
     vi.spyOn(api, 'validateWorkflow').mockReturnValue(new Promise((resolve) => (answer = resolve)))

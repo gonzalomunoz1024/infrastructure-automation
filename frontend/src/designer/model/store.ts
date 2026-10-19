@@ -1012,8 +1012,11 @@ export class DesignerStore {
       }
       const saved = await api.saveDraft(name, { definition: doc })
       this.savedJson = JSON.stringify(doc)
-      this.set({ dirty: false, problems: saved.problems.length > 0 ? saved.problems : this.checkNow() })
-      return saved
+      // the backend judges the saved draft with the published providers only: a workflow that
+      // calls unpublished ones keeps the live checks (or Validate's answer, which had them)
+      const problems = saved.problems.length > 0 && this.providerFiles().length === 0 ? saved.problems : this.checkNow()
+      this.set({ dirty: false, problems })
+      return { ...saved, problems }
     } finally {
       this.set({ saving: false })
     }
