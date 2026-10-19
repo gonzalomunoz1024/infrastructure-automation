@@ -394,6 +394,38 @@ describe('provider drafts on the canvas', () => {
     expect(s.getState().problems).toEqual([])
   })
 
+  it('turns a provider back into a draft when its change request is closed instead of merged', () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    expect(s.providerChangeClosed('cr_9')).toBe(false)
+    expect(s.providerChangeClosed('cr_8')).toBe(true)
+    const st = s.getState()
+    expect(st.providersInReview).toEqual([])
+    expect(Object.keys(st.providerDrafts)).toEqual([d.id])
+    expect(st.providerDrafts[d.id]).toMatchObject({ name: 'backup', owner: 'team-compute', actions: [{ id: 'snapshot.create' }] })
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('draft')
+    // a later Publish publishes it again and requires no closed change request
+    expect(s.usedProviderDrafts().map((x) => x.id)).toEqual([d.id])
+    expect(s.usedProvidersInReview()).toEqual([])
+    // kept in this browser again, so it outlives the session
+    expect(JSON.parse(localStorage.getItem('iaf-designer-provider-drafts:vm-backup') ?? '[]').map((x: { id: string }) => x.id)).toEqual([d.id])
+    expect(s.providerChangeClosed('cr_8')).toBe(false)
+  })
+
+  it('keeps a draft of the provider the workflow has by now when the change request is closed', () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    const again = backup({ title: 'Backup API, fixed' })
+    s.upsertProviderDraft(again)
+    s.providerChangeClosed('cr_8')
+    expect(Object.values(s.getState().providerDrafts).map((x) => x.title)).toEqual(['Backup API, fixed'])
+    expect(s.getState().providersInReview).toEqual([])
+  })
+
   it('drops the last Validate answer when a draft is added, edited or removed: it judged other providers', async () => {
     const needsVm = { level: 'error' as const, code: 'step.missingInput', step: 'snap', message: "Action snapshot.create needs 'vm'" }
     const validate = vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: false, problems: [needsVm] })

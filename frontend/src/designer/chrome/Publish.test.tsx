@@ -13,7 +13,7 @@ import { blankAction } from '../../components/provider-editor/state'
 import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
-import { LinkedChangeRequests, openChangeRequests, ProviderPublishError, ProviderRows, PublishSheetBody, reviewOf, type ProviderRow } from './Publish'
+import { closedOf, LinkedChangeRequests, openChangeRequests, ProviderPublishError, ProviderRows, PublishSheetBody, reviewOf, settleProvider, type ProviderRow } from './Publish'
 
 const text = (html: string) =>
   html
@@ -210,6 +210,26 @@ describe('the linked change requests the drawer lists', () => {
     expect(t).toContain('Provider · cr_9 · checks 2 passed')
     expect(t).toContain('merged')
     expect(t).toContain('open')
+  })
+
+  it('says when one was closed: this one cannot merge, the provider is fixed and published again', () => {
+    const one = text(renderToString(<LinkedChangeRequests ids={['cr_8', 'cr_9']} changes={[cr('cr_8', 'backup', 'closed'), cr('cr_9', 'dns', 'merged')]} onFollow={() => undefined} />))
+    expect(one).toContain('cr_8 was closed: this change request cannot merge. Close it, fix the provider and publish again.')
+    expect(one).not.toContain('merge first')
+    const two = text(renderToString(<LinkedChangeRequests ids={['cr_7', 'cr_8', 'cr_9']} changes={[cr('cr_7', 'a', 'closed'), cr('cr_8', 'b', 'closed'), cr('cr_9', 'c', 'closed')]} onFollow={() => undefined} />))
+    expect(two).toContain('cr_7, cr_8 and cr_9 were closed: this change request cannot merge. Close it, fix the providers and publish again.')
+    expect(closedOf(['cr_8', 'cr_9'], [cr('cr_8', 'backup', 'closed'), cr('cr_9', 'dns', 'open')])).toEqual(['cr_8'])
+    expect(closedOf(['cr_8'], undefined)).toEqual([])
+  })
+
+  it("settles a provider's change request for the canvas: merged, published; closed, a draft again", () => {
+    const store = { providerChangeMerged: vi.fn(async () => undefined), providerChangeClosed: vi.fn(() => true) }
+    settleProvider(store, cr('cr_8', 'backup', 'merged'))
+    settleProvider(store, cr('cr_9', 'dns', 'closed'))
+    settleProvider(store, cr('cr_5', 'ipam', 'open'))
+    settleProvider(store, { ...cr('cr_7', 'vm-restart', 'closed'), kind: 'workflow' })
+    expect(store.providerChangeMerged.mock.calls).toEqual([['cr_8']])
+    expect(store.providerChangeClosed.mock.calls).toEqual([['cr_9']])
   })
 
   it('says the workflow can merge once they all have', () => {

@@ -936,10 +936,27 @@ export class DesignerStore {
     try {
       this.loaded = await loadRegistry(true)
     } catch {
-      /* the registry as it was: what is in review stays the canvas's view of the provider */
+      /* the registry as it was: what is in review stays the canvas's view of the provider, until asked again */
+      this.mergedChanges.delete(changeRequest)
       return
     }
     this.setRegistry({ providersInReview: this.state.providersInReview.filter((r) => r.changeRequest !== changeRequest) })
+  }
+
+  /**
+   * A provider change request closed without merging: the provider is no longer in review (no
+   * later Publish requires that change request), and the draft it was published from is the
+   * workflow's again, unless the workflow has a draft of that provider by now, so it can be fixed
+   * and published again. Returns whether it was in review.
+   */
+  providerChangeClosed(changeRequest: string): boolean {
+    const entry = this.state.providersInReview.find((r) => r.changeRequest === changeRequest)
+    if (!entry) return false
+    const providersInReview = this.state.providersInReview.filter((r) => r !== entry)
+    const providerDrafts = findProviderDraft(this.state.providerDrafts, entry.draft.name) ? this.state.providerDrafts : { ...this.state.providerDrafts, [entry.draft.id]: entry.draft }
+    this.setRegistry({ providerDrafts, providersInReview })
+    this.persistProviderDrafts()
+    return true
   }
 
   /** The drafts the workflow uses, under its owner when they name none: the ones Publish opens a change request for. */

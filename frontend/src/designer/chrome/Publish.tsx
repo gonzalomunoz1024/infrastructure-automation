@@ -14,11 +14,11 @@ import { useEffect, useState } from 'react'
 import { Button, cx, DiffView, Drawer, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Skeleton, SkeletonRows, Spinner, StateTag, Tag, Textarea, useOverlayClose, useToast } from '@iaf/ui'
 import { api, errorMessage, ownChange, useCurrentUser } from '../../lib/api'
 import { invalidate, useQuery } from '../../lib/queries'
-import type { ChangeRequestDetail, Check, CommandAccepted, ProviderValidation, PublishRequest, Release, Strategy } from '../../lib/types'
+import type { ChangeRequest, ChangeRequestDetail, Check, CommandAccepted, ProviderValidation, PublishRequest, Release, Strategy } from '../../lib/types'
 import { Link, pathFor } from '../../app/router'
 import { checksSummary } from '../../components/ChangeRequestTable'
 import { draftFile, type ProviderDraft } from '../model/providerDrafts'
-import { useDesignerSelector, useDesignerStore } from '../model/store'
+import { useDesignerSelector, useDesignerStore, type DesignerStore } from '../model/store'
 
 function parseStages(text: string): number[] | null {
   const parts = text
@@ -434,16 +434,32 @@ function Merged({ cr, workflow }: { cr: ChangeRequestDetail; workflow: string })
   )
 }
 
+/** Ids as a sentence lists them: `cr_8`, `cr_8 and cr_9`, `cr_7, cr_8 and cr_9`. */
+const listed = (ids: readonly string[]): string => (ids.length < 2 ? (ids[0] ?? '') : `${ids.slice(0, -1).join(', ')} and ${ids[ids.length - 1]}`)
+
+/** The change requests a workflow's requires that were closed without merging: it can never merge. */
+export function closedOf(ids: readonly string[], changes: readonly ChangeRequest[] | undefined): string[] {
+  return ids.filter((id) => changes?.find((c) => c.id === id)?.status === 'closed')
+}
+
 /**
  * The change requests a workflow's requires, each with its status and checks: the provider change
- * requests the same Publish opened, which merge first. One opens in the drawer to follow it.
+ * requests the same Publish opened, which merge first. One that was closed instead stops this one
+ * for good: it says so. One opens in the drawer to follow it.
  */
 export function LinkedChangeRequests({ ids, changes, onFollow }: { ids: readonly string[]; changes: readonly ChangeRequestDetail[] | undefined; onFollow: (id: string) => void }) {
   const waiting = ids.filter((id) => changes?.find((c) => c.id === id)?.status !== 'merged').length
+  const closed = closedOf(ids, changes)
   return (
     <section data-testid="cr-linked">
       <h3 className="mb-1 text-caption2 font-semibold uppercase tracking-wide text-tertiary">Linked change requests</h3>
-      <p className="mb-2 text-caption text-secondary">{waiting === 0 ? 'The providers this version calls are published: it can merge.' : `The provider change requests merge first: this one merges once ${ids.length === 1 ? 'it has' : 'they have'}.`}</p>
+      <p className={cx('mb-2 text-caption', closed.length > 0 ? 'text-critical' : 'text-secondary')}>
+        {closed.length > 0
+          ? `${listed(closed)} ${closed.length === 1 ? 'was' : 'were'} closed: this change request cannot merge. Close it, fix the ${closed.length === 1 ? 'provider' : 'providers'} and publish again.`
+          : waiting === 0
+            ? 'The providers this version calls are published: it can merge.'
+            : `The provider change requests merge first: this one merges once ${ids.length === 1 ? 'it has' : 'they have'}.`}
+      </p>
       <ul className="divide-y divide-stroke-light rounded-lg border border-stroke-light">
         {ids.map((id) => {
           const c = changes?.find((x) => x.id === id)
@@ -464,6 +480,17 @@ export function LinkedChangeRequests({ ids, changes, onFollow }: { ids: readonly
       </ul>
     </section>
   )
+}
+
+/**
+ * A provider change request's outcome, for the canvas: merged, the provider is published (the
+ * registry loads again); closed, its draft is the workflow's again. Nothing for a workflow's or
+ * an open one.
+ */
+export function settleProvider(store: Pick<DesignerStore, 'providerChangeMerged' | 'providerChangeClosed'>, c: Pick<ChangeRequest, 'id' | 'kind' | 'status'>): void {
+  if (c.kind !== 'provider') return
+  if (c.status === 'merged') void store.providerChangeMerged(c.id)
+  else if (c.status === 'closed') store.providerChangeClosed(c.id)
 }
 
 function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: string; onFollow?: (id: string) => void; onBack?: () => void }) {
@@ -490,10 +517,14 @@ function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: 
   const linked = useQuery(['change-requests-linked', id, ...requires], () => Promise.all(requires.map((r) => api.changeRequest(r))), { enabled: requires.length > 0, refetchInterval: linkedLive ? 2000 : undefined })
   if (linkedLive && linked.data && linked.data.length > 0 && linked.data.every((c) => c.status !== 'open')) setLinkedLive(false)
   const waiting = requires.filter((r) => linked.data?.find((c) => c.id === r)?.status !== 'merged').length
-  // a provider published by a linked merge: the canvas reads it from the registry again
+  const closedRequired = closedOf(requires, linked.data)
+  // a provider change request merged or closed, this one or a linked one: the canvas follows
   useEffect(() => {
-    for (const c of linked.data ?? []) if (c.kind === 'provider' && c.status === 'merged') void store.providerChangeMerged(c.id)
+    for (const c of linked.data ?? []) settleProvider(store, c)
   }, [linked.data, store])
+  useEffect(() => {
+    if (cr) settleProvider(store, cr)
+  }, [cr, store])
 
   const act = async (kind: 'merge' | 'close') => {
     setActing(kind)
@@ -507,6 +538,8 @@ function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: 
         if (kind === 'merge') {
           void store.providerChangeMerged(id)
           toast.success('Merged', `${cr.name} ${cr.version} is published`)
+        } else if (store.providerChangeClosed(id)) {
+          toast.success('Closed', `${cr.name} is a draft of this workflow again: fix it and publish again.`)
         }
         return
       }
@@ -583,10 +616,18 @@ function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: 
             onClick={() => void act('merge')}
             loading={acting === 'merge'}
             disabled={!passed || own || waiting > 0 || acting !== null}
-            title={own ? 'You opened it: someone else on the team merges it' : waiting > 0 ? 'The change requests it requires merge first' : undefined}
+            title={
+              closedRequired.length > 0
+                ? `${listed(closedRequired)} ${closedRequired.length === 1 ? 'was' : 'were'} closed: close this change request, fix the provider and publish again`
+                : own
+                  ? 'You opened it: someone else on the team merges it'
+                  : waiting > 0
+                    ? 'The change requests it requires merge first'
+                    : undefined
+            }
             data-testid="cr-merge"
           >
-            {own ? 'A teammate merges it' : waiting > 0 ? 'Merge the providers first' : passed ? 'Merge and publish' : failed > 0 ? 'Checks failed' : 'Waiting for checks'}
+            {closedRequired.length > 0 ? 'Cannot merge' : own ? 'A teammate merges it' : waiting > 0 ? 'Merge the providers first' : passed ? 'Merge and publish' : failed > 0 ? 'Checks failed' : 'Waiting for checks'}
           </Button>
         </OverlayFooter>
       )}
