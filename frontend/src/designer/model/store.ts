@@ -952,7 +952,9 @@ export class DesignerStore {
           const cr = await api.changeRequest(changeRequest)
           if (cr.status === 'merged') await this.providerChangeMerged(changeRequest)
           else if (cr.status === 'closed') this.providerChangeClosed(changeRequest)
-          else if (cr.yaml?.trim()) this.set({ providersInReview: this.state.providersInReview.map((r) => (r.changeRequest === changeRequest ? { ...r, yaml: cr.yaml } : r)) })
+          else if (cr.yaml?.trim() && this.state.providersInReview.some((r) => r.changeRequest === changeRequest && r.yaml !== cr.yaml)) {
+            this.set({ providersInReview: this.state.providersInReview.map((r) => (r.changeRequest === changeRequest ? { ...r, yaml: cr.yaml } : r)) })
+          }
         } catch (e) {
           if (isApiError(e) && e.status === 404) this.providerChangeClosed(changeRequest)
         }
