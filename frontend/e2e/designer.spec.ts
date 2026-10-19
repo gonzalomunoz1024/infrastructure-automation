@@ -320,7 +320,9 @@ test.describe('workflow designer', () => {
     await page.keyboard.press('Enter')
     const ndv = page.getByTestId('ndv')
     await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('Create snapshot')
-    await expect(ndv.getByRole('button', { name: 'Provider', exact: true })).toHaveText('Snapshot API (draft)')
+    // the field names the provider; the tag under it says it is a draft
+    await expect(ndv.getByRole('button', { name: 'Provider', exact: true })).toHaveText('Snapshot API')
+    await expect(ndv.getByTestId('provider-tags')).toContainText('draft')
     await page.keyboard.press('Escape')
     await expect(node(page, 'step:createSnapshot')).toContainText('draft · snapshots · snapshot.create')
     // the live checks know the draft
