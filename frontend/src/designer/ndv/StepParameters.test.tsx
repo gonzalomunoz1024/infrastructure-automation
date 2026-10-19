@@ -170,8 +170,9 @@ describe('the git credential of a playbook', () => {
 })
 
 /*
- * Every credential field ends its options with "New credential…", as n8n's credential select ends
- * with "Create new credential": the dialog stores the value, and the field takes the reference.
+ * Every credential field starts its options with "New credential…", as n8n's credential select
+ * starts with "Create new credential", so many stored credentials never push it below the fold:
+ * the dialog stores the value, and the field takes the reference.
  */
 const fetchThings = (credential?: string): WorkflowDocument =>
   ({
@@ -184,10 +185,17 @@ const fetchThings = (credential?: string): WorkflowDocument =>
 describe('a new credential from a credential field', () => {
   const NEW = { value: NEW_CREDENTIAL, label: 'New credential…' }
 
-  it('is offered last, after a reference the registry does not list, and never on a read-only step', () => {
-    expect(credentialFieldOptions(CREDENTIALS, ['token', 'basic', 'bearer'], '', true).map((o) => o.value)).toEqual(['vault:github/read-token', 'vault:vsphere/token', 'vault:ssh/ops-automation', NEW_CREDENTIAL])
-    expect(credentialFieldOptions(CREDENTIALS, ['token'], '', true).at(-1)).toEqual(NEW)
-    expect(credentialFieldOptions(CREDENTIALS, ['ssh-key'], 'vault:gone/key', true).slice(-2)).toEqual([{ value: 'vault:gone/key', label: 'vault:gone/key', hint: 'not in the list' }, NEW])
+  it('is offered first, before the credentials and a reference the registry does not list, and never on a read-only step', () => {
+    expect(credentialFieldOptions(CREDENTIALS, ['token', 'basic', 'bearer'], '', true).map((o) => o.value)).toEqual([NEW_CREDENTIAL, 'vault:github/read-token', 'vault:vsphere/token', 'vault:ssh/ops-automation'])
+    expect(credentialFieldOptions(CREDENTIALS, ['token'], '', true)[0]).toEqual(NEW)
+    const withUnknown = credentialFieldOptions(CREDENTIALS, ['ssh-key'], 'vault:gone/key', true)
+    expect(withUnknown[0]).toEqual(NEW)
+    expect(withUnknown.at(-1)).toEqual({ value: 'vault:gone/key', label: 'vault:gone/key', hint: 'not in the list' })
+    // however many credentials are stored, it stays the first entry
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `team/token-${String(i).padStart(2, '0')}`, type: 'token' }))
+    const options = credentialFieldOptions(many, ['token'], '', true)
+    expect(options).toHaveLength(41)
+    expect(options[0]).toEqual(NEW)
     expect(credentialFieldOptions(CREDENTIALS, ['ssh-key'], 'vault:ssh/ops-automation', true).filter((o) => o.value === 'vault:ssh/ops-automation')).toHaveLength(1)
     expect(credentialFieldOptions(CREDENTIALS, ['token'], '', false).map((o) => o.value)).not.toContain(NEW_CREDENTIAL)
     // with no credential in the registry yet it is the only choice

@@ -181,10 +181,12 @@ test.describe('workflow designer', () => {
     const ndv = page.getByTestId('ndv')
     await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('HTTP request')
 
-    // like n8n's credential select, the field's options end with the entry that creates one
+    // like n8n's credential select, the field's options start with the entry that creates one (under the empty choice of an optional field)
     const field = ndv.getByRole('button', { name: 'Credential', exact: true })
     await field.click()
-    const entry = ndv.getByRole('listbox', { name: 'Credential' }).getByRole('option').last()
+    const options = ndv.getByRole('listbox', { name: 'Credential' }).getByRole('option')
+    await expect(options.first()).toHaveText('—')
+    const entry = options.nth(1)
     await expect(entry).toHaveText('New credential…')
     await entry.click()
     const dialog = page.getByRole('dialog', { name: 'Add credential' })
