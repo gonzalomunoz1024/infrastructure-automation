@@ -154,9 +154,19 @@ export function draftProvider(draft: ProviderDraft, owner?: string | null): Regi
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /**
+ * The library playbook an ansible step runs, `<provider>/<playbook>`: the plain string, or the
+ * object's `library` (config-as-code.md); undefined for a git or uploaded playbook.
+ */
+export function libraryPlaybook(playbook: unknown): string | undefined {
+  if (typeof playbook === 'string') return playbook
+  return isRecord(playbook) && typeof playbook.library === 'string' ? playbook.library : undefined
+}
+
+/**
  * Whether a step calls the draft's provider: a provider step that names it, an ansible step on a
- * playbook of its repository (or of its library, `<name>/<action>`), a terraform step on its
- * module, an IDP step on one of its tiles (the creator's IDP items name a tile by its action id).
+ * playbook of its library (`<name>/<action>`, as the plain string or `library`) or of its
+ * repository, a terraform step on its module, an IDP step on one of its tiles (the creator's IDP
+ * items name a tile by its action id).
  */
 function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
   const w = isRecord(body.with) ? body.with : {}
@@ -166,7 +176,8 @@ function calls(body: Record<string, unknown>, d: ProviderDraft): boolean {
     case 'ansible': {
       if (d.type !== 'ansible') return false
       const pb = w.playbook
-      if (typeof pb === 'string') return pb.startsWith(`${d.name}/`)
+      const library = libraryPlaybook(pb)
+      if (library !== undefined) return library.startsWith(`${d.name}/`)
       const repo = isRecord(pb) && isRecord(pb.git) ? pb.git.repo : undefined
       return typeof repo === 'string' && !!d.ansible.repo.trim() && repo.trim() === d.ansible.repo.trim()
     }

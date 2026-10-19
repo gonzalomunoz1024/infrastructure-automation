@@ -309,6 +309,9 @@ describe('the drafts a workflow calls', () => {
     const used = (step: unknown) => draftsUsedBy(doc([{ s: step }]), drafts).map((d) => d.name)
     expect(used({ call: 'ansible', with: { playbook: { git: { repo, ref: 'main', path: 'patch.yml' } } } })).toEqual(['patching'])
     expect(used({ call: 'ansible', with: { playbook: 'patching/hosts.patch' } })).toEqual(['patching'])
+    // the library playbook written as an object, as the step's parameters edit it
+    expect(used({ call: 'ansible', with: { playbook: { library: 'patching/hosts.patch' } } })).toEqual(['patching'])
+    expect(used({ call: 'ansible', with: { playbook: { library: 'patchingx/hosts.patch' } } })).toEqual([])
     expect(used({ call: 'ansible', with: { playbook: { git: { repo: 'https://example.com/acme/other', ref: 'main' } } } })).toEqual([])
     expect(used({ call: 'terraform', with: { module: { source, version: '2.3.0' }, action: 'plan' } })).toEqual(['lb'])
     expect(used({ call: 'terraform', with: { module: { source: 'https://example.com/acme/tf-modules//vpc' }, action: 'plan' } })).toEqual([])
