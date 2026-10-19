@@ -36,4 +36,23 @@ test.describe('designer pointer', () => {
     await expect(node(page, 'step:wait')).toBeVisible()
     await expect(node(page, 'placeholder')).toHaveCount(0)
   })
+
+  test('dismissing a toast leaves the step list open; a click on the canvas still closes it', async ({ page }) => {
+    const api = await mockDesignerApi(page)
+    await page.goto('/#/workflows/vm-restart')
+    await node(page, 'step:noBackupRunning').click()
+    await page.keyboard.press('Tab')
+    const creator = page.getByTestId('node-creator')
+    await expect(creator).toBeVisible()
+    // ⌘S works from the step list's search box and says so in a toast
+    await page.keyboard.press('ControlOrMeta+s')
+    await expect.poll(() => api.drafts.length).toBe(1)
+    const toast = page.getByRole('region', { name: 'Notifications' }).getByRole('status').filter({ hasText: 'Saved' })
+    await toast.getByRole('button', { name: 'Dismiss' }).click()
+    await expect(toast).toHaveCount(0)
+    await expect(creator).toBeVisible()
+    // anywhere else is still outside
+    await page.getByTestId('designer-canvas').click({ position: { x: 20, y: 20 } })
+    await expect(creator).toBeHidden()
+  })
 })
