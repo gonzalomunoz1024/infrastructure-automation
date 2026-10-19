@@ -247,10 +247,8 @@ export class DesignerStore {
   private overlay = new Map<string, Position>()
   private lastCoalesce: { key: string; at: number } | null = null
   private checkTimer: ReturnType<typeof setTimeout> | null = null
-  /** the backend's problems for one version of the document (Validate) */
-  private validated: { version: number; problems: Problem[] } | null = null
-  /** bumps whenever the registry the canvas reads changes: a Validate answer is about the providers it was asked with */
-  private registryVersion = 0
+  /** the backend's problems for one version of the document (Validate), and the provider files it was sent with */
+  private validated: { version: number; files: string; problems: Problem[] } | null = null
   private revealTimer: ReturnType<typeof setTimeout> | null = null
   private eventSub: Subscription | null = null
   private refetchTimer: ReturnType<typeof setTimeout> | null = null
@@ -355,15 +353,10 @@ export class DesignerStore {
     return withUnpublished(this.loaded, unpublished, playbooks)
   }
 
-  /**
-   * Applies `patch` with the registry and the check context it leads to, and runs the checks
-   * again. The last Validate answer goes: it judged the workflow with other providers.
-   */
+  /** Applies `patch` with the registry and the check context it leads to, and runs the checks again. */
   private setRegistry(patch: Partial<DesignerState> = {}): void {
     const next = { ...this.state, ...patch }
     const registry = this.registryFor(next.doc, next.providerDrafts, next.providersInReview)
-    this.validated = null
-    this.registryVersion++
     this.set({ ...patch, registry, ctx: contextOf(registry) })
     this.runChecks()
   }
@@ -378,8 +371,9 @@ export class DesignerStore {
 
   private computeProblems(): Problem[] {
     const { doc, ctx, graph } = this.state
-    // the backend's verdict on this very document (Validate) stands until the next edit or registry change
-    if (this.validated && this.validated.version === this.state.version) return this.validated.problems
+    // the backend's verdict on this very document (Validate) stands until the next edit, or until
+    // the unpublished providers it was judged with change (a draft added, edited or removed, one merged)
+    if (this.validated && this.validated.version === this.state.version && this.validated.files === JSON.stringify(this.providerFiles())) return this.validated.problems
     if (graph.problems.length > 0) return graph.problems
     try {
       return check(doc, ctx)
@@ -398,11 +392,12 @@ export class DesignerStore {
    */
   async validate(): Promise<ValidationResult> {
     const version = this.state.version
-    const registryVersion = this.registryVersion
-    const result = await api.validateWorkflow({ definition: this.state.doc }, this.providerFiles())
-    // edited meanwhile, or the providers changed: the answer is about an older document
-    if (this.state.version !== version || this.registryVersion !== registryVersion) return result
-    this.validated = { version, problems: result.problems }
+    const sent = this.providerFiles()
+    const files = JSON.stringify(sent)
+    const result = await api.validateWorkflow({ definition: this.state.doc }, sent)
+    // edited meanwhile, or its unpublished providers changed: the answer is about an older document
+    if (this.state.version !== version || JSON.stringify(this.providerFiles()) !== files) return result
+    this.validated = { version, files, problems: result.problems }
     if (this.checkTimer) {
       clearTimeout(this.checkTimer)
       this.checkTimer = null
