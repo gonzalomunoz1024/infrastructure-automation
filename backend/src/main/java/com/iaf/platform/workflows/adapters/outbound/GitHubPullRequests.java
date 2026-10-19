@@ -113,6 +113,21 @@ public class GitHubPullRequests {
         return out;
     }
 
+    /**
+     * Posts {@code checks} again on the pull request's head commit, as a check judged again has
+     * changed: the requires check turns from pending to success once the provider change requests
+     * it requires are done, or to failure once one was closed.
+     */
+    public void statuses(int number, List<Check> checks) {
+        String repo = repo();
+        String token = token();
+        String head = call(token, "GET", "/repos/" + repo + "/pulls/" + number, null, "read pull request #" + number).path("head").path("sha").asText("");
+        if (head.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GitHub answered pull request #" + number + " without its head commit");
+        }
+        statuses(token, repo, head, checks);
+    }
+
     public State state(int number) {
         JsonNode pr = call(token(), "GET", "/repos/" + repo() + "/pulls/" + number, null, "read pull request #" + number);
         return new State("open".equals(pr.path("state").asText()), pr.path("merged").asBoolean(false));
@@ -196,7 +211,7 @@ public class GitHubPullRequests {
 
     private void statuses(String token, String repo, String commit, List<Check> checks) {
         for (Check c : checks == null ? List.<Check>of() : checks) {
-            String state = "failed".equals(c.status()) ? "failure" : "success";
+            String state = state(c.status());
             String description = (c.status() == null ? "" : c.status() + ": ") + (c.detail() == null ? "" : c.detail());
             if (description.length() > STATUS_DESCRIPTION) {
                 description = description.substring(0, STATUS_DESCRIPTION - 1) + "…";
@@ -208,6 +223,18 @@ public class GitHubPullRequests {
                 log.warn("GitHub did not take status {} on {}: {} {}", c.id(), commit, r.status(), message(r));
             }
         }
+    }
+
+    /**
+     * The commit status state of a check: failure for failed, pending for pending (the requires
+     * check while what it requires is not done, so a branch protection rule that requires
+     * {@code iaf/requires} holds the merge), success for passed and skipped.
+     */
+    static String state(String status) {
+        if ("failed".equals(status)) {
+            return "failure";
+        }
+        return "pending".equals(status) ? "pending" : "success";
     }
 
     // ---------------------------------------------------------------- HTTP

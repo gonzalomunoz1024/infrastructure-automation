@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -863,16 +865,75 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 .map(i -> new Imported(i.yaml(), i.notes()));
     }
 
-    // ------------------------------------------------------------------ events from the releases slice
+    // ------------------------------------------------------------------ events from the releases slice and of provider change requests
 
     void on(DomainEvent event) {
-        if (event.type().startsWith("release.") && event.data() != null && event.data().hasNonNull("provider")) {
-            return; // a provider release: the providers slice keeps its versions
+        JsonNode data = event.data();
+        if (event.type().startsWith("release.") && data != null && data.hasNonNull("provider")) {
+            // a provider release: the providers slice keeps its versions; a promoted one may be what a workflow change request waits for
+            if (RELEASE_PROMOTED.equals(event.type())) {
+                providerPromoted(data);
+            }
+            return;
+        }
+        if ((CR_MERGED.equals(event.type()) || CR_CLOSED.equals(event.type())) && data != null && "provider".equals(data.path("kind").asText())) {
+            // that one, or another change request of its provider whose version may now be current
+            String id = data.path("id").asText(event.aggregateId());
+            String provider = data.path("name").asText("");
+            requiresChanged(required -> required.contains(id) || requiresProvider(required, provider), providers::currentVersion);
+            return;
         }
         switch (event.type()) {
             case RELEASE_ROLLED_BACK -> rollBack(event.data());
             case RELEASE_PROMOTED -> log.info("release promoted: {}", event.data());
             default -> {
+            }
+        }
+    }
+
+    /**
+     * A provider release was promoted: its candidate ({@code to}) serves every call, or will as soon
+     * as the providers slice, which may hear of the promotion after this listener, makes it current;
+     * unless another version was made current since the release started ({@code from} is not the
+     * current one), and then the providers slice changes nothing either.
+     */
+    private void providerPromoted(JsonNode data) {
+        String provider = data.path("provider").asText(null);
+        String from = data.path("from").asText(null);
+        String to = data.path("to").asText(null);
+        if (provider == null || to == null) {
+            return;
+        }
+        Optional<String> now = providers.currentVersion(provider);
+        Optional<String> served = now.isEmpty() || from == null || now.get().equals(from) ? Optional.of(to) : now;
+        requiresChanged(required -> requiresProvider(required, provider), name -> provider.equals(name) ? served : providers.currentVersion(name));
+    }
+
+    /** Whether one of the change requests {@code required} names is a change request of provider {@code provider}. */
+    private boolean requiresProvider(List<String> required, String provider) {
+        return required.stream().map(changeRequests::get).flatMap(Optional::stream)
+                .anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.name().equals(provider));
+    }
+
+    /**
+     * Judges again the requires check of every open workflow change request whose required ids
+     * {@code concerned} picks, with {@code current} as each provider's current version, and saves
+     * the ones whose check changed: the stored check, and with the github profile the commit status
+     * that holds the pull request, follow the provider change requests it requires.
+     */
+    private void requiresChanged(Predicate<List<String>> concerned, Function<String, Optional<String>> current) {
+        for (ChangeRequest cr : changeRequests.all()) {
+            if (cr.status() != ChangeRequest.Status.OPEN || cr.kind() != ChangeRequest.Kind.WORKFLOW || cr.required().isEmpty() || !concerned.test(cr.required())) {
+                continue;
+            }
+            Check judged = PublishChecks.requires(cr.required(), changeRequests::get, current);
+            if (cr.checks() != null && cr.checks().contains(judged)) {
+                continue;
+            }
+            try {
+                changeRequests.save(cr.withCheck(judged));
+            } catch (RuntimeException e) {
+                log.warn("could not save the requires check of change request {} judged again: {}", cr.id(), e.getMessage());
             }
         }
     }

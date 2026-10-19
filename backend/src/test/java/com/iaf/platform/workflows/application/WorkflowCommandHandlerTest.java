@@ -1266,6 +1266,11 @@ class WorkflowCommandHandlerTest {
         return queries.changeRequest(crId).block().changeRequest().checks().stream().filter(c -> c.id().equals("requires")).findFirst().orElseThrow();
     }
 
+    /** The requires check as stored, which GitHub's commit status follows, rather than as judged on reading. */
+    Check storedRequires(String crId) {
+        return changeRequests.get(crId).orElseThrow().checks().stream().filter(c -> c.id().equals("requires")).findFirst().orElseThrow();
+    }
+
     @Test
     void aWorkflowThatNeedsANewProviderPublishesWithItsChangeRequestAndMergesAfterIt() {
         changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
@@ -1302,10 +1307,29 @@ class WorkflowCommandHandlerTest {
                 .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
                 .verifyComplete();
         assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_tick (provider ticketing 0.1.0)");
+        assertThat(storedRequires(crId)).as("judged again and saved when cr_tick merged").isEqualTo(requiresCheck(crId));
         StepVerifier.create(handler.mergeChangeRequest(crId))
                 .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
                 .verifyComplete();
         assertThat(store.published("ticket-check").orElseThrow().version()).isEqualTo("0.1.0");
+    }
+
+    @Test
+    void theStoredRequiresCheckFailsWhenTheProviderChangeRequestItRequiresIsClosed() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        String crId = handler.publish("ticket-check", new PublishWorkflow(null, null, List.of("cr_tick"))).block().id();
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String other = handler.publish("vm-restart", null).block().id();
+        List<Check> otherChecks = changeRequests.get(other).orElseThrow().checks();
+
+        StepVerifier.create(handler.closeChangeRequest("cr_tick").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+
+        assertThat(storedRequires(crId)).extracting(Check::status, Check::detail).containsExactly("failed",
+                "cr_tick (provider ticketing 0.1.0) was closed without merging; close this change request and publish again");
+        assertThat(changeRequests.get(other).orElseThrow().checks()).as("a change request that requires nothing is left alone").isEqualTo(otherChecks);
     }
 
     @Test
@@ -1472,7 +1496,11 @@ class WorkflowCommandHandlerTest {
         StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1")).assertNext(r -> assertThat(r.passed()).isTrue()).verifyComplete();
         assertThat(seen).containsExactly("vsphere 1.4.0", "vsphere 1.4.0");
 
-        // the provider release is promoted: 1.4.0 serves every call
+        assertThat(storedRequires(crId)).isEqualTo(requiresCheck(crId));
+
+        // the provider release is promoted: the stored check is judged again, even before the providers slice makes 1.4.0 current
+        events.publish("release.promoted", "release", "rel_1", "junior", F.objectNode().put("provider", "vsphere").put("from", "1.3.0").put("to", "1.4.0"));
+        assertThat(storedRequires(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_canary (provider vsphere 1.4.0)");
         SampleFixtures.publishMerged(registry, next, "all");
         assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_canary (provider vsphere 1.4.0)");
         StepVerifier.create(handler.mergeChangeRequest(crId)).assertNext(a -> assertThat(a.status()).isEqualTo("merged")).verifyComplete();

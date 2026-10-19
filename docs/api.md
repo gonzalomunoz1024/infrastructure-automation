@@ -153,7 +153,13 @@ request is not opened (502). Merging or closing it on the platform merges (`plat
 or closes the pull request; when GitHub refuses the merge (a required review or status missing) it is a
 409 and nothing is published. A decision taken on GitHub comes back through the webhook above and is
 never sent back to GitHub. Reviews of pull requests merged on GitHub are GitHub's to require (branch
-protection, code owners); the platform's checks still decide whether the version is published.
+protection, code owners); the platform's checks still decide whether the version is published. A
+`pending` check is a `pending` status (`failed` is `failure`, the others `success`), and a check judged
+again is posted again on the pull request's head commit: `iaf/requires` turns `success` once what the
+workflow requires is merged and current, `failure` when one is closed. Make `iaf/requires` a required
+status check so GitHub holds a workflow's pull request until then; without it a pull request merged on
+GitHub first is in the content repository while its change request stays open (the webhook's merge
+answers 409).
 
 Change requests publish platform events (aggregate `change-request`, id the change request):
 `change-request.opened` when a workflow version is put up for review, `{ id; kind; name; version;
