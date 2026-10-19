@@ -13,7 +13,7 @@ import { blankAction } from '../../components/provider-editor/state'
 import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
-import { closedOf, LinkedChangeRequests, openChangeRequests, ProviderPublishError, ProviderRows, PublishSheetBody, reviewOf, settleProvider, type ProviderRow } from './Publish'
+import { closedOf, LinkedChangeRequests, openChangeRequests, openDraftProvider, ProviderPublishError, ProviderRows, providerRows, providersFirst, ProvidersToPublish, publishFailure, publishHold, PublishSheetBody, publishWithProviders, reviewOf, settleProvider, type ProviderReviewState, type ProviderRow } from './Publish'
 
 const text = (html: string) =>
   html
@@ -96,7 +96,7 @@ describe('the change requests a Publish opens', () => {
     const workflow = vi.spyOn(api, 'publishWorkflow').mockResolvedValue(accepted('cr_10'))
     const opened: [string, string][] = []
     const result = await openChangeRequests(
-      { workflow: 'vm-backup', request: { strategy: 'canary', notes: 'First version' }, drafts: [{ draft: backup, yaml: 'backup.yaml' }, { draft: dns, yaml: 'dns.yaml' }], inReview: ['cr_5'], opened: {} },
+      { workflow: 'vm-backup', request: { strategy: 'canary', notes: 'First version' }, drafts: [{ draft: backup, yaml: 'backup.yaml' }, { draft: dns, yaml: 'dns.yaml' }], inReview: ['cr_5'] },
       (d, id) => opened.push([d.name, id]),
     )
     expect(result.id).toBe('cr_10')
@@ -111,23 +111,13 @@ describe('the change requests a Publish opens', () => {
     expect(workflow).toHaveBeenCalledWith('vm-backup', { strategy: 'canary', notes: 'First version', requires: ['cr_8', 'cr_9', 'cr_5'] })
   })
 
-  it('opens only the drafts not opened yet when tried again', async () => {
-    const backup = draft('backup')
-    const dns = draft('dns')
-    const provider = vi.spyOn(api, 'publishProvider').mockResolvedValue(accepted('cr_9'))
-    const workflow = vi.spyOn(api, 'publishWorkflow').mockResolvedValue(accepted('cr_10'))
-    await openChangeRequests({ workflow: 'vm-backup', request: { strategy: 'canary' }, drafts: [{ draft: backup, yaml: 'backup.yaml' }, { draft: dns, yaml: 'dns.yaml' }], inReview: [], opened: { [backup.id]: 'cr_8' } }, () => undefined)
-    expect(provider.mock.calls).toEqual([['dns.yaml', 'canary']])
-    expect(workflow.mock.calls[0][1]).toEqual({ strategy: 'canary', requires: ['cr_8', 'cr_9'] })
-  })
-
   it("stops at a draft that cannot be published, naming it, and opens no workflow's change request", async () => {
     vi.spyOn(api, 'publishProvider')
       .mockResolvedValueOnce(accepted('cr_8'))
       .mockRejectedValueOnce(new Error('another change request for dns is open'))
     const workflow = vi.spyOn(api, 'publishWorkflow')
     const opened: string[] = []
-    const run = openChangeRequests({ workflow: 'vm-backup', request: {}, drafts: [{ draft: draft('backup'), yaml: 'b' }, { draft: draft('dns'), yaml: 'd' }], inReview: [], opened: {} }, (_, id) => opened.push(id))
+    const run = openChangeRequests({ workflow: 'vm-backup', request: {}, drafts: [{ draft: draft('backup'), yaml: 'b' }, { draft: draft('dns'), yaml: 'd' }], inReview: [] }, (_, id) => opened.push(id))
     await expect(run).rejects.toBeInstanceOf(ProviderPublishError)
     await expect(run).rejects.toMatchObject({ provider: 'dns', message: 'another change request for dns is open' })
     expect(opened).toEqual(['cr_8'])
@@ -175,6 +165,22 @@ describe('the Publish sheet of a workflow that calls a draft', () => {
     expect(confirm(html)).toMatch(/\sdisabled=""/)
   })
 
+  it('lists a provider in review with its change request, and publishes the workflow requiring it', () => {
+    const store = new DesignerStore({ name: 'vm-backup', doc: doc('backup'), registry: EMPTY_REGISTRY })
+    const d = draft('backup')
+    store.upsertProviderDraft(d)
+    store.providerDraftPublished(d.id, 'cr_8')
+    const html = render(store)
+    const t = text(html)
+    expect(t).toContain('Providers to publish first')
+    expect(t).toContain('backup API in review')
+    expect(t).toContain('cr_8')
+    expect(t).not.toContain('Checking')
+    expect(t).toContain('Open change request')
+    expect(t).not.toContain('Open change requests')
+    expect(confirm(html)).not.toMatch(/\sdisabled=""/)
+  })
+
   it('is the plain sheet when the workflow calls no draft', () => {
     const store = new DesignerStore({ name: 'vm-backup', doc: doc('vsphere'), registry: EMPTY_REGISTRY })
     store.upsertProviderDraft(draft('backup'))
@@ -182,6 +188,117 @@ describe('the Publish sheet of a workflow that calls a draft', () => {
     expect(text(html)).not.toContain('Providers to publish first')
     expect(text(html)).toContain('Open change request')
     expect(confirm(html)).not.toMatch(/\sdisabled=""/)
+  })
+})
+
+describe("the Publish sheet's hold", () => {
+  const ready = { state: 'ready' } as const
+  const hold = (reviews: ProviderReviewState[], patch: Partial<Parameters<typeof publishHold>[0]> = {}) => publishHold({ name: 'vm-backup', errors: 0, stagesInvalid: false, reviews, ...patch })
+
+  it('holds Publish while a review runs, and while one is blocked or did not run', () => {
+    expect(hold([ready, { state: 'checking' }])).toEqual({ reviewing: true, notReady: 0, disabled: true })
+    expect(hold([ready, { state: 'blocked', reasons: ['Every action tried: snapshot.create was not tried in dev'] }])).toEqual({ reviewing: false, notReady: 1, disabled: true })
+    expect(hold([{ state: 'failed', message: 'The server did not answer' }, ready])).toEqual({ reviewing: false, notReady: 1, disabled: true })
+  })
+
+  it('lets Publish go once every review is ready, or with no draft, unless the workflow itself stops it', () => {
+    expect(hold([ready, ready])).toEqual({ reviewing: false, notReady: 0, disabled: false })
+    expect(hold([])).toEqual({ reviewing: false, notReady: 0, disabled: false })
+    expect(hold([ready], { errors: 1 }).disabled).toBe(true)
+    expect(hold([ready], { stagesInvalid: true }).disabled).toBe(true)
+    expect(hold([ready], { name: null }).disabled).toBe(true)
+  })
+
+  it("says why it waits and offers to open a provider whose review is not ready", () => {
+    const blocked = { key: 'a', draft: draft('backup'), review: { state: 'blocked', reasons: ['Every action tried: snapshot.create was not tried in dev'] }, changeRequest: null } satisfies ProviderRow
+    const t = text(renderToString(<ProvidersToPublish rows={[blocked]} notReady={1} onOpen={() => undefined} onRetry={() => undefined} />))
+    expect(t).toContain("Publishing waits until every provider's review is ready.")
+    expect(t).toContain('Every action tried: snapshot.create was not tried in dev')
+    expect(t).toContain('Open provider')
+    const fine = text(renderToString(<ProvidersToPublish rows={[{ ...blocked, review: { state: 'ready' } }]} notReady={0} onOpen={() => undefined} onRetry={() => undefined} />))
+    expect(fine).not.toContain('Publishing waits')
+    expect(fine).not.toContain('Open provider')
+  })
+
+  it('lists each draft with its review, in order, then each provider in review', () => {
+    const backup = draft('backup')
+    const dns = draft('dns')
+    const ipam = draft('ipam')
+    const rows = providerRows({ drafts: [{ draft: backup, yaml: 'b' }, { draft: dns, yaml: 'd' }], inReview: [{ changeRequest: 'cr_5', draft: ipam, yaml: 'i' }] }, [{ state: 'ready' }])
+    expect(rows.map((r) => [r.key, r.review, r.changeRequest])).toEqual([
+      [backup.id, { state: 'ready' }, null],
+      [dns.id, { state: 'checking' }, null],
+      ['cr_5', null, 'cr_5'],
+    ])
+  })
+})
+
+describe("the Publish sheet's providers, from the store", () => {
+  const doc: WorkflowDocument = {
+    apiVersion: 'iaf.platform/v1',
+    kind: 'Workflow',
+    metadata: { name: 'vm-backup', title: 'VM backup', noun: 'vm', verb: 'backup', owner: 'team-compute', version: '1.0.0' },
+    policy: { rbac: ['team-compute'] },
+    workflow: {
+      do: [{ snap: { name: 'Snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: {} } } }, { record: { name: 'Record', call: 'provider', with: { provider: 'dns', action: 'snapshot.create', input: {} } } }],
+    },
+  } as WorkflowDocument
+
+  beforeEach(() => {
+    const data = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('opens a provider in the Provider sheet: a new one on its draft, the next patch of a published one on that provider', () => {
+    const store = new DesignerStore({ name: 'vm-backup', doc, registry: EMPTY_REGISTRY })
+    const backup = draft('backup')
+    store.upsertProviderDraft(backup)
+    openDraftProvider(store, backup)
+    expect(store.getState().providerSheet).toEqual({ entry: 'publish', draft: backup.id, provider: null, target: null })
+    const dns = { ...draft('dns'), origin: 'edit' as const, editing: 'dns', publishedVersion: '1.3.0', version: '1.3.1' }
+    store.upsertProviderDraft(dns)
+    openDraftProvider(store, dns)
+    expect(store.getState().providerSheet).toMatchObject({ entry: 'publish', draft: dns.id, provider: 'dns' })
+  })
+
+  it('clears each draft whose change request opened, names the one that failed, and opens only the others when tried again', async () => {
+    const store = new DesignerStore({ name: 'vm-backup', doc, registry: EMPTY_REGISTRY })
+    const backup = draft('backup', { strategy: 'all' })
+    const dns = draft('dns')
+    store.upsertProviderDraft(backup)
+    store.upsertProviderDraft(dns)
+    const provider = vi
+      .spyOn(api, 'publishProvider')
+      .mockResolvedValueOnce(accepted('cr_8'))
+      .mockRejectedValueOnce(new Error('another change request for dns is open.  '))
+      .mockResolvedValueOnce(accepted('cr_9'))
+    const workflow = vi.spyOn(api, 'publishWorkflow').mockResolvedValue(accepted('cr_10'))
+
+    const failed = await publishWithProviders(store, 'vm-backup', { strategy: 'canary' }).catch((e: unknown) => e)
+    expect(failed).toBeInstanceOf(ProviderPublishError)
+    expect(publishFailure(failed)).toEqual({ title: 'Could not publish dns', message: "another change request for dns is open. The workflow's change request was not opened." })
+    expect(workflow).not.toHaveBeenCalled()
+    // backup's change request is open: its draft is cleared, in review; dns is still a draft
+    expect(Object.values(store.getState().providerDrafts).map((d) => d.name)).toEqual(['dns'])
+    expect(store.getState().providersInReview.map((r) => [r.draft.name, r.changeRequest])).toEqual([['backup', 'cr_8']])
+    expect(providersFirst(store).drafts.map((p) => p.draft.name)).toEqual(['dns'])
+
+    const result = await publishWithProviders(store, 'vm-backup', { strategy: 'canary', notes: 'First version' })
+    expect(result.id).toBe('cr_10')
+    expect(provider.mock.calls.map(([yaml, strategy]) => [/name: (\w+)/.exec(yaml)?.[1], strategy])).toEqual([
+      ['backup', 'all'],
+      ['dns', 'canary'],
+      ['dns', 'canary'],
+    ])
+    expect(workflow).toHaveBeenCalledWith('vm-backup', { strategy: 'canary', notes: 'First version', requires: ['cr_9', 'cr_8'] })
+    expect(store.getState().providerDrafts).toEqual({})
+    expect(store.getState().providersInReview.map((r) => r.changeRequest)).toEqual(['cr_8', 'cr_9'])
+    expect(publishFailure(new Error('Backend unreachable'))).toEqual({ title: 'Could not publish', message: 'Backend unreachable' })
   })
 })
 

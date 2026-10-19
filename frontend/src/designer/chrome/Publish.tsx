@@ -18,7 +18,7 @@ import type { ChangeRequest, ChangeRequestDetail, Check, CommandAccepted, Provid
 import { Link, pathFor } from '../../app/router'
 import { checksSummary } from '../../components/ChangeRequestTable'
 import { draftFile, type ProviderDraft } from '../model/providerDrafts'
-import { useDesignerSelector, useDesignerStore, type DesignerStore } from '../model/store'
+import { useDesignerSelector, useDesignerStore, type DesignerStore, type ProviderInReview } from '../model/store'
 
 function parseStages(text: string): number[] | null {
   const parts = text
@@ -189,36 +189,101 @@ export class ProviderPublishError extends Error {
   }
 }
 
-/** What one Publish opens: the workflow's request, its drafts with their files, the change requests in review it requires, and the drafts already opened (by draft id). */
+/** What one Publish opens: the workflow's request, its drafts with their files, and the change requests in review it requires. */
 export interface PublishPlan {
   workflow: string
   request: Omit<PublishRequest, 'requires'>
   drafts: readonly { draft: ProviderDraft; yaml: string }[]
   inReview: readonly string[]
-  opened: Readonly<Record<string, string>>
 }
 
 /**
- * Opens a Publish's change requests: one per draft not opened yet (POST /providers:publish with the
- * draft's strategy), each handed to `onProvider` as it opens, then the workflow's, requiring every
+ * Opens a Publish's change requests: one per draft (POST /providers:publish with the draft's
+ * strategy), each handed to `onProvider` as it opens, then the workflow's, requiring every
  * provider change request (the drafts', then the ones in review). A draft that cannot be
  * published stops it before the workflow's (`ProviderPublishError`); the ones opened stay open.
  */
 export async function openChangeRequests(plan: PublishPlan, onProvider: (draft: ProviderDraft, changeRequest: string) => void): Promise<CommandAccepted> {
-  const opened: Record<string, string> = { ...plan.opened }
+  const opened: string[] = []
   for (const { draft, yaml } of plan.drafts) {
-    if (opened[draft.id]) continue
     let accepted: CommandAccepted
     try {
       accepted = await api.publishProvider(yaml, draft.strategy)
     } catch (e) {
       throw new ProviderPublishError(draft.name, e)
     }
-    opened[draft.id] = accepted.id
+    opened.push(accepted.id)
     onProvider(draft, accepted.id)
   }
-  const requires = [...plan.drafts.map((p) => opened[p.draft.id]), ...plan.inReview]
-  return api.publishWorkflow(plan.workflow, { ...plan.request, requires })
+  return api.publishWorkflow(plan.workflow, { ...plan.request, requires: [...opened, ...plan.inReview] })
+}
+
+/** What a Publish opens first, as the store has it now: the drafts the workflow calls with their files, and the providers in review it requires. */
+export interface ProvidersFirst {
+  drafts: { draft: ProviderDraft; yaml: string }[]
+  inReview: ProviderInReview[]
+}
+
+export function providersFirst(store: Pick<DesignerStore, 'usedProviderDrafts' | 'usedProvidersInReview'>): ProvidersFirst {
+  // the drafts come under the workflow's owner already: their file is the one a dry run sends
+  return { drafts: store.usedProviderDrafts().map((draft) => ({ draft, yaml: draftFile(draft, null) })), inReview: store.usedProvidersInReview() }
+}
+
+/**
+ * Opens a Publish's change requests from what the store has now (`providersFirst`). A draft whose
+ * change request opened is cleared at once and stays in review (`providerDraftPublished`), so a
+ * Publish tried again after one failed opens only the others and requires the ones opened.
+ */
+export function publishWithProviders(store: DesignerStore, workflow: string, request: Omit<PublishRequest, 'requires'>): Promise<CommandAccepted> {
+  const { drafts, inReview } = providersFirst(store)
+  return openChangeRequests({ workflow, request, drafts, inReview: inReview.map((r) => r.changeRequest) }, (draft, changeRequest) => {
+    store.providerDraftPublished(draft.id, changeRequest)
+    invalidate('provider')
+  })
+}
+
+/** What the sheet says when a Publish fails: the provider that stopped it before the workflow's change request, or why. */
+export function publishFailure(e: unknown): { title: string; message: string } {
+  if (e instanceof ProviderPublishError) return { title: `Could not publish ${e.provider}`, message: `${e.message.replace(/[.\s]*$/, '.')} The workflow's change request was not opened.` }
+  return { title: 'Could not publish', message: errorMessage(e) }
+}
+
+/** The rows the sheet lists: each draft with its review (in order), then each provider in review with its change request. */
+export function providerRows(first: ProvidersFirst, reviews: readonly ProviderReviewState[]): ProviderRow[] {
+  return [
+    ...first.drafts.map((p, i) => ({ key: p.draft.id, draft: p.draft, review: reviews[i] ?? { state: 'checking' as const }, changeRequest: null })),
+    ...first.inReview.map((r) => ({ key: r.changeRequest, draft: r.draft, review: null, changeRequest: r.changeRequest })),
+  ]
+}
+
+/** Whether the sheet holds Publish: no workflow name, an error to fix, stages that do not parse, a review still running or one not ready. */
+export function publishHold({ name, errors, stagesInvalid, reviews }: { name: string | null; errors: number; stagesInvalid: boolean; reviews: readonly ProviderReviewState[] }): { reviewing: boolean; notReady: number; disabled: boolean } {
+  const reviewing = reviews.some((r) => r.state === 'checking')
+  const notReady = reviews.filter((r) => r.state === 'blocked' || r.state === 'failed').length
+  return { reviewing, notReady, disabled: !name || errors > 0 || stagesInvalid || reviewing || notReady > 0 }
+}
+
+/** "Open provider": the Provider sheet on the draft, on its published provider when it is the next patch of one. */
+export function openDraftProvider(store: Pick<DesignerStore, 'openProviderSheet'>, draft: ProviderDraft): void {
+  store.openProviderSheet({ entry: 'publish', draft: draft.id, provider: draft.origin === 'edit' ? (draft.editing ?? draft.name) : null })
+}
+
+/** The sheet's section on the providers to publish first: each with its review, and why Publish waits while one is not ready. */
+export function ProvidersToPublish({ rows, notReady, onOpen, onRetry }: { rows: readonly ProviderRow[]; notReady: number; onOpen: (draft: ProviderDraft) => void; onRetry: () => void }) {
+  return (
+    <section>
+      <p className="mb-1 text-caption font-medium text-secondary">Providers to publish first</p>
+      <p className="mb-2 text-caption text-tertiary">
+        This workflow calls {rows.length === 1 ? 'a provider that is' : `${rows.length} providers that are`} not published yet. Each gets its own change request, which merges first; this workflow&apos;s change request requires {rows.length === 1 ? 'it' : 'them'}.
+      </p>
+      <ProviderRows rows={rows} onOpen={onOpen} onRetry={onRetry} />
+      {notReady > 0 && (
+        <p className="mt-2 text-caption text-warning" role="status">
+          Publishing waits until every provider&apos;s review is ready.
+        </p>
+      )}
+    </section>
+  )
 }
 
 /* ----------------------------------------------------------------------------
@@ -243,36 +308,32 @@ export function PublishSheetBody({ onOpened }: { onOpened: (changeRequestId: str
   const stages = parseStages(stagesText)
   const stagesInvalid = strategy === 'canary' && stages === null
 
-  // what the workflow calls before it is published, fixed while the (modal) sheet is open
-  const [plan] = useState(() => {
-    const owner = store.getState().doc.metadata?.owner
-    return { drafts: store.usedProviderDrafts().map((draft) => ({ draft, yaml: draftFile(draft, owner) })), inReview: store.usedProvidersInReview() }
-  })
-  // the drafts this sheet opened a change request for, by draft id: a Publish tried again opens only the others
-  const [opened, setOpened] = useState<Record<string, string>>({})
-  const pending = plan.drafts.filter((p) => !opened[p.draft.id])
+  // what the workflow calls before it is published, as the store has it now: a draft whose change
+  // request this sheet opened moves into review (a Publish tried again opens only the others)
+  useDesignerSelector((s) => s.providerDrafts)
+  useDesignerSelector((s) => s.providersInReview)
+  const first = providersFirst(store)
+  // how each provider in review stands now: one closed since is a draft again, one merged is published
+  useEffect(() => {
+    void store.refreshProvidersInReview()
+  }, [store])
   const reviews = useQuery(
-    ['provider-reviews', name ?? '', ...pending.map((p) => p.draft.id)],
-    () => Promise.all(pending.map((p) => api.validateProvider(p.yaml).then(reviewOf, (e): ProviderReviewState => ({ state: 'failed', message: errorMessage(e) })))),
-    { enabled: pending.length > 0 },
+    ['provider-reviews', name ?? '', ...first.drafts.map((p) => p.draft.id)],
+    () => Promise.all(first.drafts.map((p) => api.validateProvider(p.yaml).then(reviewOf, (e): ProviderReviewState => ({ state: 'failed', message: errorMessage(e) })))),
+    { enabled: first.drafts.length > 0 },
   )
   // a review on screen is judged again whenever the sheet asks: until it answers, it is checking
-  const reviewAt = (i: number): ProviderReviewState => (reviews.fetching || !reviews.data ? { state: 'checking' } : (reviews.data[i] ?? { state: 'checking' }))
-  const rows: ProviderRow[] = [
-    ...plan.drafts.map((p) => ({ key: p.draft.id, draft: p.draft, review: opened[p.draft.id] ? null : reviewAt(pending.indexOf(p)), changeRequest: opened[p.draft.id] ?? null })),
-    ...plan.inReview.map((r) => ({ key: r.changeRequest, draft: r.draft, review: null, changeRequest: r.changeRequest })),
-  ]
-  const states = pending.map((_, i) => reviewAt(i).state)
-  const reviewing = states.includes('checking')
-  const notReady = states.filter((st) => st === 'blocked' || st === 'failed').length
+  const reviewStates = first.drafts.map((_, i): ProviderReviewState => (reviews.fetching || !reviews.data ? { state: 'checking' } : (reviews.data[i] ?? { state: 'checking' })))
+  const rows = providerRows(first, reviewStates)
+  const hold = publishHold({ name, errors, stagesInvalid, reviews: reviewStates })
 
   const openProvider = (draft: ProviderDraft) => {
     close()
-    store.openProviderSheet({ entry: 'publish', draft: draft.id, provider: draft.origin === 'edit' ? (draft.editing ?? draft.name) : null })
+    openDraftProvider(store, draft)
   }
 
   const publish = async () => {
-    if (!name || busy || errors > 0 || stagesInvalid || reviewing || notReady > 0) return
+    if (!name || busy || hold.disabled) return
     setBusy(true)
     try {
       // the rollout belongs to the workflow file: write it, then save the draft the request is opened from
@@ -284,21 +345,14 @@ export function PublishSheetBody({ onOpened }: { onOpened: (changeRequestId: str
         })
       }
       if (store.getState().dirty) await store.save()
-      const accepted = await openChangeRequests(
-        { workflow: name, request: { strategy, notes: notes.trim() || undefined }, drafts: plan.drafts, inReview: plan.inReview.map((r) => r.changeRequest), opened },
-        (draft, changeRequest) => {
-          // the draft is cleared once its change request is open; the canvas keeps the provider, in review
-          setOpened((o) => ({ ...o, [draft.id]: changeRequest }))
-          store.providerDraftPublished(draft.id, changeRequest)
-          invalidate('provider')
-        },
-      )
+      // each draft is cleared once its change request is open; the canvas keeps the provider, in review
+      const accepted = await publishWithProviders(store, name, { strategy, notes: notes.trim() || undefined })
       invalidate(`workflow/${name}`)
       onOpened(accepted.id, strategy)
       close()
     } catch (e) {
-      if (e instanceof ProviderPublishError) toast.error(`Could not publish ${e.provider}`, `${e.message.replace(/[.\s]*$/, '.')} The workflow's change request was not opened.`)
-      else toast.error('Could not publish', errorMessage(e))
+      const failure = publishFailure(e)
+      toast.error(failure.title, failure.message)
     } finally {
       setBusy(false)
     }
@@ -315,20 +369,7 @@ export function PublishSheetBody({ onOpened }: { onOpened: (changeRequestId: str
           </div>
         )}
         {dirty && errors === 0 && <p className="text-caption text-secondary">Your unsaved changes are saved to the draft first.</p>}
-        {rows.length > 0 && (
-          <section>
-            <p className="mb-1 text-caption font-medium text-secondary">Providers to publish first</p>
-            <p className="mb-2 text-caption text-tertiary">
-              This workflow calls {rows.length === 1 ? 'a provider that is' : `${rows.length} providers that are`} not published yet. Each gets its own change request, which merges first; this workflow&apos;s change request requires {rows.length === 1 ? 'it' : 'them'}.
-            </p>
-            <ProviderRows rows={rows} onOpen={openProvider} onRetry={() => void reviews.refetch()} />
-            {notReady > 0 && (
-              <p className="mt-2 text-caption text-warning" role="status">
-                Publishing waits until every provider&apos;s review is ready.
-              </p>
-            )}
-          </section>
-        )}
+        {rows.length > 0 && <ProvidersToPublish rows={rows} notReady={hold.notReady} onOpen={openProvider} onRetry={() => void reviews.refetch()} />}
         <div>
           <p className="mb-1.5 text-caption font-medium text-secondary">Roll out</p>
           <Segmented<Strategy>
@@ -374,8 +415,8 @@ export function PublishSheetBody({ onOpened }: { onOpened: (changeRequestId: str
         <Button variant="ghost" onClick={close}>
           Cancel
         </Button>
-        <Button variant="primary" icon="release" loading={busy} disabled={errors > 0 || stagesInvalid || !name || reviewing || notReady > 0} onClick={() => void publish()} data-testid="publish-confirm">
-          {pending.length > 0 ? 'Open change requests' : 'Open change request'}
+        <Button variant="primary" icon="release" loading={busy} disabled={hold.disabled} onClick={() => void publish()} data-testid="publish-confirm">
+          {first.drafts.length > 0 ? 'Open change requests' : 'Open change request'}
         </Button>
       </OverlayFooter>
     </>
