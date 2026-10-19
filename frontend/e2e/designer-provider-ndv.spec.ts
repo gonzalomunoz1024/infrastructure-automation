@@ -202,7 +202,7 @@ test.describe('a provider step in the node detail view', () => {
     await expect(tab.getByTestId('provider-release')).toContainText('1.3.0')
     await expect(tab).toContainText('None open')
     await expect(tab.getByRole('link', { name: 'Provider page' })).toHaveAttribute('href', '#/providers/vsphere')
-    await expect(tab.getByRole('link', { name: 'Provider audit' })).toHaveAttribute('href', '#/audit?tab=platform&aggregate=provider')
+    await expect(tab.getByRole('link', { name: 'Audit of every provider' })).toHaveAttribute('href', '#/audit?tab=platform&aggregate=provider')
     await expect(tab.getByRole('button', { name: 'Refresh spec' })).toBeEnabled()
 
     await tab.getByRole('button', { name: 'Edit SLO' }).click()

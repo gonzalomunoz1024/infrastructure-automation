@@ -53,12 +53,13 @@ describe('the Provider tab of a published provider', () => {
     expect(html).toContain('812 calls in 14 days')
   })
 
-  it('lists only the open change requests, and links the provider page and its audit', () => {
+  it('lists only the open change requests, and links the provider page and the audit of every provider', () => {
     const html = render(publishedInfo())
     expect(html).toContain('href="#/change-requests/cr_41"')
     expect(html).not.toContain('cr_30')
     expect(html).toContain('href="#/providers/vsphere"')
-    expect(html).toContain('href="#/audit?tab=platform&amp;aggregate=provider"')
+    // the platform audit filters by type only: the link says what it opens
+    expect(html).toMatch(/href="#\/audit\?tab=platform&amp;aggregate=provider"[^>]*>Audit of every provider/)
   })
 
   it('offers Edit SLO, Refresh spec for an OpenAPI provider, and nothing to edit when read-only', () => {

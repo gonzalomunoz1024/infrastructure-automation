@@ -255,8 +255,9 @@ function PublishedProvider({ info, readOnly, onOpen }: { info: ProviderStepInfo;
           Provider page
           <Icon name="arrow-right" size={12} />
         </Link>
+        {/* the platform audit filters by type, not by provider: the link says so; the provider page holds this one's change requests */}
         <Link to={pathFor('audit', {}, { tab: 'platform', aggregate: 'provider' })} className="inline-flex items-center gap-1 font-medium text-accent hover:underline">
-          Provider audit
+          Audit of every provider
           <Icon name="arrow-right" size={12} />
         </Link>
       </div>
