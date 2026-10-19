@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { SNAPSHOT_DRAFT, EXPLANATION, mockDesignerApi, mockProviderPublish, pasteInto, VM_RESTART_DRAFTS_KEY, vmRestartYaml, yamlEditor, type MockApi } from './designer-fixtures'
+import { SNAPSHOT_DRAFT, EXPLANATION, mockDesignerApi, mockProviderPublish, mockVmRestartDraft, pasteInto, VM_RESTART_DRAFTS_KEY, VM_RESTART_REVIEW_KEY, vmRestartCallingSnapshots, vmRestartYaml, yamlEditor, type MockApi } from './designer-fixtures'
 
 /*
  * The designer against a mocked backend (the backend does not run here): the real
@@ -374,6 +374,58 @@ test.describe('workflow designer', () => {
     await expect(node(page, 'step:createSnapshot')).toContainText('snapshots · snapshot.create')
     await expect(node(page, 'step:createSnapshot')).not.toContainText('in review')
     await expect(node(page, 'step:createSnapshot')).not.toContainText('draft')
+  })
+
+  test('a provider in review outlives a reload, and is a draft again once its change request is closed', async ({ page }) => {
+    // an earlier session published the snapshots draft: cr_8 is open and vm-restart's draft calls it
+    const seed = JSON.stringify(JSON.stringify([{ changeRequest: 'cr_8', draft: SNAPSHOT_DRAFT }]))
+    await page.addInitScript(`if (!sessionStorage.getItem('seeded')) { localStorage.setItem(${JSON.stringify(VM_RESTART_REVIEW_KEY)}, ${seed}); sessionStorage.setItem('seeded', '1') }`)
+    const api = await mockDesignerApi(page)
+    const drafts = await mockProviderPublish(page, api)
+    await mockVmRestartDraft(page, vmRestartCallingSnapshots())
+    await page.goto('/#/workflows/vm-restart')
+    const step = node(page, 'step:createSnapshot')
+    await expect(step).toContainText('in review · snapshots · snapshot.create')
+    await expect(page.getByTestId('issues-button')).toHaveAccessibleName('Issues: 0')
+
+    // Publish requires its change request: the workflow's opens requiring cr_8
+    await page.getByRole('button', { name: 'Publish', exact: true }).click()
+    const sheet = page.getByRole('dialog', { name: 'Publish' })
+    const row = sheet.getByTestId('publish-providers').locator('[data-provider="snapshots"]')
+    await expect(row).toContainText('in review')
+    await expect(row).toContainText('cr_8')
+    await expect(sheet.getByTestId('publish-confirm')).toHaveText('Open change request')
+    await sheet.getByTestId('publish-confirm').click()
+    await expect.poll(() => api.publishes.length).toBe(1)
+    expect(api.publishes[0]).toMatchObject({ requires: ['cr_8'] })
+    expect(drafts.publishes).toEqual([])
+
+    // the provider's change request is closed from the drawer: the workflow's can no longer merge
+    const linked = page.getByTestId('cr-linked')
+    await expect(linked).toContainText('snapshots 1.0.0')
+    await linked.getByRole('button', { name: 'Follow snapshots 1.0.0' }).click()
+    await expect(page.getByText('Publish snapshots 1.0.0')).toBeVisible()
+    await page.getByRole('button', { name: 'Close request' }).click()
+    await expect.poll(() => drafts.closed).toEqual(['cr_8'])
+    await expect(page.getByText('snapshots is a draft of this workflow again')).toBeVisible()
+    await page.getByRole('button', { name: "Back to the workflow's change request" }).click()
+    await expect(linked).toContainText('cr_8 was closed: this change request cannot merge. Close it, fix the provider and publish again.')
+    await expect(page.getByTestId('cr-merge')).toHaveText('Cannot merge')
+    await expect(page.getByTestId('cr-merge')).toBeDisabled()
+    // the provider is a draft of the workflow again, kept in this browser
+    await expect(step).toContainText('draft · snapshots · snapshot.create')
+    expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(VM_RESTART_REVIEW_KEY)})`)).toBeNull()
+    expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(VM_RESTART_DRAFTS_KEY)})`)).toContain('"name":"snapshots"')
+
+    // opened again, it is still a draft, and Publish reviews it to publish it again
+    await page.reload()
+    await expect(step).toContainText('draft · snapshots · snapshot.create')
+    await expect(page.getByTestId('issues-button')).toHaveAccessibleName('Issues: 0')
+    await page.getByRole('button', { name: 'Publish', exact: true }).click()
+    await expect(row).toContainText('draft')
+    await expect(row).toContainText('Ready')
+    await expect(sheet.getByTestId('publish-confirm')).toHaveText('Open change requests')
+    await expect(sheet.getByTestId('publish-confirm')).toBeEnabled()
   })
 
   test('the assistant drafts a change and applies it to the canvas', async ({ page }) => {

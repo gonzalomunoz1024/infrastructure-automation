@@ -595,6 +595,49 @@ export interface MockProviderPublish {
   reviews: string[]
   /** bodies of POST /providers:publish */
   publishes: Obj[]
+  /** ids of change requests closed without merging (POST :close, or pushed by a test as a reviewer closing one) */
+  closed: string[]
+}
+
+/** Where the designer keeps vm-restart's providers in review (a Publish opened their change requests) in this browser. */
+export const VM_RESTART_REVIEW_KEY = 'iaf-designer-providers-in-review:vm-restart'
+
+/** vm-restart with a step after validate that creates a snapshot through the snapshots provider (SNAPSHOT_DRAFT). */
+export function vmRestartCallingSnapshots(): Obj {
+  const definition = vmRestart()
+  const flow = asObj(definition.workflow)
+  const steps = Array.isArray(flow.do) ? [...flow.do] : []
+  const at = steps.findIndex((s) => Object.keys(asObj(s))[0] === 'validate') + 1
+  steps.splice(at, 0, { createSnapshot: { name: 'Create snapshot', call: 'provider', with: { provider: 'snapshots', action: 'snapshot.create', input: {} } } })
+  flow.do = steps
+  return definition
+}
+
+/** On top of mockDesignerApi: GET /workflows/vm-restart answers with this definition as the draft the designer opens. */
+export async function mockVmRestartDraft(page: Page, definition: Obj): Promise<void> {
+  const meta = asObj(definition.metadata)
+  await page.route('**/api/v1/workflows/vm-restart', (route) =>
+    route.request().method() !== 'GET'
+      ? route.fallback()
+      : json(route, {
+          name: 'vm-restart',
+          title: meta.title,
+          noun: meta.noun,
+          verb: meta.verb,
+          owner: meta.owner,
+          status: 'published',
+          latestVersion: '1.3.0',
+          publishedVersion: meta.version,
+          stepCount: stepIds(asObj(definition.workflow).do).length,
+          updatedAt: '2026-10-18T09:00:00Z',
+          mcp: true,
+          yaml: stringify(definition),
+          definition,
+          versions: [{ version: meta.version, status: 'published', contentHash: 'sha256:1', publishedAt: '2026-10-01T09:00:00Z', publishedBy: 'gonzalo' }],
+          problems: [],
+          changeRequests: [],
+        }),
+  )
 }
 
 /**
@@ -604,7 +647,7 @@ export interface MockProviderPublish {
  * lists the provider. Everything else falls through to mockDesignerApi.
  */
 export async function mockProviderPublish(page: Page, api: MockApi): Promise<MockProviderPublish> {
-  const calls: MockProviderPublish = { validations: [], reviews: [], publishes: [] }
+  const calls: MockProviderPublish = { validations: [], reviews: [], publishes: [], closed: [] }
   const providers = registryProviders()
   const snapshots = { name: 'snapshots', title: 'Snapshot API', type: 'http', owner: 'team-compute', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe', approval: 'none', input: { type: 'object', properties: { vm: { type: 'string' } } }, output: null, sample: { id: 'snap-1', state: 'ready' } }] }
   const changeRequest = (id: string, kind: string, name: string, version: string, extra: Obj = {}): Obj => ({
@@ -615,7 +658,7 @@ export async function mockProviderPublish(page: Page, api: MockApi): Promise<Moc
     branch: `${kind}/${name}-${version}`,
     title: `Publish ${name} ${version}`,
     author: 'gonzalo',
-    status: api.merged.includes(id) ? 'merged' : 'open',
+    status: api.merged.includes(id) ? 'merged' : calls.closed.includes(id) ? 'closed' : 'open',
     strategy: 'canary',
     createdAt: '2026-10-18T10:00:00Z',
     checks: [
@@ -652,6 +695,10 @@ export async function mockProviderPublish(page: Page, api: MockApi): Promise<Moc
     if (method === 'GET' && path === '/change-requests/cr_7') return json(route, changeRequest('cr_7', 'workflow', 'vm-restart', '1.3.0', { requires: ['cr_8'] }))
     if (method === 'POST' && path === '/change-requests/cr_8:merge') {
       api.merged.push('cr_8')
+      return json(route, { id: 'cr_8', status: 'accepted' }, 202)
+    }
+    if (method === 'POST' && path === '/change-requests/cr_8:close') {
+      calls.closed.push('cr_8')
       return json(route, { id: 'cr_8', status: 'accepted' }, 202)
     }
     // as the backend: the workflow merges once the change requests it requires have
