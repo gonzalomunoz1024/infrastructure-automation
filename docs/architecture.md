@@ -910,7 +910,6 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
-<<<<<<< HEAD
 The Provider sheet (`frontend/src/designer/chrome/ProviderSheet.tsx`) is Add provider inside the
 designer: a drawer over the canvas with a rail of sections, as n8n's credential modal has, hosting
 the wizard's own steps (`frontend/src/components/provider-editor/`) and imports. Connect holds the
@@ -958,7 +957,7 @@ endpoint takes the request when it can, as the action it has for that method and
 beside its others, but never a draft whose file is its own (a try's or Devin's) or that signs in
 with another credential, which gives the request a new draft; the step then calls that action and
 the Provider sheet opens on the draft.
-=======
+
 A provider drafted from the designer (kept in the browser per workflow, as the Provider sheet
 leaves it) reads like a published one: the store merges the drafts into the registry the canvas
 reads (`withUnpublished` in `frontend/src/designer/model/registry.ts`), so the node creator, the
@@ -977,7 +976,31 @@ workflow opens, and when Publish opens, each one's change request is asked how i
 closed instead of merged turns back into a draft to fix and publish again. The drawer lists the
 linked change requests with their status, says the provider ones merge first (or that one was
 closed, so this one cannot merge), holds Merge until they have, and follows each one there.
->>>>>>> df-wp2
+
+A provider step's node detail view brings the provider into the designer. Beside Test step, which
+stays a dry run, Try for real makes one real call (`POST /providers:try`) with the provider draft's
+file or the published one, starting in the environment the review counts, asking first when the
+action changes something and, for a delete whose input names a registry resource, picking its
+target with the registry picker. The Output pane shows the answer as the provider page does. Save
+as sample makes the draft take the file the call came back with, whose sample the backend redacted;
+the live answer is never kept, so a failed call, or one made with a file the draft no longer has,
+saves nothing. Fix schema writes the answer's shape into the draft's overrides. Use the real response
+(`POST /providers/{name}/overrides`) is offered only for a call made with the published file while
+the workflow holds no draft of the provider and no other change request of it is open: the platform
+takes one change request per provider at a time. Pinned data stays the designer's own mock. The
+Settings tab's "Action (shared by every workflow)" section edits the action's effect, retry policy,
+approval, plan step, what a delete removes, its own SLO and the provider's error classes; the edits
+go into the provider's draft, the first one starting a draft of a published provider's next patch,
+and a draft that holds a file takes them as line edits (`frontend/src/designer/ndv/providerFile.ts`),
+so the browser never parses YAML. Error classes written otherwise than one per line are shown as
+written. The section names an open change request of the provider, which a draft has to wait for.
+The step's own retry, timeout and pause stay where they were. The Provider tab shows the provider
+page's health band, success rate and p95 against the SLO, the action's own band, its alerts, the
+release in flight and the open change requests, with Edit SLO and Refresh spec (held back while a
+change request is open or the workflow holds a draft) and links to the provider page and the audit
+of every provider. A provider the platform does not know and no draft in this browser holds is shown
+as such. The canvas marks each provider step with its provider's health from one shared read of
+`GET /providers`.
 
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`

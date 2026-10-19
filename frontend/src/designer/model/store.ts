@@ -147,7 +147,8 @@ export interface DesignerState {
   lastInput: JsonObject | null
 }
 
-export type NdvTab = 'parameters' | 'settings'
+/** The node detail view's tabs; Provider only on a step that calls a provider. */
+export type NdvTab = 'parameters' | 'settings' | 'provider'
 
 export type CanvasMenuTarget = { kind: 'node'; id: string } | { kind: 'pane'; flowX: number; flowY: number } | { kind: 'edge'; id: string } | { kind: 'selection'; ids: string[] }
 
