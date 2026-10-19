@@ -5,14 +5,20 @@
  * samples, health and an SLO like every provider call.
  *
  * The step's credential becomes the provider's auth (it is a `vault:` reference, never a value);
- * a header the action cannot carry is named in the notes, never copied.
+ * a header the action cannot carry is named in the notes, never copied. The notes are worked out
+ * before anything changes (planProviderAction), so the step can show them and ask first.
+ *
+ * A draft of the same endpoint is reused when it can take the request: the action it already has
+ * for the same method and path, or a new action beside its others, never on a draft whose file is
+ * its own (a try's or Devin's `draftYaml`, which the rows no longer write) and never at the cost of
+ * the step's credential; otherwise the request starts a new draft, and the notes say why.
  */
 import { STEP_TYPES, type JsonObject, type JsonValue } from '@iaf/workflow-checks'
-import { blankAction, ENDPOINT_RE, ID_RE, inferSchema, kebab, nextKey, type AuthType } from '../../components/provider-editor/state'
+import { blankAction, ENDPOINT_RE, ID_RE, inferSchema, kebab, nextKey, type ActionRow, type AuthType } from '../../components/provider-editor/state'
 import type { Effect, RetryPolicy } from '../../lib/types'
 import { findStepNode } from '../model/graph'
 import { newProviderDraft, type ProviderDraft } from '../model/providerDrafts'
-import type { DesignerStore } from '../model/store'
+import type { DesignerState, DesignerStore } from '../model/store'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 /** The methods whose input is the JSON body; the others send it as query parameters (HttpProviderCall). */
@@ -139,71 +145,141 @@ export function actionIdFor(method: string, path: string, taken: ReadonlySet<str
   return id
 }
 
-/** The step's last output: its test run's, else what is pinned or a job gave; the body of an HTTP answer (`{ status, body }`). */
-export function lastOutputOf(store: DesignerStore, stepId: string): JsonValue | undefined {
-  const state = store.getState()
-  const ran = state.testRun?.result?.steps.find((s) => s.id === stepId && s.output !== undefined && s.output !== null)
-  const out = (ran?.output as JsonValue | undefined) ?? store.knownOutputs()[stepId]
+/**
+ * The step's last test output: its test run's, else what it gave in a run that succeeded (the
+ * execution open in the designer); the body of an HTTP answer (`{ status, body }`). Never pinned
+ * data, which is the designer's own mock and no answer of the system's.
+ */
+export function lastOutputOf(state: Pick<DesignerState, 'testRun' | 'execution'>, stepId: string): JsonValue | undefined {
+  const tested = state.testRun?.result?.steps.find((s) => s.id === stepId && s.output !== undefined && s.output !== null)
+  const ran = state.execution?.job?.steps.find((s) => s.id === stepId && s.status === 'succeeded' && s.output !== undefined && s.output !== null)
+  const out = (tested?.output ?? ran?.output) as JsonValue | undefined
   if (isObject(out) && 'status' in out && 'body' in out) return out.body
   return out
 }
 
-export type SaveAsProvider = { ok: true; draft: ProviderDraft; provider: string; action: string; notes: string[] } | { ok: false; error: string }
+type Auth = HttpActionPlan['auth']
+const signsIn = (a: Auth) => a.type !== 'none' && a.credential.trim() !== ''
+const sameAuth = (a: Auth, b: Auth) => a.type === b.type && a.credential === b.credential && (a.type !== 'header' || a.header.toLowerCase() === b.header.toLowerCase())
+
+/** How the step's credential goes with a draft's auth: as it is, taken by the draft (which signs in with none and is written from its rows), or not at all. */
+function authFit(d: ProviderDraft, plan: HttpActionPlan): 'same' | 'take' | 'clash' {
+  if (!signsIn(plan.auth) || sameAuth(d.auth, plan.auth)) return 'same'
+  if (!signsIn(d.auth) && d.draftYaml === null) return 'take'
+  return 'clash'
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** Whether a draft's own file (a try's, Devin's) lists an action of that id. */
+const fileHasAction = (yaml: string, id: string) => new RegExp(`^\\s*(-\\s+)?id:\\s*["']?${escapeRe(id)}["']?\\s*$`, 'm').test(yaml)
+
+/** What Save as provider action will do, worked out before it does it. */
+export interface ProviderActionSave {
+  /** the draft as it will be kept */
+  draft: ProviderDraft
+  /** false when the draft already has the action as it is, and stays untouched */
+  changed: boolean
+  /** the action the step will call, and its input */
+  action: string
+  input: JsonObject
+  /** what does not come along, or goes somewhere the user may not expect, in words */
+  notes: string[]
+}
 
 /**
- * Saves the HTTP step's request as an action of an `http` provider draft and turns the step into
- * a call of it (one undo step), then opens the Provider sheet on the draft. A new draft of the
- * same endpoint takes the action beside the ones it has.
+ * Save as provider action, worked out without changing anything: the draft the request goes into
+ * (an endpoint's draft that already has it, one that can take it beside its other actions, or a
+ * new one), the action the step will call, and the notes to show first.
  */
-export function saveAsProviderAction(store: DesignerStore, stepId: string): SaveAsProvider {
-  const state = store.getState()
+export function planProviderAction(state: DesignerState, stepId: string): { ok: true; save: ProviderActionSave } | { ok: false; error: string } {
   const node = findStepNode(state.graph, stepId)
   const body = node?.data.body
   if (!body || body.call !== 'http') return { ok: false, error: 'Only an HTTP request step can be saved as a provider action.' }
   const planned = httpActionPlan(isObject(body.with) ? body.with : {})
   if (!planned.ok) return planned
   const plan = planned.plan
-  const example = lastOutputOf(store, stepId)
+  const notes = [...plan.notes]
+  const example = lastOutputOf(state, stepId)
+  const exampleText = example !== undefined ? JSON.stringify(example, null, 2) : ''
+  const inputText = Object.keys(plan.input).length > 0 ? JSON.stringify(inferSchema(plan.input), null, 2) : ''
+  const done = (draft: ProviderDraft, changed: boolean, action: string) => ({ ok: true as const, save: { draft, changed, action, input: plan.input, notes } })
 
   const drafts = Object.values(state.providerDrafts)
-  const sameEndpoint = (d: ProviderDraft) => d.origin === 'new' && d.type === 'http' && d.environments.some((e) => e.url.trim().replace(/\/+$/, '').toLowerCase() === plan.endpoint.toLowerCase())
-  const existing = drafts.find(sameEndpoint)
-  const id = actionIdFor(plan.method, plan.path, new Set((existing?.actions ?? []).map((a) => a.id)))
-  const stepName = typeof body.name === 'string' ? body.name.trim() : ''
-  const row = blankAction({
-    id,
-    title: stepName && stepName !== STEP_TYPES.http.title ? stepName : `${plan.method} ${plan.path}`,
-    method: plan.method,
-    path: plan.path,
-    effect: plan.effect,
-    retry: plan.retry,
-    approval: plan.effect === 'delete',
-    inputText: Object.keys(plan.input).length > 0 ? JSON.stringify(inferSchema(plan.input), null, 2) : '',
-    exampleText: example !== undefined ? JSON.stringify(example, null, 2) : '',
-  })
+  const sameEndpoint = drafts.filter((d) => d.origin === 'new' && d.type === 'http' && d.environments.some((e) => e.url.trim().replace(/\/+$/, '').toLowerCase() === plan.endpoint.toLowerCase()))
+  const fitting = sameEndpoint.filter((d) => authFit(d, plan) !== 'clash')
+  const sameRoute = (a: ActionRow) => ID_RE.test(a.id) && a.method.toUpperCase() === plan.method && a.path.trim() === plan.path
 
-  let draft: ProviderDraft
-  if (existing) draft = { ...existing, actions: [...existing.actions, row] }
-  else {
-    const host = plan.endpoint.replace(/^https?:\/\//i, '')
-    const taken = new Set([...(state.registry?.providers ?? []).map((p) => p.name), ...drafts.map((d) => d.name)])
-    const owner = typeof state.doc.metadata?.owner === 'string' ? state.doc.metadata.owner : ''
-    draft = newProviderDraft('http', {
-      title: host,
-      name: providerNameFor(host, taken),
-      nameTouched: true,
-      owner,
-      ownerTouched: owner !== '',
-      environments: [{ key: nextKey(), name: 'dev', url: plan.endpoint }],
-      auth: plan.auth,
-      actions: [row],
-    })
+  // a draft of the endpoint that has this request already: the step calls that action
+  for (const d of fitting) {
+    const row = d.actions.find((a) => sameRoute(a) && (d.draftYaml === null || (a.selected && fileHasAction(d.draftYaml, a.id))))
+    if (!row) continue
+    if (d.draftYaml !== null) return done(d, false, row.id)
+    const filled: ActionRow = { ...row, selected: true, exampleText: row.exampleText.trim() ? row.exampleText : exampleText, inputText: row.inputText.trim() ? row.inputText : inputText }
+    const take = authFit(d, plan) === 'take'
+    const changed = take || filled.selected !== row.selected || filled.exampleText !== row.exampleText || filled.inputText !== row.inputText
+    return done({ ...d, ...(take ? { auth: { ...plan.auth } } : {}), actions: d.actions.map((a) => (a.key === row.key ? filled : a)) }, changed, row.id)
   }
-  store.upsertProviderDraft(draft)
+
+  const stepName = typeof body.name === 'string' ? body.name.trim() : ''
+  const rowFor = (id: string) =>
+    blankAction({
+      id,
+      title: stepName && stepName !== STEP_TYPES.http.title ? stepName : `${plan.method} ${plan.path}`,
+      method: plan.method,
+      path: plan.path,
+      effect: plan.effect,
+      retry: plan.retry,
+      approval: plan.effect === 'delete',
+      inputText,
+      exampleText,
+    })
+
+  // a draft of the endpoint written from its rows: the action goes beside its others
+  const open = fitting.find((d) => d.draftYaml === null)
+  if (open) {
+    const id = actionIdFor(plan.method, plan.path, new Set(open.actions.map((a) => a.id)))
+    return done({ ...open, ...(authFit(open, plan) === 'take' ? { auth: { ...plan.auth } } : {}), actions: [...open.actions, rowFor(id)] }, true, id)
+  }
+
+  // a new draft
+  const host = plan.endpoint.replace(/^https?:\/\//i, '')
+  const taken = new Set([...(state.registry?.providers ?? []).map((p) => p.name), ...drafts.map((d) => d.name)])
+  const owner = typeof state.doc.metadata?.owner === 'string' ? state.doc.metadata.owner : ''
+  const id = actionIdFor(plan.method, plan.path, new Set())
+  const draft = newProviderDraft('http', {
+    title: host,
+    name: providerNameFor(host, taken),
+    nameTouched: true,
+    owner,
+    ownerTouched: owner !== '',
+    environments: [{ key: nextKey(), name: 'dev', url: plan.endpoint }],
+    auth: { ...plan.auth },
+    actions: [rowFor(id)],
+  })
+  for (const d of sameEndpoint) {
+    if (authFit(d, plan) === 'clash') notes.push(`The draft ${d.name} of ${plan.endpoint} signs in with another credential than this step, so the request goes into a new draft, ${draft.name}.`)
+    else if (d.draftYaml !== null) notes.push(`The draft ${d.name} of ${plan.endpoint} keeps a file of its own (a try's answer or a draft it took), which a new action would not reach, so the request goes into a new draft, ${draft.name}.`)
+  }
+  return done(draft, true, id)
+}
+
+export type SaveAsProvider = { ok: true; draft: ProviderDraft; provider: string; action: string; notes: string[] } | { ok: false; error: string }
+
+/**
+ * Saves the HTTP step's request as an action of an `http` provider draft, as planProviderAction
+ * works it out, and turns the step into a call of it (one undo step), then opens the Provider
+ * sheet on the draft.
+ */
+export function saveAsProviderAction(store: DesignerStore, stepId: string): SaveAsProvider {
+  const planned = planProviderAction(store.getState(), stepId)
+  if (!planned.ok) return planned
+  const { draft, changed, action, input, notes } = planned.save
+  if (changed) store.upsertProviderDraft(draft)
   store.updateStep(stepId, (b) => {
     b.call = 'provider'
-    b.with = { provider: draft.name, action: id, input: plan.input }
+    b.with = { provider: draft.name, action, input }
   })
   store.openProviderSheet({ entry: 'step', draft: draft.id, target: { kind: 'step', step: stepId } })
-  return { ok: true, draft, provider: draft.name, action: id, notes: plan.notes }
+  return { ok: true, draft, provider: draft.name, action, notes }
 }

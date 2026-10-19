@@ -6,10 +6,11 @@
  *
  * As n8n has it beside a credential, a provider step's provider field ends with "New provider…"
  * and has an "Edit provider" pencil, both opening the Provider sheet for this step; an HTTP step
- * can Import cURL (curl.ts) and be saved as a provider action (httpProvider.ts).
+ * can Import cURL (curl.ts) and be saved as a provider action (httpProvider.ts), which first lists
+ * what of the request does not come along and asks.
  */
 import { createContext, useContext, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { Button, cx, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Tag, Textarea, useOverlayClose, type SelectOption } from '@iaf/ui'
+import { Button, ConfirmDialog, cx, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Tag, Textarea, useOverlayClose, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
@@ -18,10 +19,10 @@ import { findStepLocation, safeParseSteps } from '../model/graph'
 import { findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
-import { useDesignerSelector, useDesignerStore, type ProviderSheetOptions } from '../model/store'
+import { useDesignerSelector, useDesignerStore, type DesignerStore, type ProviderSheetOptions } from '../model/store'
 import { DRAFT_TAG, effectTags, providersWithDrafts, type ListedProvider } from '../creator/catalog'
 import { httpWithFromCurl, parseCurl, type CredentialKind, type CurlRequest } from './curl'
-import { httpActionPlan, saveAsProviderAction } from './httpProvider'
+import { httpActionPlan, planProviderAction, saveAsProviderAction } from './httpProvider'
 import { useNdv } from './context'
 import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
@@ -339,12 +340,26 @@ export function importCurl(update: StepEdit['update'], request: CurlRequest): vo
   })
 }
 
+/**
+ * Save as provider action, as the HTTP step's button runs it: what does not come along (a header,
+ * a GET's body, an endpoint that is not https, a draft that cannot take the request) is listed
+ * first and the user confirms; with nothing to say it saves at once.
+ */
+export function startProviderActionSave(store: DesignerStore, stepId: string): { error: string } | { confirm: string[] } | { saved: true } {
+  const planned = planProviderAction(store.getState(), stepId)
+  if (!planned.ok) return { error: planned.error }
+  if (planned.save.notes.length > 0) return { confirm: planned.save.notes }
+  const saved = saveAsProviderAction(store, stepId)
+  return saved.ok ? { saved: true } : { error: saved.error }
+}
+
 function HttpParams() {
   const store = useDesignerStore()
   const { stepId, body, get, update, readOnly } = useStepEdit()
   const [importing, setImporting] = useState(false)
   const [imported, setImported] = useState<CurlImported | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [leftOut, setLeftOut] = useState<string[] | null>(null)
   const credential = asString(get('credential'))
   const askCredential = imported !== null && imported.dropped.length > 0 && credential === imported.credential
   const plan = httpActionPlan(asObject(body.with as JsonValue | undefined))
@@ -354,8 +369,13 @@ function HttpParams() {
     setSaveError(null)
   }
   const save = () => {
+    const started = startProviderActionSave(store, stepId)
+    setSaveError('error' in started ? started.error : null)
+    if ('confirm' in started) setLeftOut(started.confirm)
+  }
+  const saveAnyway = () => {
     const saved = saveAsProviderAction(store, stepId)
-    setSaveError(saved.ok ? null : saved.error)
+    if (!saved.ok) setSaveError(saved.error)
   }
   return (
     <>
@@ -398,6 +418,22 @@ function HttpParams() {
         <Modal onClose={() => setImporting(false)} width="max-w-xl" label="Import cURL command" raised>
           <ImportCurlForm onImport={onImport} />
         </Modal>
+      )}
+      {leftOut && (
+        <ConfirmDialog
+          title="Save as provider action?"
+          message="The step will call an action of an http provider draft, which is reviewed before it is published. Not all of this request comes along:"
+          confirmLabel="Save as provider action"
+          icon="provider"
+          onConfirm={saveAnyway}
+          onClose={() => setLeftOut(null)}
+        >
+          <ul className="list-disc space-y-1 pl-4 text-caption text-secondary" data-testid="provider-action-notes">
+            {leftOut.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </ConfirmDialog>
       )}
     </>
   )

@@ -2,6 +2,7 @@ import { renderToString } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { blankAction } from '../../components/provider-editor/state'
+import { api } from '../../lib/api'
 import { providersWithDrafts } from '../creator/catalog'
 import { bodyFor } from '../model/edits'
 import { documentToGraph, findStepNode, graphToDocument } from '../model/graph'
@@ -10,8 +11,8 @@ import { EMPTY_REGISTRY, type Registry } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { parseCurl } from './curl'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
-import { actionIdFor, httpActionPlan, providerNameFor, saveAsProviderAction } from './httpProvider'
-import { credentialFieldOptions, credentialOptions, curlCredentialNote, editProviderOptions, gitResolveQuery, importCurl, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, StepParameters } from './StepParameters'
+import { actionIdFor, httpActionPlan, lastOutputOf, planProviderAction, providerNameFor, saveAsProviderAction } from './httpProvider'
+import { credentialFieldOptions, credentialOptions, curlCredentialNote, editProviderOptions, gitResolveQuery, importCurl, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, startProviderActionSave, StepParameters } from './StepParameters'
 import { hostsValue, withGroupKey } from './inventory'
 
 /*
@@ -419,6 +420,7 @@ describe('saving an HTTP step as a provider action', () => {
   })
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   const vmPower = (w: Record<string, unknown>): WorkflowDocument =>
@@ -475,10 +477,17 @@ describe('saving an HTTP step as a provider action', () => {
     expect(actionIdFor('DELETE', '/', new Set())).toBe('delete')
   })
 
-  it('makes an http provider draft, turns the step into a call of it (one undo), and opens the sheet on it', () => {
+  /** A test run of the workflow in which the step answered this. */
+  async function tested(store: DesignerStore, step: string, output: unknown) {
+    vi.spyOn(api, 'dryRunWorkflow').mockResolvedValue({ passed: true, path: [step], steps: [{ id: step, name: step, status: 'succeeded', output }] })
+    await store.testRun({})
+  }
+
+  it('makes an http provider draft, turns the step into a call of it (one undo), and opens the sheet on it', async () => {
     const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
     // the last test output: an HTTP answer, whose body is the example
-    store.setPin('getVm', { status: 200, body: { id: 'vm-1', name: 'web-01', powerState: 'off' } })
+    await tested(store, 'getVm', { status: 200, body: { id: 'vm-1', name: 'web-01', powerState: 'off' } })
+    store.dispose()
     const saved = saveAsProviderAction(store, 'getVm')
     if (!saved.ok) throw new Error(saved.error)
     expect(saved).toMatchObject({ provider: 'example', action: 'vms.get', notes: ['The header X-Trace is not part of a provider action and was left out.'] })
@@ -526,6 +535,115 @@ describe('saving an HTTP step as a provider action', () => {
     // no test output yet: no example
     expect(d.actions[1].exampleText).toBe('')
     expect(store.getState().doc.workflow?.do?.[1]).toEqual({ powerOn: { name: 'Power it on', call: 'provider', with: { provider: 'example', action: 'power.create', input: { vmId: '{{ $input.vmId }}', state: 'on', force: false } } } })
+  })
+
+  it('takes the example from a test or a run that succeeded, never from pinned data', async () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
+    // a mock pinned to try expressions downstream is the designer's own, not the system's answer
+    store.setPin('getVm', { id: 'fake-1' })
+    expect(lastOutputOf(store.getState(), 'getVm')).toBeUndefined()
+    const pinned = saveAsProviderAction(store, 'getVm')
+    if (!pinned.ok) throw new Error(pinned.error)
+    expect(store.getState().providerDrafts[pinned.draft.id].actions[0].exampleText).toBe('')
+    expect(JSON.stringify(store.getState().providerDrafts)).not.toContain('fake-1')
+    // a run that succeeded, as the open execution shows it
+    const run = { status: 'succeeded', steps: [{ id: 'powerOn', status: 'succeeded', output: { status: 202, body: { task: 't-1' } } }] }
+    expect(lastOutputOf({ testRun: null, execution: { jobId: 'j-1', job: run as never, loading: false, error: null } }, 'powerOn')).toEqual({ task: 't-1' })
+    // a test run's answer comes before it
+    await tested(store, 'powerOn', { status: 200, body: { task: 't-2' } })
+    store.dispose()
+    expect(lastOutputOf({ ...store.getState(), execution: { jobId: 'j-1', job: run as never, loading: false, error: null } }, 'powerOn')).toEqual({ task: 't-2' })
+  })
+
+  it('lists what does not come along before it saves, and saves at once when nothing is lost', () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
+    // GET_VM sends X-Trace, which a provider action does not carry: the user is asked first
+    expect(startProviderActionSave(store, 'getVm')).toEqual({ confirm: ['The header X-Trace is not part of a provider action and was left out.'] })
+    expect(store.getState().doc.workflow?.do?.[0]).toEqual({ getVm: { name: 'Get the VM', call: 'http', with: GET_VM } })
+    expect(store.getState().providerDrafts).toEqual({})
+    // the dialog lists it
+    expect(planProviderAction(store.getState(), 'getVm')).toMatchObject({ ok: true, save: { notes: ['The header X-Trace is not part of a provider action and was left out.'] } })
+    // powerOn loses nothing: saved without asking
+    expect(startProviderActionSave(store, 'powerOn')).toEqual({ saved: true })
+    expect(store.getState().doc.workflow?.do?.[1]).toMatchObject({ powerOn: { call: 'provider' } })
+    expect(startProviderActionSave(store, 'nope')).toEqual({ error: 'Only an HTTP request step can be saved as a provider action.' })
+  })
+
+  it('points a step at the action the draft has for the same request, never a second copy', () => {
+    const doc = vmPower(GET_VM)
+    const steps = doc.workflow?.do ?? []
+    // a check before and after the change: two steps with the same request
+    steps.push({ getVmAfter: { name: 'Get the VM again', call: 'http', with: { ...GET_VM } } } as never)
+    const store = new DesignerStore({ name: 'vm-power', doc, registry: REGISTRY })
+    const first = saveAsProviderAction(store, 'getVm')
+    store.closeProviderSheet()
+    const second = saveAsProviderAction(store, 'getVmAfter')
+    if (!first.ok || !second.ok) throw new Error('not saved')
+    expect(second.draft.id).toBe(first.draft.id)
+    expect(second.action).toBe('vms.get')
+    expect(store.getState().providerDrafts[first.draft.id].actions.map((a) => a.id)).toEqual(['vms.get'])
+    expect(store.getState().doc.workflow?.do?.[2]).toEqual({ getVmAfter: { name: 'Get the VM again', call: 'provider', with: { provider: 'example', action: 'vms.get', input: { vmId: '{{ $input.vmId }}' } } } })
+    // undo gives the HTTP step back and the draft stays; saving it again reuses the action
+    store.closeProviderSheet()
+    store.undo()
+    expect(store.getState().doc.workflow?.do?.[2]).toMatchObject({ getVmAfter: { call: 'http' } })
+    const again = saveAsProviderAction(store, 'getVmAfter')
+    if (!again.ok) throw new Error(again.error)
+    expect(again.action).toBe('vms.get')
+    expect(store.getState().providerDrafts[first.draft.id].actions.map((a) => a.id)).toEqual(['vms.get'])
+  })
+
+  it("gives the draft the step's credential when it signs in with none, and starts a new draft when it signs in with another", () => {
+    const doc = vmPower({ method: 'GET', url: 'https://api.example.com/health' })
+    const steps = doc.workflow?.do ?? []
+    steps.push({ listVms: { name: 'List the VMs', call: 'http', with: { method: 'GET', url: 'https://api.example.com/vms', credential: 'vault:example/other-token' } } } as never)
+    const store = new DesignerStore({ name: 'vm-power', doc, registry: REGISTRY })
+    // the health check signs in with nothing: the draft has no auth
+    const health = saveAsProviderAction(store, 'getVm')
+    if (!health.ok) throw new Error(health.error)
+    expect(store.getState().providerDrafts[health.draft.id].auth).toEqual({ type: 'none', credential: '', header: '' })
+    store.closeProviderSheet()
+    // powerOn signs in with vault:example/api-token: the draft takes it, and keeps both actions
+    const power = saveAsProviderAction(store, 'powerOn')
+    if (!power.ok) throw new Error(power.error)
+    expect(power.draft.id).toBe(health.draft.id)
+    expect(store.getState().providerDrafts[health.draft.id]).toMatchObject({ auth: { type: 'bearer', credential: 'vault:example/api-token' } })
+    expect(store.getState().providerDrafts[health.draft.id].actions.map((a) => a.id)).toEqual(['health.list', 'power.create'])
+    store.closeProviderSheet()
+    // listVms signs in with another credential: never dropped, a new draft of the endpoint, and the notes say so
+    const planned = planProviderAction(store.getState(), 'listVms')
+    expect(planned).toMatchObject({ ok: true, save: { notes: ['The draft example of https://api.example.com signs in with another credential than this step, so the request goes into a new draft, example-api.'] } })
+    const list = saveAsProviderAction(store, 'listVms')
+    if (!list.ok) throw new Error(list.error)
+    expect(list.draft.id).not.toBe(health.draft.id)
+    expect(store.getState().providerDrafts[list.draft.id]).toMatchObject({ name: 'example-api', auth: { type: 'bearer', credential: 'vault:example/other-token' } })
+    expect(store.getState().providerDrafts[health.draft.id].auth.credential).toBe('vault:example/api-token')
+  })
+
+  it("never adds an action to a draft whose file is its own: a new draft has it, in the file it publishes", () => {
+    const store = new DesignerStore({ name: 'vm-power', doc: vmPower(GET_VM), registry: REGISTRY })
+    const first = saveAsProviderAction(store, 'getVm')
+    if (!first.ok) throw new Error(first.error)
+    store.closeProviderSheet()
+    // Try it's "Use this" (or a Devin draft) fixes the draft's file
+    const fixed = { ...store.getState().providerDrafts[first.draft.id] }
+    fixed.draftYaml = draftYaml(fixed)
+    store.upsertProviderDraft(fixed)
+    expect(fixed.draftYaml).toMatch(/id: vms\.get/)
+    // the same request again is the action the file already has: the draft stays as it is
+    const steps = store.getState().doc.workflow?.do ?? []
+    expect(steps).toHaveLength(2)
+    store.undo()
+    const same = planProviderAction(store.getState(), 'getVm')
+    expect(same).toMatchObject({ ok: true, save: { changed: false, action: 'vms.get' } })
+    // another request to the endpoint goes into a new draft, whose file has it
+    const second = saveAsProviderAction(store, 'powerOn')
+    if (!second.ok) throw new Error(second.error)
+    expect(second.draft.id).not.toBe(first.draft.id)
+    expect(second.notes).toEqual([`The draft example of https://api.example.com keeps a file of its own (a try's answer or a draft it took), which a new action would not reach, so the request goes into a new draft, example-api.`])
+    expect(draftYaml(store.getState().providerDrafts[second.draft.id])).toContain('id: power.create')
+    expect(store.getState().providerDrafts[first.draft.id].draftYaml).toBe(fixed.draftYaml)
+    expect(store.getState().providerDrafts[first.draft.id].actions.map((a) => a.id)).toEqual(['vms.get'])
   })
 
   it('says why a step cannot be saved, and changes nothing', () => {

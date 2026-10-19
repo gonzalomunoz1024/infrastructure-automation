@@ -183,8 +183,13 @@ test.describe('authoring providers in the designer', () => {
     await ndv.getByRole('button', { name: 'Test step' }).first().click()
     await expect.poll(() => api.dryRuns.length).toBe(1)
 
-    // Save as provider action: an http provider draft, and the step calls its action
+    // Save as provider action says first what does not come along: X-Trace is no part of an action
     await ndv.getByRole('button', { name: 'Save as provider action' }).click()
+    const confirm = page.getByRole('dialog', { name: 'Save as provider action?' })
+    await expect(confirm.getByTestId('provider-action-notes')).toHaveText('The header X-Trace is not part of a provider action and was left out.')
+    await confirm.getByRole('button', { name: 'Save as provider action' }).click()
+    await expect(confirm).toBeHidden()
+    // an http provider draft, and the step calls its action
     await expect(ndv.getByRole('button', { name: 'Provider', exact: true })).toHaveText('api.example.com')
     await expect(ndv.getByRole('button', { name: 'Action', exact: true })).toHaveText('POST /things?page=2')
     await expect(ndv.getByTestId('provider-tags')).toContainText('draft')
