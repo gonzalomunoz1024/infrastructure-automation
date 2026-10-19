@@ -3,6 +3,8 @@ package com.iaf.platform.audit.adapters.outbound;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -10,6 +12,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
@@ -28,6 +31,7 @@ import com.iaf.platform.common.adapters.mongo.Mongo;
 import com.iaf.platform.common.adapters.mongo.TestMongo;
 import com.iaf.platform.common.domain.Hashes;
 import com.mongodb.MongoException;
+import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.Sorts;
 import com.mongodb.client.model.Updates;
@@ -264,6 +268,37 @@ class MongoEvidenceStoreTest extends EvidenceStoreContract {
         assertThat(store.recordIds(EvidenceFilter.ALL)).containsExactly("job_2", "job_1");
     }
 
+    /**
+     * An append whose entry is in has appended, even when the header update after it fails: it
+     * returns the entry, since a caller that retried a failed append would chain the same event
+     * twice. Reads fold the entry in, and the next append brings the header up to date.
+     */
+    @Test
+    void anAppendWhoseHeaderUpdateFailsStillAppendsItsEntryOnce() {
+        AtomicInteger failures = new AtomicInteger();
+        EvidenceStore store = new MongoEvidenceStore(failingHeaderUpdates(failures));
+        EvidenceEntry first = store.append("job_1", requested(T0, "vm-restart", "ana"));
+        failures.set(1);
+
+        EvidenceEntry second = store.append("job_1", step(T0.plusSeconds(1)));
+
+        assertThat(failures).as("the header update was tried, and failed").hasValue(0);
+        assertThat(second.seq()).isEqualTo(2);
+        assertThat(entries("job_1")).hasSize(2);
+        assertThat(header("job_1").getInteger("count")).as("the header has not counted it").isEqualTo(1);
+        EvidenceRecord read = reopen().record("job_1").orElseThrow();
+        assertThat(read.entries()).extracting(EvidenceEntry::hash).containsExactly(first.hash(), second.hash());
+        assertThat(HashChain.verify(read.entries())).isEqualTo(-1);
+        assertThat(read.latestHash()).isEqualTo(second.hash());
+
+        EvidenceEntry third = store.append("job_1", step(T0.plusSeconds(2)));
+
+        assertThat(third.seq()).isEqualTo(3);
+        assertThat(third.previous()).isEqualTo(second.hash());
+        assertThat(header("job_1").getInteger("count")).as("the next append brought the header up to date").isEqualTo(3);
+        assertThat(HashChain.verify(reopen().record("job_1").orElseThrow().entries())).isEqualTo(-1);
+    }
+
     @Test
     void checkpointsHaveTheirOwnDocumentsKeyedByTheHeadTheySign() {
         EvidenceStore store = newStore();
@@ -279,6 +314,32 @@ class MongoEvidenceStoreTest extends EvidenceStoreContract {
         });
         assertThat(header(EvidenceRecord.PLATFORM)).doesNotContainKey("checkpoints");
         assertThat(header(EvidenceRecord.PLATFORM).get(Mongo.DOC, Document.class)).doesNotContainKey("checkpoints");
+    }
+
+    /** The test's database, where an update of {@code evidence_records} fails while {@code failures} is above zero, each counting it down. */
+    private Mongo failingHeaderUpdates(AtomicInteger failures) {
+        return new Mongo(db.database()) {
+            @Override
+            public MongoCollection<Document> collection(String name) {
+                MongoCollection<Document> real = super.collection(name);
+                return MongoEvidenceStore.RECORDS.equals(name) ? failingUpdates(real, failures) : real;
+            }
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private static MongoCollection<Document> failingUpdates(MongoCollection<Document> real, AtomicInteger failures) {
+        return (MongoCollection<Document>) Proxy.newProxyInstance(MongoCollection.class.getClassLoader(), new Class<?>[] {MongoCollection.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("updateOne") && failures.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                        throw new MongoException("the header update failed");
+                    }
+                    try {
+                        return method.invoke(real, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
     }
 
     private void insertOnly(String jobId, EvidenceEntry chained) {

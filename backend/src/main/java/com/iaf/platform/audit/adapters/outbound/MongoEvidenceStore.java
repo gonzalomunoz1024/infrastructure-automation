@@ -60,7 +60,9 @@ import lombok.extern.slf4j.Slf4j;
  * or a delete of an entry (find and insert only on {@code evidence_entries}); this adapter never
  * asks for one. There are no multi-document transactions either, so an append inserts its entry
  * first and grows the header after, with an update that only moves the header forward; an append
- * cut off in between leaves a header that has not counted every entry. Every read folds the
+ * cut off in between leaves a header that has not counted every entry, and so does a header update
+ * that fails, which does not fail the append (its entry is in, and a retried append would chain the
+ * same event twice). Every read folds the
  * entries the header has not counted ({@link #record}, {@link #records}); the record's next append
  * brings the header forward, and so does the sealing run ({@link #unsealed}), so a record closed
  * by such an entry is still sealed. Appends and seals of one record are serialised in this
@@ -129,7 +131,13 @@ public class MongoEvidenceStore implements EvidenceStore {
                     log.debug("evidence entry {} of {} was written by another writer; chaining after it", chained.seq(), id);
                     continue;
                 }
-                grow(id, head == null ? Head.open(id, chained) : head.then(chained));
+                // the entry is in, so the append has happened: a caller that retried a failure would chain the event twice
+                try {
+                    grow(id, head == null ? Head.open(id, chained) : head.then(chained));
+                } catch (RuntimeException e) {
+                    log.warn("evidence entry {} of {} was appended, but its record's header was not moved forward; "
+                            + "reads fold the entry in and the next append or sealing run moves it", chained.seq(), id, e);
+                }
                 return chained;
             }
         }

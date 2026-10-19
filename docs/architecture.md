@@ -271,8 +271,10 @@ finishes what a stop in between left.
   after it, so the hash chain never forks across instances (a striped lock orders the writers of
   one instance). An append inserts its entry, then grows the header (`evidence_records`: the record
   without its entries, its count, whether it is closed, and its seal) with an update that matches
-  only while the header has counted fewer entries. Reads fold in entries the header has not counted
-  yet, and the sealing run brings a lagging header up to date. The seal is written once, by an
+  only while the header has counted fewer entries. Once its entry is in, an append has happened: a
+  header update that fails is logged and the entry returned, so the audit listener never retries it
+  into a second copy. Reads fold in entries the header has not counted yet, and the next append or
+  the sealing run brings a lagging header up to date. The seal is written once, by an
   update that matches only while the record has none. Checkpoints have a collection of their own so
   the header stays small: the platform stream is checkpointed every hour for years, a document holds
   at most 16 MB, and every append rewrites the header. An append on one instance that races a seal
