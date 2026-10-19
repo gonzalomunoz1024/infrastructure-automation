@@ -249,12 +249,17 @@ export const PlaceholderNode = memo(function PlaceholderNode({ data }: NodeProps
   return (
     <div className="relative" style={{ width: NODE_SIZE, height: NODE_SIZE }}>
       <Handle type="target" position={Position.Left} id="in" className="iaf-handle iaf-handle--hidden" isConnectable={false} />
+      {/*
+        React Flow gives a node that is neither selectable nor draggable pointer-events: none, and
+        this one is neither: without pointer-events-auto a real click fell through to the pane
+        (selection on drag) and missed the button; nopan keeps a press on it from starting a selection.
+      */}
       <button
         type="button"
         disabled={data.readOnly}
         onClick={() => store.openCreator({ kind: 'start', flow: 'main' })}
         aria-label="Add first step"
-        className="nodrag flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-stroke bg-surface/60 text-tertiary transition-colors hover:border-accent hover:text-accent"
+        className="nodrag nopan pointer-events-auto flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-stroke bg-surface/60 text-tertiary transition-colors hover:border-accent hover:text-accent"
       >
         <Icon name="plus" size={30} strokeWidth={1.8} />
       </button>
