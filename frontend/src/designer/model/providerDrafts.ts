@@ -18,6 +18,21 @@ import type { AnsibleImport, ImportedPlaybook, ProviderDetail, ProviderImport, P
 import { initialState, nextKey, parseSchema, providerYaml, stateFromProvider, typeChange, type ActionRow, type WizardState } from '../../components/provider-editor/state'
 import { allStepLocations } from './graph'
 
+/**
+ * A provider draft whose change request a Publish opened, not merged yet: the draft left the
+ * workflow's drafts, but until the change request merges the canvas still reads the provider
+ * (tagged "in review"), and a dry run, Validate and the next Publish take its file along (the next
+ * Publish also requires its change request). Kept in this browser per workflow, next to the drafts.
+ */
+export interface ProviderInReview {
+  /** the provider change request's id */
+  changeRequest: string
+  /** the draft as it was published, under the owner it was published with */
+  draft: ProviderDraft
+  /** the file the change request publishes */
+  yaml: string
+}
+
 /** Where a draft came from: a provider not published yet, or the next patch of a published one. */
 export type ProviderDraftOrigin = 'new' | 'edit'
 
@@ -311,5 +326,46 @@ export function saveProviderDrafts(workflow: string, drafts: Readonly<Record<str
     else localStorage.setItem(key(workflow), JSON.stringify(list))
   } catch {
     /* storage unavailable or full: the drafts live for this session */
+  }
+}
+
+function reviewKey(workflow: string): string {
+  return `iaf-designer-providers-in-review:${workflow}`
+}
+
+/**
+ * The workflow's providers in review kept in this browser, each with its change request and its
+ * draft (read as a stored draft is); the file is written again from the draft, until the change
+ * request gives its own. None when storage is unavailable; one this version cannot read is left out.
+ */
+export function loadProvidersInReview(workflow: string): ProviderInReview[] {
+  let parsed: unknown
+  try {
+    const raw = localStorage.getItem(reviewKey(workflow))
+    if (!raw) return []
+    parsed = JSON.parse(raw)
+  } catch {
+    return []
+  }
+  const out: ProviderInReview[] = []
+  for (const item of Array.isArray(parsed) ? parsed : []) {
+    try {
+      const changeRequest = isObject(item) && typeof item.changeRequest === 'string' ? item.changeRequest : ''
+      const draft = changeRequest ? restored(item.draft) : null
+      if (draft && !out.some((r) => r.changeRequest === changeRequest)) out.push({ changeRequest, draft, yaml: draftFile(draft, null) })
+    } catch {
+      /* not one this version reads */
+    }
+  }
+  return out
+}
+
+/** Keeps the workflow's providers in review in this browser: the change request and the draft, as a draft is stored (no file, no secret). */
+export function saveProvidersInReview(workflow: string, list: readonly ProviderInReview[]): void {
+  try {
+    if (list.length === 0) localStorage.removeItem(reviewKey(workflow))
+    else localStorage.setItem(reviewKey(workflow), JSON.stringify(list.map((r) => ({ changeRequest: r.changeRequest, draft: stored(r.draft) }))))
+  } catch {
+    /* storage unavailable or full: they live for this session */
   }
 }

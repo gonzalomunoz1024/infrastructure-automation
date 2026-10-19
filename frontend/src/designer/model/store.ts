@@ -7,7 +7,7 @@
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import { check, type CheckContext, type JsonObject, type JsonValue, type Problem, type StepBody, type StepDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
-import { api, errorMessage, jobEvents, type Subscription } from '../../lib/api'
+import { api, errorMessage, isApiError, jobEvents, type Subscription } from '../../lib/api'
 import type { DraftSaved, DryRunResult, JobDetail, RegistryCredential, ValidationResult, WorkflowDetail } from '../../lib/types'
 import {
   addForkBranch,
@@ -39,7 +39,7 @@ import { applyFix, clone, fixOf } from './fixes'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, ROW, documentToGraph, findStepNode, graphToDocument, isStepNode, stepIds, stepNodeId, type Graph, type GraphEdge, type GraphNode, type Position } from './graph'
 import { autoLayout, positionAfter } from './layout'
 import { contextOf, EMPTY_REGISTRY, loadRegistry, rememberCredential, withCredential, withUnpublished, type Registry } from './registry'
-import { draftFile, draftPlaybooks, draftProvider, draftsUsedBy, findProviderDraft, loadProviderDrafts, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
+import { draftFile, draftPlaybooks, draftProvider, draftsUsedBy, findProviderDraft, loadProviderDrafts, loadProvidersInReview, saveProviderDrafts, saveProvidersInReview, withDefaultOwner, type ProviderDraft, type ProviderInReview } from './providerDrafts'
 import { loadStickies, saveStickies, type Sticky } from './stickies'
 import { withoutEmptyKeys } from './nulls'
 import type { StepOutputs } from './expressions'
@@ -105,20 +105,7 @@ export interface ProviderSheetStep {
   params: NewStepParams
 }
 
-/**
- * A provider draft this session's Publish opened a change request for, not merged yet: the draft
- * is gone, but until the change request merges the canvas still reads the provider (tagged "in
- * review"), and a dry run, Validate and the next Publish take its file along (the next Publish
- * also requires its change request).
- */
-export interface ProviderInReview {
-  /** the provider change request's id */
-  changeRequest: string
-  /** the draft as it was published, under the owner it was published with */
-  draft: ProviderDraft
-  /** the file the change request publishes */
-  yaml: string
-}
+export type { ProviderInReview } from './providerDrafts'
 
 export interface DesignerState {
   name: string | null
@@ -145,7 +132,7 @@ export interface DesignerState {
   providerDrafts: Record<string, ProviderDraft>
   /** the Provider sheet, when open */
   providerSheet: ProviderSheetState | null
-  /** the drafts published from this session whose change requests are not merged yet; this session only */
+  /** the drafts a Publish opened change requests for, not merged yet; kept in this browser per workflow */
   providersInReview: ProviderInReview[]
   saving: boolean
   /** bumps on every document change */
@@ -272,6 +259,8 @@ export class DesignerStore {
   private loaded: Registry | null
   /** the provider change requests whose merge reloaded the registry */
   private readonly mergedChanges = new Set<string>()
+  /** the first load of the registry, while it runs: a reload on a merge waits for it, so the older answer cannot land last */
+  private registryLoad: Promise<void> | null = null
   private outputsCache: { version: number; testRun: TestRun | null; pins: Record<string, JsonValue>; execution: ExecutionView | null; value: StepOutputs } | null = null
 
   constructor(init: DesignerStoreInit) {
@@ -280,7 +269,8 @@ export class DesignerStore {
     const registry = init.registry === undefined ? null : init.registry
     this.loaded = registry
     const providerDrafts = init.name ? loadProviderDrafts(init.name) : {}
-    const merged = this.registryFor(doc, providerDrafts, [])
+    const providersInReview = init.name ? loadProvidersInReview(init.name) : []
+    const merged = this.registryFor(doc, providerDrafts, providersInReview)
     this.state = {
       name: init.name,
       isNew: init.isNew ?? false,
@@ -303,7 +293,7 @@ export class DesignerStore {
       stickies: init.name ? loadStickies(init.name) : [],
       providerDrafts,
       providerSheet: null,
-      providersInReview: [],
+      providersInReview,
       saving: false,
       version: 0,
       ndvTab: 'parameters',
@@ -313,7 +303,7 @@ export class DesignerStore {
     }
     this.runChecks()
     if (init.registry === undefined) {
-      void loadRegistry()
+      this.registryLoad = loadRegistry()
         .then((r) => {
           this.loaded = r
           this.setRegistry({ registryLoading: false })
@@ -323,6 +313,8 @@ export class DesignerStore {
           this.setRegistry({ registryLoading: false })
         })
     }
+    // a change request may have merged or closed since: the canvas follows
+    if (providersInReview.length > 0) void this.refreshProvidersInReview()
   }
 
   // ------------------------------------------------------------------ plumbing
@@ -912,7 +904,7 @@ export class DesignerStore {
 
   /**
    * A draft whose publish opened `changeRequest`: the draft is dropped (as `removeProviderDraft`),
-   * and the provider stays in review for this session until that change request merges.
+   * and the provider stays in review, kept in this browser, until that change request merges.
    */
   providerDraftPublished(id: string, changeRequest: string): void {
     const draft = this.state.providerDrafts[id]
@@ -923,17 +915,19 @@ export class DesignerStore {
     const providersInReview = [...this.state.providersInReview.filter((r) => r.draft.name !== draft.name), { changeRequest, draft: published, yaml: draftFile(published, null) }]
     this.setRegistry({ providerDrafts, providersInReview, ...(this.state.providerSheet?.draft === id ? { providerSheet: null } : {}) })
     this.persistProviderDrafts()
+    this.persistProvidersInReview()
   }
 
   /**
    * A provider change request merged (the provider is published): the registry is loaded again so
-   * the canvas reads the published provider, and what this session kept in review for it goes.
-   * Once per change request.
+   * the canvas reads the published provider, and what was kept in review for it goes. Once per
+   * change request.
    */
   async providerChangeMerged(changeRequest: string): Promise<void> {
     if (this.mergedChanges.has(changeRequest)) return
     this.mergedChanges.add(changeRequest)
     try {
+      await this.registryLoad
       this.loaded = await loadRegistry(true)
     } catch {
       /* the registry as it was: what is in review stays the canvas's view of the provider, until asked again */
@@ -941,6 +935,29 @@ export class DesignerStore {
       return
     }
     this.setRegistry({ providersInReview: this.state.providersInReview.filter((r) => r.changeRequest !== changeRequest) })
+    this.persistProvidersInReview()
+  }
+
+  /**
+   * How each provider in review stands now (GET /change-requests/{id}), for a workflow opened
+   * again or a Publish about to require them: merged, the provider is published
+   * (`providerChangeMerged`); closed, or no longer there, its draft is the workflow's again
+   * (`providerChangeClosed`); open, it stays, with the file its change request publishes. One that
+   * does not answer stays as it was.
+   */
+  async refreshProvidersInReview(): Promise<void> {
+    await Promise.all(
+      this.state.providersInReview.map(async ({ changeRequest }) => {
+        try {
+          const cr = await api.changeRequest(changeRequest)
+          if (cr.status === 'merged') await this.providerChangeMerged(changeRequest)
+          else if (cr.status === 'closed') this.providerChangeClosed(changeRequest)
+          else if (cr.yaml?.trim()) this.set({ providersInReview: this.state.providersInReview.map((r) => (r.changeRequest === changeRequest ? { ...r, yaml: cr.yaml } : r)) })
+        } catch (e) {
+          if (isApiError(e) && e.status === 404) this.providerChangeClosed(changeRequest)
+        }
+      }),
+    )
   }
 
   /**
@@ -956,6 +973,7 @@ export class DesignerStore {
     const providerDrafts = findProviderDraft(this.state.providerDrafts, entry.draft.name) ? this.state.providerDrafts : { ...this.state.providerDrafts, [entry.draft.id]: entry.draft }
     this.setRegistry({ providerDrafts, providersInReview })
     this.persistProviderDrafts()
+    this.persistProvidersInReview()
     return true
   }
 
@@ -1012,6 +1030,10 @@ export class DesignerStore {
     if (this.state.name) saveProviderDrafts(this.state.name, this.state.providerDrafts)
   }
 
+  private persistProvidersInReview(): void {
+    if (this.state.name) saveProvidersInReview(this.state.name, this.state.providersInReview)
+  }
+
   // ------------------------------------------------------------------ save, test, publish
 
   async save(): Promise<DraftSaved> {
@@ -1025,6 +1047,7 @@ export class DesignerStore {
         this.set({ isNew: false, name: newName, dirty: false, problems: this.checkNow() })
         if (this.state.stickies.length > 0) saveStickies(newName, this.state.stickies)
         if (Object.keys(this.state.providerDrafts).length > 0) saveProviderDrafts(newName, this.state.providerDrafts)
+        if (this.state.providersInReview.length > 0) saveProvidersInReview(newName, this.state.providersInReview)
         return { name: newName, version: doc.metadata?.version ?? '0.1.0', problems: this.state.problems }
       }
       const saved = await api.saveDraft(name, { definition: doc })

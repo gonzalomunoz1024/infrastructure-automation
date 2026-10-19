@@ -4,8 +4,8 @@ import { DesignerStore, isAutoLayout } from './store'
 import { API_TRIGGER_ID, findStepNode, stepIds } from './graph'
 import { sampleDocuments } from './graph.test'
 import { EMPTY_REGISTRY, loadRegistry, setRegistryForTests } from './registry'
-import { api } from '../../lib/api'
-import type { RegistryProvider } from '../../lib/types'
+import { api, ApiError } from '../../lib/api'
+import type { ChangeRequestDetail, RegistryProvider } from '../../lib/types'
 import { blankAction } from '../../components/provider-editor/state'
 import { buildCatalog } from '../creator/catalog'
 import { unpublishedTag } from '../canvas/flow'
@@ -502,5 +502,100 @@ describe('provider drafts on the canvas', () => {
     expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBeUndefined()
     expect(s.providerFiles()).toEqual([])
     expect(codes(s)).not.toContain('step.unknownProvider')
+  })
+})
+
+/*
+ * Providers in review outlive the session: kept in this browser per workflow, and checked against
+ * their change requests when the workflow opens again.
+ */
+describe('providers in review across sessions', () => {
+  const VSPHERE: RegistryProvider = { name: 'vsphere', title: 'vSphere', type: 'openapi', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }] }
+  const doc = (): WorkflowDocument => ({
+    ...minimal([{ snap: { name: 'Snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: { vm: 'vm-1' } } } }]),
+    metadata: { name: 'vm-backup', noun: 'vm', verb: 'backup', owner: 'team-compute', version: '1.0.0' },
+  })
+  const open = () => new DesignerStore({ name: 'vm-backup', doc: doc(), registry: { ...EMPTY_REGISTRY, providers: [VSPHERE] } })
+  const codes = (s: DesignerStore) => s.checkNow().map((p) => p.code)
+  const changeRequest = (status: ChangeRequestDetail['status'], yaml = ''): ChangeRequestDetail => ({ id: 'cr_8', kind: 'provider', name: 'backup', version: '1.0.0', branch: 'provider/backup-1.0.0', title: 'Publish backup 1.0.0', author: 'gonzalo', status, strategy: 'canary', createdAt: '2026-10-18T10:00:00Z', checks: [], diff: '', yaml })
+  /** A session that published the draft (cr_8 is open), then left. */
+  const published = () => {
+    const s = open()
+    const d = newProviderDraft('http', { title: 'Backup API', name: 'backup', actions: [blankAction({ id: 'snapshot.create', title: 'Create snapshot', method: 'POST', path: '/snapshots', effect: 'create', retry: 'unsafe' })] })
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    return d
+  }
+
+  beforeEach(() => {
+    const data = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    setRegistryForTests(null)
+  })
+
+  it('keep the provider in review when the workflow opens again, with the file its change request publishes', async () => {
+    const d = published()
+    const ask = vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('open', 'kind: Provider\nmetadata:\n  name: backup\n'))
+    const s = open()
+    let st = s.getState()
+    expect(st.providerDrafts).toEqual({})
+    expect(st.providersInReview.map((r) => [r.changeRequest, r.draft.id])).toEqual([['cr_8', d.id]])
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('in review')
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    // the next Publish requires its change request; a dry run takes its file
+    expect(s.usedProvidersInReview().map((r) => r.changeRequest)).toEqual(['cr_8'])
+    expect(s.providerFiles()[0]).toContain('name: backup')
+    await vi.waitFor(() => expect(s.providerFiles()).toEqual(['kind: Provider\nmetadata:\n  name: backup\n']))
+    expect(ask).toHaveBeenCalledWith('cr_8')
+    st = s.getState()
+    expect(st.providersInReview).toHaveLength(1)
+  })
+
+  it('turn the provider back into a draft when its change request was closed meanwhile, or is gone', async () => {
+    const d = published()
+    vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('closed'))
+    const s = open()
+    await vi.waitFor(() => expect(s.getState().providersInReview).toEqual([]))
+    expect(Object.keys(s.getState().providerDrafts)).toEqual([d.id])
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('draft')
+    expect(localStorage.getItem('iaf-designer-providers-in-review:vm-backup')).toBeNull()
+    // and when the workflow opens again it is a draft
+    expect(Object.keys(open().getState().providerDrafts)).toEqual([d.id])
+
+    localStorage.removeItem('iaf-designer-provider-drafts:vm-backup')
+    published()
+    vi.spyOn(api, 'changeRequest').mockRejectedValue(new ApiError(404, { error: 'No change request cr_8' }))
+    const gone = open()
+    await vi.waitFor(() => expect(gone.getState().providersInReview).toEqual([]))
+    expect(Object.values(gone.getState().providerDrafts).map((x) => x.name)).toEqual(['backup'])
+  })
+
+  it('keep it in review when the change request does not answer', async () => {
+    published()
+    const ask = vi.spyOn(api, 'changeRequest').mockRejectedValue(new ApiError(0, null))
+    const s = open()
+    await vi.waitFor(() => expect(ask).toHaveBeenCalled())
+    await s.refreshProvidersInReview()
+    expect(s.getState().providersInReview.map((r) => r.changeRequest)).toEqual(['cr_8'])
+    expect(s.getState().providerDrafts).toEqual({})
+  })
+
+  it('read the published provider when its change request merged meanwhile', async () => {
+    published()
+    vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('merged'))
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/registry/providers') ? [VSPHERE, { name: 'backup', title: 'Backup API', type: 'http', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe' }] }] : []))
+    const s = open()
+    await vi.waitFor(() => expect(s.getState().providersInReview).toEqual([]))
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')).toMatchObject({ title: 'Backup API' })
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBeUndefined()
+    expect(s.getState().providerDrafts).toEqual({})
+    expect(s.providerFiles()).toEqual([])
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    expect(localStorage.getItem('iaf-designer-providers-in-review:vm-backup')).toBeNull()
   })
 })

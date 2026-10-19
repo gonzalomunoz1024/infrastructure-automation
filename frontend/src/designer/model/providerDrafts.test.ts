@@ -3,7 +3,7 @@ import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { blankAction, buildProviderDocument } from '../../components/provider-editor/state'
 import { emitYaml } from '../../components/yaml-emit'
 import type { ProviderDetail, TryResult } from '../../lib/types'
-import { draftFile, draftFromProvider, draftPlaybooks, draftProvider, draftsUsedBy, draftYaml, findProviderDraft, loadProviderDrafts, newProviderDraft, saveProviderDrafts, withDefaultOwner, type ProviderDraft } from './providerDrafts'
+import { draftFile, draftFromProvider, draftPlaybooks, draftProvider, draftsUsedBy, draftYaml, findProviderDraft, loadProviderDrafts, loadProvidersInReview, newProviderDraft, saveProviderDrafts, saveProvidersInReview, withDefaultOwner, type ProviderDraft } from './providerDrafts'
 
 /** A localStorage of this test's own: vitest runs these in node, which has none. */
 function memoryStorage(): Storage & { data: Map<string, string> } {
@@ -179,6 +179,50 @@ describe('the drafts a workflow keeps in this browser', () => {
     const d = newProviderDraft('http', { name: 'backup' })
     expect(() => saveProviderDrafts('vm-restart', { [d.id]: d })).not.toThrow()
     expect(loadProviderDrafts('vm-restart')).toEqual({})
+  })
+})
+
+describe('the providers in review a workflow keeps in this browser', () => {
+  const REVIEW_KEY = 'iaf-designer-providers-in-review:vm-restart'
+
+  it('keep each change request with its draft, as a draft is stored, and write its file again from the draft', () => {
+    const d = newProviderDraft('http', { name: 'backup', owner: 'team-compute', auth: { type: 'bearer', credential: 'example-token', header: '' }, environments: [{ key: 1, name: 'dev', url: 'https://user:example-password@backup-dev.example.com' }] })
+    saveProvidersInReview('vm-restart', [{ changeRequest: 'cr_8', draft: d, yaml: draftFile(d, null) }])
+    const raw = storage.getItem(REVIEW_KEY) ?? ''
+    expect(raw).not.toContain('example-token')
+    expect(raw).not.toContain('example-password')
+    // no file is stored: it is the draft's, or the change request's once it answers
+    expect(JSON.parse(raw)).toEqual([{ changeRequest: 'cr_8', draft: expect.objectContaining({ id: d.id, name: 'backup' }) }])
+    const [back] = loadProvidersInReview('vm-restart')
+    expect(back.changeRequest).toBe('cr_8')
+    expect(back.draft).toMatchObject({ id: d.id, name: 'backup', owner: 'team-compute', auth: { credential: '' } })
+    expect(back.yaml).toBe(draftFile(back.draft, null))
+    expect(back.yaml).toContain('name: backup')
+    expect(loadProviderDrafts('vm-restart')).toEqual({})
+    expect(loadProvidersInReview('vm-create')).toEqual([])
+    saveProvidersInReview('vm-restart', [])
+    expect(storage.getItem(REVIEW_KEY)).toBeNull()
+  })
+
+  it('leave out what they cannot read, and live for the session when storage is unavailable', () => {
+    const d = newProviderDraft('http', { name: 'backup' })
+    storage.setItem(REVIEW_KEY, JSON.stringify([{ changeRequest: 'cr_8', draft: d }, { changeRequest: 'cr_8', draft: d }, { changeRequest: '', draft: d }, { changeRequest: 'cr_9', draft: { id: 'x' } }, { draft: d }, 'cr_10', null]))
+    expect(loadProvidersInReview('vm-restart').map((r) => r.changeRequest)).toEqual(['cr_8'])
+    storage.setItem(REVIEW_KEY, '{not json')
+    expect(loadProvidersInReview('vm-restart')).toEqual([])
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('denied')
+      },
+      setItem: () => {
+        throw new Error('quota')
+      },
+      removeItem: () => {
+        throw new Error('denied')
+      },
+    })
+    expect(() => saveProvidersInReview('vm-restart', [{ changeRequest: 'cr_8', draft: d, yaml: '' }])).not.toThrow()
+    expect(loadProvidersInReview('vm-restart')).toEqual([])
   })
 })
 
