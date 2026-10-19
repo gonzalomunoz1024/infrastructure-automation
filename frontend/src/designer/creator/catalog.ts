@@ -6,7 +6,8 @@
  * The workflow's provider drafts (designer/model/providerDrafts.ts) are listed with the published
  * providers, tagged "draft", and the Providers view has "Connect a new system": each entry opens
  * the Provider sheet, whose chosen action then lands where the "+" was, the way n8n adds a node
- * after "Create new credential".
+ * after "Create new credential". "HTTP request (cURL)" adds an HTTP step there instead, open on its
+ * Import cURL dialog, and the step's Save as provider action takes it on to the sheet.
  */
 import { fuzzyMatch, type Tone } from '@iaf/ui'
 import { STEP_TYPES, type JsonObject, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
@@ -18,8 +19,11 @@ import type { Registry } from '../model/registry'
 import type { ProviderSheetEntry } from '../model/store'
 import { providerGlyph, triggerGlyph, typeGlyph, type Glyph } from '../canvas/glyphs'
 
-/** What choosing a leaf does: add a step, add a trigger, or open the Provider sheet from one of its entries. */
-export type CreatorAction = { kind: 'step'; type: StepType; params?: NewStepParams } | { kind: 'trigger'; trigger: TriggerKind } | { kind: 'provider-sheet'; entry: ProviderSheetEntry }
+/**
+ * What choosing a leaf does: add a step (an HTTP step from a pasted cURL command opens on its
+ * Import cURL dialog), add a trigger, or open the Provider sheet from one of its entries.
+ */
+export type CreatorAction = { kind: 'step'; type: StepType; params?: NewStepParams; importCurl?: boolean } | { kind: 'trigger'; trigger: TriggerKind } | { kind: 'provider-sheet'; entry: ProviderSheetEntry }
 
 export interface CreatorTag {
   label: string
@@ -142,10 +146,14 @@ function draftPlaybooks(drafts: DraftsInput | undefined, registered: readonly Re
    Connect a new system
    ------------------------------------------------------------------------- */
 
-/** The entries of "Connect a new system": each opens the Provider sheet on a new provider of its kind. */
+/**
+ * The entries of "Connect a new system": each opens the Provider sheet on a new provider of its
+ * kind, but cURL, whose command is pasted into a new HTTP step (its Import cURL), which Save as
+ * provider action then makes an action of an http provider draft.
+ */
 export const CONNECT_ENTRIES: readonly { entry: ProviderSheetEntry; title: string; description: string; glyph: Glyph; keywords: string }[] = [
   { entry: 'openapi', title: 'API from an OpenAPI spec', description: 'Import a spec; its operations become actions', glyph: providerGlyph('openapi'), keywords: 'openapi swagger spec rest api import url paste upload git' },
-  { entry: 'curl', title: 'HTTP request (cURL)', description: 'Paste a cURL command; the request becomes an action', glyph: providerGlyph('http'), keywords: 'curl http request rest endpoint paste' },
+  { entry: 'curl', title: 'HTTP request (cURL)', description: 'An HTTP step from a pasted cURL command, then saved as a provider action', glyph: providerGlyph('http'), keywords: 'curl http request rest endpoint paste import' },
   { entry: 'ansible', title: 'Ansible repository', description: 'Playbooks from a Git repository, pinned to a commit', glyph: providerGlyph('ansible'), keywords: 'ansible playbooks git repository' },
   { entry: 'terraform', title: 'Terraform module', description: 'A module with plan, apply and destroy', glyph: providerGlyph('terraform'), keywords: 'terraform module plan apply destroy' },
   { entry: 'idp', title: 'IDP tile', description: 'A developer-portal tile, requested on the user’s behalf', glyph: providerGlyph('idp'), keywords: 'idp tile developer portal' },
@@ -200,7 +208,8 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, e
     keywords: `run workflow child ${w.name}`,
     action: { kind: 'step', type: 'run', params: { workflow: w.name, version: `^${w.version.split('.')[0] || '1'}`, name: `Run ${w.title}` } },
   }))
-  const connectItems: CreatorItem[] = CONNECT_ENTRIES.map((c) => ({ id: `connect:${c.entry}`, title: c.title, description: c.description, glyph: c.glyph, keywords: `connect new system add provider ${c.keywords}`, action: { kind: 'provider-sheet', entry: c.entry } }))
+  const connectAction = (entry: ProviderSheetEntry): CreatorAction => (entry === 'curl' ? { kind: 'step', type: 'http', importCurl: true } : { kind: 'provider-sheet', entry })
+  const connectItems: CreatorItem[] = CONNECT_ENTRIES.map((c) => ({ id: `connect:${c.entry}`, title: c.title, description: c.description, glyph: c.glyph, keywords: `connect new system add provider ${c.keywords}`, action: connectAction(c.entry) }))
   add({
     id: 'providers',
     title: 'Providers',

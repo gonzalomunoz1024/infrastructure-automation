@@ -12,7 +12,7 @@ import { DesignerContext, DesignerStore } from '../model/store'
 import { parseCurl } from './curl'
 import { checkAccessOn, checkAccessValue, writeField } from './fields'
 import { actionIdFor, httpActionPlan, lastOutputOf, planProviderAction, providerNameFor, saveAsProviderAction } from './httpProvider'
-import { credentialFieldOptions, credentialOptions, curlCredentialNote, editProviderOptions, gitResolveQuery, importCurl, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, providerFieldOptions, startProviderActionSave, StepParameters } from './StepParameters'
+import { credentialFieldOptions, credentialOptions, curlCredentialNote, editProviderOptions, gitResolveQuery, importCurl, importCurlOnOpen, NEW_CREDENTIAL, NEW_PROVIDER, newProviderOptions, opensOnImportCurl, providerFieldOptions, startProviderActionSave, StepParameters } from './StepParameters'
 import { hostsValue, withGroupKey } from './inventory'
 
 /*
@@ -385,6 +385,16 @@ describe("the HTTP step's Import cURL", () => {
       </DesignerContext.Provider>,
     )
     expect(readOnly).not.toContain('Import cURL')
+  })
+
+  it("opens on the Import cURL dialog once, for the step the node creator's cURL entry added", () => {
+    const store = new DesignerStore({ name: 'things-sync', doc: fetchThings(), registry: REGISTRY })
+    expect(renderStep(store, 'fetch')).not.toContain('Import cURL command')
+    importCurlOnOpen('fetch')
+    expect(opensOnImportCurl('fetch')).toBe(true)
+    const html = renderStep(store, 'fetch')
+    expect(html).toContain('Import cURL command')
+    expect(html).toContain('aria-label="cURL command"')
   })
 
   it('fills the step in one undo step, keeps its credential, and the dropped secret is nowhere', () => {

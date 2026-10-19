@@ -131,12 +131,18 @@ describe('connecting a new system from the node creator', () => {
   const drafts = { [backup.id]: backup, [vsphereNext.id]: vsphereNext, [unnamed.id]: unnamed, [tfDraft.id]: tfDraft, [playbooks.id]: playbooks }
   const catalog = buildCatalog(registry, { metadata: { name: 'vm-restart' } }, { drafts, health: { vsphere: 'degraded', portal: 'healthy' } })
 
-  it('has the seven ways to connect a new system in the Providers view, each opening the Provider sheet', () => {
+  it('has the seven ways to connect a new system in the Providers view, each opening the Provider sheet but cURL, which is pasted into a new HTTP step', () => {
     const providers = catalog.get('providers')
     expect(providers?.sections.map((s) => s.title)).toEqual([undefined, 'Connect a new system', 'Run workflow'])
     const connect = providers?.sections[1].items ?? []
     expect(connect.map((i) => i.title)).toEqual(['API from an OpenAPI spec', 'HTTP request (cURL)', 'Ansible repository', 'Terraform module', 'IDP tile', 'SDK worker', 'Describe it (Ask Devin)'])
-    expect(connect.map((i) => i.action)).toEqual(['openapi', 'curl', 'ansible', 'terraform', 'idp', 'sdk', 'describe'].map((entry) => ({ kind: 'provider-sheet', entry })))
+    expect(connect.map((i) => i.action)).toEqual([
+      { kind: 'provider-sheet', entry: 'openapi' },
+      { kind: 'step', type: 'http', importCurl: true },
+      ...['ansible', 'terraform', 'idp', 'sdk', 'describe'].map((entry) => ({ kind: 'provider-sheet', entry })),
+    ])
+    // it says what it does: a step whose cURL is pasted, then saved as an action
+    expect(connect[1].description).toBe('An HTTP step from a pasted cURL command, then saved as a provider action')
     expect(CONNECT_ENTRIES).toHaveLength(7)
     // also with no provider registered at all
     const empty = buildCatalog(null, { metadata: { name: 'x' } })
@@ -145,7 +151,7 @@ describe('connecting a new system from the node creator', () => {
   })
 
   it('finds the entries by search, so "curl" or "swagger" gets there from anywhere', () => {
-    expect(searchCatalog(catalog, 'curl')[0].items[0]).toMatchObject({ title: 'HTTP request (cURL)', action: { kind: 'provider-sheet', entry: 'curl' } })
+    expect(searchCatalog(catalog, 'curl')[0].items[0]).toMatchObject({ title: 'HTTP request (cURL)', action: { kind: 'step', type: 'http', importCurl: true } })
     expect(searchCatalog(catalog, 'swagger').flatMap((s) => s.items.map((i) => i.id))).toContain('connect:openapi')
     expect(searchCatalog(catalog, 'devin').flatMap((s) => s.items.map((i) => i.id))).toContain('connect:describe')
     expect(new Set(leavesOf(catalog).map((l) => l.item.id)).size).toBe(leavesOf(catalog).length)

@@ -5,8 +5,9 @@ import { mockDesignerApi, type MockApi } from './designer-fixtures'
  * Authoring providers from the designer, against the mocked backend of the designer spec plus
  * this spec's own routes: the node creator's "Connect a new system", each provider's health band
  * and the workflow's drafts; the provider field's New provider… and Edit provider; and an HTTP
- * step that imports a cURL command (without what signed in) and is saved as a provider action.
- * The Provider sheet itself is another package's: these tests stop where it opens.
+ * step, added from the creator's cURL entry, that imports a cURL command (without what signed in)
+ * and is saved as a provider action after saying what does not come along. The Provider sheet
+ * itself is another package's: these tests stop where it opens.
  */
 
 const DRAFTS_KEY = 'iaf-designer-provider-drafts:vm-restart'
@@ -102,11 +103,16 @@ test.describe('authoring providers in the designer', () => {
     const connect = creator.getByRole('group', { name: 'Connect a new system' }).getByRole('option')
     await expect(connect).toHaveText([/API from an OpenAPI spec/, /HTTP request \(cURL\)/, /Ansible repository/, /Terraform module/, /IDP tile/, /SDK worker/, /Describe it \(Ask Devin\)/])
     // search finds them from the top as well
-    await creator.getByRole('combobox', { name: 'Search steps' }).fill('curl')
+    const search = creator.getByRole('combobox', { name: 'Search steps' })
+    await search.fill('curl')
     await expect(creator.getByRole('option').first()).toContainText('HTTP request (cURL)')
-    // choosing one hands over to the Provider sheet: the creator closes
+    await expect(creator.getByRole('option').first()).toContainText('An HTTP step from a pasted cURL command')
+    await search.fill('API from an OpenAPI spec')
+    await expect(creator.getByRole('option').first()).toContainText('API from an OpenAPI spec')
+    // choosing one hands over to the Provider sheet: the creator closes, and no step is added or opened yet
     await page.keyboard.press('Enter')
     await expect(creator).toBeHidden()
+    await expect(page.getByTestId('ndv')).toBeHidden()
   })
 
   test('the provider field lists the drafts, ends with New provider… and has an Edit provider pencil', async ({ page }) => {
@@ -126,20 +132,20 @@ test.describe('authoring providers in the designer', () => {
     await expect(ndv.getByRole('button', { name: 'Action', exact: true })).toHaveText('Get VM')
   })
 
-  test('an HTTP step imports a cURL command without what signed in, and is saved as a provider action', async ({ page }) => {
+  test("the creator's cURL entry adds an HTTP step that imports a command without what signed in, and saves it as a provider action", async ({ page }) => {
     const api = await open(page)
     await node(page, 'step:notifyDone').click()
     await page.keyboard.press('Tab')
     const creator = page.getByTestId('node-creator')
-    await page.keyboard.type('HTTP request')
-    await expect(creator.getByRole('option').first()).toContainText('HTTP request')
+    await page.keyboard.type('curl')
+    await expect(creator.getByRole('option').first()).toContainText('HTTP request (cURL)')
     await page.keyboard.press('Enter')
     const ndv = page.getByTestId('ndv')
     await expect(ndv.getByRole('textbox', { name: 'Step name' })).toHaveValue('HTTP request')
 
-    // Import cURL, as n8n's HTTP Request node has it; the secrets are obviously fake
-    await ndv.getByRole('button', { name: 'Import cURL' }).click()
+    // the new step opens on Import cURL, as n8n's HTTP Request node has it; the secrets are obviously fake
     const dialog = page.getByRole('dialog', { name: 'Import cURL command' })
+    await expect(dialog).toBeVisible()
     await dialog.getByRole('textbox', { name: 'cURL command' }).fill(
       [
         "curl -X POST 'https://api.example.com/things?page=2&api_key=example-key' \\",

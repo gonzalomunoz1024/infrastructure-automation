@@ -9,7 +9,7 @@
  * can Import cURL (curl.ts) and be saved as a provider action (httpProvider.ts), which first lists
  * what of the request does not come along and asks.
  */
-import { createContext, useContext, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { Button, ConfirmDialog, cx, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Tag, Textarea, useOverlayClose, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { AddCredentialModal } from '../../components/CredentialPicker'
@@ -340,6 +340,19 @@ export function importCurl(update: StepEdit['update'], request: CurlRequest): vo
   })
 }
 
+/** The HTTP steps whose parameters open on the Import cURL dialog, once: the node creator's "HTTP request (cURL)". */
+const importOnOpen = new Set<string>()
+
+/** Opens the Import cURL dialog when the step's parameters show next (the step the node creator just added). */
+export function importCurlOnOpen(stepId: string): void {
+  importOnOpen.add(stepId)
+}
+
+/** Whether the step's parameters open on the Import cURL dialog. */
+export function opensOnImportCurl(stepId: string): boolean {
+  return importOnOpen.has(stepId)
+}
+
 /**
  * Save as provider action, as the HTTP step's button runs it: what does not come along (a header,
  * a GET's body, an endpoint that is not https, a draft that cannot take the request) is listed
@@ -356,10 +369,14 @@ export function startProviderActionSave(store: DesignerStore, stepId: string): {
 function HttpParams() {
   const store = useDesignerStore()
   const { stepId, body, get, update, readOnly } = useStepEdit()
-  const [importing, setImporting] = useState(false)
+  const [importing, setImporting] = useState(() => !readOnly && opensOnImportCurl(stepId))
   const [imported, setImported] = useState<CurlImported | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [leftOut, setLeftOut] = useState<string[] | null>(null)
+  // asked once: the dialog does not come back the next time the step is opened
+  useEffect(() => {
+    importOnOpen.delete(stepId)
+  }, [stepId])
   const credential = asString(get('credential'))
   const askCredential = imported !== null && imported.dropped.length > 0 && credential === imported.credential
   const plan = httpActionPlan(asObject(body.with as JsonValue | undefined))
