@@ -9,6 +9,13 @@ import type { WorkflowMetadata } from '@iaf/workflow-checks'
 import { DeprecatedTag } from '../../components/Deprecation'
 import { useDesigner, useDesignerStore, type DesignerTab } from '../model/store'
 
+/**
+ * The right-hand buttons' tooltips end at their button's right edge instead of centring under it:
+ * centred, Publish's hung past the window, and that hidden overflow made the full-bleed designer
+ * wider than its box, so a scrollIntoView inside it slid the whole designer sideways.
+ */
+const TIP_END = '[&>[role=tooltip]]:left-auto [&>[role=tooltip]]:right-0 [&>[role=tooltip]]:translate-x-0'
+
 function EditableTitle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [editing, setEditing] = useState(false)
   // the draft exists only while editing; it starts from the title when editing begins
@@ -87,8 +94,9 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
     { id: 'settings', label: 'Settings' },
   ]
   return (
-    <header className="@container relative z-20 flex h-14 shrink-0 items-center gap-3 border-b border-stroke-light bg-surface px-3">
-      <div className="flex min-w-0 flex-1 items-center gap-2">
+    // one row of h-14 while it fits; in a narrower designer the tabs and then the buttons wrap to rows of their own instead of overflowing
+    <header className="@container relative z-20 flex min-h-14 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-stroke-light bg-surface px-3 py-2">
+      <div className="flex min-w-28 flex-1 items-center gap-2">
         <IconButton label="Back to workflows" size="sm" onClick={onBack}>
           <Icon name="arrow-left" size={16} />
         </IconButton>
@@ -123,9 +131,9 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
 
       <Tabs<DesignerTab> tabs={tabs} value={s.tab} onChange={(t) => store.setTab(t)} ariaLabel="Designer views" className="shrink-0 flex-nowrap" />
 
-      {/* never narrower than its buttons: when space runs out the title truncates, not this */}
-      <div className="flex min-w-max flex-1 items-center justify-end gap-1.5">
-        <Tooltip label={s.problems.length === 0 ? 'No problems found' : `${errors} errors, ${warnings} warnings`} side="bottom">
+      {/* as wide as its buttons: when space runs out the title truncates, then this takes a row of its own (wrapping only when even that is too narrow) */}
+      <div className="flex max-w-full flex-[1_0_auto] flex-wrap items-center justify-end gap-1.5">
+        <Tooltip label={s.problems.length === 0 ? 'No problems found' : `${errors} errors, ${warnings} warnings`} side="bottom" className={TIP_END}>
           <button
             type="button"
             onClick={onIssues}
@@ -141,28 +149,28 @@ export function TopBar({ onBack, onIssues, onYaml, onAssistant, onSave, onPublis
             <Badge count={s.problems.length} tone={errors > 0 ? 'critical' : 'neutral'} showZero />
           </button>
         </Tooltip>
-        <Tooltip label="Run every check on the backend, including what publishing would refuse" side="bottom">
+        <Tooltip label="Run every check on the backend, including what publishing would refuse" side="bottom" className={TIP_END}>
           <Button variant="ghost" size="sm" icon="shield" onClick={onValidate} loading={validating} aria-label="Validate" data-testid="validate-button">
             <span className="hidden @6xl:inline">Validate</span>
           </Button>
         </Tooltip>
-        <Tooltip label="The workflow as YAML" side="bottom">
+        <Tooltip label="The workflow as YAML" side="bottom" className={TIP_END}>
           <Button variant="ghost" size="sm" icon="document" onClick={onYaml} aria-label="YAML">
             <span className="hidden @6xl:inline">YAML</span>
           </Button>
         </Tooltip>
-        <Tooltip label="Build or change the workflow by describing it" side="bottom">
+        <Tooltip label="Build or change the workflow by describing it" side="bottom" className={TIP_END}>
           <Button variant="ghost" size="sm" icon="sparkles" onClick={onAssistant} aria-label="Assistant" aria-pressed={assistantOpen} className={cx(assistantOpen && 'bg-accent-tint text-accent')}>
             <span className="hidden @6xl:inline">Assistant</span>
           </Button>
         </Tooltip>
         <span className="mx-1 h-5 w-px bg-stroke-light" aria-hidden="true" />
-        <Tooltip label={<span className="flex items-center gap-1.5">Save the draft <Kbd>{m}S</Kbd></span>} side="bottom">
+        <Tooltip label={<span className="flex items-center gap-1.5">Save the draft <Kbd>{m}S</Kbd></span>} side="bottom" className={TIP_END}>
           <Button variant="secondary" size="sm" loading={s.saving} onClick={onSave} disabled={!s.dirty && !s.isNew} data-testid="save-button">
             {s.saving ? 'Saving' : s.dirty || s.isNew ? 'Save' : 'Saved'}
           </Button>
         </Tooltip>
-        <Tooltip label={s.isNew ? 'Save the workflow first' : 'Open a change request to publish'} side="bottom">
+        <Tooltip label={s.isNew ? 'Save the workflow first' : 'Open a change request to publish'} side="bottom" className={TIP_END}>
           <Button variant="primary" size="sm" icon="release" onClick={onPublish} disabled={s.isNew} aria-label="Publish">
             <span className="hidden @3xl:inline">Publish</span>
           </Button>
