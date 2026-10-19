@@ -572,6 +572,8 @@ function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: 
     try {
       if (kind === 'merge') await api.mergeChangeRequest(id)
       else await api.closeChangeRequest(id)
+      // a provider closed from here is a draft of the workflow again at once, before the drawer reads its status
+      const back = kind === 'close' && cr?.kind === 'provider' && store.providerChangeClosed(id)
       await q.refetch()
       invalidate('releases')
       if (cr?.kind === 'provider') {
@@ -579,7 +581,7 @@ function DrawerBody({ id, workflow, onFollow, onBack }: { id: string; workflow: 
         if (kind === 'merge') {
           void store.providerChangeMerged(id)
           toast.success('Merged', `${cr.name} ${cr.version} is published`)
-        } else if (store.providerChangeClosed(id)) {
+        } else if (back) {
           toast.success('Closed', `${cr.name} is a draft of this workflow again: fix it and publish again.`)
         }
         return
