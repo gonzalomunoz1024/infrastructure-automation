@@ -29,7 +29,7 @@ public interface ProviderStorePort {
         return get(name).map(List::of).orElse(List.of());
     }
 
-    /** One kept version of a provider: the current one or a canary candidate. */
+    /** One kept version of a provider: the current one (as {@link #get} returns it) or a canary candidate. */
     default Optional<StoredProvider> version(String name, String version) {
         if (version == null) {
             return Optional.empty();

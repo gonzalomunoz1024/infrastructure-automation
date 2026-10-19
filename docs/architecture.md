@@ -244,11 +244,12 @@ finishes what a stop in between left.
   since the database was made, the current one among them, is also a `provider_versions` document
   (keyed `<name>@<version>`), so a canary candidate (`ProviderStorePort.saveVersion`) is kept beside
   the current version, routed to by its release, and survives a restart until it is promoted and
-  saved as current. A save writes the provider, then its version, and a current version whose
-  version document a stop left unwritten still counts among the versions; a delete removes the
-  versions, then the provider, and deleting again finishes an interrupted one. The versions read
-  newest first, as in memory, and a kept version is never written back to the content repo until
-  it is current.
+  saved as current. A save writes the provider, then its version. The current version always reads
+  as the `providers` document, so one whose version document a stop left unwritten, or left from
+  an earlier save of the same number, still counts among the versions with its new definition. A
+  delete removes the versions, then the provider, and deleting again finishes an interrupted one.
+  The versions read newest first, as in memory, and a kept version is never written back to the
+  content repo until it is current.
 - Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
   is one `review_evidence` document per result, with the in-memory bounds: the last 50 connection
   tests and the last 500 tries of a provider, and a response over 256 KiB kept without its body.

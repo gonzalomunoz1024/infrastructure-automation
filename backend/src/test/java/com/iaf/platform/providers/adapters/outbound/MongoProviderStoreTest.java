@@ -159,6 +159,24 @@ class MongoProviderStoreTest extends ProviderStoreContract {
     }
 
     @Test
+    void aSaveOfTheCurrentNumberThatStoppedBeforeItsVersionDocumentReadsTheNewDefinition() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        store.saveVersion(echo("1.1.0", "ana"));
+        String yaml = ECHO.replace("https://echo.example", "https://echo2.example");
+        StoredProvider changed = new StoredProvider(ProviderYaml.parse(yaml), yaml, "providers/team-a/echo.yaml", NOW, "ana");
+        // the provider's document of a save of 1.0.0 again, without its provider_versions write (the bump ran in its finally)
+        db.mongo().collection(MongoProviderStore.PROVIDERS).replaceOne(Filters.eq("_id", "echo"),
+                new Document("_id", "echo").append("updatedAt", Mongo.date(NOW)).append(Mongo.DOC, db.mongo().doc(changed)));
+        db.mongo().bump(MongoProviderStore.STORE);
+
+        assertThat(store.get("echo")).contains(changed);
+        assertThat(store.version("echo", "1.0.0")).as("the current version is the provider's document").contains(changed);
+        assertThat(store.versions("echo")).containsExactly(echo("1.1.0", "ana"), changed);
+        assertThat(store.version("echo", "1.1.0")).as("another version comes from provider_versions").contains(echo("1.1.0", "ana"));
+    }
+
+    @Test
     void aDeleteThatStoppedAfterTheVersionsIsFinishedByDeletingAgain() throws Exception {
         write(ECHO);
         ProviderStorePort store = newStore(props(content, false));
