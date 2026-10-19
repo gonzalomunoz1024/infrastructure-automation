@@ -28,8 +28,9 @@ cd backend && mvn -B -q test -Dtest=SampleWorkflowsDryRunTest   # every sample w
 ```
 
 CI also scans the files and the new commits for secrets with gitleaks. A finding reviewed as a
-false positive goes in `.gitleaksignore` by its fingerprint; never commit a real secret, even
-in a test (use an obviously fake value and a `vault:<path>` reference).
+false positive goes in `.gitleaksignore` by its fingerprint, and test fixtures that must look like
+credentials (the cURL import's) are allowed by rule and path in `.gitleaks.toml`; never commit a real
+secret, even in a test (use an obviously fake value and a `vault:<path>` reference).
 
 The live runners have optional tests against real tools: `IAF_ANSIBLE_BIN` (a directory with
 `ansible-runner` and `ansible-playbook`) enables `AnsibleRealRunTest`, `IAF_TERRAFORM_BIN` (a

@@ -1,0 +1,16 @@
+# gitleaks: the default rules, plus the reviewed exceptions below. A single finding reviewed as a
+# false positive goes in .gitleaksignore by its fingerprint instead.
+[extend]
+useDefault = true
+
+# The designer's cURL import is tested with commands that sign in, using fake values, to prove it
+# drops every credential before anything reaches a step. Only the curl rules are silenced, and only
+# in these test files.
+[[allowlists]]
+description = "cURL import test fixtures with fake credentials"
+targetRules = ["curl-auth-header", "curl-auth-user"]
+paths = [
+  '''frontend/src/designer/ndv/curl\.test\.ts$''',
+  '''frontend/src/designer/ndv/StepParameters\.test\.tsx$''',
+  '''frontend/e2e/designer-provider-authoring\.spec\.ts$''',
+]
