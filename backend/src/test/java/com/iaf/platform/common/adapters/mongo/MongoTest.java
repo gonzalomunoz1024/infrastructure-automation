@@ -171,10 +171,10 @@ class MongoTest {
         labels.put("unset", null);
         Note note = new Note("t\ud800", "ana", data, labels);
         Map<String, Object> wellFormedLabels = new LinkedHashMap<>();
-        wellFormedLabels.put("x�", "y�z");
+        wellFormedLabels.put("x\ufffd", "y\ufffdz");
         wellFormedLabels.put("unset", null);
-        Note wellFormed = new Note("t�", "ana", new ObjectMapper().readTree("""
-                {"lone": "�", "inside": "a�b", "pair": "😀", "key�": {"list": ["�", "ok", "��"]}}
+        Note wellFormed = new Note("t\ufffd", "ana", new ObjectMapper().readTree("""
+                {"lone": "\ufffd", "inside": "a\ufffdb", "pair": "😀", "key\ufffd": {"list": ["\ufffd", "ok", "\ufffd\ufffd"]}}
                 """), wellFormedLabels);
         MongoCollection<Document> notes = db.mongo().collection("notes");
         Document written = db.mongo().doc(note);

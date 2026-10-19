@@ -274,7 +274,7 @@ public class Mongo {
                 if (out == null) {
                     out = new StringBuilder(text.length()).append(text, 0, i);
                 }
-                out.append('�');
+                out.append('\uFFFD');
             }
         }
         return out == null ? text : out.toString();

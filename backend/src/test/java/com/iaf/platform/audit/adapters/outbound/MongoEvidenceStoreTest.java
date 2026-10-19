@@ -101,9 +101,9 @@ class MongoEvidenceStoreTest extends EvidenceStoreContract {
         assertThat(record.entries()).extracting(EvidenceEntry::hash).containsExactly(withData.hash(), withoutData.hash());
         EvidenceEntry read = record.entries().get(0);
         assertThat(read.data()).isEqualTo(withData.data()).isEqualTo(JSON.readTree("""
-                {"step": "fetch", "output": {"body": "�", "text": "a�b", "key�": ["a�b", "😀"]}}
+                {"step": "fetch", "output": {"body": "\ufffd", "text": "a\ufffdb", "key\ufffd": ["a\ufffdb", "😀"]}}
                 """));
-        assertThat(record.entries()).extracting(EvidenceEntry::actor).containsExactly("ana�", "bob�");
+        assertThat(record.entries()).extracting(EvidenceEntry::actor).containsExactly("ana\ufffd", "bob\ufffd");
     }
 
     @Test
