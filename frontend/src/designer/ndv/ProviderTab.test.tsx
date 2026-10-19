@@ -1,12 +1,13 @@
 import { renderToString } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
+import { ApiError } from '../../lib/api'
 import type { ProviderAlert } from '../../lib/types'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { againstSlo, alertsFor, editsHeldBack, ProviderTab } from './ProviderTab'
-import type { ProviderStepInfo } from './providerStep'
-import { editDraft, loadingInfo, newDraftInfo, publishedInfo, settledDetail, vsphereDetail } from './testProviders'
+import { stepState, type ProviderStepInfo } from './providerStep'
+import { editDraft, loadingInfo, newDraftInfo, publishedInfo, settledDetail, unknownInfo, vsphereDetail } from './testProviders'
 
 /*
  * The Provider tab of a provider step brings the provider page into the designer: the health band
@@ -116,5 +117,29 @@ describe('the Provider tab of a draft', () => {
     expect(html).toContain('once its change request merges')
     expect(html).toContain('Open provider')
     expect(html).not.toContain('Edit SLO')
+  })
+})
+
+describe('the Provider tab of a provider nobody here knows', () => {
+  it('says it is not registered, rather than calling it a draft or loading forever', () => {
+    const html = render(unknownInfo())
+    expect(html).toContain('vspher is not a registered provider')
+    expect(html).toContain('no draft of it is kept in this browser')
+    expect(html).not.toContain('is a draft')
+    expect(html).not.toContain('Open provider')
+    // while the published provider loads, the tab waits instead
+    expect(render(loadingInfo())).not.toContain('is a draft')
+  })
+
+  it('is unknown only once the platform answered that it has no such provider', () => {
+    const notFound = new ApiError(404, { error: 'No provider vspher' })
+    expect(stepState(undefined, false, false, notFound)).toBe('unknown')
+    // not listed (the registry is loading, failed, or is older than the provider) but found, or not answered yet
+    expect(stepState(undefined, false, true, null)).toBe('published')
+    expect(stepState(undefined, false, false, null)).toBe('published')
+    expect(stepState(undefined, false, false, new ApiError(0, null))).toBe('published')
+    expect(stepState(undefined, true, false, null)).toBe('published')
+    expect(stepState(editDraft(), false, false, notFound)).toBe('published')
+    expect(stepState(newDraftInfo().draft, false, false, notFound)).toBe('draft')
   })
 })

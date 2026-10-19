@@ -8,8 +8,8 @@ import { draftYaml } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { changesSomething, fixableAnswer, realResponseOffer, sampleRefusal, sampleSaved, tryEnvironments, tryYaml, withFixedSchema, withSample, type TriedCall } from './providerStep'
-import { editDraft, loadingInfo, newDraft, newDraftInfo, providerStep, publishedInfo, settledDetail, VSPHERE_YAML } from './testProviders'
-import { confirmMessage, prefillInput, testResourceFields, TriedOutput, TryForReal } from './TryForReal'
+import { editDraft, loadingInfo, newDraft, newDraftInfo, providerStep, publishedInfo, settledDetail, unknownInfo, VSPHERE_YAML } from './testProviders'
+import { confirmMessage, prefillInput, testResourceFields, TriedOutput, TryForReal, tryLabel } from './TryForReal'
 
 /*
  * Try for real on a provider step: one real call (POST /providers:try) with the draft's file or
@@ -78,9 +78,13 @@ describe('what a real call is made with', () => {
     expect(confirmMessage('change', 'test', [])).toBe('This is a real change call, not a dry run.')
   })
 
-  it('is offered once the file is there', () => {
+  it('is offered once the file is there, and says why not for a provider the platform does not know', () => {
     expect(render(<TryForReal info={publishedInfo()} stepId="check" prefill={{}} onTried={() => {}} />)).not.toContain('disabled=""')
     expect(render(<TryForReal info={loadingInfo()} stepId="check" prefill={{}} onTried={() => {}} />)).toContain('disabled=""')
+    expect(tryLabel(loadingInfo())).toBe('Loading vsphere…')
+    expect(tryLabel(loadingInfo(new Error('down')))).toBe('Could not load vsphere')
+    expect(render(<TryForReal info={unknownInfo()} stepId="check" prefill={{}} onTried={() => {}} />)).toContain('disabled=""')
+    expect(tryLabel(unknownInfo())).toBe('vspher is not a registered provider; pick one in Parameters')
   })
 })
 

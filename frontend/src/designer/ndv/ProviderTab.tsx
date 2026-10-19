@@ -6,7 +6,7 @@
  * page, held back while the workflow holds a draft of the provider or another change request is
  * open, since the platform takes one change at a time) and links to the provider page and the
  * provider events of the audit. A provider that is only a draft has none of these yet: the tab
- * says so and opens the draft.
+ * says so and opens the draft; one the platform does not know says that.
  */
 import { useState, type ReactNode } from 'react'
 import { Button, Icon, Skeleton, StatusDot, Tag, duration, percent, type DotKind } from '@iaf/ui'
@@ -78,7 +78,17 @@ export function editsHeldBack(draft: ProviderDraft | undefined, open: ChangeRequ
 export function ProviderTab({ info, stepId, readOnly = false }: { info: ProviderStepInfo; stepId: string; readOnly?: boolean }) {
   const store = useDesignerStore()
   const openProvider = () => store.openProviderSheet({ entry: 'node', provider: info.published ? info.provider : null, draft: info.draft?.id ?? null, target: { kind: 'step', step: stepId } })
-  if (!info.published) {
+  if (info.state === 'unknown') {
+    return (
+      <div className="space-y-4" data-testid="ndv-provider-tab">
+        <div className="rounded-md border border-dashed border-stroke-light px-4 py-6 text-center">
+          <p className="text-footnote font-medium text-primary">{info.provider} is not a registered provider</p>
+          <p className="mt-1 text-caption text-tertiary">The platform has no provider of that name, and no draft of it is kept in this browser (drafts live in the browser they were made in). Pick a provider in Parameters.</p>
+        </div>
+      </div>
+    )
+  }
+  if (info.state === 'draft') {
     return (
       <div className="space-y-4" data-testid="ndv-provider-tab">
         <div className="rounded-md border border-dashed border-stroke-light px-4 py-6 text-center">

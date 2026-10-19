@@ -13,7 +13,7 @@
 import { useCallback, useMemo } from 'react'
 import { useToast } from '@iaf/ui'
 import type { JsonValue, ParsedStep } from '@iaf/workflow-checks'
-import { api } from '../../lib/api'
+import { api, ApiError } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
 import type { ChangeRequest, Effect, ProviderDetail, RegistryAction, RegistryProvider, RetryPolicy, Schema, TryResult } from '../../lib/types'
 import { actionSlo, blankAction, endpointsOf, inferSchema, nextKey, parseSchema, sandboxEnvironment, stateFromProvider, withVersion, type ActionRow } from '../../components/provider-editor/state'
@@ -26,12 +26,22 @@ import { withActionFields, withOverride, type ActionField } from './providerFile
 /** What every workflow calling the action shares, as the Settings tab edits it: the wizard's fields of an action. */
 export type ActionPolicy = Pick<ActionRow, 'effect' | 'retry' | 'approval' | 'plan' | 'effectDetail' | 'sloSuccessRate' | 'sloP95Ms'>
 
+/**
+ * What the step's provider is here: a provider only this workflow's draft holds (`draft`), one
+ * with a published version (`published`: the registry lists it, the platform knows it, or the
+ * draft edits it; also while GET /providers/{name} has not answered), or one the platform does not
+ * know and no draft in this browser holds (`unknown`: a misspelled or retired name, or a teammate's
+ * draft kept in another browser).
+ */
+export type ProviderStepState = 'draft' | 'published' | 'unknown'
+
 /** The provider step's provider and action, the workflow's draft of it, and the published one. */
 export interface ProviderStepInfo {
   provider: string
   action: string
   draft: ProviderDraft | undefined
-  /** it has a published version: the registry lists it, or the draft edits one */
+  state: ProviderStepState
+  /** `state` is published: it has a published version, or may have one while it loads */
   published: boolean
   registryProvider: RegistryProvider | undefined
   /** GET /providers/{name}, for a published provider */
@@ -56,6 +66,17 @@ export function providerCall(step: ParsedStep): { provider: string; action: stri
   return { provider: asString(w.provider), action: asString(w.action) }
 }
 
+/**
+ * What the step's provider is, from the workflow's drafts, the registry and GET /providers/{name}:
+ * a provider the registry does not list (it is still loading, it failed, or the provider was
+ * published since) is looked up on its own, and only a 404 makes it unknown.
+ */
+export function stepState(draft: ProviderDraft | undefined, listed: boolean, found: boolean, error: unknown): ProviderStepState {
+  if (draft) return draft.origin === 'edit' ? 'published' : 'draft'
+  if (listed || found) return 'published'
+  return error instanceof ApiError && error.status === 404 ? 'unknown' : 'published'
+}
+
 /** The step's provider as the node detail view reads it; null for a step that calls no provider. */
 export function useProviderStep(step: ParsedStep): ProviderStepInfo | null {
   const registry = useDesignerSelector((s) => s.registry)
@@ -63,12 +84,17 @@ export function useProviderStep(step: ParsedStep): ProviderStepInfo | null {
   const { provider, action } = providerCall(step)
   const draft = findProviderDraft(drafts, provider)
   const registryProvider = findProvider(registry, provider)
-  const published = draft ? draft.origin === 'edit' : registryProvider !== undefined
-  const detail = useQuery(['provider', provider], () => api.provider(provider), { enabled: !!provider && published })
+  const lookUp = !!provider && (!draft || draft.origin === 'edit')
+  const detail = useQuery(['provider', provider], () => api.provider(provider), { enabled: lookUp })
+  const state = stepState(draft, registryProvider !== undefined, lookUp && detail.data !== undefined, lookUp ? detail.error : null)
+  const published = state === 'published'
   const data = published ? detail.data : undefined
   const loading = published && detail.loading
   const error = published ? detail.error : null
-  return useMemo(() => (provider ? { provider, action, draft, published, registryProvider, detail: data, detailLoading: loading, detailError: error } : null), [provider, action, draft, published, registryProvider, data, loading, error])
+  return useMemo(
+    () => (provider ? { provider, action, draft, state, published, registryProvider, detail: data, detailLoading: loading, detailError: error } : null),
+    [provider, action, draft, state, published, registryProvider, data, loading, error],
+  )
 }
 
 /** The provider's change request that is still open, if any: the platform takes no other change to the provider until it merges or closes. */

@@ -58,12 +58,20 @@ export function confirmMessage(effect: Effect, environment: string, targets: rea
   return `This is a real ${effect} call, not a dry run${targets.length ? `: it deletes ${targets.join(', ')} in ${environment}` : ''}.`
 }
 
+/** What the Try for real button says: why it cannot call yet, or what it does. */
+export function tryLabel(info: ProviderStepInfo): string {
+  if (info.state === 'unknown') return `${info.provider} is not a registered provider; pick one in Parameters`
+  if (!info.action) return 'Pick an action first'
+  if (!tryYaml(info)) return info.detailError ? `Could not load ${info.provider}` : `Loading ${info.provider}…`
+  return 'One real call to the provider, not a dry run'
+}
+
 /** The Try for real button, and the dialog that makes the call. */
 export function TryForReal({ info, stepId, prefill, onTried, disabled }: { info: ProviderStepInfo; stepId: string; prefill: SchemaValue; onTried: (tried: TriedCall) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false)
   const yaml = tryYaml(info)
-  const ready = !!yaml && !!info.action
-  const why = !info.action ? 'Pick an action first' : !yaml ? (info.detailError ? `Could not load ${info.provider}` : `Loading ${info.provider}…`) : 'One real call to the provider, not a dry run'
+  const ready = !!yaml && !!info.action && info.state !== 'unknown'
+  const why = tryLabel(info)
   return (
     <>
       <Tooltip label={why}>

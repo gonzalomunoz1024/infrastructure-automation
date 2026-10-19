@@ -46,12 +46,17 @@ export const settledDetail = (patch: Partial<ProviderDetail> = {}): ProviderDeta
 
 /** The step info of a published provider: loaded, and with the workflow's draft of it when given. */
 export function publishedInfo(action = 'vm.get', draft?: ProviderDraft, detail: ProviderDetail = vsphereDetail()): ProviderStepInfo {
-  return { provider: 'vsphere', action, draft, published: true, registryProvider: undefined, detail, detailLoading: false, detailError: null }
+  return { provider: 'vsphere', action, draft, state: 'published', published: true, registryProvider: undefined, detail, detailLoading: false, detailError: null }
 }
 
 /** The step info of a published provider whose detail has not answered yet (or failed). */
 export function loadingInfo(error: unknown = null): ProviderStepInfo {
-  return { provider: 'vsphere', action: 'vm.get', draft: undefined, published: true, registryProvider: undefined, detail: undefined, detailLoading: error === null, detailError: error }
+  return { provider: 'vsphere', action: 'vm.get', draft: undefined, state: 'published', published: true, registryProvider: undefined, detail: undefined, detailLoading: error === null, detailError: error }
+}
+
+/** The step info of a provider the platform does not know and no draft holds: a misspelled name, or a draft kept in another browser. */
+export function unknownInfo(provider = 'vspher'): ProviderStepInfo {
+  return { provider, action: 'vm.get', draft: undefined, state: 'unknown', published: false, registryProvider: undefined, detail: undefined, detailLoading: false, detailError: null }
 }
 
 /** An edit draft of vsphere, the published file at the next patch. */
@@ -64,7 +69,7 @@ export function newDraft(): ProviderDraft {
 }
 
 export function newDraftInfo(draft: ProviderDraft = newDraft()): ProviderStepInfo {
-  return { provider: draft.name, action: 'invoices.get', draft, published: false, registryProvider: undefined, detail: undefined, detailLoading: false, detailError: null }
+  return { provider: draft.name, action: 'invoices.get', draft, state: 'draft', published: false, registryProvider: undefined, detail: undefined, detailLoading: false, detailError: null }
 }
 
 /** A provider step as the canvas parses one. */

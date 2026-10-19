@@ -158,6 +158,15 @@ export function SharedAction({ info, stepId, readOnly = false }: { info: Provide
   const fromState = !!info.draft && info.draft.draftYaml === null
   const change = openChange(info)
   const openProvider = () => store.openProviderSheet({ entry: 'node', provider: info.published ? info.provider : null, draft: info.draft?.id ?? null, target: { kind: 'step', step: stepId } })
+  if (info.state === 'unknown') {
+    return (
+      <ParamSection title="Action (shared by every workflow)">
+        <p className="text-caption text-tertiary" data-testid="shared-action-unknown">
+          {info.provider} is not a registered provider, and no draft of it is kept in this browser; pick a provider in Parameters.
+        </p>
+      </ParamSection>
+    )
+  }
   return (
     <ParamSection
       title="Action (shared by every workflow)"
