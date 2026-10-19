@@ -13,7 +13,7 @@ const DesignerRoute = lazy(() => import('../designer/DesignerRoute'))
  */
 export default function WorkflowDesignerPage({ route }: PageProps) {
   return (
-    <div className="absolute inset-0 overflow-hidden">
+    <div className="absolute inset-0 overflow-hidden" data-testid="designer-root">
       <Suspense fallback={<DesignerSkeleton />}>
         <DesignerRoute route={route} />
       </Suspense>

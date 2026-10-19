@@ -112,7 +112,8 @@ export type StepRetry = { maxAttempts?: number; backoff?: string }
 
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
 
-export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning'
+/** 'pending': a check still waiting on something else, such as the provider change requests a workflow's `requires` names. */
+export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning' | 'pending'
 export type Check = { id: string; label: string; status: CheckStatus; detail?: string }
 
 export type ChangeRequestStatus = 'open' | 'merged' | 'closed'
@@ -130,6 +131,8 @@ export type ChangeRequest = {
   createdAt: string
   mergedAt?: string
   url?: string
+  /** the change requests (their ids) that must merge before this one: a workflow's, the provider change requests the same Publish opened */
+  requires?: string[]
 }
 export type ChangeRequestDetail = ChangeRequest & {
   diff: string
@@ -159,7 +162,8 @@ export type ReplayCheck = { passed: boolean; replayed: number; divergences: { jo
 export type ImportSource = 'idp' | 'ansible' | 'terraform' | 'openapi'
 export type ImportResult = { yaml: string; notes: string[] }
 export type Template = { id: string; title: string; description: string; yaml: string }
-export type PublishRequest = { strategy?: Strategy; notes?: string }
+/** `requires`: the change requests (their ids) that must merge first, the provider change requests opened for the drafts the workflow uses; sent only when it names one. */
+export type PublishRequest = { strategy?: Strategy; notes?: string; requires?: string[] }
 
 /* ----------------------------------------------------------------------------
    Registry (read-only, used by the designer and the assistant)
@@ -183,10 +187,13 @@ export type TerraformModuleRef = { source: string; version?: string; ref?: strin
 /**
  * `module` is the terraform provider's `spec.module`. GET /registry/providers does not carry it;
  * the designer's registry reads it through the backend (registry.ts, `withTerraformModules`).
+ * `unpublished` is the designer's own: a provider draft of the workflow ('draft'), or one whose
+ * change request the designer opened and that is not merged yet ('in review'); the backend never sends it.
  */
-export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef }
+export type RegistryProvider = { name: string; title: string; type: ProviderType; owner?: string; actions: RegistryAction[]; module?: TerraformModuleRef; unpublished?: 'draft' | 'in review' }
 export type RegistryWorkflow = { name: string; title: string; version: string; input: Schema; output: Schema }
-export type RegistryPlaybook = { name: string; version: string; path: string; owner: string }
+/** `unpublished` is the designer's own, as a provider's: a playbook of an Ansible draft of the workflow, or of one in review. */
+export type RegistryPlaybook = { name: string; version: string; path: string; owner: string; unpublished?: 'draft' | 'in review' }
 export type RegistryCredential = { name: string; type: string }
 
 /** POST /playbooks:upload: the stored archive a step refers to as `playbook.upload`. */

@@ -11,37 +11,13 @@ import type { AnsibleImport, AnsibleImportRequest, GitRef, ImportedPlaybook, Pro
 import { CredentialPicker } from '../components/CredentialPicker'
 import { EffectTag, Mono } from '../components/common'
 import type { WizardState } from './ProviderWizardPage'
+import { blankImportForm, type ImportForm } from '../components/provider-editor/state'
+
+export { blankImportForm, type ImportForm }
 
 export type ImportKind = 'ansible' | 'terraform'
 
-export interface ImportForm {
-  /** terraform: where the module comes from */
-  source: 'git' | 'registry'
-  repo: string
-  ref: string
-  path: string
-  /** the vault: reference of a read token for a private repository */
-  readCredential: string
-  /** ansible: playbooks to keep, by path or action id; all when empty */
-  playbooks: string
-  /** terraform, from the registry: namespace/name/provider and an exact version */
-  module: string
-  version: string
-  registryCredential: string
-  name: string
-  owner: string
-  /** the owner was typed, so the signed-in user's team no longer fills it */
-  ownerTouched: boolean
-  /** ansible: the machine credential the playbooks connect with; terraform: what the runner gives Terraform */
-  credential: string
-  executionEnvironment: string
-}
-
 const HTTPS_RE = /^https:\/\/\S+$/
-
-export function blankImportForm(owner = ''): ImportForm {
-  return { source: 'git', repo: '', ref: 'main', path: '', readCredential: '', playbooks: '', module: '', version: '', registryCredential: '', name: '', owner, ownerTouched: false, credential: '', executionEnvironment: '' }
-}
 
 const trimmed = (s: string): string | undefined => s.trim() || undefined
 
@@ -132,9 +108,20 @@ export function importedPatch(kind: ImportKind, result: AnsibleImport | Terrafor
   }
 }
 
-export function ImportStep({ kind, defaultOwner, onImported }: { kind: ImportKind; defaultOwner: string; onImported: (patch: Partial<WizardState>) => void }) {
+export interface ImportStepProps {
+  kind: ImportKind
+  defaultOwner: string
+  onImported: (patch: Partial<WizardState>) => void
+  /** the form as kept elsewhere (the designer's draft), with `onFormChange`; the wizard page leaves both out and the step keeps its own */
+  form?: ImportForm | null
+  onFormChange?: (form: ImportForm) => void
+}
+
+export function ImportStep({ kind, defaultOwner, onImported, form: kept, onFormChange }: ImportStepProps) {
   const toast = useToast()
-  const [form, setForm] = useState<ImportForm>(() => blankImportForm(defaultOwner))
+  const [own, setOwn] = useState<ImportForm>(() => blankImportForm(defaultOwner))
+  const form = onFormChange ? (kept ?? blankImportForm(defaultOwner)) : own
+  const setForm = onFormChange ?? setOwn
   const [busy, setBusy] = useState(false)
   // the owner arrives with /me, after the form was made
   const f = form.ownerTouched || !defaultOwner ? form : { ...form, owner: defaultOwner }

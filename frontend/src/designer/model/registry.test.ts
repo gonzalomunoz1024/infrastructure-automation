@@ -2,7 +2,7 @@ import { check, type Problem } from '@iaf/workflow-checks'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CatalogEntry, Dependencies, JsonObject, RegistryProvider, WorkflowDocument } from '../../lib/types'
 import { newDocument } from './edits'
-import { contextOf, EMPTY_REGISTRY, loadRegistry, mcpToolsOf, setRegistryForTests, terraformModuleIn, terraformModuleOf, withTerraformModules, workflowRunsOf, type Registry } from './registry'
+import { contextOf, EMPTY_REGISTRY, loadRegistry, mcpToolsOf, playbookLabel, providerLabel, setRegistryForTests, terraformModuleIn, terraformModuleOf, withTerraformModules, withUnpublished, workflowRunsOf, type Registry } from './registry'
 
 /*
  * A terraform provider's module, which GET /registry/providers does not carry: read from the plan
@@ -195,5 +195,72 @@ describe('what the checks read from the registry', () => {
     const ctx = contextOf(partial)
     expect(ctx.workflowRuns).toBeUndefined()
     expect(ctx.mcpTools).toBeUndefined()
+  })
+})
+
+/*
+ * The providers a workflow uses before they are published (its drafts, the ones in review), read
+ * by the canvas as published ones.
+ */
+describe('the unpublished providers of a workflow', () => {
+  const published: RegistryProvider = { name: 'backup', title: 'Backup', type: 'http', owner: 'team-data', actions: [{ id: 'snapshot.list', title: 'List', effect: 'read', retry: 'safe' }] }
+  const vsphere: RegistryProvider = { name: 'vsphere', title: 'vSphere', type: 'openapi', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }] }
+  const draftOf = (name: string, title: string): RegistryProvider => ({
+    name,
+    title,
+    type: 'http',
+    owner: 'team-compute',
+    unpublished: 'draft',
+    actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe', approval: 'none', input: { type: 'object', required: ['vm'], properties: { vm: { type: 'string' } } } }],
+  })
+
+  it('join the registry, each in place of a published provider of its name, the first of a name winning', () => {
+    const registry = { ...EMPTY_REGISTRY, providers: [published, vsphere] }
+    const merged = withUnpublished(registry, [draftOf('backup', 'Backup next'), draftOf('backup', 'Backup again'), draftOf('', 'Unnamed'), draftOf('dns', 'DNS')])
+    expect(merged.providers.map((p) => [p.name, p.title])).toEqual([
+      ['vsphere', 'vSphere'],
+      ['backup', 'Backup next'],
+      ['dns', 'DNS'],
+    ])
+    expect(withUnpublished(registry, [])).toBe(registry)
+  })
+
+  it("keep the published provider's module when they name none, as the draft of a terraform provider's next patch", () => {
+    const module = { source: 'https://example.com/acme/tf-modules//network', version: '1.0.0' }
+    const network: RegistryProvider = { name: 'network', title: 'Network', type: 'terraform', actions: [{ id: 'plan', title: 'Plan', effect: 'read', retry: 'safe' }], module }
+    const edit: RegistryProvider = { name: 'network', title: 'Network next', type: 'terraform', actions: network.actions, unpublished: 'draft' }
+    const merged = withUnpublished({ ...EMPTY_REGISTRY, providers: [network] }, [edit])
+    expect(merged.providers).toEqual([{ ...edit, module }])
+    // a draft's own module stands
+    const own = { source: 'https://example.com/acme/tf-modules//network2' }
+    expect(withUnpublished({ ...EMPTY_REGISTRY, providers: [network] }, [{ ...edit, module: own }]).providers[0].module).toEqual(own)
+    expect(withUnpublished(EMPTY_REGISTRY, [edit]).providers[0].module).toBeUndefined()
+  })
+
+  it("bring an Ansible draft's playbooks into the library, each in place of a published one of its name", () => {
+    const published = { name: 'ops/hosts.patch', version: '1.0.0', path: 'patch.yml', owner: 'team-ops' }
+    const other = { name: 'db/backup', version: '2.0.0', path: 'backup.yml', owner: 'team-data' }
+    const next = { ...published, version: '1.0.1', unpublished: 'draft' as const }
+    const added = { name: 'ops/hosts.retire', version: '1.0.1', path: 'retire.yml', owner: 'team-ops', unpublished: 'draft' as const }
+    const merged = withUnpublished({ ...EMPTY_REGISTRY, playbooks: [published, other] }, [], [next, added, { ...added, path: 'again.yml' }])
+    expect(merged.playbooks).toEqual([other, next, added])
+    expect(merged.providers).toEqual([])
+    expect(playbookLabel(added)).toBe('ops/hosts.retire (draft)')
+    expect(playbookLabel(other)).toBe('db/backup')
+  })
+
+  it('are named with their tag wherever the designer names a provider', () => {
+    expect(providerLabel(draftOf('backup', 'Backup API'))).toBe('Backup API (draft)')
+    expect(providerLabel({ ...draftOf('backup', 'Backup API'), unpublished: 'in review' })).toBe('Backup API (in review)')
+    expect(providerLabel(vsphere)).toBe('vSphere')
+  })
+
+  it('are judged by the live checks as published ones: their actions and their input schemas', () => {
+    const doc = draft([{ snap: { name: 'Snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: {} } } }])
+    const before = check(doc, contextOf({ ...EMPTY_REGISTRY, providers: [vsphere] })).map((p) => p.code)
+    expect(before).toContain('step.unknownProvider')
+    const after = check(doc, contextOf(withUnpublished({ ...EMPTY_REGISTRY, providers: [vsphere] }, [draftOf('backup', 'Backup API')])))
+    expect(after.map((p) => p.code)).not.toContain('step.unknownProvider')
+    expect(only(after, 'step.missingInput').map((p) => p.message)).toEqual(["Action snapshot.create needs 'vm'"])
   })
 })

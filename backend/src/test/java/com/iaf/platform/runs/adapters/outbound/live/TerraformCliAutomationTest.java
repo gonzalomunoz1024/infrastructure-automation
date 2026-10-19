@@ -30,6 +30,8 @@ import com.iaf.platform.common.ports.CredentialsPort;
 import com.iaf.platform.config.ArtifactsProperties;
 import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.config.RunnersProperties;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.runs.ports.outbound.AutomationRunnerPort.RunRequest;
 import com.iaf.platform.runs.ports.outbound.ProviderCallPort.ProviderCallException;
@@ -415,6 +417,31 @@ class TerraformCliAutomationTest {
         JsonNode out = runner.run(request("{\"action\": \"apply\", " + MODULE + "}", null, true, false), logged::add).block(Duration.ofSeconds(10));
 
         assertThat(out).isEqualTo(JSON.readTree("{\"add\": 0, \"change\": 0, \"destroy\": 0, \"outputs\": {}}"));
+        assertThat(record.resolve("calls")).doesNotExist();
+    }
+
+    @Test
+    void aDryRunAnswersFromADraftProviderThatDescribesTheModule() throws Exception {
+        ProviderDefinition draft = ProviderYaml.parse("""
+                apiVersion: iaf.platform/v1
+                kind: Provider
+                metadata: { name: lb-modules, title: Load balancer modules, owner: team-platform, version: 0.1.0 }
+                spec:
+                  type: terraform
+                  module: { source: "git::REPO//modules/lb", version: 2.3.0 }
+                  actions:
+                    - id: apply
+                      title: Apply
+                      effect: create
+                      retry: unsafe
+                      sample: { add: 3, change: 0, destroy: 0, outputs: { url: "https://lb.example.com" } }
+                """.replace("REPO", repo));
+        RunRequest dry = request("{\"action\": \"apply\", " + MODULE + "}", null, true, false);
+
+        JsonNode out = runner.run(new RunRequest(dry.jobId(), dry.seq(), dry.type(), dry.step(), dry.with(), dry.environment(), true, false, List.of(draft)),
+                logged::add).block(Duration.ofSeconds(10));
+
+        assertThat(out).isEqualTo(JSON.readTree("{\"add\": 3, \"change\": 0, \"destroy\": 0, \"outputs\": {\"url\": \"https://lb.example.com\"}}"));
         assertThat(record.resolve("calls")).doesNotExist();
     }
 

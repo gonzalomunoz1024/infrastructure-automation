@@ -2,16 +2,52 @@
  * n8n's node creator: the panel on the right with a search field, the categories of "What
  * happens next?", deeper lists (a provider's actions, the playbook library, the published
  * workflows), arrow keys and Enter, and the new step added where the "+" was (or after the
- * selection) and opened right away.
+ * selection) and opened right away. The providers show their health band (GET /providers) and
+ * the workflow's drafts beside them; "Connect a new system" opens the Provider sheet for the same
+ * place, so the action it ends on is inserted there, but for cURL: an HTTP step there, open on its
+ * Import cURL dialog.
  */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { cx, Icon, SkeletonRows, Tag, useDismiss } from '@iaf/ui'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { cx, Icon, SkeletonRows, Tag } from '@iaf/ui'
+import { HealthBand } from '../../components/HealthBand'
+import { api } from '../../lib/api'
+import { useQuery } from '../../lib/queries'
+import type { HealthStatus } from '../../lib/types'
 import type { InsertPoint } from '../model/edits'
 import { findStepNode, triggerNodeId, type Graph } from '../model/graph'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
+import { importCurlOnOpen } from '../ndv/StepParameters'
 import { NodeGlyph } from '../canvas/glyphs'
 import { revealIn } from '../scroll'
 import { buildCatalog, ROOT_VIEW, searchCatalog, type CreatorItem } from './catalog'
+
+/** The toast stack (ToastProvider's live region): toasts float over everything, the step list included. */
+const TOASTS = '[role="region"][aria-live][aria-label="Notifications"]'
+
+/**
+ * useDismiss for the step list: a mousedown outside it (in the capture phase, as useDismiss does,
+ * since the canvas stops propagation) or Escape closes it; but a click in the toasts (Dismiss,
+ * a toast's action) is not outside: dismissing a "Saved" toast used to close the list.
+ */
+function useDismissExceptToasts(ref: RefObject<HTMLElement | null>, onDismiss: () => void): void {
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (!ref.current || ref.current.contains(target)) return
+      if (target instanceof Element && target.closest(TOASTS)) return
+      onDismiss()
+    }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') onDismiss()
+    }
+    document.addEventListener('mousedown', onDown, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [ref, onDismiss])
+}
 
 /** Where the step lands, in words. */
 export function placementOf(point: InsertPoint | null, graph: Graph): string {
@@ -36,8 +72,12 @@ export function NodeCreator() {
   const loading = useDesignerSelector((s) => s.registryLoading)
   const doc = useDesignerSelector((s) => s.doc)
   const graph = useDesignerSelector((s) => s.graph)
+  const drafts = useDesignerSelector((s) => s.providerDrafts)
+  // the providers page's list, shared through the query cache: each provider's health band
+  const summaries = useQuery('providers', () => api.providers())
+  const health = useMemo(() => Object.fromEntries((summaries.data ?? []).map((p) => [p.name, p.health.status])) as Record<string, HealthStatus>, [summaries.data])
   const workflowName = doc.metadata?.name
-  const catalog = useMemo(() => buildCatalog(registry, { metadata: { name: workflowName } }), [registry, workflowName])
+  const catalog = useMemo(() => buildCatalog(registry, { metadata: { name: workflowName } }, { drafts, health }), [registry, workflowName, drafts, health])
   const [stack, setStack] = useState<string[]>([ROOT_VIEW])
   const [query, setQuery] = useState(creator?.query ?? '')
   const [active, setActive] = useState(0)
@@ -45,7 +85,7 @@ export function NodeCreator() {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const close = useMemo(() => () => store.closeCreator(), [store])
-  useDismiss(ref, true, close)
+  useDismissExceptToasts(ref, close)
 
   const view = catalog.get(stack[stack.length - 1]) ?? catalog.get(ROOT_VIEW)
   const searching = query.trim().length > 0
@@ -81,6 +121,15 @@ export function NodeCreator() {
       const index = store.getState().doc.triggers?.length ?? 0
       store.addTrigger(action.trigger)
       store.openNdv(triggerNodeId(index))
+      return
+    }
+    // the sheet closes the creator; the action it ends on is inserted where this step would have gone
+    if (action.kind === 'provider-sheet') return store.openProviderSheet({ entry: action.entry, target: { kind: 'insert', point: creator?.point ?? null } })
+    if (action.importCurl) {
+      // the new step's parameters open on the Import cURL dialog
+      const id = store.addStep(action.type, action.params ?? {}, creator?.point ?? null)
+      importCurlOnOpen(id)
+      store.setNdvTab('parameters')
       return
     }
     store.addStep(action.type, action.params ?? {}, creator?.point ?? null)
@@ -182,6 +231,7 @@ export function NodeCreator() {
                       <span className="block truncate text-footnote font-medium text-primary">{item.title}</span>
                       {item.description && <span className="block truncate text-caption text-tertiary">{item.description}</span>}
                     </span>
+                    {item.health && <HealthBand health={{ status: item.health }} className="shrink-0" />}
                     {item.tags?.map((t) => (
                       <Tag key={t.label} size="sm" tone={t.tone}>
                         {t.label}

@@ -75,8 +75,9 @@ export function FieldLabel({ htmlFor, label, required, description, right }: { h
         )}
         {required && <span className="sr-only"> (required)</span>}
       </label>
+      {/* the description wraps at 18rem: on one line a long one hung past the Settings view and made it scroll sideways */}
       {description && (
-        <Tooltip label={description} side="top">
+        <Tooltip label={<span className="block w-max max-w-72 whitespace-normal">{description}</span>} side="top">
           <span tabIndex={0} aria-label={description} className="inline-flex text-tertiary hover:text-secondary">
             <Icon name="info" size={12} />
           </span>

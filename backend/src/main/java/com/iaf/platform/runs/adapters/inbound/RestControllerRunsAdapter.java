@@ -27,6 +27,7 @@ import com.iaf.platform.common.tracing.TraceIds;
 import com.iaf.platform.common.tracing.Traces;
 import com.iaf.platform.gateway.application.JobQuotas;
 import com.iaf.platform.identity.application.CurrentIdentity;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.runs.application.RunsCommandHandler;
 import com.iaf.platform.runs.application.RunsQueryHandler;
 import com.iaf.platform.runs.domain.DryRunResult;
@@ -307,6 +308,11 @@ public class RestControllerRunsAdapter implements RunsCommands, RunsQueries {
     @Override
     public Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who) {
         return commands.dryRun(definition, input, who);
+    }
+
+    @Override
+    public Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who, List<ProviderDefinition> drafts) {
+        return commands.dryRun(definition, input, who, drafts);
     }
 
     @Override

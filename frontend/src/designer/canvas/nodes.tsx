@@ -1,17 +1,21 @@
 /**
  * The canvas nodes, drawn by hand in n8n's shapes: a 100 px square body with the glyph in the
  * middle and the name underneath, a rounded-left trigger, the "+" stub on free outputs, the
- * hover toolbar, issue and run badges, the End and compensation nodes, the "Add first step"
- * placeholder and the sticky notes.
+ * hover toolbar, issue and run badges, the health dot of a provider step's provider, the End and
+ * compensation nodes, the "Add first step" placeholder and the sticky notes.
  */
 import { memo, useState, type MouseEvent, type ReactNode } from 'react'
 import { Handle, NodeResizer, NodeToolbar, Position, type NodeProps } from '@xyflow/react'
-import { cx, Icon, Spinner, type IconName } from '@iaf/ui'
-import { NODE_SIZE } from '../model/graph'
-import { useDesignerStore } from '../model/store'
+import { cx, Icon, Spinner, StatusDot, type IconName } from '@iaf/ui'
+import type { JsonValue } from '@iaf/workflow-checks'
+import type { HealthStatus } from '../../lib/types'
+import { healthDot } from '../../components/HealthBand'
+import { findStepNode, NODE_SIZE } from '../model/graph'
+import { useDesignerSelector, useDesignerStore } from '../model/store'
 import type { Sticky } from '../model/stickies'
 import { sampleInput } from '../model/expressions'
 import { NodeGlyph, UiGlyph } from './glyphs'
+import { useProviderHealth } from './providerHealth'
 import type { EndFlowNode, Issues, PlaceholderFlowNode, RunState, StepFlowNode, StickyFlowNode, TriggerFlowNode, UndoFlowNode } from './flow'
 
 const OUT_PITCH = 26
@@ -52,6 +56,27 @@ function RunBadge({ run }: { run: RunState | null }) {
     default:
       return null
   }
+}
+
+const HEALTH_LABEL: Record<HealthStatus, string> = { healthy: 'healthy', degraded: 'degraded', failing: 'failing', unknown: 'unknown' }
+
+/** The provider a step calls, '' for a step that calls none. */
+function stepProvider(step: { type: string; with?: unknown }): string {
+  if (step.type !== 'provider' || !step.with || typeof step.with !== 'object') return ''
+  const p = (step.with as Record<string, JsonValue>).provider
+  return typeof p === 'string' ? p : ''
+}
+
+/** The health band of a provider step's provider, as the server judges it; nothing until it is known, or while it has no calls to judge. */
+export function HealthDot({ provider }: { provider: string }) {
+  const status = useProviderHealth(provider)
+  if (!status || status === 'unknown') return null
+  const label = `${provider} is ${HEALTH_LABEL[status]}`
+  return (
+    <span className="absolute right-2 top-2 flex" title={label} aria-label={label} role="img" data-health={status}>
+      <StatusDot kind={healthDot(status)} pulse={status === 'failing'} />
+    </span>
+  )
 }
 
 function bodyTone(run: RunState | null, selected: boolean): string {
@@ -130,6 +155,10 @@ function NameBlock({ name, subtitle }: { name: string; subtitle: string }) {
 
 export const StepNode = memo(function StepNode({ id, data, selected, isConnectable }: NodeProps<StepFlowNode>) {
   const store = useDesignerStore()
+  const provider = useDesignerSelector((s) => {
+    const node = findStepNode(s.graph, data.stepId)
+    return node ? stepProvider(node.data.step) : ''
+  })
   const k = data.outputs.length
   const height = stepNodeHeight(k)
   const testStep = () => {
@@ -148,6 +177,7 @@ export const StepNode = memo(function StepNode({ id, data, selected, isConnectab
       <div className={cx('iaf-node-body relative flex h-full w-full items-center justify-center rounded-lg border-2 bg-surface shadow-sm transition-[border-color,box-shadow] duration-150', bodyTone(data.run, selected))}>
         <NodeGlyph glyph={data.glyph} size={40} />
         {data.container && <span className="absolute left-2 top-1.5 text-caption2 font-medium uppercase tracking-wide text-tertiary">{data.typeTitle.split(' ')[0]}</span>}
+        {provider && !data.readOnly && <HealthDot provider={provider} />}
         <div className="absolute bottom-1.5 right-2 flex items-center gap-1">
           {data.pinned && (
             <span title="Output pinned">
@@ -249,12 +279,17 @@ export const PlaceholderNode = memo(function PlaceholderNode({ data }: NodeProps
   return (
     <div className="relative" style={{ width: NODE_SIZE, height: NODE_SIZE }}>
       <Handle type="target" position={Position.Left} id="in" className="iaf-handle iaf-handle--hidden" isConnectable={false} />
+      {/*
+        React Flow gives a node that is neither selectable nor draggable pointer-events: none, and
+        this one is neither: without pointer-events-auto a real click fell through to the pane
+        (selection on drag) and missed the button; nopan keeps a press on it from starting a selection.
+      */}
       <button
         type="button"
         disabled={data.readOnly}
         onClick={() => store.openCreator({ kind: 'start', flow: 'main' })}
         aria-label="Add first step"
-        className="nodrag flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-stroke bg-surface/60 text-tertiary transition-colors hover:border-accent hover:text-accent"
+        className="nodrag nopan pointer-events-auto flex h-full w-full items-center justify-center rounded-lg border-2 border-dashed border-stroke bg-surface/60 text-tertiary transition-colors hover:border-accent hover:text-accent"
       >
         <Icon name="plus" size={30} strokeWidth={1.8} />
       </button>

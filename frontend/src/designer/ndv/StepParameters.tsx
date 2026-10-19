@@ -3,18 +3,26 @@
  * registry knows the shape (a provider action's input, a child workflow's input, a resource
  * type's attributes) and written by hand for the flow steps (switch cases, fork branches, the
  * loop, wait, set). Every field writes straight into the step body through the store.
+ *
+ * As n8n has it beside a credential, a provider step's provider field ends with "New provider…"
+ * and has an "Edit provider" pencil, both opening the Provider sheet for this step; an HTTP step
+ * can Import cURL (curl.ts) and be saved as a provider action (httpProvider.ts), which first lists
+ * what of the request does not come along and asks.
  */
-import { createContext, useContext, useId, useMemo, useState, type ReactNode } from 'react'
-import { Button, cx, Icon, Input, Segmented, Tag, type SelectOption } from '@iaf/ui'
+import { createContext, useContext, useEffect, useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Button, ConfirmDialog, cx, Icon, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, Segmented, Tag, Textarea, useOverlayClose, type SelectOption } from '@iaf/ui'
 import { displayName, STEP_TYPES, type JsonObject, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import { AddCredentialModal } from '../../components/CredentialPicker'
 import { api, errorMessage } from '../../lib/api'
 import type { RegistryCredential, Schema } from '../../lib/types'
 import { findStepLocation, safeParseSteps } from '../model/graph'
-import { findAction, findProvider, knownGroups, type Registry } from '../model/registry'
+import { findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
+import { findAction, findProvider, knownGroups, playbookLabel, providerLabel, type Registry } from '../model/registry'
 import { fieldsOf, type FieldType } from '../model/schema'
-import { useDesignerStore } from '../model/store'
-import { effectTags } from '../creator/catalog'
+import { useDesignerSelector, useDesignerStore, type DesignerStore, type ProviderSheetOptions } from '../model/store'
+import { DRAFT_TAG, effectTags, providersWithDrafts, type ListedProvider } from '../creator/catalog'
+import { httpWithFromCurl, parseCurl, type CredentialKind, type CurlRequest } from './curl'
+import { httpActionPlan, planProviderAction, saveAsProviderAction } from './httpProvider'
 import { useNdv } from './context'
 import { asObject, asString, checkAccessOn, checkAccessValue, isSettingsField, problemsAt, readField, rootOf, writeField } from './fields'
 import { FieldLabel, KeyValueEditor, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
@@ -119,18 +127,18 @@ export function credentialOptions(credentials: readonly RegistryCredential[], ki
   return [...credentials].sort((a, b) => rank(a.type) - rank(b.type) || a.name.localeCompare(b.name)).map((c) => ({ value: `vault:${c.name}`, label: c.name, hint: c.type }))
 }
 
-/** The value of the entry that ends a credential field's options, n8n's "Create new credential". */
+/** The value of the entry that starts a credential field's options, n8n's "Create new credential". */
 export const NEW_CREDENTIAL = '__new-credential__'
 
 /**
- * A credential field's options: the credentials, then a reference the registry does not list, then
- * "New credential…" last unless the step is read-only.
+ * A credential field's options: "New credential…" first unless the step is read-only (first, as in
+ * n8n's credential select, so a long list of stored credentials never pushes it below the fold),
+ * then the credentials, then a reference the registry does not list.
  */
 export function credentialFieldOptions(credentials: readonly RegistryCredential[], kinds: readonly string[] | undefined, current: string, canCreate: boolean): SelectOption[] {
   const options = credentialOptions(credentials, kinds)
   if (current && !options.some((o) => o.value === current)) options.push({ value: current, label: current, hint: 'not in the list' })
-  if (canCreate) options.push({ value: NEW_CREDENTIAL, label: 'New credential…' })
-  return options
+  return canCreate ? [{ value: NEW_CREDENTIAL, label: 'New credential…' }, ...options] : options
 }
 
 /**
@@ -165,13 +173,42 @@ function CredentialParam({ field = 'credential', kinds, label = 'Credential', de
 const METHODS: SelectOption[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))
 const CALL_TYPES = ['openapi', 'http', 'sdk']
 
+/** The value of the entry that ends the provider field's options, as "New credential…" ends a credential field's. */
+export const NEW_PROVIDER = '__new-provider__'
+
+/** The provider field's options: the providers a step can call, the workflow's drafts marked, then "New provider…" unless the step is read-only. */
+export function providerFieldOptions(providers: readonly ListedProvider[], canCreate: boolean): SelectOption[] {
+  const options: SelectOption[] = providers.filter((p) => CALL_TYPES.includes(p.type)).map((p) => ({ value: p.name, label: p.title, hint: p.draft ? `${p.name} · draft` : p.unpublished ? `${p.name} · ${p.unpublished}` : p.name }))
+  if (canCreate) options.push({ value: NEW_PROVIDER, label: 'New provider…' })
+  return options
+}
+
+/** "New provider…": the Provider sheet on a new provider, whose chosen action then fills this step. */
+export function newProviderOptions(stepId: string): ProviderSheetOptions {
+  return { entry: 'step', target: { kind: 'step', step: stepId } }
+}
+
+/**
+ * "Edit provider": the Provider sheet on the step's provider, for this step. A draft of the
+ * workflow's is opened as it is; a published provider opens on a draft of its next patch (the
+ * workflow's, or the one the sheet starts from it).
+ */
+export function editProviderOptions(drafts: Readonly<Record<string, ProviderDraft>>, stepId: string, provider: string): ProviderSheetOptions {
+  const target = { kind: 'step', step: stepId } as const
+  const draft = findProviderDraft(drafts, provider)
+  if (draft?.origin === 'new') return { entry: 'step', draft: draft.id, provider: null, target }
+  return { entry: 'step', provider, ...(draft ? { draft: draft.id } : {}), target }
+}
+
 function ProviderParams() {
-  const { get, update, registry } = useStepEdit()
+  const store = useDesignerStore()
+  const { stepId, get, update, registry, readOnly } = useStepEdit()
+  const drafts = useDesignerSelector((s) => s.providerDrafts)
+  const listed = useMemo(() => providersWithDrafts(registry, drafts), [registry, drafts])
   const providerName = asString(get('provider'))
   const actionId = asString(get('action'))
-  const providers = (registry?.providers ?? []).filter((p) => CALL_TYPES.includes(p.type))
-  const provider = findProvider(registry, providerName)
-  const action = findAction(registry, providerName, actionId)
+  const provider = listed.find((p) => p.name === providerName)
+  const action = provider?.actions.find((a) => a.id === actionId)
   const setProvider = (v: JsonValue | undefined) =>
     update((b) => {
       writeField(b, 'provider', v ?? '')
@@ -179,18 +216,42 @@ function ProviderParams() {
     })
   return (
     <>
-      <P field="provider" label="Provider" required options={providers.map((p) => ({ value: p.name, label: p.title, hint: p.name }))} expression={false} onChange={setProvider} />
+      <div className="flex items-start gap-1.5">
+        <div className="min-w-0 flex-1">
+          <P field="provider" label="Provider" required options={providerFieldOptions(listed, !readOnly)} expression={false} onChange={(v) => (v === NEW_PROVIDER ? store.openProviderSheet(newProviderOptions(stepId)) : setProvider(v))} />
+        </div>
+        {providerName && !readOnly && (
+          <button
+            type="button"
+            onClick={() => store.openProviderSheet(editProviderOptions(store.getState().providerDrafts, stepId, providerName))}
+            aria-label="Edit provider"
+            title={provider?.draft ? `Edit the draft of ${provider.title}` : `Edit ${provider?.title ?? providerName}: its next version, reviewed and published as a change request`}
+            data-testid="edit-provider"
+            className="mt-7 flex h-[38px] w-9 shrink-0 items-center justify-center rounded-md border border-stroke-light bg-surface text-secondary hover:bg-surface-secondary hover:text-primary"
+          >
+            <Icon name="edit" size={14} />
+          </button>
+        )}
+      </div>
       <P field="action" label="Action" required options={(provider?.actions ?? []).map((a) => ({ value: a.id, label: a.title || a.id, hint: `${a.id} · ${a.effect}` }))} expression={false} />
-      {action && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          {effectTags(action).map((t) => (
-            <Tag key={t.label} size="sm" tone={t.tone}>
-              {t.label}
+      {(action || provider?.draft) && (
+        <div className="flex flex-wrap items-center gap-1.5" data-testid="provider-tags">
+          {provider?.draft && (
+            <Tag size="sm" tone={DRAFT_TAG.tone} title="Not published yet: Publish opens its change request with the workflow's">
+              {DRAFT_TAG.label}
             </Tag>
-          ))}
-          <Tag size="sm" outline>
-            retry {action.retry}
-          </Tag>
+          )}
+          {action &&
+            effectTags(action).map((t) => (
+              <Tag key={t.label} size="sm" tone={t.tone}>
+                {t.label}
+              </Tag>
+            ))}
+          {action && (
+            <Tag size="sm" outline>
+              retry {action.retry}
+            </Tag>
+          )}
         </div>
       )}
       <ParamSection title="Input">
@@ -200,14 +261,197 @@ function ProviderParams() {
   )
 }
 
+/** What the last Import cURL left out, for the note at the credential field: names only, never a value. */
+interface CurlImported {
+  dropped: string[]
+  warnings: string[]
+  kind?: CredentialKind
+  /** the credential the step had then: the note stays until another is picked */
+  credential: string
+}
+
+const SIGNED_IN: Record<CredentialKind, string> = {
+  bearer: 'a bearer token',
+  basic: 'a user and password',
+  header: 'a key or a cookie',
+}
+
+/** The note under the credential field after an import dropped what signed in. */
+export function curlCredentialNote(imported: Pick<CurlImported, 'dropped' | 'kind'>): string {
+  const how = imported.kind ? SIGNED_IN[imported.kind] : 'a secret'
+  const what = imported.dropped.join(', ')
+  return `The command signed in with ${how} (${what}); it was not imported and is not kept anywhere. Pick a credential, or create one, for the step to sign in with.`
+}
+
+/** n8n's "Import cURL command": the command is read in this dialog, and nothing that signs in leaves it. */
+function ImportCurlForm({ onImport }: { onImport: (request: CurlRequest) => void }) {
+  const close = useOverlayClose()
+  const [text, setText] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    const parsed = parseCurl(text)
+    if (!parsed.ok) return setError(parsed.error)
+    setText('')
+    onImport(parsed.request)
+    close()
+  }
+  return (
+    <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+      <OverlayHeader title="Import cURL command" subtitle="Its method, URL, headers and body fill in the step." icon="terminal" />
+      <OverlayBody className="space-y-3">
+        <Textarea
+          aria-label="cURL command"
+          mono
+          rows={8}
+          value={text}
+          spellCheck={false}
+          autoFocus
+          autoComplete="off"
+          placeholder={`curl -X POST https://api.example.com/things \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name": "web-01"}'`}
+          onChange={(e) => {
+            setText(e.target.value)
+            setError(null)
+          }}
+        />
+        <p className="text-caption text-tertiary">An Authorization header, a -u user and password, cookies and API keys are not imported: the step signs in with a credential instead.</p>
+        {error && (
+          <p role="alert" className="text-caption text-critical">
+            {error}
+          </p>
+        )}
+      </OverlayBody>
+      <OverlayFooter>
+        <Button type="button" variant="ghost" onClick={close}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" icon="download" disabled={!text.trim()}>
+          Import
+        </Button>
+      </OverlayFooter>
+    </form>
+  )
+}
+
+/** Import cURL: the step takes the request's method, URL, headers and body in one undo step, and keeps its credential. */
+export function importCurl(update: StepEdit['update'], request: CurlRequest): void {
+  update((b) => {
+    b.with = httpWithFromCurl(request, asObject(b.with as JsonValue | undefined))
+  })
+}
+
+/** The HTTP steps whose parameters open on the Import cURL dialog, once: the node creator's "HTTP request (cURL)". */
+const importOnOpen = new Set<string>()
+
+/** Opens the Import cURL dialog when the step's parameters show next (the step the node creator just added). */
+export function importCurlOnOpen(stepId: string): void {
+  importOnOpen.add(stepId)
+}
+
+/** Whether the step's parameters open on the Import cURL dialog. */
+export function opensOnImportCurl(stepId: string): boolean {
+  return importOnOpen.has(stepId)
+}
+
+/**
+ * Save as provider action, as the HTTP step's button runs it: what does not come along (a header,
+ * a GET's body, an endpoint that is not https, a draft that cannot take the request) is listed
+ * first and the user confirms; with nothing to say it saves at once.
+ */
+export function startProviderActionSave(store: DesignerStore, stepId: string): { error: string } | { confirm: string[] } | { saved: true } {
+  const planned = planProviderAction(store.getState(), stepId)
+  if (!planned.ok) return { error: planned.error }
+  if (planned.save.notes.length > 0) return { confirm: planned.save.notes }
+  const saved = saveAsProviderAction(store, stepId)
+  return saved.ok ? { saved: true } : { error: saved.error }
+}
+
 function HttpParams() {
+  const store = useDesignerStore()
+  const { stepId, body, get, update, readOnly } = useStepEdit()
+  const [importing, setImporting] = useState(() => !readOnly && opensOnImportCurl(stepId))
+  const [imported, setImported] = useState<CurlImported | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [leftOut, setLeftOut] = useState<string[] | null>(null)
+  // asked once: the dialog does not come back the next time the step is opened
+  useEffect(() => {
+    importOnOpen.delete(stepId)
+  }, [stepId])
+  const credential = asString(get('credential'))
+  const askCredential = imported !== null && imported.dropped.length > 0 && credential === imported.credential
+  const plan = httpActionPlan(asObject(body.with as JsonValue | undefined))
+  const onImport = (request: CurlRequest) => {
+    importCurl(update, request)
+    setImported({ dropped: request.dropped, warnings: request.warnings, kind: request.credentialKind, credential })
+    setSaveError(null)
+  }
+  const save = () => {
+    const started = startProviderActionSave(store, stepId)
+    setSaveError('error' in started ? started.error : null)
+    if ('confirm' in started) setLeftOut(started.confirm)
+  }
+  const saveAnyway = () => {
+    const saved = saveAsProviderAction(store, stepId)
+    if (!saved.ok) setSaveError(saved.error)
+  }
   return (
     <>
+      {!readOnly && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button size="sm" variant="secondary" icon="terminal" onClick={() => setImporting(true)}>
+            Import cURL
+          </Button>
+          <Button size="sm" variant="secondary" icon="provider" onClick={save} disabled={!plan.ok} title={plan.ok ? 'Make this request an action of a provider draft: it gets a review, samples, health and an SLO' : plan.error}>
+            Save as provider action
+          </Button>
+        </div>
+      )}
+      {saveError && (
+        <p role="alert" className="text-caption text-critical">
+          {saveError}
+        </p>
+      )}
+      {imported && imported.warnings.length > 0 && (
+        <ul className="space-y-0.5 rounded-md bg-surface-secondary px-3 py-2 text-caption text-secondary" data-testid="curl-warnings">
+          {imported.warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+      )}
       <P field="method" label="Method" options={METHODS} expression={false} />
       <P field="url" label="URL" required placeholder="https://api.example.com/things/{{ $input.id }}" mono />
-      <CredentialParam kinds={['token', 'basic', 'bearer']} />
+      <div className={cx(askCredential && '-mx-2 rounded-md border border-warning/40 bg-warning-tint/40 px-2 pb-2')} data-testid="http-credential" data-attention={askCredential ? 'true' : undefined}>
+        <CredentialParam kinds={['token', 'basic', 'bearer']} />
+        {askCredential && imported && (
+          <p role="status" className="mt-1.5 flex items-start gap-1.5 text-caption text-warning" data-testid="curl-credential-note">
+            <Icon name="key" size={12} className="mt-0.5 shrink-0" />
+            <span>{curlCredentialNote(imported)}</span>
+          </p>
+        )}
+      </div>
       <KeyValueParam field="headers" label="Headers" addLabel="Add header" keyPlaceholder="Header" />
       <P field="body" label="Body" type="any" description="JSON, or an expression" />
+      {importing && (
+        <Modal onClose={() => setImporting(false)} width="max-w-xl" label="Import cURL command" raised>
+          <ImportCurlForm onImport={onImport} />
+        </Modal>
+      )}
+      {leftOut && (
+        <ConfirmDialog
+          title="Save as provider action?"
+          message="The step will call an action of an http provider draft, which is reviewed before it is published. Not all of this request comes along:"
+          confirmLabel="Save as provider action"
+          icon="provider"
+          onConfirm={saveAnyway}
+          onClose={() => setLeftOut(null)}
+        >
+          <ul className="list-disc space-y-1 pl-4 text-caption text-secondary" data-testid="provider-action-notes">
+            {leftOut.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </ConfirmDialog>
+      )}
     </>
   )
 }
@@ -465,7 +709,7 @@ function AnsibleParams() {
             expression={false}
             mono
             problemsExact={['playbook']}
-            options={playbooks.map((x) => ({ value: x.name, label: x.name, hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
+            options={playbooks.map((x) => ({ value: x.name, label: playbookLabel(x), hint: [x.version, x.owner].filter(Boolean).join(' · ') }))}
             description="A playbook of the library: <provider>/<playbook>"
           />
         )}
@@ -544,7 +788,7 @@ function IdpParams() {
   const current = tiles.find((t) => t.action.id === tile)
   return (
     <>
-      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: t.provider.title }))} />
+      <P field="tile" label="Tile" required expression={false} options={tiles.map((t) => ({ value: t.action.id, label: t.action.title || t.action.id, hint: providerLabel(t.provider) }))} />
       <ParamSection title="Input">
         <SchemaFields schema={current?.action.input} prefix="input" emptyText="The tile's fields as JSON" />
       </ParamSection>
@@ -940,7 +1184,7 @@ export function stepKindLabel(step: ParsedStep, registry: Registry | null): stri
   if (step.type === 'provider') {
     const p = findProvider(registry, asString(w.provider))
     const a = findAction(registry, asString(w.provider), asString(w.action))
-    return [p?.title ?? asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
+    return [p ? providerLabel(p) : asString(w.provider), a?.title ?? asString(w.action)].filter(Boolean).join(' · ') || STEP_TYPES.provider.title
   }
   return STEP_TYPES[step.type].title
 }

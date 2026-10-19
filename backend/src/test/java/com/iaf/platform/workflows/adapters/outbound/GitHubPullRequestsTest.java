@@ -2,6 +2,7 @@ package com.iaf.platform.workflows.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -188,6 +189,27 @@ class GitHubPullRequestsTest {
         assertThat(merge.json().path("merge_method").asText()).isEqualTo("squash");
         assertThat(merge.json().path("commit_title").asText()).isEqualTo("Update Restart a VM 1.3.0 (#42)");
         assertThat(seen.get(2).json().path("state").asText()).isEqualTo("closed");
+    }
+
+    @Test
+    void aPendingCheckIsAPendingStatusAndAChangedCheckIsPostedAgainOnTheHeadCommit() {
+        answer("GET /repos/acme/content/pulls/42", 200, "{\"state\":\"open\",\"head\":{\"sha\":\"c0ffee9\"}}");
+        answer("POST /repos/acme/content/statuses/c0ffee9", 201, "{}");
+
+        client.statuses(42, List.of(new Check("requires", "Requires", "pending", "waiting for cr_10 (provider ticketing 0.1.0) to merge")));
+        client.statuses(42, List.of(new Check("requires", "Requires", "passed", "published: cr_10 (provider ticketing 0.1.0)"),
+                new Check("lint", "Lint", "skipped", null)));
+        client.statuses(42, List.of(new Check("requires", "Requires", "failed", "cr_10 (provider ticketing 0.1.0) was closed without merging")));
+
+        List<JsonNode> posted = seen.stream().filter(s -> s.method().equals("POST")).map(Seen::json).toList();
+        assertThat(posted).extracting(n -> n.path("context").asText(), n -> n.path("state").asText()).containsExactly(
+                tuple("iaf/requires", "pending"), tuple("iaf/requires", "success"), tuple("iaf/lint", "success"), tuple("iaf/requires", "failure"));
+        assertThat(posted.get(0).path("description").asText()).isEqualTo("pending: waiting for cr_10 (provider ticketing 0.1.0) to merge");
+        assertThat(seen).filteredOn(s -> s.method().equals("POST")).extracting(Seen::path).containsOnly("/repos/acme/content/statuses/c0ffee9");
+
+        answer("GET /repos/acme/content/pulls/43", 200, "{\"state\":\"open\"}");
+        assertThatThrownBy(() -> client.statuses(43, List.of(new Check("requires", "Requires", "passed", null))))
+                .isInstanceOfSatisfying(ResponseStatusException.class, e -> assertThat(e.getReason()).isEqualTo("GitHub answered pull request #43 without its head commit"));
     }
 
     @Test

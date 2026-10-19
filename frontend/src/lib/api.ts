@@ -549,6 +549,13 @@ export async function streamSse<T>(path: string, body: unknown, onEvent: (event:
    The client: one function per endpoint in docs/api.md
    ------------------------------------------------------------------------- */
 
+/** A workflow's publish body, without an empty `requires`: a publish that needs no change request sends what it always sent. */
+function publishBody(body: PublishRequest): PublishRequest {
+  if (!body.requires || body.requires.length > 0) return body
+  const { requires: _none, ...rest } = body
+  return rest
+}
+
 export const api = {
   /* identity */
   me: () => get<Me>('/me'),
@@ -564,13 +571,16 @@ export const api = {
   saveDraft: (name: string, source: WorkflowSource) => put<DraftSaved>(`/workflows/${enc(name)}/draft`, source),
   createWorkflow: (source: WorkflowSource) => post<CommandAccepted>('/workflows', source),
   deleteWorkflow: (name: string) => del<void>(`/workflows/${enc(name)}`),
-  validateWorkflow: (source: WorkflowSource) => post<ValidationResult>('/workflows:validate', source),
-  dryRunWorkflow: (source: WorkflowSource, input: Record<string, unknown>) => post<DryRunResult>('/workflows:dry-run', { ...source, input }),
+  /** `providers`: the YAML of each provider draft the workflow uses, judged with it for this call only; sent only when there is one. */
+  validateWorkflow: (source: WorkflowSource, providers?: string[]) => post<ValidationResult>('/workflows:validate', providers?.length ? { ...source, providers } : source),
+  /** `providers` as for validateWorkflow: the dry run answers from those drafts. */
+  dryRunWorkflow: (source: WorkflowSource, input: Record<string, unknown>, providers?: string[]) => post<DryRunResult>('/workflows:dry-run', providers?.length ? { ...source, input, providers } : { ...source, input }),
   /** definition → canonical YAML; the browser never renders YAML itself. */
   renderWorkflow: (source: { definition: WorkflowDefinition }) => post<RenderResult>('/workflows:render', source),
   /** YAML → definition plus the problems the checks find; the browser never parses YAML itself. */
   parseWorkflow: (source: { yaml: string }) => post<ParseResult>('/workflows:parse', source),
-  publishWorkflow: (name: string, body: PublishRequest = {}) => post<CommandAccepted>(`/workflows/${enc(name)}:publish`, body),
+  /** `body.requires` is sent only when it names a change request. */
+  publishWorkflow: (name: string, body: PublishRequest = {}) => post<CommandAccepted>(`/workflows/${enc(name)}:publish`, publishBody(body)),
   replayCheck: (name: string, version: string) => post<ReplayCheck>(`/workflows/${enc(name)}/versions/${enc(version)}:replay-check`),
   changeRequests: (status?: ChangeRequestStatus) => get<ChangeRequest[]>(`/change-requests${qs({ status })}`),
   changeRequest: (id: string) => get<ChangeRequestDetail>(`/change-requests/${enc(id)}`),

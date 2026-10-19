@@ -448,7 +448,8 @@ export function SettingsView() {
             ))}
           </ul>
         </nav>
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+        {/* relative: the absolutely placed bits inside (sr-only labels) scroll and clip with it instead of hanging below the designer and making it scrollable */}
+        <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-4 py-6 sm:px-6">
             <Section id="workflow" title="Workflow" description="How the catalog, the API and the MCP tool name and group this workflow.">
               <div className="grid gap-4 sm:grid-cols-2">

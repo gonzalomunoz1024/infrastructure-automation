@@ -95,8 +95,8 @@ public class RestControllerWorkflowAdapter implements WorkflowCommands, Workflow
 
     @Override
     @PostMapping("/workflows:validate")
-    public Mono<Validation> validate(@RequestBody WorkflowSource source) {
-        return commands.validate(source);
+    public Mono<Validation> validate(@RequestBody ValidateRequest request) {
+        return commands.validate(request);
     }
 
     @Override

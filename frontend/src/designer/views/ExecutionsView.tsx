@@ -325,7 +325,7 @@ export function ExecutionsView() {
 
   return (
     <div className="flex h-full min-h-0" data-testid="executions">
-      <aside aria-label="Executions" className="flex w-[300px] shrink-0 flex-col border-r border-stroke-light bg-surface">
+      <aside aria-label="Executions" className="flex w-[300px] max-w-[50%] shrink-0 flex-col border-r border-stroke-light bg-surface">
         <div className="flex items-center gap-2 px-4 py-3">
           <h2 className="flex-1 text-footnote font-semibold text-primary">Executions</h2>
           {jobs.fetching && !jobs.loading && <span className="text-caption2 text-tertiary">updating…</span>}

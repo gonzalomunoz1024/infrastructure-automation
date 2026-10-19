@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -41,10 +43,13 @@ import com.iaf.platform.config.PlaybooksProperties;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort;
 import com.iaf.platform.playbooks.ports.outbound.PlaybookLintPort.LintResult;
+import com.iaf.platform.providers.domain.ProviderChecks;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
@@ -59,8 +64,10 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.DraftSaved;
+import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.DryRunRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.ImportRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.PublishWorkflow;
+import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.ValidateRequest;
 import com.iaf.platform.workflows.ports.inbound.WorkflowCommands.WorkflowSource;
 
 import reactor.core.publisher.Mono;
@@ -76,7 +83,9 @@ class WorkflowCommandHandlerTest {
     Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     InMemoryWorkflowStore store = InMemoryWorkflowStore.empty(clock);
     InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
-    ProviderQueries providers = SampleFixtures.providerQueries();
+    /** The current version of each provider, as the providers slice serves it; a merged provider change request is published into it. */
+    List<ProviderDefinition> registry = new ArrayList<>(SampleFixtures.providers());
+    ProviderQueries providers = SampleFixtures.providerQueries(registry);
     ResourceQueries resources = SampleFixtures.resourceQueries();
     CredentialsPort credentials = SampleFixtures.credentials();
     RunsCommands runs = SampleFixtures.runs();
@@ -93,6 +102,12 @@ class WorkflowCommandHandlerTest {
     void setUp() {
         store.seed(SampleFixtures.ROOT);
         events.register(published::add);
+        // the providers slice's listener, which publishes a merged provider change request in handlers built by hand
+        events.register(e -> {
+            if (e.type().equals("change-request.merged") && "provider".equals(e.data().path("kind").asText())) {
+                changeRequests.get(e.aggregateId()).ifPresent(cr -> SampleFixtures.publishMerged(registry, cr.yaml(), cr.strategy()));
+            }
+        });
         queries = new WorkflowQueryHandler(store, changeRequests, providers, resources, credentials);
         handler = new WorkflowCommandHandler(store, changeRequests, queries, providers, resources, runs, runsQueries, policy, events, clock);
         handler.init();
@@ -1109,6 +1124,415 @@ class WorkflowCommandHandlerTest {
         events.publish("release.promoted", "release", "rel_1", "platform", F.objectNode().put("workflow", "vm-restart"));
         events.publish("release.rolled-back", "release", "rel_2", "platform", F.objectNode().put("workflow", "nope"));
         assertThat(store.published("vm-restart").orElseThrow().version()).as("nothing else changed").isEqualTo("1.2.0");
+    }
+
+    // ------------------------------------------------------------------ drafts of providers
+
+    static ValidateRequest validating(String yaml, String... drafts) {
+        return new ValidateRequest(yaml, null, drafts.length == 0 ? null : List.of(drafts));
+    }
+
+    /** vsphere as its owner may be editing it: vm.waitForPowerState renamed. */
+    static String renamedVsphere() {
+        String vsphere = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        assertThat(vsphere).contains("id: vm.waitForPowerState");
+        return vsphere.replace("id: vm.waitForPowerState", "id: vm.awaitPowerState");
+    }
+
+    @Test
+    void validateSeesTheDraftsOfProvidersItCarriesForThatCallOnly() {
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).extracting(Problem::code).contains("step.unknownProvider");
+                })
+                .verifyComplete();
+
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, SampleFixtures.TICKETING)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).as("%s", v.problems()).isTrue();
+                    assertThat(v.problems()).extracting(Problem::code).doesNotContain("step.unknownProvider", "step.unknownAction");
+                })
+                .verifyComplete();
+
+        // the draft served that call: nothing kept it
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK)))
+                .assertNext(v -> assertThat(v.problems()).extracting(Problem::code).contains("step.unknownProvider"))
+                .verifyComplete();
+        assertThat(queries.checkContext().block().provider("ticketing")).isEmpty();
+        assertThat(changeRequests.all()).isEmpty();
+        assertThat(store.versions("ticket-check")).isEmpty();
+    }
+
+    @Test
+    void aDraftStandsInForThePublishedProviderOfItsName() {
+        StepVerifier.create(handler.validate(validating(vmRestart, renamedVsphere())))
+                .assertNext(v -> {
+                    assertThat(v.valid()).isFalse();
+                    assertThat(v.problems()).filteredOn(Problem::isError).extracting(Problem::code, Problem::step)
+                            .containsOnly(tuple("step.unknownAction", "validate"));
+                })
+                .verifyComplete();
+        String renamed = vmRestart.replace("action: vm.waitForPowerState", "action: vm.awaitPowerState");
+        StepVerifier.create(handler.validate(validating(renamed, renamedVsphere())))
+                .assertNext(v -> assertThat(v.valid()).as("%s", v.problems()).isTrue())
+                .verifyComplete();
+        StepVerifier.create(handler.validate(validating(renamed)))
+                .assertNext(v -> assertThat(v.problems()).extracting(Problem::code).contains("step.unknownAction"))
+                .verifyComplete();
+    }
+
+    @Test
+    void aDraftWithAnErrorIsA400WithItsProblemsAndSoAreAnEmptyEntryAndASecondDraftOfOneProvider() {
+        String plain = SampleFixtures.TICKETING.replace("credential: vault:ticketing/api-key", "credential: example-token");
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, plain)))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(InvalidInputException.class).hasMessage("The draft provider ticketing (providers[0]) has 1 problem to fix");
+                    assertThat(((InvalidInputException) e).problems()).filteredOn(Problem::isError).extracting(Problem::code).containsExactly("credential.plain");
+                })
+                .verify();
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(plain))))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageContaining("ticketing (providers[0])"))
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, "kind: Provider\nmetadata: [")))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(InvalidInputException.class).hasMessageStartingWith("The draft provider in providers[0] has"))
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, " ")))
+                .expectErrorMessage("providers[0] is empty: each entry of providers is a provider file")
+                .verify();
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, SampleFixtures.TICKETING,
+                        SampleFixtures.TICKETING.replace("version: 0.1.0", "version: 0.2.0"))))
+                .expectErrorMessage("providers[1] is a second draft of provider ticketing; send one file per provider")
+                .verify();
+        verify(runs, never()).dryRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void aDraftStillBeingWrittenServesTheCallAndWhatStopsItsPublishComesBackAsWarnings() {
+        String draft = SampleFixtures.TICKETING_UNFINISHED;
+        assertThat(ProviderChecks.check(draft).errors()).extracting(Problem::code)
+                .containsExactlyInAnyOrder("credential.missing", "action.approvalRequired", "alerts.channel");
+
+        StepVerifier.create(handler.validate(validating(SampleFixtures.TICKET_CHECK, draft)))
+                .assertNext(v -> {
+                    assertThat(v.valid()).as("%s", v.problems()).isTrue();
+                    assertThat(v.problems()).filteredOn(p -> p.code().equals("provider.draft"))
+                            .allSatisfy(p -> {
+                                assertThat(p.isError()).isFalse();
+                                assertThat(p.step()).isNull();
+                                assertThat(p.message()).startsWith("The draft provider ticketing is not ready to publish: ");
+                            })
+                            .extracting(Problem::field)
+                            .containsExactlyInAnyOrder("providers[0].spec.auth.credential", "providers[0].spec.actions[2].approval", "providers[0].spec.alerts.channel");
+                    assertThat(v.problems()).extracting(Problem::code).doesNotContain("step.unknownProvider", "step.unknownAction");
+                })
+                .verifyComplete();
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(draft))))
+                .assertNext(r -> assertThat(r.passed()).isTrue())
+                .verifyComplete();
+        verify(runs).dryRun(any(), any(), any(), any());
+    }
+
+    @Test
+    void aDryRunHandsItsDraftsToTheRunsSlice() {
+        List<List<ProviderDefinition>> seen = new ArrayList<>();
+        when(runs.dryRun(any(), any(), any(), any())).thenAnswer(inv -> {
+            seen.add(inv.getArgument(3));
+            return Mono.just(SampleFixtures.DRY_RUN_PASSED);
+        });
+
+        StepVerifier.create(handler.dryRun(new DryRunRequest(SampleFixtures.TICKET_CHECK, null, F.objectNode().put("id", "T-1"), List.of(SampleFixtures.TICKETING))))
+                .assertNext(r -> assertThat(r.passed()).isTrue())
+                .verifyComplete();
+
+        assertThat(seen).singleElement().satisfies(drafts -> assertThat(drafts).singleElement().satisfies(p -> {
+            assertThat(p.name()).isEqualTo("ticketing");
+            assertThat(p.action("ticket.get")).isPresent();
+        }));
+        // without drafts the dry run is the one it always was
+        handler.dryRun(new DryRunRequest(vmRestart, null, F.objectNode().put("vmId", "vm-1"))).block();
+        verify(runs).dryRun(any(), any(), any());
+        assertThat(seen).hasSize(1);
+    }
+
+    // ------------------------------------------------------------------ linked change requests
+
+    static ChangeRequest ticketingChange(ChangeRequest.Status status) {
+        return new ChangeRequest("cr_tick", ChangeRequest.Kind.PROVIDER, "ticketing", "0.1.0", "change/provider-ticketing-0.1.0", "Publish ticketing 0.1.0", "mateo",
+                status, List.of(new Check("schema", "Schema", "passed", null)), "all", SampleFixtures.TICKETING, "", NOW, null, null, null);
+    }
+
+    Check requiresCheck(String crId) {
+        return queries.changeRequest(crId).block().changeRequest().checks().stream().filter(c -> c.id().equals("requires")).findFirst().orElseThrow();
+    }
+
+    /** The requires check as stored, which GitHub's commit status follows, rather than as judged on reading. */
+    Check storedRequires(String crId) {
+        return changeRequests.get(crId).orElseThrow().checks().stream().filter(c -> c.id().equals("requires")).findFirst().orElseThrow();
+    }
+
+    @Test
+    void aWorkflowThatNeedsANewProviderPublishesWithItsChangeRequestAndMergesAfterIt() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        // alone it calls a provider nobody published
+        StepVerifier.create(handler.publish("ticket-check", null))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code).contains("step.unknownProvider"))
+                .verify();
+
+        String crId = handler.publish("ticket-check", new PublishWorkflow("all", null, List.of("cr_tick"))).block().id();
+
+        ChangeRequest cr = changeRequests.get(crId).orElseThrow();
+        assertThat(cr.requires()).containsExactly("cr_tick");
+        assertThat(cr.checks()).extracting(Check::id)
+                .containsExactly("schema", "checks", "playbooks", "policy", "replay", "contracts", "diff", "routes", "yaml", "requires");
+        assertThat(cr.checks()).filteredOn(c -> !c.id().equals("requires")).extracting(Check::status).doesNotContain("failed");
+        assertThat(cr.checks()).filteredOn(c -> c.id().equals("requires")).singleElement().satisfies(c -> {
+            assertThat(c.status()).isEqualTo("pending");
+            assertThat(c.detail()).isEqualTo("waiting for cr_tick (provider ticketing 0.1.0) to merge");
+        });
+        assertThat(cr.checksPassed()).as("pending is no failure").isTrue();
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(ConflictException.class)
+                            .hasMessage("change request " + crId + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is open");
+                    assertThat(((ConflictException) e).detail()).isEqualTo(java.util.Map.of("requires", List.of("cr_tick")));
+                })
+                .verify();
+        assertThat(changeRequests.get(crId).orElseThrow().status()).isEqualTo(ChangeRequest.Status.OPEN);
+        assertThat(store.published("ticket-check")).isEmpty();
+
+        // the provider's change request merges on its own, and then the workflow's may
+        StepVerifier.create(handler.mergeChangeRequest("cr_tick").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_tick (provider ticketing 0.1.0)");
+        assertThat(storedRequires(crId)).as("judged again and saved when cr_tick merged").isEqualTo(requiresCheck(crId));
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(store.published("ticket-check").orElseThrow().version()).isEqualTo("0.1.0");
+    }
+
+    @Test
+    void theStoredRequiresCheckFailsWhenTheProviderChangeRequestItRequiresIsClosed() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        String crId = handler.publish("ticket-check", new PublishWorkflow(null, null, List.of("cr_tick"))).block().id();
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String other = handler.publish("vm-restart", null).block().id();
+        List<Check> otherChecks = changeRequests.get(other).orElseThrow().checks();
+
+        StepVerifier.create(handler.closeChangeRequest("cr_tick").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("closed"))
+                .verifyComplete();
+
+        assertThat(storedRequires(crId)).extracting(Check::status, Check::detail).containsExactly("failed",
+                "cr_tick (provider ticketing 0.1.0) was closed without merging; close this change request and publish again");
+        assertThat(changeRequests.get(other).orElseThrow().checks()).as("a change request that requires nothing is left alone").isEqualTo(otherChecks);
+    }
+
+    @Test
+    void theRequiresCheckIsPendingPassedOrFailedAsTheChangeRequestsItRequiresAre() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        String crId = handler.publish("ticket-check", new PublishWorkflow(null, null, List.of("cr_tick"))).block().id();
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail)
+                .containsExactly("pending", "waiting for cr_tick (provider ticketing 0.1.0) to merge");
+
+        // merged, but its provider is not served yet (still being published)
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN).withStatus(ChangeRequest.Status.MERGED, NOW, "junior"));
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("pending",
+                "waiting for cr_tick (provider ticketing 0.1.0) to serve calls: it is merged, but ticketing is not published yet");
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorMessage("change request " + crId + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is merged, "
+                        + "but ticketing is not published yet")
+                .verify();
+        SampleFixtures.publishMerged(registry, SampleFixtures.TICKETING, "all");
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_tick (provider ticketing 0.1.0)");
+
+        changeRequests.save(ticketingChange(ChangeRequest.Status.CLOSED));
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("failed",
+                "cr_tick (provider ticketing 0.1.0) was closed without merging; close this change request and publish again");
+        // the lists and the workflow's page judge it the same way, and a merge is refused
+        assertThat(queries.changeRequests("open").collectList().block()).filteredOn(c -> c.id().equals(crId)).singleElement()
+                .satisfies(c -> assertThat(c.checksPassed()).isFalse());
+        assertThat(queries.detail("ticket-check").block().changeRequests()).singleElement()
+                .satisfies(c -> assertThat(c.checks()).filteredOn(k -> k.id().equals("requires")).extracting(Check::status).containsExactly("failed"));
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorMessage("change request " + crId + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is closed")
+                .verify();
+    }
+
+    @Test
+    void requiresNamesOpenOrMergedProviderChangeRequestsOnly() {
+        String vsphere = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        changeRequests.save(providerChange("cr_vs", "vsphere", "mateo", vsphere));
+        changeRequests.save(providerChange("cr_vs2", "vsphere", "mateo", vsphere.replace("version: 1.3.0", "version: 1.4.1")));
+        changeRequests.save(ticketingChange(ChangeRequest.Status.CLOSED));
+        changeRequests.save(new ChangeRequest("cr_wf", ChangeRequest.Kind.WORKFLOW, "create-vm", "1.0.1", "change/create-vm-1.0.1", "Update Create VM 1.0.1", "mateo",
+                ChangeRequest.Status.OPEN, List.of(), "all", "", "", NOW, null, null, null));
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        java.util.Map<List<String>, String> refused = java.util.Map.of(
+                List.of("cr_nope"), "requires names cr_nope, which is no change request",
+                List.of("cr_wf"), "requires names cr_wf, a workflow change request; a workflow requires provider change requests only",
+                List.of("cr_tick"), "requires names cr_tick, which was closed; name open or merged provider change requests",
+                List.of("cr_vs", "cr_vs2"), "requires names two change requests of provider vsphere; name the one the workflow needs",
+                List.of(" "), "requires holds an empty change request id");
+        refused.forEach((requires, message) -> StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow(null, null, requires)))
+                .expectErrorSatisfies(e -> assertThat(e).isExactlyInstanceOf(IllegalArgumentException.class).hasMessage(message))
+                .verify());
+        assertThat(changeRequests.all()).filteredOn(c -> c.name().equals("vm-restart")).isEmpty();
+        assertThat(store.draft("vm-restart")).as("the draft stays a draft").isPresent();
+
+        // an id named twice counts once
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_vs", "cr_vs"))).block().id();
+        assertThat(changeRequests.get(crId).orElseThrow().requires()).containsExactly("cr_vs");
+    }
+
+    @Test
+    void theReplayOfAChangeThatRequiresAProviderChangeSeesItsFile() {
+        changeRequests.save(providerChange("cr_vs", "vsphere", "mateo",
+                SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("version: 1.3.0", "version: 1.4.0")));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        List<String> seen = new ArrayList<>();
+        when(runs.dryRun(any(), any(), any(), any())).thenAnswer(inv -> {
+            List<ProviderDefinition> drafts = inv.getArgument(3);
+            drafts.forEach(d -> seen.add(d.name() + " " + d.metadata().version()));
+            return Mono.just(SampleFixtures.DRY_RUN_PASSED);
+        });
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_vs"))).block().id();
+
+        assertThat(seen).containsExactly("vsphere 1.4.0");
+        assertThat(changeRequests.get(crId).orElseThrow().checks()).filteredOn(c -> c.id().equals("replay")).singleElement()
+                .satisfies(c -> assertThat(c.detail()).isEqualTo("1 job(s) of 1.2.0 replayed"));
+        // the replay check of the version under review sees it too
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1")).assertNext(r -> assertThat(r.replayed()).isEqualTo(1)).verifyComplete();
+        assertThat(seen).containsExactly("vsphere 1.4.0", "vsphere 1.4.0");
+    }
+
+    static ChangeRequest vsphereChange(String id, String version, String yaml, ChangeRequest.Status status, String strategy) {
+        return new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, "vsphere", version, "change/provider-vsphere-" + version, "Provider vSphere " + version, "mateo",
+                status, List.of(new Check("schema", "Schema", "passed", null)), strategy, yaml, "", NOW, null, null, null);
+    }
+
+    String currentVsphere() {
+        return providers.currentVersion("vsphere").orElseThrow();
+    }
+
+    /** Captures the provider files each dry run with drafts sees, as {@code name version}. */
+    List<String> draftsSeen() {
+        List<String> seen = new ArrayList<>();
+        when(runs.dryRun(any(), any(), any(), any())).thenAnswer(inv -> {
+            List<ProviderDefinition> drafts = inv.getArgument(3);
+            drafts.forEach(d -> seen.add(d.name() + " " + d.metadata().version()));
+            return Mono.just(SampleFixtures.DRY_RUN_PASSED);
+        });
+        return seen;
+    }
+
+    @Test
+    void aMergedProviderChangeIsJudgedByTheVersionThatServesCallsNow() {
+        String vsphere = SampleFixtures.yaml("providers/team-compute/vsphere.yaml");
+        // 1.2.0 merged long ago with an action that 1.3.0, current now, no longer has
+        changeRequests.save(vsphereChange("cr_old", "1.2.0", vsphere.replace("version: 1.3.0", "version: 1.2.0").replace("id: vm.waitForPowerState", "id: vm.legacyWait"),
+                ChangeRequest.Status.MERGED, "all"));
+        changeRequests.save(vsphereChange("cr_now", "1.3.0", vsphere, ChangeRequest.Status.MERGED, "all"));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        List<String> seen = draftsSeen();
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart).replace("action: vm.waitForPowerState", "action: vm.legacyWait"))).block();
+
+        // its file would hide the version that serves calls, so the publish is refused
+        StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_old"))))
+                .expectErrorSatisfies(e -> assertThat(e).isExactlyInstanceOf(IllegalArgumentException.class)
+                        .hasMessage("requires names cr_old, which merged provider vsphere 1.2.0, but vsphere 1.3.0 serves calls now; "
+                                + "the checks judge the workflow against that version, so publish without cr_old"))
+                .verify();
+        // the merged version that serves calls is the registry's own: the checks see no file of it, and vm.legacyWait is unknown
+        StepVerifier.create(handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_now"))))
+                .expectErrorSatisfies(e -> assertThat(problemsOf(e)).extracting(Problem::code, Problem::step).contains(tuple("step.unknownAction", "validate")))
+                .verify();
+        assertThat(changeRequests.all()).filteredOn(c -> c.name().equals("vm-restart")).isEmpty();
+
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart))).block();
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_now"))).block().id();
+        assertThat(seen).as("the replay ran on the published providers").isEmpty();
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_now (provider vsphere 1.3.0)");
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1")).assertNext(r -> assertThat(r.replayed()).isEqualTo(1)).verifyComplete();
+        assertThat(seen).isEmpty();
+
+        // a later version serving calls still has what the required one published
+        SampleFixtures.publishMerged(registry, vsphere.replace("version: 1.3.0", "version: 1.3.1"), "all");
+        assertThat(requiresCheck(crId).status()).isEqualTo("passed");
+        StepVerifier.create(handler.mergeChangeRequest(crId)).assertNext(a -> assertThat(a.status()).isEqualTo("merged")).verifyComplete();
+    }
+
+    @Test
+    void aWorkflowThatNeedsACanaryOfItsProviderMergesOnceThatVersionServesEveryCall() {
+        String next = SampleFixtures.yaml("providers/team-compute/vsphere.yaml").replace("version: 1.3.0", "version: 1.4.0")
+                .replace("id: vm.waitForPowerState", "id: vm.awaitPowerState");
+        changeRequests.save(vsphereChange("cr_canary", "1.4.0", next, ChangeRequest.Status.OPEN, "canary"));
+        when(runsQueries.outcomes(any(), any(), any())).thenReturn(Mono.just(List.of(outcome("job_1", "succeeded", null))));
+        List<String> seen = draftsSeen();
+        handler.saveDraft("vm-restart", WorkflowSource.ofYaml(edited(vmRestart).replace("action: vm.waitForPowerState", "action: vm.awaitPowerState"))).block();
+        String crId = handler.publish("vm-restart", new PublishWorkflow(null, null, List.of("cr_canary"))).block().id();
+        assertThat(seen).containsExactly("vsphere 1.4.0");
+
+        // merged, the canary starts: 1.3.0 still serves the other calls, and it has no vm.awaitPowerState
+        StepVerifier.create(handler.mergeChangeRequest("cr_canary").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+        assertThat(currentVsphere()).isEqualTo("1.3.0");
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("pending",
+                "waiting for cr_canary (provider vsphere 1.4.0) to serve calls: it is merged, but vsphere 1.3.0 still serves calls");
+        StepVerifier.create(handler.mergeChangeRequest(crId))
+                .expectErrorSatisfies(e -> assertThat(e).isInstanceOf(ConflictException.class).hasMessage("change request " + crId
+                        + " waits for the provider change requests it requires: cr_canary (provider vsphere 1.4.0) is merged, but vsphere 1.3.0 still serves calls"))
+                .verify();
+        // while it rolls out, the replay check of the version under review still sees the candidate's file
+        StepVerifier.create(handler.replayCheck("vm-restart", "1.2.1")).assertNext(r -> assertThat(r.passed()).isTrue()).verifyComplete();
+        assertThat(seen).containsExactly("vsphere 1.4.0", "vsphere 1.4.0");
+
+        assertThat(storedRequires(crId)).isEqualTo(requiresCheck(crId));
+
+        // the provider release is promoted: the stored check is judged again, even before the providers slice makes 1.4.0 current
+        events.publish("release.promoted", "release", "rel_1", "junior", F.objectNode().put("provider", "vsphere").put("from", "1.3.0").put("to", "1.4.0"));
+        assertThat(storedRequires(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_canary (provider vsphere 1.4.0)");
+        SampleFixtures.publishMerged(registry, next, "all");
+        assertThat(requiresCheck(crId)).extracting(Check::status, Check::detail).containsExactly("passed", "published: cr_canary (provider vsphere 1.4.0)");
+        StepVerifier.create(handler.mergeChangeRequest(crId)).assertNext(a -> assertThat(a.status()).isEqualTo("merged")).verifyComplete();
+        assertThat(store.published("vm-restart").orElseThrow().version()).isEqualTo("1.2.1");
+    }
+
+    @Test
+    void aWorkflowMergeWhileItsProviderIsStillBeingPublishedIsRefused() {
+        changeRequests.save(ticketingChange(ChangeRequest.Status.OPEN));
+        handler.createDraft(WorkflowSource.ofYaml(SampleFixtures.TICKET_CHECK)).block();
+        String crId = handler.publish("ticket-check", new PublishWorkflow("all", null, List.of("cr_tick"))).block().id();
+        List<String> refused = new ArrayList<>();
+        ProviderCommands providerCommands = mock(ProviderCommands.class);
+        when(providerCommands.publishMerged("cr_tick")).thenAnswer(inv -> Mono.fromRunnable(() -> {
+            // cr_tick is saved merged and its provider is being published when the workflow's merge comes in
+            assertThat(changeRequests.get("cr_tick").orElseThrow().status()).isEqualTo(ChangeRequest.Status.MERGED);
+            handler.mergeChangeRequest(crId).onErrorResume(e -> {
+                refused.add(e.getMessage());
+                return Mono.empty();
+            }).block();
+            SampleFixtures.publishMerged(registry, SampleFixtures.TICKETING, "all");
+        }));
+        handler.setProviderCommands(providerCommands);
+
+        StepVerifier.create(handler.mergeChangeRequest("cr_tick").contextWrite(ctx -> CurrentIdentity.with(ctx, JUNIOR)))
+                .assertNext(a -> assertThat(a.status()).isEqualTo("merged"))
+                .verifyComplete();
+
+        assertThat(refused).containsExactly("change request " + crId
+                + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is merged, but ticketing is not published yet");
+        assertThat(store.published("ticket-check")).isEmpty();
+        StepVerifier.create(handler.mergeChangeRequest(crId)).assertNext(a -> assertThat(a.status()).isEqualTo("merged")).verifyComplete();
     }
 
     // ------------------------------------------------------------------ import

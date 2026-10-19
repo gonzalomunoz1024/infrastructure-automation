@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WorkflowDocument } from '@iaf/workflow-checks'
 import { DesignerStore, isAutoLayout } from './store'
 import { API_TRIGGER_ID, findStepNode, stepIds } from './graph'
 import { sampleDocuments } from './graph.test'
 import { EMPTY_REGISTRY, loadRegistry, setRegistryForTests } from './registry'
+import { api, ApiError } from '../../lib/api'
+import type { ChangeRequestDetail, RegistryProvider } from '../../lib/types'
+import { blankAction } from '../../components/provider-editor/state'
+import { buildCatalog } from '../creator/catalog'
+import { unpublishedTag } from '../canvas/flow'
+import { contextAt } from './expressions'
+import { newProviderDraft } from './providerDrafts'
 
 const vmRestart = (): WorkflowDocument => sampleDocuments().find((s) => s.file.endsWith('vm-restart.yaml'))!.doc
 
@@ -168,5 +175,450 @@ describe('a credential stored from a credential field', () => {
     s.addCredential(TOKEN)
     await vi.waitFor(() => expect(s.getState().registry?.credentials).toEqual([VSPHERE, TOKEN]))
     expect((await loadRegistry()).credentials).toEqual([VSPHERE, TOKEN])
+  })
+})
+
+/*
+ * The workflow's provider drafts and the Provider sheet: kept in this browser per workflow, as the
+ * stickies are, outside the document, its undo history and the dirty flag.
+ */
+describe('provider drafts and the Provider sheet', () => {
+  const KEY = 'iaf-designer-provider-drafts:vm-restart'
+  let data: Map<string, string>
+
+  beforeEach(() => {
+    data = new Map()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('adds, replaces and drops a draft outside undo and the dirty flag, kept per workflow', () => {
+    const s = store()
+    const d = newProviderDraft('http', { name: 'backup', auth: { type: 'bearer', credential: 'vault:backup/token', header: '' } })
+    s.upsertProviderDraft(d)
+    s.upsertProviderDraft({ ...d, title: 'Backup API' })
+    expect(Object.keys(s.getState().providerDrafts)).toEqual([d.id])
+    expect(s.getState().providerDrafts[d.id].title).toBe('Backup API')
+    expect(s.getState()).toMatchObject({ dirty: false, canUndo: false })
+    expect(JSON.parse(data.get(KEY) ?? '[]')).toHaveLength(1)
+    // the next canvas of this workflow has it
+    expect(store().getState().providerDrafts[d.id]).toMatchObject({ name: 'backup', title: 'Backup API', auth: { credential: 'vault:backup/token' } })
+    s.removeProviderDraft(d.id)
+    s.removeProviderDraft('draft_none')
+    expect(s.getState().providerDrafts).toEqual({})
+    expect(data.has(KEY)).toBe(false)
+  })
+
+  it('opens the sheet in place of the node creator and the menu, on the draft of the provider it names', () => {
+    const s = store()
+    const d = newProviderDraft('openapi', { name: 'vsphere' })
+    s.upsertProviderDraft(d)
+    s.openCreator()
+    s.openMenu({ x: 1, y: 1, target: { kind: 'pane', flowX: 0, flowY: 0 } })
+    s.openProviderSheet({ entry: 'step', provider: 'vsphere', target: { kind: 'step', step: 'restart' } })
+    expect(s.getState()).toMatchObject({ creator: null, menu: null, providerSheet: { entry: 'step', provider: 'vsphere', draft: d.id, target: { kind: 'step', step: 'restart' } } })
+    s.openProviderSheet({ entry: 'node', provider: 'dns' })
+    expect(s.getState().providerSheet).toEqual({ entry: 'node', provider: 'dns', draft: null, target: null })
+    // dropping the draft it edits closes it
+    s.openProviderSheet({ entry: 'node', draft: d.id })
+    s.removeProviderDraft(d.id)
+    expect(s.getState().providerSheet).toBeNull()
+  })
+
+  it("a new provider's sheet takes the first draft saved from it", () => {
+    const s = store()
+    s.openProviderSheet({ entry: 'openapi', target: { kind: 'insert', point: null } })
+    const d = newProviderDraft('openapi', { name: 'backup' })
+    s.upsertProviderDraft(d)
+    expect(s.getState().providerSheet?.draft).toBe(d.id)
+    // a sheet on a published provider takes only that provider's draft
+    s.openProviderSheet({ entry: 'node', provider: 'dns' })
+    s.upsertProviderDraft(newProviderDraft('openapi', { name: 'other' }))
+    expect(s.getState().providerSheet?.draft).toBeNull()
+  })
+
+  it('closes with the chosen action as a new step where it was opened for, and opens it', () => {
+    const s = store()
+    s.openCreator()
+    s.openProviderSheet({ entry: 'curl', target: { kind: 'insert', point: { kind: 'after', step: 'approval', handle: 'main' } } })
+    const id = s.closeProviderSheet({ type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })
+    expect(id).not.toBeNull()
+    const st = s.getState()
+    expect(st.providerSheet).toBeNull()
+    expect(stepIds(st.graph).slice(0, 4)).toEqual(['checkVmExists', 'noBackupRunning', 'approval', id])
+    expect(st.ndv).toBe(`step:${id}`)
+    const entry = st.doc.workflow?.do?.find((e) => id! in e)
+    expect(entry?.[id!]).toMatchObject({ name: 'Create snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create' } })
+    s.undo()
+    expect(stepIds(s.getState().graph)).not.toContain(id)
+  })
+
+  it('closes filling the step it was opened from, which keeps its id and name', () => {
+    const s = store(minimal([{ a: { name: 'Back up', call: 'http', with: { method: 'GET', url: 'https://backup.example.com' } } }]))
+    s.openProviderSheet({ entry: 'step', target: { kind: 'step', step: 'a' } })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })).toBe('a')
+    expect(s.getState().doc.workflow?.do?.[0]?.a).toEqual({ name: 'Back up', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: {} } })
+    expect(s.getState().canUndo).toBe(true)
+  })
+
+  it('closes without a step, or without a target, or on a step gone, and changes nothing', () => {
+    const s = store()
+    const version = s.getState().version
+    s.openProviderSheet({ entry: 'describe', target: { kind: 'insert', point: null } })
+    expect(s.closeProviderSheet()).toBeNull()
+    s.openProviderSheet({ entry: 'node', provider: 'vsphere' })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'vsphere', action: 'vm.get' } })).toBeNull()
+    s.openProviderSheet({ entry: 'step', target: { kind: 'step', step: 'gone' } })
+    expect(s.closeProviderSheet({ type: 'provider', params: { provider: 'vsphere', action: 'vm.get' } })).toBeNull()
+    expect(s.closeProviderSheet()).toBeNull()
+    expect(s.getState()).toMatchObject({ providerSheet: null, version, canUndo: false })
+  })
+
+  it("a new workflow's drafts are kept under its name once saved", async () => {
+    vi.spyOn(api, 'createWorkflow').mockResolvedValue({ id: 'cmd-1', status: 'accepted' } as Awaited<ReturnType<typeof api.createWorkflow>>)
+    const s = new DesignerStore({ name: null, doc: vmRestart(), registry: null, isNew: true })
+    const d = newProviderDraft('http', { name: 'backup' })
+    s.upsertProviderDraft(d)
+    expect(data.size).toBe(0)
+    await s.save()
+    expect(JSON.parse(data.get(KEY) ?? '[]').map((x: { id: string }) => x.id)).toEqual([d.id])
+  })
+})
+
+/*
+ * A draft on the canvas: the registry the canvas reads lists it as a published provider (tagged
+ * draft), its owner defaults to the workflow's, a dry run and Validate send the files of the
+ * drafts the workflow calls, and a draft Publish opened stays in review until it merges.
+ */
+describe('provider drafts on the canvas', () => {
+  const VSPHERE: RegistryProvider = { name: 'vsphere', title: 'vSphere', type: 'openapi', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }] }
+  const withBackupStep = (): WorkflowDocument => ({
+    ...minimal([
+      { snap: { name: 'Snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: { vm: 'vm-1' } } } },
+      { get: { name: 'Get VM', call: 'provider', with: { provider: 'vsphere', action: 'vm.get', input: {} } } },
+    ]),
+    metadata: { name: 'vm-backup', noun: 'vm', verb: 'backup', owner: 'team-compute', version: '1.0.0' },
+  })
+  const backup = (patch: Parameters<typeof newProviderDraft>[1] = {}) =>
+    newProviderDraft('http', { title: 'Backup API', name: 'backup', actions: [blankAction({ id: 'snapshot.create', title: 'Create snapshot', method: 'POST', path: '/snapshots', effect: 'create', retry: 'unsafe', inputText: '{"type":"object","required":["vm"],"properties":{"vm":{"type":"string"}}}', exampleText: '{"id":"snap-1"}' })], ...patch })
+  const onCanvas = (doc = withBackupStep()) => new DesignerStore({ name: doc.metadata?.name ?? null, doc, registry: { ...EMPTY_REGISTRY, providers: [VSPHERE] } })
+  const codes = (s: DesignerStore) => s.checkNow().map((p) => p.code)
+
+  beforeEach(() => {
+    const data = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    setRegistryForTests(null)
+  })
+
+  it('lists a draft as a provider of the registry, tagged draft, under the workflow owner, and the checks know it', () => {
+    const s = onCanvas()
+    expect(codes(s)).toContain('step.unknownProvider')
+    const d = backup()
+    s.upsertProviderDraft(d)
+    const p = s.getState().registry?.providers.find((x) => x.name === 'backup')
+    expect(p).toMatchObject({ title: 'Backup API', owner: 'team-compute', unpublished: 'draft', actions: [{ id: 'snapshot.create', sample: { id: 'snap-1' } }] })
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    // the draft itself takes the owner too: the evidence its tries leave is kept under it
+    expect(s.getState().providerDrafts[d.id].owner).toBe('team-compute')
+    s.removeProviderDraft(d.id)
+    expect(s.getState().registry?.providers.map((x) => x.name)).toEqual(['vsphere'])
+    expect(codes(s)).toContain('step.unknownProvider')
+  })
+
+  it('offers the draft in the node creator, tagged draft, and its sample as the expected output', () => {
+    const s = onCanvas()
+    s.upsertProviderDraft(backup())
+    const catalog = buildCatalog(s.getState().registry, s.getState().doc)
+    expect(catalog.get('providers')?.sections[0].items.find((i) => i.id === 'provider:backup')?.tags).toEqual([{ label: 'draft', tone: 'accent' }])
+    expect(catalog.get('provider:backup')?.title).toBe('Backup API (draft)')
+    const action = catalog.get('provider:backup')?.sections[0].items[0]
+    expect(action?.tags?.map((t) => t.label)).toEqual(['create', 'draft'])
+    expect(action?.action).toEqual({ kind: 'step', type: 'provider', params: { provider: 'backup', action: 'snapshot.create', name: 'Create snapshot' } })
+    expect(contextAt(s.getState().doc, 'get', {}, s.getState().registry).outputs.snap).toEqual({ id: 'snap-1' })
+  })
+
+  it("offers an Ansible draft's playbooks in the library, tagged, and tags the steps that run one", () => {
+    const s = onCanvas()
+    const ops = { ...newProviderDraft('ansible', { name: 'ops', title: 'Ops playbooks' }), actions: [blankAction({ id: 'hosts.patch', title: 'Patch hosts', playbook: 'patch.yml', effect: 'change', retry: 'unsafe' })] }
+    s.upsertProviderDraft(ops)
+    const registry = s.getState().registry
+    expect(registry?.playbooks).toEqual([{ name: 'ops/hosts.patch', version: ops.version, path: 'patch.yml', owner: 'team-compute', unpublished: 'draft' }])
+    const library = buildCatalog(registry, s.getState().doc).get('ansible')?.sections[0]
+    expect(library?.items.map((i) => [i.title, i.tags])).toEqual([['ops/hosts.patch', [{ label: 'draft', tone: 'accent' }]]])
+    const providers = registry?.providers ?? []
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: 'ops/hosts.patch' } }, providers)).toBe('draft')
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: { library: 'ops/hosts.patch' } } }, providers)).toBe('draft')
+    expect(unpublishedTag({ type: 'ansible', with: { playbook: { git: { repo: 'https://example.com/ops', path: 'ops/x.yml' } } } }, providers)).toBeUndefined()
+    expect(unpublishedTag({ type: 'provider', with: { provider: 'vsphere', action: 'vm.get' } }, providers)).toBeUndefined()
+    s.upsertProviderDraft(backup())
+    expect(unpublishedTag({ type: 'provider', with: { provider: 'backup', action: 'snapshot.create' } }, s.getState().registry?.providers ?? [])).toBe('draft')
+  })
+
+  it("keeps an owner someone set, or cleared, and follows the workflow's owner while the draft names none", () => {
+    const s = onCanvas()
+    const touched = backup({ name: 'dns', owner: '', ownerTouched: true })
+    s.upsertProviderDraft(touched)
+    s.upsertProviderDraft(backup({ name: 'storage', owner: 'team-data' }))
+    expect(s.getState().providerDrafts[touched.id].owner).toBe('')
+    expect(Object.values(s.getState().providerDrafts).map((d) => d.owner)).toEqual(['', 'team-data'])
+    // the registry and the file still name the workflow's owner for the one left empty
+    expect(s.getState().registry?.providers.find((x) => x.name === 'dns')?.owner).toBe('team-compute')
+    s.update((doc) => void (doc.metadata!.owner = 'team-ops'))
+    expect(s.getState().registry?.providers.find((x) => x.name === 'dns')?.owner).toBe('team-ops')
+  })
+
+  it('sends the files of the drafts the workflow calls with a dry run and Validate, and no others', async () => {
+    const dryRun = vi.spyOn(api, 'dryRunWorkflow').mockResolvedValue({ passed: true, path: [], steps: [] })
+    const validate = vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: true, problems: [] })
+    const s = onCanvas()
+    await s.testRun({})
+    expect(dryRun.mock.calls[0][2]).toEqual([])
+    s.upsertProviderDraft(backup())
+    s.upsertProviderDraft(backup({ name: 'unused' }))
+    await s.testRun({ vm: 'vm-1' })
+    await s.validate()
+    const files = dryRun.mock.calls[1][2] ?? []
+    expect(files).toHaveLength(1)
+    expect(files[0]).toContain('name: backup')
+    expect(files[0]).toContain('owner: team-compute')
+    expect(validate.mock.calls[0][1]).toEqual(files)
+    expect(s.getState().problems).toEqual([])
+  })
+
+  it('turns a provider back into a draft when its change request is closed instead of merged', () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    expect(s.providerChangeClosed('cr_9')).toBe(false)
+    expect(s.providerChangeClosed('cr_8')).toBe(true)
+    const st = s.getState()
+    expect(st.providersInReview).toEqual([])
+    expect(Object.keys(st.providerDrafts)).toEqual([d.id])
+    expect(st.providerDrafts[d.id]).toMatchObject({ name: 'backup', owner: 'team-compute', actions: [{ id: 'snapshot.create' }] })
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('draft')
+    // a later Publish publishes it again and requires no closed change request
+    expect(s.usedProviderDrafts().map((x) => x.id)).toEqual([d.id])
+    expect(s.usedProvidersInReview()).toEqual([])
+    // kept in this browser again, so it outlives the session
+    expect(JSON.parse(localStorage.getItem('iaf-designer-provider-drafts:vm-backup') ?? '[]').map((x: { id: string }) => x.id)).toEqual([d.id])
+    expect(s.providerChangeClosed('cr_8')).toBe(false)
+  })
+
+  it('keeps a draft of the provider the workflow has by now when the change request is closed', () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    const again = backup({ title: 'Backup API, fixed' })
+    s.upsertProviderDraft(again)
+    s.providerChangeClosed('cr_8')
+    expect(Object.values(s.getState().providerDrafts).map((x) => x.title)).toEqual(['Backup API, fixed'])
+    expect(s.getState().providersInReview).toEqual([])
+  })
+
+  it('counts a draft published on its own from the Provider sheet as in review: required, editable again once closed, gone once merged', async () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft({ ...d, changeRequest: 'cr_5' })
+    // Publish requires its change request instead of opening a second one, and the canvas still knows it
+    expect(s.usedProviderDrafts()).toEqual([])
+    expect(s.usedProvidersInReview().map((r) => [r.changeRequest, r.draft.id])).toEqual([['cr_5', d.id]])
+    expect(s.providerFiles()).toHaveLength(1)
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    // closed: the draft stays, editable, and the next Publish publishes it again
+    expect(s.providerChangeClosed('cr_5')).toBe(true)
+    expect(s.getState().providerDrafts[d.id].changeRequest).toBeUndefined()
+    expect(s.usedProviderDrafts().map((x) => x.id)).toEqual([d.id])
+    expect(s.usedProvidersInReview()).toEqual([])
+    // published on its own again, then merged: the draft is no longer needed
+    s.upsertProviderDraft({ ...s.getState().providerDrafts[d.id], changeRequest: 'cr_6' })
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/registry/providers') ? [VSPHERE, { name: 'backup', title: 'Backup API', type: 'http', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe' }] }] : []))
+    await s.providerChangeMerged('cr_6')
+    expect(s.getState().providerDrafts).toEqual({})
+    expect(s.providerFiles()).toEqual([])
+    expect(codes(s)).not.toContain('step.unknownProvider')
+  })
+
+  it('drops the last Validate answer when a draft is added, edited or removed: it judged other providers', async () => {
+    const needsVm = { level: 'error' as const, code: 'step.missingInput', step: 'snap', message: "Action snapshot.create needs 'vm'" }
+    const validate = vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: false, problems: [needsVm] })
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    await s.validate()
+    expect(s.checkNow()).toEqual([needsVm])
+    // the draft is edited (vm is optional now): the live checks judge it again
+    const optional = s.getState().providerDrafts[d.id].actions.map((a) => ({ ...a, inputText: '{"type":"object","properties":{"vm":{"type":"string"}}}' }))
+    s.upsertProviderDraft({ ...s.getState().providerDrafts[d.id], actions: optional })
+    expect(s.checkNow()).not.toContainEqual(needsVm)
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    validate.mockResolvedValue({ valid: true, problems: [] })
+    await s.validate()
+    expect(s.checkNow()).toEqual([])
+    s.removeProviderDraft(d.id)
+    expect(codes(s)).toContain('step.unknownProvider')
+  })
+
+  it("keeps the live checks on Save when the workflow calls a draft: the backend's save knows only published providers", async () => {
+    const unknown = { level: 'error' as const, code: 'step.unknownProvider', step: 'snap', field: 'with.provider', message: "Unknown provider 'backup'" }
+    const saveDraft = vi.spyOn(api, 'saveDraft').mockResolvedValue({ name: 'vm-backup', version: '1.0.0', problems: [unknown] })
+    const s = onCanvas()
+    s.upsertProviderDraft(backup())
+    s.update((doc) => void (doc.metadata!.title = 'VM backup'))
+    const live = s.checkNow()
+    expect(live.map((p) => p.code)).not.toContain('step.unknownProvider')
+    const saved = await s.save()
+    expect(saved.problems).toEqual(live)
+    expect(s.getState().problems).toEqual(live)
+    // a workflow without drafts (none kept for this one) takes the backend's answer, as before
+    const plain = new DesignerStore({ name: 'vm-plain', doc: withBackupStep(), registry: { ...EMPTY_REGISTRY, providers: [VSPHERE] } })
+    plain.update((doc) => void (doc.metadata!.title = 'VM backup'))
+    expect((await plain.save()).problems).toEqual([unknown])
+    expect(plain.getState().problems).toEqual([unknown])
+    expect(saveDraft).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps no Validate answer that comes back after the providers changed', async () => {
+    let answer: (v: { valid: boolean; problems: [] }) => void = () => undefined
+    vi.spyOn(api, 'validateWorkflow').mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    const pending = s.validate()
+    s.removeProviderDraft(d.id)
+    answer({ valid: true, problems: [] })
+    await pending
+    expect(codes(s)).toContain('step.unknownProvider')
+  })
+
+  it('keeps a published draft in review until its change request merges, then reads the published provider', async () => {
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    s.openProviderSheet({ entry: 'publish', draft: d.id })
+    expect(s.usedProviderDrafts().map((x) => x.id)).toEqual([d.id])
+    s.providerDraftPublished(d.id, 'cr_8')
+    let st = s.getState()
+    expect(st.providerDrafts).toEqual({})
+    expect(st.providerSheet).toBeNull()
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('in review')
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    expect(s.usedProviderDrafts()).toEqual([])
+    expect(s.usedProvidersInReview().map((r) => r.changeRequest)).toEqual(['cr_8'])
+    expect(s.providerFiles()).toHaveLength(1)
+    expect(s.providerFiles()[0]).toContain('name: backup')
+    // merged: the registry loads again and lists the provider as published
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/registry/providers') ? [VSPHERE, { name: 'backup', title: 'Backup API', type: 'http', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe' }] }] : []))
+    await s.providerChangeMerged('cr_8')
+    st = s.getState()
+    expect(st.providersInReview).toEqual([])
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBeUndefined()
+    expect(s.providerFiles()).toEqual([])
+    expect(codes(s)).not.toContain('step.unknownProvider')
+  })
+})
+
+/*
+ * Providers in review outlive the session: kept in this browser per workflow, and checked against
+ * their change requests when the workflow opens again.
+ */
+describe('providers in review across sessions', () => {
+  const VSPHERE: RegistryProvider = { name: 'vsphere', title: 'vSphere', type: 'openapi', actions: [{ id: 'vm.get', title: 'Get VM', effect: 'read', retry: 'safe' }] }
+  const doc = (): WorkflowDocument => ({
+    ...minimal([{ snap: { name: 'Snapshot', call: 'provider', with: { provider: 'backup', action: 'snapshot.create', input: { vm: 'vm-1' } } } }]),
+    metadata: { name: 'vm-backup', noun: 'vm', verb: 'backup', owner: 'team-compute', version: '1.0.0' },
+  })
+  const open = () => new DesignerStore({ name: 'vm-backup', doc: doc(), registry: { ...EMPTY_REGISTRY, providers: [VSPHERE] } })
+  const codes = (s: DesignerStore) => s.checkNow().map((p) => p.code)
+  const changeRequest = (status: ChangeRequestDetail['status'], yaml = ''): ChangeRequestDetail => ({ id: 'cr_8', kind: 'provider', name: 'backup', version: '1.0.0', branch: 'provider/backup-1.0.0', title: 'Publish backup 1.0.0', author: 'gonzalo', status, strategy: 'canary', createdAt: '2026-10-18T10:00:00Z', checks: [], diff: '', yaml })
+  /** A session that published the draft (cr_8 is open), then left. */
+  const published = () => {
+    const s = open()
+    const d = newProviderDraft('http', { title: 'Backup API', name: 'backup', actions: [blankAction({ id: 'snapshot.create', title: 'Create snapshot', method: 'POST', path: '/snapshots', effect: 'create', retry: 'unsafe' })] })
+    s.upsertProviderDraft(d)
+    s.providerDraftPublished(d.id, 'cr_8')
+    return d
+  }
+
+  beforeEach(() => {
+    const data = new Map<string, string>()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v), removeItem: (k: string) => void data.delete(k) })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    setRegistryForTests(null)
+  })
+
+  it('keep the provider in review when the workflow opens again, with the file its change request publishes', async () => {
+    const d = published()
+    const ask = vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('open', 'kind: Provider\nmetadata:\n  name: backup\n'))
+    const s = open()
+    let st = s.getState()
+    expect(st.providerDrafts).toEqual({})
+    expect(st.providersInReview.map((r) => [r.changeRequest, r.draft.id])).toEqual([['cr_8', d.id]])
+    expect(st.registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('in review')
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    // the next Publish requires its change request; a dry run takes its file
+    expect(s.usedProvidersInReview().map((r) => r.changeRequest)).toEqual(['cr_8'])
+    expect(s.providerFiles()[0]).toContain('name: backup')
+    await vi.waitFor(() => expect(s.providerFiles()).toEqual(['kind: Provider\nmetadata:\n  name: backup\n']))
+    expect(ask).toHaveBeenCalledWith('cr_8')
+    st = s.getState()
+    expect(st.providersInReview).toHaveLength(1)
+  })
+
+  it('turn the provider back into a draft when its change request was closed meanwhile, or is gone', async () => {
+    const d = published()
+    vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('closed'))
+    const s = open()
+    await vi.waitFor(() => expect(s.getState().providersInReview).toEqual([]))
+    expect(Object.keys(s.getState().providerDrafts)).toEqual([d.id])
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBe('draft')
+    expect(localStorage.getItem('iaf-designer-providers-in-review:vm-backup')).toBeNull()
+    // and when the workflow opens again it is a draft
+    expect(Object.keys(open().getState().providerDrafts)).toEqual([d.id])
+
+    localStorage.removeItem('iaf-designer-provider-drafts:vm-backup')
+    published()
+    vi.spyOn(api, 'changeRequest').mockRejectedValue(new ApiError(404, { error: 'No change request cr_8' }))
+    const gone = open()
+    await vi.waitFor(() => expect(gone.getState().providersInReview).toEqual([]))
+    expect(Object.values(gone.getState().providerDrafts).map((x) => x.name)).toEqual(['backup'])
+  })
+
+  it('keep it in review when the change request does not answer', async () => {
+    published()
+    const ask = vi.spyOn(api, 'changeRequest').mockRejectedValue(new ApiError(0, null))
+    const s = open()
+    await vi.waitFor(() => expect(ask).toHaveBeenCalled())
+    await s.refreshProvidersInReview()
+    expect(s.getState().providersInReview.map((r) => r.changeRequest)).toEqual(['cr_8'])
+    expect(s.getState().providerDrafts).toEqual({})
+  })
+
+  it('read the published provider when its change request merged meanwhile', async () => {
+    published()
+    vi.spyOn(api, 'changeRequest').mockResolvedValue(changeRequest('merged'))
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => Response.json(String(input).endsWith('/registry/providers') ? [VSPHERE, { name: 'backup', title: 'Backup API', type: 'http', actions: [{ id: 'snapshot.create', title: 'Create snapshot', effect: 'create', retry: 'unsafe' }] }] : []))
+    const s = open()
+    await vi.waitFor(() => expect(s.getState().providersInReview).toEqual([]))
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')).toMatchObject({ title: 'Backup API' })
+    expect(s.getState().registry?.providers.find((x) => x.name === 'backup')?.unpublished).toBeUndefined()
+    expect(s.getState().providerDrafts).toEqual({})
+    expect(s.providerFiles()).toEqual([])
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    expect(localStorage.getItem('iaf-designer-providers-in-review:vm-backup')).toBeNull()
   })
 })

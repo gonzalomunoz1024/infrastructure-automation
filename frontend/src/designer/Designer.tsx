@@ -1,7 +1,8 @@
 /**
  * The workflow designer: one store per open workflow, the header, the Editor · Executions ·
- * Settings views, the side panels and sheets, and the keys that work everywhere (⌘S saves,
- * ⌘↵ tests). The page decides what to open; this module is the lazily loaded chunk.
+ * Settings views, the side panels and sheets (the Provider sheet among them), and the keys that
+ * work everywhere (⌘S saves, ⌘↵ tests). The page decides what to open; this module is the lazily
+ * loaded chunk.
  */
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { ConfirmDialog, Skeleton, SkeletonRows, useHotkey, useToast } from '@iaf/ui'
@@ -24,6 +25,7 @@ const SettingsView = lazy(() => import('./views/SettingsView').then((m) => ({ de
 const AssistantPanel = lazy(() => import('./chrome/AssistantPanel').then((m) => ({ default: m.AssistantPanel })))
 const PublishSheet = lazy(() => import('./chrome/Publish').then((m) => ({ default: m.PublishSheet })))
 const ChangeRequestDrawer = lazy(() => import('./chrome/Publish').then((m) => ({ default: m.ChangeRequestDrawer })))
+const ProviderSheet = lazy(() => import('./chrome/ProviderSheet').then((m) => ({ default: m.ProviderSheet })))
 
 function ViewSkeleton() {
   return (
@@ -60,6 +62,7 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
   const toast = useToast()
   const tab = useDesignerSelector((s) => s.tab)
   const name = useDesignerSelector((s) => s.name)
+  const providerSheet = useDesignerSelector((s) => s.providerSheet !== null)
   const [panel, setPanel] = useState<Panel>(null)
   const [assistant, setAssistant] = useState(false)
   const [leaving, setLeaving] = useState(false)
@@ -173,6 +176,12 @@ function Shell({ onCreated }: { onCreated?: (name: string) => void }) {
       {changeRequest && name && (
         <Suspense fallback={null}>
           <ChangeRequestDrawer id={changeRequest} workflow={name} onClose={() => setChangeRequest(null)} />
+        </Suspense>
+      )}
+      {/* the Provider sheet, opened from the node creator, a step's parameters, the node detail view or Publish */}
+      {providerSheet && (
+        <Suspense fallback={null}>
+          <ProviderSheet />
         </Suspense>
       )}
       {leaving && (

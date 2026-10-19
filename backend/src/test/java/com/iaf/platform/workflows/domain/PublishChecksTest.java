@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.tuple;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 
@@ -92,11 +95,11 @@ class PublishChecksTest {
         WorkflowDefinition pinned = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
         String commit = "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d";
 
-        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", commit), List.of()), PlaybookPins.Lint.NONE);
+        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(Map.of("restart", commit), List.of()), PlaybookPins.Lint.NONE);
         assertThat(passed.status()).isEqualTo("passed");
         assertThat(passed.detail()).isEqualTo("1 playbook(s) pinned to a commit; pinned at publish: restart to 4e1d9a2c7b0f");
 
-        Check failed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of(),
+        Check failed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(Map.of(),
                 List.of("step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)")), PlaybookPins.Lint.NONE);
         assertThat(failed.status()).isEqualTo("failed");
         assertThat(failed.detail()).isEqualTo("could not pin to a commit: step restart: v3.1.0 of github.com/acme/ops-playbooks did not resolve (connect timed out)");
@@ -107,7 +110,7 @@ class PublishChecksTest {
     @Test
     void thePlaybooksCheckFailsWithTheLintersFindingsAndCountsWhatItLinted() {
         WorkflowDefinition pinned = WorkflowYaml.parse(SampleFixtures.yaml("workflows/team-compute/vm-restart.yaml"));
-        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(java.util.Map.of("restart", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d"), List.of()),
+        Check passed = PublishChecks.playbooks(pinned, ctx(), new PlaybookPins.Outcome(Map.of("restart", "4e1d9a2c7b0f4e1d9a2c7b0f4e1d9a2c7b0f4e1d"), List.of()),
                 new PlaybookPins.Lint(List.of("restart"), List.of()));
         assertThat(passed.status()).isEqualTo("passed");
         assertThat(passed.detail()).as("the pins stay last, where the change request page reads them")
@@ -320,5 +323,41 @@ class PublishChecksTest {
         assertThat(problems).extracting(Problem::code).containsExactly("publish.playbooks", "publish.routes", "publish.routes", "publish.routes", "mcp.toolName");
         assertThat(problems.get(0).step()).isEqualTo("restart");
         assertThat(problems.get(1).message()).contains("is served by vm-restart");
+    }
+
+    static ChangeRequest providerChange(String id, String version, ChangeRequest.Status status) {
+        return new ChangeRequest(id, ChangeRequest.Kind.PROVIDER, "vsphere", version, "change/provider-vsphere-" + version, "Provider vSphere " + version, "mateo",
+                status, List.of(), "canary", "", "", Instant.parse("2026-10-17T10:00:00Z"), null, null, null);
+    }
+
+    @Test
+    void aRequiredProviderChangeIsDoneOnceItsVersionOrALaterOneServesCalls() {
+        Map<String, ChangeRequest> crs = Map.of(
+                "cr_open", providerChange("cr_open", "1.4.0", ChangeRequest.Status.OPEN),
+                "cr_merged", providerChange("cr_merged", "1.4.0", ChangeRequest.Status.MERGED),
+                "cr_closed", providerChange("cr_closed", "1.4.0", ChangeRequest.Status.CLOSED));
+        Function<String, Optional<ChangeRequest>> lookup = id -> Optional.ofNullable(crs.get(id));
+
+        assertThat(PublishChecks.Required.of(List.of("cr_open", "cr_merged", "cr_closed", "cr_gone"), lookup, name -> Optional.of("1.3.0")))
+                .extracting(PublishChecks.Required::standing, PublishChecks.Required::why)
+                .containsExactly(
+                        tuple(PublishChecks.Standing.OPEN, "cr_open (provider vsphere 1.4.0) is open"),
+                        tuple(PublishChecks.Standing.ROLLING_OUT, "cr_merged (provider vsphere 1.4.0) is merged, but vsphere 1.3.0 still serves calls"),
+                        tuple(PublishChecks.Standing.CLOSED, "cr_closed (provider vsphere 1.4.0) is closed"),
+                        tuple(PublishChecks.Standing.CLOSED, "cr_gone is gone"));
+        for (String current : List.of("1.4.0", "1.4.1", "2.0.0")) {
+            assertThat(PublishChecks.Required.of(List.of("cr_merged"), lookup, name -> Optional.of(current)).get(0).standing())
+                    .as(current).isEqualTo(PublishChecks.Standing.DONE);
+        }
+        for (String current : List.of("1.3.9", "1.4.0-rc.1")) {
+            assertThat(PublishChecks.Required.of(List.of("cr_merged"), lookup, name -> Optional.of(current)).get(0).standing())
+                    .as(current).isEqualTo(PublishChecks.Standing.ROLLING_OUT);
+        }
+        assertThat(PublishChecks.requires(List.of("cr_merged"), lookup, name -> Optional.empty()))
+                .extracting(Check::status, Check::detail)
+                .containsExactly("pending", "waiting for cr_merged (provider vsphere 1.4.0) to serve calls: it is merged, but vsphere is not published yet");
+        assertThat(PublishChecks.requires(List.of("cr_open", "cr_merged"), lookup, name -> Optional.of("1.4.0")))
+                .extracting(Check::status, Check::detail)
+                .containsExactly("pending", "waiting for cr_open (provider vsphere 1.4.0) to merge; published: cr_merged (provider vsphere 1.4.0)");
     }
 }

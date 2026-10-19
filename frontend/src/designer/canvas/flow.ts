@@ -6,10 +6,11 @@
  */
 import type { Edge, Node } from '@xyflow/react'
 import { jobState } from '@iaf/ui'
-import { STEP_TYPES, type JsonValue, type Problem } from '@iaf/workflow-checks'
+import { STEP_TYPES, type JsonValue, type ParsedStep, type Problem } from '@iaf/workflow-checks'
 import type { RegistryProvider } from '../../lib/types'
 import { API_TRIGGER_ID, COLUMN, ERROR_TRIGGER_ID, NODE_SIZE, isStepNode, type EdgeRole, type Graph, type GraphEdge, type GraphNode, type OutputHandle, type TriggerType } from '../model/graph'
 import type { InsertPoint } from '../model/edits'
+import { libraryPlaybook } from '../model/providerDrafts'
 import type { Sticky } from '../model/stickies'
 import { stepGlyph, triggerGlyph, type Glyph } from './glyphs'
 
@@ -223,6 +224,25 @@ export interface Flow {
   edges: FlowEdge[]
 }
 
+/**
+ * The tag of the provider a step calls when the workflow has not published it (one of its drafts,
+ * or one in review): a provider step's provider, an ansible step's library playbook's
+ * (`<provider>/<playbook>`); undefined otherwise.
+ */
+export function unpublishedTag(step: Pick<ParsedStep, 'type' | 'with'>, providers: readonly RegistryProvider[]): RegistryProvider['unpublished'] {
+  if (!providers.some((p) => p.unpublished)) return undefined
+  const w = step.with && typeof step.with === 'object' && !Array.isArray(step.with) ? step.with : {}
+  const name = step.type === 'provider' ? w.provider : step.type === 'ansible' ? libraryPlaybook(w.playbook)?.split('/')[0] : undefined
+  const p = typeof name === 'string' ? providers.find((x) => x.name === name && (step.type !== 'ansible' || x.type === 'ansible')) : undefined
+  return p?.unpublished
+}
+
+/** A step's subtitle, led by its provider's tag when the workflow has not published it, so a truncated subtitle still shows it. */
+function tagged(subtitle: string, step: Pick<ParsedStep, 'type' | 'with'>, providers: readonly RegistryProvider[]): string {
+  const tag = unpublishedTag(step, providers)
+  return tag ? `${tag} · ${subtitle}` : subtitle
+}
+
 function stepNodeData(n: GraphNode & { data: { kind: 'step' } }, edgesFrom: ReadonlyMap<string, Set<string>>, issues: Issues | undefined, run: RunInfo | undefined, input: FlowInput): StepNodeData {
   const d = n.data
   const handles = edgesFrom.get(n.id) ?? new Set<string>()
@@ -231,7 +251,7 @@ function stepNodeData(n: GraphNode & { data: { kind: 'step' } }, edgesFrom: Read
     kind: 'step',
     stepId: d.stepId,
     name: d.step.name ?? d.stepId,
-    subtitle: d.subtitle,
+    subtitle: tagged(d.subtitle, d.step, input.providers),
     typeTitle: STEP_TYPES[d.step.type].title,
     glyph: stepGlyph(d.step, input.providers),
     outputs: d.outputs,

@@ -13,6 +13,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,6 +34,7 @@ import com.iaf.platform.common.ports.PolicyPort.PolicyDecision;
 import com.iaf.platform.common.ports.PolicyPort.Rule;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries.Lineage;
 import com.iaf.platform.runs.RunsTestWiring;
 import com.iaf.platform.runs.SampleContent;
@@ -786,6 +788,168 @@ class RunsCommandHandlerTest {
         assertThat(verify.status()).isEqualTo("failed");
         assertThat(verify.error()).contains("Assertion failed");
         assertThat(r.steps().stream().filter(s -> s.id().equals("get")).findFirst().orElseThrow().status()).isEqualTo("succeeded");
+    }
+
+    /** A provider nobody published yet, as the designer sends its draft with the workflow it tests. */
+    private static final String TICKETING = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: ticketing, title: Ticketing, owner: team-compute, version: 0.1.0 }
+            spec:
+              type: http
+              endpoints:
+                dev: https://tickets-dev.example.com/api
+              auth: { type: header, header: X-Api-Key, credential: vault:ticketing/api-key }
+              actions:
+                - id: ticket.get
+                  title: Get a ticket
+                  operation: { method: GET, path: "/tickets/{id}" }
+                  effect: read
+                  retry: safe
+                  input: { type: object, required: [id], properties: { id: { type: string } } }
+                  sample: { id: "{{ $input.id }}", state: open }
+            """;
+
+    private static final String TICKET_CHECK = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: ticket-check, title: Check a ticket, noun: ticket, verb: check, owner: team-compute, version: 0.1.0 }
+            api: { method: POST, path: "/api/v1/tickets:check", input: { type: object, properties: { id: { type: string } } } }
+            workflow:
+              do:
+                - getTicket:
+                    name: Get the ticket
+                    call: provider
+                    with: { provider: ticketing, action: ticket.get, input: { id: "{{ $input.id }}" } }
+            """;
+
+    /** A new Ansible provider (a playbook in a repo no published provider names) and a new Terraform module. */
+    private static final String NET_PLAYBOOKS = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: net-playbooks, title: Network playbooks, owner: team-platform, version: 0.1.0 }
+            spec:
+              type: ansible
+              source:
+                git: { repo: github.com/acme/net-playbooks, ref: v0.1.0 }
+                commit: 5b7d3e9a1c2f5b7d3e9a1c2f5b7d3e9a1c2f5b7d
+              auth: { type: none }
+              actions:
+                - id: vlan.create
+                  title: Create a VLAN
+                  playbook: vlan/create.yml
+                  effect: create
+                  retry: unsafe
+                  vars: { type: object, required: [vlan_id], properties: { vlan_id: { type: integer } } }
+                  sample: { ok: 6, changed: 2, failed: 0, vlanReady: true }
+            """;
+
+    private static final String DNS_ZONES = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: dns-zones, title: DNS zones, owner: team-platform, version: 0.1.0 }
+            spec:
+              type: terraform
+              module: { source: "git::https://github.com/acme/tf-modules//dns", version: 0.1.0 }
+              auth: { type: none }
+              actions:
+                - id: plan
+                  title: Plan
+                  effect: read
+                  retry: safe
+                  vars: { type: object, required: [zone], properties: { zone: { type: string } } }
+                  sample: { add: 2, change: 0, destroy: 0 }
+                - id: apply
+                  title: Apply
+                  effect: create
+                  retry: unsafe
+                  plan: plan
+                  vars: { type: object, required: [zone], properties: { zone: { type: string } } }
+                  sample: { outputs: { zoneId: "zone-{{ $input.zone }}" }, add: 2, change: 0, destroy: 0 }
+            """;
+
+    private static final String NETWORK_SETUP = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: network-setup, title: Set up a network, noun: network, verb: setup, owner: team-platform, version: 0.1.0 }
+            api: { method: POST, path: "/api/v1/networks:setup", input: { type: object, properties: { zone: { type: string } } } }
+            workflow:
+              do:
+                - vlan:
+                    name: Create the VLAN
+                    call: ansible
+                    with:
+                      playbook:
+                        git: { repo: github.com/acme/net-playbooks, ref: v0.1.0, path: vlan/create.yml }
+                        commit: 5b7d3e9a1c2f5b7d3e9a1c2f5b7d3e9a1c2f5b7d
+                      inventory: dynamic
+                      extraVars: { vlan_id: 120 }
+                - zone:
+                    name: Create the zone
+                    call: terraform
+                    with:
+                      module: { source: "git::https://github.com/acme/tf-modules//dns", version: 0.1.0 }
+                      action: apply
+                      vars: { zone: "{{ $input.zone }}" }
+            """;
+
+    private static DryRunResult.DryRunStep step(DryRunResult r, String id) {
+        return r.steps().stream().filter(s -> s.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    @Test
+    void aDryRunAnswersFromADraftProviderForThatDryRunOnly() {
+        WorkflowDefinition def = WorkflowYaml.parse(TICKET_CHECK);
+        JsonNode input = SampleContent.json(Map.of("id", "T-7"));
+        DryRunResult unknown = handler.dryRun(def, input, SampleContent.GONZALO).block();
+        assertThat(unknown.passed()).isFalse();
+        assertThat(step(unknown, "getTicket").error()).isEqualTo("unknown_provider: Unknown provider 'ticketing'");
+
+        DryRunResult drafted = handler.dryRun(def, input, SampleContent.GONZALO, List.of(ProviderYaml.parse(TICKETING))).block();
+
+        assertThat(drafted.passed()).as(drafted.error()).isTrue();
+        assertThat(step(drafted, "getTicket").status()).isEqualTo("succeeded");
+        assertThat(step(drafted, "getTicket").output()).isEqualTo(SampleContent.json(Map.of("id", "T-7", "state", "open")));
+        // nothing kept the draft: the next dry run does not know the provider, and the shared ports never changed
+        assertThat(handler.dryRun(def, input, SampleContent.GONZALO).block().passed()).isFalse();
+        assertThat(w.executors.ports().providers()).isSameAs(w.providers);
+        assertThat(w.executors.ports().drafts()).isEmpty();
+        assertThat(published).isEmpty();
+        verify(w.telemetry, never()).record(any());
+    }
+
+    @Test
+    void aDraftStandsInForThePublishedProviderOfItsNameInADryRun() throws Exception {
+        String vsphere = Files.readString(SampleContent.ROOT.resolve("providers/team-compute/vsphere.yaml"));
+        String sample = "name: \"web-{{ $input.id.replace('vm-', '') }}\"";
+        assertThat(vsphere).contains(sample);
+        ProviderDefinition draft = ProviderYaml.parse(vsphere.replace(sample, "name: \"draft-{{ $input.id.replace('vm-', '') }}\""));
+        JsonNode input = SampleContent.json(Map.of("vmId", "vm-1042", "reason", "x"));
+
+        DryRunResult drafted = handler.dryRun(SampleContent.workflow("vm-restart"), input, SampleContent.GONZALO, List.of(draft)).block();
+
+        assertThat(drafted.passed()).as(drafted.error()).isTrue();
+        assertThat(step(drafted, "checkVmExists").output().path("name").asText()).isEqualTo("draft-1042");
+        DryRunResult asPublished = handler.dryRun(SampleContent.workflow("vm-restart"), input, SampleContent.GONZALO).block();
+        assertThat(step(asPublished, "checkVmExists").output().path("name").asText()).isEqualTo("web-1042");
+    }
+
+    @Test
+    void ansibleAndTerraformDraftsAnswerTheirStepsAsPublishedProvidersDo() {
+        WorkflowDefinition def = WorkflowYaml.parse(NETWORK_SETUP);
+        JsonNode input = SampleContent.json(Map.of("zone", "shop"));
+        DryRunResult bare = handler.dryRun(def, input, SampleContent.GONZALO).block();
+        assertThat(bare.passed()).as(bare.error()).isTrue();
+        assertThat(step(bare, "vlan").output().has("vlanReady")).as("no provider describes the playbook").isFalse();
+        assertThat(step(bare, "zone").output().path("add").asInt()).as("no provider describes the module").isZero();
+
+        DryRunResult drafted = handler.dryRun(def, input, SampleContent.GONZALO, List.of(ProviderYaml.parse(NET_PLAYBOOKS), ProviderYaml.parse(DNS_ZONES)))
+                .block();
+
+        assertThat(drafted.passed()).as(drafted.error()).isTrue();
+        assertThat(step(drafted, "vlan").output()).isEqualTo(SampleContent.json(Map.of("ok", 6, "changed", 2, "failed", 0, "vlanReady", true)));
+        assertThat(step(drafted, "zone").output().path("add").asInt()).isEqualTo(2);
+        assertThat(step(drafted, "zone").output().path("outputs").path("zoneId").asText()).isEqualTo("zone-shop");
     }
 
     @Test

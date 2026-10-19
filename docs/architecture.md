@@ -860,6 +860,14 @@ action's band over the last 24 hours (`perAction[].band`, with the provider's `H
 judged against the action's own SLO when it has one, which the table shows, else the provider's,
 and colours the success rate and the p95 against that SLO.
 
+The wizard's state, YAML and steps live in `frontend/src/components/provider-editor/`, and the
+provider page's band, release card, SLO and spec refresh dialogs and try outcome in
+`frontend/src/components/provider-admin.tsx`, so the designer uses the same pieces. A workflow's
+providers before they are published are drafts (`frontend/src/designer/model/providerDrafts.ts`):
+the wizard's state plus where it came from, its YAML the wizard's, kept in the browser's
+localStorage per workflow as the sticky notes are, outside the document and undo. A stored draft
+keeps credentials only as `vault:` references, no user or password in a URL, and no try's answer.
+
 The designer works from the registry. Its node creator inserts a terraform provider's action with
 the provider's own `spec.module`, so the step passes the `terraform.module` check as inserted:
 `GET /registry/providers` carries no spec, so the designer's registry reads the module from the
@@ -901,6 +909,98 @@ before it (`GET /jobs?workflow=&status=succeeded`, then `GET /jobs/{id}`): steps
 by name, a step on one side only shows as added or removed, and each pair shows its status and the
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
+
+The Provider sheet (`frontend/src/designer/chrome/ProviderSheet.tsx`) is Add provider inside the
+designer: a drawer over the canvas with a rail of sections, as n8n's credential modal has, hosting
+the wizard's own steps (`frontend/src/components/provider-editor/`) and imports. Connect holds the
+Type step's fields, with the type of the entry it was opened from picked (an Ansible repository or a
+Terraform module starts on its import, which is then the whole form, Describe it on Ask Devin), then
+the spec import, the tile or worker, the environments, the auth with its credential picker and Test
+connection; Actions, Try it and Review follow. It edits one of the workflow's provider drafts
+(`frontend/src/designer/model/providerDrafts.ts`): a new provider's, or, opened on a published
+provider, its next patch as Edit provider starts it, collecting evidence on Connect and Try it. The
+first change saves the draft and each later one replaces it (the import form as typed too), outside
+undo and the dirty flag, so closing and reopening loses nothing: an entry for a new system carries
+on with the latest draft of its type that no step calls yet, with Start over to drop it. The action
+picked in its header becomes a step where the sheet was opened from, on "Use this action" or on
+closing once one is picked, inserted and opened or filling the step it came from (left as it is
+when it already makes that call), as n8n adds a node after creating a credential. When the draft
+took a file instead (Devin's, an import's), its actions, its type and a terraform module are read
+from the file's `spec`, and its actions are tried from the step. "Publish provider only" opens the
+provider's change request on its own: a new provider's draft then stays, read-only and marked with
+that change request (`changeRequest`), so the steps that call it keep resolving and the workflow's
+Publish requires that change request instead of opening a second one; an edit's draft is dropped.
+
+Providers are authored from the designer as well. The node creator's Providers view lists each
+published provider with its health band (`GET /providers`, the list the providers page reads) and
+the workflow's provider drafts tagged draft, whose actions insert like a published provider's, and
+ends with "Connect a new system": an API from an OpenAPI spec, an HTTP request (cURL), an Ansible
+repository, a Terraform module, an IDP tile, an SDK worker and Describe it (Ask Devin), each of which
+opens the Provider sheet on the point the creator was opened for, but cURL, which adds an HTTP step
+there open on its Import cURL dialog. A provider step's provider field lists the drafts beside the
+published providers and ends with "New provider…" (a credential field leads with "New
+credential…" instead, so it stays in view with many stored); its pencil, Edit provider, opens the sheet on the workflow's draft of the provider,
+or on a published one's next patch, and the sheet closing on the action the step already calls
+keeps the step's input. An http step's Import cURL fills its method, URL, headers and body from a
+pasted cURL command, quoted for bash or for Windows cmd (`frontend/src/designer/ndv/curl.ts`): what
+signed in (an Authorization header, `-u`, a cookie, a header named for a token or a key or valued
+`Bearer …`, and a query, body or form field named like a password, secret, token or API key) is
+dropped before anything reaches the step, so it is in neither the workflow, the undo history nor
+the browser's storage, and the credential field is highlighted with a note that names what was
+dropped, never its value. Its "Save as provider action" (`frontend/src/designer/ndv/httpProvider.ts`)
+makes the request an action of an http provider draft, after listing what does not come along (a
+header, a GET's body, an endpoint that is not https) and asking: the URL's origin is the draft's
+dev endpoint, the action is `{ method, path }` with each `{{ }}` of the path a `{parameter}` and a
+POST, PUT or PATCH body's fields the rest of its input, the step's credential is the provider's
+auth and the step's last test output (never pinned data) the action's example. A draft of the same
+endpoint takes the request when it can, as the action it has for that method and path or a new one
+beside its others, but never a draft whose file is its own (a try's or Devin's) or that signs in
+with another credential, which gives the request a new draft; the step then calls that action and
+the Provider sheet opens on the draft.
+
+A provider drafted from the designer (kept in the browser per workflow, as the Provider sheet
+leaves it) reads like a published one: the store merges the drafts into the registry the canvas
+reads (`withUnpublished` in `frontend/src/designer/model/registry.ts`), so the node creator, the
+parameters (an Ansible draft's playbooks join the library), Expected output and the live checks
+treat it as published, tagged "draft" wherever its name shows, and a draft that names no owner
+takes the workflow's `metadata.owner`. Test workflow and Validate send the files of the drafts the
+workflow calls (`providers: [yaml]`), and the browser still parses no YAML; Save keeps the live
+checks for such a workflow, since the draft save checks against published providers only. Publish
+lists those drafts with their review from `POST /providers:validate` and holds until every review
+is ready, offering Open provider on one that is not; it then opens one provider change request per
+draft (`POST /providers:publish` with the draft's strategy), clears each draft whose change request
+opened, and opens the workflow's with `requires` naming them. A published draft stays on the
+canvas "in review", kept in the browser next to the drafts, and is still sent with a dry run,
+Validate and the next Publish until its change request merges and the registry reloads; when the
+workflow opens, and when Publish opens, each one's change request is asked how it stands. One
+closed instead of merged turns back into a draft to fix and publish again. The drawer lists the
+linked change requests with their status, says the provider ones merge first (or that one was
+closed, so this one cannot merge), holds Merge until they have, and follows each one there.
+
+A provider step's node detail view brings the provider into the designer. Beside Test step, which
+stays a dry run, Try for real makes one real call (`POST /providers:try`) with the provider draft's
+file or the published one, starting in the environment the review counts, asking first when the
+action changes something and, for a delete whose input names a registry resource, picking its
+target with the registry picker. The Output pane shows the answer as the provider page does. Save
+as sample makes the draft take the file the call came back with, whose sample the backend redacted;
+the live answer is never kept, so a failed call, or one made with a file the draft no longer has,
+saves nothing. Fix schema writes the answer's shape into the draft's overrides. Use the real response
+(`POST /providers/{name}/overrides`) is offered only for a call made with the published file while
+the workflow holds no draft of the provider and no other change request of it is open: the platform
+takes one change request per provider at a time. Pinned data stays the designer's own mock. The
+Settings tab's "Action (shared by every workflow)" section edits the action's effect, retry policy,
+approval, plan step, what a delete removes, its own SLO and the provider's error classes; the edits
+go into the provider's draft, the first one starting a draft of a published provider's next patch,
+and a draft that holds a file takes them as line edits (`frontend/src/designer/ndv/providerFile.ts`),
+so the browser never parses YAML. Error classes written otherwise than one per line are shown as
+written. The section names an open change request of the provider, which a draft has to wait for.
+The step's own retry, timeout and pause stay where they were. The Provider tab shows the provider
+page's health band, success rate and p95 against the SLO, the action's own band, its alerts, the
+release in flight and the open change requests, with Edit SLO and Refresh spec (held back while a
+change request is open or the workflow holds a draft) and links to the provider page and the audit
+of every provider. A provider the platform does not know and no draft in this browser holds is shown
+as such. The canvas marks each provider step with its provider's health from one shared read of
+`GET /providers`.
 
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`

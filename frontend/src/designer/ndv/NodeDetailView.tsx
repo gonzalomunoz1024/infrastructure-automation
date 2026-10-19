@@ -4,6 +4,8 @@
  * field draggable onto a parameter), the node itself (name, kind, Test step, then Parameters
  * and Settings with the live problems under their fields) and Output (the test run's output,
  * pinned data, or what the step is expected to return). ⌘↵ tests, Esc goes back to the canvas.
+ * A provider step also has Try for real beside Test step (a real call, whose answer the Output
+ * pane shows) and a Provider tab with how its provider is doing.
  */
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { Button, cx, Icon, Kbd, Modal, modKeyLabel, Segmented, Select, Spinner, Tabs, Textarea, Tooltip, useHotkey, useOverlayClose, useToast } from '@iaf/ui'
@@ -18,8 +20,11 @@ import { NdvContext, type NdvContextValue } from './context'
 import { DATA_MODES, DataView, type DataMode } from './DataView'
 import { asObject, asString, isSettingsField, jsonText, parseJsonText } from './fields'
 import { ProblemList } from './ParameterField'
+import { ProviderTab } from './ProviderTab'
+import { triedFor, tryInputSchema, useProviderStep, type TriedCall } from './providerStep'
 import { looseProblems, StepParameters, stepKindLabel } from './StepParameters'
 import { StepSettings } from './StepSettings'
+import { prefillInput, TriedOutput, TryForReal } from './TryForReal'
 import { triggerOutput, triggerProblems, TriggerParameters, type TriggerTarget } from './TriggerParameters'
 
 const INPUT_SOURCE = '__input'
@@ -157,9 +162,11 @@ interface OutputPaneProps {
   expected: JsonValue | null
   expectedSchema?: Schema | null
   onTest?: () => void
+  /** the answer of a real call (Try for real), shown instead of the test output until it is closed */
+  tried?: ReactNode
 }
 
-function OutputPane({ stepId, fixed, expected, expectedSchema, onTest }: OutputPaneProps) {
+function OutputPane({ stepId, fixed, expected, expectedSchema, onTest, tried }: OutputPaneProps) {
   const store = useDesignerStore()
   const toast = useToast()
   const testRun = useDesignerSelector((s) => s.testRun)
@@ -172,9 +179,13 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest }: OutputP
   const runOutput = runStep?.output as JsonValue | undefined
   const shown: JsonValue | undefined = fixed !== undefined ? fixed : pinned !== undefined ? pinned : ran ? runOutput : undefined
   const count = itemsLabel(shown)
+  // while a real call's answer fills the pane, the header's controls (which act on the test output) step aside
+  const showingTried = !!tried && !editing
 
   let body: ReactNode
-  if (editing && stepId) {
+  if (showingTried) {
+    body = tried
+  } else if (editing && stepId) {
     body = (
       <PinEditor
         initial={pinned ?? runOutput ?? expected ?? {}}
@@ -258,8 +269,9 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest }: OutputP
   return (
     <section aria-label="Output" className="hidden min-w-0 flex-1 flex-col md:flex" data-testid="ndv-output">
       <PaneHeader title="Output">
-        {count && <span className="text-caption2 text-tertiary">{count}</span>}
-        {stepId && fixed === undefined && (
+        {showingTried && <span className="text-caption2 text-tertiary">Real call</span>}
+        {!showingTried && count && <span className="text-caption2 text-tertiary">{count}</span>}
+        {!showingTried && stepId && fixed === undefined && (
           <Tooltip label={pinned !== undefined ? 'Unpin the output' : 'Pin the output: tests and the steps after it use it'}>
             <button
               type="button"
@@ -273,7 +285,7 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest }: OutputP
             </button>
           </Tooltip>
         )}
-        <ModeSwitch value={mode} onChange={setMode} label="Output view" />
+        {!showingTried && <ModeSwitch value={mode} onChange={setMode} label="Output view" />}
       </PaneHeader>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto pr-1">{body}</div>
     </section>
@@ -283,7 +295,7 @@ function OutputPane({ stepId, fixed, expected, expectedSchema, onTest }: OutputP
 // ---------------------------------------------------------------------------------------------
 // the node
 
-function NodeHeader({ glyph, title, kind, editable, onRename, placeholder, onTest, testing }: { glyph: ReactNode; title: string; kind: string; editable: boolean; onRename?: (name: string) => void; placeholder?: string; onTest?: () => void; testing?: boolean }) {
+function NodeHeader({ glyph, title, kind, editable, onRename, placeholder, onTest, testing, extra }: { glyph: ReactNode; title: string; kind: string; editable: boolean; onRename?: (name: string) => void; placeholder?: string; onTest?: () => void; testing?: boolean; extra?: ReactNode }) {
   return (
     <div className="flex items-center gap-3 border-b border-stroke-light px-4 py-3">
       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-stroke-light bg-surface">{glyph}</span>
@@ -301,6 +313,7 @@ function NodeHeader({ glyph, title, kind, editable, onRename, placeholder, onTes
         )}
         <p className="truncate text-caption text-tertiary">{kind}</p>
       </div>
+      {extra}
       {onTest && (
         <Button size="sm" variant="primary" onClick={onTest} loading={testing} data-testid="ndv-test-step">
           <span className="flex items-center gap-1.5">
@@ -359,15 +372,24 @@ function StepDetail({ node }: { node: GraphNode & { data: StepNodeData } }) {
     },
     [pins, testRun],
   )
+  const provider = useProviderStep(step)
+  // the answer of the last real call, for this step only; never kept in the store or the draft
+  const [tried, setTried] = useState<TriedCall | null>(null)
+  const triedHere = triedFor(tried, stepId, provider)
+  // the Try for real dialog: while it is open, ⌘↵ is its own, not Test step's
+  const [tryOpen, setTryOpen] = useState(false)
+  const prefill = useMemo(() => (provider ? prefillInput(step, sc.ctx, tryInputSchema(provider)) : {}), [provider, step, sc])
   const test = useCallback(() => {
     const st = store.getState()
     if (st.testRun?.status === 'running') return
+    setTried(null)
     void store.testRun(st.lastInput ?? sampleInput(st.doc), stepId)
   }, [store, stepId])
-  useHotkey('mod+enter', test, { allowInInputs: true })
+  useHotkey('mod+enter', test, { allowInInputs: true, enabled: !tryOpen })
 
   const w = asObject(step.with as JsonValue | undefined)
   const action = step.type === 'provider' ? findAction(registry, asString(w.provider), asString(w.action)) : undefined
+  const shownTab: NdvTab = tab === 'provider' && !provider ? 'parameters' : tab
   return (
     <NdvContext.Provider value={ndv}>
       <InputPane key={stepId} outputs={sc.outputs} previous={sc.previous} input={sc.ctx.input ?? null} nameOf={nameOf} originOf={originOf} inputFromRun={lastInput !== null} />
@@ -381,30 +403,40 @@ function StepDetail({ node }: { node: GraphNode & { data: StepNodeData } }) {
           onRename={(name) => store.setStepName(stepId, name)}
           onTest={test}
           testing={testing}
+          extra={provider ? <TryForReal info={provider} stepId={stepId} prefill={prefill} onTried={setTried} onOpenChange={setTryOpen} /> : undefined}
         />
         <div className="border-b border-stroke-light px-3 py-2">
           <Tabs<NdvTab>
-            value={tab}
+            value={shownTab}
             onChange={(t) => store.setNdvTab(t)}
             ariaLabel="Step details"
             tabs={[
               { id: 'parameters', label: 'Parameters', count: paramCount > 0 ? paramCount : undefined },
               { id: 'settings', label: 'Settings', count: settingsCount > 0 ? settingsCount : undefined },
+              ...(provider ? [{ id: 'provider' as const, label: 'Provider' }] : []),
             ]}
           />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          {tab === 'parameters' ? (
+          {shownTab === 'parameters' ? (
             <>
               <ProblemsBox problems={looseProblems(step, body, stepProblems)} />
               <StepParameters stepId={stepId} body={body} step={step} registry={registry} doc={doc} />
             </>
+          ) : shownTab === 'provider' && provider ? (
+            <ProviderTab info={provider} stepId={stepId} />
           ) : (
-            <StepSettings stepId={stepId} body={body} step={step} doc={doc} ownCtx={ownCtx} allProblems={problems} />
+            <StepSettings stepId={stepId} body={body} step={step} doc={doc} ownCtx={ownCtx} allProblems={problems} provider={provider} />
           )}
         </div>
       </section>
-      <OutputPane stepId={stepId} expected={expected} expectedSchema={action?.output ?? null} onTest={test} />
+      <OutputPane
+        stepId={stepId}
+        expected={expected}
+        expectedSchema={action?.output ?? null}
+        onTest={test}
+        tried={triedHere && provider ? <TriedOutput key={`${triedHere.result.at ?? ''}${triedHere.environment}`} info={provider} tried={triedHere} onClose={() => setTried(null)} /> : undefined}
+      />
     </NdvContext.Provider>
   )
 }

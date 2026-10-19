@@ -1,6 +1,10 @@
 package com.iaf.platform.runs.ports.outbound;
 
+import java.util.List;
+
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.workflows.domain.ProviderDrafts;
 import com.iaf.platform.workflows.domain.Step;
 import com.iaf.platform.workflows.domain.StepType;
 
@@ -16,8 +20,26 @@ import reactor.core.publisher.Mono;
  */
 public interface AutomationRunnerPort {
 
-    /** {@code with} is the step's parameters with every expression already resolved. */
-    record RunRequest(String jobId, int seq, StepType type, Step step, JsonNode with, String environment, boolean dryRun, boolean checkMode) {
+    /**
+     * {@code with} is the step's parameters with every expression already resolved;
+     * {@code drafts} are provider files nobody published yet that a dry run answers from before
+     * the published providers (empty for a live step).
+     */
+    record RunRequest(String jobId, int seq, StepType type, Step step, JsonNode with, String environment, boolean dryRun, boolean checkMode,
+            List<ProviderDefinition> drafts) {
+
+        public RunRequest {
+            drafts = drafts == null ? List.of() : List.copyOf(drafts);
+        }
+
+        public RunRequest(String jobId, int seq, StepType type, Step step, JsonNode with, String environment, boolean dryRun, boolean checkMode) {
+            this(jobId, seq, type, step, with, environment, dryRun, checkMode, List.of());
+        }
+
+        /** The providers the samples answer from: {@code published} with the drafts standing in for the providers of their names. */
+        public List<ProviderDefinition> providers(List<ProviderDefinition> published) {
+            return ProviderDrafts.over(published, drafts);
+        }
     }
 
     /**
