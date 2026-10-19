@@ -187,6 +187,8 @@ platform:
     seed-history: true    # generate recent jobs so health, releases and evidence have data
   persistence:            # used with the mongo profile
     telemetry-retention: P30D   # provider-call samples older than this are deleted
+  cors:                   # the console origins that may call the API from another origin; any other gets a 403
+    allowed-origins: http://localhost:3000, http://127.0.0.1:3000, http://localhost:5173   # add yours when the console's dev server runs on another port
 
 ---
 # The temporal profile (docker compose, scripts/dev.sh --temporal): jobs run as Temporal workflows on
