@@ -58,7 +58,9 @@ terraform executable) enables `TerraformRealRunTest`.
   test extends, so the in-memory and the MongoDB adapter behave the same. A MongoDB adapter
   (`@Profile("mongo") @Primary`, over `Mongo`) runs it through `TestMongo`, a fresh database per
   test, dropped after it, when `PLATFORM_TEST_MONGO_URI` names a MongoDB (`mongodb://localhost:27017`
-  with `docker compose up mongo`; without it those tests are skipped). A record is stored whole
+  with `docker compose up mongo`; without it those tests are skipped; any connection string works,
+  credentials and auth database included, since a test that starts the application passes it as
+  given and names its database in `spring.data.mongodb.database`). A record is stored whole
   under `doc`, with top-level copies of what is filtered, sorted or kept unique, so a new field
   needs no migration; an index is created in the adapter's constructor, on every start. There are
   no multi-document transactions: each write that must be atomic is one document's. A MongoDB

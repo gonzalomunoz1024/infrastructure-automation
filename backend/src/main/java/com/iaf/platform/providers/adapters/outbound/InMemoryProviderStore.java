@@ -92,13 +92,17 @@ public class InMemoryProviderStore implements ProviderStorePort {
         }
     }
 
+    /** The kept versions newest first; the current version is the current provider, as in MongoDB. */
     @Override
     public List<StoredProvider> versions(String name) {
         Map<String, StoredProvider> kept = name == null ? null : versions.get(name);
         if (kept == null) {
             return get(name).map(List::of).orElse(List.of());
         }
+        StoredProvider current = providers.get(name);
+        String currentVersion = current == null ? null : current.definition().metadata().version();
         return kept.values().stream()
+                .map(p -> currentVersion != null && currentVersion.equals(p.definition().metadata().version()) ? current : p)
                 .sorted(Comparator.comparing((StoredProvider p) -> Semver.parse(p.definition().metadata().version())).reversed())
                 .toList();
     }

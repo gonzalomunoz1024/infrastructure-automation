@@ -41,7 +41,8 @@ import lombok.extern.slf4j.Slf4j;
  * {@code kind: Workflow} file under the content dir that the database does not hold yet becomes
  * a published version, as in memory; a stored version is never reset by its file, except that a
  * version still exactly as seeded takes the file's new content. Reads come from a copy of the
- * collection that is reloaded whenever any instance has written to it.
+ * collection that is reloaded whenever any instance has written to it ({@link Revisioned}: every
+ * write moves the store's revision, also one that throws, and a copy is at most 30 seconds old).
  *
  * <p>With {@code platform.content.git} on, the content repo stays the store
  * ({@link GitWorkflowStore}): Git is durable already.
@@ -114,8 +115,7 @@ public class MongoWorkflowStore implements WorkflowStorePort {
             }
         }
         if (!writes.isEmpty()) {
-            writes.forEach(this::upsert);
-            table.bump();
+            table.write(() -> writes.forEach(this::upsert));
         }
         log.info("workflow store: {} version(s) seeded and {} refreshed from {}", added, writes.size() - added, abs);
         return writes.size();
@@ -148,15 +148,13 @@ public class MongoWorkflowStore implements WorkflowStorePort {
 
     @Override
     public void save(WorkflowRecord record) {
-        upsert(record);
-        table.bump();
+        table.write(() -> upsert(record));
     }
 
+    /** A delete that found nothing moves the revision too, which costs one reload. */
     @Override
     public void delete(String name, String version) {
-        if (mongo.collection(COLLECTION).deleteOne(Filters.eq("_id", key(name, version))).getDeletedCount() > 0) {
-            table.bump();
-        }
+        table.write(() -> mongo.collection(COLLECTION).deleteOne(Filters.eq("_id", key(name, version))));
     }
 
     private void upsert(WorkflowRecord r) {

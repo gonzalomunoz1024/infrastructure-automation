@@ -10,6 +10,10 @@ content in this repository; nothing needs a real vCenter, Vault or Temporal.
 scripts/dev.sh        # backend on http://localhost:8080, frontend on http://localhost:3000
 ```
 
+Serving the console on another port? List its origin in `platform.cors.allowed-origins`
+(or `PLATFORM_CORS_ALLOWED_ORIGINS`, comma-separated), or the backend refuses every POST from it
+with a 403.
+
 Open <http://localhost:3000>. You are `gonzalo`, an admin. The demo keeps everything in memory
 and seeds two weeks of history (jobs, releases, change requests, resources) that agrees with
 itself. To see the platform as a less privileged person, open **Settings** and change **Act as**:
