@@ -80,6 +80,28 @@ class MongoEvidenceStoreTest extends EvidenceStoreContract {
         assertThat(HashChain.verify(List.of(read))).isEqualTo(-1);
     }
 
+    /**
+     * Half a surrogate pair (JSON may escape one) is chained as U+FFFD, the character the stored
+     * text reads back as, in a value, a key or the actor, so the chain still verifies after a read.
+     */
+    @Test
+    void anEntryHoldingALoneSurrogateVerifiesAfterRead() throws Exception {
+        EvidenceStore store = newStore();
+        EvidenceEntry withData = store.append("job_1", EvidenceEntry.draft(T0, EvidenceKind.STEP, "ana\ud800", JSON.readTree("""
+                {"step": "fetch", "output": {"body": "\\ud800", "text": "a\\udc00b", "key\\ud800": ["a\\udc00b", "\\ud83d\\ude00"]}}
+                """)));
+        EvidenceEntry withoutData = store.append("job_1", EvidenceEntry.draft(T0.plusSeconds(1), EvidenceKind.DECISION, "bob\udc00", null));
+
+        EvidenceRecord record = reopen().record("job_1").orElseThrow();
+        assertThat(HashChain.verify(record.entries())).isEqualTo(-1);
+        assertThat(record.entries()).extracting(EvidenceEntry::hash).containsExactly(withData.hash(), withoutData.hash());
+        EvidenceEntry read = record.entries().get(0);
+        assertThat(read.data()).isEqualTo(withData.data()).isEqualTo(JSON.readTree("""
+                {"step": "fetch", "output": {"body": "�", "text": "a�b", "key�": ["a�b", "😀"]}}
+                """));
+        assertThat(record.entries()).extracting(EvidenceEntry::actor).containsExactly("ana�", "bob�");
+    }
+
     @Test
     void onlyEverInsertsEntries() {
         EvidenceStore store = newStore();

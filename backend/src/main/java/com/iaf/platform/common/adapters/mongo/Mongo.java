@@ -4,7 +4,10 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -63,7 +66,8 @@ import reactor.core.scheduler.Schedulers;
  * the other top-level fields are copies of what the adapter queries, sorts and indexes on. The
  * mapping is the application's JSON (ISO instants to the nanosecond, lowercase enums, a null
  * component left out, while a null inside a JSON value or a map is kept both ways, so a job's input
- * or an evidence entry's hashed data comes back exactly) turned into a document field by field,
+ * or an evidence entry's hashed data comes back exactly, and half a surrogate pair stored as the
+ * U+FFFD it would read back as) turned into a document field by field,
  * never parsed as extended JSON, so a key such as
  * {@code $ref} in an imported schema stays a key, and read back with {@link #codecs}, so a part of
  * a schema that holds {@code $id} beside {@code $ref} stays a document and an integer beyond a long
@@ -232,16 +236,72 @@ public class Mongo {
 
     // ---------------------------------------------------------------- records
 
-    /** A record as the document it is stored as. */
+    /** A record as the document it is stored as, its text {@linkplain #wellFormed(String) well-formed}. */
     public Document doc(Object value) {
         if (value == null) {
             return null;
         }
         try {
-            return new Document(MAPPER.convertValue(value, FIELDS));
+            return new Document(wellFormed(MAPPER.convertValue(value, FIELDS)));
         } catch (IllegalArgumentException e) {
             throw new IllegalStateException("cannot store " + value.getClass().getSimpleName() + " as a document: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * The text with each lone UTF-16 surrogate (half a pair, which JSON may escape and Jackson
+     * accepts) replaced by U+FFFD: the driver would write one as bytes that are not UTF-8, which
+     * read back as U+FFFD, so storing U+FFFD keeps what is written equal to what reads back (and an
+     * evidence entry's hash equal to the hash of what is read). The same string when it has none.
+     */
+    public static String wellFormed(String text) {
+        if (text == null) {
+            return null;
+        }
+        StringBuilder out = null;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (!Character.isSurrogate(c)) {
+                if (out != null) {
+                    out.append(c);
+                }
+            } else if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
+                if (out != null) {
+                    out.append(c).append(text.charAt(i + 1));
+                }
+                i++;
+            } else {
+                if (out == null) {
+                    out = new StringBuilder(text.length()).append(text, 0, i);
+                }
+                out.append('�');
+            }
+        }
+        return out == null ? text : out.toString();
+    }
+
+    /** The map's keys and text, at every depth, {@linkplain #wellFormed(String) well-formed}; nulls kept. */
+    private static Map<String, Object> wellFormed(Map<?, ?> fields) {
+        Map<String, Object> out = LinkedHashMap.newLinkedHashMap(fields.size());
+        fields.forEach((k, v) -> out.put(wellFormed(String.valueOf(k)), wellFormedValue(v)));
+        return out;
+    }
+
+    private static Object wellFormedValue(Object value) {
+        if (value instanceof String s) {
+            return wellFormed(s);
+        }
+        if (value instanceof Map<?, ?> m) {
+            return wellFormed(m);
+        }
+        if (value instanceof List<?> l) {
+            List<Object> out = new ArrayList<>(l.size());
+            for (Object v : l) {
+                out.add(wellFormedValue(v));
+            }
+            return out;
+        }
+        return value;
     }
 
     /** The record in the {@value #DOC} field of a stored document. */

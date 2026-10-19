@@ -160,6 +160,34 @@ class MongoTest {
     }
 
     @Test
+    void aLoneSurrogateIsStoredAsTheReplacementCharacterSoWhatIsWrittenReadsBack() throws Exception {
+        // JSON may escape half a surrogate pair, which Jackson accepts; the driver would write it as bytes that are not UTF-8,
+        // which read back as U+FFFD, so it is stored as U+FFFD, in a value or a key; a whole pair stays as it is
+        JsonNode data = new ObjectMapper().readTree("""
+                {"lone": "\\ud800", "inside": "a\\udc00b", "pair": "\\ud83d\\ude00", "key\\ud800": {"list": ["\\udfff", "ok", "\\ude00\\ud83d"]}}
+                """);
+        Map<String, Object> labels = new LinkedHashMap<>();
+        labels.put("x\udbff", "y\udc00z");
+        labels.put("unset", null);
+        Note note = new Note("t\ud800", "ana", data, labels);
+        Map<String, Object> wellFormedLabels = new LinkedHashMap<>();
+        wellFormedLabels.put("x�", "y�z");
+        wellFormedLabels.put("unset", null);
+        Note wellFormed = new Note("t�", "ana", new ObjectMapper().readTree("""
+                {"lone": "�", "inside": "a�b", "pair": "😀", "key�": {"list": ["�", "ok", "��"]}}
+                """), wellFormedLabels);
+        MongoCollection<Document> notes = db.mongo().collection("notes");
+        Document written = db.mongo().doc(note);
+        notes.insertOne(new Document("_id", "one").append(Mongo.DOC, written));
+
+        Document stored = notes.find().first();
+        assertThat(Mongo.mapper().valueToTree(stored.get(Mongo.DOC)).equals(Mongo.mapper().valueToTree(written)))
+                .as("what is written is what reads back").isTrue();
+        assertThat(db.mongo().read(stored, Note.class)).isEqualTo(wellFormed);
+        assertThat(db.mongo().as(written, Note.class)).isEqualTo(wellFormed);
+    }
+
+    @Test
     void aStoreRevisionMovesOnEveryBump() {
         assertThat(db.mongo().revision("workflows")).isZero();
         db.mongo().bump("workflows");

@@ -217,7 +217,9 @@ driver would read it as a DBRef and drop its other keys); an integer beyond a lo
 to 34 digits and, longer, as a binary of the user-defined subtype (`0x80`) holding its decimal
 digits, and either reads back as exactly that integer; a null inside a JSON value or a map is kept both ways,
 so a job's input or an evidence entry's hashed data comes back exactly, while a null record
-component is left out. One known gap: a decimal held as a JSON decimal node (the HCL importer makes
+component is left out. Half a UTF-16 surrogate pair (JSON may escape one) is stored, in a value or
+a key, as the U+FFFD the driver would read it back as, so what is written reads back as written
+and an evidence entry is hashed as it will be read. One known gap: a decimal held as a JSON decimal node (the HCL importer makes
 one for an integer beyond a long) is stored as a double and can lose digits. Each adapter creates the indexes it relies on in its constructor, so every
 start makes the missing ones and leaves the others as they are. The adapters' tests run on a real
 MongoDB when `PLATFORM_TEST_MONGO_URI` names one, a fresh database per test (see

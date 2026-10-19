@@ -410,9 +410,14 @@ public class MongoEvidenceStore implements EvidenceStore {
 
     // ------------------------------------------------------------------ helpers
 
-    /** The entry as it will read back from its document, so the hash chained now is the hash verified later. */
+    /**
+     * The entry as it will read back from its document, so the hash chained now is the hash
+     * verified later: its data as the mapping returns it, and its text, actor included, as
+     * {@link Mongo#doc} stores it (half a surrogate pair as U+FFFD, which is what the stored text
+     * would read back as).
+     */
     private EvidenceEntry stable(EvidenceEntry e) {
-        return e.data() == null ? e : mongo.as(mongo.doc(e), EvidenceEntry.class);
+        return mongo.as(mongo.doc(e), EvidenceEntry.class);
     }
 
     /** The documents {@code which} picks, in one query, by record, each record's in {@code seq} order. */
