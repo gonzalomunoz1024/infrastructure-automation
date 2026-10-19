@@ -130,6 +130,8 @@ export type ChangeRequest = {
   createdAt: string
   mergedAt?: string
   url?: string
+  /** the change requests (their ids) that must merge before this one: a workflow's, the provider change requests the same Publish opened */
+  requires?: string[]
 }
 export type ChangeRequestDetail = ChangeRequest & {
   diff: string
@@ -159,7 +161,8 @@ export type ReplayCheck = { passed: boolean; replayed: number; divergences: { jo
 export type ImportSource = 'idp' | 'ansible' | 'terraform' | 'openapi'
 export type ImportResult = { yaml: string; notes: string[] }
 export type Template = { id: string; title: string; description: string; yaml: string }
-export type PublishRequest = { strategy?: Strategy; notes?: string }
+/** `requires`: the change requests (their ids) that must merge first, the provider change requests opened for the drafts the workflow uses; sent only when it names one. */
+export type PublishRequest = { strategy?: Strategy; notes?: string; requires?: string[] }
 
 /* ----------------------------------------------------------------------------
    Registry (read-only, used by the designer and the assistant)
