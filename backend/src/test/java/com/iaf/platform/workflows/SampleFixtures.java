@@ -54,11 +54,34 @@ public final class SampleFixtures {
     }
 
     public static ProviderQueries providerQueries() {
-        List<ProviderDefinition> all = providers();
+        return providerQueries(providers());
+    }
+
+    /** Answers from {@code registry} as it is at each call, so a test can publish a provider into it: one current version per name. */
+    public static ProviderQueries providerQueries(List<ProviderDefinition> registry) {
         ProviderQueries q = mock(ProviderQueries.class);
-        when(q.all()).thenReturn(Flux.fromIterable(all));
-        when(q.provider(anyString())).thenAnswer(inv -> Mono.justOrEmpty(all.stream().filter(p -> p.name().equals(inv.getArgument(0))).findFirst()));
+        when(q.all()).thenAnswer(inv -> Flux.fromIterable(List.copyOf(registry)));
+        when(q.provider(anyString())).thenAnswer(inv -> Mono.justOrEmpty(named(registry, inv.getArgument(0))));
+        when(q.currentVersion(anyString())).thenAnswer(inv -> named(registry, inv.getArgument(0)).map(p -> p.metadata().version()));
         return q;
+    }
+
+    private static java.util.Optional<ProviderDefinition> named(List<ProviderDefinition> registry, String name) {
+        return List.copyOf(registry).stream().filter(p -> p.name().equals(name)).findFirst();
+    }
+
+    /**
+     * What the providers slice does with a merged provider change request, for handlers built by
+     * hand: its file becomes the current version of a new provider or with the strategy all; a
+     * canary over an existing provider stays a candidate, the current version unchanged.
+     */
+    public static void publishMerged(List<ProviderDefinition> registry, String yaml, String strategy) {
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        boolean exists = registry.stream().anyMatch(p -> p.name().equals(def.name()));
+        if (!exists || "all".equals(strategy)) {
+            registry.removeIf(p -> p.name().equals(def.name()));
+            registry.add(def);
+        }
     }
 
     public static ResourceQueries resourceQueries() {
@@ -81,8 +104,91 @@ public final class SampleFixtures {
     public static RunsCommands runs() {
         RunsCommands r = mock(RunsCommands.class);
         when(r.dryRun(any(), any(), any())).thenReturn(Mono.just(DRY_RUN_PASSED));
+        when(r.dryRun(any(), any(), any(), any())).thenReturn(Mono.just(DRY_RUN_PASSED));
         return r;
     }
+
+    /** A provider nobody published yet, as the designer sends its draft with a workflow that calls it. */
+    public static final String TICKETING = """
+            apiVersion: iaf.platform/v1
+            kind: Provider
+            metadata: { name: ticketing, title: Ticketing, owner: team-compute, version: 0.1.0, description: Tickets of the service desk. }
+            spec:
+              type: http
+              endpoints:
+                dev: https://tickets-dev.example.com/api
+              auth: { type: header, header: X-Api-Key, credential: vault:ticketing/api-key }
+              actions:
+                - id: ticket.get
+                  title: Get a ticket
+                  operation: { method: GET, path: "/tickets/{id}" }
+                  effect: read
+                  retry: safe
+                  input:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: string }
+                  output:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      state: { type: string }
+                  sample: { id: "{{ $input.id }}", state: open }
+              slo: { successRate: 99.0, p95Ms: 800 }
+              alerts: { channel: "#compute-alerts" }
+            """;
+
+    /**
+     * {@link #TICKETING} while the designer is still writing it: no credential picked yet, a create
+     * and a delete action, no alert channel, and the delete's approval turned off. Usable for a dry
+     * run or a validate, not publishable yet.
+     */
+    public static final String TICKETING_UNFINISHED = TICKETING
+            .replace("auth: { type: header, header: X-Api-Key, credential: vault:ticketing/api-key }", "auth: { type: header, header: X-Api-Key }")
+            .replace("  slo: { successRate: 99.0, p95Ms: 800 }\n  alerts: { channel: \"#compute-alerts\" }\n", "")
+            .replace("""
+                          sample: { id: "{{ $input.id }}", state: open }
+                    """, """
+                          sample: { id: "{{ $input.id }}", state: open }
+                        - id: ticket.create
+                          title: Open a ticket
+                          operation: { method: POST, path: /tickets }
+                          effect: create
+                          retry: unsafe
+                          sample: { id: T-100, state: open }
+                        - id: ticket.delete
+                          title: Delete a ticket
+                          operation: { method: DELETE, path: "/tickets/{id}" }
+                          effect: delete
+                          retry: unsafe
+                          approval: none
+                    """);
+
+    /** A new workflow that calls the {@link #TICKETING} provider. */
+    public static final String TICKET_CHECK = """
+            apiVersion: iaf.platform/v1
+            kind: Workflow
+            metadata: { name: ticket-check, title: Check a ticket, noun: ticket, verb: check, owner: team-compute }
+            api:
+              method: POST
+              path: /api/v1/tickets:check
+              input:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: string, title: Ticket id }
+            policy: { rbac: [ops] }
+            workflow:
+              do:
+                - getTicket:
+                    name: Get the ticket
+                    call: provider
+                    with:
+                      provider: ticketing
+                      action: ticket.get
+                      input: { id: "{{ $input.id }}" }
+            """;
 
     public static RunsQueries runsQueries() {
         RunsQueries r = mock(RunsQueries.class);

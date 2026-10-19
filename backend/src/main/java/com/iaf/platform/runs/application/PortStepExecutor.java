@@ -123,6 +123,22 @@ public class PortStepExecutor implements StepExecutor {
     /** The beans the executor works with. */
     public record Ports(ProviderQueries providers, ProviderCallPort calls, AutomationRunners runners, WorkflowQueries workflows,
             ResourceQueries resources, ResourceCommands resourceCommands, JobEvents events, PolicyPort policy, Clock clock) {
+
+        /**
+         * The same ports with provider lookups answered from {@code drafts} first: a draft stands
+         * in for the published provider of its name (or adds one). For a dry run only.
+         */
+        public Ports withProviders(List<ProviderDefinition> drafts) {
+            if (drafts == null || drafts.isEmpty()) {
+                return this;
+            }
+            return new Ports(new DraftProviders(providers, drafts), calls, runners, workflows, resources, resourceCommands, events, policy, clock);
+        }
+
+        /** The provider drafts the lookups answer from first; empty for the ports of a live job. */
+        public List<ProviderDefinition> drafts() {
+            return providers instanceof DraftProviders d ? d.drafts() : List.of();
+        }
     }
 
     private final Ports ports;
@@ -232,7 +248,7 @@ public class PortStepExecutor implements StepExecutor {
         JsonNode w = with == null ? F.objectNode() : with;
         boolean checkMode = w.path("checkModeOnTest").asBoolean(false) && "test".equals(ctx.environment());
         try {
-            RunRequest request = new RunRequest(ctx.jobId(), ctx.nextSeq(), type, step, w, ctx.environment(), dryRun, checkMode);
+            RunRequest request = new RunRequest(ctx.jobId(), ctx.nextSeq(), type, step, w, ctx.environment(), dryRun, checkMode, ports.drafts());
             // the runner enforces the step's timeout itself (and ends its process); the grace lets it report that
             JsonNode out = await(runner.run(request, progress(ctx, step)), (timeout == null ? DEFAULT_CALL_TIMEOUT : timeout).plus(RUNNER_GRACE), ctx);
             return out == null ? F.objectNode() : out;

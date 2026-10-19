@@ -69,6 +69,29 @@ class GitHubChangeRequestsTest {
     }
 
     @Test
+    void savedAgainWithAChangedCheckTheOpenChangeRequestPostsItOnThePullRequest() {
+        ChangeRequest pending = open().withCheck(new ChangeRequest.Check("requires", "Requires", "pending", "waiting for cr_10 (provider ticketing 0.1.0) to merge"))
+                .withCheck(new ChangeRequest.Check("schema", "Schema", "passed", null));
+        when(github.open(any())).thenReturn(new GitHubPullRequests.PullRequest(42, URL, "c0ffee1"));
+        changeRequests.save(pending);
+
+        changeRequests.save(store.get("cr_9").orElseThrow());
+        verify(github, never()).statuses(anyInt(), any());
+
+        ChangeRequest.Check passed = new ChangeRequest.Check("requires", "Requires", "passed", "published: cr_10 (provider ticketing 0.1.0)");
+        changeRequests.save(store.get("cr_9").orElseThrow().withCheck(passed));
+        verify(github).statuses(42, List.of(passed));
+        assertThat(store.get("cr_9").orElseThrow().checks()).contains(passed);
+
+        // GitHub not taking it leaves the change request saved: the platform's merge judges the check again anyway
+        ChangeRequest.Check failed = new ChangeRequest.Check("requires", "Requires", "failed", "cr_10 (provider ticketing 0.1.0) was closed without merging");
+        org.mockito.Mockito.doThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "GitHub did not answer")).when(github).statuses(42, List.of(failed));
+        changeRequests.save(store.get("cr_9").orElseThrow().withCheck(failed));
+        assertThat(store.get("cr_9").orElseThrow().checks()).contains(failed);
+        assertThat(store.get("cr_9").orElseThrow().url()).isEqualTo(URL);
+    }
+
+    @Test
     void mergingOnThePlatformMergesThePullRequest() {
         opened();
         when(github.state(42)).thenReturn(new GitHubPullRequests.State(true, false));

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,11 +30,14 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.adapters.outbound.DemoUserDirectory;
 import com.iaf.platform.identity.adapters.outbound.InMemoryServiceAccounts;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.workflows.SampleFixtures;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
 import com.iaf.platform.workflows.application.WorkflowCommandHandler;
 import com.iaf.platform.workflows.application.WorkflowQueryHandler;
+import com.iaf.platform.workflows.domain.ChangeRequest;
 
 import reactor.core.publisher.Mono;
 
@@ -52,13 +56,22 @@ class RestControllerWorkflowAdapterTest {
     InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
     EventBus events = new EventBus(clock);
     PolicyPort policy = SampleFixtures.policy();
+    /** The providers as the providers slice serves them; a merged provider change request is published into it. */
+    List<ProviderDefinition> registry = new ArrayList<>(SampleFixtures.providers());
     WebTestClient client;
 
     @BeforeEach
     void setUp() {
         store.seed(SampleFixtures.ROOT);
-        WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
-        WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(),
+        ProviderQueries providers = SampleFixtures.providerQueries(registry);
+        // the providers slice's listener, which publishes a merged provider change request in handlers built by hand
+        events.register(e -> {
+            if (e.type().equals("change-request.merged") && "provider".equals(e.data().path("kind").asText())) {
+                changeRequests.get(e.aggregateId()).ifPresent(cr -> SampleFixtures.publishMerged(registry, cr.yaml(), cr.strategy()));
+            }
+        });
+        WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, providers, SampleFixtures.resourceQueries(), SampleFixtures.credentials());
+        WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, providers, SampleFixtures.resourceQueries(),
                 SampleFixtures.runs(), SampleFixtures.runsQueries(), policy, events, clock);
         commands.init();
         PlatformProperties props = new PlatformProperties();
@@ -235,6 +248,72 @@ class RestControllerWorkflowAdapterTest {
         String crId = changeRequests.all().get(0).id();
         client.post().uri("/api/v1/change-requests/" + crId + ":close").exchange().expectStatus().isAccepted().expectBody().jsonPath("$.status").isEqualTo("closed");
         client.get().uri("/api/v1/workflows/thing-refresh/versions/0.1.0").exchange().expectStatus().isOk().expectBody().jsonPath("$.status").isEqualTo("draft");
+    }
+
+    @Test
+    void validateAndDryRunTakeDraftsOfProviders() {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck)).exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.valid").isEqualTo(false).jsonPath("$.problems[?(@.code == 'step.unknownProvider')]").exists();
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", List.of(SampleFixtures.TICKETING)))
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.valid").isEqualTo(true).jsonPath("$.problems[?(@.code == 'step.unknownProvider')]").doesNotExist();
+        String plain = SampleFixtures.TICKETING.replace("credential: vault:ticketing/api-key", "credential: example-token");
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", List.of(plain))).exchange()
+                .expectStatus().isBadRequest()
+                .expectBody().jsonPath("$.error").isEqualTo("The draft provider ticketing (providers[0]) has 1 problem to fix")
+                .jsonPath("$.problems[?(@.code == 'credential.plain')].field").isEqualTo(List.of("spec.auth.credential"));
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", List.of(SampleFixtures.TICKETING)))
+                .exchange().expectStatus().isOk().expectBody().jsonPath("$.passed").isEqualTo(true);
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", List.of(plain)))
+                .exchange().expectStatus().isBadRequest().expectBody().jsonPath("$.problems").isArray();
+    }
+
+    @Test
+    void aDraftNotReadyToPublishStillServesValidateAndDryRun() {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        List<String> drafts = List.of(SampleFixtures.TICKETING_UNFINISHED);
+        client.post().uri("/api/v1/workflows:validate").bodyValue(Map.of("yaml", ticketCheck, "providers", drafts)).exchange()
+                .expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.valid").isEqualTo(true)
+                .jsonPath("$.problems[?(@.code == 'provider.draft')].field")
+                .isEqualTo(List.of("providers[0].spec.auth.credential", "providers[0].spec.actions[2].approval", "providers[0].spec.alerts.channel"))
+                .jsonPath("$.problems[?(@.code == 'provider.draft')].level").isEqualTo(List.of("warning", "warning", "warning"));
+        client.post().uri("/api/v1/workflows:dry-run").bodyValue(Map.of("yaml", ticketCheck, "input", Map.of("id", "T-1"), "providers", drafts))
+                .exchange().expectStatus().isOk().expectBody().jsonPath("$.passed").isEqualTo(true);
+    }
+
+    @Test
+    void aPublishTakesTheProviderChangeRequestsItRequiresAndMergesAfterThem() throws Exception {
+        String ticketCheck = SampleFixtures.TICKET_CHECK;
+        changeRequests.save(new ChangeRequest("cr_tick", ChangeRequest.Kind.PROVIDER, "ticketing", "0.1.0", "change/provider-ticketing-0.1.0", "Publish ticketing 0.1.0",
+                "mateo", ChangeRequest.Status.OPEN, List.of(new ChangeRequest.Check("schema", "Schema", "passed", null)), "all", SampleFixtures.TICKETING, "", NOW,
+                null, null, null));
+        client.post().uri("/api/v1/workflows").bodyValue(Map.of("yaml", ticketCheck)).exchange().expectStatus().isAccepted();
+        client.post().uri("/api/v1/workflows/ticket-check:publish").bodyValue(Map.of("requires", List.of("cr_nope"))).exchange()
+                .expectStatus().isBadRequest().expectBody().jsonPath("$.error").isEqualTo("requires names cr_nope, which is no change request");
+        byte[] accepted = client.post().uri("/api/v1/workflows/ticket-check:publish").bodyValue(Map.of("strategy", "all", "requires", List.of("cr_tick")))
+                .exchange().expectStatus().isAccepted().expectBody().jsonPath("$.status").isEqualTo("open").returnResult().getResponseBody();
+        String crId = JSON.readTree(accepted).path("id").asText();
+
+        client.get().uri("/api/v1/change-requests/" + crId).exchange().expectStatus().isOk()
+                .expectBody()
+                .jsonPath("$.requires").isEqualTo(List.of("cr_tick"))
+                .jsonPath("$.checks.length()").isEqualTo(10)
+                .jsonPath("$.checks[?(@.id == 'requires')].status").isEqualTo(List.of("pending"))
+                .jsonPath("$.checks[?(@.id == 'requires')].detail").isEqualTo(List.of("waiting for cr_tick (provider ticketing 0.1.0) to merge"));
+        client.post().uri("/api/v1/change-requests/" + crId + ":merge").exchange().expectStatus().isEqualTo(409)
+                .expectBody()
+                .jsonPath("$.error").isEqualTo("change request " + crId + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is open")
+                .jsonPath("$.detail.requires").isEqualTo(List.of("cr_tick"));
+
+        client.post().uri("/api/v1/change-requests/cr_tick:merge").header("X-User", "junior").exchange().expectStatus().isAccepted();
+        client.get().uri("/api/v1/change-requests?status=open").exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$[?(@.id == '" + crId + "')].checks[?(@.id == 'requires')].status").isEqualTo(List.of("passed"));
+        client.post().uri("/api/v1/change-requests/" + crId + ":merge").exchange().expectStatus().isAccepted()
+                .expectBody().jsonPath("$.status").isEqualTo("merged");
+        client.get().uri("/api/v1/workflows/ticket-check").exchange().expectStatus().isOk().expectBody().jsonPath("$.publishedVersion").isEqualTo("0.1.0");
     }
 
     @Test

@@ -1,10 +1,12 @@
 package com.iaf.platform.runs.application;
 
 import java.time.Clock;
+import java.util.List;
 
 import org.springframework.stereotype.Component;
 
 import com.iaf.platform.common.ports.PolicyPort;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.ports.inbound.ResourceCommands;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
@@ -38,5 +40,10 @@ public class StepExecutors {
     /** A dry-run executor: ports called with {@code dryRun = true}, nothing published, events recorded. */
     public PortStepExecutor dryRun(Job job, Recorder recorder) {
         return PortStepExecutor.dryRun(ports, job, recorder);
+    }
+
+    /** A dry-run executor that looks up {@code drafts} (unpublished provider files) before the published providers of the same name. */
+    public PortStepExecutor dryRun(Job job, Recorder recorder, List<ProviderDefinition> drafts) {
+        return PortStepExecutor.dryRun(ports.withProviders(drafts), job, recorder);
     }
 }

@@ -649,15 +649,11 @@ public class ProviderCommandHandler implements ProviderCommands {
         if (!STRATEGIES.contains(strategy)) {
             throw new IllegalArgumentException("strategy is canary or all");
         }
-        ProviderChecks.Result checks = ProviderChecks.check(command.yaml());
-        if (checks.hasErrors()) {
+        ProviderChecks.Publishable file = ProviderChecks.publishable(command.yaml(), checks -> {
             int n = checks.errors().size();
-            throw new ConflictException("The provider has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published", checks.problems());
-        }
-        ProviderDefinition def = ProviderYaml.parse(command.yaml());
-        ContentFiles.requireSlug("The provider name", def.name());
-        ContentFiles.requireSlug("The owner team", def.owner());
-        return new Publishable(def, strategy, checks);
+            return new ConflictException("The provider has " + n + (n == 1 ? " problem" : " problems") + " to fix before it can be published", checks.problems());
+        });
+        return new Publishable(file.definition(), strategy, file.checks());
     }
 
     private CommandAccepted publish(Identity who, Publish command, Publishable p, Optional<String> candidate) {

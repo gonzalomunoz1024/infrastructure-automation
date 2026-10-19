@@ -47,15 +47,38 @@ public interface WorkflowCommands {
         }
     }
 
-    /** Body of {@code POST /workflows:dry-run}: the document plus the job input to walk it with. */
-    record DryRunRequest(String yaml, JsonNode definition, JsonNode input) {
+    /**
+     * Body of {@code POST /workflows:dry-run}: the document plus the job input to walk it with.
+     * {@code providers} (optional): provider files that are not published yet (drafts), each
+     * checked as a provider publish checks it, which stand in for the published provider of
+     * their name in this dry run only.
+     */
+    record DryRunRequest(String yaml, JsonNode definition, JsonNode input, List<String> providers) {
+        public DryRunRequest(String yaml, JsonNode definition, JsonNode input) {
+            this(yaml, definition, input, null);
+        }
+
         public WorkflowSource source() {
             return new WorkflowSource(yaml, definition);
         }
     }
 
-    /** Body of {@code POST /workflows/{name}:publish}. {@code strategy} is canary or all; null means the file's rollout strategy. */
-    record PublishWorkflow(String strategy, String notes) {
+    /** Body of {@code POST /workflows:validate}: the document, and drafts of providers as a dry run takes them, which the checks see for this call only. */
+    record ValidateRequest(String yaml, JsonNode definition, List<String> providers) {
+        public WorkflowSource source() {
+            return new WorkflowSource(yaml, definition);
+        }
+    }
+
+    /**
+     * Body of {@code POST /workflows/{name}:publish}. {@code strategy} is canary or all; null means
+     * the file's rollout strategy. {@code requires} (optional): ids of provider change requests,
+     * open or merged, that the workflow's change request needs merged first.
+     */
+    record PublishWorkflow(String strategy, String notes, List<String> requires) {
+        public PublishWorkflow(String strategy, String notes) {
+            this(strategy, notes, null);
+        }
     }
 
     /** Body of {@code POST /workflows:import}: {@code source} is idp, ansible, terraform or openapi. */
@@ -87,13 +110,25 @@ public interface WorkflowCommands {
     /** Deletes the draft version(s) of a workflow; published versions are never deleted (409). */
     Mono<Void> deleteDraft(String name);
 
-    Mono<Validation> validate(WorkflowSource source);
+    /** Every check of a document as the backend runs them, with the drafts of providers it carries; an invalid draft is a 400 with its problems. */
+    Mono<Validation> validate(ValidateRequest request);
 
+    /** {@link #validate(ValidateRequest)} of a document that carries no draft. */
+    default Mono<Validation> validate(WorkflowSource source) {
+        return validate(new ValidateRequest(source.yaml(), source.definition(), null));
+    }
+
+    /** Walks the document against the samples, with the drafts of providers it carries; an invalid draft is a 400 with its problems. */
     Mono<DryRunResult> dryRun(DryRunRequest request);
 
-    /** Opens a change request for the draft; the accepted id is the change request id. */
+    /**
+     * Opens a change request for the draft; the accepted id is the change request id. With
+     * {@code requires} its checks and replay also see the provider files of those change
+     * requests, and it merges only once every one of them is merged.
+     */
     Mono<CommandAccepted> publish(String name, PublishWorkflow command);
 
+    /** Merges an open change request whose checks passed; a workflow one waits for every change request it requires to be merged (409). */
     Mono<CommandAccepted> mergeChangeRequest(String id);
 
     Mono<CommandAccepted> closeChangeRequest(String id);

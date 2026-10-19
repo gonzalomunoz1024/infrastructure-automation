@@ -7,10 +7,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
@@ -37,12 +40,15 @@ import com.iaf.platform.common.ports.PolicyPort;
 import com.iaf.platform.common.ports.PolicyPort.PolicyInput;
 import com.iaf.platform.identity.application.CurrentIdentity;
 import com.iaf.platform.identity.domain.AccessRules;
+import com.iaf.platform.providers.domain.ProviderChecks;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.inbound.ProviderCommands;
 import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.resources.domain.ResourceTypeDefinition;
 import com.iaf.platform.resources.ports.inbound.ResourceQueries;
 import com.iaf.platform.runs.domain.DryRunResult;
+import com.iaf.platform.runs.domain.InvalidInputException;
 import com.iaf.platform.runs.ports.inbound.RunsCommands;
 import com.iaf.platform.runs.ports.inbound.RunsQueries;
 import com.iaf.platform.runs.ports.inbound.RunsQueries.JobOutcome;
@@ -51,6 +57,7 @@ import com.iaf.platform.workflows.domain.ChangeRequest.Check;
 import com.iaf.platform.workflows.domain.CheckContext;
 import com.iaf.platform.workflows.domain.DependencyRules;
 import com.iaf.platform.workflows.domain.PlaybookPins;
+import com.iaf.platform.workflows.domain.ProviderDrafts;
 import com.iaf.platform.workflows.domain.PublishChecks;
 import com.iaf.platform.workflows.domain.ReplayPaths;
 import com.iaf.platform.workflows.domain.ReplayResult;
@@ -226,16 +233,80 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     // ------------------------------------------------------------------ checks and the round trip
 
     @Override
-    public Mono<Validation> validate(WorkflowSource source) {
-        return Mono.zip(queries.checkContext(), resources.types().collectList()).flatMap(t -> blocking(() -> {
-            List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
-            List<Problem> problems = designer;
-            if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
-                List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
-                problems = PublishChecks.merge(designer, publish);
+    public Mono<Validation> validate(ValidateRequest request) {
+        WorkflowSource source = request.source();
+        return Mono.fromCallable(() -> drafts(request.providers()))
+                .flatMap(drafts -> Mono.zip(queries.checkContext().map(ctx -> ctx.withProviders(drafts.definitions())), resources.types().collectList())
+                        .flatMap(t -> blocking(() -> {
+                            List<Problem> designer = new ArrayList<>(problems(source, t.getT1()));
+                            List<Problem> problems = designer;
+                            if (designer.stream().noneMatch(WorkflowCommandHandler::structural)) {
+                                List<Problem> publish = publishProblems(source.parse(), t.getT1(), t.getT2(), designer);
+                                problems = PublishChecks.merge(designer, publish);
+                            }
+                            boolean valid = !WorkflowChecks.hasErrors(problems);
+                            if (!drafts.gates().isEmpty()) {
+                                problems = new ArrayList<>(problems);
+                                problems.addAll(drafts.gates());
+                            }
+                            return new Validation(valid, problems);
+                        })));
+    }
+
+    /**
+     * The drafts of providers a dry run or a validate carries, and what still stops each being
+     * published, as warnings ({@code provider.draft}, its field under {@code providers[i]}): the
+     * workflow's checks are not the place a provider's review is decided, and the designer's
+     * Publish asks POST /providers:validate for that.
+     */
+    record Drafts(List<ProviderDefinition> definitions, List<Problem> gates) {
+        static final Drafts NONE = new Drafts(List.of(), List.of());
+    }
+
+    /**
+     * The drafts of providers a dry run or a validate carries, each read as a draft for that one
+     * call ({@link ProviderChecks#draft}): one that is no usable provider file (it does not parse,
+     * names no provider or owner, its actions cannot be called, it holds a secret) is a 400 with
+     * those problems, and so are an empty entry and a second draft of one name. What only gates
+     * publishing (an alert channel, a credential, a delete's approval, a pinned spec, SLO ranges)
+     * does not stop the call. They serve that call only; nothing is stored.
+     */
+    static Drafts drafts(List<String> files) {
+        if (files == null || files.isEmpty()) {
+            return Drafts.NONE;
+        }
+        List<ProviderDefinition> out = new ArrayList<>();
+        List<Problem> gates = new ArrayList<>();
+        for (int i = 0; i < files.size(); i++) {
+            String yaml = files.get(i);
+            String which = "providers[" + i + "]";
+            if (yaml == null || yaml.isBlank()) {
+                throw new IllegalArgumentException(which + " is empty: each entry of providers is a provider file");
             }
-            return new Validation(!WorkflowChecks.hasErrors(problems), problems);
-        }));
+            ProviderChecks.Draft draft = ProviderChecks.draft(yaml, unusable -> {
+                int n = unusable.size();
+                return InvalidInputException.of("The draft provider " + draftLabel(yaml, which) + " has " + n + (n == 1 ? " problem" : " problems") + " to fix",
+                        unusable);
+            });
+            ProviderDefinition def = draft.definition();
+            if (ProviderDrafts.named(out, def.name()).isPresent()) {
+                throw new IllegalArgumentException(which + " is a second draft of provider " + def.name() + "; send one file per provider");
+            }
+            out.add(def);
+            draft.gates().forEach(p -> gates.add(Problem.warning("provider.draft", null, p.field() == null ? which : which + "." + p.field(),
+                    "The draft provider " + def.name() + " is not ready to publish: " + p.message())));
+        }
+        return new Drafts(List.copyOf(out), List.copyOf(gates));
+    }
+
+    /** {@code vsphere (providers[0])}, or {@code in providers[0]} when the file names no provider. */
+    private static String draftLabel(String yaml, String which) {
+        try {
+            String name = WorkflowYaml.readTree(yaml).path("metadata").path("name").asText("");
+            return name.isBlank() ? "in " + which : name + " (" + which + ")";
+        } catch (IllegalArgumentException e) {
+            return "in " + which;
+        }
     }
 
     /**
@@ -263,9 +334,15 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<DryRunResult> dryRun(DryRunRequest request) {
         return CurrentIdentity.current().flatMap(who -> {
             WorkflowDefinition def = request.source().parse();
+            List<ProviderDefinition> drafts = drafts(request.providers()).definitions();
             JsonNode input = request.input() == null || request.input().isNull() ? F.objectNode() : request.input();
-            return runs.dryRun(def, input, who);
+            return dryRun(def, input, who, drafts);
         });
+    }
+
+    /** A dry run in the runs slice, with the drafts in front of the published providers when there are any. */
+    private Mono<DryRunResult> dryRun(WorkflowDefinition def, JsonNode input, Identity who, List<ProviderDefinition> drafts) {
+        return drafts.isEmpty() ? runs.dryRun(def, input, who) : runs.dryRun(def, input, who, drafts);
     }
 
     @Override
@@ -301,11 +378,12 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     /**
      * What a publish or a replay check works on: the version, the previous published one
-     * (nullable), the caller, and what pinning its git playbooks did.
+     * (nullable), the caller, what pinning its git playbooks did, and the provider change requests
+     * it requires.
      */
-    private record Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who, PlaybookPins.Outcome pins) {
-        Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who) {
-            this(record, previous, who, PlaybookPins.Outcome.NONE);
+    private record Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who, PlaybookPins.Outcome pins, Required required) {
+        Candidate(WorkflowRecord record, WorkflowRecord previous, Identity who, Required required) {
+            this(record, previous, who, PlaybookPins.Outcome.NONE, required);
         }
 
         String previousVersion() {
@@ -313,10 +391,20 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         }
     }
 
+    /** The provider change requests a workflow change request requires, and their provider files, which its checks and replay see. */
+    private record Required(List<ChangeRequest> changeRequests, List<ProviderDefinition> files) {
+        static final Required NONE = new Required(List.of(), List.of());
+
+        List<String> ids() {
+            return changeRequests.stream().map(ChangeRequest::id).toList();
+        }
+    }
+
     @Override
     public Mono<CommandAccepted> publish(String name, PublishWorkflow command) {
         String requested = command == null ? null : command.strategy();
         String notes = command == null ? null : command.notes();
+        List<String> requires = command == null || command.requires() == null ? List.of() : command.requires();
         if (requested != null && !STRATEGIES.contains(requested)) {
             return Mono.error(new IllegalArgumentException("strategy is canary or all"));
         }
@@ -326,12 +414,14 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 throw new NotFoundException("workflow", name);
             }
             AccessRules.requireEdit(who, ownerOf(existing), "workflow " + name);
+            Required required = required(requires);
             WorkflowRecord draft = store.draft(name).orElseThrow(() -> new ConflictException("workflow " + name + " has no draft to publish"));
             openChangeRequest(name).ifPresent(cr -> {
                 throw new ConflictException("change request " + cr.id() + " is already open for workflow " + name, Map.of("changeRequest", cr.id()));
             });
-            return new Candidate(withVersionRanges(draft), store.published(name).orElse(null), who);
-        })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext(), missingUploads(c.record().definition()), blocking(this::publishedDefinitions)).flatMap(judged -> {
+            return new Candidate(withVersionRanges(draft), store.published(name).orElse(null), who, required);
+        })).flatMap(this::pinned).flatMap(c -> Mono.zip(queries.checkContext().map(ctx -> ctx.withProviders(c.required().files())),
+                missingUploads(c.record().definition()), blocking(this::publishedDefinitions)).flatMap(judged -> {
             CheckContext ctx = judged.getT1();
             WorkflowDefinition def = c.record().definition();
             // whose each credential is decides credential.owner; a vault that cannot say is no verdict
@@ -354,7 +444,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                             : Mono.just(PublishChecks.policy(d)));
             Mono<Check> replayCheck = c.previous() == null
                     ? Mono.just(PublishChecks.replay(ReplayResult.none(), null))
-                    : replay(name, def, c.previousVersion(), c.who())
+                    : replay(name, def, c.previousVersion(), c.who(), c.required().files())
                             .map(r -> PublishChecks.replay(r, c.previousVersion()))
                             .onErrorResume(e -> Mono.just(PublishChecks.replayUnavailable(String.valueOf(e.getMessage()))));
             // the linter reads each pinned git playbook at its commit, so it runs beside policy and replay, once the file has no errors
@@ -403,8 +493,76 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             return Mono.just(c);
         }
         return pinning.pin(c.record().definition()).map(p -> p.outcome().pinned().isEmpty()
-                ? new Candidate(c.record(), c.previous(), c.who(), p.outcome())
-                : new Candidate(c.record().withDefinition(p.definition(), clock.instant(), c.who().id()), c.previous(), c.who(), p.outcome()));
+                ? new Candidate(c.record(), c.previous(), c.who(), p.outcome(), c.required())
+                : new Candidate(c.record().withDefinition(p.definition(), clock.instant(), c.who().id()), c.previous(), c.who(), p.outcome(), c.required()));
+    }
+
+    /**
+     * The provider change requests a publish names in {@code requires}, open or merged, with the
+     * provider files its checks and replay see in front of the published providers
+     * ({@link #draftFile}). A 400 for an id that names no change request, a workflow change
+     * request or a closed one, for a merged one whose provider has moved on to a later version
+     * since (its file would hide the version that serves calls now), and for two change requests
+     * of one provider; an id named twice counts once.
+     */
+    private Required required(List<String> ids) {
+        if (ids.isEmpty()) {
+            return Required.NONE;
+        }
+        List<ChangeRequest> crs = new ArrayList<>();
+        List<ProviderDefinition> files = new ArrayList<>();
+        for (String id : new LinkedHashSet<>(ids)) {
+            if (id == null || id.isBlank()) {
+                throw new IllegalArgumentException("requires holds an empty change request id");
+            }
+            ChangeRequest cr = changeRequests.get(id).orElseThrow(() -> new IllegalArgumentException("requires names " + id + ", which is no change request"));
+            if (cr.kind() != ChangeRequest.Kind.PROVIDER) {
+                throw new IllegalArgumentException("requires names " + id + ", a workflow change request; a workflow requires provider change requests only");
+            }
+            if (cr.status() == ChangeRequest.Status.CLOSED) {
+                throw new IllegalArgumentException("requires names " + id + ", which was closed; name open or merged provider change requests");
+            }
+            if (crs.stream().anyMatch(c -> c.name().equals(cr.name()))) {
+                throw new IllegalArgumentException("requires names two change requests of provider " + cr.name() + "; name the one the workflow needs");
+            }
+            PublishChecks.Required r = new PublishChecks.Required(id, Optional.of(cr), providers.currentVersion(cr.name()));
+            r.current().filter(v -> cr.status() == ChangeRequest.Status.MERGED && !v.equals(cr.version()) && PublishChecks.atLeast(v, cr.version()))
+                    .ifPresent(v -> {
+                        throw new IllegalArgumentException("requires names " + id + ", which merged provider " + cr.name() + " " + cr.version() + ", but "
+                                + cr.name() + " " + v + " serves calls now; the checks judge the workflow against that version, so publish without " + id);
+                    });
+            crs.add(cr);
+            draftFile(r).ifPresent(files::add);
+        }
+        return new Required(List.copyOf(crs), List.copyOf(files));
+    }
+
+    /**
+     * The provider file of a change request a workflow change request requires, as its checks and
+     * replay see it in front of the published providers: an open one's, and a merged one's whose
+     * version does not serve calls yet (a canary rolling out). None for one whose version, or a
+     * later one, serves calls (the registry has it) or that was closed.
+     */
+    private static Optional<ProviderDefinition> draftFile(PublishChecks.Required r) {
+        PublishChecks.Standing standing = r.standing();
+        return standing == PublishChecks.Standing.OPEN || standing == PublishChecks.Standing.ROLLING_OUT
+                ? r.changeRequest().map(WorkflowCommandHandler::providerFile)
+                : Optional.empty();
+    }
+
+    /** The provider file a provider change request publishes; a 400 when it cannot be read as one. */
+    private static ProviderDefinition providerFile(ChangeRequest cr) {
+        try {
+            return ProviderYaml.parse(cr.yaml());
+        } catch (IllegalArgumentException | NullPointerException e) {
+            throw new IllegalArgumentException("change request " + cr.id() + " holds no provider file the checks can read: " + e.getMessage(), e);
+        }
+    }
+
+    /** The provider files the checks and replay of a workflow change request see for the change requests it requires ({@link #draftFile}). */
+    private List<ProviderDefinition> requiredFiles(ChangeRequest cr) {
+        return PublishChecks.Required.of(cr.required(), changeRequests::get, providers::currentVersion).stream()
+                .map(WorkflowCommandHandler::draftFile).flatMap(Optional::stream).toList();
     }
 
     private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck,
@@ -413,7 +571,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         WorkflowDefinition def = draft.definition();
         String previousVersion = c.previousVersion();
         String diff = UnifiedDiff.of(c.previous() == null ? "" : c.previous().yaml(), draft.yaml(), draft.path() == null ? pathFor(def) : draft.path());
-        List<Check> checks = List.of(
+        List<Check> checks = new ArrayList<>(List.of(
                 PublishChecks.schema(def),
                 PublishChecks.checks(problems),
                 PublishChecks.playbooks(def, ctx, c.pins(), lint),
@@ -422,12 +580,16 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 contractsCheck,
                 PublishChecks.diff(diff, previousVersion),
                 PublishChecks.routes(def, publishedDefinitions()),
-                PublishChecks.yaml(draft));
+                PublishChecks.yaml(draft)));
+        List<String> requires = c.required().ids();
+        if (!requires.isEmpty()) {
+            checks.add(PublishChecks.requires(requires, changeRequests::get, providers::currentVersion));
+        }
         Instant now = clock.instant();
         String title = (previousVersion == null ? "Publish " : "Update ") + def.title() + " " + draft.version();
         ChangeRequest cr = new ChangeRequest(Ids.next("cr"), ChangeRequest.Kind.WORKFLOW, draft.name(), draft.version(),
-                VersionRules.branch(draft.name(), draft.version()), title, c.who().id(), ChangeRequest.Status.OPEN, checks, strategy,
-                draft.yaml(), diff, now, null, null, null);
+                VersionRules.branch(draft.name(), draft.version()), title, c.who().id(), ChangeRequest.Status.OPEN, List.copyOf(checks), strategy,
+                draft.yaml(), diff, now, null, null, null, requires.isEmpty() ? null : requires);
         changeRequests.save(cr);
         store.save(draft.withStatus(WorkflowStatus.CANDIDATE).withNotes(notes));
         // the owner team of the version under review, so a listener can tell its reviewers without reading the store
@@ -441,14 +603,30 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 .flatMap(cr -> cr.kind() == ChangeRequest.Kind.WORKFLOW ? blocking(() -> mergeWorkflow(cr, who)) : mergeProvider(cr, who)));
     }
 
-    /** An open change request whose checks passed, merged by someone other than its author (admins excepted). */
+    /**
+     * An open change request whose checks passed and whose required provider change requests are
+     * done (merged, and their version serves calls), merged by someone other than its author
+     * (admins excepted).
+     */
     private ChangeRequest mergeable(String id, Identity who) {
         ChangeRequest cr = changeRequests.get(id).orElseThrow(() -> new NotFoundException("change request", id));
         if (cr.status() != ChangeRequest.Status.OPEN) {
             throw new ConflictException("change request " + id + " is " + cr.status().json());
         }
-        if (!cr.checksPassed()) {
-            throw new ConflictException("checks failed", PublishChecks.failed(cr.checks()));
+        // the requires check is judged now, below
+        List<Check> failed = PublishChecks.failed(cr.checks()).stream().filter(c -> !PublishChecks.REQUIRES.equals(c.id())).toList();
+        if (!failed.isEmpty()) {
+            throw new ConflictException("checks failed", failed);
+        }
+        // a workflow that needs a new provider version merges once that version serves every call: merged
+        // and current, not a canary still rolling out, nor merged while its publish has not finished
+        List<String> waiting = PublishChecks.Required.of(cr.required(), changeRequests::get, providers::currentVersion).stream()
+                .filter(r -> r.standing() != PublishChecks.Standing.DONE)
+                .map(PublishChecks.Required::why)
+                .toList();
+        if (!waiting.isEmpty()) {
+            throw new ConflictException("change request " + id + " waits for the provider change requests it requires: " + String.join(", ", waiting),
+                    Map.of("requires", cr.required()));
         }
         // the reviewer is not the author: nobody merges their own change, admins excepted
         if (who.id().equals(cr.author()) && !who.admin()) {
@@ -564,10 +742,12 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     public Mono<ReplayResult> replayCheck(String name, String version) {
         return CurrentIdentity.current().flatMap(who -> blocking(() -> {
             WorkflowRecord rec = store.get(name, version).orElseThrow(() -> new NotFoundException("workflow version", name + "@" + version));
-            return new Candidate(rec, previousOf(name, version).orElse(null), who);
+            // a version under review sees the provider files of the change requests it requires
+            List<ProviderDefinition> files = openChangeRequest(name).filter(cr -> version.equals(cr.version())).map(this::requiredFiles).orElse(List.of());
+            return new Candidate(rec, previousOf(name, version).orElse(null), who, new Required(List.of(), files));
         })).flatMap(c -> c.previous() == null
                 ? Mono.just(ReplayResult.none())
-                : replay(name, c.record().definition(), c.previousVersion(), c.who()));
+                : replay(name, c.record().definition(), c.previousVersion(), c.who(), c.required().files()));
     }
 
     /**
@@ -576,15 +756,17 @@ public class WorkflowCommandHandler implements WorkflowCommands {
      * another path than the job did ({@link ReplayPaths}: other steps, another order, another
      * provider action). When the samples cannot reproduce the job's own path (the previous
      * version's dry run already takes another route, as when real data chose a branch), that dry
-     * run stands in for the job.
+     * run stands in for the job. The new version's dry runs see {@code drafts} (the provider files
+     * of the change requests it requires) in front of the published providers; the previous
+     * version's see the published ones, as its jobs did.
      */
-    Mono<ReplayResult> replay(String name, WorkflowDefinition def, String previousVersion, Identity who) {
+    Mono<ReplayResult> replay(String name, WorkflowDefinition def, String previousVersion, Identity who, List<ProviderDefinition> drafts) {
         Instant since = clock.instant().minus(REPLAY_WINDOW);
         return blocking(() -> store.get(name, previousVersion).map(WorkflowRecord::definition))
                 .flatMap(previous -> runsQueries.outcomes(name, previousVersion, since)
                         .defaultIfEmpty(List.of())
                         .flatMapMany(Flux::fromIterable)
-                        .concatMap(o -> replayed(o, def, previous.orElse(null), who))
+                        .concatMap(o -> replayed(o, def, previous.orElse(null), who, drafts))
                         .collectList())
                 .map(all -> {
                     List<Divergence> divergences = all.stream().flatMap(Optional::stream).toList();
@@ -593,9 +775,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     }
 
     /** One job of the previous version against the new definition: its dry run, then its path. */
-    private Mono<Optional<Divergence>> replayed(JobOutcome o, WorkflowDefinition def, WorkflowDefinition previous, Identity who) {
+    private Mono<Optional<Divergence>> replayed(JobOutcome o, WorkflowDefinition def, WorkflowDefinition previous, Identity who,
+            List<ProviderDefinition> drafts) {
         JsonNode input = o.input() == null || o.input().isNull() ? F.objectNode() : o.input();
-        return runs.dryRun(def, input, who)
+        return dryRun(def, input, who, drafts)
                 .flatMap(r -> divergence(o, r).map(d -> Mono.just(Optional.of(d))).orElseGet(() -> pathDivergence(o, r, def, previous, input, who)))
                 .defaultIfEmpty(Optional.of(new Divergence(o.id(), null, "no dry-run result")))
                 .onErrorResume(e -> Mono.just(Optional.of(new Divergence(o.id(), null, "dry run failed: " + e.getMessage()))));
@@ -682,16 +865,77 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 .map(i -> new Imported(i.yaml(), i.notes()));
     }
 
-    // ------------------------------------------------------------------ events from the releases slice
+    // ------------------------------------------------------------------ events from the releases slice and of provider change requests
 
     void on(DomainEvent event) {
-        if (event.type().startsWith("release.") && event.data() != null && event.data().hasNonNull("provider")) {
-            return; // a provider release: the providers slice keeps its versions
+        JsonNode data = event.data();
+        if (event.type().startsWith("release.") && data != null && data.hasNonNull("provider")) {
+            // a provider release: the providers slice keeps its versions; a promoted one may be what a workflow change request waits for
+            if (RELEASE_PROMOTED.equals(event.type())) {
+                providerPromoted(data);
+            }
+            return;
+        }
+        if ((CR_MERGED.equals(event.type()) || CR_CLOSED.equals(event.type())) && data != null && "provider".equals(data.path("kind").asText())) {
+            // that one, or another change request of its provider whose version may now be current
+            String id = data.path("id").asText(event.aggregateId());
+            String provider = data.path("name").asText("");
+            requiresChanged(required -> required.contains(id) || requiresProvider(required, provider), providers::currentVersion);
+            return;
         }
         switch (event.type()) {
             case RELEASE_ROLLED_BACK -> rollBack(event.data());
             case RELEASE_PROMOTED -> log.info("release promoted: {}", event.data());
             default -> {
+            }
+        }
+    }
+
+    /**
+     * A provider release was promoted: its candidate ({@code to}) serves every call, or will as soon
+     * as the providers slice, which may hear of the promotion after this listener, makes it current;
+     * unless another version was made current since the release started ({@code from} is not the
+     * current one), and then the providers slice changes nothing either.
+     */
+    private void providerPromoted(JsonNode data) {
+        String provider = data.path("provider").asText(null);
+        String from = data.path("from").asText(null);
+        String to = data.path("to").asText(null);
+        if (provider == null || to == null) {
+            return;
+        }
+        Optional<String> now = providers.currentVersion(provider);
+        Optional<String> served = now.isEmpty() || from == null || now.get().equals(from) ? Optional.of(to) : now;
+        requiresChanged(required -> requiresProvider(required, provider), name -> provider.equals(name) ? served : providers.currentVersion(name));
+    }
+
+    /** Whether one of the change requests {@code required} names is a change request of provider {@code provider}. */
+    private boolean requiresProvider(List<String> required, String provider) {
+        return required.stream().map(changeRequests::get).flatMap(Optional::stream)
+                .anyMatch(cr -> cr.kind() == ChangeRequest.Kind.PROVIDER && cr.name().equals(provider));
+    }
+
+    /**
+     * Judges again the requires check of every open workflow change request whose required ids
+     * {@code concerned} picks, with {@code current} as each provider's current version, and saves
+     * the ones whose check changed: the stored check, and with the github profile the commit status
+     * that holds the pull request, follow the provider change requests it requires.
+     */
+    private void requiresChanged(Predicate<List<String>> concerned, Function<String, Optional<String>> current) {
+        for (ChangeRequest cr : changeRequests.all()) {
+            if (cr.status() != ChangeRequest.Status.OPEN || cr.kind() != ChangeRequest.Kind.WORKFLOW || cr.required().isEmpty() || !concerned.test(cr.required())) {
+                continue;
+            }
+            Check judged = PublishChecks.requires(cr.required(), changeRequests::get, current);
+            if (cr.checks() != null && cr.checks().contains(judged)) {
+                continue;
+            }
+            try {
+                // read again: a merge or close since the listing must not be saved over with an open copy
+                changeRequests.get(cr.id()).filter(fresh -> fresh.status() == ChangeRequest.Status.OPEN)
+                        .ifPresent(fresh -> changeRequests.save(fresh.withCheck(judged)));
+            } catch (RuntimeException e) {
+                log.warn("could not save the requires check of change request {} judged again: {}", cr.id(), e.getMessage());
             }
         }
     }

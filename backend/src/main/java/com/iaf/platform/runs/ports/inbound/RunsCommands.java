@@ -5,6 +5,7 @@ import java.util.List;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.domain.CommandAccepted;
 import com.iaf.platform.common.domain.Identity;
+import com.iaf.platform.providers.domain.ProviderDefinition;
 import com.iaf.platform.runs.domain.DryRunResult;
 import com.iaf.platform.runs.domain.Preview;
 import com.iaf.platform.workflows.domain.WorkflowDefinition;
@@ -67,6 +68,13 @@ public interface RunsCommands {
 
     /** Walk a definition against recorded samples without starting a job. */
     Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who);
+
+    /**
+     * A dry run that also sees provider files nobody published yet: each draft stands in for the
+     * published provider of its name (or adds one), for provider calls and for the ansible and
+     * terraform steps the samples answer, in this dry run only. Nothing is stored.
+     */
+    Mono<DryRunResult> dryRun(WorkflowDefinition definition, JsonNode input, Identity who, List<ProviderDefinition> drafts);
 
     /** The blast radius of a run: plan operations, affected resources, cost, policy. */
     Mono<Preview> preview(WorkflowDefinition definition, JsonNode input, Identity who);
