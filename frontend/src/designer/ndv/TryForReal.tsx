@@ -4,11 +4,12 @@
  * Try it makes it. It starts in the environment the review counts, asks first when the action
  * changes something, and for a delete whose input names a registry resource offers the registry
  * picker, so the call deletes a test resource someone chose. The answer shows in the Output pane
- * as the provider page shows it (`TryOutcome`), with Save as sample and Fix schema into the
- * provider's draft and, for a published provider, Use the real response (a change request).
- * Test step stays a dry run, and pinned data stays the designer's own mock: a call pins nothing.
+ * as the provider page shows it (`TryOutcome`), with Save as sample (the file the call came back
+ * with, whose sample the backend redacted: the live answer is never kept) and Fix schema into the
+ * provider's draft and, for a published provider, Use the real response (a change request). Test
+ * step stays a dry run, and pinned data stays the designer's own mock: a call pins nothing.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Button, ConfirmDialog, Field, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, Select, Tag, Tooltip, duration, useToast } from '@iaf/ui'
 import { resolve, type ExpressionContext, type JsonValue, type ParsedStep } from '@iaf/workflow-checks'
 import { api, errorMessage } from '../../lib/api'
@@ -21,7 +22,7 @@ import { TryOutcome } from '../../components/provider-admin'
 import { resourceFields } from '../../components/provider-editor/state'
 import { UiGlyph } from '../canvas/glyphs'
 import { asObject, isExpression } from './fields'
-import { actionEffect, changesSomething, fixableAnswer, tryEnvironments, tryInputSchema, tryYaml, useDraftEdit, withFixedSchema, withSample, type ProviderStepInfo, type TriedCall } from './providerStep'
+import { actionEffect, changesSomething, draftToEdit, fixableAnswer, sampleRefusal, sampleSaved, tryEnvironments, tryInputSchema, tryYaml, useDraftEdit, withFixedSchema, withSample, type ProviderStepInfo, type TriedCall } from './providerStep'
 
 /**
  * What the call's form starts with: the schema's defaults, then the step's input as it resolves
@@ -181,6 +182,16 @@ function TryForm({ info, stepId, yaml, prefill, onTried, onClose }: { info: Prov
   )
 }
 
+/** A line under the answer: why a button is left out or cannot keep the answer. */
+function Note({ children, testId }: { children: ReactNode; testId?: string }) {
+  return (
+    <p className="flex items-start gap-1.5 text-caption text-secondary" data-testid={testId}>
+      <Icon name="info" size={12} className="mt-0.5 shrink-0 text-tertiary" />
+      <span>{children}</span>
+    </p>
+  )
+}
+
 /**
  * The answer of a real call in the Output pane: the provider page's outcome, with Save as sample
  * and Fix schema into the provider's draft (started from the published provider when it has
@@ -193,6 +204,8 @@ export function TriedOutput({ info, tried, onClose }: { info: ProviderStepInfo; 
   const [done, setDone] = useState<{ sample: boolean; schema: boolean }>({ sample: false, schema: false })
   const [fixing, setFixing] = useState(false)
   const { result, action } = tried
+  const saved = done.sample || sampleSaved(info.draft, tried)
+  const refusal = saved ? null : sampleRefusal(draftToEdit(info), tried)
 
   // "Use the real response": the answer's schema as the published action's override, through a change request
   const adoptRealResponse = async (override: OverrideRequest) => {
@@ -220,36 +233,40 @@ export function TriedOutput({ info, tried, onClose }: { info: ProviderStepInfo; 
         </button>
       </div>
       <TryOutcome result={result} action={action} fixing={fixing} onUseRealResponse={info.published ? (o) => void adoptRealResponse(o) : undefined}>
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-stroke-light pt-3">
-          <span className="mr-auto text-caption text-tertiary">Into the provider’s draft; the step’s pinned data stays as it is.</span>
-          <Button
-            size="sm"
-            icon={done.sample ? 'check' : 'document'}
-            disabled={done.sample}
-            title="Dry runs of the action answer with this"
-            onClick={() => {
-              if (edit((d) => withSample(d, tried), 'Could not save the sample')) {
-                setDone((s) => ({ ...s, sample: true }))
-                toast.success('Sample saved', `Dry runs of ${action} answer with this.`)
-              }
-            }}
-          >
-            {done.sample ? 'Sample saved' : 'Save as sample'}
-          </Button>
-          <Button
-            size="sm"
-            icon={done.schema ? 'check' : 'edit'}
-            disabled={done.schema || !fixableAnswer(result.response)}
-            title="The action's output follows the shape of this answer"
-            onClick={() => {
-              if (edit((d) => withFixedSchema(d, tried), 'Could not fix the schema')) {
-                setDone((s) => ({ ...s, schema: true }))
-                toast.success('Schema fixed', `${action}'s output now follows the real answer.`)
-              }
-            }}
-          >
-            {done.schema ? 'Schema fixed' : 'Fix schema'}
-          </Button>
+        <div className="space-y-2 border-t border-stroke-light pt-3">
+          {!result.ok && <Note testId="ndv-tried-failed">A call that failed keeps nothing: no sample, and no schema from its error.</Note>}
+          {result.ok && refusal && <Note testId="ndv-sample-refused">{refusal}</Note>}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="mr-auto text-caption text-tertiary">Into the provider’s draft; the step’s pinned data stays as it is.</span>
+            <Button
+              size="sm"
+              icon={saved ? 'check' : 'document'}
+              disabled={saved || refusal !== null}
+              title={refusal ?? 'Dry runs of the action answer with this, as the backend recorded it: secret-looking values masked'}
+              onClick={() => {
+                if (edit((d) => withSample(d, tried), 'Could not save the sample')) {
+                  setDone((s) => ({ ...s, sample: true }))
+                  toast.success('Sample saved', `Dry runs of ${action} answer with this.`)
+                }
+              }}
+            >
+              {saved ? 'Sample saved' : 'Save as sample'}
+            </Button>
+            <Button
+              size="sm"
+              icon={done.schema ? 'check' : 'edit'}
+              disabled={done.schema || !fixableAnswer(result)}
+              title="The action's output follows the shape of this answer"
+              onClick={() => {
+                if (edit((d) => withFixedSchema(d, tried), 'Could not fix the schema')) {
+                  setDone((s) => ({ ...s, schema: true }))
+                  toast.success('Schema fixed', `${action}'s output now follows the real answer.`)
+                }
+              }}
+            >
+              {done.schema ? 'Schema fixed' : 'Fix schema'}
+            </Button>
+          </div>
         </div>
       </TryOutcome>
     </div>

@@ -254,7 +254,8 @@ test.describe('a provider step in the node detail view', () => {
     await expect(out.getByRole('button', { name: 'Sample saved' })).toBeDisabled()
     drafts = await storedDrafts(page)
     expect(String(drafts[0].draftYaml)).toContain("# vm.get's sample recorded in dev")
-    expect((drafts[0].samples as Obj)['vm.get']).toEqual(ANSWER)
+    // the live answer is kept nowhere: the samples the draft took from the published file stay as they were
+    expect((drafts[0].samples as Obj)['vm.get']).toEqual((vsphereDetail().actions as Obj[]).find((a) => a.id === 'vm.get')?.sample)
 
     // Fix schema: the answer's shape into the draft's overrides
     await out.getByRole('button', { name: 'Fix schema' }).click()

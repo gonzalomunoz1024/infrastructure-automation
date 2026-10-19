@@ -169,24 +169,40 @@ export function withPolicy(draft: ProviderDraft, actionId: string, patch: Partia
 }
 
 /**
- * "Save as sample": the draft with the call's answer as the action's sample, so dry runs answer
- * with it. A draft written from its state records it there; a draft that holds a file takes the
- * file the call came back with (its sample, and where it was recorded) at the draft's version when
- * it is the file the call was made with, else the sample written into its own file by lines.
+ * Why "Save as sample" cannot keep this call's answer, or null when it can. The sample is the one
+ * the backend wrote into the file the call came back with (`result.yaml`): secret-looking fields,
+ * the secrets it resolved and token-shaped words masked as `vault:redacted`. The live answer
+ * (`result.response`) is never kept, so a call that failed (no sample), one that came back without
+ * that file, or one made with a file the draft no longer has keeps nothing.
  */
-export function withSample(draft: ProviderDraft, tried: TriedCall): ProviderDraft | null {
-  const { action, result } = tried
-  const samples = { ...draft.samples, [action]: result.response }
-  if (draft.draftYaml === null) return { ...draft, samples }
-  if (result.yaml && withVersion(tried.yaml, draft.version) === draft.draftYaml) return { ...draft, samples, draftYaml: withVersion(result.yaml, draft.version) }
-  const fields: Partial<Record<ActionField, unknown>> = { sample: result.response }
-  if (result.environment && result.at) fields.recorded = { environment: result.environment, at: result.at }
-  const file = withActionFields(draft.draftYaml, action, fields)
-  return file === null ? null : { ...draft, samples, draftYaml: file }
+export function sampleRefusal(draft: ProviderDraft | null, tried: TriedCall): string | null {
+  const { result } = tried
+  if (!result.ok) return 'A call that failed records no sample.'
+  if (!result.yaml) return 'The call came back without the file that keeps its sample; try again.'
+  if (draft && withVersion(tried.yaml, draft.version) !== draftYaml(draft)) return 'The draft changed since this call: try again to save its answer as the sample.'
+  return null
 }
 
-/** Whether "Fix schema" can take this answer: only a JSON object or list has a shape to record. */
-export const fixableAnswer = (response: unknown): boolean => typeof response === 'object' && response !== null
+/**
+ * "Save as sample": the draft takes the file the call came back with, at the draft's version: the
+ * file it was made with plus the answer as the action's sample (redacted by the backend) and
+ * where it was recorded, so dry runs answer with it. A draft written from its state then holds
+ * that file, as the wizard's "Use this" does. Null when the answer cannot be kept (`sampleRefusal`).
+ */
+export function withSample(draft: ProviderDraft, tried: TriedCall): ProviderDraft | null {
+  const yaml = tried.result.yaml
+  if (!yaml || sampleRefusal(draft, tried) !== null) return null
+  return { ...draft, draftYaml: withVersion(yaml, draft.version) }
+}
+
+/** Whether the draft holds the file this call came back with: its answer is the draft's sample. */
+export function sampleSaved(draft: ProviderDraft | undefined, tried: TriedCall): boolean {
+  const yaml = tried.result.yaml
+  return !!draft && !!yaml && draftYaml(draft) === withVersion(yaml, draft.version)
+}
+
+/** Whether "Fix schema" can take this answer: only the JSON object or list of a call that worked has a shape to record. */
+export const fixableAnswer = (result: Pick<TryResult, 'ok' | 'response'>): boolean => result.ok && typeof result.response === 'object' && result.response !== null
 
 /** "Fix schema": the draft with the schema of the call's answer as the action's override (`spec.overrides`). */
 export function withFixedSchema(draft: ProviderDraft, tried: TriedCall): ProviderDraft | null {
