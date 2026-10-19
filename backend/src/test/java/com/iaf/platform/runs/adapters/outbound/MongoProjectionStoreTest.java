@@ -3,6 +3,7 @@ package com.iaf.platform.runs.adapters.outbound;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.math.BigInteger;
 import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.platform.common.adapters.mongo.Mongo;
 import com.iaf.platform.common.adapters.mongo.TestMongo;
 import com.iaf.platform.common.events.EventBus;
@@ -26,8 +28,11 @@ import com.iaf.platform.runs.domain.Approval;
 import com.iaf.platform.runs.domain.Job;
 import com.iaf.platform.runs.domain.JobEvent;
 import com.iaf.platform.runs.domain.JobStatus;
+import com.iaf.platform.runs.domain.JobStep;
+import com.iaf.platform.runs.domain.JobStep.StepStatus;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore;
 import com.iaf.platform.runs.ports.outbound.ProjectionStore.JobQuery;
+import com.iaf.platform.workflows.domain.StepType;
 import com.mongodb.MongoException;
 import com.mongodb.client.model.Filters;
 
@@ -145,6 +150,31 @@ class MongoProjectionStoreTest extends ProjectionStoreContract {
         assertThat(restarted.get("job_1").orElseThrow().status()).isEqualTo(JobStatus.SUCCEEDED);
         assertThat(restarted.events("job_1").collectList().block()).extracting(JobEvent::seq).containsExactly(1L, 2L, 3L);
         assertThat(new JobProjection(new EventBus(clock), reopen()).history("job_1")).hasSize(3);
+    }
+
+    /** A run's input or an HTTP step's response holding an integer longer than a Decimal128 holds: kept exactly, as any other. */
+    @Test
+    void aJobWhoseInputAndStepOutputHoldA39DigitIntegerSavesAndReadsBackExactly() throws Exception {
+        BigInteger serial = new BigInteger("123456789012345678901234567890123456789");
+        JsonNode input = JSON.readTree("{\"vm\": \"web-01\", \"serial\": %1$s, \"limits\": [-%1$s, 2]}".formatted(serial));
+        JsonNode response = JSON.readTree("{\"status\": 200, \"body\": {\"id\": -%1$s, \"items\": [{\"n\": %1$s}]}}".formatted(serial));
+        JobStep fetched = JobStep.builder().id("fetch").name("Fetch the VM").type(StepType.HTTP).status(StepStatus.SUCCEEDED).attempt(1)
+                .startedAt(T0).input(input).output(response).build();
+        Job job = job("job_big", "vm-restart", JobStatus.SUCCEEDED, T0).withInput(input).withOutput(response).withSteps(List.of(fetched));
+        JobEvent step = new JobEvent(1, T0, "job_big", "step", JSON.createObjectNode().put("step", "fetch").set("output", response));
+        ProjectionStore store = newStore();
+
+        store.save(job);
+        store.append(step);
+
+        ProjectionStore restarted = reopen();
+        Job read = restarted.job("job_big").orElseThrow();
+        assertThat(read).isEqualTo(job);
+        assertThat(read.input().get("serial").bigIntegerValue()).isEqualTo(serial);
+        assertThat(read.step("fetch").output().at("/body/items/0/n").bigIntegerValue()).isEqualTo(serial);
+        assertThat(read.step("fetch").output().at("/body/id").bigIntegerValue()).isEqualTo(serial.negate());
+        assertThat(restarted.jobs(JobQuery.ALL)).containsExactly(job);
+        assertThat(restarted.history("job_big")).containsExactly(step);
     }
 
     private static String json(Object value) {
