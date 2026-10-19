@@ -931,6 +931,33 @@ provider's change request on its own: a new provider's draft then stays, read-on
 that change request (`changeRequest`), so the steps that call it keep resolving and the workflow's
 Publish requires that change request instead of opening a second one; an edit's draft is dropped.
 
+Providers are authored from the designer as well. The node creator's Providers view lists each
+published provider with its health band (`GET /providers`, the list the providers page reads) and
+the workflow's provider drafts tagged draft, whose actions insert like a published provider's, and
+ends with "Connect a new system": an API from an OpenAPI spec, an HTTP request (cURL), an Ansible
+repository, a Terraform module, an IDP tile, an SDK worker and Describe it (Ask Devin), each of which
+opens the Provider sheet on the point the creator was opened for, but cURL, which adds an HTTP step
+there open on its Import cURL dialog. A provider step's provider field lists the drafts beside the
+published providers and ends with "New provider…", as a credential field ends with "New
+credential…"; its pencil, Edit provider, opens the sheet on the workflow's draft of the provider,
+or on a published one's next patch, and the sheet closing on the action the step already calls
+keeps the step's input. An http step's Import cURL fills its method, URL, headers and body from a
+pasted cURL command, quoted for bash or for Windows cmd (`frontend/src/designer/ndv/curl.ts`): what
+signed in (an Authorization header, `-u`, a cookie, a header named for a token or a key or valued
+`Bearer …`, and a query, body or form field named like a password, secret, token or API key) is
+dropped before anything reaches the step, so it is in neither the workflow, the undo history nor
+the browser's storage, and the credential field is highlighted with a note that names what was
+dropped, never its value. Its "Save as provider action" (`frontend/src/designer/ndv/httpProvider.ts`)
+makes the request an action of an http provider draft, after listing what does not come along (a
+header, a GET's body, an endpoint that is not https) and asking: the URL's origin is the draft's
+dev endpoint, the action is `{ method, path }` with each `{{ }}` of the path a `{parameter}` and a
+POST, PUT or PATCH body's fields the rest of its input, the step's credential is the provider's
+auth and the step's last test output (never pinned data) the action's example. A draft of the same
+endpoint takes the request when it can, as the action it has for that method and path or a new one
+beside its others, but never a draft whose file is its own (a try's or Devin's) or that signs in
+with another credential, which gives the request a new draft; the step then calls that action and
+the Provider sheet opens on the draft.
+
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
 imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint

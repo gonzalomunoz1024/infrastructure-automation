@@ -2,15 +2,28 @@
  * What the node creator offers, built from the registry: the categories n8n's creator shows
  * ("What happens next?"), each a list of items that either add a step (or a trigger) or open a
  * deeper list, plus a fuzzy search over every leaf. Product names come from the registry only.
+ *
+ * The workflow's provider drafts (designer/model/providerDrafts.ts) are listed with the published
+ * providers, tagged "draft", and the Providers view has "Connect a new system": each entry opens
+ * the Provider sheet, whose chosen action then lands where the "+" was, the way n8n adds a node
+ * after "Create new credential". "HTTP request (cURL)" adds an HTTP step there instead, open on its
+ * Import cURL dialog, and the step's Save as provider action takes it on to the sheet.
  */
 import { fuzzyMatch, type Tone } from '@iaf/ui'
 import { STEP_TYPES, type JsonObject, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
-import type { RegistryAction, RegistryProvider } from '../../lib/types'
+import type { HealthStatus, RegistryAction, RegistryPlaybook, RegistryProvider, Schema } from '../../lib/types'
+import { ID_RE, inferSchema, NAME_RE, parseSchema } from '../../components/provider-editor/state'
 import type { NewStepParams, TriggerKind } from '../model/edits'
+import type { ProviderDraft } from '../model/providerDrafts'
 import type { Registry } from '../model/registry'
+import type { ProviderSheetEntry } from '../model/store'
 import { providerGlyph, triggerGlyph, typeGlyph, type Glyph } from '../canvas/glyphs'
 
-export type CreatorAction = { kind: 'step'; type: StepType; params?: NewStepParams } | { kind: 'trigger'; trigger: TriggerKind }
+/**
+ * What choosing a leaf does: add a step (an HTTP step from a pasted cURL command opens on its
+ * Import cURL dialog), add a trigger, or open the Provider sheet from one of its entries.
+ */
+export type CreatorAction = { kind: 'step'; type: StepType; params?: NewStepParams; importCurl?: boolean } | { kind: 'trigger'; trigger: TriggerKind } | { kind: 'provider-sheet'; entry: ProviderSheetEntry }
 
 export interface CreatorTag {
   label: string
@@ -32,6 +45,8 @@ export interface CreatorItem {
   view?: string
   /** why it cannot be added */
   disabled?: string
+  /** a published provider's health band (GET /providers) */
+  health?: HealthStatus
 }
 
 export interface CreatorSection {
@@ -49,6 +64,110 @@ export interface CreatorView {
 export type Catalog = Map<string, CreatorView>
 
 export const ROOT_VIEW = 'root'
+
+/** The tag of a provider, action or playbook that is not published yet. */
+export const DRAFT_TAG: CreatorTag = { label: 'draft', tone: 'accent' }
+
+/* ----------------------------------------------------------------------------
+   Provider drafts beside the registry's providers
+   ------------------------------------------------------------------------- */
+
+/** A provider as the creator and the parameter forms list it: a registered one, or a draft of the workflow's. */
+export type ListedProvider = RegistryProvider & { draft?: boolean }
+
+/** The drafts as the store holds them (by id) or as a list. */
+export type DraftsInput = Readonly<Record<string, ProviderDraft>> | readonly ProviderDraft[]
+
+const draftList = (drafts: DraftsInput | undefined): readonly ProviderDraft[] => (!drafts ? [] : Array.isArray(drafts) ? drafts : Object.values(drafts))
+
+const objectOf = (text: string): Record<string, unknown> | undefined => parseSchema(text) as Record<string, unknown> | undefined
+
+/**
+ * A draft as a registry provider: its name, title, type and owner, and the actions it selects with
+ * their schemas (an http action's output from its example) and samples. Null while it has no name
+ * a step can refer to.
+ */
+export function draftAsProvider(d: ProviderDraft): ListedProvider | null {
+  const name = d.name.trim()
+  if (!NAME_RE.test(name)) return null
+  const actions: RegistryAction[] = d.actions
+    .filter((a) => a.selected && ID_RE.test(a.id))
+    .map((a) => {
+      const example = d.type === 'http' ? objectOf(a.exampleText) : undefined
+      const output: Schema | null = parseSchema(a.outputText) ?? d.overrides[a.id] ?? (example ? inferSchema(example) : null)
+      const sample = d.samples[a.id] ?? example
+      return { id: a.id, title: a.title.trim() || a.id, effect: a.effect, retry: a.retry, approval: a.approval ? 'required' : 'none', input: parseSchema(a.inputText) ?? null, output, ...(sample !== undefined ? { sample } : {}) }
+    })
+  const source = d.terraform.source.trim()
+  const version = d.terraform.version.trim()
+  return {
+    name,
+    title: d.title.trim() || name,
+    type: d.type,
+    ...(d.owner.trim() ? { owner: d.owner.trim() } : {}),
+    actions,
+    ...(d.type === 'terraform' && source ? { module: version ? { source, version } : { source } } : {}),
+    draft: true,
+  }
+}
+
+/**
+ * The registry's providers with the workflow's drafts: a draft of a published provider (its next
+ * patch) stands in its place, with the actions it will have; a new one comes after them. A draft
+ * already in the registry under its name is not listed twice.
+ */
+export function providersWithDrafts(registry: Registry | null, drafts?: DraftsInput): ListedProvider[] {
+  const list: ListedProvider[] = [...(registry?.providers ?? [])]
+  for (const d of draftList(drafts)) {
+    const p = draftAsProvider(d)
+    if (!p) continue
+    const i = list.findIndex((x) => x.name === p.name)
+    if (i >= 0) list[i] = { ...list[i], ...p, module: p.module ?? list[i].module }
+    else list.push(p)
+  }
+  return list
+}
+
+/** The playbooks of the workflow's Ansible drafts, as the library names them (`<provider>/<action>`). */
+function draftPlaybooks(drafts: DraftsInput | undefined, registered: readonly RegistryPlaybook[]): (RegistryPlaybook & { draft: true })[] {
+  const out: (RegistryPlaybook & { draft: true })[] = []
+  for (const d of draftList(drafts)) {
+    const p = d.type === 'ansible' ? draftAsProvider(d) : null
+    if (!p) continue
+    for (const a of d.actions.filter((x) => x.selected && ID_RE.test(x.id))) {
+      const name = `${p.name}/${a.id}`
+      if (!registered.some((r) => r.name === name)) out.push({ name, version: d.version, path: a.playbook, owner: d.owner, draft: true })
+    }
+  }
+  return out
+}
+
+/* ----------------------------------------------------------------------------
+   Connect a new system
+   ------------------------------------------------------------------------- */
+
+/**
+ * The entries of "Connect a new system": each opens the Provider sheet on a new provider of its
+ * kind, but cURL, whose command is pasted into a new HTTP step (its Import cURL), which Save as
+ * provider action then makes an action of an http provider draft.
+ */
+export const CONNECT_ENTRIES: readonly { entry: ProviderSheetEntry; title: string; description: string; glyph: Glyph; keywords: string }[] = [
+  { entry: 'openapi', title: 'API from an OpenAPI spec', description: 'Import a spec; its operations become actions', glyph: providerGlyph('openapi'), keywords: 'openapi swagger spec rest api import url paste upload git' },
+  { entry: 'curl', title: 'HTTP request (cURL)', description: 'An HTTP step from a pasted cURL command, then saved as a provider action', glyph: providerGlyph('http'), keywords: 'curl http request rest endpoint paste import' },
+  { entry: 'ansible', title: 'Ansible repository', description: 'Playbooks from a Git repository, pinned to a commit', glyph: providerGlyph('ansible'), keywords: 'ansible playbooks git repository' },
+  { entry: 'terraform', title: 'Terraform module', description: 'A module with plan, apply and destroy', glyph: providerGlyph('terraform'), keywords: 'terraform module plan apply destroy' },
+  { entry: 'idp', title: 'IDP tile', description: 'A developer-portal tile, requested on the user’s behalf', glyph: providerGlyph('idp'), keywords: 'idp tile developer portal' },
+  { entry: 'sdk', title: 'SDK worker', description: 'Activities a team-owned worker registers on a task queue', glyph: { kind: 'bolt', tone: 'accent' }, keywords: 'sdk worker activity temporal task queue code' },
+  { entry: 'describe', title: 'Describe it (Ask Devin)', description: 'Say what the system does; Devin drafts the provider', glyph: { kind: 'sparkles', tone: 'accent' }, keywords: 'describe devin assistant ai draft' },
+]
+
+/** What the creator lists beside the registry. */
+export interface CatalogExtras {
+  /** the workflow's provider drafts, listed tagged "draft" */
+  drafts?: DraftsInput
+  /** each published provider's health band, by name (GET /providers) */
+  health?: Readonly<Record<string, HealthStatus>>
+}
 
 const EFFECT_TONE: Record<string, Tone> = { read: 'neutral', create: 'healthy', change: 'warning', delete: 'critical', none: 'neutral' }
 
@@ -68,19 +187,18 @@ function branch(id: string, view: string, title: string, description: string, gl
   return { id, title, description, glyph, view }
 }
 
-function providersOf(registry: Registry | null, types: readonly string[]): RegistryProvider[] {
-  return (registry?.providers ?? []).filter((p) => types.includes(p.type)).sort((a, b) => a.title.localeCompare(b.title))
-}
-
 const CALL_PROVIDER_TYPES = ['openapi', 'http', 'sdk']
 
-/** The views of the creator for a registry and a document. */
-export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): Catalog {
+/** The views of the creator for a registry and a document, with the workflow's provider drafts and the providers' health. */
+export function buildCatalog(registry: Registry | null, doc: WorkflowDocument, extras: CatalogExtras = {}): Catalog {
   const views: Catalog = new Map()
   const add = (v: CreatorView) => views.set(v.id, v)
+  const listed = providersWithDrafts(registry, extras.drafts)
+  const providersOf = (types: readonly string[]) => listed.filter((p) => types.includes(p.type)).sort((a, b) => a.title.localeCompare(b.title))
+  const draftTags = (p: ListedProvider) => (p.draft ? [DRAFT_TAG] : [])
 
   // providers and their actions
-  const callProviders = providersOf(registry, CALL_PROVIDER_TYPES)
+  const callProviders = providersOf(CALL_PROVIDER_TYPES)
   const workflows = (registry?.workflows ?? []).filter((w) => w.name !== doc.metadata?.name).sort((a, b) => a.title.localeCompare(b.title))
   const runItems: CreatorItem[] = workflows.map((w) => ({
     id: `run:${w.name}`,
@@ -90,17 +208,29 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     keywords: `run workflow child ${w.name}`,
     action: { kind: 'step', type: 'run', params: { workflow: w.name, version: `^${w.version.split('.')[0] || '1'}`, name: `Run ${w.title}` } },
   }))
+  const connectAction = (entry: ProviderSheetEntry): CreatorAction => (entry === 'curl' ? { kind: 'step', type: 'http', importCurl: true } : { kind: 'provider-sheet', entry })
+  const connectItems: CreatorItem[] = CONNECT_ENTRIES.map((c) => ({ id: `connect:${c.entry}`, title: c.title, description: c.description, glyph: c.glyph, keywords: `connect new system add provider ${c.keywords}`, action: connectAction(c.entry) }))
   add({
     id: 'providers',
     title: 'Providers',
-    subtitle: 'Call an action of a registered provider',
+    subtitle: 'Call an action of a provider, or connect a new system',
     sections: [
       {
         items:
           callProviders.length > 0
-            ? callProviders.map((p) => ({ id: `provider:${p.name}`, title: p.title, description: `${p.actions.length} ${p.actions.length === 1 ? 'action' : 'actions'}${p.owner ? ` · ${p.owner}` : ''}`, glyph: providerGlyph(p.type), view: `provider:${p.name}`, keywords: p.name }))
-            : [stepItem('provider', { description: 'No provider is registered yet; pick the provider in the step' })],
+            ? callProviders.map((p) => ({
+                id: `provider:${p.name}`,
+                title: p.title,
+                description: `${p.actions.length} ${p.actions.length === 1 ? 'action' : 'actions'}${p.owner ? ` · ${p.owner}` : ''}`,
+                glyph: providerGlyph(p.type),
+                view: `provider:${p.name}`,
+                keywords: `${p.name}${p.draft ? ' draft' : ''}`,
+                ...(p.draft ? { tags: [DRAFT_TAG] } : {}),
+                ...(extras.health?.[p.name] ? { health: extras.health[p.name] } : {}),
+              }))
+            : [stepItem('provider', { description: 'No provider is registered yet; connect a new system below, or pick the provider in the step' })],
       },
+      { title: 'Connect a new system', items: connectItems },
       ...(runItems.length > 0 ? [{ title: 'Run workflow', items: runItems }] : []),
     ],
   })
@@ -108,7 +238,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     add({
       id: `provider:${p.name}`,
       title: p.title,
-      subtitle: p.name,
+      subtitle: p.draft ? `${p.name} · draft, not published yet` : p.name,
       sections: [
         {
           title: 'Actions',
@@ -117,7 +247,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
             title: a.title || a.id,
             description: `${p.title} · ${a.id}`,
             glyph: providerGlyph(p.type),
-            tags: effectTags(a),
+            tags: [...effectTags(a), ...draftTags(p)],
             keywords: `${p.name} ${a.id} ${a.effect}`,
             action: { kind: 'step', type: 'provider', params: { provider: p.name, action: a.id, name: a.title || a.id } },
           })),
@@ -178,8 +308,9 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     sections: [{ items: [stepItem('http', { keywords: 'api rest url request' }), stepItem('script', { keywords: 'javascript code function transform' }), stepItem('set', { keywords: 'variables vars edit fields' }), stepItem('activity', { keywords: 'temporal worker task queue' })] }],
   })
 
-  // ansible
-  const playbooks = registry?.playbooks ?? []
+  // ansible: the library's playbooks, then the ones the workflow's drafts will publish
+  const registered = registry?.playbooks ?? []
+  const playbooks: (RegistryPlaybook & { draft?: boolean })[] = [...registered, ...draftPlaybooks(extras.drafts, registered)]
   add({
     id: 'ansible',
     title: 'Ansible',
@@ -194,7 +325,8 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
                 title: pb.name,
                 description: [pb.path, pb.version, pb.owner].filter(Boolean).join(' · '),
                 glyph: typeGlyph('ansible'),
-                keywords: `ansible playbook library ${pb.path}`,
+                keywords: `ansible playbook library ${pb.path}${pb.draft ? ' draft' : ''}`,
+                ...(pb.draft ? { tags: [DRAFT_TAG] } : {}),
                 action: { kind: 'step' as const, type: 'ansible' as const, params: { playbook: pb.name, name: pb.name.split('/').pop() ?? pb.name } },
               })),
             },
@@ -211,7 +343,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
   })
 
   // terraform: a provider's actions run its own module (spec.module), so the step passes the terraform.module check as inserted
-  const tf = providersOf(registry, ['terraform'])
+  const tf = providersOf(['terraform'])
   add({
     id: 'terraform',
     title: 'Terraform',
@@ -227,7 +359,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
             title: a.title || a.id,
             description: p.module ? `${p.title} · ${a.id} · ${[p.module.source, p.module.version].filter(Boolean).join(' @ ')}` : `${p.title} · ${a.id}`,
             glyph: providerGlyph('terraform'),
-            tags: effectTags(a),
+            tags: [...effectTags(a), ...draftTags(p)],
             keywords: `terraform module ${p.name} ${a.id}`,
             action: { kind: 'step', type: 'terraform', params: { name: `${p.title}: ${a.title || a.id}`, module, terraformAction } },
           }
@@ -238,7 +370,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
   })
 
   // IDP tiles
-  const idp = providersOf(registry, ['idp'])
+  const idp = providersOf(['idp'])
   add({
     id: 'idp',
     title: 'IDP tiles',
@@ -252,7 +384,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
               title: a.title || a.id,
               description: `${p.title} · ${a.id}`,
               glyph: providerGlyph('idp'),
-              tags: effectTags(a),
+              tags: [...effectTags(a), ...draftTags(p)],
               keywords: `idp tile portal ${a.id}`,
               action: { kind: 'step' as const, type: 'idp' as const, params: { tile: a.id, name: a.title || a.id } },
             })),
@@ -282,7 +414,7 @@ export function buildCatalog(registry: Registry | null, doc: WorkflowDocument): 
     sections: [
       {
         items: [
-          branch('root:providers', 'providers', 'Providers', 'Call an action of a registered provider, or another workflow', { kind: 'provider', tone: 'accent' }),
+          branch('root:providers', 'providers', 'Providers', 'Call an action of a provider or another workflow, or connect a new system', { kind: 'provider', tone: 'accent' }),
           branch('root:flow', 'flow', 'Flow', 'Branch, loop, wait, run another workflow', { kind: 'switch', tone: 'warning' }),
           branch('root:human', 'human', 'Human', 'Ask for an approval, notify a channel', { kind: 'approval', tone: 'healthy' }),
           branch('root:resources', 'resources', 'Resources', 'Use or register resources of the registry', { kind: 'resource', tone: 'accent' }),
