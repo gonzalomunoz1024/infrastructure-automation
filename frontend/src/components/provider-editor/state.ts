@@ -352,6 +352,97 @@ export function yamlActions(yaml: string): FileAction[] {
   return out
 }
 
+const PROVIDER_TYPES = new Set<string>(['openapi', 'http', 'ansible', 'terraform', 'idp', 'sdk'])
+
+/** What a file's `spec` block says the provider is, as `fileSpec` reads it. */
+export interface FileSpec {
+  type?: ProviderType
+  /** a terraform provider's `spec.module` */
+  module?: { source: string; version: string }
+}
+
+/**
+ * The type a provider file declares (`spec.type`) and, for terraform, its module (`spec.module`,
+ * as a block or a one-line `{ source: …, version: … }`), read line by line like `metadataOf`:
+ * what a file taken instead of the wizard's document (Devin's, an import's, a published one) is.
+ */
+export function fileSpec(yaml: string): FileSpec {
+  const lines = yaml.split('\n')
+  const spec = lines.findIndex((l) => /^spec:\s*(#.*)?$/.test(l))
+  if (spec < 0) return {}
+  const lead = (l: string) => l.length - l.trimStart().length
+  const out: FileSpec = {}
+  let indent: number | null = null
+  // inside `module:`, at the indentation of its first key
+  let module: { source: string; version: string } | null = null
+  let moduleKeys = -1
+  for (let i = spec + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    const at = lead(l)
+    if (at === 0) break
+    indent ??= at
+    if (module && at > indent) {
+      moduleKeys = moduleKeys < 0 ? at : moduleKeys
+      const m = at === moduleKeys ? /^\s+(source|version):(.*)$/.exec(l) : null
+      if (m) module[m[1] as 'source' | 'version'] = unquote(m[2])
+      continue
+    }
+    module = null
+    if (at !== indent) continue
+    const type = /^\s+type:(.*)$/.exec(l)
+    if (type) {
+      const t = unquote(type[1])
+      if (PROVIDER_TYPES.has(t)) out.type = t as ProviderType
+      continue
+    }
+    const mod = /^\s+module:(.*)$/.exec(l)
+    if (mod) {
+      const found = { source: '', version: '' }
+      out.module = found
+      const flow = /^\s*\{(.*)\}\s*(#.*)?$/.exec(mod[1])
+      if (flow) for (const m of flow[1].matchAll(/(source|version)\s*:\s*("[^"]*"|'[^']*'|[^,}]*)/g)) found[m[1] as 'source' | 'version'] = unquote(m[2])
+      else {
+        module = found
+        moduleKeys = -1
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * The form of an Ansible repository's or a Terraform module's import, as typed: what
+ * POST /providers:import-ansible and :import-terraform are sent (pages/ProviderImport.tsx), kept in
+ * a designer draft until the import runs. Its credentials are `vault:` references.
+ */
+export interface ImportForm {
+  /** terraform: where the module comes from */
+  source: 'git' | 'registry'
+  repo: string
+  ref: string
+  path: string
+  /** the vault: reference of a read token for a private repository */
+  readCredential: string
+  /** ansible: playbooks to keep, by path or action id; all when empty */
+  playbooks: string
+  /** terraform, from the registry: namespace/name/provider and an exact version */
+  module: string
+  version: string
+  registryCredential: string
+  name: string
+  owner: string
+  /** the owner was typed, so the signed-in user's team no longer fills it */
+  ownerTouched: boolean
+  /** ansible: the machine credential the playbooks connect with; terraform: what the runner gives Terraform */
+  credential: string
+  executionEnvironment: string
+}
+
+export function blankImportForm(owner = ''): ImportForm {
+  return { source: 'git', repo: '', ref: 'main', path: '', readCredential: '', playbooks: '', module: '', version: '', registryCredential: '', name: '', owner, ownerTouched: false, credential: '', executionEnvironment: '' }
+}
+
 /** A draft names the provider: the wizard takes its name, title, owner and version, so the path and the change request say what is published. */
 export function draftNames(yaml: string): Partial<WizardState> {
   const m = metadataOf(yaml)

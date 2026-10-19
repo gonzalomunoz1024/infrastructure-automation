@@ -21,13 +21,18 @@ export interface ReviewStepProps extends StepProps {
   publishHint?: string
   /** what the toast's "Open change request" does; the wizard navigates to it */
   openChangeRequest?: (id: string) => void
+  /** where it is shown: the wizard page (the default) or the designer's Provider sheet, which words what it points at for someone who uses only the designer */
+  surface?: 'page' | 'sheet'
 }
 
 const navigateToChangeRequest = (id: string) => navigate(pathFor('change-request', { id }))
 
 /** Checks, the review of the evidence, the strategy and Publish. */
-export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLabel = 'Publish as change request', publishHint = 'Opens a change request on a branch; the checks run again there, and merging publishes.', openChangeRequest = navigateToChangeRequest }: ReviewStepProps) {
+export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLabel = 'Publish as change request', publishHint = 'Opens a change request on a branch; the checks run again there, and merging publishes.', openChangeRequest = navigateToChangeRequest, surface = 'page' }: ReviewStepProps) {
   const toast = useToast()
+  const sheet = surface === 'sheet'
+  // what a file taken instead replaces
+  const replaced = sheet ? "the form's YAML" : "the wizard's document"
   const [judged, setJudged] = useState<{ yaml: string; result: ProviderValidation } | null>(null)
   const validation = judged?.yaml === yaml ? judged.result : null
   const setValidation = (result: ProviderValidation) => setJudged({ yaml, result })
@@ -91,11 +96,11 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLab
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-tint px-4 py-2 text-sm">
             <span className="inline-flex items-center gap-2 text-primary">
               <Icon name={state.editing ? 'edit' : 'sparkles'} size={14} className="text-accent" />
-              {state.editing ? `The file as published, at version ${state.version}; a try's answer goes in with Use this.` : state.imported ? "The import's draft replaces the wizard's document." : "This draft replaces the wizard's document."}
+              {state.editing ? `The file as published, at version ${state.version}; a try's answer goes in with Use this.` : state.imported ? `The import's draft replaces ${replaced}.` : `This draft replaces ${replaced}.`}
             </span>
             {!state.editing && (
               <Button size="sm" variant="ghost" onClick={() => update({ draftYaml: null })}>
-                Back to the wizard's YAML
+                {sheet ? "Back to the form's YAML" : "Back to the wizard's YAML"}
               </Button>
             )}
           </div>
@@ -147,7 +152,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLab
         </Card>
 
         {validation && review !== undefined && (
-          <Card title="Review" subtitle="What the platform saw in this wizard, judged as the reviewer sees it on the change request." data-testid="review-evidence">
+          <Card title="Review" subtitle={`What the platform saw ${sheet ? 'here' : 'in this wizard'}, judged as the reviewer sees it on the change request.`} data-testid="review-evidence">
             {review === null ? (
               <p className="text-sm text-secondary">Not a provider file: nothing to review.</p>
             ) : (
@@ -202,7 +207,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLab
               />
             </Field>
             {state.editing ? (
-              <p className="text-caption text-tertiary">The SLO and the alert channel change from the provider page, through a change request of their own.</p>
+              <p className="text-caption text-tertiary">The SLO and the alert channel change from {sheet ? "the step's Provider tab" : 'the provider page'}, through a change request of their own.</p>
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-3">
