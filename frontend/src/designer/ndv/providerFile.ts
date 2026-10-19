@@ -1,12 +1,14 @@
 /**
  * Line edits of a provider file, for the node detail view: an action's own fields (its effect,
- * retry, approval, plan, effectDetail, own SLO, sample and where that sample was recorded) and an
- * action's override. The browser never parses YAML (docs/contributing.md), so, like the wizard's
- * `withVersion`, these find the keys by their indentation in block-style YAML, the way the
- * repository's files and `emitYaml` write them, and write each value on one line in flow style.
- * Nothing else in the file is touched. A file they cannot edit that way (no `spec` block, the
- * action missing or written in flow style, a flow-style `overrides`) comes back as null.
+ * retry, approval, plan, effectDetail, own SLO, sample and where that sample was recorded), an
+ * action's override and the error classes. The browser never parses YAML (docs/contributing.md),
+ * so, like the wizard's `withVersion`, these find the keys by their indentation in block-style
+ * YAML, the way the repository's files and `emitYaml` write them, and write each value on one line
+ * in flow style. Nothing else in the file is touched. A file they cannot edit that way (no `spec`
+ * block, the action missing or written in flow style, a flow-style `overrides`, error classes not
+ * written one per line as the designer writes them) comes back as null.
  */
+import { blankError, errorDocument, type ErrorRow } from '../../components/provider-editor/state'
 import { emitYaml, needsQuotes } from '../../components/yaml-emit'
 
 /** The fields of an action `withActionFields` writes; undefined removes one. */
@@ -269,4 +271,99 @@ export function canEditAction(yaml: string, actionId: string): boolean {
 function canEdit(lines: readonly string[], actionId: string): boolean {
   const item = findAction(lines, actionId)
   return item !== null && item !== 'flow'
+}
+
+/* ----------------------------------------------------------------------------
+   Error classes (`spec.errors`)
+   ------------------------------------------------------------------------- */
+
+/** One error class as the designer writes it: a list item on one line, in flow style, as the repository's files write them. */
+const errorLine = (indent: number, e: Record<string, unknown>) => `${pad(indent)}- ${flowValue(e)}`
+
+/** The rows' entries of `spec.errors`: a row left blank is none. */
+const errorEntries = (rows: readonly ErrorRow[]) => rows.map(errorDocument).filter((e): e is Record<string, unknown> => e !== undefined)
+
+/** A scalar of a one-line flow mapping: what follows `key:` up to the next `,` or `}`, a quoted value whole. */
+function flowField(text: string, key: string): string | undefined {
+  const m = new RegExp(`(?:^|[{,\\s])${escape(key)}\\s*:\\s*("(?:[^"\\\\]|\\\\.)*"|'(?:[^']|'')*'|[^,}]*)`).exec(text)
+  return m ? unquote(m[1]) : undefined
+}
+
+/**
+ * The provider file's error classes as the Settings tab's rows: none when it has no `spec.errors`,
+ * and null when its block is not written as the designer writes it (one flow-style item per line
+ * holding a status, the text the body contains, a class and retry, and nothing else), so that
+ * writing the rows back (`withErrors`) loses nothing. Each item is read, then written again and
+ * compared with its line, so a field the rows do not hold makes the block null.
+ */
+export function errorRowsOf(yaml: string): ErrorRow[] | null {
+  const lines = yaml.split('\n')
+  const spec = topEntry(lines, 'spec')
+  if (!spec) return null
+  const errors = childEntry(lines, spec, 'errors')
+  if (!errors) return []
+  const value = valueAfterKey(lines[errors.at].trimStart())
+  if (value === '[]') return []
+  if (value !== '') return null
+  const rows: ErrorRow[] = []
+  let indent: number | null = null
+  for (let i = errors.at + 1; i < errors.end; i++) {
+    const line = lines[i]
+    if (line.trim() === '') continue
+    const n = indentOf(line)
+    indent ??= n
+    const item = /^-\s+(\{.*\})\s*$/.exec(line.trimStart())
+    if (n !== indent || !item) return null
+    const flow = item[1]
+    const row = blankError({ status: flowField(flow, 'status') ?? '', body: flowField(flow, 'body') ?? '', class: flowField(flow, 'class') ?? '', retry: flowField(flow, 'retry') === 'true' })
+    const entry = errorDocument(row)
+    if (!entry || errorLine(n, entry) !== line.trimEnd()) return null
+    rows.push(row)
+  }
+  return rows
+}
+
+/** Whether the file's error classes are the ones these rows write, so the rows can stand for them. */
+export function errorsWrittenAs(yaml: string, rows: readonly ErrorRow[]): boolean {
+  const own = errorRowsOf(yaml)
+  return own !== null && JSON.stringify(errorEntries(own)) === JSON.stringify(errorEntries(rows))
+}
+
+/**
+ * The file with `spec.errors` written from these rows, one item per line (the block left out when
+ * no row names a class), placed after the actions and overrides when the file had none; null when
+ * the file has no `spec` block, or error classes the rows cannot stand for (`errorRowsOf`).
+ */
+export function withErrors(yaml: string, rows: readonly ErrorRow[]): string | null {
+  const lines = yaml.split('\n')
+  const spec = topEntry(lines, 'spec')
+  if (!spec || errorRowsOf(yaml) === null) return null
+  const step = childIndent(lines, spec)
+  if (step === null) return null
+  const errors = childEntry(lines, spec, 'errors')
+  // the items where the file has them, else indented under the key as the repository's files write them
+  const first = errors ? lines.slice(errors.at + 1, errors.end).find((l) => l.trim() !== '') : undefined
+  const items = first !== undefined ? indentOf(first) : step * 2
+  const entries = errorEntries(rows)
+  const block = entries.length === 0 ? [] : [`${pad(step)}errors:`, ...entries.map((e) => errorLine(items, e))]
+  if (errors) lines.splice(errors.at, errors.end - errors.at, ...block)
+  else if (block.length > 0) {
+    const after = childEntry(lines, spec, 'overrides') ?? childEntry(lines, spec, 'actions')
+    lines.splice(after ? after.end : spec.end, 0, ...block)
+  }
+  return lines.join('\n')
+}
+
+/** The error classes as the file writes them, for a section that shows them without editing them: the block's lines, or the rows' as the designer writes them. */
+export function errorClassesText(source: string | readonly ErrorRow[]): string {
+  if (typeof source !== 'string') return errorEntries(source).map((e) => errorLine(0, e)).join('\n')
+  const lines = source.split('\n')
+  const spec = topEntry(lines, 'spec')
+  const errors = spec && childEntry(lines, spec, 'errors')
+  if (!errors) return ''
+  const own = lines.slice(errors.at + 1, errors.end).filter((l) => l.trim() !== '')
+  const head = valueAfterKey(lines[errors.at].trimStart())
+  if (own.length === 0) return head === '[]' ? '' : head
+  const least = Math.min(...own.map(indentOf))
+  return own.map((l) => l.slice(least)).join('\n')
 }
