@@ -15,7 +15,7 @@ import { useToast } from '@iaf/ui'
 import type { JsonValue, ParsedStep } from '@iaf/workflow-checks'
 import { api } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
-import type { Effect, ProviderDetail, RegistryAction, RegistryProvider, RetryPolicy, Schema, TryResult } from '../../lib/types'
+import type { ChangeRequest, Effect, ProviderDetail, RegistryAction, RegistryProvider, RetryPolicy, Schema, TryResult } from '../../lib/types'
 import { actionSlo, blankAction, endpointsOf, inferSchema, nextKey, parseSchema, sandboxEnvironment, stateFromProvider, withVersion, type ActionRow } from '../../components/provider-editor/state'
 import { draftFromProvider, draftYaml, findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { findProvider } from '../model/registry'
@@ -69,6 +69,11 @@ export function useProviderStep(step: ParsedStep): ProviderStepInfo | null {
   const loading = published && detail.loading
   const error = published ? detail.error : null
   return useMemo(() => (provider ? { provider, action, draft, published, registryProvider, detail: data, detailLoading: loading, detailError: error } : null), [provider, action, draft, published, registryProvider, data, loading, error])
+}
+
+/** The provider's change request that is still open, if any: the platform takes no other change to the provider until it merges or closes. */
+export function openChange(info: ProviderStepInfo): ChangeRequest | undefined {
+  return info.detail?.changeRequests.find((c) => c.status === 'open')
 }
 
 function registryRow(a: RegistryAction): ActionRow {
@@ -203,6 +208,19 @@ export function sampleSaved(draft: ProviderDraft | undefined, tried: TriedCall):
 
 /** Whether "Fix schema" can take this answer: only the JSON object or list of a call that worked has a shape to record. */
 export const fixableAnswer = (result: Pick<TryResult, 'ok' | 'response'>): boolean => result.ok && typeof result.response === 'object' && result.response !== null
+
+/**
+ * Whether "Use the real response" (POST /providers/{name}/overrides, a change request on the
+ * published version) is offered for this call: only for a call made with the published file and
+ * no draft of the provider in the workflow (whose change request a second one would block: Fix
+ * schema writes into the draft instead), and not while another change request is open, which the
+ * platform would refuse.
+ */
+export function realResponseOffer(info: ProviderStepInfo, tried: TriedCall): 'offered' | 'draft' | 'open' | 'none' {
+  if (info.draft) return info.draft.origin === 'edit' ? 'draft' : 'none'
+  if (!info.published || !info.detail || tried.yaml !== info.detail.yaml) return 'none'
+  return openChange(info) ? 'open' : 'offered'
+}
 
 /** "Fix schema": the draft with the schema of the call's answer as the action's override (`spec.overrides`). */
 export function withFixedSchema(draft: ProviderDraft, tried: TriedCall): ProviderDraft | null {

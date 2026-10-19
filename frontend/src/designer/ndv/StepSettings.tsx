@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react'
 import { Button, cx, Icon, Input, Select, Switch, Tag, Textarea } from '@iaf/ui'
 import { STEP_TYPES, type ExpressionContext, type JsonValue, type ParsedStep, type Problem, type StepBody, type StepDocument, type StepType, type WorkflowDocument } from '@iaf/workflow-checks'
 import type { Effect, RetryPolicy } from '../../lib/types'
+import { Link, pathFor } from '../../app/router'
 import { ActionSloInputs, ErrorClasses } from '../../components/provider-editor/ActionsStep'
 import { EFFECTS, type WizardState } from '../../components/provider-editor/state'
 import { bodyFor, newStepId, stepIdProblem } from '../model/edits'
@@ -18,7 +19,7 @@ import { useDesignerStore } from '../model/store'
 import { NodeGlyph, typeGlyph } from '../canvas/glyphs'
 import { readField, writeField } from './fields'
 import { FieldLabel, JsonInput, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
-import { actionRow, planOptions, providerSlo, RETRY_OPTIONS, useDraftEdit, withPolicy, type ActionPolicy, type ProviderStepInfo } from './providerStep'
+import { actionRow, openChange, planOptions, providerSlo, RETRY_OPTIONS, useDraftEdit, withPolicy, type ActionPolicy, type ProviderStepInfo } from './providerStep'
 
 const COMPENSATION_TYPES: StepType[] = ['provider', 'http', 'notify', 'script', 'ansible', 'run']
 
@@ -141,7 +142,8 @@ function CompensateEditor({ stepId, body, doc, readOnly, problems }: { stepId: s
  * so an edit goes into the provider's draft (started from the published file when there is none)
  * and reaches every workflow once the provider's change request merges; the step's own retry,
  * timeout and pause stay above. Error classes are the provider's too: edited here for a draft
- * written from its state, kept as written in a provider file.
+ * written from its state, kept as written in a provider file. An open change request of the
+ * provider is named, since the draft cannot be published before it merges or closes.
  */
 export function SharedAction({ info, stepId, readOnly = false }: { info: ProviderStepInfo; stepId: string; readOnly?: boolean }) {
   const store = useDesignerStore()
@@ -154,6 +156,7 @@ export function SharedAction({ info, stepId, readOnly = false }: { info: Provide
   const title = info.draft?.title || info.detail?.title || info.registryProvider?.title || info.provider
   const set = (patch: Partial<ActionPolicy>) => void edit((d) => withPolicy(d, info.action, patch, row), `Could not change ${info.action}`)
   const fromState = !!info.draft && info.draft.draftYaml === null
+  const change = openChange(info)
   const openProvider = () => store.openProviderSheet({ entry: 'node', provider: info.published ? info.provider : null, draft: info.draft?.id ?? null, target: { kind: 'step', step: stepId } })
   return (
     <ParamSection
@@ -186,6 +189,14 @@ export function SharedAction({ info, stepId, readOnly = false }: { info: Provide
           These fields belong to the provider, not to this step: a change here changes {info.action || 'the action'} for every workflow that calls it, once the provider’s change request merges.{' '}
           {info.draft ? 'It goes into the provider’s draft.' : info.published ? 'The first change starts a draft of the provider’s next version.' : ''}
         </p>
+        {change && (
+          <p className="mt-1" data-testid="shared-action-open-change">
+            <Link to={pathFor('change-request', { id: change.id })} className="font-mono text-accent hover:underline">
+              {change.id}
+            </Link>{' '}
+            ({change.version}) is still open: {info.provider} takes no other change until it merges or closes, so {info.draft ? 'the draft' : 'a draft started here'} can be published only after that.
+          </p>
+        )}
       </div>
       {waiting && <p className="text-caption text-tertiary">{info.detailError ? `Could not load ${info.provider}; its action cannot be changed here.` : `Loading ${info.provider}…`}</p>}
       {!waiting && !row && <p className="text-caption text-tertiary">{info.provider} has no action {info.action || 'named'} to change.</p>}

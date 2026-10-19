@@ -6,12 +6,14 @@
  * picker, so the call deletes a test resource someone chose. The answer shows in the Output pane
  * as the provider page shows it (`TryOutcome`), with Save as sample (the file the call came back
  * with, whose sample the backend redacted: the live answer is never kept) and Fix schema into the
- * provider's draft and, for a published provider, Use the real response (a change request). Test
- * step stays a dry run, and pinned data stays the designer's own mock: a call pins nothing.
+ * provider's draft and, for a published provider the workflow holds no draft of, Use the real
+ * response (a change request). Test step stays a dry run, and pinned data stays the designer's own
+ * mock: a call pins nothing.
  */
 import { useMemo, useState, type ReactNode } from 'react'
 import { Button, ConfirmDialog, Field, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, Select, Tag, Tooltip, duration, useToast } from '@iaf/ui'
 import { resolve, type ExpressionContext, type JsonValue, type ParsedStep } from '@iaf/workflow-checks'
+import { Link, pathFor } from '../../app/router'
 import { api, errorMessage } from '../../lib/api'
 import { invalidate } from '../../lib/queries'
 import type { Effect, OverrideRequest, Schema } from '../../lib/types'
@@ -22,7 +24,7 @@ import { TryOutcome } from '../../components/provider-admin'
 import { resourceFields } from '../../components/provider-editor/state'
 import { UiGlyph } from '../canvas/glyphs'
 import { asObject, isExpression } from './fields'
-import { actionEffect, changesSomething, draftToEdit, fixableAnswer, sampleRefusal, sampleSaved, tryEnvironments, tryInputSchema, tryYaml, useDraftEdit, withFixedSchema, withSample, type ProviderStepInfo, type TriedCall } from './providerStep'
+import { actionEffect, changesSomething, draftToEdit, fixableAnswer, openChange, realResponseOffer, sampleRefusal, sampleSaved, tryEnvironments, tryInputSchema, tryYaml, useDraftEdit, withFixedSchema, withSample, type ProviderStepInfo, type TriedCall } from './providerStep'
 
 /**
  * What the call's form starts with: the schema's defaults, then the step's input as it resolves
@@ -195,7 +197,7 @@ function Note({ children, testId }: { children: ReactNode; testId?: string }) {
 /**
  * The answer of a real call in the Output pane: the provider page's outcome, with Save as sample
  * and Fix schema into the provider's draft (started from the published provider when it has
- * none) and, for a published provider, Use the real response.
+ * none) and, for a published provider the workflow holds no draft of, Use the real response.
  */
 export function TriedOutput({ info, tried, onClose }: { info: ProviderStepInfo; tried: TriedCall; onClose: () => void }) {
   const toast = useToast()
@@ -206,6 +208,8 @@ export function TriedOutput({ info, tried, onClose }: { info: ProviderStepInfo; 
   const { result, action } = tried
   const saved = done.sample || sampleSaved(info.draft, tried)
   const refusal = saved ? null : sampleRefusal(draftToEdit(info), tried)
+  const offer = realResponseOffer(info, tried)
+  const change = openChange(info)
 
   // "Use the real response": the answer's schema as the published action's override, through a change request
   const adoptRealResponse = async (override: OverrideRequest) => {
@@ -232,10 +236,24 @@ export function TriedOutput({ info, tried, onClose }: { info: ProviderStepInfo; 
           Back to the test output
         </button>
       </div>
-      <TryOutcome result={result} action={action} fixing={fixing} onUseRealResponse={info.published ? (o) => void adoptRealResponse(o) : undefined}>
+      <TryOutcome result={result} action={action} fixing={fixing} onUseRealResponse={offer === 'offered' ? (o) => void adoptRealResponse(o) : undefined}>
         <div className="space-y-2 border-t border-stroke-light pt-3">
           {!result.ok && <Note testId="ndv-tried-failed">A call that failed keeps nothing: no sample, and no schema from its error.</Note>}
           {result.ok && refusal && <Note testId="ndv-sample-refused">{refusal}</Note>}
+          {result.mismatches.length > 0 && offer === 'draft' && info.draft && (
+            <Note testId="ndv-real-response-draft">
+              Fix schema writes this answer’s shape into the workflow’s draft of {info.provider} ({info.draft.version}). Use the real response is left out: it would open a separate change request on the published version, and the draft’s could not open until that one merged.
+            </Note>
+          )}
+          {result.mismatches.length > 0 && offer === 'open' && change && (
+            <Note testId="ndv-real-response-open">
+              Use the real response opens a change request, and{' '}
+              <Link to={pathFor('change-request', { id: change.id })} className="font-mono text-accent hover:underline">
+                {change.id}
+              </Link>{' '}
+              ({change.version}) is still open: {info.provider} takes no other change until it merges or closes.
+            </Note>
+          )}
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="mr-auto text-caption text-tertiary">Into the provider’s draft; the step’s pinned data stays as it is.</span>
             <Button

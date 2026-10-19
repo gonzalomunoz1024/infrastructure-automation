@@ -41,6 +41,9 @@ export function vsphereDetail(patch: Partial<ProviderDetail> = {}): ProviderDeta
   }
 }
 
+/** vsphere with no change request open: the platform takes the next change. */
+export const settledDetail = (patch: Partial<ProviderDetail> = {}): ProviderDetail => vsphereDetail({ changeRequests: vsphereDetail().changeRequests.filter((c) => c.status !== 'open'), ...patch })
+
 /** The step info of a published provider: loaded, and with the workflow's draft of it when given. */
 export function publishedInfo(action = 'vm.get', draft?: ProviderDraft, detail: ProviderDetail = vsphereDetail()): ProviderStepInfo {
   return { provider: 'vsphere', action, draft, published: true, registryProvider: undefined, detail, detailLoading: false, detailError: null }

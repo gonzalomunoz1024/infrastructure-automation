@@ -3,21 +3,24 @@
  * page. Its health band with the reasons the server gave, the success rate and p95 against its
  * SLO, the step's action's own band, the alerts (the action's first), the release in flight and the
  * open change requests, with Edit SLO and Refresh spec (each a change request, as on the provider
- * page) and links to the provider page and the provider events of the audit. A provider that is
- * only a draft has none of these yet: the tab says so and opens the draft.
+ * page, held back while the workflow holds a draft of the provider or another change request is
+ * open, since the platform takes one change at a time) and links to the provider page and the
+ * provider events of the audit. A provider that is only a draft has none of these yet: the tab
+ * says so and opens the draft.
  */
 import { useState, type ReactNode } from 'react'
 import { Button, Icon, Skeleton, StatusDot, Tag, duration, percent, type DotKind } from '@iaf/ui'
 import { Link, pathFor } from '../../app/router'
 import { api, errorMessage } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
-import type { ProviderAlert, ProviderDetail } from '../../lib/types'
+import type { ChangeRequest, ProviderAlert, ProviderDetail } from '../../lib/types'
 import { HealthBand, measured } from '../../components/HealthBand'
 import { ActionBand, RefreshSpecModal, ReleaseCard, SloModal } from '../../components/provider-admin'
 import { When, shortJobId } from '../../components/common'
 import { currentRelease } from '../../pages/ReleasesPage'
+import type { ProviderDraft } from '../model/providerDrafts'
 import { useDesignerStore } from '../model/store'
-import type { ProviderStepInfo } from './providerStep'
+import { openChange, type ProviderStepInfo } from './providerStep'
 
 const severityDot = (s: string): DotKind => (/crit|error|fail|page/i.test(s) ? 'critical' : /warn/i.test(s) ? 'warning' : 'neutral')
 
@@ -60,6 +63,16 @@ function Figure({ label, value, target, met }: { label: string; value: string; t
       <p className="text-caption2 text-tertiary">{target ? `SLO ${target}${met === null ? '' : met ? ' · met' : ' · missed'}` : 'No SLO yet'}</p>
     </div>
   )
+}
+
+/**
+ * Why Edit SLO and Refresh spec are held back, or null when they are not: each opens a change
+ * request on the published version, which the platform refuses while another is open, and which
+ * would block the change request of the workflow's draft of the provider.
+ */
+export function editsHeldBack(draft: ProviderDraft | undefined, open: ChangeRequest | undefined): 'draft' | 'open' | null {
+  if (draft) return 'draft'
+  return open ? 'open' : null
 }
 
 export function ProviderTab({ info, stepId, readOnly = false }: { info: ProviderStepInfo; stepId: string; readOnly?: boolean }) {
@@ -112,6 +125,8 @@ function PublishedProvider({ info, readOnly, onOpen }: { info: ProviderStepInfo;
   const release = currentRelease(releases.data)
   const open = detail.changeRequests.filter((c) => c.status === 'open')
   const shown = alertsFor(alerts.data ?? [], info.action)
+  const change = openChange(info)
+  const heldBack = editsHeldBack(info.draft, change)
   return (
     <div className="space-y-6" data-testid="ndv-provider-tab">
       <Section
@@ -131,14 +146,29 @@ function PublishedProvider({ info, readOnly, onOpen }: { info: ProviderStepInfo;
         </div>
         <p className="text-caption text-tertiary">Over the last 24 hours, {detail.health.calls === 0 ? 'with no calls yet' : `${detail.health.calls} calls`}{detail.slo?.channel ? ` · alerts go to ${detail.slo.channel}` : ''}.</p>
         {!readOnly && (
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="secondary" icon="settings" onClick={() => setEditSlo(true)}>
-              Edit SLO
-            </Button>
-            {detail.type === 'openapi' && (
-              <Button size="sm" variant="secondary" icon="refresh" onClick={() => setRefreshing(true)}>
-                Refresh spec
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" icon="settings" onClick={() => setEditSlo(true)} disabled={heldBack !== null}>
+                Edit SLO
               </Button>
+              {detail.type === 'openapi' && (
+                <Button size="sm" variant="secondary" icon="refresh" onClick={() => setRefreshing(true)} disabled={heldBack !== null}>
+                  Refresh spec
+                </Button>
+              )}
+            </div>
+            {heldBack === 'draft' && info.draft && (
+              <p className="text-caption text-secondary" data-testid="ndv-provider-held-back">
+                The workflow holds a draft of {name} ({info.draft.version}). Edit SLO and Refresh spec would each open a separate change request on {detail.version}, and the draft’s could not open until that one merged: change them in the draft with Open provider.
+              </p>
+            )}
+            {heldBack === 'open' && change && (
+              <p className="text-caption text-secondary" data-testid="ndv-provider-held-back">
+                <Link to={pathFor('change-request', { id: change.id })} className="font-mono text-accent hover:underline">
+                  {change.id}
+                </Link>{' '}
+                ({change.version}) is still open: {name} takes no other change until it merges or closes.
+              </p>
             )}
           </div>
         )}

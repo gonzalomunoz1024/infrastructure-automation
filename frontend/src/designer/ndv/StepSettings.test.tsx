@@ -9,7 +9,7 @@ import { DesignerContext, DesignerStore } from '../model/store'
 import { isSettingsField, writeField } from './fields'
 import { withPolicy, type ProviderStepInfo } from './providerStep'
 import { StepSettings } from './StepSettings'
-import { editDraft, loadingInfo, newDraft, newDraftInfo, publishedInfo } from './testProviders'
+import { editDraft, loadingInfo, newDraft, newDraftInfo, publishedInfo, settledDetail } from './testProviders'
 
 /*
  * A step paused on its failure waits for a person's decision for its `attentionTimeout` (seven
@@ -125,6 +125,14 @@ describe('the action a provider step shares with every workflow', () => {
     expect(control(html, 'Retry policy of the action')).not.toContain('disabled')
     expect(html).toContain('keeps its error classes as written')
     expect(html).toContain('Open provider')
+  })
+
+  it('names an open change request of the provider, which a draft has to wait for', () => {
+    const html = renderProvider(publishedInfo())
+    expect(html).toContain('href="#/change-requests/cr_41"')
+    expect(html).toContain('(1.3.1) is still open: vsphere takes no other change until it merges or closes, so a draft started here can be published only after that.')
+    expect(renderProvider(publishedInfo('vm.get', editDraft()))).toContain('so the draft can be published only after that')
+    expect(renderProvider(publishedInfo('vm.get', undefined, settledDetail()))).not.toContain('is still open')
   })
 
   it('is not there for a step that calls no provider, and waits for the provider to load', () => {

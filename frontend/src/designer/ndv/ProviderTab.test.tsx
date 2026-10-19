@@ -4,9 +4,9 @@ import type { WorkflowDocument } from '@iaf/workflow-checks'
 import type { ProviderAlert } from '../../lib/types'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
-import { againstSlo, alertsFor, ProviderTab } from './ProviderTab'
+import { againstSlo, alertsFor, editsHeldBack, ProviderTab } from './ProviderTab'
 import type { ProviderStepInfo } from './providerStep'
-import { loadingInfo, newDraftInfo, publishedInfo, vsphereDetail } from './testProviders'
+import { editDraft, loadingInfo, newDraftInfo, publishedInfo, settledDetail, vsphereDetail } from './testProviders'
 
 /*
  * The Provider tab of a provider step brings the provider page into the designer: the health band
@@ -25,6 +25,14 @@ function render(info: ProviderStepInfo, readOnly = false): string {
       <ProviderTab info={info} stepId="check" readOnly={readOnly} />
     </DesignerContext.Provider>,
   ))
+}
+
+/** The opening tag of the button that shows this text. */
+function button(html: string, label: string): string {
+  const at = html.indexOf(`>${label}<`)
+  expect(at, `no button ${label}`).toBeGreaterThanOrEqual(0)
+  const open = html.lastIndexOf('<button', at)
+  return html.slice(open, html.indexOf('>', open) + 1)
 }
 
 const alert = (id: string, action: string, at: string): ProviderAlert => ({ id, at, provider: 'vsphere', action, message: `${action} alert`, severity: 'warning' })
@@ -53,14 +61,28 @@ describe('the Provider tab of a published provider', () => {
   })
 
   it('offers Edit SLO, Refresh spec for an OpenAPI provider, and nothing to edit when read-only', () => {
-    const html = render(publishedInfo())
-    expect(html).toContain('Edit SLO')
-    expect(html).toContain('Refresh spec')
+    const html = render(publishedInfo('vm.get', undefined, settledDetail()))
+    expect(button(html, 'Edit SLO')).not.toContain('disabled=""')
+    expect(button(html, 'Refresh spec')).not.toContain('disabled=""')
     expect(html).toContain('Open provider')
-    expect(render(publishedInfo('vm.get', undefined, vsphereDetail({ type: 'http' })))).not.toContain('Refresh spec')
+    expect(render(publishedInfo('vm.get', undefined, settledDetail({ type: 'http' })))).not.toContain('Refresh spec')
     const readOnly = render(publishedInfo(), true)
     expect(readOnly).not.toContain('Edit SLO')
     expect(readOnly).not.toContain('Open provider')
+  })
+
+  it('holds back Edit SLO and Refresh spec while another change request is open, or the workflow holds a draft of the provider', () => {
+    const open = render(publishedInfo())
+    expect(button(open, 'Edit SLO')).toContain('disabled=""')
+    expect(button(open, 'Refresh spec')).toContain('disabled=""')
+    expect(open).toContain('(1.3.1) is still open: vsphere takes no other change until it merges or closes.')
+    const drafted = render(publishedInfo('vm.get', editDraft(), settledDetail()))
+    expect(button(drafted, 'Edit SLO')).toContain('disabled=""')
+    expect(drafted).toContain('The workflow holds a draft of vsphere (1.3.1)')
+    expect(drafted).toContain('change them in the draft with Open provider')
+    expect(editsHeldBack(undefined, undefined)).toBeNull()
+    expect(editsHeldBack(editDraft(), undefined)).toBe('draft')
+    expect(editsHeldBack(undefined, vsphereDetail().changeRequests[0])).toBe('open')
   })
 
   it('says so when the action is not the provider’s, or the provider has not answered', () => {

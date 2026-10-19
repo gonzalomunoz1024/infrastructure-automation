@@ -7,8 +7,8 @@ import type { TryResult } from '../../lib/types'
 import { draftYaml } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
-import { changesSomething, fixableAnswer, sampleRefusal, sampleSaved, tryEnvironments, tryYaml, withFixedSchema, withSample, type TriedCall } from './providerStep'
-import { editDraft, loadingInfo, newDraft, newDraftInfo, providerStep, publishedInfo, VSPHERE_YAML } from './testProviders'
+import { changesSomething, fixableAnswer, realResponseOffer, sampleRefusal, sampleSaved, tryEnvironments, tryYaml, withFixedSchema, withSample, type TriedCall } from './providerStep'
+import { editDraft, loadingInfo, newDraft, newDraftInfo, providerStep, publishedInfo, settledDetail, VSPHERE_YAML } from './testProviders'
 import { confirmMessage, prefillInput, testResourceFields, TriedOutput, TryForReal } from './TryForReal'
 
 /*
@@ -16,7 +16,8 @@ import { confirmMessage, prefillInput, testResourceFields, TriedOutput, TryForRe
  * the published one, starting where the review counts tries, asking first when it changes
  * something, and its answer kept, on request, in the provider's draft: as the sample (the file the
  * backend wrote, whose sample it redacted: the live answer is never kept), or as the schema of the
- * action's output. Use the real response is the published provider's change request.
+ * action's output. Use the real response is the published provider's change request, offered only
+ * when the workflow holds no draft of it and no other change request is open.
  */
 
 // the live answer holds a secret; the file the backend returns has it masked
@@ -91,8 +92,8 @@ function button(html: string, label: string): string {
 }
 
 describe('the answer of a real call', () => {
-  it('is shown as the provider page shows it, with Save as sample and Fix schema, and Use the real response for a published provider', () => {
-    const published = render(<TriedOutput info={publishedInfo()} tried={tried(VSPHERE_YAML)} onClose={() => {}} />)
+  it('is shown as the provider page shows it, with Save as sample, Fix schema and, for a published provider, Use the real response', () => {
+    const published = render(<TriedOutput info={publishedInfo('vm.get', undefined, settledDetail())} tried={tried(VSPHERE_YAML)} onClose={() => {}} />)
     expect(published).toContain('A real call of vm.get in')
     expect(published).toContain('HTTP 200')
     expect(published).toContain('1 field differ')
@@ -102,10 +103,30 @@ describe('the answer of a real call', () => {
     const draft = render(<TriedOutput info={newDraftInfo()} tried={tried(draftYaml(newDraft()), RESULT, 'invoices.get')} onClose={() => {}} />)
     expect(draft).toContain('Save as sample')
     expect(draft).not.toContain('Use the real response')
+    expect(draft).not.toContain('is left out')
+  })
+
+  it('leaves out Use the real response while the workflow holds a draft of the provider, and points to Fix schema', () => {
+    const draft = editDraft()
+    const html = render(<TriedOutput info={publishedInfo('vm.get', draft, settledDetail())} tried={tried(draftYaml(draft))} onClose={() => {}} />)
+    expect(html).not.toContain('>Use the real response<')
+    expect(html).toContain('Fix schema writes this answer’s shape into the workflow’s draft of vsphere (1.3.1)')
+    expect(realResponseOffer(publishedInfo('vm.get', draft, settledDetail()), tried(draftYaml(draft)))).toBe('draft')
+  })
+
+  it('leaves out Use the real response while another change request of the provider is open, and links it', () => {
+    const html = render(<TriedOutput info={publishedInfo()} tried={tried(VSPHERE_YAML)} onClose={() => {}} />)
+    expect(html).not.toContain('>Use the real response<')
+    expect(html).toContain('href="#/change-requests/cr_41"')
+    expect(html).toContain('(1.3.1) is still open: vsphere takes no other change until it merges or closes')
+    expect(realResponseOffer(publishedInfo(), tried(VSPHERE_YAML))).toBe('open')
+    // a call made with another file than the published one is not the published action's answer
+    expect(realResponseOffer(publishedInfo('vm.get', undefined, settledDetail()), tried('kind: Provider'))).toBe('none')
+    expect(realResponseOffer(newDraftInfo(), tried(draftYaml(newDraft())))).toBe('none')
   })
 
   it('keeps nothing of a call that failed', () => {
-    const html = render(<TriedOutput info={publishedInfo()} tried={tried(VSPHERE_YAML, FAILED)} onClose={() => {}} />)
+    const html = render(<TriedOutput info={publishedInfo('vm.get', undefined, settledDetail())} tried={tried(VSPHERE_YAML, FAILED)} onClose={() => {}} />)
     expect(button(html, 'Save as sample')).toContain('disabled=""')
     expect(button(html, 'Fix schema')).toContain('disabled=""')
     expect(html).toContain('A call that failed keeps nothing')
@@ -118,7 +139,7 @@ describe('the answer of a real call', () => {
   it('says why the answer cannot be saved once the draft changed since the call', () => {
     const draft = editDraft()
     const changed = withFixedSchema(draft, tried(VSPHERE_YAML))!
-    const html = render(<TriedOutput info={publishedInfo('vm.get', changed)} tried={tried(draftYaml(draft))} onClose={() => {}} />)
+    const html = render(<TriedOutput info={publishedInfo('vm.get', changed, settledDetail())} tried={tried(draftYaml(draft))} onClose={() => {}} />)
     expect(button(html, 'Save as sample')).toContain('disabled=""')
     expect(html).toContain('The draft changed since this call: try again to save its answer as the sample.')
   })

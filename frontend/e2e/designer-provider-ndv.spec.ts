@@ -7,15 +7,19 @@ import { mockDesignerApi } from './designer-fixtures'
  * A provider step's node detail view against a mocked backend: the health dot on the canvas, the
  * Provider tab (the provider page's health, SLO, alerts, release and change requests, Edit SLO),
  * the Settings tab's shared action, whose first edit starts a draft of the provider's next patch,
- * and Try for real, whose answer the Output pane shows with Save as sample, Fix schema and Use
- * the real response. The designer's own mocks answer the rest (designer-fixtures.ts); this file
- * adds the provider endpoints in front of them.
+ * and Try for real, whose answer the Output pane shows with Save as sample, Fix schema and,
+ * without a draft, Use the real response. The platform takes one change request per provider at a
+ * time, as the mock does. The designer's own mocks answer the rest (designer-fixtures.ts); this
+ * file adds the provider endpoints in front of them.
  */
 
 const VSPHERE_YAML = readFileSync(new URL('../../providers/team-compute/vsphere.yaml', import.meta.url), 'utf8')
 const DRAFTS_KEY = 'iaf-designer-provider-drafts:vm-restart'
 
 type Obj = Record<string, unknown>
+
+const OPEN_CHANGE = { id: 'cr_41', kind: 'provider', name: 'vsphere', version: '1.3.1', branch: 'provider/vsphere-1.3.1', title: 'vsphere 1.3.1: the SLO of VMware vSphere', author: 'alice', status: 'open', checks: [], strategy: 'canary', createdAt: '2026-10-18T08:00:00Z' }
+const MERGED_CHANGE = { id: 'cr_30', kind: 'provider', name: 'vsphere', version: '1.3.0', branch: 'provider/vsphere-1.3.0', title: 'vsphere 1.3.0', author: 'alice', status: 'merged', checks: [], strategy: 'canary', createdAt: '2026-10-01T08:00:00Z' }
 
 function vsphereDetail(): Obj {
   const doc = parse(VSPHERE_YAML) as { metadata: Obj; spec: { endpoints: Record<string, string>; auth: Obj; actions: Obj[]; slo: Obj } }
@@ -50,10 +54,7 @@ function vsphereDetail(): Obj {
     actions,
     daily: [],
     perAction: [{ action: 'vm.get', calls: 812, successRate: 96.1, p50Ms: 210, p95Ms: 1500, topErrors: [], slo: { successRate: 99.5, p95Ms: 800 }, band: 'failing' }],
-    changeRequests: [
-      { id: 'cr_41', kind: 'provider', name: 'vsphere', version: '1.3.1', branch: 'provider/vsphere-1.3.1', title: 'vsphere 1.3.1: the SLO of VMware vSphere', author: 'alice', status: 'open', checks: [], strategy: 'canary', createdAt: '2026-10-18T08:00:00Z' },
-      { id: 'cr_30', kind: 'provider', name: 'vsphere', version: '1.3.0', branch: 'provider/vsphere-1.3.0', title: 'vsphere 1.3.0', author: 'alice', status: 'merged', checks: [], strategy: 'canary', createdAt: '2026-10-01T08:00:00Z' },
-    ],
+    changeRequests: [MERGED_CHANGE],
   }
 }
 
@@ -85,14 +86,21 @@ interface ProviderCalls {
   slos: Obj[]
 }
 
+/** The change request an edit opens: one at a time, as the platform takes them. */
+function opened(id: string, title: string): Obj {
+  return { ...OPEN_CHANGE, id, title, createdAt: '2026-10-18T11:00:00Z' }
+}
+
 function json(route: Route, body: unknown, status = 200): Promise<void> {
   return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
 }
 
-/** The provider endpoints the node detail view calls, in front of the designer's mocks. */
-async function mockProviders(page: Page): Promise<ProviderCalls> {
+/** The provider endpoints the node detail view calls, in front of the designer's mocks; `openChange` starts with cr_41 open. */
+async function mockProviders(page: Page, { openChange = false } = {}): Promise<ProviderCalls> {
   const calls: ProviderCalls = { tries: [], overrides: [], slos: [] }
   const detail = vsphereDetail()
+  const changes = detail.changeRequests as Obj[]
+  if (openChange) changes.unshift(OPEN_CHANGE)
   await page.route('**/api/v1/**', async (route) => {
     const req = route.request()
     const url = new URL(req.url())
@@ -112,6 +120,7 @@ async function mockProviders(page: Page): Promise<ProviderCalls> {
     if (method === 'GET' && path === '/releases' && url.searchParams.get('provider') === 'vsphere') return json(route, [RELEASE])
     if (method === 'PUT' && path === '/providers/vsphere/slo') {
       calls.slos.push(req.postDataJSON() as Obj)
+      changes.unshift(opened('cr_43', 'Provider VMware vSphere 1.3.1: SLO'))
       return json(route, { id: 'cr_43', status: 'open' }, 202)
     }
     if (method === 'POST' && path === '/providers:try') {
@@ -134,6 +143,7 @@ async function mockProviders(page: Page): Promise<ProviderCalls> {
     }
     if (method === 'POST' && path === '/providers/vsphere/overrides') {
       calls.overrides.push(req.postDataJSON() as Obj)
+      changes.unshift(opened('cr_42', 'Provider VMware vSphere 1.3.1: vm.get uses the real response'))
       return json(route, { id: 'cr_42', status: 'open' }, 202)
     }
     return route.fallback()
@@ -145,9 +155,9 @@ function node(page: Page, id: string): Locator {
   return page.locator(`.react-flow__node[data-id="${id}"]`)
 }
 
-async function openVmRestart(page: Page): Promise<ProviderCalls> {
+async function openVmRestart(page: Page, options: { openChange?: boolean } = {}): Promise<ProviderCalls> {
   await mockDesignerApi(page)
-  const calls = await mockProviders(page)
+  const calls = await mockProviders(page, options)
   await page.goto('/#/workflows/vm-restart')
   await expect(node(page, 'step:checkVmExists')).toBeVisible()
   return calls
@@ -190,11 +200,10 @@ test.describe('a provider step in the node detail view', () => {
     await expect(alerts.nth(1)).toContainText('Three timeouts in ten minutes')
     await expect(tab.getByTestId('provider-release')).toContainText('Release in flight')
     await expect(tab.getByTestId('provider-release')).toContainText('1.3.0')
-    await expect(tab.getByTestId('ndv-provider-changes').getByRole('link', { name: 'cr_41' })).toHaveAttribute('href', '#/change-requests/cr_41')
-    await expect(tab.getByTestId('ndv-provider-changes')).not.toContainText('cr_30')
+    await expect(tab).toContainText('None open')
     await expect(tab.getByRole('link', { name: 'Provider page' })).toHaveAttribute('href', '#/providers/vsphere')
     await expect(tab.getByRole('link', { name: 'Provider audit' })).toHaveAttribute('href', '#/audit?tab=platform&aggregate=provider')
-    await expect(tab.getByRole('button', { name: 'Refresh spec' })).toBeVisible()
+    await expect(tab.getByRole('button', { name: 'Refresh spec' })).toBeEnabled()
 
     await tab.getByRole('button', { name: 'Edit SLO' }).click()
     const slo = page.getByRole('dialog', { name: 'Edit SLO' })
@@ -204,6 +213,12 @@ test.describe('a provider step in the node detail view', () => {
     expect(calls.slos).toEqual([{ successRate: 99.5, p95Ms: 1200, channel: '#compute-alerts' }])
     // the SLO is the provider's, not the workflow's: the canvas is not touched
     await expect(page.getByTestId('ndv')).toBeVisible()
+    // its change request is open now, and the platform takes no other change until it merges
+    await expect(tab.getByTestId('ndv-provider-changes').getByRole('link', { name: 'cr_43' })).toHaveAttribute('href', '#/change-requests/cr_43')
+    await expect(tab.getByTestId('ndv-provider-changes')).not.toContainText('cr_30')
+    await expect(tab.getByRole('button', { name: 'Edit SLO' })).toBeDisabled()
+    await expect(tab.getByRole('button', { name: 'Refresh spec' })).toBeDisabled()
+    await expect(tab.getByTestId('ndv-provider-held-back')).toContainText('cr_43 (1.3.1) is still open')
   })
 
   test('edits the shared action into a draft, tries it for real and keeps the answer in the draft', async ({ page }) => {
@@ -265,10 +280,10 @@ test.describe('a provider step in the node detail view', () => {
     expect(fixed.spec.overrides['vm.get']).toEqual({ response: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, power_state: { type: 'string' }, cpu: { type: 'integer' } } } })
     expect(fixed.spec.actions.find((a) => a.id === 'vm.get')?.retry).toBe('unsafe')
 
-    // Use the real response: the published provider's override, through a change request
-    await out.getByRole('button', { name: 'Use the real response' }).click()
-    await expect(page.getByText('Opened change request cr_42')).toBeVisible()
-    expect(calls.overrides).toEqual([{ action: 'vm.get', response: ANSWER }])
+    // with a draft of vsphere in the workflow, Use the real response (a second change request) is left out
+    await expect(out.getByRole('button', { name: 'Use the real response' })).toHaveCount(0)
+    await expect(out.getByTestId('ndv-real-response-draft')).toContainText('Fix schema writes this answer’s shape into the workflow’s draft of vsphere (1.3.1)')
+    expect(calls.overrides).toHaveLength(0)
 
     // back to the test output; pinned data was never touched
     await out.getByRole('button', { name: 'Back to the test output' }).click()
@@ -276,11 +291,35 @@ test.describe('a provider step in the node detail view', () => {
     await expect(ndv.getByRole('button', { name: 'Pin output' })).toBeDisabled()
   })
 
-  test('asks before a real call that changes something', async ({ page }) => {
+  test('uses the real response of a published provider through a change request, when no draft of it is in the workflow', async ({ page }) => {
     const calls = await openVmRestart(page)
     await node(page, 'step:checkVmExists').dblclick()
     const ndv = page.getByTestId('ndv')
+    await ndv.getByTestId('ndv-try-for-real').click()
+    const dialog = page.getByRole('dialog', { name: 'Try vm.get for real' })
+    await expect(dialog).toContainText('published 1.3.0')
+    await dialog.getByLabel(/^id/).fill('vm-1042')
+    await dialog.getByRole('button', { name: 'Try it' }).click()
+    expect(String(calls.tries[0]?.yaml)).toBe(VSPHERE_YAML)
+
+    const out = ndv.getByTestId('ndv-tried')
+    await out.getByRole('button', { name: 'Use the real response' }).click()
+    await expect(page.getByText('Opened change request cr_42')).toBeVisible()
+    expect(calls.overrides).toEqual([{ action: 'vm.get', response: ANSWER }])
+    // the change request is the provider's: no draft was started, and the next change waits for it
+    expect(await storedDrafts(page)).toEqual([])
+    await expect(out.getByRole('button', { name: 'Use the real response' })).toHaveCount(0)
+    await expect(out.getByTestId('ndv-real-response-open')).toContainText('cr_42 (1.3.1) is still open')
+  })
+
+  test('asks before a real call that changes something, and names the change request a draft waits for', async ({ page }) => {
+    const calls = await openVmRestart(page, { openChange: true })
+    await node(page, 'step:checkVmExists').dblclick()
+    const ndv = page.getByTestId('ndv')
     await ndv.getByRole('tab', { name: 'Settings' }).click()
+    // cr_41 is open: a draft started here can be published only once it merges or closes
+    await expect(ndv.getByTestId('shared-action-open-change')).toContainText('cr_41 (1.3.1) is still open')
+    await expect(ndv.getByTestId('shared-action-open-change').getByRole('link', { name: 'cr_41' })).toHaveAttribute('href', '#/change-requests/cr_41')
     // a delete asks for an approval and says what it removes, as the wizard's Actions step
     await pick(ndv, page, 'Effect of the action', /^delete$/)
     await expect(ndv.getByRole('switch', { name: 'Needs an approval' })).toHaveAttribute('aria-checked', 'true')
