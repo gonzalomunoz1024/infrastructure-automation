@@ -394,6 +394,39 @@ describe('provider drafts on the canvas', () => {
     expect(s.getState().problems).toEqual([])
   })
 
+  it('drops the last Validate answer when a draft is added, edited or removed: it judged other providers', async () => {
+    const needsVm = { level: 'error' as const, code: 'step.missingInput', step: 'snap', message: "Action snapshot.create needs 'vm'" }
+    const validate = vi.spyOn(api, 'validateWorkflow').mockResolvedValue({ valid: false, problems: [needsVm] })
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    await s.validate()
+    expect(s.checkNow()).toEqual([needsVm])
+    // the draft is edited (vm is optional now): the live checks judge it again
+    const optional = s.getState().providerDrafts[d.id].actions.map((a) => ({ ...a, inputText: '{"type":"object","properties":{"vm":{"type":"string"}}}' }))
+    s.upsertProviderDraft({ ...s.getState().providerDrafts[d.id], actions: optional })
+    expect(s.checkNow()).not.toContainEqual(needsVm)
+    expect(codes(s)).not.toContain('step.unknownProvider')
+    validate.mockResolvedValue({ valid: true, problems: [] })
+    await s.validate()
+    expect(s.checkNow()).toEqual([])
+    s.removeProviderDraft(d.id)
+    expect(codes(s)).toContain('step.unknownProvider')
+  })
+
+  it('keeps no Validate answer that comes back after the providers changed', async () => {
+    let answer: (v: { valid: boolean; problems: [] }) => void = () => undefined
+    vi.spyOn(api, 'validateWorkflow').mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    const s = onCanvas()
+    const d = backup()
+    s.upsertProviderDraft(d)
+    const pending = s.validate()
+    s.removeProviderDraft(d.id)
+    answer({ valid: true, problems: [] })
+    await pending
+    expect(codes(s)).toContain('step.unknownProvider')
+  })
+
   it('keeps a published draft in review until its change request merges, then reads the published provider', async () => {
     const s = onCanvas()
     const d = backup()

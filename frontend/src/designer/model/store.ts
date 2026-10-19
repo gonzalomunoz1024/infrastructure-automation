@@ -262,6 +262,8 @@ export class DesignerStore {
   private checkTimer: ReturnType<typeof setTimeout> | null = null
   /** the backend's problems for one version of the document (Validate) */
   private validated: { version: number; problems: Problem[] } | null = null
+  /** bumps whenever the registry the canvas reads changes: a Validate answer is about the providers it was asked with */
+  private registryVersion = 0
   private revealTimer: ReturnType<typeof setTimeout> | null = null
   private eventSub: Subscription | null = null
   private refetchTimer: ReturnType<typeof setTimeout> | null = null
@@ -361,10 +363,15 @@ export class DesignerStore {
     return withUnpublished(this.loaded, unpublished, playbooks)
   }
 
-  /** Applies `patch` with the registry and the check context it leads to, and runs the checks again. */
+  /**
+   * Applies `patch` with the registry and the check context it leads to, and runs the checks
+   * again. The last Validate answer goes: it judged the workflow with other providers.
+   */
   private setRegistry(patch: Partial<DesignerState> = {}): void {
     const next = { ...this.state, ...patch }
     const registry = this.registryFor(next.doc, next.providerDrafts, next.providersInReview)
+    this.validated = null
+    this.registryVersion++
     this.set({ ...patch, registry, ctx: contextOf(registry) })
     this.runChecks()
   }
@@ -379,7 +386,7 @@ export class DesignerStore {
 
   private computeProblems(): Problem[] {
     const { doc, ctx, graph } = this.state
-    // the backend's verdict on this very document (Validate) stands until the next edit
+    // the backend's verdict on this very document (Validate) stands until the next edit or registry change
     if (this.validated && this.validated.version === this.state.version) return this.validated.problems
     if (graph.problems.length > 0) return graph.problems
     try {
@@ -399,8 +406,10 @@ export class DesignerStore {
    */
   async validate(): Promise<ValidationResult> {
     const version = this.state.version
+    const registryVersion = this.registryVersion
     const result = await api.validateWorkflow({ definition: this.state.doc }, this.providerFiles())
-    if (this.state.version !== version) return result // edited meanwhile: the answer is about an older document
+    // edited meanwhile, or the providers changed: the answer is about an older document
+    if (this.state.version !== version || this.registryVersion !== registryVersion) return result
     this.validated = { version, problems: result.problems }
     if (this.checkTimer) {
       clearTimeout(this.checkTimer)
