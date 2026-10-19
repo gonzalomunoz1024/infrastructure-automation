@@ -1,6 +1,7 @@
 package com.iaf.platform.providers.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -23,6 +24,7 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.providers.domain.ProviderYaml;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort;
 import com.iaf.platform.providers.ports.outbound.ProviderStorePort.StoredProvider;
+import com.mongodb.MongoSocketReadException;
 import com.mongodb.client.model.Filters;
 
 @EnabledIfEnvironmentVariable(named = TestMongo.MONGO_URI, matches = ".+")
@@ -125,6 +127,22 @@ class MongoProviderStoreTest extends ProviderStoreContract {
     }
 
     @Test
+    void aWriteThatThrowsAfterLandingStillMovesTheRevision() throws Exception {
+        write(ECHO);
+        ProviderStorePort other = newStore(props(content, false));
+        assertThat(other.get("echo").map(StoredProvider::updatedBy)).contains("content");
+        long before = db.mongo().revision(MongoProviderStore.STORE);
+        ProviderStorePort saving = new MongoProviderStore(db.landingThenFailing(MongoProviderStore.PROVIDERS, "replaceOne"), props(content, false),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        String yaml = ECHO.replace("https://echo.example", "https://echo2.example");
+        StoredProvider changed = new StoredProvider(ProviderYaml.parse(yaml), yaml, "providers/team-a/echo.yaml", NOW, "ana");
+
+        assertThatThrownBy(() -> saving.save(changed)).isInstanceOf(MongoSocketReadException.class);
+        assertThat(db.mongo().revision(MongoProviderStore.STORE)).isEqualTo(before + 1);
+        assertThat(other.get("echo")).as("another instance sees the provider's document at once").contains(changed);
+    }
+
+    @Test
     void aCurrentVersionWithoutItsOwnDocumentStillCountsAmongTheVersions() throws Exception {
         // what a save that stopped between the provider's document and its version's leaves behind
         write(ECHO);
@@ -138,6 +156,24 @@ class MongoProviderStoreTest extends ProviderStoreContract {
         store.saveVersion(echo("1.1.0", "ana"));
         assertThat(versionsOf(store.versions("echo"))).containsExactly("1.1.0", "1.0.0");
         assertThat(store.version("echo", "1.0.0")).contains(current);
+    }
+
+    @Test
+    void aSaveOfTheCurrentNumberThatStoppedBeforeItsVersionDocumentReadsTheNewDefinition() throws Exception {
+        write(ECHO);
+        ProviderStorePort store = newStore(props(content, false));
+        store.saveVersion(echo("1.1.0", "ana"));
+        String yaml = ECHO.replace("https://echo.example", "https://echo2.example");
+        StoredProvider changed = new StoredProvider(ProviderYaml.parse(yaml), yaml, "providers/team-a/echo.yaml", NOW, "ana");
+        // the provider's document of a save of 1.0.0 again, without its provider_versions write (the bump ran in its finally)
+        db.mongo().collection(MongoProviderStore.PROVIDERS).replaceOne(Filters.eq("_id", "echo"),
+                new Document("_id", "echo").append("updatedAt", Mongo.date(NOW)).append(Mongo.DOC, db.mongo().doc(changed)));
+        db.mongo().bump(MongoProviderStore.STORE);
+
+        assertThat(store.get("echo")).contains(changed);
+        assertThat(store.version("echo", "1.0.0")).as("the current version is the provider's document").contains(changed);
+        assertThat(store.versions("echo")).containsExactly(echo("1.1.0", "ana"), changed);
+        assertThat(store.version("echo", "1.1.0")).as("another version comes from provider_versions").contains(echo("1.1.0", "ana"));
     }
 
     @Test

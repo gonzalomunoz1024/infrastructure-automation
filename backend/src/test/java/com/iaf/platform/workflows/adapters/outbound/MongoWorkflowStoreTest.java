@@ -1,6 +1,7 @@
 package com.iaf.platform.workflows.adapters.outbound;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +19,7 @@ import com.iaf.platform.workflows.domain.WorkflowRecord;
 import com.iaf.platform.workflows.domain.WorkflowStatus;
 import com.iaf.platform.workflows.domain.WorkflowYaml;
 import com.iaf.platform.workflows.ports.outbound.WorkflowStorePort;
+import com.mongodb.MongoSocketReadException;
 
 @EnabledIfEnvironmentVariable(named = TestMongo.MONGO_URI, matches = ".+")
 class MongoWorkflowStoreTest extends WorkflowStoreContract {
@@ -63,6 +65,21 @@ class MongoWorkflowStoreTest extends WorkflowStoreContract {
         assertThat(other.versions("restart")).hasSize(1);
         other.delete("restart", "1.0.0");
         assertThat(store.all()).isEmpty();
+    }
+
+    @Test
+    void aWriteThatThrowsAfterLandingStillMovesTheRevision() {
+        WorkflowStorePort other = reopen();
+        assertThat(other.all()).isEmpty();
+        WorkflowStorePort saving = new MongoWorkflowStore(db.landingThenFailing(MongoWorkflowStore.COLLECTION, "replaceOne"), (Path) null, CLOCK);
+        assertThatThrownBy(() -> saving.save(record("restart", "1.0.0", WorkflowStatus.PUBLISHED))).isInstanceOf(MongoSocketReadException.class);
+        assertThat(db.mongo().revision(MongoWorkflowStore.STORE)).isEqualTo(1);
+        assertThat(other.published("restart")).as("another instance sees the version at once").isPresent();
+
+        WorkflowStorePort deleting = new MongoWorkflowStore(db.landingThenFailing(MongoWorkflowStore.COLLECTION, "deleteOne"), (Path) null, CLOCK);
+        assertThatThrownBy(() -> deleting.delete("restart", "1.0.0")).isInstanceOf(MongoSocketReadException.class);
+        assertThat(db.mongo().revision(MongoWorkflowStore.STORE)).isEqualTo(2);
+        assertThat(other.published("restart")).as("and sees it gone at once").isEmpty();
     }
 
     @Test

@@ -1,15 +1,16 @@
 package com.iaf.platform.common.adapters.mongo;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigInteger;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.bson.BsonType;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -91,10 +92,49 @@ class MongoTest {
             assertThat(read).as(id).isEqualTo(shape);
             assertThat(read.schema().get("maximum").bigIntegerValue()).isEqualTo(new BigInteger("18446744073709551615"));
         }
-        JsonNode tooLong = new ObjectMapper().readTree("{\"maximum\": 12345678901234567890123456789012345}");
-        assertThatThrownBy(() -> shapes.insertOne(new Document("_id", "too-long").append(Mongo.DOC,
-                db.mongo().doc(new Shape("x", null, 0, 0, tooLong, List.of(), Map.of())))))
-                .as("35 digits do not fit a Decimal128: refused, never rounded").hasStackTraceContaining("inexact rounding");
+        assertThat(shapes.countDocuments(Filters.type("doc.schema.maximum", BsonType.DECIMAL128))).as("up to 34 digits: a Decimal128").isEqualTo(2);
+    }
+
+    @Test
+    void anIntegerTooLongForADecimal128ComesBackExactlyThroughEveryWrite() throws Exception {
+        // a run's input or an HTTP step's response can hold any integer: 35 and 40 digits, either sign, at depth and in arrays
+        String d35 = "12345678901234567890123456789012345";
+        String d40 = "9876543210987654321098765432109876543210";
+        JsonNode schema = new ObjectMapper().readTree("""
+                {"positive": %1$s, "negative": -%1$s, "longer": %2$s, "lower": -%2$s, "fits": 1234567890123456789012345678901234,
+                 "deep": {"inner": {"value": -%2$s, "list": [%1$s, -%2$s, {"x": -%1$s}, [%2$s, 7]]}},
+                 "list": [-%1$s, %2$s, 1, 99999999999999999999]}
+                """.formatted(d35, d40));
+        Shape shape = new Shape("web-07", Instant.parse("2026-10-18T09:15:30.123456789Z"), Long.MIN_VALUE, 0.5, schema, List.of(), Map.of());
+        MongoCollection<Document> shapes = db.mongo().collection("shapes");
+        shapes.insertOne(new Document("_id", "inserted").append(Mongo.DOC, db.mongo().doc(shape)));
+        shapes.replaceOne(Filters.eq("_id", "replaced"), new Document("_id", "replaced").append(Mongo.DOC, db.mongo().doc(shape)),
+                new ReplaceOptions().upsert(true));
+        shapes.updateOne(Filters.eq("_id", "set"), Updates.set(Mongo.DOC, db.mongo().doc(shape)), new UpdateOptions().upsert(true));
+
+        BigInteger p35 = new BigInteger(d35);
+        BigInteger p40 = new BigInteger(d40);
+        for (String id : List.of("inserted", "replaced", "set")) {
+            Document stored = shapes.find(Filters.eq("_id", id)).first();
+            Shape read = db.mongo().read(stored, Shape.class);
+            assertThat(read).as(id).isEqualTo(shape);
+            assertThat(read.schema().get("negative").bigIntegerValue()).as(id).isEqualTo(p35.negate());
+            assertThat(read.schema().at("/deep/inner/list/3/0").isBigInteger()).as(id).isTrue();
+            assertThat(read.schema().at("/deep/inner/list/3/0").bigIntegerValue()).as(id).isEqualTo(p40);
+            // the stored document holds the same Java type as a shorter one: a BigInteger
+            Document storedSchema = stored.get(Mongo.DOC, Document.class).get("schema", Document.class);
+            assertThat(storedSchema.get("longer")).as(id).isEqualTo(p40);
+            assertThat(storedSchema.get("lower")).as(id).isEqualTo(p40.negate());
+            assertThat(storedSchema.get("fits")).as(id).isEqualTo(new BigInteger("1234567890123456789012345678901234"));
+            assertThat(storedSchema.getList("list", Object.class)).as(id).containsExactly(p35.negate(), p40, 1, new BigInteger("99999999999999999999"));
+            assertThat(storedSchema.get("deep", Document.class).get("inner", Document.class).getList("list", Object.class).get(2))
+                    .as(id).isEqualTo(new Document("x", p35.negate()));
+        }
+        assertThat(shapes.countDocuments(Filters.type("doc.schema.fits", BsonType.DECIMAL128))).as("34 digits stay a Decimal128").isEqualTo(3);
+        // decoded as a BigInteger on its own too, not only inside a document
+        assertThat(shapes.distinct("doc.schema.lower", BigInteger.class).into(new ArrayList<>())).containsExactly(p40.negate());
+        assertThat(shapes.distinct("doc.schema.fits", BigInteger.class).into(new ArrayList<>()))
+                .containsExactly(new BigInteger("1234567890123456789012345678901234"));
     }
 
     record Note(String title, String owner, JsonNode data, Map<String, Object> labels) {
@@ -117,6 +157,34 @@ class MongoTest {
         Document stored = notes.find().first();
         assertThat(db.mongo().read(stored, Note.class)).isEqualTo(note);
         assertThat(stored.get(Mongo.DOC, Document.class)).as("a null component is left out").doesNotContainKey("owner");
+    }
+
+    @Test
+    void aLoneSurrogateIsStoredAsTheReplacementCharacterSoWhatIsWrittenReadsBack() throws Exception {
+        // JSON may escape half a surrogate pair, which Jackson accepts; the driver would write it as bytes that are not UTF-8,
+        // which read back as U+FFFD, so it is stored as U+FFFD, in a value or a key; a whole pair stays as it is
+        JsonNode data = new ObjectMapper().readTree("""
+                {"lone": "\\ud800", "inside": "a\\udc00b", "pair": "\\ud83d\\ude00", "key\\ud800": {"list": ["\\udfff", "ok", "\\ude00\\ud83d"]}}
+                """);
+        Map<String, Object> labels = new LinkedHashMap<>();
+        labels.put("x\udbff", "y\udc00z");
+        labels.put("unset", null);
+        Note note = new Note("t\ud800", "ana", data, labels);
+        Map<String, Object> wellFormedLabels = new LinkedHashMap<>();
+        wellFormedLabels.put("x\ufffd", "y\ufffdz");
+        wellFormedLabels.put("unset", null);
+        Note wellFormed = new Note("t\ufffd", "ana", new ObjectMapper().readTree("""
+                {"lone": "\ufffd", "inside": "a\ufffdb", "pair": "😀", "key\ufffd": {"list": ["\ufffd", "ok", "\ufffd\ufffd"]}}
+                """), wellFormedLabels);
+        MongoCollection<Document> notes = db.mongo().collection("notes");
+        Document written = db.mongo().doc(note);
+        notes.insertOne(new Document("_id", "one").append(Mongo.DOC, written));
+
+        Document stored = notes.find().first();
+        assertThat(Mongo.mapper().valueToTree(stored.get(Mongo.DOC)).equals(Mongo.mapper().valueToTree(written)))
+                .as("what is written is what reads back").isTrue();
+        assertThat(db.mongo().read(stored, Note.class)).isEqualTo(wellFormed);
+        assertThat(db.mongo().as(written, Note.class)).isEqualTo(wellFormed);
     }
 
     @Test

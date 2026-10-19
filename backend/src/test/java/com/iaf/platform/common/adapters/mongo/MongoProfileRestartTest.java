@@ -126,10 +126,10 @@ class MongoProfileRestartTest {
      */
     ConfigurableApplicationContext start(boolean demoHistory, String... more) {
         List<String> args = new ArrayList<>(List.of("--server.port=0",
-                "--spring.data.mongodb.uri=" + TestMongo.uriOf(database),
                 "--platform.content.dir=..",
                 "--platform.demo.seed-history=" + demoHistory,
                 "--platform.audit.signing-key=test-signing-key"));
+        TestMongo.springProperties(database).forEach((key, value) -> args.add("--" + key + "=" + value));
         // an argument given twice reads as both values joined by a comma, so one given here replaces the default
         for (String arg : more) {
             String key = arg.substring(0, arg.indexOf('=') + 1);

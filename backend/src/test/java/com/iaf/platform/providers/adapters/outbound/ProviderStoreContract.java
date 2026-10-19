@@ -185,10 +185,15 @@ abstract class ProviderStoreContract {
         assertThat(store.all()).hasSize(1);
         assertThat(versionsOf(store.versions("echo"))).containsExactly("1.10.0", "1.2.0", "1.0.0");
 
-        StoredProvider again = new StoredProvider(echo("1.2.0", "mateo").definition(), echo("1.2.0", "mateo").yaml(), "providers/team-a/echo.yaml", NOW.plusSeconds(60), "mateo");
+        StoredProvider again = new StoredProvider(echo("1.10.0", "mateo").definition(), echo("1.10.0", "mateo").yaml(), "providers/team-a/echo.yaml", NOW.plusSeconds(60), "mateo");
         store.saveVersion(again);
-        assertThat(store.version("echo", "1.2.0")).as("a version saved again replaces the kept one").contains(again);
+        assertThat(store.version("echo", "1.10.0")).as("a version saved again replaces the kept one").contains(again);
         assertThat(store.versions("echo")).hasSize(3);
+
+        StoredProvider current = store.get("echo").orElseThrow();
+        store.saveVersion(echo("1.2.0", "mateo"));
+        assertThat(store.version("echo", "1.2.0")).as("the current version reads as the current provider").contains(current);
+        assertThat(store.versions("echo")).hasSize(3).contains(current);
     }
 
     @Test

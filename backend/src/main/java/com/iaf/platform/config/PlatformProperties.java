@@ -1,6 +1,8 @@
 package com.iaf.platform.config;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
@@ -25,6 +27,7 @@ public class PlatformProperties {
     private Audit audit = new Audit();
     private Demo demo = new Demo();
     private Persistence persistence = new Persistence();
+    private Cors cors = new Cors();
 
     @Data
     public static class Content {
@@ -188,5 +191,15 @@ public class PlatformProperties {
     public static class Persistence {
         /** How long provider-call samples are kept; older ones are deleted. */
         private Duration telemetryRetention = Duration.ofDays(30);
+    }
+
+    /** Cross-origin calls to the API and WebSocket ({@link WebConfig}). */
+    @Data
+    public static class Cors {
+        /**
+         * The browser origins allowed to call from another origin: the console's dev server, whose
+         * POSTs through its proxy still carry the page's origin; any other origin gets a 403.
+         */
+        private List<String> allowedOrigins = new ArrayList<>(List.of("http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173"));
     }
 }

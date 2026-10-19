@@ -53,7 +53,7 @@ Package root `com.iaf.platform`. One package per slice, each with the same four 
 | `assistant` | natural-language builder sessions (Devin), the platform's checks of its drafts, SSE stream, `assistant.*` events |
 | `identity`  | who is calling: dev identity, OIDC, service accounts and their scopes (`ServiceScopeWebFilter`), RBAC checks (`AccessRules`: who may invoke, edit, approve, and use a credential: its owner team, anyone when it has no owner, admins always; who sees a provider: the same rule, for scoping the provider list) |
 | `common`    | cross-slice domain: ids, expressions, JSON schema validation, events, clock, redaction, trace ids |
-| `config`    | Clock, Jackson, CORS, WebSocket mapping, GlobalExceptionHandler, demo loader |
+| `config`    | Clock, Jackson, CORS (the console origins of `platform.cors.allowed-origins`), WebSocket mapping, GlobalExceptionHandler, demo loader |
 
 ### CQRS rules
 
@@ -213,10 +213,13 @@ through the application's JSON (ISO instants to the nanosecond, lowercase enums)
 parsed as extended JSON, so a key such as `$ref` in an imported schema stays a key. The codecs keep
 what the driver would change: a sub-document with both `$ref` and `$id` stays a document (the
 driver would read it as a DBRef and drop its other keys); an integer beyond a long (an OpenAPI
-`uint64` bound) is stored as a Decimal128, exact to 34 digits (a longer one is refused, never
-rounded), and reads back as that integer; a null inside a JSON value or a map is kept both ways,
+`uint64` bound, or any number in a run's input or a step's response) is stored as a Decimal128 up
+to 34 digits and, longer, as a binary of the user-defined subtype (`0x80`) holding its decimal
+digits, and either reads back as exactly that integer; a null inside a JSON value or a map is kept both ways,
 so a job's input or an evidence entry's hashed data comes back exactly, while a null record
-component is left out. One known gap: a decimal held as a JSON decimal node (the HCL importer makes
+component is left out. Half a UTF-16 surrogate pair (JSON may escape one) is stored, in a value or
+a key, as the U+FFFD the driver would read it back as, so what is written reads back as written
+and an evidence entry is hashed as it will be read. One known gap: a decimal held as a JSON decimal node (the HCL importer makes
 one for an integer beyond a long) is stored as a double and can lose digits. Each adapter creates the indexes it relies on in its constructor, so every
 start makes the missing ones and leaves the others as they are. The adapters' tests run on a real
 MongoDB when `PLATFORM_TEST_MONGO_URI` names one, a fresh database per test (see
@@ -237,16 +240,19 @@ finishes what a stop in between left.
   content; one changed through the platform is never reset. Resource types are rewritten from
   their files at every start. Reads come from a copy of the collection (`Revisioned`) that is
   reloaded when the store's number in `store_revisions` shows a write from any instance; a write
-  moves that number once it is done.
+  moves that number once it is done, also when it throws, since it may have landed. A copy older than 30 seconds is reloaded even when the number
+  stayed, so a write whose move was lost (the instance died in between) reaches every instance
+  within that time.
 - A provider's current version is its `providers` document (keyed by name); every version saved
   since the database was made, the current one among them, is also a `provider_versions` document
   (keyed `<name>@<version>`), so a canary candidate (`ProviderStorePort.saveVersion`) is kept beside
   the current version, routed to by its release, and survives a restart until it is promoted and
-  saved as current. A save writes the provider, then its version, and a current version whose
-  version document a stop left unwritten still counts among the versions; a delete removes the
-  versions, then the provider, and deleting again finishes an interrupted one. The versions read
-  newest first, as in memory, and a kept version is never written back to the content repo until
-  it is current.
+  saved as current. A save writes the provider, then its version. The current version always reads
+  as the `providers` document, so one whose version document a stop left unwritten, or left from
+  an earlier save of the same number, still counts among the versions with its new definition. A
+  delete removes the versions, then the provider, and deleting again finishes an interrupted one.
+  The versions read newest first, as in memory, and a kept version is never written back to the
+  content repo until it is current.
 - Review evidence (what the wizard's Test connection and Try it calls proved, per provider name)
   is one `review_evidence` document per result, with the in-memory bounds: the last 50 connection
   tests and the last 500 tries of a provider, and a response over 256 KiB kept without its body.
@@ -268,8 +274,10 @@ finishes what a stop in between left.
   after it, so the hash chain never forks across instances (a striped lock orders the writers of
   one instance). An append inserts its entry, then grows the header (`evidence_records`: the record
   without its entries, its count, whether it is closed, and its seal) with an update that matches
-  only while the header has counted fewer entries. Reads fold in entries the header has not counted
-  yet, and the sealing run brings a lagging header up to date. The seal is written once, by an
+  only while the header has counted fewer entries. Once its entry is in, an append has happened: a
+  header update that fails is logged and the entry returned, so the audit listener never retries it
+  into a second copy. Reads fold in entries the header has not counted yet, and the next append or
+  the sealing run brings a lagging header up to date. The seal is written once, by an
   update that matches only while the record has none. Checkpoints have a collection of their own so
   the header stays small: the platform stream is checkpointed every hour for years, a document holds
   at most 16 MB, and every append rewrites the header. An append on one instance that races a seal
