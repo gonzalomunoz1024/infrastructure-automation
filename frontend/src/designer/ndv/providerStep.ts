@@ -16,12 +16,12 @@ import type { JsonValue, ParsedStep } from '@iaf/workflow-checks'
 import { api, ApiError } from '../../lib/api'
 import { useQuery } from '../../lib/queries'
 import type { ChangeRequest, Effect, ProviderDetail, RegistryAction, RegistryProvider, RetryPolicy, Schema, TryResult } from '../../lib/types'
-import { actionSlo, blankAction, endpointsOf, inferSchema, nextKey, parseSchema, sandboxEnvironment, stateFromProvider, withVersion, type ActionRow } from '../../components/provider-editor/state'
+import { actionSlo, blankAction, endpointsOf, inferSchema, nextKey, parseSchema, sandboxEnvironment, stateFromProvider, withVersion, type ActionRow, type ErrorRow } from '../../components/provider-editor/state'
 import { draftFromProvider, draftYaml, findProviderDraft, type ProviderDraft } from '../model/providerDrafts'
 import { findProvider } from '../model/registry'
 import { useDesignerSelector, useDesignerStore } from '../model/store'
 import { asObject, asString } from './fields'
-import { withActionFields, withOverride, type ActionField } from './providerFile'
+import { errorRowsOf, errorsWrittenAs, withActionFields, withErrors, withOverride, type ActionField } from './providerFile'
 
 /** What every workflow calling the action shares, as the Settings tab edits it: the wizard's fields of an action. */
 export type ActionPolicy = Pick<ActionRow, 'effect' | 'retry' | 'approval' | 'plan' | 'effectDetail' | 'sloSuccessRate' | 'sloP95Ms'>
@@ -261,6 +261,24 @@ export function withFixedSchema(draft: ProviderDraft, tried: TriedCall): Provide
   if (draft.draftYaml === null) return { ...draft, overrides }
   const file = withOverride(draft.draftYaml, tried.action, schema)
   return file === null ? null : { ...draft, overrides, draftYaml: file }
+}
+
+/**
+ * The error classes the Settings tab edits, with keys that stay while the file does: a draft's
+ * rows when its file writes them (or it has no file), else the ones read from the draft's or the
+ * published file; null when that file writes them in a way rows would lose (`errorRowsOf`).
+ */
+export function errorRows(draft: ProviderDraft | undefined, publishedYaml: string | undefined): ErrorRow[] | null {
+  if (draft && (draft.draftYaml === null || errorsWrittenAs(draft.draftYaml, draft.errors))) return draft.errors
+  const yaml = draft ? draft.draftYaml : publishedYaml
+  return yaml ? errorRowsOf(yaml) : null
+}
+
+/** The draft with these error classes: in its state, or in its rows and, by lines, its file (null when the file's cannot be rewritten). */
+export function withErrorClasses(draft: ProviderDraft, errors: ErrorRow[]): ProviderDraft | null {
+  if (draft.draftYaml === null) return { ...draft, errors }
+  const file = withErrors(draft.draftYaml, errors)
+  return file === null ? null : { ...draft, errors, draftYaml: file }
 }
 
 /**

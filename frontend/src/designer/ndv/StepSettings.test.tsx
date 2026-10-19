@@ -7,9 +7,10 @@ import { draftYaml } from '../model/providerDrafts'
 import { EMPTY_REGISTRY } from '../model/registry'
 import { DesignerContext, DesignerStore } from '../model/store'
 import { isSettingsField, writeField } from './fields'
-import { withPolicy, type ProviderStepInfo } from './providerStep'
+import { draftFromProvider } from '../model/providerDrafts'
+import { errorRows, withErrorClasses, withPolicy, type ProviderStepInfo } from './providerStep'
 import { StepSettings } from './StepSettings'
-import { editDraft, loadingInfo, newDraft, newDraftInfo, publishedInfo, settledDetail, unknownInfo } from './testProviders'
+import { editDraft, loadingInfo, newDraft, newDraftInfo, publishedInfo, settledDetail, unknownInfo, vsphereDetail } from './testProviders'
 
 /*
  * A step paused on its failure waits for a person's decision for its `attentionTimeout` (seven
@@ -108,7 +109,7 @@ function shown(html: string, label: string): string {
   return html.slice(html.indexOf('>', at) + 1, html.indexOf('</button>', at)).replace(/<[^>]+>/g, '')
 }
 
-type ProviderFile = { metadata: { version: string }; spec: { actions: Record<string, unknown>[] } }
+type ProviderFile = { metadata: { version: string }; spec: { actions: Record<string, unknown>[]; errors?: Record<string, unknown>[] } }
 const fileAction = (yaml: string | null, id: string) => (parse(yaml ?? '') as ProviderFile).spec.actions.find((a) => a.id === id)
 
 describe('the action a provider step shares with every workflow', () => {
@@ -123,7 +124,10 @@ describe('the action a provider step shares with every workflow', () => {
     expect(shown(html, 'Effect of the action')).toContain('read')
     expect(shown(html, 'Retry policy of the action')).toContain('safe')
     expect(control(html, 'Retry policy of the action')).not.toContain('disabled')
-    expect(html).toContain('keeps its error classes as written')
+    // the published file's error classes, as rows to edit
+    expect(html).toContain('value="not_found"')
+    expect(html).toContain('value="rate_limited"')
+    expect(html).toContain('Add error class')
     expect(html).toContain('Open provider')
   })
 
@@ -192,7 +196,34 @@ describe('the action a provider step shares with every workflow', () => {
     expect(fileAction(draftYaml(out), 'invoices.get')).toMatchObject({ retry: 'unsafe', approval: 'required' })
     const html = renderProvider(newDraftInfo(out))
     expect(html).toContain('draft 1.0.0')
-    expect(html).not.toContain('keeps its error classes as written')
+    expect(html).toContain('Start from the usual ones')
+    const classes = withErrorClasses(out, [{ key: 1, status: '429', body: '', class: 'rate_limited', retry: true }])!
+    expect(classes.draftYaml).toBeNull()
+    expect((parse(draftYaml(classes)) as ProviderFile).spec.errors).toEqual([{ match: { status: 429 }, class: 'rate_limited', retry: true }])
+  })
+
+  it('edits the error classes of a provider file into the draft’s rows and, by lines, its file', () => {
+    // a published provider: the rows come from its file, and the first edit starts the draft
+    const rows = errorRows(undefined, vsphereDetail().yaml)!
+    expect(rows.map((r) => r.class)).toEqual(['not_found', 'conflict', 'rate_limited', 'unavailable'])
+    const draft = withErrorClasses(draftFromProvider(vsphereDetail()), [...rows, { key: 99, status: '500', body: 'quota', class: 'quota', retry: false }])!
+    expect((parse(draft.draftYaml!) as ProviderFile).spec.errors?.map((e) => e.class)).toEqual(['not_found', 'conflict', 'rate_limited', 'unavailable', 'quota'])
+    expect((parse(draft.draftYaml!) as ProviderFile).metadata.version).toBe('1.3.1')
+    // from then on the draft's rows stand for its file, keys and all
+    expect(errorRows(draft, vsphereDetail().yaml)).toBe(draft.errors)
+    // an edit draft whose rows are not its file's yet reads them from the file
+    expect(errorRows(editDraft(), undefined)?.map((r) => r.class)).toEqual(rows.map((r) => r.class))
+  })
+
+  it('shows error classes written another way as they are, and cannot edit them', () => {
+    const block = '  errors:\n    - match:\n        status: 404\n      class: not_found\n      retry: false\n'
+    const draft = { ...editDraft(), draftYaml: editDraft().draftYaml!.replace(/ {2}errors:\n(?: {4}- .*\n)+/, block) }
+    expect(errorRows(draft, undefined)).toBeNull()
+    expect(withErrorClasses(draft, [])).toBeNull()
+    const html = renderProvider(publishedInfo('vm.get', draft))
+    expect(html).toContain('writes them in a way the designer does not edit; open the provider to change them')
+    expect(html).toContain('class: not_found')
+    expect(html).not.toContain('Add error class')
   })
 
   it('is not written where the file does not hold the action by lines, or there is no such action', () => {
@@ -205,5 +236,8 @@ describe('the action a provider step shares with every workflow', () => {
     const html = renderProvider(publishedInfo(), true)
     expect(html).not.toContain('Open provider')
     expect(control(html, 'Retry policy of the action')).toContain('disabled')
+    // the error classes as the file writes them, nothing to edit
+    expect(html).not.toContain('Add error class')
+    expect(html).toContain('- { match: { status: 404 }, class: not_found, retry: false }')
   })
 })

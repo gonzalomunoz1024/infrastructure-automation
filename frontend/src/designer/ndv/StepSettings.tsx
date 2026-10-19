@@ -12,14 +12,15 @@ import { STEP_TYPES, type ExpressionContext, type JsonValue, type ParsedStep, ty
 import type { Effect, RetryPolicy } from '../../lib/types'
 import { Link, pathFor } from '../../app/router'
 import { ActionSloInputs, ErrorClasses } from '../../components/provider-editor/ActionsStep'
-import { EFFECTS, type WizardState } from '../../components/provider-editor/state'
+import { EFFECTS, stateFromProvider, type ErrorRow, type WizardState } from '../../components/provider-editor/state'
 import { bodyFor, newStepId, stepIdProblem } from '../model/edits'
 import { stepTypeOfBody } from '../model/fixes'
 import { useDesignerStore } from '../model/store'
 import { NodeGlyph, typeGlyph } from '../canvas/glyphs'
 import { readField, writeField } from './fields'
 import { FieldLabel, JsonInput, ParameterField, ParamSection, ProblemList, type ParamSpec } from './ParameterField'
-import { actionRow, openChange, planOptions, providerSlo, RETRY_OPTIONS, useDraftEdit, withPolicy, type ActionPolicy, type ProviderStepInfo } from './providerStep'
+import { errorClassesText } from './providerFile'
+import { actionRow, errorRows, openChange, planOptions, providerSlo, RETRY_OPTIONS, useDraftEdit, withErrorClasses, withPolicy, type ActionPolicy, type ProviderStepInfo } from './providerStep'
 
 const COMPENSATION_TYPES: StepType[] = ['provider', 'http', 'notify', 'script', 'ansible', 'run']
 
@@ -138,12 +139,36 @@ function CompensateEditor({ stepId, body, doc, readOnly, problems }: { stepId: s
 }
 
 /**
+ * The provider's error classes in the shared action: the wizard's rows, edited into the draft
+ * (its state, or its file by lines), for a draft written from its state and for a provider file
+ * that writes them one per line as the designer does (the repository's files do); otherwise, and
+ * where the step cannot change, the classes as the file writes them.
+ */
+function SharedErrorClasses({ info, disabled, onChange }: { info: ProviderStepInfo; disabled: boolean; onChange: (errors: ErrorRow[]) => void }) {
+  const published = info.detail?.yaml
+  const file = info.draft ? info.draft.draftYaml : (published ?? null)
+  // read again only when the draft or the published file changes, so a row keeps its key (and its focus) while it is typed in
+  const rows = useMemo(() => errorRows(info.draft, published), [info.draft, published])
+  const base = useMemo<WizardState | null>(() => info.draft ?? (info.detail ? stateFromProvider(info.detail) : null), [info.draft, info.detail])
+  if (!disabled && rows !== null && base) return <ErrorClasses state={{ ...base, errors: rows }} update={(patch: Partial<WizardState>) => onChange(patch.errors ?? rows)} />
+  const text = rows !== null ? errorClassesText(rows) : file ? errorClassesText(file) : ''
+  return (
+    <>
+      <FieldLabel label="Error classes" description="How a failed call of the provider is named, so retries and alerts know what it means" />
+      {/* nothing to say while the published file loads: the section says so above */}
+      {text ? <pre className="mt-1 overflow-x-auto rounded-sm bg-surface-secondary px-2 py-1.5 font-mono text-caption2 text-secondary">{text}</pre> : file !== null || info.draft ? <p className="text-caption text-tertiary">None.</p> : null}
+      {!disabled && rows === null && file && <p className="mt-1 text-caption text-tertiary">The provider file writes them in a way the designer does not edit; open the provider to change them.</p>}
+    </>
+  )
+}
+
+/**
  * A provider step's action as every workflow calling it shares it. Its fields are the provider's,
  * so an edit goes into the provider's draft (started from the published file when there is none)
  * and reaches every workflow once the provider's change request merges; the step's own retry,
- * timeout and pause stay above. Error classes are the provider's too: edited here for a draft
- * written from its state, kept as written in a provider file. An open change request of the
- * provider is named, since the draft cannot be published before it merges or closes.
+ * timeout and pause stay above. Error classes are the provider's too (`SharedErrorClasses`). An
+ * open change request of the provider is named, since the draft cannot be published before it
+ * merges or closes.
  */
 export function SharedAction({ info, stepId, readOnly = false }: { info: ProviderStepInfo; stepId: string; readOnly?: boolean }) {
   const store = useDesignerStore()
@@ -155,7 +180,6 @@ export function SharedAction({ info, stepId, readOnly = false }: { info: Provide
   const disabled = readOnly || waiting || !row
   const title = info.draft?.title || info.detail?.title || info.registryProvider?.title || info.provider
   const set = (patch: Partial<ActionPolicy>) => void edit((d) => withPolicy(d, info.action, patch, row), `Could not change ${info.action}`)
-  const fromState = !!info.draft && info.draft.draftYaml === null
   const change = openChange(info)
   const openProvider = () => store.openProviderSheet({ entry: 'node', provider: info.published ? info.provider : null, draft: info.draft?.id ?? null, target: { kind: 'step', step: stepId } })
   if (info.state === 'unknown') {
@@ -246,14 +270,7 @@ export function SharedAction({ info, stepId, readOnly = false }: { info: Provide
         {row ? <ActionSloInputs action={row} provider={slo} label={info.action} size="sm" disabled={disabled} onChange={(p) => set(p)} /> : <p className="text-caption text-tertiary">None</p>}
       </div>
       <div data-testid="shared-error-classes">
-        {fromState && info.draft ? (
-          <ErrorClasses state={info.draft} update={(patch: Partial<WizardState>) => void edit((d) => ({ ...d, ...patch }), 'Could not change the error classes')} />
-        ) : (
-          <>
-            <FieldLabel label="Error classes" description="How a failed call of the provider is named, so retries and alerts know what it means" />
-            <p className="text-caption text-tertiary">{info.draft || info.published ? 'The provider file keeps its error classes as written; open the provider to change them.' : 'None.'}</p>
-          </>
-        )}
+        <SharedErrorClasses info={info} disabled={readOnly || waiting} onChange={(errors) => void edit((d) => withErrorClasses(d, errors), 'Could not change the error classes')} />
       </div>
     </ParamSection>
   )

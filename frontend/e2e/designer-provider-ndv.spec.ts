@@ -243,8 +243,15 @@ test.describe('a provider step in the node detail view', () => {
     const file = String(drafts[0].draftYaml)
     expect(file).toContain('  version: 1.3.1')
     expect(file).toContain('    - id: vm.get\n      title: Get VM\n      operation: getVm\n      effect: read\n      retry: unsafe\n')
-    // the published file's error classes are kept as written
-    await expect(ndv.getByTestId('shared-error-classes')).toContainText('keeps its error classes as written')
+
+    // the provider's error classes, as rows: a new one goes into the draft's file, one line, as it is typed
+    const classes = ndv.getByTestId('shared-error-classes')
+    await expect(classes.getByRole('textbox', { name: 'Class' }).first()).toHaveValue('not_found')
+    await classes.getByRole('button', { name: 'Add error class' }).click()
+    await classes.getByRole('textbox', { name: 'Status' }).last().pressSequentially('500')
+    await classes.getByRole('textbox', { name: 'Class' }).last().pressSequentially('quota')
+    await expect(classes.getByRole('textbox', { name: 'Class' }).last()).toHaveValue('quota')
+    await expect.poll(async () => String((await storedDrafts(page))[0].draftYaml)).toContain('    - { match: { status: 503 }, class: unavailable, retry: true }\n    - { match: { status: 500 }, class: quota, retry: false }\n')
 
     // Try for real: the draft's file, in dev, the input resolved from the step's
     await ndv.getByTestId('ndv-try-for-real').click()
