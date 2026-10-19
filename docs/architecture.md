@@ -910,6 +910,27 @@ by name, a step on one side only shows as added or removed, and each pair shows 
 fields of its output that differ, the field diff the time travel computes on the server. The step
 view shows the same for its step; a run with no successful run before it says so.
 
+The Provider sheet (`frontend/src/designer/chrome/ProviderSheet.tsx`) is Add provider inside the
+designer: a drawer over the canvas with a rail of sections, as n8n's credential modal has, hosting
+the wizard's own steps (`frontend/src/components/provider-editor/`) and imports. Connect holds the
+Type step's fields, with the type of the entry it was opened from picked (an Ansible repository or a
+Terraform module starts on its import, which is then the whole form, Describe it on Ask Devin), then
+the spec import, the tile or worker, the environments, the auth with its credential picker and Test
+connection; Actions, Try it and Review follow. It edits one of the workflow's provider drafts
+(`frontend/src/designer/model/providerDrafts.ts`): a new provider's, or, opened on a published
+provider, its next patch as Edit provider starts it, collecting evidence on Connect and Try it. The
+first change saves the draft and each later one replaces it (the import form as typed too), outside
+undo and the dirty flag, so closing and reopening loses nothing: an entry for a new system carries
+on with the latest draft of its type that no step calls yet, with Start over to drop it. The action
+picked in its header becomes a step where the sheet was opened from, on "Use this action" or on
+closing once one is picked, inserted and opened or filling the step it came from (left as it is
+when it already makes that call), as n8n adds a node after creating a credential. When the draft
+took a file instead (Devin's, an import's), its actions, its type and a terraform module are read
+from the file's `spec`, and its actions are tried from the step. "Publish provider only" opens the
+provider's change request on its own: a new provider's draft then stays, read-only and marked with
+that change request (`changeRequest`), so the steps that call it keep resolving and the workflow's
+Publish requires that change request instead of opening a second one; an edit's draft is dropped.
+
 The YAML drawer and the expanded expression editor are Monaco (`@monaco-editor/react` over
 `monaco-editor`, loaded from the bundle with `loader.config({ monaco })` and Vite's `?worker`
 imports, never from a CDN) in a chunk the shell loads when one of them opens, so the first paint

@@ -11,9 +11,28 @@ import type { StepProps } from './state'
 
 /* ---- 5 · Review ---------------------------------------------------------- */
 
-/** Checks, the review of the evidence, the strategy and Publish; `onPublished` takes the change request it opened (the wizard page opens it). */
-export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProps & { yaml: string; onAsk: () => void; onPublished: (accepted: CommandAccepted) => void }) {
+export interface ReviewStepProps extends StepProps {
+  yaml: string
+  onAsk: () => void
+  /** takes the change request it opened (the wizard page opens it) */
+  onPublished: (accepted: CommandAccepted) => void
+  /** the publish button's label and the line under it, where the page says it otherwise (the designer's "Publish provider only") */
+  publishLabel?: string
+  publishHint?: string
+  /** what the toast's "Open change request" does; the wizard navigates to it */
+  openChangeRequest?: (id: string) => void
+  /** where it is shown: the wizard page (the default) or the designer's Provider sheet, which words what it points at for someone who uses only the designer */
+  surface?: 'page' | 'sheet'
+}
+
+const navigateToChangeRequest = (id: string) => navigate(pathFor('change-request', { id }))
+
+/** Checks, the review of the evidence, the strategy and Publish. */
+export function ReviewStep({ state, update, yaml, onAsk, onPublished, publishLabel = 'Publish as change request', publishHint = 'Opens a change request on a branch; the checks run again there, and merging publishes.', openChangeRequest = navigateToChangeRequest, surface = 'page' }: ReviewStepProps) {
   const toast = useToast()
+  const sheet = surface === 'sheet'
+  // what a file taken instead replaces
+  const replaced = sheet ? "the form's YAML" : "the wizard's document"
   const [judged, setJudged] = useState<{ yaml: string; result: ProviderValidation } | null>(null)
   const validation = judged?.yaml === yaml ? judged.result : null
   const setValidation = (result: ProviderValidation) => setJudged({ yaml, result })
@@ -57,7 +76,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
         message: `${state.name} ${state.version} goes through review${state.strategy === 'canary' ? ', then a canary' : ', then every call moves at once'}.`,
         tone: 'healthy',
         duration: 8000,
-        action: { label: 'Open change request', onClick: () => navigate(pathFor('change-request', { id: accepted.id })) },
+        action: { label: 'Open change request', onClick: () => openChangeRequest(accepted.id) },
       })
       onPublished(accepted)
     } catch (e) {
@@ -77,11 +96,11 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-accent/40 bg-accent-tint px-4 py-2 text-sm">
             <span className="inline-flex items-center gap-2 text-primary">
               <Icon name={state.editing ? 'edit' : 'sparkles'} size={14} className="text-accent" />
-              {state.editing ? `The file as published, at version ${state.version}; a try's answer goes in with Use this.` : state.imported ? "The import's draft replaces the wizard's document." : "This draft replaces the wizard's document."}
+              {state.editing ? `The file as published, at version ${state.version}; a try's answer goes in with Use this.` : state.imported ? `The import's draft replaces ${replaced}.` : `This draft replaces ${replaced}.`}
             </span>
             {!state.editing && (
               <Button size="sm" variant="ghost" onClick={() => update({ draftYaml: null })}>
-                Back to the wizard's YAML
+                {sheet ? "Back to the form's YAML" : "Back to the wizard's YAML"}
               </Button>
             )}
           </div>
@@ -133,7 +152,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
         </Card>
 
         {validation && review !== undefined && (
-          <Card title="Review" subtitle="What the platform saw in this wizard, judged as the reviewer sees it on the change request." data-testid="review-evidence">
+          <Card title="Review" subtitle={`What the platform saw ${sheet ? 'here' : 'in this wizard'}, judged as the reviewer sees it on the change request.`} data-testid="review-evidence">
             {review === null ? (
               <p className="text-sm text-secondary">Not a provider file: nothing to review.</p>
             ) : (
@@ -188,7 +207,7 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
               />
             </Field>
             {state.editing ? (
-              <p className="text-caption text-tertiary">The SLO and the alert channel change from the provider page, through a change request of their own.</p>
+              <p className="text-caption text-tertiary">The SLO and the alert channel change from {sheet ? "the step's Provider tab" : 'the provider page'}, through a change request of their own.</p>
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-3">
@@ -205,9 +224,9 @@ export function ReviewStep({ state, update, yaml, onAsk, onPublished }: StepProp
               </>
             )}
             <Button variant="primary" icon="git-branch" className="w-full" loading={busy === 'publish'} disabled={busy === 'validate' || (!!validation && (failed(validation) || reviewBlocks(validation)))} onClick={() => void publish()}>
-              Publish as change request
+              {publishLabel}
             </Button>
-            <p className="text-caption text-tertiary">Opens a change request on a branch; the checks run again there, and merging publishes.</p>
+            <p className="text-caption text-tertiary">{publishHint}</p>
           </div>
         </Card>
       </aside>

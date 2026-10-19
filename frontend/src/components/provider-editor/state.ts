@@ -289,6 +289,160 @@ export function metadataOf(yaml: string): Partial<Record<MetadataField, string>>
   return out
 }
 
+/** One action of a provider file as `yamlActions` reads it. */
+export interface FileAction {
+  id: string
+  title: string
+  effect: string
+}
+
+const unquote = (raw: string): string => {
+  const m = /^\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(?:#.*)?$/.exec(raw)
+  return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim()
+}
+
+/**
+ * The actions of a file's `spec.actions` list (their id, title and effect), read line by line
+ * like `metadataOf`: what a file the wizard took instead of its own document (Devin's, an
+ * import's) offers to call. An entry without a plain `id:` is left out.
+ */
+export function yamlActions(yaml: string): FileAction[] {
+  const lines = yaml.split('\n')
+  const spec = lines.findIndex((l) => /^spec:\s*(#.*)?$/.test(l))
+  if (spec < 0) return []
+  const lead = (l: string) => l.length - l.trimStart().length
+  let list = -1
+  for (let i = spec + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    if (lead(l) === 0) break
+    if (/^\s+actions:\s*(#.*)?$/.test(l)) {
+      list = i
+      break
+    }
+  }
+  if (list < 0) return []
+  const base = lead(lines[list])
+  const out: FileAction[] = []
+  let item: Partial<FileAction> | null = null
+  let keys = -1
+  const flush = () => {
+    if (item?.id) out.push({ id: item.id, title: item.title ?? '', effect: item.effect ?? '' })
+  }
+  for (let i = list + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    const at = lead(l)
+    const dash = /^(\s*)-(\s+|$)(.*)$/.exec(l)
+    // the list ends at the next key of spec (an item may sit at the key's own indentation)
+    if (at < base || (at === base && !dash)) break
+    let rest: string | null = null
+    if (dash && (keys < 0 || at < keys)) {
+      flush()
+      item = {}
+      keys = at + 1 + dash[2].length
+      rest = dash[3]
+    } else if (item && at === keys) rest = l.trim()
+    if (item && rest !== null) {
+      const m = /^(id|title|effect):(.*)$/.exec(rest)
+      if (m) item[m[1] as keyof FileAction] = unquote(m[2])
+    }
+  }
+  flush()
+  return out
+}
+
+const PROVIDER_TYPES = new Set<string>(['openapi', 'http', 'ansible', 'terraform', 'idp', 'sdk'])
+
+/** What a file's `spec` block says the provider is, as `fileSpec` reads it. */
+export interface FileSpec {
+  type?: ProviderType
+  /** a terraform provider's `spec.module` */
+  module?: { source: string; version: string }
+}
+
+/**
+ * The type a provider file declares (`spec.type`) and, for terraform, its module (`spec.module`,
+ * as a block or a one-line `{ source: …, version: … }`), read line by line like `metadataOf`:
+ * what a file taken instead of the wizard's document (Devin's, an import's, a published one) is.
+ */
+export function fileSpec(yaml: string): FileSpec {
+  const lines = yaml.split('\n')
+  const spec = lines.findIndex((l) => /^spec:\s*(#.*)?$/.test(l))
+  if (spec < 0) return {}
+  const lead = (l: string) => l.length - l.trimStart().length
+  const out: FileSpec = {}
+  let indent: number | null = null
+  // inside `module:`, at the indentation of its first key
+  let module: { source: string; version: string } | null = null
+  let moduleKeys = -1
+  for (let i = spec + 1; i < lines.length; i++) {
+    const l = lines[i]
+    if (!l.trim() || l.trimStart().startsWith('#')) continue
+    const at = lead(l)
+    if (at === 0) break
+    indent ??= at
+    if (module && at > indent) {
+      moduleKeys = moduleKeys < 0 ? at : moduleKeys
+      const m = at === moduleKeys ? /^\s+(source|version):(.*)$/.exec(l) : null
+      if (m) module[m[1] as 'source' | 'version'] = unquote(m[2])
+      continue
+    }
+    module = null
+    if (at !== indent) continue
+    const type = /^\s+type:(.*)$/.exec(l)
+    if (type) {
+      const t = unquote(type[1])
+      if (PROVIDER_TYPES.has(t)) out.type = t as ProviderType
+      continue
+    }
+    const mod = /^\s+module:(.*)$/.exec(l)
+    if (mod) {
+      const found = { source: '', version: '' }
+      out.module = found
+      const flow = /^\s*\{(.*)\}\s*(#.*)?$/.exec(mod[1])
+      if (flow) for (const m of flow[1].matchAll(/(source|version)\s*:\s*("[^"]*"|'[^']*'|[^,}]*)/g)) found[m[1] as 'source' | 'version'] = unquote(m[2])
+      else {
+        module = found
+        moduleKeys = -1
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * The form of an Ansible repository's or a Terraform module's import, as typed: what
+ * POST /providers:import-ansible and :import-terraform are sent (pages/ProviderImport.tsx), kept in
+ * a designer draft until the import runs. Its credentials are `vault:` references.
+ */
+export interface ImportForm {
+  /** terraform: where the module comes from */
+  source: 'git' | 'registry'
+  repo: string
+  ref: string
+  path: string
+  /** the vault: reference of a read token for a private repository */
+  readCredential: string
+  /** ansible: playbooks to keep, by path or action id; all when empty */
+  playbooks: string
+  /** terraform, from the registry: namespace/name/provider and an exact version */
+  module: string
+  version: string
+  registryCredential: string
+  name: string
+  owner: string
+  /** the owner was typed, so the signed-in user's team no longer fills it */
+  ownerTouched: boolean
+  /** ansible: the machine credential the playbooks connect with; terraform: what the runner gives Terraform */
+  credential: string
+  executionEnvironment: string
+}
+
+export function blankImportForm(owner = ''): ImportForm {
+  return { source: 'git', repo: '', ref: 'main', path: '', readCredential: '', playbooks: '', module: '', version: '', registryCredential: '', name: '', owner, ownerTouched: false, credential: '', executionEnvironment: '' }
+}
+
 /** A draft names the provider: the wizard takes its name, title, owner and version, so the path and the change request say what is published. */
 export function draftNames(yaml: string): Partial<WizardState> {
   const m = metadataOf(yaml)
