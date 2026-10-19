@@ -10,7 +10,7 @@
  * written into a URL, and none of the tries' live answers (the review's evidence is the server's).
  */
 import type { ProviderDetail, ProviderType } from '../../lib/types'
-import { initialState, nextKey, providerYaml, stateFromProvider, typeChange, type WizardState } from '../../components/provider-editor/state'
+import { blankImportForm, initialState, nextKey, providerYaml, stateFromProvider, typeChange, type ImportForm, type WizardState } from '../../components/provider-editor/state'
 
 /** Where a draft came from: a provider not published yet, or the next patch of a published one. */
 export type ProviderDraftOrigin = 'new' | 'edit'
@@ -22,6 +22,15 @@ export interface ProviderDraft extends WizardState {
   origin: ProviderDraftOrigin
   /** An edit's published version, the one `version` (its next patch) follows; null for a new provider. */
   publishedVersion: string | null
+  /**
+   * The change request a new provider's draft opened on its own (the Provider sheet's "Publish
+   * provider only"). The draft stays, read-only, until that change request merges: the workflow's
+   * steps keep resolving it, and the workflow's Publish requires that change request instead of
+   * opening a second one (one may be open per provider).
+   */
+  changeRequest?: string
+  /** An Ansible repository's or a Terraform module's import as typed, kept until the import runs. */
+  importForm?: ImportForm
 }
 
 function newDraftId(): string {
@@ -81,6 +90,13 @@ function stored(d: ProviderDraft): ProviderDraft {
     ansible: { ...d.ansible, repo: withoutUserinfo(d.ansible.repo) },
     terraform: { ...d.terraform, source: withoutUserinfo(d.terraform.source) },
     tries: {},
+    importForm: d.importForm && {
+      ...d.importForm,
+      repo: withoutUserinfo(d.importForm.repo),
+      readCredential: vaultRef(d.importForm.readCredential),
+      registryCredential: vaultRef(d.importForm.registryCredential),
+      credential: vaultRef(d.importForm.credential),
+    },
   }
 }
 
@@ -98,6 +114,8 @@ function restored(raw: unknown): ProviderDraft | null {
   return stored({
     ...d,
     publishedVersion: typeof raw.publishedVersion === 'string' ? raw.publishedVersion : null,
+    changeRequest: typeof raw.changeRequest === 'string' && raw.changeRequest ? raw.changeRequest : undefined,
+    importForm: isObject(raw.importForm) ? { ...blankImportForm(), ...raw.importForm } : undefined,
     environments: d.environments.map((e) => ({ ...e, key: nextKey() })),
     actions: d.actions.map((a) => ({ ...a, key: nextKey() })),
     errors: d.errors.map((e) => ({ ...e, key: nextKey() })),
