@@ -112,7 +112,8 @@ export type StepRetry = { maxAttempts?: number; backoff?: string }
 
 export type Rollout = { waves: number[]; maxParallel: number; stopIfFailedPercent: number }
 
-export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning'
+/** 'pending': a check still waiting on something else, such as the provider change requests a workflow's `requires` names. */
+export type CheckStatus = 'passed' | 'failed' | 'skipped' | 'warning' | 'pending'
 export type Check = { id: string; label: string; status: CheckStatus; detail?: string }
 
 export type ChangeRequestStatus = 'open' | 'merged' | 'closed'
