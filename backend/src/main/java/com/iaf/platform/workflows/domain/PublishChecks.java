@@ -365,33 +365,92 @@ public final class PublishChecks {
     }
 
     /**
-     * The requires check of a change request opened with the change requests it requires
-     * ({@code ids}, each looked up now): passed once every one is merged, pending while one is
-     * still open, failed once one was closed without merging, since it never will be. One the
-     * lookup no longer finds counts as closed.
+     * Where a provider change request that a workflow change request requires stands. DONE once it
+     * is merged and its provider's current version is its version or a later one, so a workflow
+     * that calls what it added finds it on every call; ROLLING_OUT while it is merged but its
+     * version does not serve calls yet (a canary still rolling out or rolled back, or the provider
+     * still being published); OPEN; CLOSED once it was closed without merging, or is gone, since
+     * it never will be done.
      */
-    public static Check requires(List<String> ids, Function<String, Optional<ChangeRequest>> lookup) {
-        List<String> merged = new ArrayList<>();
-        List<String> open = new ArrayList<>();
-        List<String> closed = new ArrayList<>();
-        for (String id : ids) {
-            Optional<ChangeRequest> cr = lookup.apply(id);
-            String named = cr.map(PublishChecks::named).orElse(id);
-            switch (cr.map(ChangeRequest::status).orElse(ChangeRequest.Status.CLOSED)) {
-                case MERGED -> merged.add(named);
-                case OPEN -> open.add(named);
-                case CLOSED -> closed.add(named);
-            }
+    public enum Standing {
+        DONE, ROLLING_OUT, OPEN, CLOSED
+    }
+
+    /** A change request a workflow change request requires ({@code id}; empty when the store no longer has it) and the version its provider serves now. */
+    public record Required(String id, Optional<ChangeRequest> changeRequest, Optional<String> current) {
+
+        /** Each of {@code ids}, looked up now with the current version of its provider. */
+        public static List<Required> of(List<String> ids, Function<String, Optional<ChangeRequest>> lookup, Function<String, Optional<String>> current) {
+            return ids.stream().map(id -> {
+                Optional<ChangeRequest> cr = lookup.apply(id);
+                return new Required(id, cr, cr.flatMap(c -> current.apply(c.name())));
+            }).toList();
         }
+
+        public Standing standing() {
+            if (changeRequest.isEmpty()) {
+                return Standing.CLOSED;
+            }
+            ChangeRequest cr = changeRequest.get();
+            return switch (cr.status()) {
+                case OPEN -> Standing.OPEN;
+                case CLOSED -> Standing.CLOSED;
+                case MERGED -> current.filter(v -> atLeast(v, cr.version())).isPresent() ? Standing.DONE : Standing.ROLLING_OUT;
+            };
+        }
+
+        /** {@code cr_123 (provider vsphere 1.4.0)}, or the bare id of one that is gone. */
+        public String named() {
+            return changeRequest.map(PublishChecks::named).orElse(id);
+        }
+
+        /** Why it is not done: {@code cr_1 (provider vsphere 1.4.1) is open}, {@code ... is merged, but vsphere 1.4.0 still serves calls}. */
+        public String why() {
+            return switch (standing()) {
+                case DONE -> named() + " is merged and published";
+                case OPEN -> named() + " is open";
+                case CLOSED -> changeRequest.isEmpty() ? id + " is gone" : named() + " is closed";
+                case ROLLING_OUT -> named() + " is merged, but " + servedNow();
+            };
+        }
+
+        private String servedNow() {
+            String provider = changeRequest.map(ChangeRequest::name).orElse(id);
+            return current.map(v -> provider + " " + v + " still serves calls").orElse(provider + " is not published yet");
+        }
+    }
+
+    /** Whether provider version {@code version} is {@code wanted} or a later one; versions that differ only after a dash are not later. */
+    public static boolean atLeast(String version, String wanted) {
+        return version.equals(wanted) || Semver.parse(version).compareTo(Semver.parse(wanted)) > 0;
+    }
+
+    /**
+     * The requires check of a change request opened with the change requests it requires
+     * ({@code ids}, each looked up now, with the current version of its provider): passed once
+     * every one is done (merged, and its version or a later one serves calls), pending while one is
+     * open or its version is not current yet (a canary rolling out), failed once one was closed
+     * without merging, since it never will be. One the lookup no longer finds counts as closed.
+     */
+    public static Check requires(List<String> ids, Function<String, Optional<ChangeRequest>> lookup, Function<String, Optional<String>> current) {
+        List<Required> all = Required.of(ids, lookup, current);
+        List<String> closed = all.stream().filter(r -> r.standing() == Standing.CLOSED).map(Required::named).toList();
         if (!closed.isEmpty()) {
             return new Check(REQUIRES, "Requires", FAILED, String.join(", ", closed) + (closed.size() == 1 ? " was" : " were")
                     + " closed without merging; close this change request and publish again");
         }
+        List<String> done = all.stream().filter(r -> r.standing() == Standing.DONE).map(Required::named).toList();
+        List<String> waiting = new ArrayList<>();
+        List<String> open = all.stream().filter(r -> r.standing() == Standing.OPEN).map(Required::named).toList();
         if (!open.isEmpty()) {
-            return new Check(REQUIRES, "Requires", PENDING, "waiting for " + String.join(", ", open) + " to merge"
-                    + (merged.isEmpty() ? "" : "; merged: " + String.join(", ", merged)));
+            waiting.add("waiting for " + String.join(", ", open) + " to merge");
         }
-        return new Check(REQUIRES, "Requires", PASSED, "merged: " + String.join(", ", merged));
+        all.stream().filter(r -> r.standing() == Standing.ROLLING_OUT)
+                .forEach(r -> waiting.add("waiting for " + r.named() + " to serve calls: it is merged, but " + r.servedNow()));
+        if (!waiting.isEmpty()) {
+            return new Check(REQUIRES, "Requires", PENDING, String.join("; ", waiting) + (done.isEmpty() ? "" : "; published: " + String.join(", ", done)));
+        }
+        return new Check(REQUIRES, "Requires", PASSED, "published: " + String.join(", ", done));
     }
 
     /** {@code cr_123 (provider vsphere 1.4.0)}: a change request as a check's detail names it. */

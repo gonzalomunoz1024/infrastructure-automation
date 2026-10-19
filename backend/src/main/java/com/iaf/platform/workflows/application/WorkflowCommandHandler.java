@@ -496,9 +496,12 @@ public class WorkflowCommandHandler implements WorkflowCommands {
     }
 
     /**
-     * The provider change requests a publish names in {@code requires}, open or merged, with their
-     * provider files. An id that names no change request, a workflow change request or a closed
-     * one is a 400, and so are two change requests of one provider; an id named twice counts once.
+     * The provider change requests a publish names in {@code requires}, open or merged, with the
+     * provider files its checks and replay see in front of the published providers
+     * ({@link #draftFile}). A 400 for an id that names no change request, a workflow change
+     * request or a closed one, for a merged one whose provider has moved on to a later version
+     * since (its file would hide the version that serves calls now), and for two change requests
+     * of one provider; an id named twice counts once.
      */
     private Required required(List<String> ids) {
         if (ids.isEmpty()) {
@@ -517,14 +520,32 @@ public class WorkflowCommandHandler implements WorkflowCommands {
             if (cr.status() == ChangeRequest.Status.CLOSED) {
                 throw new IllegalArgumentException("requires names " + id + ", which was closed; name open or merged provider change requests");
             }
-            ProviderDefinition file = providerFile(cr);
-            ProviderDrafts.named(files, file.name()).ifPresent(twin -> {
-                throw new IllegalArgumentException("requires names two change requests of provider " + file.name() + "; name the one the workflow needs");
-            });
+            if (crs.stream().anyMatch(c -> c.name().equals(cr.name()))) {
+                throw new IllegalArgumentException("requires names two change requests of provider " + cr.name() + "; name the one the workflow needs");
+            }
+            PublishChecks.Required r = new PublishChecks.Required(id, Optional.of(cr), providers.currentVersion(cr.name()));
+            r.current().filter(v -> cr.status() == ChangeRequest.Status.MERGED && !v.equals(cr.version()) && PublishChecks.atLeast(v, cr.version()))
+                    .ifPresent(v -> {
+                        throw new IllegalArgumentException("requires names " + id + ", which merged provider " + cr.name() + " " + cr.version() + ", but "
+                                + cr.name() + " " + v + " serves calls now; the checks judge the workflow against that version, so publish without " + id);
+                    });
             crs.add(cr);
-            files.add(file);
+            draftFile(r).ifPresent(files::add);
         }
         return new Required(List.copyOf(crs), List.copyOf(files));
+    }
+
+    /**
+     * The provider file of a change request a workflow change request requires, as its checks and
+     * replay see it in front of the published providers: an open one's, and a merged one's whose
+     * version does not serve calls yet (a canary rolling out). None for one whose version, or a
+     * later one, serves calls (the registry has it) or that was closed.
+     */
+    private static Optional<ProviderDefinition> draftFile(PublishChecks.Required r) {
+        PublishChecks.Standing standing = r.standing();
+        return standing == PublishChecks.Standing.OPEN || standing == PublishChecks.Standing.ROLLING_OUT
+                ? r.changeRequest().map(WorkflowCommandHandler::providerFile)
+                : Optional.empty();
     }
 
     /** The provider file a provider change request publishes; a 400 when it cannot be read as one. */
@@ -536,9 +557,10 @@ public class WorkflowCommandHandler implements WorkflowCommands {
         }
     }
 
-    /** The provider files of the change requests a workflow change request requires that the store still holds. */
+    /** The provider files the checks and replay of a workflow change request see for the change requests it requires ({@link #draftFile}). */
     private List<ProviderDefinition> requiredFiles(ChangeRequest cr) {
-        return cr.required().stream().map(changeRequests::get).flatMap(Optional::stream).map(WorkflowCommandHandler::providerFile).toList();
+        return PublishChecks.Required.of(cr.required(), changeRequests::get, providers::currentVersion).stream()
+                .map(WorkflowCommandHandler::draftFile).flatMap(Optional::stream).toList();
     }
 
     private CommandAccepted open(Candidate c, CheckContext ctx, List<Problem> problems, String strategy, String notes, Check policyCheck, Check replayCheck,
@@ -559,7 +581,7 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 PublishChecks.yaml(draft)));
         List<String> requires = c.required().ids();
         if (!requires.isEmpty()) {
-            checks.add(PublishChecks.requires(requires, changeRequests::get));
+            checks.add(PublishChecks.requires(requires, changeRequests::get, providers::currentVersion));
         }
         Instant now = clock.instant();
         String title = (previousVersion == null ? "Publish " : "Update ") + def.title() + " " + draft.version();
@@ -581,26 +603,27 @@ public class WorkflowCommandHandler implements WorkflowCommands {
 
     /**
      * An open change request whose checks passed and whose required provider change requests are
-     * merged, merged by someone other than its author (admins excepted).
+     * done (merged, and their version serves calls), merged by someone other than its author
+     * (admins excepted).
      */
     private ChangeRequest mergeable(String id, Identity who) {
         ChangeRequest cr = changeRequests.get(id).orElseThrow(() -> new NotFoundException("change request", id));
         if (cr.status() != ChangeRequest.Status.OPEN) {
             throw new ConflictException("change request " + id + " is " + cr.status().json());
         }
-        if (!cr.checksPassed()) {
-            throw new ConflictException("checks failed", PublishChecks.failed(cr.checks()));
+        // the requires check is judged now, below
+        List<Check> failed = PublishChecks.failed(cr.checks()).stream().filter(c -> !PublishChecks.REQUIRES.equals(c.id())).toList();
+        if (!failed.isEmpty()) {
+            throw new ConflictException("checks failed", failed);
         }
-        // a workflow that needs a new provider merges after the provider's change request
-        List<String> waiting = new ArrayList<>();
-        for (String requiredId : cr.required()) {
-            Optional<ChangeRequest> other = changeRequests.get(requiredId);
-            if (other.map(o -> o.status() != ChangeRequest.Status.MERGED).orElse(true)) {
-                waiting.add(other.map(o -> PublishChecks.named(o) + " is " + o.status().json()).orElse(requiredId + " is gone"));
-            }
-        }
+        // a workflow that needs a new provider version merges once that version serves every call: merged
+        // and current, not a canary still rolling out, nor merged while its publish has not finished
+        List<String> waiting = PublishChecks.Required.of(cr.required(), changeRequests::get, providers::currentVersion).stream()
+                .filter(r -> r.standing() != PublishChecks.Standing.DONE)
+                .map(PublishChecks.Required::why)
+                .toList();
         if (!waiting.isEmpty()) {
-            throw new ConflictException("change request " + id + " requires change requests that are not merged yet: " + String.join(", ", waiting),
+            throw new ConflictException("change request " + id + " waits for the provider change requests it requires: " + String.join(", ", waiting),
                     Map.of("requires", cr.required()));
         }
         // the reviewer is not the author: nobody merges their own change, admins excepted

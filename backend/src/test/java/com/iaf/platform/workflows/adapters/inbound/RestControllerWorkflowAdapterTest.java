@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,6 +30,8 @@ import com.iaf.platform.config.PlatformProperties;
 import com.iaf.platform.identity.adapters.inbound.IdentityWebFilter;
 import com.iaf.platform.identity.adapters.outbound.DemoUserDirectory;
 import com.iaf.platform.identity.adapters.outbound.InMemoryServiceAccounts;
+import com.iaf.platform.providers.domain.ProviderDefinition;
+import com.iaf.platform.providers.ports.inbound.ProviderQueries;
 import com.iaf.platform.workflows.SampleFixtures;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryChangeRequests;
 import com.iaf.platform.workflows.adapters.outbound.InMemoryWorkflowStore;
@@ -53,13 +56,22 @@ class RestControllerWorkflowAdapterTest {
     InMemoryChangeRequests changeRequests = new InMemoryChangeRequests();
     EventBus events = new EventBus(clock);
     PolicyPort policy = SampleFixtures.policy();
+    /** The providers as the providers slice serves them; a merged provider change request is published into it. */
+    List<ProviderDefinition> registry = new ArrayList<>(SampleFixtures.providers());
     WebTestClient client;
 
     @BeforeEach
     void setUp() {
         store.seed(SampleFixtures.ROOT);
-        WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(), SampleFixtures.credentials());
-        WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, SampleFixtures.providerQueries(), SampleFixtures.resourceQueries(),
+        ProviderQueries providers = SampleFixtures.providerQueries(registry);
+        // the providers slice's listener, which publishes a merged provider change request in handlers built by hand
+        events.register(e -> {
+            if (e.type().equals("change-request.merged") && "provider".equals(e.data().path("kind").asText())) {
+                changeRequests.get(e.aggregateId()).ifPresent(cr -> SampleFixtures.publishMerged(registry, cr.yaml(), cr.strategy()));
+            }
+        });
+        WorkflowQueryHandler queries = new WorkflowQueryHandler(store, changeRequests, providers, SampleFixtures.resourceQueries(), SampleFixtures.credentials());
+        WorkflowCommandHandler commands = new WorkflowCommandHandler(store, changeRequests, queries, providers, SampleFixtures.resourceQueries(),
                 SampleFixtures.runs(), SampleFixtures.runsQueries(), policy, events, clock);
         commands.init();
         PlatformProperties props = new PlatformProperties();
@@ -293,7 +305,7 @@ class RestControllerWorkflowAdapterTest {
                 .jsonPath("$.checks[?(@.id == 'requires')].detail").isEqualTo(List.of("waiting for cr_tick (provider ticketing 0.1.0) to merge"));
         client.post().uri("/api/v1/change-requests/" + crId + ":merge").exchange().expectStatus().isEqualTo(409)
                 .expectBody()
-                .jsonPath("$.error").isEqualTo("change request " + crId + " requires change requests that are not merged yet: cr_tick (provider ticketing 0.1.0) is open")
+                .jsonPath("$.error").isEqualTo("change request " + crId + " waits for the provider change requests it requires: cr_tick (provider ticketing 0.1.0) is open")
                 .jsonPath("$.detail.requires").isEqualTo(List.of("cr_tick"));
 
         client.post().uri("/api/v1/change-requests/cr_tick:merge").header("X-User", "junior").exchange().expectStatus().isAccepted();

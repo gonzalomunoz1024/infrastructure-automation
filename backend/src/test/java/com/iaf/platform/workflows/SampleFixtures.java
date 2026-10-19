@@ -54,11 +54,34 @@ public final class SampleFixtures {
     }
 
     public static ProviderQueries providerQueries() {
-        List<ProviderDefinition> all = providers();
+        return providerQueries(providers());
+    }
+
+    /** Answers from {@code registry} as it is at each call, so a test can publish a provider into it: one current version per name. */
+    public static ProviderQueries providerQueries(List<ProviderDefinition> registry) {
         ProviderQueries q = mock(ProviderQueries.class);
-        when(q.all()).thenReturn(Flux.fromIterable(all));
-        when(q.provider(anyString())).thenAnswer(inv -> Mono.justOrEmpty(all.stream().filter(p -> p.name().equals(inv.getArgument(0))).findFirst()));
+        when(q.all()).thenAnswer(inv -> Flux.fromIterable(List.copyOf(registry)));
+        when(q.provider(anyString())).thenAnswer(inv -> Mono.justOrEmpty(named(registry, inv.getArgument(0))));
+        when(q.currentVersion(anyString())).thenAnswer(inv -> named(registry, inv.getArgument(0)).map(p -> p.metadata().version()));
         return q;
+    }
+
+    private static java.util.Optional<ProviderDefinition> named(List<ProviderDefinition> registry, String name) {
+        return List.copyOf(registry).stream().filter(p -> p.name().equals(name)).findFirst();
+    }
+
+    /**
+     * What the providers slice does with a merged provider change request, for handlers built by
+     * hand: its file becomes the current version of a new provider or with the strategy all; a
+     * canary over an existing provider stays a candidate, the current version unchanged.
+     */
+    public static void publishMerged(List<ProviderDefinition> registry, String yaml, String strategy) {
+        ProviderDefinition def = ProviderYaml.parse(yaml);
+        boolean exists = registry.stream().anyMatch(p -> p.name().equals(def.name()));
+        if (!exists || "all".equals(strategy)) {
+            registry.removeIf(p -> p.name().equals(def.name()));
+            registry.add(def);
+        }
     }
 
     public static ResourceQueries resourceQueries() {

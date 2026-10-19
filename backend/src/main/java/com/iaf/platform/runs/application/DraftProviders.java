@@ -17,7 +17,8 @@ import reactor.core.publisher.Mono;
  * The providers a dry run with drafts sees: {@link #provider} and {@link #all} answer from the
  * drafts (provider files nobody published yet) before the published providers, a draft standing
  * in for the published provider of its name. The registry reads ({@link #list}, {@link #detail},
- * {@link #alerts}, {@link #ownerOf}) stay the published ones. Built per dry run; nothing is stored.
+ * {@link #alerts}, {@link #ownerOf}, {@link #currentVersion}) stay the published ones. Built per
+ * dry run; nothing is stored.
  */
 final class DraftProviders implements ProviderQueries {
 
@@ -62,5 +63,10 @@ final class DraftProviders implements ProviderQueries {
     @Override
     public Optional<String> ownerOf(String name) {
         return published.ownerOf(name);
+    }
+
+    @Override
+    public Optional<String> currentVersion(String name) {
+        return published.currentVersion(name);
     }
 }

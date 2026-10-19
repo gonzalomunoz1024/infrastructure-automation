@@ -51,4 +51,11 @@ public interface ProviderQueries {
      * where blocking is allowed, as a command handler's bounded elastic section is.
      */
     Optional<String> ownerOf(String name);
+
+    /**
+     * The version of the provider that serves calls now (its current stored version; a version a
+     * provider release still rolls out is not current until it is promoted); empty when no provider
+     * has that name. A store read: call it where blocking is allowed, as {@link #ownerOf} is.
+     */
+    Optional<String> currentVersion(String name);
 }

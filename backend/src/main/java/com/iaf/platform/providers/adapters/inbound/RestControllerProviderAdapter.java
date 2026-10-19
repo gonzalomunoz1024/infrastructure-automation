@@ -73,6 +73,11 @@ public class RestControllerProviderAdapter implements ProviderCommands, Provider
     }
 
     @Override
+    public Optional<String> currentVersion(String name) {
+        return queries.currentVersion(name);
+    }
+
+    @Override
     @PostMapping("/providers:import-spec")
     public Mono<SpecImport> importSpec(@RequestBody ImportSpec command) {
         return commands.importSpec(command);

@@ -119,6 +119,15 @@ class ProviderQueryHandlerTest {
         assertThat(handler.ownerOf("shared")).isEmpty();
     }
 
+    @Test
+    void theCurrentVersionIsTheStoredOneNotACandidateKeptBesideIt() {
+        String next = YAML.replace("version: 1.1.0", "version: 1.2.0");
+        when(store.version("fleet", "1.2.0")).thenReturn(Optional.of(new StoredProvider(ProviderYaml.parse(next), next, fleet.path(), NOW, "content")));
+        assertThat(handler.currentVersion("fleet")).contains("1.1.0");
+        assertThat(handler.currentVersion("nope")).isEmpty();
+        assertThat(handler.currentVersion(" ")).isEmpty();
+    }
+
     String versionFor(Use use) {
         return handler.provider("fleet").contextWrite(c -> Use.with(c, use)).map(d -> d.metadata().version()).block();
     }

@@ -102,7 +102,7 @@ type Check = { id; label; status: 'passed' | 'failed' | 'skipped' | 'pending'; d
 | POST   | `/workflows/{name}/versions/{version}:replay-check` | → `{ passed: boolean; replayed: number; divergences: { jobId; step; reason }[] }` (200): the replay check of the publish, against the highest published or retired version below this one; `step` is where the job and the version part, for example `the job ran noBackupRunning (backup jobs.list) where 1.2.1 runs approval` |
 | GET    | `/change-requests?status=`                   | `ChangeRequest[]` |
 | GET    | `/change-requests/{id}`                      | `ChangeRequest & { diff: string; yaml: string; preview?: { mermaid: string } }`. `preview.mermaid` is the workflow the change request writes as a Mermaid `flowchart LR`: its ways in (the operation, the MCP tool, each trigger) lead to the first step, each step is labelled with its name and type (a provider call adds the provider and action, a run step the workflow and range), a fork's branches, a for loop, a try and a switch case's steps are subgraphs, a switch's cases label its edges (a jump goes to the step it names or to End), and dotted edges lead to what runs on an error (a try's catch, the workflow's catch) and to compensations. A provider change request has no preview |
-| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests. Merging and closing need edit rights over the owner team: the workflow version's `metadata.owner`; for a provider, the stored provider's owner (the owner the posted file names counts only for a provider that does not exist yet); only an admin when no owner team can be named (403 otherwise). A provider change request is published by the providers slice once saved merged and before `change-request.merged` is sent; when that fails it is open again and the merge answers 500 with the reason. A workflow change request answers 409 until every change request it `requires` is merged (below) |
+| POST   | `/change-requests/{id}:merge`                | → `CommandAccepted` (publishes the version; starts the canary). The reviewer is not the author: 403 when the person who opened the change request merges it, unless they are an admin; the author may still close it. Same rule for workflow and provider change requests. Merging and closing need edit rights over the owner team: the workflow version's `metadata.owner`; for a provider, the stored provider's owner (the owner the posted file names counts only for a provider that does not exist yet); only an admin when no owner team can be named (403 otherwise). A provider change request is published by the providers slice once saved merged and before `change-request.merged` is sent; when that fails it is open again and the merge answers 500 with the reason. A workflow change request answers 409 until every change request it `requires` is merged and its version current (below) |
 | POST   | `/change-requests/{id}:close`                | → `CommandAccepted` (the same owner rule as a merge) |
 | POST   | `/change-requests:github-webhook`            | profile `github` only. GitHub's `pull_request` deliveries, signed with the webhook secret (`X-Hub-Signature-256: sha256=<HMAC-SHA256 of the body>`; the secret is the `vault:` reference `platform.github.webhook-secret`). A pull request merged on GitHub merges its change request, closed without merging closes it, as `github:<login>` → 200 `{ status; changeRequest }`. 401 when the signature is missing or wrong, 503 when the secret cannot be read, 409 when the platform refuses the merge (failed checks: the change request stays open). `ping` → 200 `{ status: 'pong' }`; other events and actions, and pull requests of no change request → 202 `{ status: 'ignored'; reason }`. No platform credential is needed or used |
 | POST   | `/workflows:import`                          | `{ source: 'idp' \| 'ansible' \| 'terraform' \| 'openapi'; ref: string }` → `{ yaml; notes: string[] }` (200): a valid draft started from a registered tile, playbook (`<provider>/<action>` or `<repo>#<ref>:<path>`), module or provider action. The draft takes a name, a route and a verb of its own when a workflow already has the natural name or a published workflow the natural MCP tool (`create-vm-from-vsphere` on `POST /api/v1/vms:create-from-vsphere`, the MCP tool `vm_create_from_vsphere`), so publishing it never meets `mcp.toolName`, registers what it made only when a resource type is named like its noun, and the notes say what is left to fill in; 400 names the known refs |
@@ -122,21 +122,26 @@ plan, verify or override naming no action, or a secret (`credential.plain`); an 
 files of one provider are a 400 too. What only gates publishing (the alert channel, the credential
 reference, a delete's approval, the pinned spec, endpoints, SLO ranges) does not stop the call:
 `:validate` returns each such error as a `provider.draft` warning whose field is under `providers[i]`
-(`valid` is not affected), and the review is decided by `POST /providers:validate` and `:publish`. A draft stands in for the published provider of its name,
-or adds one, for that call only: the checks see its actions, and the dry run answers its provider calls,
-and the ansible and terraform steps whose playbook or module it describes, from its samples as for a
-published provider. Nothing is stored.
+(`valid` is not affected), and the review is decided by `POST /providers:validate` and `:publish`. A
+draft stands in for the published provider of its name, or adds one, for that call only: the checks see
+its actions, and the dry run answers its provider calls, and the ansible and terraform steps whose
+playbook or module it describes, from its samples as for a published provider. Nothing is stored.
 
 Linked change requests: `requires` on `:publish` names provider change requests, open or merged, that
 the workflow needs, as the designer opens a new provider's first; anything else is a 400 (no such change
-request, a workflow one, a closed one, two of one provider). The workflow change request keeps them in
-`requires`, its checks and replay see their provider files, and it gains a `requires` check, judged each
-time it is read: `passed` once every one is merged, `pending` while one is open, `failed` once one was
-closed without merging (close this one and publish again).
+request, a workflow one, a closed one, two of one provider, and a merged one whose provider has moved on
+to a later version since, which would hide the version that serves calls). The workflow change request
+keeps them in `requires`. Its checks and replay see the provider file of each one that is open, or merged
+while its version does not serve calls yet; one whose version serves calls is the registry's own. It gains
+a `requires` check, judged each time it is read: `passed` once every one is merged and its version, or a
+later one, is the provider's current version; `pending` while one is open, or merged but not current yet
+(a canary rolling out, or rolled back); `failed` once one was closed without merging (close this one and
+publish again).
 
 Merge order: merging a workflow change request answers 409 `{ error; detail: { requires } }`, naming
-each change request it requires that is not merged yet, until all of them are; a merge from GitHub is
-refused the same way. A provider change request merges on its own, so the provider goes first.
+each change request it requires and why it is not done yet, until every one is merged and current: a
+provider merged with the `canary` strategy counts once its release is promoted, so no job of the workflow
+meets the previous version. A provider change request merges on its own, so the provider goes first.
 
 With the `github` profile a change request is a pull request on the content repository
 (`platform.github.repo`): opening it pushes the branch with its one file from `platform.github.base-branch`,

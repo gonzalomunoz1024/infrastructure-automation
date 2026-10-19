@@ -153,7 +153,7 @@ public class WorkflowQueryHandler implements WorkflowQueries {
                     List<Problem> problems = WorkflowChecks.check(current.definition(), ctx);
                     List<ChangeRequest> crs = changeRequests.all().stream()
                             .filter(cr -> cr.kind() == ChangeRequest.Kind.WORKFLOW && name.equals(cr.name()))
-                            .map(cr -> withoutContent(judged(cr, changeRequests)))
+                            .map(cr -> withoutContent(judged(cr, changeRequests, providers)))
                             .toList();
                     return new WorkflowDetail(s.name(), s.title(), s.noun(), s.verb(), s.persona(), s.folder(), s.owner(), s.tags(), s.status(),
                             s.latestVersion(), s.publishedVersion(), s.stepCount(), s.updatedAt(), s.mcp(),
@@ -181,23 +181,24 @@ public class WorkflowQueryHandler implements WorkflowQueries {
     public Flux<ChangeRequest> changeRequests(String status) {
         return blocking(() -> changeRequests.all().stream()
                 .filter(cr -> status == null || status.isBlank() || cr.status().json().equalsIgnoreCase(status))
-                .map(cr -> withoutContent(judged(cr, changeRequests)))
+                .map(cr -> withoutContent(judged(cr, changeRequests, providers)))
                 .toList()).flatMapMany(Flux::fromIterable);
     }
 
     @Override
     public Mono<ChangeRequestDetail> changeRequest(String id) {
-        return optional(() -> changeRequests.get(id).map(cr -> judged(cr, changeRequests)))
+        return optional(() -> changeRequests.get(id).map(cr -> judged(cr, changeRequests, providers)))
                 .switchIfEmpty(Mono.error(() -> new NotFoundException("change request", id)))
                 .map(cr -> new ChangeRequestDetail(cr, WorkflowMermaid.preview(cr).map(Preview::new).orElse(null)));
     }
 
     /**
      * The change request with its requires check judged now: the change requests it requires may
-     * have been merged or closed since it was opened (a store read per change request it requires).
+     * have been merged or closed since it was opened, and the versions they publish may have
+     * become current (two store reads per change request it requires).
      */
-    static ChangeRequest judged(ChangeRequest cr, ChangeRequestPort store) {
-        return cr.required().isEmpty() ? cr : cr.withCheck(PublishChecks.requires(cr.required(), store::get));
+    static ChangeRequest judged(ChangeRequest cr, ChangeRequestPort store, ProviderQueries providers) {
+        return cr.required().isEmpty() ? cr : cr.withCheck(PublishChecks.requires(cr.required(), store::get, providers::currentVersion));
     }
 
     @Override
