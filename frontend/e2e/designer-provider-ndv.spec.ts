@@ -7,10 +7,10 @@ import { mockDesignerApi, type MockApi } from './designer-fixtures'
  * A provider step's node detail view against a mocked backend: the health dot on the canvas, the
  * Provider tab (the provider page's health, SLO, alerts, release and change requests, Edit SLO),
  * the Settings tab's shared action, whose first edit starts a draft of the provider's next patch,
- * and Try for real, whose answer the Output pane shows with Save as sample, Fix schema and,
- * without a draft, Use the real response. The platform takes one change request per provider at a
- * time, as the mock does. The designer's own mocks answer the rest (designer-fixtures.ts); this
- * file adds the provider endpoints in front of them.
+ * and Try for real, whose answer the Output pane shows with Save as sample (the file the backend
+ * returns, its sample redacted), Fix schema and, without a draft, Use the real response. The
+ * platform takes one change request per provider at a time, as the mock does. The designer's own
+ * mocks answer the rest (designer-fixtures.ts); this file adds the provider endpoints in front.
  */
 
 const VSPHERE_YAML = readFileSync(new URL('../../providers/team-compute/vsphere.yaml', import.meta.url), 'utf8')
@@ -78,7 +78,8 @@ const RELEASE = {
   history: [],
 }
 
-const ANSWER = { id: 'vm-1042', name: 'web-1042', power_state: 'POWERED_ON', cpu: 4 }
+// the live answer echoes a token; the file the backend returns keeps it masked
+const ANSWER = { id: 'vm-1042', name: 'web-1042', power_state: 'POWERED_ON', cpu: 4, sessionToken: 'example-token' }
 
 interface ProviderCalls {
   tries: Obj[]
@@ -137,8 +138,8 @@ async function mockProviders(page: Page, { openChange = false } = {}): Promise<P
         ],
         environment: String(body.environment),
         at: '2026-10-18T10:00:00Z',
-        // the file with the answer as the sample, as the backend writes it
-        yaml: `${String(body.yaml)}\n# vm.get's sample recorded in ${String(body.environment)}\n`,
+        // the file with the answer as the sample, as the backend writes it: the token masked
+        yaml: `${String(body.yaml)}\n# vm.get's sample recorded in ${String(body.environment)}, sessionToken: vault:redacted\n`,
       })
     }
     if (method === 'POST' && path === '/providers/vsphere/overrides') {
@@ -161,6 +162,11 @@ async function openVmRestart(page: Page, options: { openChange?: boolean } = {})
   await page.goto('/#/workflows/vm-restart')
   await expect(node(page, 'step:checkVmExists')).toBeVisible()
   return { ...calls, api }
+}
+
+/** What this browser keeps for the workflow's provider drafts, as stored. */
+async function storedText(page: Page): Promise<string> {
+  return (await page.evaluate(`localStorage.getItem(${JSON.stringify(DRAFTS_KEY)}) ?? ''`)) as string
 }
 
 /** The workflow's provider drafts as this browser keeps them. */
@@ -280,21 +286,23 @@ test.describe('a provider step in the node detail view', () => {
     await expect(output.getByRole('radiogroup', { name: 'Output view' })).toHaveCount(0)
     await expect(output).toContainText('Real call')
 
-    // Save as sample: the draft takes the file the call came back with
+    // Save as sample: the draft takes the file the call came back with, its sample redacted; the live answer is kept nowhere
     await out.getByRole('button', { name: 'Save as sample' }).click()
     await expect(out.getByRole('button', { name: 'Sample saved' })).toBeDisabled()
     drafts = await storedDrafts(page)
-    expect(String(drafts[0].draftYaml)).toContain("# vm.get's sample recorded in dev")
-    // the live answer is kept nowhere: the samples the draft took from the published file stay as they were
+    expect(String(drafts[0].draftYaml)).toContain("# vm.get's sample recorded in dev, sessionToken: vault:redacted")
+    // the samples the draft took from the published file stay as they were
     expect((drafts[0].samples as Obj)['vm.get']).toEqual((vsphereDetail().actions as Obj[]).find((a) => a.id === 'vm.get')?.sample)
+    expect(await storedText(page)).not.toContain('example-token')
 
     // Fix schema: the answer's shape into the draft's overrides
     await out.getByRole('button', { name: 'Fix schema' }).click()
     await expect(out.getByRole('button', { name: 'Schema fixed' })).toBeDisabled()
     drafts = await storedDrafts(page)
     const fixed = parse(String(drafts[0].draftYaml)) as { spec: { overrides: Obj; actions: Obj[] } }
-    expect(fixed.spec.overrides['vm.get']).toEqual({ response: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, power_state: { type: 'string' }, cpu: { type: 'integer' } } } })
+    expect(fixed.spec.overrides['vm.get']).toEqual({ response: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, power_state: { type: 'string' }, cpu: { type: 'integer' }, sessionToken: { type: 'string' } } } })
     expect(fixed.spec.actions.find((a) => a.id === 'vm.get')?.retry).toBe('unsafe')
+    expect(await storedText(page)).not.toContain('example-token')
 
     // with a draft of vsphere in the workflow, Use the real response (a second change request) is left out
     await expect(out.getByRole('button', { name: 'Use the real response' })).toHaveCount(0)
