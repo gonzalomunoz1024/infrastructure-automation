@@ -931,7 +931,9 @@ public class WorkflowCommandHandler implements WorkflowCommands {
                 continue;
             }
             try {
-                changeRequests.save(cr.withCheck(judged));
+                // read again: a merge or close since the listing must not be saved over with an open copy
+                changeRequests.get(cr.id()).filter(fresh -> fresh.status() == ChangeRequest.Status.OPEN)
+                        .ifPresent(fresh -> changeRequests.save(fresh.withCheck(judged)));
             } catch (RuntimeException e) {
                 log.warn("could not save the requires check of change request {} judged again: {}", cr.id(), e.getMessage());
             }
