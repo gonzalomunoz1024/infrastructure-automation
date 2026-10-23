@@ -1,0 +1,667 @@
+package com.iaf.console.bff.resources.application;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.access.domain.AccessCheck;
+import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.jobs.application.OnBehalfOf;
+import com.iaf.console.bff.jobs.domain.JobView;
+import com.iaf.console.bff.platform.application.PlatformClients;
+import com.iaf.console.bff.platform.application.PlatformProperties;
+import com.iaf.console.bff.resources.domain.ActivityEntry;
+import com.iaf.console.bff.resources.domain.BatchAccepted;
+import com.iaf.console.bff.resources.domain.BatchInput;
+import com.iaf.console.bff.resources.domain.CommandAccepted;
+import com.iaf.console.bff.resources.domain.CommandInput;
+import com.iaf.console.bff.resources.domain.FindingView;
+import com.iaf.console.bff.resources.domain.LineageView;
+import com.iaf.console.bff.resources.domain.PreviewView;
+import com.iaf.console.bff.resources.domain.ResourceRef;
+import com.iaf.console.bff.resources.domain.ResourceView;
+import com.iaf.console.bff.resources.domain.StateAnswer;
+import com.iaf.console.bff.resources.domain.StateCaller;
+import com.iaf.console.bff.resources.domain.StateCommands;
+import com.iaf.console.bff.resources.domain.StateQuery;
+import com.iaf.console.bff.resources.domain.StateResource;
+import com.iaf.console.bff.resources.ports.outbound.StatePort;
+import com.iaf.console.bff.session.application.CurrentSession;
+import com.iaf.console.bff.session.application.Sessions;
+import com.iaf.console.bff.session.domain.Session;
+import com.iaf.console.bff.trust.application.Trust;
+import com.iaf.console.bff.types.application.Types;
+import com.iaf.console.bff.types.domain.ConsoleAction;
+import com.iaf.console.bff.types.domain.ConsoleType;
+import com.iaf.console.kit.errors.ConflictException;
+import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.NotFoundException;
+import com.iaf.console.kit.errors.Problem;
+import com.iaf.console.kit.paging.CursorPaging;
+import com.iaf.console.kit.paging.Page;
+import com.iaf.console.kit.scope.AccountScope;
+import com.iaf.console.platform.client.JobFilter;
+import com.iaf.console.platform.client.PlatformException;
+import com.iaf.console.platform.client.PlatformPort;
+import com.iaf.console.platform.client.RequestOptions;
+import com.iaf.console.platform.model.BatchContext;
+import com.iaf.console.platform.model.CatalogEntry;
+import com.iaf.console.platform.model.JobSummary;
+import com.iaf.console.platform.model.Lineage;
+import com.iaf.console.platform.model.Resource;
+import com.iaf.console.platform.model.RolloutPolicy;
+import com.iaf.console.wfrn.Wfrn;
+import com.iaf.console.wfrn.WfrnException;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+/**
+ * The resource pages (WP 3.2, 3.3): the state service is the source of what exists and in which
+ * state, the platform runs the workflows. A create mints the name first and starts the create
+ * workflow with the name in the job's context, so the registry binds it; an update or a verb
+ * starts the workflow on the registry's record and then tells the state service what is
+ * underway; the feed brings the outcome back. Every read is scoped to the session's account and
+ * region, every command asks the account's policies, a destructive one a fresh sign-in and an
+ * explicit confirmation.
+ */
+public class Resources {
+
+    public static final String TAG_VERB = "tag";
+    private static final Logger log = LoggerFactory.getLogger(Resources.class);
+    private static final Pattern PATH_PARAM = Pattern.compile("\\{([A-Za-z0-9_-]+)}");
+    private static final int RECENT_JOBS = 10;
+    private static final Map<String, String> PLATFORM_STATES = Map.ofEntries(
+            Map.entry("building", StateResource.PENDING), Map.entry("pending", StateResource.PENDING), Map.entry("creating", StateResource.PENDING),
+            Map.entry("ready", StateResource.ACTIVE), Map.entry("active", StateResource.ACTIVE), Map.entry("running", StateResource.ACTIVE),
+            Map.entry("deprecated", StateResource.ACTIVE), Map.entry("updating", StateResource.UPDATING),
+            Map.entry("deleting", StateResource.DELETING), Map.entry("retired", StateResource.DELETED),
+            Map.entry("deleted", StateResource.DELETED), Map.entry("failed", StateResource.FAILED));
+
+    private final Types types;
+    private final Access access;
+    private final Sessions sessions;
+    private final Trust trust;
+    private final PlatformClients clients;
+    private final PlatformProperties platform;
+    private final StatePort state;
+    private final ObjectMapper json;
+
+    public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
+            StatePort state, ObjectMapper json) {
+        this.types = types;
+        this.access = access;
+        this.sessions = sessions;
+        this.trust = trust;
+        this.clients = clients;
+        this.platform = platform;
+        this.state = state;
+        this.json = json;
+    }
+
+    /** The filters of a list. */
+    public record ListFilters(String q, String state, Map<String, String> tags, Boolean drift, String sort, Integer limit, String after) {
+        public ListFilters {
+            tags = tags == null ? Map.of() : Map.copyOf(tags);
+        }
+    }
+
+    /** A resource page's answer: the view and its ETag, or only the ETag when the page's copy still stands. */
+    public record Detail(ResourceView view, String etag, boolean notModified) {
+    }
+
+    /** A resource with the type it belongs to, as every command starts. */
+    private record Subject(ConsoleType type, StateResource resource, String etag) {
+    }
+
+    // ---- reads
+
+    public Mono<Page<ResourceView>> list(Session session, String type, ListFilters filters) {
+        return types.byType(session, type).flatMap(t -> state.list(scope(session), caller(session),
+                new StateQuery(t.type(), filters.state(), filters.q(), filters.tags(), null, filters.drift(), filters.sort(),
+                        CursorPaging.pageSize(filters.limit()), filters.after()))
+                .map(page -> new Page<>(page.items().stream().map(ResourceView::summary).toList(), page.next())));
+    }
+
+    public Mono<Detail> get(Session session, String type, String wfrn, String ifNoneMatch) {
+        return types.byType(session, type).flatMap(t -> {
+            checkName(session, t, wfrn);
+            return state.get(scope(session), caller(session), wfrn, ifNoneMatch).flatMap(answer -> {
+                if (answer.notModified()) {
+                    return Mono.just(new Detail(null, answer.etag(), true));
+                }
+                StateResource r = answer.resource();
+                return Mono.zip(can(session, t, r), recentJobs(session, r), lineageOf(session, r)).map(tuple -> {
+                    List<String> can = tuple.getT1();
+                    List<JobView> jobs = tuple.getT2();
+                    Optional<Lineage> lineage = tuple.getT3();
+                    JobView lastJob = jobs.stream().filter(j -> j.jobId().equals(r.lastJobId())).findFirst().orElse(jobs.isEmpty() ? null : jobs.get(0));
+                    FindingView finding = FindingView.of(r, findingCan(can));
+                    List<ResourceRef> builtFrom = lineage.map(l -> refs(l.builtFrom())).orElse(List.of());
+                    List<ResourceRef> dependents = lineage.map(l -> refs(l.dependents())).orElse(List.of());
+                    return new Detail(ResourceView.detail(r, lastJob, finding, jobs, builtFrom, dependents, can), answer.etag(), false);
+                });
+            });
+        });
+    }
+
+    /** The resource's log, oldest first; readable after the resource is gone, as the tombstone keeps it. */
+    public Mono<Page<ActivityEntry>> activity(Session session, String type, String wfrn, Integer limit, String after) {
+        return types.byType(session, type).flatMap(t -> {
+            checkName(session, t, wfrn);
+            return state.events(scope(session), caller(session), wfrn, CursorPaging.pageSize(limit), after)
+                    .map(page -> new Page<>(page.items().stream().map(ActivityEntry::of).filter(e -> e != null).toList(), page.next()));
+        });
+    }
+
+    /** The open finding; 404 when the resource has none. */
+    public Mono<FindingView> drift(Session session, String type, String wfrn) {
+        return subject(session, type, wfrn).flatMap(s -> {
+            if (s.resource().drift() == null) {
+                return Mono.error(new NotFoundException("no open finding on " + wfrn));
+            }
+            return can(session, s.type(), s.resource()).map(can -> FindingView.of(s.resource(), findingCan(can)));
+        });
+    }
+
+    public Mono<LineageView> lineage(Session session, String type, String wfrn) {
+        return subject(session, type, wfrn).flatMap(s -> lineageOf(session, s.resource()).map(lineage -> lineage
+                .map(l -> lineageView(s.resource(), l)).orElseGet(() -> LineageView.alone(s.resource()))));
+    }
+
+    // ---- commands
+
+    /** Mints the name, then starts the type's create workflow with it in the job's context. */
+    public Mono<CommandAccepted> create(Session session, String type, CommandInput body, String requestId, String idempotencyKey) {
+        return types.byType(session, type).flatMap(t -> {
+            ConsoleAction action = actionOf(t, "create");
+            String actionName = AccessCheck.action(t.service(), action.verb());
+            return access.require(session, actionName, AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type()))
+                    .then(sessions.requireFreshFor(session, actionName))
+                    .then(Mono.fromRunnable(() -> requireFields(action, body.input())))
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> {
+                        Map<String, Object> input = inputFor(action, entry, body, null);
+                        StateCommands.Mint mint = new StateCommands.Mint(t.type(), session.region(), nameOf(input), entry.workflow(),
+                                json.valueToTree(input), session.user().userId());
+                        return state.mint(scope(session), caller(session), mint, new StateCommands.Meta(idempotencyKey, requestId))
+                                .flatMap(minted -> start(session, entry, Map.of(), input, options(session, requestId, idempotencyKey, minted.wfrn(), body))
+                                        .map(accepted -> new CommandAccepted(minted.wfrn(), accepted.jobId(), requestId,
+                                                approval(action, accepted.status()))));
+                    });
+        });
+    }
+
+    public Mono<PreviewView> previewCreate(Session session, String type, CommandInput body, String requestId) {
+        return types.byType(session, type).flatMap(t -> {
+            ConsoleAction action = actionOf(t, "create");
+            String actionName = AccessCheck.action(t.service(), action.verb());
+            return access.require(session, actionName, AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type()))
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> preview(session, entry, Map.of(), inputFor(action, entry, body, null), options(session, requestId, null, null, body),
+                            Map.of()));
+        });
+    }
+
+    /** Starts the update workflow on the registry's record, then records the requested changes on the state service. */
+    public Mono<CommandAccepted> update(Session session, String type, String wfrn, CommandInput body, String ifMatch, String requestId,
+            String idempotencyKey) {
+        return subject(session, type, wfrn).flatMap(s -> {
+            ConsoleAction action = actionOf(s.type(), "update");
+            String actionName = AccessCheck.action(s.type().service(), action.verb());
+            return guard(session, actionName, wfrn, action, body)
+                    .then(Mono.fromRunnable(() -> requireState(s.resource(), ifMatch, StateResource.ACTIVE, StateResource.FAILED)))
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> {
+                        Map<String, Object> input = inputFor(action, entry, body, s.resource());
+                        return start(session, entry, pathParams(entry, s.resource()), input, options(session, requestId, idempotencyKey, wfrn, body))
+                                .flatMap(accepted -> {
+                                    // no expected version: the feed already moved it when the job started
+                                    StateCommands.Update update = new StateCommands.Update(null, session.user().userId(),
+                                            accepted.jobId(), entry.workflow(), entry.version(), json.valueToTree(changesOf(action, input)));
+                                    return state.requestUpdate(scope(session), caller(session), wfrn, update, new StateCommands.Meta(idempotencyKey, requestId))
+                                            .onErrorResume(ConflictException.class, e -> {
+                                                log.warn("job {} runs on {} but the state service refused the update: {}", accepted.jobId(), wfrn, e.getMessage());
+                                                return Mono.just(s.resource());
+                                            })
+                                            .thenReturn(new CommandAccepted(wfrn, accepted.jobId(), requestId, approval(action, accepted.status())));
+                                });
+                    });
+        });
+    }
+
+    /** Runs a verb of the type's catalog on the resource; a delete also tells the state service the resource is going. */
+    public Mono<CommandAccepted> run(Session session, String type, String wfrn, String verb, CommandInput body, String requestId, String idempotencyKey) {
+        return subject(session, type, wfrn).flatMap(s -> {
+            if ("create".equals(verb) || "update".equals(verb)) {
+                return Mono.error(NotFoundException.of("verb", verb));
+            }
+            ConsoleAction action = actionOf(s.type(), verb);
+            String actionName = AccessCheck.action(s.type().service(), action.verb());
+            boolean delete = "delete".equals(verb);
+            return guard(session, actionName, wfrn, action, body)
+                    .then(Mono.fromRunnable(() -> {
+                        if (delete) {
+                            requireState(s.resource(), null, StateResource.ACTIVE, StateResource.FAILED);
+                        } else if (!s.resource().live()) {
+                            throw new ConflictException("the resource is " + s.resource().state());
+                        }
+                    }))
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> {
+                        Map<String, Object> input = inputFor(action, entry, body, s.resource());
+                        return start(session, entry, pathParams(entry, s.resource()), input, options(session, requestId, idempotencyKey, wfrn, body))
+                                .flatMap(accepted -> {
+                                    CommandAccepted answer = new CommandAccepted(wfrn, accepted.jobId(), requestId, approval(action, accepted.status()));
+                                    if (!delete) {
+                                        return Mono.just(answer);
+                                    }
+                                    StateCommands.Delete request = new StateCommands.Delete(null, session.user().userId(), accepted.jobId(),
+                                            entry.workflow(), entry.version(), body.reason());
+                                    return state.requestDelete(scope(session), caller(session), wfrn, request, new StateCommands.Meta(idempotencyKey, requestId))
+                                            .onErrorResume(ConflictException.class, e -> {
+                                                log.warn("job {} runs on {} but the state service refused the delete: {}", accepted.jobId(), wfrn, e.getMessage());
+                                                return Mono.just(s.resource());
+                                            })
+                                            .thenReturn(answer);
+                                });
+                    });
+        });
+    }
+
+    public Mono<PreviewView> previewVerb(Session session, String type, String wfrn, String verb, CommandInput body, String requestId) {
+        return subject(session, type, wfrn).flatMap(s -> {
+            if ("create".equals(verb)) {
+                return Mono.error(NotFoundException.of("verb", verb));
+            }
+            ConsoleAction action = actionOf(s.type(), verb);
+            String actionName = AccessCheck.action(s.type().service(), action.verb());
+            return access.require(session, actionName, wfrn)
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> {
+                        Map<String, String> known = s.resource().registryId() == null ? Map.of() : Map.of(s.resource().registryId(), wfrn);
+                        return preview(session, entry, pathParams(entry, s.resource()), inputFor(action, entry, body, s.resource()),
+                                options(session, requestId, null, wfrn, body), known);
+                    });
+        });
+    }
+
+    /** Replaces the resource's tags: what the body names is set, what it leaves out is removed. */
+    public Mono<Map<String, String>> setTags(Session session, String type, String wfrn, Map<String, String> tags, String requestId, String idempotencyKey) {
+        Map<String, String> wanted = tags == null ? Map.of() : tags;
+        return subject(session, type, wfrn).flatMap(s -> {
+            String actionName = AccessCheck.action(s.type().service(), TAG_VERB);
+            return access.require(session, actionName, wfrn).then(Mono.defer(() -> {
+                List<String> removed = s.resource().tags().keySet().stream().filter(name -> !wanted.containsKey(name)).toList();
+                StateCommands.Tag command = new StateCommands.Tag(s.resource().version(), session.user().userId(), wanted, removed);
+                return state.tag(scope(session), caller(session), wfrn, command, new StateCommands.Meta(idempotencyKey, requestId))
+                        .map(StateResource::tags);
+            }));
+        });
+    }
+
+    /** One verb over many rows; a create mints one name per row and binds each to its row. */
+    public Mono<BatchAccepted> batch(Session session, String type, BatchInput body, String requestId, String idempotencyKey) {
+        return types.byType(session, type).flatMap(t -> {
+            if (body.verb() == null || body.items().isEmpty()) {
+                return Mono.error(new InvalidInputException("a batch names a verb and at least one row",
+                        List.of(Problem.error("required", "/items", "at least one row"))));
+            }
+            ConsoleAction action = actionOf(t, body.verb());
+            if (!action.bulk()) {
+                return Mono.error(new InvalidInputException("the verb runs one resource at a time",
+                        List.of(Problem.error("bulk.unsupported", "/verb", action.verb() + " has no batch route"))));
+            }
+            String actionName = AccessCheck.action(t.service(), action.verb());
+            String pattern = AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type());
+            boolean create = "create".equals(body.verb());
+            return access.require(session, actionName, pattern)
+                    .then(sessions.requireFreshFor(session, actionName))
+                    .then(Mono.fromRunnable(() -> {
+                        if (action.destructive() && !body.confirmed()) {
+                            throw confirmRequired(action);
+                        }
+                    }))
+                    .then(types.entry(session, action.workflow()))
+                    .flatMap(entry -> {
+                        Mono<List<Row>> rows = create ? mintRows(session, t, entry, action, body, requestId, idempotencyKey)
+                                : existingRows(session, t, entry, action, body);
+                        return rows.flatMap(prepared -> {
+                            List<Map<String, Object>> items = prepared.stream().map(Row::input).toList();
+                            List<BatchContext> contexts = prepared.stream().map(r -> new BatchContext(r.wfrn(), null)).toList();
+                            RolloutPolicy rollout = body.rollout() == null ? null
+                                    : new RolloutPolicy(body.rollout().waves(), body.rollout().maxParallel(), body.rollout().stopIfFailedPercent());
+                            RequestOptions options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
+                            return clients.forAccount(scope(session))
+                                    .flatMap(p -> p.batch(entry, items, body.defaults(), rollout, contexts, options))
+                                    .map(accepted -> new BatchAccepted(accepted.body().jobId(), accepted.body().rows(), requestId,
+                                            create ? prepared.stream().map(Row::wfrn).toList() : null));
+                        });
+                    });
+        });
+    }
+
+    private record Row(String wfrn, Map<String, Object> input) {
+    }
+
+    private Mono<List<Row>> mintRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body, String requestId,
+            String idempotencyKey) {
+        List<Mono<Row>> mints = new ArrayList<>();
+        for (int i = 0; i < body.items().size(); i++) {
+            BatchInput.Row row = body.items().get(i);
+            Map<String, Object> input = new LinkedHashMap<>(body.defaults());
+            input.putAll(row.input());
+            requireFields(action, input);
+            String key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey + "#" + i;
+            StateCommands.Mint mint = new StateCommands.Mint(t.type(), session.region(), nameOf(input), entry.workflow(), json.valueToTree(input),
+                    session.user().userId());
+            mints.add(state.mint(scope(session), caller(session), mint, new StateCommands.Meta(key, requestId))
+                    .map(minted -> new Row(minted.wfrn(), row.input())));
+        }
+        return Flux.concat(mints).collectList();
+    }
+
+    private Mono<List<Row>> existingRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body) {
+        List<Mono<Row>> rows = new ArrayList<>();
+        for (int i = 0; i < body.items().size(); i++) {
+            BatchInput.Row row = body.items().get(i);
+            if (row.wfrn() == null || row.wfrn().isBlank()) {
+                return Mono.error(new InvalidInputException("every row of a " + action.verb() + " batch names its resource",
+                        List.of(Problem.error("required", "/items/" + i + "/wfrn", "the resource's wfrn"))));
+            }
+            checkName(session, t, row.wfrn());
+            rows.add(state.get(scope(session), caller(session), row.wfrn(), null).map(answer -> {
+                StateResource r = answer.resource();
+                Map<String, Object> input = new LinkedHashMap<>(row.input());
+                if (entry.subjectInput() != null && r.registryId() != null) {
+                    input.putIfAbsent(entry.subjectInput(), r.registryId());
+                }
+                return new Row(r.wfrn(), input);
+            }));
+        }
+        return Flux.concat(rows).collectList();
+    }
+
+    // ---- the pieces
+
+    private Mono<Subject> subject(Session session, String type, String wfrn) {
+        return types.byType(session, type).flatMap(t -> {
+            checkName(session, t, wfrn);
+            Mono<StateAnswer> read = state.get(scope(session), caller(session), wfrn, null);
+            return read.map(answer -> new Subject(t, answer.resource(), answer.etag()));
+        });
+    }
+
+    /** The wfrn is the path's type, in the session's account and region; anything else is a 404, never a hint. */
+    private static void checkName(Session session, ConsoleType type, String wfrn) {
+        Wfrn parsed;
+        try {
+            parsed = Wfrn.parse(wfrn);
+        } catch (WfrnException e) {
+            throw NotFoundException.of("resource", wfrn);
+        }
+        if (!parsed.type().equals(type.type()) || !parsed.in(session.accountId(), session.region())) {
+            throw NotFoundException.of("resource", wfrn);
+        }
+    }
+
+    private static ConsoleAction actionOf(ConsoleType type, String verb) {
+        return type.actions().stream().filter(a -> a.verb().equals(verb)).findFirst()
+                .orElseThrow(() -> NotFoundException.of("action", type.type() + ":" + verb));
+    }
+
+    /** The policy, then the step-up, then the confirmation a destructive verb needs. */
+    private Mono<Void> guard(Session session, String actionName, String wfrn, ConsoleAction action, CommandInput body) {
+        return access.require(session, actionName, wfrn)
+                .then(sessions.requireFreshFor(session, actionName))
+                .then(Mono.fromRunnable(() -> {
+                    if (action.destructive() && !body.confirmed()) {
+                        throw confirmRequired(action);
+                    }
+                }));
+    }
+
+    private static InvalidInputException confirmRequired(ConsoleAction action) {
+        return new InvalidInputException("confirm " + action.verb() + ": it is destructive",
+                List.of(Problem.error("confirm.required", "/confirm", "set confirm to true to run " + action.verb())));
+    }
+
+    private static void requireState(StateResource r, String ifMatch, String... allowed) {
+        if (ifMatch != null && !ifMatch.isBlank()) {
+            String version = ifMatch.replace("\"", "").replace("W/", "").trim();
+            if (!version.equals(String.valueOf(r.version()))) {
+                throw new ConflictException("the resource moved on to version " + r.version(), Map.of("version", r.version()));
+            }
+        }
+        for (String s : allowed) {
+            if (r.is(s)) {
+                return;
+            }
+        }
+        throw new ConflictException("the resource is " + r.state(), Map.of("state", r.state()));
+    }
+
+    private static void requireFields(ConsoleAction action, Map<String, Object> input) {
+        JsonNode required = action.input() == null ? null : action.input().get("required");
+        if (required == null || !required.isArray()) {
+            return;
+        }
+        List<Problem> problems = new ArrayList<>();
+        for (JsonNode field : required) {
+            String name = field.asText();
+            if (action.subjectInput() != null && action.subjectInput().equals(name)) {
+                continue;
+            }
+            if (input.get(name) == null) {
+                problems.add(Problem.error("required", "/" + name, name + " is required"));
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new InvalidInputException("the form misses required fields", problems);
+        }
+    }
+
+    /** The form's values, with the subject's registry id where the workflow wants it and the reason where the input has a place for it. */
+    private static Map<String, Object> inputFor(ConsoleAction action, CatalogEntry entry, CommandInput body, StateResource subject) {
+        Map<String, Object> input = new LinkedHashMap<>(body.input());
+        if (subject != null && entry.subjectInput() != null && subject.registryId() != null) {
+            input.putIfAbsent(entry.subjectInput(), subject.registryId());
+        }
+        if (body.reason() != null && !body.reason().isBlank() && action.input() != null && action.input().path("properties").has("reason")) {
+            input.putIfAbsent("reason", body.reason());
+        }
+        return input;
+    }
+
+    /** What an update asks to change: the form's values without the subject. */
+    private static Map<String, Object> changesOf(ConsoleAction action, Map<String, Object> input) {
+        Map<String, Object> changes = new LinkedHashMap<>(input);
+        if (action.subjectInput() != null) {
+            changes.remove(action.subjectInput());
+        }
+        return changes;
+    }
+
+    private static Map<String, String> pathParams(CatalogEntry entry, StateResource subject) {
+        Map<String, String> params = new HashMap<>();
+        Matcher m = PATH_PARAM.matcher(entry.path() == null ? "" : entry.path());
+        while (m.find()) {
+            if (subject.registryId() == null) {
+                throw new ConflictException("the platform has not registered " + subject.wfrn() + " yet; wait for it to become active",
+                        Map.of("state", subject.state()));
+            }
+            params.put(m.group(1), subject.registryId());
+        }
+        return params;
+    }
+
+    private static String nameOf(Map<String, Object> input) {
+        Object name = input.get("name");
+        return name == null ? null : name.toString();
+    }
+
+    private RequestOptions options(Session session, String requestId, String idempotencyKey, String wfrn, CommandInput body) {
+        RequestOptions options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
+        if (wfrn != null) {
+            options = options.withResourceWfrn(wfrn);
+        }
+        for (Map.Entry<String, String> label : body.labels().entrySet()) {
+            options = options.withLabel(label.getKey(), label.getValue());
+        }
+        if (body.reason() != null && !body.reason().isBlank() && !body.labels().containsKey("reason")) {
+            options = options.withLabel("reason", body.reason());
+        }
+        return options;
+    }
+
+    private record Started(String jobId, String status) {
+    }
+
+    private Mono<Started> start(Session session, CatalogEntry entry, Map<String, String> pathParams, Map<String, Object> input, RequestOptions options) {
+        return clients.forAccount(scope(session)).flatMap(p -> p.start(entry, pathParams, input, options))
+                .map(accepted -> new Started(accepted.body().jobId(), accepted.body().status()));
+    }
+
+    private Mono<PreviewView> preview(Session session, CatalogEntry entry, Map<String, String> pathParams, Map<String, Object> input,
+            RequestOptions options, Map<String, String> wfrnsByRegistryId) {
+        if (!entry.hasPreview()) {
+            return Mono.error(new NotFoundException("the workflow " + entry.workflow() + " publishes no preview"));
+        }
+        return clients.forAccount(scope(session)).flatMap(p -> p.preview(entry, pathParams, input, options))
+                .map(preview -> PreviewView.of(preview, wfrnsByRegistryId));
+    }
+
+    private static Boolean approval(ConsoleAction action, String status) {
+        return action.approval() || "waiting-approval".equals(status) || "waiting_approval".equals(status);
+    }
+
+    /** The verbs the user may run on this resource, from the account's policies, plus {@code tag}. */
+    private Mono<List<String>> can(Session session, ConsoleType type, StateResource r) {
+        if (!r.live()) {
+            return Mono.just(List.of());
+        }
+        List<String> verbs = new ArrayList<>();
+        List<AccessCheck> checks = new ArrayList<>();
+        for (ConsoleAction action : type.actions()) {
+            if ("create".equals(action.verb())) {
+                continue;
+            }
+            verbs.add(action.verb());
+            checks.add(new AccessCheck(AccessCheck.action(type.service(), action.verb()), r.wfrn()));
+        }
+        verbs.add(TAG_VERB);
+        checks.add(new AccessCheck(AccessCheck.action(type.service(), TAG_VERB), r.wfrn()));
+        return access.decide(session, checks).map(decisions -> {
+            List<String> can = new ArrayList<>();
+            for (int i = 0; i < verbs.size(); i++) {
+                Decision decision = decisions.get(i);
+                if (decision.allowed()) {
+                    can.add(verbs.get(i));
+                }
+            }
+            return can;
+        });
+    }
+
+    private static List<String> findingCan(List<String> can) {
+        return can.contains("update") ? List.of("revert", "accept", "ignore") : List.of();
+    }
+
+    private Mono<List<JobView>> recentJobs(Session session, StateResource r) {
+        JobFilter filter = JobFilter.ofAccount(session.accountId()).withRegion(session.region()).withWfrn(r.wfrn()).withLimit(RECENT_JOBS);
+        return clients.forAccount(scope(session)).flatMap(p -> p.listJobs(filter))
+                .map(page -> {
+                    List<JobView> jobs = new ArrayList<>();
+                    for (JobSummary job : page.items()) {
+                        if (job.context() != null && session.accountId().equals(job.context().accountId())) {
+                            jobs.add(JobView.summary(job));
+                        }
+                    }
+                    return jobs;
+                })
+                .onErrorResume(e -> {
+                    log.warn("the jobs of {} are unavailable: {}", r.wfrn(), e.getMessage());
+                    return Mono.just(List.of());
+                });
+    }
+
+    private Mono<Optional<Lineage>> lineageOf(Session session, StateResource r) {
+        if (r.registryId() == null) {
+            return Mono.just(Optional.empty());
+        }
+        return clients.forAccount(scope(session)).flatMap(p -> p.getResourceLineage(r.registryId()))
+                .map(Optional::of)
+                .onErrorResume(PlatformException.class, e -> {
+                    if (!e.isNotFound()) {
+                        log.warn("the lineage of {} is unavailable: {}", r.wfrn(), e.getMessage());
+                    }
+                    return Mono.just(Optional.empty());
+                })
+                .onErrorResume(e -> {
+                    log.warn("the lineage of {} is unavailable: {}", r.wfrn(), e.getMessage());
+                    return Mono.just(Optional.empty());
+                });
+    }
+
+    private static LineageView lineageView(StateResource subject, Lineage lineage) {
+        Map<String, String> wfrns = new HashMap<>();
+        List<ResourceRef> nodes = new ArrayList<>();
+        List<Resource> all = new ArrayList<>();
+        if (lineage.nodes() != null) {
+            all.addAll(lineage.nodes());
+        }
+        if (lineage.resource() != null && all.stream().noneMatch(n -> n.id() != null && n.id().equals(lineage.resource().id()))) {
+            all.add(lineage.resource());
+        }
+        for (Resource node : all) {
+            ResourceRef ref = ref(node);
+            if (node.id() != null && subject.registryId() != null && node.id().equals(subject.registryId())) {
+                ref = new ResourceRef(subject.wfrn(), subject.type(), subject.name() != null ? subject.name() : ref.name(), subject.state(), node.id());
+            }
+            if (ref.wfrn() != null && node.id() != null) {
+                wfrns.put(node.id(), ref.wfrn());
+            }
+            nodes.add(ref);
+        }
+        List<LineageView.Edge> edges = new ArrayList<>();
+        if (lineage.edges() != null) {
+            for (Lineage.Edge edge : lineage.edges()) {
+                edges.add(new LineageView.Edge(wfrns.getOrDefault(edge.from(), edge.from()), wfrns.getOrDefault(edge.to(), edge.to()), edge.via()));
+            }
+        }
+        if (nodes.stream().noneMatch(n -> subject.wfrn().equals(n.wfrn()))) {
+            nodes.add(0, ResourceRef.of(subject));
+        }
+        return new LineageView(ResourceRef.of(subject), nodes, edges);
+    }
+
+    private static List<ResourceRef> refs(List<Resource> resources) {
+        return resources == null ? List.of() : resources.stream().map(Resources::ref).toList();
+    }
+
+    private static ResourceRef ref(Resource resource) {
+        String status = resource.status() == null ? null : resource.status().toLowerCase(Locale.ROOT);
+        return new ResourceRef(resource.wfrn(), resource.type(), resource.name(), status == null ? null : PLATFORM_STATES.get(status), resource.id());
+    }
+
+    private static AccountScope scope(Session session) {
+        return CurrentSession.scope(session);
+    }
+
+    private static StateCaller caller(Session session) {
+        return new StateCaller(session.user().userId(), session.currentAccount().groups(), session.currentAccount().roles());
+    }
+}

@@ -22,11 +22,33 @@ info:
     **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
     sent back as `after`. `limit` is 1 to 200, 50 by default.
 
-    **Errors.** `{ error, problems?, correlationId? }`: 400 bad input (`problems` carry the
-    platform's `Problem` rows, with the field as a JSON pointer, so the form can mark them), 401 no
-    session, 403 the account's policies deny it (the only place the console answers 403: within the
-    user's own account), 404 unknown or another account's, 409 a conflict, 429 over a quota (with
-    `Retry-After`), 502 the platform answered an error (with its `correlationId`).
+    **Errors.** `{ error, problems?, denied?, detail?, correlationId? }`: 400 bad input (`problems`
+    carry the platform's `Problem` rows, with the field as a JSON pointer, so the form can mark
+    them), 401 no session, 403 the account's policies deny it (the only place the console answers
+    403: within the user's own account), 404 unknown or another account's, 409 a conflict, 429 over
+    a quota (with `Retry-After`), 502 the platform answered an error (with its `correlationId`).
+
+    **Every 403 but a missing CSRF token carries `denied`**, a `Denial`: which layer decided
+    (`console-iam`, the account's roles and policies, or `platform`, the platform's own scopes),
+    the `<service>:<verb>` action and the wfrn or pattern checked, the reason, the role, policy and
+    statement (console IAM) or scope (platform) behind it, whether the person may request access
+    and which role would grant it. A step-up refusal (a fresh sign-in is needed for the action) is
+    a 403 with `detail: { stepUp: true, action, login }`, `login` being the `/auth/login` URL to
+    send the person to. The same `Denial` greys an action in the descriptors
+    (`ConsoleAction.allowed` and `denied`), decided per session with `<service>:<verb>` on
+    `wfrn:<partition>:<service>:<region>:<account>:<type>/*`.
+
+    **IAM in the console.** `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas}` and
+    their sub-paths pass through to the identity service's `/v1/accounts/{accountId}/…` for the
+    session's account, with the identity service's schemas unchanged
+    (`contracts/openapi/console-identity-service.yaml`): `If-Match`, `If-None-Match`,
+    `Idempotency-Key` and `Content-Type` are forwarded, the status, `ETag` and body come back as
+    they were, and a 403 without a `denied` block gets one. Writes need `X-Csrf-Token` like every
+    other write. Access requests (`/console/v1/access-requests`) let a person ask for an action a
+    denial marked `requestable`; an account admin decides them.
+
+    **Keys.** `GET /.well-known/jwks.json` publishes the public keys the other console services
+    verify this service's internal tokens and `X-On-Behalf-Of` assertions with.
 
     **wfrns in URLs.** `/console/v1/r/{type}/{wfrn}` takes the wfrn percent-encoded; the type is
     repeated in the path so the same template never serves two shapes, and the BFF answers 404 when
@@ -51,6 +73,10 @@ tags:
   - name: Events
   - name: Search
   - name: Preferences
+  - name: IAM
+    description: The identity service for the session's account, passed through
+  - name: Access requests
+  - name: Keys
   - name: Health
 security:
   - session: []
@@ -76,13 +102,19 @@ paths:
     get:
       operationId: login
       summary: Start the sign-in
-      description: Redirects to the identity provider (OIDC, authorization code with PKCE); `returnTo` must be a console path.
+      description: Redirects to the identity provider (OIDC, authorization code with PKCE); `returnTo` must be a console path. `login_hint` goes to the provider as is (the demo provider then skips its picker); `stepUp=true` asks for a fresh authentication (`prompt=login`, `max_age=0`) and marks the session stepped up for the actions that need it.
       tags: [Auth]
       security: []
       parameters:
         - name: returnTo
           in: query
           schema: { type: string, pattern: '^/' }
+        - name: login_hint
+          in: query
+          schema: { type: string }
+        - name: stepUp
+          in: query
+          schema: { type: boolean, default: false }
       responses:
         '302':
           description: To the identity provider
@@ -765,6 +797,239 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Suggestion' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/iam/{collection}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+    get:
+      operationId: listIam
+      summary: List an IAM collection of the session's account
+      description: 'Passes through to `GET /v1/accounts/{accountId}/{collection}` of the identity service; the page shape and the items are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createIam
+      summary: Create in an IAM collection of the session's account
+      description: 'Passes through to the identity service''s POST with the body unchanged; the status (201, or 200 for an access key, whose secret is answered this once) and the body are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '201': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /console/v1/iam/{collection}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+    get:
+      operationId: getIam
+      summary: One IAM record of the session's account
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '304': { description: Unchanged }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateIam
+      summary: Change an IAM record
+      description: 'For users, groups, roles and quotas, as the identity service''s PATCH; `If-Match` carries the version and 409 says it moved on'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    put:
+      operationId: replaceIam
+      summary: Replace an IAM record
+      description: 'For policies, as the identity service''s PUT'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteIam
+      summary: Remove an IAM record
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/iam/{collection}/{id}:{action}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+      - $ref: '#/components/parameters/IamAction'
+    post:
+      operationId: iamAction
+      summary: An IAM record's action
+      description: '`rotate` on an access key (the new secret is answered this once) and `request-increase` on a quota, as the identity service''s `:{action}` operations'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '202': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/access-requests:
+    get:
+      operationId: listAccessRequests
+      summary: Access requests
+      description: '`scope=mine` (the default) lists the person''s own requests; `scope=account` lists every request of the account, for its admins'
+      tags: [Access requests]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccessRequestStatus' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [mine, account], default: mine }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessRequest' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAccessRequest
+      summary: Ask for an action a denial marked requestable
+      description: 'Opens a request to the account''s admins; the same open request (same action, resource and role) answers 409 with the existing one'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequestInput' }
+      responses:
+        '202':
+          description: The request, pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The same request is already open
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+  /console/v1/access-requests/{requestId}:decide:
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideAccessRequest
+      summary: Approve or reject an access request
+      description: 'For the account''s admins; approving grants the suggested role (or the role asked for) and the requester''s next session carries it'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: The BFF's public keys
+      description: The keys the other console services verify this service's internal tokens and X-On-Behalf-Of assertions with (RFC 7517); the current key and the previous one during a rotation, each with a `kid`
+      tags: [Keys]
+      security: []
+      responses:
+        '200':
+          description: The key set
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 'public, max-age=300'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JsonWebKeySet' }
   /console/v1/preferences:
     get:
       operationId: getPreferences
@@ -815,6 +1080,28 @@ components:
       in: header
       required: false
       schema: { type: string }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The version the caller holds; 409 when the record moved on
+      schema: { type: string }
+    IamCollection:
+      name: collection
+      in: path
+      required: true
+      schema: { type: string, enum: [users, groups, roles, policies, access-keys, quotas] }
+    IamId:
+      name: id
+      in: path
+      required: true
+      description: The record's id (a quota's key)
+      schema: { type: string }
+    IamAction:
+      name: action
+      in: path
+      required: true
+      schema: { type: string, enum: [rotate, request-increase] }
     TypePath:
       name: type
       in: path
@@ -876,10 +1163,18 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
-      description: 'The account''s policies deny it, or the CSRF token is missing'
+      description: 'The account''s policies deny it (`denied` says which layer, why, and what to request), a step-up is needed (`detail.stepUp`), or the CSRF token is missing (no `denied`)'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    IamAnswer:
+      description: 'The identity service''s answer, unchanged: its schema for the collection (contracts/openapi/console-identity-service.yaml), its ETag'
+      headers:
+        ETag:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/IamBody' }
     NotFound:
       description: Unknown, or another account's
       content:
@@ -927,7 +1222,31 @@ components:
         problems:
           type: array
           items: { $ref: '#/components/schemas/Problem' }
+        denied: { $ref: '#/components/schemas/Denial' }
+        detail:
+          type: object
+          description: 'More about the refusal; a step-up refusal is `{ stepUp: true, action, login }`'
+          properties:
+            stepUp: { type: boolean }
+            action: { type: string, description: 'The `<service>:<verb>` that needs a fresh sign-in' }
+            login: { type: string, description: 'The /auth/login URL to send the person to, with stepUp=true and returnTo set' }
+          additionalProperties: true
         correlationId: { type: string }
+    Denial:
+      type: object
+      description: Why an action is refused or greyed, from the layer that decided
+      required: [layer, action, reason, requestable]
+      properties:
+        layer: { type: string, enum: [console-iam, platform], description: "The account's roles and policies, or the platform's own scopes" }
+        action: { type: string, description: '`<service>:<verb>`' }
+        resource: { type: string, description: The wfrn or pattern checked }
+        reason: { type: string, description: One sentence a person can act on }
+        role: { type: string, description: 'console-iam: the role the decision came from' }
+        policyId: { type: string, description: 'console-iam: the policy' }
+        statement: { type: string, description: 'console-iam: the statement id' }
+        scope: { type: string, description: 'platform: the scope the service account lacks' }
+        requestable: { type: boolean, description: Whether the person may open an access request for it }
+        suggestedRole: { type: string, description: The managed role that would allow it }
     Problem:
       type: object
       required: [code, message]
@@ -968,6 +1287,14 @@ components:
         name: { type: string }
         status: { type: string }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        roles:
+          type: array
+          description: 'The managed role names the person holds in the account: viewer, operator, account-admin, auditor (shown as Viewer, Operator, Admin, Auditor)'
+          items: { type: string }
+        groups:
+          type: array
+          description: The person's groups in the account
+          items: { type: string }
     Region:
       type: object
       required: [name, status, environments]
@@ -985,12 +1312,14 @@ components:
     ConsoleAction:
       type: object
       description: One verb of the type's catalog, as the Actions menu draws it (P-08)
-      required: [verb, title, method, destructive, approval, bulk, preview]
+      required: [verb, title, method, destructive, approval, bulk, preview, allowed]
       properties:
         verb: { type: string }
         title: { type: string }
         description: { type: string }
-        method: { type: string, enum: [POST, PATCH, DELETE] }
+        method: { type: string, enum: [POST, PATCH, DELETE], description: "The catalog entry's own method when it names one, else create is POST, update is PATCH, delete is DELETE and any other verb is POST" }
+        allowed: { type: boolean, description: 'Whether this session may run it, decided with `<service>:<verb>` on `wfrn:<partition>:<service>:<region>:<account>:<type>/*`' }
+        denied: { $ref: '#/components/schemas/Denial', description: Why not, when allowed is false }
         destructive: { type: boolean }
         approval: { type: boolean }
         bulk: { type: boolean }
@@ -1384,3 +1713,70 @@ components:
             type: array
             items: { type: string }
         version: { type: integer }
+    IamBody:
+      type: object
+      description: 'A body of the identity service''s API, unchanged (contracts/openapi/console-identity-service.yaml)'
+      additionalProperties: true
+    AccessRequestStatus:
+      type: string
+      enum: [pending, approved, rejected, expired]
+    AccessRequestInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
+        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        role: { type: string, description: The role asked for; the denial's suggestedRole by default }
+        reason: { type: string, maxLength: 2000 }
+    AccessDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    AccessRequest:
+      type: object
+      required: [requestId, accountId, requester, action, reason, status, requestedAt]
+      properties:
+        requestId: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        requester:
+          type: object
+          required: [userId]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        status: { $ref: '#/components/schemas/AccessRequestStatus' }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        comment: { type: string }
+        approvers:
+          type: array
+          description: Who may decide it
+          items: { type: string }
+    JsonWebKeySet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, kid]
+            properties:
+              kty: { type: string }
+              kid: { type: string }
+              use: { type: string }
+              alg: { type: string }
+              crv: { type: string }
+              x: { type: string }
+              y: { type: string }
+              n: { type: string }
+              e: { type: string }
+            additionalProperties: true

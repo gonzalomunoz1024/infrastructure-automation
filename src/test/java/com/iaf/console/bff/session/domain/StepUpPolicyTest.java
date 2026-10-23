@@ -40,7 +40,7 @@ class StepUpPolicyTest {
     }
 
     private static Session session(Instant authTime) {
-        AccountMembership membership = new AccountMembership("123456789012", "Compute", "active", "global", List.of("operators"), List.of("operator"));
+        AccountMembership membership = new AccountMembership("123456789012", "Compute", "active", "global", List.of("members"), List.of("operator"));
         return new Session("s1", new Principal("user_dana", "dana@example.com", "Dana", List.of("team-compute")), List.of(membership), "123456789012",
                 "global", authTime, authTime, authTime, authTime.plus(Duration.ofHours(12)), "https://idp.example", "dana");
     }

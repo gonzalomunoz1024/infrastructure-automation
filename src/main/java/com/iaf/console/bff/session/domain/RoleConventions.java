@@ -13,7 +13,7 @@ public final class RoleConventions {
 
     public static final String VIEWER = "viewer";
     public static final String OPERATOR = "operator";
-    public static final String ADMIN = "admin";
+    public static final String ADMIN = "account-admin";
     public static final String AUDITOR = "auditor";
 
     public static final List<String> MANAGED = List.of(VIEWER, OPERATOR, ADMIN, AUDITOR);
@@ -27,7 +27,7 @@ public final class RoleConventions {
             String g = group.toLowerCase(Locale.ROOT);
             if (g.contains("admin") || g.contains("owner")) {
                 add(roles, ADMIN);
-            } else if (g.contains("operator") || g.contains("developer") || g.equals("ops") || g.endsWith("-ops") || g.contains("dba")) {
+            } else if (g.equals("members") || g.contains("operator") || g.contains("developer") || g.equals("ops") || g.endsWith("-ops") || g.contains("dba")) {
                 add(roles, OPERATOR);
             } else if (g.contains("auditor") || g.contains("audit")) {
                 add(roles, AUDITOR);

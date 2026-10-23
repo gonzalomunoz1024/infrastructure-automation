@@ -10,6 +10,8 @@ console:
     secure: false
   identity:
     url: ""
+  state:
+    url: ""
   platform:
     fake:
       enabled: true

@@ -7,18 +7,31 @@ import com.iaf.console.bff.session.domain.ActionPatterns;
 
 /**
  * The managed roles and what each allows, as the console reads them: viewer reads, operator reads
- * and runs non-destructive verbs, admin does everything (IAM writes and deletes included), auditor
- * reads and sees the trail. The identity service decides for real; this table answers the demo
+ * and runs non-destructive verbs, account-admin (shown as Admin) does everything (IAM writes and
+ * deletes included), auditor reads and sees the trail. The identity service creates them in every
+ * account with the groups that hold them: viewers, members (operator), owners (account-admin) and
+ * auditors. The identity service decides for real; this table answers the demo
  * stand-in and names the role to suggest when a verb is refused.
  */
 public final class ManagedRoles {
 
     public static final String VIEWER = "viewer";
     public static final String OPERATOR = "operator";
-    public static final String ADMIN = "admin";
+    public static final String ADMIN = "account-admin";
     public static final String AUDITOR = "auditor";
 
     public static final List<String> ALL = List.of(VIEWER, OPERATOR, ADMIN, AUDITOR);
+
+    /** The managed group that holds a managed role in every account. */
+    public static String groupOf(String role) {
+        return switch (role == null ? "" : role.toLowerCase(Locale.ROOT)) {
+            case ADMIN -> "owners";
+            case OPERATOR -> "members";
+            case AUDITOR -> "auditors";
+            case VIEWER -> "viewers";
+            default -> role;
+        };
+    }
 
     private static final List<String> READS = List.of("*:list", "*:get", "*:read", "*:describe", "*:search", "*:preview");
     private static final List<String> DESTRUCTIVE = List.of("*:delete", "*:destroy", "*:purge", "*:terminate");

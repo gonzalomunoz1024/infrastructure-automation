@@ -86,6 +86,38 @@ public final class Console {
         return call(spec);
     }
 
+    /** A GET at a URI template whose variables (a wfrn, say) are percent-encoded strictly. */
+    public Reply getAt(String template, Signed as, Map<String, String> headers, Object... vars) {
+        WebClient.RequestHeadersSpec<?> spec = client.get().uri(template, vars);
+        if (as != null) {
+            spec = spec.cookie(SESSION_COOKIE, as.cookie());
+        }
+        for (Map.Entry<String, String> h : headers.entrySet()) {
+            spec = spec.header(h.getKey(), h.getValue());
+        }
+        return call(spec);
+    }
+
+    /** A write at a URI template whose variables are percent-encoded strictly, with the session cookie and the CSRF token. */
+    public Reply sendAt(HttpMethod method, String template, Signed as, Object body, Map<String, String> headers, Object... vars) {
+        WebClient.RequestBodySpec spec = client.method(method).uri(template, vars);
+        if (as != null) {
+            spec = spec.cookie(SESSION_COOKIE, as.cookie());
+            if (!headers.containsKey(CSRF_HEADER)) {
+                spec = spec.header(CSRF_HEADER, as.csrf());
+            }
+        }
+        for (Map.Entry<String, String> h : headers.entrySet()) {
+            if (!h.getValue().isEmpty()) {
+                spec = spec.header(h.getKey(), h.getValue());
+            }
+        }
+        if (body == null) {
+            return call(spec);
+        }
+        return call(spec.contentType(MediaType.APPLICATION_JSON).bodyValue(body));
+    }
+
     public Reply post(String path, Signed as, Object body) {
         return send(HttpMethod.POST, path, as, body, Map.of());
     }

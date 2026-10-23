@@ -43,10 +43,12 @@ public abstract class DemoApp {
     /** Starts a {@code vm-restart} for the compute account as gonzalo, straight at the platform; the job id. */
     protected static String startVmRestart(PlatformClients clients, Trust trust) {
         PlatformPort platform = clients.forAccount(AccountScope.of(COMPUTE, "global", "user_gonzalo")).block();
-        Resource vm = platform.listResources(new ResourceFilter("vm", null, null, null, null, null, 5, null)).block().items().get(0);
+        Resource vm = platform.listResources(new ResourceFilter("vm", null, null, null, null, null, 50, null)).block().items().stream()
+                .filter(r -> r.status() == null || !(r.status().equalsIgnoreCase("retired") || r.status().equalsIgnoreCase("deleted")))
+                .findFirst().orElseThrow();
         CatalogEntry restart = platform.listCatalog("vm").block().stream().filter(e -> "vm-restart".equals(e.workflow())).findFirst().orElseThrow();
         String assertion = trust.assertionSigner().sign(
-                new OnBehalfOfAssertions.User("user_gonzalo", "Gonzalo Munoz", "gonzalo@example.com", List.of("account-admins")), COMPUTE, "global");
+                new OnBehalfOfAssertions.User("user_gonzalo", "Gonzalo Munoz", "gonzalo@example.com", List.of("owners")), COMPUTE, "global");
         return platform.start(restart, Map.of("vmId", vm.id()), Map.of("reason", "restart from the console tests", "environment", "dev"),
                 RequestOptions.console(assertion, "req_test_" + System.nanoTime(), null)).block().body().jobId();
     }

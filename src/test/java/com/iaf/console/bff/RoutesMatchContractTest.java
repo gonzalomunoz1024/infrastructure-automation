@@ -23,17 +23,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
  * Every operation of the pinned contract is served, except the ones named here as later work
- * packages: the resource pages go through the state service (WP 3.2, 3.3) and search through the
- * indexer (WP 4.1).
+ * packages: search goes through the indexer (WP 4.1).
  */
 class RoutesMatchContractTest extends DemoApp {
 
-    private static final Set<String> LATER = Set.of(
-            "/console/v1/r/{type}", "/console/v1/r/{type}:preview", "/console/v1/r/{type}:batch", "/console/v1/r/{type}/{wfrn}",
-            "/console/v1/r/{type}/{wfrn}:{verb}", "/console/v1/r/{type}/{wfrn}:{verb}:preview", "/console/v1/r/{type}/{wfrn}/activity",
-            "/console/v1/r/{type}/{wfrn}/drift", "/console/v1/r/{type}/{wfrn}/lineage", "/console/v1/r/{type}/{wfrn}/tags",
-            "/console/v1/search", "/console/v1/suggest");
-
+    private static final Set<String> LATER = Set.of("/console/v1/search", "/console/v1/suggest");
     private static final Set<String> METHODS = Set.of("get", "post", "put", "patch", "delete");
 
     @Autowired

@@ -21,6 +21,7 @@ import org.springframework.web.server.ServerWebExchange;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.domain.NoConsoleAccountException;
 import com.iaf.console.bff.session.domain.StepUpRequiredException;
@@ -70,6 +71,12 @@ public class BffExceptionHandler {
         String login = "/auth/login?stepUp=true" + (returnTo == null ? "" : "&returnTo=" + URLEncoder.encode(returnTo, StandardCharsets.UTF_8));
         Map<String, Object> detail = Map.of("stepUp", true, "action", ex.action(), "login", login);
         return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(new Errors.Body(ex.getMessage(), null, Correlation.of(exchange), null, detail)));
+    }
+
+    /** A deleted resource: 410 with its tombstone as the detail, so the page can say until when the name stays reserved. */
+    @ExceptionHandler(GoneException.class)
+    public Mono<ResponseEntity<Errors.Body>> gone(GoneException ex, ServerWebExchange exchange) {
+        return Mono.just(ResponseEntity.status(HttpStatus.GONE).body(new Errors.Body(ex.getMessage(), null, Correlation.of(exchange), null, ex.tombstone())));
     }
 
     @ExceptionHandler(PlatformException.class)

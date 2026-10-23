@@ -1,8 +1,31 @@
 # Endpoints beyond the pinned contract
 
-`contracts.lock` pins the hub's `console-bff.yaml`. The web app's phase-1 thread asked for the
-following additions (its note: `console-web-phase-1/bff-contract-additions.md`), which this
-service serves today and which the hub should fold into the contract.
+`contracts.lock` pins the hub's `console-bff.yaml` (console-root--phase-0 at b40ccc9). The web
+app's phase-1 thread asked for the additions below (its note:
+`console-web-phase-1/bff-contract-additions.md`); the hub folded them into the contract at
+29cdcf9 and e8992fb, and this file now only records what this service answers beyond the pinned
+text, for the next contract revision.
+
+## Resources
+
+The resource operations (`/console/v1/r/{type}…`) are served as the contract says, over the state
+service, with these details the contract does not spell out yet:
+
+- `ConsoleResource` also carries `observedAt`, `observedStatus`, `changes` (while `updating`),
+  `lastError`, `lastJobId`, `requestedBy` and `deletedAt`, as the state service's record has them.
+- `ConsoleResourceDetail.can` lists the catalog's verbs the account's policies allow on the
+  resource and `tag` when `<service>:tag` is allowed; `Finding.can` is `revert, accept, ignore`
+  when `<service>:update` is allowed.
+- `ResourceRef` carries `id`, the platform's registry id, beside the wfrn, so a lineage node the
+  platform has no wfrn for is still addressable.
+- `GET /r/{type}/{wfrn}` answers the state service's `ETag` and honours `If-None-Match` (304);
+  `PATCH` honours `If-Match` against the resource's `version` (409 when it moved on).
+- `410` carries the tombstone as `detail` (`wfrn`, `deletedAt`, `tombstoneUntil`, `lastVersion`);
+  `/activity` stays readable for a deleted resource.
+- A destructive verb (`delete` and anything the catalog marks destructive) needs `confirm: true`
+  (400 `confirm.required` otherwise) and a fresh sign-in (`console.auth.step-up`).
+- `POST /r/{type}:batch` answers 400 `bulk.unsupported` for a verb without a batch route and
+  400 `required` for a row without `wfrn` on a verb other than create.
 
 ## Session
 

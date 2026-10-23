@@ -45,12 +45,12 @@ public class DemoDirectory {
         person("ana", "Ana Costa", List.of("team-data", "developer", "dba"));
         person("mia", "Mia Chen", List.of("team-platform", "compute-approvers", "platform-approvers"));
         person("noah", "Noah Berg", List.of("team-network"));
-        join("gonzalo", ACCOUNT_COMPUTE, List.of("account-admins"), List.of(ManagedRoles.ADMIN));
-        join("gonzalo", ACCOUNT_DATA, List.of("account-admins"), List.of(ManagedRoles.ADMIN));
-        join("dana", ACCOUNT_COMPUTE, List.of("operators", "compute-approvers"), List.of(ManagedRoles.OPERATOR));
-        join("mateo", ACCOUNT_COMPUTE, List.of("operators"), List.of(ManagedRoles.OPERATOR));
-        join("raj", ACCOUNT_DATA, List.of("operators", "data-approvers"), List.of(ManagedRoles.OPERATOR));
-        join("ana", ACCOUNT_DATA, List.of("operators", "viewers"), List.of(ManagedRoles.OPERATOR, ManagedRoles.VIEWER));
+        join("gonzalo", ACCOUNT_COMPUTE, List.of("owners"), List.of(ManagedRoles.ADMIN));
+        join("gonzalo", ACCOUNT_DATA, List.of("owners"), List.of(ManagedRoles.ADMIN));
+        join("dana", ACCOUNT_COMPUTE, List.of("members", "compute-approvers"), List.of(ManagedRoles.OPERATOR));
+        join("mateo", ACCOUNT_COMPUTE, List.of("members"), List.of(ManagedRoles.OPERATOR));
+        join("raj", ACCOUNT_DATA, List.of("members", "data-approvers"), List.of(ManagedRoles.OPERATOR));
+        join("ana", ACCOUNT_DATA, List.of("members", "viewers"), List.of(ManagedRoles.OPERATOR, ManagedRoles.VIEWER));
         join("mia", ACCOUNT_COMPUTE, List.of("viewers", "compute-approvers"), List.of(ManagedRoles.VIEWER));
     }
 

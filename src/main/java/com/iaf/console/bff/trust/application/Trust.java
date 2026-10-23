@@ -75,6 +75,7 @@ public class Trust {
                 .subject(token.subject())
                 .claim(SERVICE_CLAIM, properties.issuer())
                 .claim("groups", token.groups())
+                .claim("roles", token.roles())
                 .jwtID(UUID.randomUUID().toString())
                 .issueTime(Date.from(now))
                 .expirationTime(Date.from(now.plus(lifetime)));

@@ -26,8 +26,8 @@ class LoginFlowTest extends DemoApp {
         assertEquals("gonzalo@example.com", view.path("user").path("email").asText());
         assertEquals(COMPUTE, view.path("account").path("accountId").asText());
         assertEquals("global", view.path("region").asText());
-        assertTrue(roles(view).contains("admin"), "roles: " + roles(view));
-        assertTrue(view.path("account").path("groups").toString().contains("account-admins"));
+        assertTrue(roles(view).contains("account-admin"), "roles: " + roles(view));
+        assertTrue(view.path("account").path("groups").toString().contains("owners"));
         assertFalse(gonzalo.csrf().isBlank());
         assertTrue(view.path("stepUp").path("actions").toString().contains("*:delete"));
         assertNotNull(view.path("expiresAt").asText(null));

@@ -3,6 +3,7 @@ package com.iaf.console.bff.live.application;
 import java.time.Clock;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -27,7 +28,8 @@ public class LiveConfiguration {
 
     @Bean
     @ConditionalOnProperty(prefix = "console.live.relay", name = "enabled", havingValue = "true", matchIfMissing = true)
-    public PlatformFeedRelay platformFeedRelay(PlatformClients clients, LiveHub hub, Types types, Regions regions, LiveProperties properties) {
-        return new PlatformFeedRelay(clients, hub, types, regions, properties);
+    public PlatformFeedRelay platformFeedRelay(PlatformClients clients, LiveHub hub, Types types, Regions regions, LiveProperties properties,
+            ObjectProvider<FeedListener> listeners) {
+        return new PlatformFeedRelay(clients, hub, types, regions, properties, listeners.orderedStream().toList());
     }
 }

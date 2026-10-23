@@ -1,6 +1,7 @@
 package com.iaf.console.bff.live.application;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -32,16 +33,23 @@ public class PlatformFeedRelay implements SmartLifecycle {
     private final Types types;
     private final Regions regions;
     private final LiveProperties properties;
+    private final List<FeedListener> listeners;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicLong relayed = new AtomicLong();
     private volatile Disposable subscription;
 
     public PlatformFeedRelay(PlatformClients clients, LiveHub hub, Types types, Regions regions, LiveProperties properties) {
+        this(clients, hub, types, regions, properties, List.of());
+    }
+
+    public PlatformFeedRelay(PlatformClients clients, LiveHub hub, Types types, Regions regions, LiveProperties properties,
+            List<FeedListener> listeners) {
         this.clients = clients;
         this.hub = hub;
         this.types = types;
         this.regions = regions;
         this.properties = properties;
+        this.listeners = listeners == null ? List.of() : List.copyOf(listeners);
     }
 
     @Override
@@ -60,6 +68,13 @@ public class PlatformFeedRelay implements SmartLifecycle {
                     }
                     if (PlatformEvents.changesRegions(event)) {
                         regions.refresh();
+                    }
+                    for (FeedListener listener : listeners) {
+                        try {
+                            listener.onFeedEvent(event);
+                        } catch (RuntimeException e) {
+                            log.warn("a feed listener failed on {} ({}): {}", event.key(), event.type(), e.toString());
+                        }
                     }
                     PlatformEvents.toLive(event).ifPresent(mapped -> {
                         hub.publish(mapped.accountId(), mapped.event());

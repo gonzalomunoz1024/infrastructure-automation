@@ -23,7 +23,7 @@ class RoleConventionsTest {
 
     @Test
     void theStrongestRoleWins() {
-        assertEquals(RoleConventions.ADMIN, RoleConventions.strongest(List.of("viewer", "admin", "operator")));
+        assertEquals(RoleConventions.ADMIN, RoleConventions.strongest(List.of("viewer", "account-admin", "operator")));
         assertEquals(RoleConventions.OPERATOR, RoleConventions.strongest(List.of("viewer", "operator")));
         assertEquals(RoleConventions.VIEWER, RoleConventions.strongest(List.of()));
     }

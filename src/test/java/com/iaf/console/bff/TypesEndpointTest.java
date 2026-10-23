@@ -84,7 +84,7 @@ class TypesEndpointTest extends DemoApp {
         assertEquals("operator", denied.path("suggestedRole").asText());
         assertTrue(denied.path("requestable").asBoolean());
         assertTrue(denied.path("reason").asText().contains("viewer"), denied.toString());
-        assertEquals("admin", action(vm, "delete").path("denied").path("suggestedRole").asText());
+        assertEquals("account-admin", action(vm, "delete").path("denied").path("suggestedRole").asText());
     }
 
     @Test

@@ -36,8 +36,11 @@ public class Types {
 
     private static final Logger log = LoggerFactory.getLogger(Types.class);
 
-    /** The descriptors of one account and region, before any policy is applied. */
-    public record Catalogue(List<ConsoleType> types, String contentHash) {
+    /** The descriptors of one account and region, before any policy is applied, with the catalog entries behind them by workflow. */
+    public record Catalogue(List<ConsoleType> types, Map<String, CatalogEntry> entries, String contentHash) {
+        public Catalogue {
+            entries = entries == null ? Map.of() : Map.copyOf(entries);
+        }
     }
 
     private final PlatformClients clients;
@@ -118,8 +121,14 @@ public class Types {
                     types.sort((a, b) -> a.key().compareTo(b.key()));
                     StringBuilder hash = new StringBuilder();
                     types.forEach(t -> hash.append(t.etag()).append('|'));
+                    Map<String, CatalogEntry> entries = new java.util.HashMap<>();
+                    for (CatalogEntry entry : catalog) {
+                        if (entry.workflow() != null) {
+                            entries.putIfAbsent(entry.workflow(), entry);
+                        }
+                    }
                     log.debug("descriptors loaded for account {} region {}: {} types", session.accountId(), session.region(), types.size());
-                    return new Catalogue(types, Descriptors.sha256(hash.toString()));
+                    return new Catalogue(types, entries, Descriptors.sha256(hash.toString()));
                 });
     }
 
@@ -155,6 +164,25 @@ public class Types {
             Map<String, ConsoleAction> byVerb = new java.util.LinkedHashMap<>();
             type.actions().forEach(a -> byVerb.put(a.verb(), a));
             return byVerb;
+        });
+    }
+
+    /** The type a resource type name belongs to, greyed for the session's user; 404 when unknown or not in the region. */
+    public Mono<ConsoleType> byType(Session session, String type) {
+        return catalogue(session).flatMap(catalogue -> {
+            ConsoleType found = catalogue.types().stream().filter(t -> t.type().equals(type)).findFirst().orElse(null);
+            if (found == null) {
+                return Mono.error(NotFoundException.of("type", type));
+            }
+            return grey(session, List.of(found)).map(types -> types.get(0));
+        });
+    }
+
+    /** The catalog entry of a workflow, as the platform published it; 404 when the catalog has none. */
+    public Mono<CatalogEntry> entry(Session session, String workflow) {
+        return catalogue(session).flatMap(catalogue -> {
+            CatalogEntry entry = workflow == null ? null : catalogue.entries().get(workflow);
+            return entry == null ? Mono.error(NotFoundException.of("workflow", String.valueOf(workflow))) : Mono.just(entry);
         });
     }
 

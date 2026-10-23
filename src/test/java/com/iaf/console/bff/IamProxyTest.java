@@ -29,7 +29,7 @@ class IamProxyTest extends DemoApp {
         assertEquals(404, console.get("/console/v1/iam/users/user_raj", gonzalo).status(), "raj is not a member of the compute account");
         Console.Reply groups = console.get("/console/v1/iam/groups", gonzalo);
         assertEquals(200, groups.status(), groups.body());
-        assertTrue(groups.json().path("items").toString().contains("account-admins"));
+        assertTrue(groups.json().path("items").toString().contains("owners"));
         Console.Reply roles = console.get("/console/v1/iam/roles", gonzalo);
         assertEquals(200, roles.status(), roles.body());
         assertTrue(roles.json().path("items").toString().contains("operator"));
@@ -51,7 +51,7 @@ class IamProxyTest extends DemoApp {
         assertEquals("console-iam", denied.path("layer").asText());
         assertTrue(denied.path("action").asText().startsWith("iam:"), denied.toString());
         assertEquals("viewer", denied.path("role").asText());
-        assertEquals("admin", denied.path("suggestedRole").asText());
+        assertEquals("account-admin", denied.path("suggestedRole").asText());
         Console.Reply noCsrf = console.send(HttpMethod.POST, "/console/v1/iam/users", mia, Map.of("userId", "user_noah"), Map.of(Console.CSRF_HEADER, ""));
         assertEquals(403, noCsrf.status());
         assertTrue(noCsrf.json().path("denied").isMissingNode());
@@ -64,7 +64,7 @@ class IamProxyTest extends DemoApp {
                 Map.of("userId", "user_noah", "email", "noah@example.com", "name", "Noah Berg", "groups", List.of("viewers")));
         assertTrue(added.status() == 200 || added.status() == 201, added.body());
         assertTrue(added.json().path("roles").toString().contains("viewer"), added.body());
-        Console.Reply updated = console.send(HttpMethod.PATCH, "/console/v1/iam/users/user_noah", gonzalo, Map.of("groups", List.of("operators")), Map.of());
+        Console.Reply updated = console.send(HttpMethod.PATCH, "/console/v1/iam/users/user_noah", gonzalo, Map.of("groups", List.of("members")), Map.of());
         assertEquals(200, updated.status(), updated.body());
         assertTrue(updated.json().path("roles").toString().contains("operator"), updated.body());
         Console.Reply removed = console.send(HttpMethod.DELETE, "/console/v1/iam/users/user_noah", gonzalo, null, Map.of());
@@ -100,7 +100,7 @@ class IamProxyTest extends DemoApp {
         JsonNode request = requested.json();
         String requestId = request.path("requestId").asText();
         assertEquals("pending", request.path("status").asText());
-        assertEquals("admin", request.path("role").asText());
+        assertEquals("account-admin", request.path("role").asText());
         assertEquals("user_mateo", request.path("requester").path("userId").asText());
         assertTrue(request.path("approvers").toString().contains("user_gonzalo"), request.toString());
         Console.Reply duplicate = console.post("/console/v1/access-requests", mateo,

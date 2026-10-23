@@ -350,7 +350,7 @@ public class DemoIdentityRoutes {
     private List<Map<String, Object>> groups(String accountId) {
         Map<String, Map<String, Object>> byName = new LinkedHashMap<>();
         for (String role : ManagedRoles.ALL) {
-            String name = ManagedRoles.ADMIN.equals(role) ? "account-admins" : role + "s";
+            String name = ManagedRoles.groupOf(role);
             byName.put(name, group(accountId, name, "Members hold the managed role " + role, List.of(role), true));
         }
         for (Map.Entry<DemoPerson, DemoMembership> e : directory.members(accountId)) {
