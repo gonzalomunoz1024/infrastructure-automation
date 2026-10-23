@@ -350,7 +350,12 @@ paths:
     post:
       operationId: createResource
       summary: Create a resource
-      description: Mints the wfrn, then starts the type's create workflow with the delegation and the context. The resource shows at once in `pending`.
+      description: >-
+        Mints the wfrn, then starts the type's create workflow with the delegation and the context.
+        The resource shows at once in `pending`. A budget of the account with `blockCreates` that is
+        over refuses the create with 409 `budget.exceeded`, naming the budgets in `detail.budgets`
+        (the same rule the preview shows); when the cost service cannot answer within 2 seconds the
+        create goes ahead (decision 25).
       tags: [Commands]
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
@@ -1190,6 +1195,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/PriceBinding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /console/v1/cost/chargeback:
     get:
       operationId: getChargeback
@@ -1225,6 +1231,9 @@ paths:
           headers:
             Content-Disposition: { schema: { type: string } }
             X-Content-Sha256: { schema: { type: string } }
+            X-Console-Skipped-Accounts:
+              description: 'With `scope=organization`, the comma-separated accounts left out for want of `cost:export`'
+              schema: { type: string }
           content:
             text/csv:
               schema: { type: string }
