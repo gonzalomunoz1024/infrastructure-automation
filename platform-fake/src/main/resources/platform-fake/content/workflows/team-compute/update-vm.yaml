@@ -1,0 +1,76 @@
+# The update-vm sample of the hub's platform-changes appendix (P-15), with the approval for
+# production the change asks for. It is not in the platform's sample content yet.
+apiVersion: iaf.platform/v1
+kind: Workflow
+metadata:
+  name: update-vm
+  title: Update VM
+  noun: vm
+  verb: update
+  persona: developer
+  owner: team-compute
+  folder: Compute
+  tags: [vsphere]
+  version: 1.0.0
+  description: Change a virtual machine's CPU and memory, then record the new size.
+api:
+  method: PATCH
+  path: /api/v1/vms/{vmId}
+  input:
+    type: object
+    required: [vmId]
+    properties:
+      vmId: { type: string, title: VM, x-resource: { type: vm } }
+      cpu: { type: integer, title: CPUs, enum: [2, 4, 8], x-console: { mutable: true } }
+      memoryGb: { type: integer, title: Memory (GiB), enum: [8, 16, 32], x-console: { mutable: true, format: gibibytes } }
+      reason: { type: string, title: Reason, x-console: { operational: true } }
+  response: { status: 202 }
+  preview: true
+policy:
+  rbac: [developer, ops, sre]
+workflow:
+  do:
+    - useVm:
+        name: Use VM
+        use: { type: vm, id: "{{ $input.vmId }}", checkAccess: true }
+        output: { as: vm }
+    - prodNeedsApproval:
+        name: Production?
+        switch:
+          - case: { when: "{{ $vm.attributes.environment == 'prod' }}", then: approval }
+          - default: resize
+    - approval:
+        name: Approve production resize
+        approval:
+          group: compute-approvers
+          message: "Resize {{ $vm.attributes.name }} to {{ $input.cpu ?? $vm.attributes.cpu }} CPUs and {{ $input.memoryGb ?? $vm.attributes.memoryGb }} GiB?"
+          timeout: 8h
+    - resize:
+        name: Resize in vSphere
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.update
+          input:
+            id: "{{ $vm.providerId ?? $input.vmId }}"
+            cpu: "{{ $input.cpu ?? $vm.attributes.cpu }}"
+            memoryGb: "{{ $input.memoryGb ?? $vm.attributes.memoryGb }}"
+        retry: { maxAttempts: 2, backoff: exponential }
+    - waitReady:
+        name: Wait for power on
+        call: provider
+        with:
+          provider: vsphere
+          action: vm.waitForPowerState
+          input: { id: "{{ $vm.providerId ?? $input.vmId }}", state: poweredOn, timeout: 600 }
+    - record:
+        name: Record new size
+        register:
+          type: vm
+          id: "{{ $input.vmId }}"
+          attributes:
+            cpu: "{{ $input.cpu ?? $vm.attributes.cpu }}"
+            memoryGb: "{{ $input.memoryGb ?? $vm.attributes.memoryGb }}"
+  outputs:
+    cpu: "{{ $input.cpu ?? $vm.attributes.cpu }}"
+    memoryGb: "{{ $input.memoryGb ?? $vm.attributes.memoryGb }}"

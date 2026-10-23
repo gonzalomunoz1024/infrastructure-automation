@@ -1,0 +1,11 @@
+# The one region for now, exactly as the platform change P-07 shows it. It becomes regions/global.yaml
+# in the platform's content (P-15) and is what platform-fake serves from GET /api/v1/regions.
+apiVersion: iaf.platform/v1
+kind: Region
+metadata:
+  name: global
+  title: Global
+spec:
+  partition: wf
+  status: available              # available | opt-in | retired
+  environments: [dev, test, prod]

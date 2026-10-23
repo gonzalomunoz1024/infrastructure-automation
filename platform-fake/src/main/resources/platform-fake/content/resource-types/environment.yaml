@@ -1,0 +1,18 @@
+apiVersion: iaf.platform/v1
+kind: ResourceType
+metadata:
+  name: environment
+  plural: environments
+  owner: team-platform
+  description: A composite web environment (database, web servers, load balancer).
+schema:
+  type: object
+  required: [name, stage]
+  properties:
+    name: { type: string, examples: [shop-prod, shop-dev] }
+    stage: { type: string, examples: [prod, dev] }
+    url: { type: string, examples: ["https://shop.example.com", "https://shop-dev.example.com"] }
+    database: { type: string }
+    webServers: { type: array, items: { type: string } }
+states: [building, ready, deprecated, retired]
+producedBy: web-environment

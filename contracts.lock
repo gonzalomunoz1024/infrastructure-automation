@@ -1,0 +1,9 @@
+# contracts.lock
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root--stack
+commit: 4b8acf47ee8a77ba6628e4a4cf26d97e13179b10
+files:
+  contracts/platform/openapi-target.yaml: sha256:3b5754e62d308b4f2387f8f0de572060e426de5ae73095ac9cc37a03a3e6c696
+  contracts/platform/asyncapi-target.yaml: sha256:94e3abdf95b7db8e41ad87860e3b71b0265a48d014ae03732e5991f8da879d63
+  contracts/platform/used-operations.txt: sha256:87981ad1c2b1e05d353a434a9a1141d6acb68c90a75db10aa35fdaf736358d8d
+  contracts/wfrn/fixtures.json: sha256:55115d10638a19f4beafe3c2560dae5b856239b63cb4665c986aad759181220d

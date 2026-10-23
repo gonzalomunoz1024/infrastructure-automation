@@ -1,0 +1,47 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: backup
+  title: Backup service
+  owner: team-platform
+  version: 1.0.0
+  description: The enterprise backup scheduler. No OpenAPI spec; endpoints are described with one example each.
+spec:
+  type: http
+  endpoints:
+    dev: https://backup-dev.example.com/api
+    test: https://backup-test.example.com/api
+    prod: https://backup.example.com/api
+  auth: { type: header, header: X-Api-Key, credential: vault:backup/api-key }
+  actions:
+    - id: jobs.list
+      title: List backup jobs
+      operation: { method: GET, path: "/jobs?target={target}&state={state}" }
+      effect: read
+      retry: safe
+      input:
+        type: object
+        properties:
+          target: { type: string }
+          state: { type: string, enum: [running, done, failed] }
+      example:
+        items: []
+        total: 0
+      sample: { items: [], total: 0 }
+    - id: jobs.create
+      title: Start a backup
+      operation: { method: POST, path: /jobs }
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [target]
+        properties:
+          target: { type: string }
+          retentionDays: { type: integer, default: 30 }
+      example: { id: bk-9001, state: running }
+      sample: { id: "bk-{{ $job.seq }}", state: running }
+  errors:
+    - { match: { status: 429 }, class: rate_limited, retry: true }
+  slo: { successRate: 99.0, p95Ms: 1200 }
+  alerts: { channel: "#platform-alerts" }

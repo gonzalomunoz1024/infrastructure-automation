@@ -1,0 +1,167 @@
+apiVersion: iaf.platform/v1
+kind: Provider
+metadata:
+  name: mongodb
+  title: MongoDB Ops Manager
+  owner: team-data
+  version: 2.1.0
+  description: Clusters, backups and health from Ops Manager.
+spec:
+  type: openapi
+  spec:
+    url: https://opsmanager.example.com/api/public/v1.0/openapi.json
+    sha256: 5a1e2d3c4b5a6978869584736251403f2e1d0c9b8a7f6e5d4c3b2a1908f7e6d5
+  endpoints:
+    dev: https://opsmanager-dev.example.com/api/public/v1.0
+    test: https://opsmanager-test.example.com/api/public/v1.0
+    prod: https://opsmanager.example.com/api/public/v1.0
+  auth: { type: basic, credential: vault:mongodb/ops-manager }
+  actions:
+    - id: cluster.get
+      title: Get cluster
+      operation: getCluster
+      effect: read
+      retry: safe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string }
+          version: { type: string }
+          tier: { type: string }
+          state: { type: string }
+          connectionString: { type: string }
+      sample:
+        id: "{{ $input.id }}"
+        name: "orders-{{ $input.id.replace('db-', '') }}"
+        version: "7.0"
+        tier: M30
+        state: healthy
+        connectionString: "mongodb+srv://orders.example.com"
+    - id: cluster.health
+      title: Cluster health
+      operation: getClusterHealth
+      effect: read
+      retry: safe
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      output:
+        type: object
+        properties:
+          state: { type: string }
+          replicationLagSeconds: { type: number }
+          members: { type: integer }
+      sample: { state: healthy, replicationLagSeconds: 1.2, members: 3 }
+    - id: cluster.create
+      title: Create cluster
+      operation: createCluster
+      effect: create
+      retry: unsafe
+      plan: cluster.get
+      input:
+        type: object
+        required: [name, tier]
+        properties:
+          name: { type: string }
+          tier: { type: string, enum: [M10, M30, M60] }
+          environment: { type: string }
+          version: { type: string, default: "7.0" }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string }
+          version: { type: string }
+          state: { type: string }
+          connectionString: { type: string }
+      sample:
+        id: "db-{{ $job.seq }}"
+        name: "{{ $input.name }}"
+        version: "7.0"
+        state: creating
+        connectionString: "mongodb+srv://{{ $input.name }}.example.com"
+        monthlyCost: 57
+    - id: cluster.upgrade
+      title: Upgrade cluster
+      operation: upgradeCluster
+      effect: change
+      retry: unsafe
+      approval: required
+      input:
+        type: object
+        required: [id, version]
+        properties:
+          id: { type: string }
+          version: { type: string }
+      sample: { id: "{{ $input.id }}", version: "{{ $input.version }}", state: upgrading }
+    - id: cluster.waitForState
+      title: Wait for cluster state
+      operation: getCluster
+      effect: read
+      retry: safe
+      input:
+        type: object
+        required: [id, state]
+        properties:
+          id: { type: string }
+          state: { type: string }
+          timeout: { type: integer, default: 1800 }
+      sample: { id: "{{ $input.id }}", state: "{{ $input.state }}", waitedSeconds: 310 }
+    - id: cluster.delete
+      title: Delete cluster
+      operation: deleteCluster
+      effect: delete
+      retry: unsafe
+      approval: required
+      plan: cluster.get
+      verify: { action: cluster.get, expect: notFound }
+      input:
+        type: object
+        required: [id]
+        properties:
+          id: { type: string }
+      sample: { id: "{{ $input.id }}", deleted: true }
+    - id: backup.snapshot
+      title: Take snapshot
+      operation: createSnapshot
+      effect: create
+      retry: unsafe
+      input:
+        type: object
+        required: [clusterId]
+        properties:
+          clusterId: { type: string }
+          description: { type: string }
+      output:
+        type: object
+        properties:
+          id: { type: string }
+          clusterId: { type: string }
+      sample: { id: "snapshot-{{ $job.seq }}", clusterId: "{{ $input.clusterId }}" }
+    - id: backup.restore
+      title: Restore snapshot
+      operation: restoreSnapshot
+      effect: change
+      retry: unsafe
+      approval: required
+      input:
+        type: object
+        required: [clusterId, snapshotId]
+        properties:
+          clusterId: { type: string }
+          snapshotId: { type: string }
+      sample: { clusterId: "{{ $input.clusterId }}", snapshotId: "{{ $input.snapshotId }}", state: restoring }
+  errors:
+    - { match: { status: 404 }, class: not_found, retry: false }
+    - { match: { status: 429 }, class: rate_limited, retry: true }
+    - { match: { status: 503 }, class: unavailable, retry: true }
+  slo: { successRate: 99.0, p95Ms: 1500 }
+  alerts: { channel: "#data-alerts" }
