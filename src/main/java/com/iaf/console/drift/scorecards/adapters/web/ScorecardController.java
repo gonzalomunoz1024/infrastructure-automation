@@ -17,7 +17,6 @@ import org.springframework.web.server.ServerWebExchange;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.application.IdempotentCommands;
-import com.iaf.console.drift.drift.ports.outbound.OnBehalfOfPort;
 import com.iaf.console.drift.scorecards.application.RemediationService;
 import com.iaf.console.drift.scorecards.application.ScorecardQueries;
 import com.iaf.console.drift.scorecards.application.ScorecardSnapshots;
@@ -33,7 +32,9 @@ import reactor.core.publisher.Mono;
  * The scorecards API of {@code contracts/openapi/console-drift-service.yaml} (WP 9.6): the packs,
  * an account's scorecard, the heat map of several accounts (console-internal callers only), a
  * rule's failing resources, one resource's results, and the one-click fix, which relays the BFF's
- * {@code X-On-Behalf-Of} so the job names the person who asked. Nothing here fixes anything on its own.
+ * {@code X-On-Behalf-Of} so the change names the person who asked, and which a person may ask for only
+ * with {@code scorecards:remediate} and the fix's own action on the resource (403 otherwise). Nothing
+ * here fixes anything on its own.
  */
 @RestController
 public final class ScorecardController {
@@ -119,7 +120,7 @@ public final class ScorecardController {
         }
         Wfrn.parse(body.wfrn());
         AccountScope scope = scope(exchange, accountId != null || !principal.internal() ? accountId : Wfrn.parse(body.wfrn()).account());
-        return remediation.remediate(scope, pack, ruleId, body, idempotencyKey, requestId, onBehalfOf, person(principal))
+        return remediation.remediate(scope, pack, ruleId, body, idempotencyKey, requestId, onBehalfOf, principal)
                 .map(ScorecardController::respond);
     }
 
@@ -165,14 +166,6 @@ public final class ScorecardController {
             throw new NotFoundException("not found");
         }
         return principal;
-    }
-
-    /** The person a fix runs for: the caller when it is a person of the account; none for a service, which relays one. */
-    static OnBehalfOfPort.Person person(ConsolePrincipal principal) {
-        if (principal.internal()) {
-            return null;
-        }
-        return new OnBehalfOfPort.Person(principal.subject(), null, null, principal.groups());
     }
 
     static ResponseEntity<ObjectNode> respond(IdempotentCommands.Outcome outcome) {

@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.iaf.console.drift.auth.application.WriteGuard;
 import com.iaf.console.drift.drift.application.IdempotentCommands;
 import com.iaf.console.drift.drift.ports.outbound.OnBehalfOfPort;
 import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
@@ -100,8 +101,9 @@ public class ScorecardConfiguration {
 
     @Bean
     public RemediationService remediationService(ScorecardQueries queries, EvaluationStorePort evaluations, WatchStorePort watches, PlatformPort platform,
-            StateServicePort state, WorkflowStarterPort starter, OnBehalfOfPort onBehalfOf, IdempotentCommands idempotent, ScorecardMetrics metrics) {
-        return new RemediationService(queries, evaluations, watches, platform, state, starter, onBehalfOf, idempotent, metrics);
+            StateServicePort state, WorkflowStarterPort starter, OnBehalfOfPort onBehalfOf, WriteGuard guard, IdempotentCommands idempotent,
+            ScorecardMetrics metrics) {
+        return new RemediationService(queries, evaluations, watches, platform, state, starter, onBehalfOf, guard, idempotent, metrics);
     }
 
     @Bean

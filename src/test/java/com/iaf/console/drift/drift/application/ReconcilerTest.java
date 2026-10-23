@@ -325,7 +325,8 @@ class ReconcilerTest {
         }
 
         @Override
-        public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String requestId, String idempotencyKey) {
+        public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String onBehalfOf, String requestId,
+                String idempotencyKey) {
             calls.add("tag:" + wfrn);
             return Mono.empty();
         }

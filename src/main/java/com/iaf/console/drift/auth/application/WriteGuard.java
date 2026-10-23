@@ -33,6 +33,18 @@ public final class WriteGuard {
         return decide(caller, name.service() + ":" + verb, wfrn);
     }
 
+    /**
+     * As {@link #require}, for an action the console itself names rather than the resource's service
+     * ({@code scorecards:remediate}), on the resource.
+     */
+    public Mono<Void> requireAction(ConsolePrincipal caller, String action, String wfrn) {
+        if (caller.internal()) {
+            return Mono.empty();
+        }
+        Wfrn.parse(wfrn);
+        return decide(caller, action, wfrn);
+    }
+
     /** As {@link #require}, on every resource of a type in an account and region, for a command that makes one (an import). */
     public Mono<Void> requireOnType(ConsolePrincipal caller, String service, String verb, String accountId, String region, String type) {
         if (caller.internal()) {
