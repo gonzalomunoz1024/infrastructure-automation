@@ -501,7 +501,7 @@ components:
       type: object
       properties:
         reason: { type: string, maxLength: 1000 }
-        actor: { type: string, description: The console user, when the BFF sends it for one }
+        actor: { type: string, description: "The console user, when the BFF sends it for one" }
     DriftField:
       type: object
       required: [path]

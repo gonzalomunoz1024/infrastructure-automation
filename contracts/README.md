@@ -90,7 +90,9 @@ npm run check:platform -- --from contracts/platform/openapi-c9529d5.json   # the
 node scripts/platform-contract-check.mjs --from http://localhost:8080/api/v1/openapi.json --header 'X-User: gonzalo'   # against a running platform
 ```
 
-`npm run check` fails on any problem; the platform check fails only when something the console
-uses has diverged from the target, and prints `landed`, `pending` or `diverged` per operation,
-grouped by platform change. CI runs both on every push and pull request, and the platform check
+`npm run check` fails on any problem, including an entry with no value: in a flow mapping a comma
+ends a plain scalar, so `{ type: string, description: The job, when there is one }` cuts the
+description short and turns `when there is one` into a stray key; quote a description that holds a
+comma. The platform check fails only when something the console uses has diverged from the target,
+and prints `landed`, `pending` or `diverged` per operation, grouped by platform change. CI runs both on every push and pull request, and the platform check
 nightly against a freshly built platform `main` (hub README, "How services share contracts").

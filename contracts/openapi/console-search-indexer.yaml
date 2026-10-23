@@ -97,7 +97,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/SearchHit' }
                   next: { $ref: '#/components/schemas/Cursor' }
-                  total: { type: integer, description: The number of hits when it is cheap to count, absent otherwise }
+                  total: { type: integer, description: "The number of hits when it is cheap to count, absent otherwise" }
                   tookMs: { type: integer }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
