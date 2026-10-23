@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type QueryKey = string | readonly unknown[]
 
-/** 'jobs' · ['job', id] → 'job/<id>' — prefixes make invalidation easy. */
+/** 'jobs' · ['job', id] → 'job/<id>': prefixes make invalidation easy. */
 export function keyOf(key: QueryKey): string {
   if (typeof key === 'string') return key
   return key.map((part) => (typeof part === 'string' ? part : JSON.stringify(part ?? null))).join('/')

@@ -3,7 +3,7 @@ import { useConsole } from '../app/console'
 import { navigate, pathFor, type PageProps } from '../app/router'
 import { DEMO_ACCOUNTS, formatAccountId, setAccount } from '../lib/accounts'
 import { clearDescriptorCache } from '../lib/api'
-import { DEV_IDENTITIES, setCurrentUser, useCurrentUser } from '../lib/identity'
+import { DEV_IDENTITIES, identityOf, setCurrentUser, useCurrentUser } from '../lib/identity'
 import { clearQueryCache } from '../lib/queries'
 import { clearRecent } from '../lib/recent'
 import { setRegionName } from '../lib/regions'
@@ -24,6 +24,7 @@ export default function SettingsPage(_props: PageProps) {
   const toast = useToast()
   const { me, account, region, regions, refetch } = useConsole()
   const user = useCurrentUser()
+  const identity = identityOf(user)
 
   const clearCaches = () => {
     clearDescriptorCache()
@@ -56,7 +57,8 @@ export default function SettingsPage(_props: PageProps) {
             <CardRow label="Development identity" description="Sent as the X-User header; the sign-in page lists the same people.">
               <Select
                 size="sm"
-                ariaLabel="Development identity"
+                // Atlas's Select names its trigger with aria-label alone, so the value goes in the name too (WCAG 2.5.3)
+                ariaLabel={identity ? `Development identity: ${identity.name}` : 'Development identity'}
                 value={user ?? ''}
                 options={DEV_IDENTITIES.map((d) => ({ value: d.id, label: d.name, hint: d.roles.join(', ') }))}
                 onChange={(id) => {
@@ -83,10 +85,10 @@ export default function SettingsPage(_props: PageProps) {
 
         <Card title="Scope" subtitle="The account and region every page is read in">
           <CardRow label="Account" description="Demo accounts until the platform serves them (phase 2).">
-            <Select size="sm" ariaLabel="Account" value={account.id} options={DEMO_ACCOUNTS.map((a) => ({ value: a.id, label: a.name, hint: formatAccountId(a.id) }))} onChange={setAccount} mono />
+            <Select size="sm" ariaLabel={`Account: ${account.name}`} value={account.id} options={DEMO_ACCOUNTS.map((a) => ({ value: a.id, label: a.name, hint: formatAccountId(a.id) }))} onChange={setAccount} mono />
           </CardRow>
           <CardRow label="Region" description={regions.length <= 1 ? 'The platform serves one region.' : 'From GET /api/v1/regions.'}>
-            {regions.length <= 1 ? <span className="text-sm text-secondary">{region.title}</span> : <Select size="sm" ariaLabel="Region" value={region.name} options={regions.map((r) => ({ value: r.name, label: r.title, hint: r.name }))} onChange={setRegionName} />}
+            {regions.length <= 1 ? <span className="text-sm text-secondary">{region.title}</span> : <Select size="sm" ariaLabel={`Region: ${region.title}`} value={region.name} options={regions.map((r) => ({ value: r.name, label: r.title, hint: r.name }))} onChange={setRegionName} />}
           </CardRow>
         </Card>
 

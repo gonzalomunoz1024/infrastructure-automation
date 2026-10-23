@@ -29,7 +29,7 @@ brings it.
 | Package                | Path                   | What it is                                                                                                                                      |
 | ---------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@iaf/console`         | `console/`             | The web app: React 19, Vite 8, TypeScript 5.9, Tailwind 4, Vitest, Playwright                                                                   |
-| `@iaf/console-kit`     | `packages/console-kit` | The console's composites: forks of the platform's SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList behind a provider, plus VirtualTable, WfrnText, LifecycleBadge, PropertyFilterBar and CursorPager |
+| `@iaf/console-kit`     | `packages/console-kit` | The console's composites: forks of the platform's SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList behind a provider, plus VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar and CursorPager |
 | `@iaf/ui`              | `packages/ui`          | Atlas, the platform's design system, copied verbatim from the platform at `c9529d5`                                                             |
 | `@iaf/wfrn`            | `packages/wfrn`        | The TypeScript twin of the wfrn resource name, judged by the hub's fixtures                                                                      |
 
@@ -123,9 +123,10 @@ the sha256 of each copy (`packages/wfrn/SPEC.md`, `packages/wfrn/fixtures.json`)
    and the light accent `#0066cc` (5.6:1, and white on it 5.6:1); dark tertiary text becomes
    `#98989d`. The dark accent stays Atlas's `#0a84ff`, on which white text reads at 3.65:1: a
    note for P-14, since the console only overrides and never edits Atlas.
-6. **Status colour is in the dot.** `LifecycleBadge` and `JobStatusBadge` show a coloured dot
-   next to a label in the primary text colour, instead of Atlas's `StateTag`, whose coloured text
-   does not reach AA on tinted backgrounds.
+6. **Status colour is in the dot.** `LifecycleBadge` (resource states) and `StatusBadge` (jobs
+   and steps), both in console-kit, show a coloured dot next to a label in the primary text
+   colour, instead of Atlas's `StateTag`, whose coloured text does not reach AA on its tints; the
+   kit's `StepTimeline` uses `StatusBadge` for the same reason. A note for P-14.
 7. **wfrns are derived until the platform mints them.** A resource that carries a `wfrn` (P-05)
    is shown as named; one that does not gets a wfrn derived from the partition, region and
    account in the header plus its id, marked as derived (dimmed in lists, tagged on its page).
@@ -146,14 +147,28 @@ the sha256 of each copy (`packages/wfrn/SPEC.md`, `packages/wfrn/fixtures.json`)
 12. **Writes wait for phase 3.** The create, change and delete buttons are drawn, disabled for
     assistive technology, and say which phase brings them, so nobody wonders whether they are
     broken.
+13. **Accessible names contain the visible text (WCAG 2.5.3).** The header's search field and
+    menu triggers name themselves with visually hidden text instead of `aria-label`, so the name
+    holds the visible words at every width. Atlas's `UserMenu` names its collapsed trigger
+    "Account: name" over visible initials, and its `Select` names its trigger with `aria-label`
+    alone, which hides the chosen value; so the header has its own `UserMenuButton` over Atlas
+    primitives, and every `Select` the console renders is named "label: value". Both are notes
+    for P-14. The journey's axe check (zero serious or critical findings on the home, a list, a
+    resource and a request) keeps this true.
+14. **Descriptor hints are read as P-06 writes them.** `defaultSort: -created` sorts newest
+    first and a key no column has falls back to the name; `detail.tabs` names tabs by id
+    (`configuration`, `json`) and the console shows their labels, an empty list keeping the
+    defaults. A field's label is the schema's `title`, else its name split into words
+    (`memoryGb` is "Memory GB"). On a resource page the ungrouped fields read together, first,
+    before the named groups; in a form they keep their place.
 
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journey and its screenshots
-  src/app/        the shell: App, AppShell, Header, ServiceSidebar, Breadcrumbs, Footer,
-                  Search, PlatformFeed, the router, the console context
+  src/app/        the shell: App, AppShell, Header, UserMenuButton, ServiceSidebar, Breadcrumbs,
+                  Footer, Search, PlatformFeed, the router, the console context
   src/lib/        api (fetch, traceparent, X-User, ETag cache, paging), sse, queries,
                   descriptors, identity, accounts, regions, recent, store
   src/mock/       the mock server, its dataset and the browser installer, with the samples

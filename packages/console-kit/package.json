@@ -2,7 +2,7 @@
   "name": "@iaf/console-kit",
   "version": "0.1.0",
   "private": true,
-  "description": "The console's composite components: SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList forked from the platform at c9529d5 behind a ConsoleKitProvider, plus VirtualTable, WfrnText, LifecycleBadge, PropertyFilterBar and CursorPager",
+  "description": "The console's composite components: SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList forked from the platform at c9529d5 behind a ConsoleKitProvider, plus VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar and CursorPager",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

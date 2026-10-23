@@ -2,7 +2,7 @@
  * @iaf/console-kit: the console's components above Atlas. Forks of the platform's composites
  * (SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline, ProblemList)
  * fed through a ConsoleKitProvider instead of the platform's API client, plus the pieces the
- * console adds: VirtualTable, WfrnText, LifecycleBadge, PropertyFilterBar and CursorPager.
+ * console adds: VirtualTable, WfrnText, LifecycleBadge, StatusBadge, PropertyFilterBar and CursorPager.
  */
 
 export * from './types'
@@ -38,6 +38,7 @@ export { StepTimeline, buildOf, childJobIdOf, continuedAfterFailure, type StepTi
 export { VirtualTable, sortRows, type VirtualColumn, type VirtualSort, type VirtualTableProps, type CellValue } from './VirtualTable'
 export { WfrnText, displayWfrn, type WfrnTextProps } from './WfrnText'
 export { LifecycleBadge, lifecycleOf, isLifecycleClass, type LifecycleBadgeProps } from './LifecycleBadge'
+export { StatusBadge, statusTone, type StatusBadgeProps, type StatusTone } from './StatusBadge'
 export {
   PropertyFilterBar,
   parseToken,

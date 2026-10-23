@@ -55,7 +55,12 @@ export function WfrnText({ wfrn, max = 40, copy = true, href, size = 'sm', class
       ) : (
         <span className={cx(textClass, 'text-primary')}>{text}</span>
       )}
-      {copy && <CopyIconButton text={wfrn} label="Copy wfrn" className="shrink-0" />}
+      {copy && (
+        // copying must not open the row the name sits in
+        <span className="flex shrink-0" onClick={(e) => e.stopPropagation()}>
+          <CopyIconButton text={wfrn} label="Copy wfrn" />
+        </span>
+      )}
     </span>
   )
 }

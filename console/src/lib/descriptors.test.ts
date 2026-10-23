@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import rawTypes from '../mock/samples/resource-types.json'
 import rawCatalog from '../mock/samples/catalog.json'
 import { buildMockData } from '../mock/data'
-import { composeTypes, countByLifecycle, findType, groupServices, idOfWfrn, partsOfWfrn, purposeOf, serviceOf, singularOf, titleOf, wfrnOf, type ConsoleType } from './descriptors'
+import { DEFAULT_TABS, composeType, composeTypes, countByLifecycle, findType, groupServices, idOfWfrn, partsOfWfrn, purposeOf, serviceOf, singularOf, titleOf, wfrnOf, type ConsoleType } from './descriptors'
 import type { CatalogEntry, Resource, ResourceType } from './types'
 
 /*
@@ -110,6 +110,27 @@ describe('the hints of the mock copy', () => {
     const counts = countByLifecycle(vms, vm as ConsoleType)
     expect(counts.active + counts.pending + counts.deleted + counts.failed + counts.other + counts.updating + counts.deleting).toBe(vms.length)
     expect(counts.active).toBeGreaterThan(counts.pending)
+  })
+})
+
+describe('hints the samples do not carry', () => {
+  const vm = types.find((t) => t.name === 'vm') as ResourceType
+  const hinted = (console: unknown) => composeType({ ...vm, console: console as ResourceType['console'] }, catalog)
+
+  it('reads a descending default sort, an alias, and falls back to the name for a key no column has', () => {
+    const desc = hinted({ list: { defaultSort: '-created' } })
+    expect([desc.defaultSort, desc.defaultSortDir]).toEqual(['created', 'desc'])
+    const alias = hinted({ list: { defaultSort: 'createdAt' } })
+    expect([alias.defaultSort, alias.defaultSortDir]).toEqual(['created', 'asc'])
+    const unknown = hinted({ list: { defaultSort: '-nope' } })
+    expect([unknown.defaultSort, unknown.defaultSortDir]).toEqual(['name', 'asc'])
+    expect(composeType(vm, catalog).defaultSortDir).toBe('asc')
+  })
+
+  it('labels the tabs a hint names by id, and keeps the defaults for an empty list', () => {
+    expect(hinted({ detail: { tabs: ['configuration', 'drift', 'monitoring', 'json', 'cost-and-usage', 'drift'] } }).tabs).toEqual(['Configuration', 'Drift', 'Monitoring', 'JSON', 'Cost and usage'])
+    expect(hinted({ detail: { tabs: [] } }).tabs).toEqual([...DEFAULT_TABS])
+    expect(hinted({ detail: { tabs: ['', 7] } }).tabs).toEqual([...DEFAULT_TABS])
   })
 })
 

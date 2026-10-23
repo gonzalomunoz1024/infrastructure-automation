@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Icon, JsonView, StateTag, StatusDot, Tag, cx, duration, type DotKind } from '@iaf/ui'
+import { Icon, JsonView, StatusDot, Tag, cx, duration, type DotKind } from '@iaf/ui'
 import { useConsoleKit } from './provider'
 import type { JobStep, JobStepStatus, JobSummary } from './types'
 import { TextLink, When } from './common'
+import { StatusBadge } from './StatusBadge'
 
 /*
  * A job, step by step: a vertical list with a status dot per step, the kind, attempt and
@@ -181,7 +182,7 @@ export function StepTimeline({ steps, children, highlight, defaultOpen = [], cla
                     {!step.error && continued?.message && <span className="truncate text-warning">{continued.message}</span>}
                   </div>
                 </div>
-                <StateTag status={step.status} size="sm" />
+                <StatusBadge status={step.status} size="sm" />
                 {hasDetail && <Icon name="chevron-down" size={14} className={cx('shrink-0 text-tertiary transition-transform duration-150', isOpen && 'rotate-180')} />}
               </button>
               {(child || childId) && (
@@ -191,7 +192,7 @@ export function StepTimeline({ steps, children, highlight, defaultOpen = [], cla
                   <TextLink to={links.job(child?.id ?? childId!)} mono>
                     {child?.id ?? childId}
                   </TextLink>
-                  {child && <StateTag status={child.status} size="sm" />}
+                  {child && <StatusBadge status={child.status} size="sm" />}
                   {child && (
                     <span className="text-tertiary">
                       {child.title} · {child.version}

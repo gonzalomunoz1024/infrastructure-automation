@@ -148,10 +148,23 @@ export function checkDot(status: CheckStatus | string): DotKind {
   return 'neutral'
 }
 
-/** "needs-attention" → "Needs attention". */
+/** The short words written in capitals when they stand alone in a name. */
+const ACRONYMS = new Set(['api', 'cidr', 'cpu', 'dns', 'gb', 'gib', 'id', 'iops', 'ip', 'mb', 'mib', 'os', 'ram', 'ssd', 'ssh', 'tb', 'tls', 'url', 'vm', 'vpc'])
+
+/** "needs-attention" → "Needs attention", "memoryGb" → "Memory GB", "createdAt" → "Created at". */
 export function titleCase(s: string): string {
-  const t = s.replace(/[-_]+/g, ' ')
-  return t.charAt(0).toUpperCase() + t.slice(1)
+  const words = s
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w.toLowerCase()))
+  if (words.length === 0) return ''
+  const first = words[0]
+  words[0] = first === first.toUpperCase() ? first : first.charAt(0).toUpperCase() + first.slice(1)
+  return words.join(' ')
 }
 
 /** The current time, refreshed every `intervalMs`, for countdowns and relative times that must move. */

@@ -1,7 +1,6 @@
 import { Card, EmptyState, Icon, PageHeader, SkeletonRows, plural, relativeTime, type IconName } from '@iaf/ui'
-import { ErrorState, Section } from '@iaf/console-kit'
+import { ErrorState, Section, StatusBadge } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
-import { JobStatusBadge } from '../app/JobStatusBadge'
 import { PHASES } from '../app/Phase'
 import { Link, pathFor, type PageProps } from '../app/router'
 import { api } from '../lib/api'
@@ -98,7 +97,7 @@ export default function HomePage(_props: PageProps) {
                           {j.id} · {j.requester}
                         </span>
                       </span>
-                      <JobStatusBadge status={j.status} size="sm" />
+                      <StatusBadge status={j.status} size="sm" />
                       <time className="hidden shrink-0 text-caption text-tertiary sm:inline" dateTime={j.startedAt}>
                         {relativeTime(j.startedAt)}
                       </time>

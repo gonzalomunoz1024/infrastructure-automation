@@ -15,6 +15,9 @@ import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase
  *   lifecycle console.lifecycle, else each state by its name (ready is active, building pending,
  *             retired deleted, failed failed); a state nobody can place stays null
  *   actions   the catalog entries whose noun is the type; create is the producedBy workflow
+ *   sort      console.list.defaultSort, a leading `-` meaning newest or largest first, else name
+ *   tabs      console.detail.tabs by their ids, else Configuration, Drift, Activity,
+ *             Relationships, Tags, Permissions and JSON
  */
 
 export type ColumnKind = 'name' | 'status' | 'wfrn' | 'owner' | 'created' | 'updated' | 'field'
@@ -58,6 +61,8 @@ export interface ConsoleType {
   lifecycle: Record<string, LifecycleClass | null>
   columns: ConsoleColumn[]
   defaultSort: string
+  /** the direction of the default sort: a hint of `-created` sorts newest first */
+  defaultSortDir: 'asc' | 'desc'
   tabs: string[]
   actions: ConsoleAction[]
   create: ConsoleAction | null
@@ -200,6 +205,42 @@ export function columnsOf(rt: ResourceType): ConsoleColumn[] {
   return [BUILTIN_COLUMNS.name, BUILTIN_COLUMNS.status, BUILTIN_COLUMNS.wfrn, ...fields.map((f) => fieldColumn(rt, f)), BUILTIN_COLUMNS.owner, BUILTIN_COLUMNS.created]
 }
 
+/** The labels of the tabs a `console.detail.tabs` hint names by id. */
+export const TAB_LABELS: Record<string, string> = {
+  configuration: 'Configuration',
+  drift: 'Drift',
+  activity: 'Activity',
+  relationships: 'Relationships',
+  tags: 'Tags',
+  permissions: 'Permissions',
+  monitoring: 'Monitoring',
+  json: 'JSON',
+}
+
+/** The tabs a type's hint lists, as labels; the defaults when it lists none. */
+export function tabsOf(hinted: unknown): string[] {
+  if (!Array.isArray(hinted)) return [...DEFAULT_TABS]
+  const out: string[] = []
+  for (const raw of hinted) {
+    if (typeof raw !== 'string' || !raw.trim()) continue
+    const word = raw.trim()
+    const id = word.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    const label = TAB_LABELS[id] ?? capitalise(word.replace(/[-_]+/g, ' '))
+    if (!out.includes(label)) out.push(label)
+  }
+  return out.length ? out : [...DEFAULT_TABS]
+}
+
+/** `-created` sorts by the created column, newest first; a key no column has falls back to the name. */
+export function sortOf(hinted: unknown, columns: ConsoleColumn[]): { key: string; dir: 'asc' | 'desc' } {
+  if (typeof hinted !== 'string' || !hinted.trim()) return { key: 'name', dir: 'asc' }
+  const word = hinted.trim()
+  const desc = word.startsWith('-')
+  const raw = word.replace(/^[-+]/, '')
+  const key = BUILTIN_ALIASES[raw] ?? raw
+  return columns.some((c) => c.key === key) ? { key, dir: desc ? 'desc' : 'asc' } : { key: 'name', dir: 'asc' }
+}
+
 export function toAction(entry: CatalogEntry): ConsoleAction {
   return {
     workflow: entry.workflow,
@@ -230,8 +271,7 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
   const producer = rt.producedBy ? catalog.find((e) => e.workflow === rt.producedBy) : undefined
   const create = producer ? toAction(producer) : (actions.find((a) => a.verb === 'create') ?? null)
   const columns = columnsOf(rt)
-  const hintedSort = rt.console?.list?.defaultSort
-  const tabs = rt.console?.detail?.tabs?.filter((t) => typeof t === 'string' && t.trim())
+  const sort = sortOf(rt.console?.list?.defaultSort, columns)
   return {
     name: rt.name,
     plural: rt.plural,
@@ -244,8 +284,9 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
     states: rt.states ?? [],
     lifecycle: lifecycleMapOf(rt),
     columns,
-    defaultSort: hintedSort && columns.some((c) => c.key === hintedSort) ? hintedSort : 'name',
-    tabs: tabs?.length ? tabs : [...DEFAULT_TABS],
+    defaultSort: sort.key,
+    defaultSortDir: sort.dir,
+    tabs: tabsOf(rt.console?.detail?.tabs),
     actions,
     create,
     schema: rt.schema ?? { type: 'object' },

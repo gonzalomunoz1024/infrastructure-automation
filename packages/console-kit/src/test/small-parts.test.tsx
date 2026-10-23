@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
-import { CursorPager, LifecycleBadge, WfrnText, displayWfrn, lifecycleOf, nextCursorFromLink, parseDuration, countdown, shortJobId, summarize, titleCase } from '../index'
+import { CursorPager, LifecycleBadge, StatusBadge, WfrnText, displayWfrn, lifecycleOf, nextCursorFromLink, parseDuration, countdown, shortJobId, statusTone, summarize, titleCase } from '../index'
 
 const text = (html: string) => html.replace(/<!--.*?-->/g, '')
 const WFRN = 'wfrn:wf:compute:global:123456789012:vm/vm-web-01'
@@ -52,6 +52,34 @@ describe('LifecycleBadge', () => {
   })
 })
 
+describe('StatusBadge', () => {
+  it('folds status words onto tones, with rolled back and compensated as undone', () => {
+    expect(statusTone('succeeded')).toBe('succeeded')
+    expect(statusTone('waiting-approval')).toBe('waiting')
+    expect(statusTone('needs-attention')).toBe('waiting')
+    expect(statusTone('pending')).toBe('queued')
+    expect(statusTone('Running')).toBe('running')
+    expect(statusTone('skipped')).toBe('cancelled')
+    expect(statusTone('rolled-back')).toBe('undone')
+    expect(statusTone('compensated')).toBe('undone')
+  })
+
+  it('keeps the colour in the dot and the word in the primary text colour', () => {
+    const html = text(renderToString(<StatusBadge status="waiting-approval" size="sm" />))
+    expect(html).toContain('data-status="waiting-approval"')
+    expect(html).toContain('data-tone="waiting"')
+    expect(html).toContain('>Waiting approval<')
+    expect(html).toContain('bg-warning-tint')
+    expect(html).toContain('text-primary')
+    expect(html).not.toContain('text-state-')
+    expect(html).toContain('animate-pulse-subtle')
+    const done = text(renderToString(<StatusBadge status="succeeded" label="Done" />))
+    expect(done).toContain('>Done<')
+    expect(done).toContain('bg-healthy-tint')
+    expect(done).not.toContain('animate-pulse-subtle')
+  })
+})
+
 describe('CursorPager', () => {
   it('reads the next cursor from a Link header', () => {
     expect(nextCursorFromLink('</api/v1/vms?limit=50&after=abc123>; rel="next"')).toBe('abc123')
@@ -67,7 +95,8 @@ describe('CursorPager', () => {
     expect(html).toContain('page 1')
     expect(html).toContain('aria-label="Next page"')
     expect(html).toMatch(/aria-label="Previous page"[^>]*disabled=""/)
-    expect(html).toContain('aria-label="Rows per page"')
+    // Atlas's Select names its trigger with aria-label alone, so the value rides in the name
+    expect(html).toContain('aria-label="Rows per page: 50 per page"')
     expect(text(renderToString(<CursorPager count={0} hasNext={false} hasPrevious onNext={() => {}} onPrevious={() => {}} pageSize={50} noun="virtual machine" />))).toContain('No virtual machines on this page')
   })
 })
@@ -86,5 +115,12 @@ describe('common helpers', () => {
     expect(summarize({ a: 1, b: { c: 2 } })).toBe('a: 1 · b: {"c":2}')
     expect(summarize(null)).toBe('not set')
     expect(titleCase('needs-attention')).toBe('Needs attention')
+    expect(titleCase('memoryGb')).toBe('Memory GB')
+    expect(titleCase('cpu')).toBe('CPU')
+    expect(titleCase('createdAt')).toBe('Created at')
+    expect(titleCase('sizeGb')).toBe('Size GB')
+    expect(titleCase('Environment')).toBe('Environment')
+    expect(titleCase('publicIPAddress')).toBe('Public IP address')
+    expect(titleCase('')).toBe('')
   })
 })

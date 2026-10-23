@@ -1,8 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tabs, Tag, cx } from '@iaf/ui'
-import { CopyableId, ErrorState, ExternalLink, Facts, LifecycleBadge, ResourceLineage, Section, When, WfrnText, formatField, formatValue, groupFields, titleCase, xConsoleOf } from '@iaf/console-kit'
+import { CopyableId, ErrorState, ExternalLink, Facts, LifecycleBadge, ResourceLineage, Section, StatusBadge, When, WfrnText, formatField, formatValue, groupFields, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
-import { JobStatusBadge } from '../app/JobStatusBadge'
 import { LaterButton, PHASES } from '../app/Phase'
 import { Link, navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
@@ -159,7 +158,10 @@ function FieldLabel({ name, schema }: { name: string; schema: Schema | undefined
 
 function Configuration({ type, resource }: { type: ConsoleType; resource: Resource }) {
   const props = type.schema.properties ?? {}
-  const groups = groupFields(type.schema)
+  // a form keeps ungrouped fields in place; a page reads better with them together, first
+  const grouped = groupFields(type.schema)
+  const ungrouped = grouped.filter((g) => g.group === null).flatMap((g) => g.names)
+  const groups = [...(ungrouped.length ? [{ group: 'Attributes', names: ungrouped }] : []), ...grouped.filter((g) => g.group !== null)]
   const known = new Set(Object.keys(props))
   const extra = Object.keys(resource.attributes ?? {}).filter((k) => !known.has(k))
   if (groups.length === 0 && extra.length === 0) return <EmptyState compact icon="document" title="No attributes" message="This type has no schema fields and the resource carries no attributes." />
@@ -207,7 +209,7 @@ function Activity({ resource, wfrn }: { resource: Resource; wfrn: string }) {
                   {j.id} · {j.requester}
                 </span>
               </span>
-              <JobStatusBadge status={j.status} size="sm" />
+              <StatusBadge status={j.status} size="sm" />
               <When at={j.startedAt} className="hidden shrink-0 text-caption text-tertiary sm:inline" />
             </Link>
           </li>

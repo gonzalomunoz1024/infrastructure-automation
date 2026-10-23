@@ -45,8 +45,7 @@ export function columnsFor(type: ConsoleType): VirtualColumn<Row>[] {
           minRem: 18,
           accessor: (r) => r.wfrn,
           render: (r) => (
-            // the copy button inside must not open the row
-            <span className={cx('flex min-w-0', r.derived && 'opacity-75')} onClick={(e) => e.stopPropagation()} title={r.derived ? 'Derived by the console until the platform mints it' : undefined}>
+            <span className={cx('flex min-w-0', r.derived && 'opacity-75')} title={r.derived ? 'Derived by the console until the platform mints it' : undefined}>
               <WfrnText wfrn={r.wfrn} max={40} />
             </span>
           ),
@@ -131,7 +130,7 @@ function TypeList({ type, wfrnContext }: { type: ConsoleType; wfrnContext: WfrnC
   const paging = useCursorPaging()
   const [pageSize, setPageSize] = useState(50)
   const [tokens, setTokens] = useState<FilterToken[]>([])
-  const [sort, setSort] = useState<VirtualSort>({ key: type.defaultSort, dir: 'asc' })
+  const [sort, setSort] = useState<VirtualSort>({ key: type.defaultSort, dir: type.defaultSortDir })
   const server = useMemo(() => serverParamsOf(tokens), [tokens])
   const list = useQuery(['resources', type.plural, { limit: pageSize, after: paging.after ?? null, ...server }], () => api.resourcesOf(type.plural, { limit: pageSize, after: paging.after, ...server }))
 

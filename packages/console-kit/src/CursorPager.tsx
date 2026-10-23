@@ -73,7 +73,8 @@ export function CursorPager({ count, hasNext, hasPrevious, onNext, onPrevious, p
       </p>
       <div className="flex items-center gap-2">
         {onPageSizeChange && (
-          <Select size="sm" ariaLabel="Rows per page" value={String(pageSize)} onChange={(v) => onPageSizeChange(Number(v))} options={sizes.map((n) => ({ value: String(n), label: `${n} per page` }))} className="w-32" />
+          // Atlas's Select names its trigger with aria-label alone, so the value goes in the name too (WCAG 2.5.3)
+          <Select size="sm" ariaLabel={`Rows per page: ${pageSize} per page`} value={String(pageSize)} onChange={(v) => onPageSizeChange(Number(v))} options={sizes.map((n) => ({ value: String(n), label: `${n} per page` }))} className="w-32" />
         )}
         <IconButton size="sm" label="Previous page" onClick={onPrevious} disabled={!hasPrevious || loading}>
           <Icon name="chevron-left" size={16} />

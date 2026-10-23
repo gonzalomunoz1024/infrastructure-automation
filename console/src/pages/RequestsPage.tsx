@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Button, EmptyState, Icon, IconButton, PageHeader, Stat, Tag, cx, duration, formatNumber, plural } from '@iaf/ui'
-import { CursorPager, ErrorState, PropertyFilterBar, VirtualTable, When, applyFilters, useCursorPaging, useNow, type FilterProperty, type FilterToken, type VirtualColumn, type VirtualSort } from '@iaf/console-kit'
-import { JobStatusBadge } from '../app/JobStatusBadge'
+import { CursorPager, ErrorState, PropertyFilterBar, StatusBadge, VirtualTable, When, applyFilters, useCursorPaging, useNow, type FilterProperty, type FilterToken, type VirtualColumn, type VirtualSort } from '@iaf/console-kit'
 import { navigate, pathFor, type PageProps } from '../app/router'
 import { api } from '../lib/api'
 import { useQuery } from '../lib/queries'
@@ -59,7 +58,7 @@ const columnsFor = (now: number): VirtualColumn<JobSummary>[] => [
       </span>
     ),
   },
-  { key: 'status', header: 'Status', sortable: true, width: '10rem', accessor: (j) => j.status, render: (j) => <JobStatusBadge status={j.status} size="sm" /> },
+  { key: 'status', header: 'Status', sortable: true, width: '10rem', accessor: (j) => j.status, render: (j) => <StatusBadge status={j.status} size="sm" /> },
   {
     key: 'workflow',
     header: 'Workflow',

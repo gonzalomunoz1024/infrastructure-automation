@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, UserMenu, cx, modKeyLabel, useDismiss, useTheme, type IconName } from '@iaf/ui'
+import { EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, cx, modKeyLabel, useDismiss, useTheme, type IconName } from '@iaf/ui'
 import { BrandLockup } from './BrandMark'
+import { UserMenuButton } from './UserMenuButton'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
 import { DEMO_ACCOUNTS, formatAccountId, setAccount } from '../lib/accounts'
@@ -133,16 +134,18 @@ function ServicesMenu() {
 function SearchTrigger({ onClick }: { onClick: () => void }) {
   return (
     <>
+      {/* named by its visible text; the keycap is a hint, not part of the name */}
       <button
         type="button"
         onClick={onClick}
-        aria-label="Search"
         aria-keyshortcuts="Meta+K Control+K"
         className="hidden h-9 w-full max-w-xl items-center gap-2 rounded-md border border-stroke-light bg-surface-secondary px-3 text-sm text-tertiary transition-colors hover:border-stroke hover:text-secondary sm:flex"
       >
         <Icon name="search" size={15} />
         <span className="flex-1 truncate text-left">Search services, resources and pages</span>
-        <Kbd className="text-secondary">{modKeyLabel()}K</Kbd>
+        <span aria-hidden="true" className="flex">
+          <Kbd className="text-secondary">{modKeyLabel()}K</Kbd>
+        </span>
       </button>
       <IconButton label="Search" className="sm:hidden" onClick={onClick}>
         <Icon name="search" size={18} />
@@ -163,14 +166,23 @@ function HeaderMenu({ label, icon, text, hint, children, width = 'w-72', role = 
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-label={label}
         aria-haspopup={role === 'menu' ? 'menu' : 'dialog'}
         aria-expanded={open}
         className={cx('flex h-9 items-center gap-1.5 rounded-full px-2 text-sm transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
       >
+        {/* the full label is the accessible name at every width; the visible text and hint repeat parts of it */}
+        <span className="sr-only">{label}</span>
         <Icon name={icon} size={17} />
-        {text && <span className="hidden max-w-40 truncate md:inline">{text}</span>}
-        {hint && <span className="hidden font-mono text-caption text-tertiary xl:inline">{hint}</span>}
+        {text && (
+          <span aria-hidden="true" className="hidden max-w-40 truncate md:inline">
+            {text}
+          </span>
+        )}
+        {hint && (
+          <span aria-hidden="true" className="hidden font-mono text-caption text-tertiary xl:inline">
+            {hint}
+          </span>
+        )}
       </button>
       {open && (
         <PopoverPanel role={role} ariaLabel={label} className={cx('absolute right-0 top-full mt-1 py-1', width)}>
@@ -326,11 +338,9 @@ function UserButton() {
   const { me, offline } = useConsole()
   const { mode, setMode } = useTheme()
   return (
-    <UserMenu
+    <UserMenuButton
       user={me ? { id: me.id, name: me.name, email: me.email, roles: me.roles, teams: me.teams, admin: me.admin } : null}
       status={offline ? 'offline' : me ? 'online' : 'loading'}
-      placement="bottom"
-      collapsed
       themeMode={mode}
       onThemeChange={setMode}
       items={[

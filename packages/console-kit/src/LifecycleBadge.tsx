@@ -63,7 +63,10 @@ export function LifecycleBadge({ status, lifecycle, map, size = 'md', className 
       title={cls && cls !== status.toLowerCase() ? `${status} (${cls})` : undefined}
       data-lifecycle={cls ?? 'unknown'}
     >
-      <StatusDot kind={style?.dot} varName={style?.varName} pulse={style?.pulse} size="sm" />
+      {/* the word carries the meaning; the dot is decoration for assistive technology */}
+      <span aria-hidden="true" className="flex">
+        <StatusDot kind={style?.dot} varName={style?.varName} pulse={style?.pulse} size="sm" />
+      </span>
       <span className="truncate">{status}</span>
     </span>
   )

@@ -1,7 +1,6 @@
 import { Card, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
-import { CopyableId, ErrorState, Facts, Section, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
+import { CopyableId, ErrorState, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
 import { pathOfWfrn, useConsole } from '../app/console'
-import { JobStatusBadge } from '../app/JobStatusBadge'
 import { LaterButton } from '../app/Phase'
 import { href, type PageProps } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
@@ -56,7 +55,7 @@ export default function RequestPage({ route }: PageProps) {
         columns={4}
         className="mb-8"
         items={[
-          { label: 'Status', value: <JobStatusBadge status={job.status} /> },
+          { label: 'Status', value: <StatusBadge status={job.status} /> },
           {
             label: 'Workflow',
             value: (
