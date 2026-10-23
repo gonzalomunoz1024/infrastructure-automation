@@ -2,11 +2,12 @@ asyncapi: 3.0.0
 id: urn:iaf:console:events
 info:
   title: Customer console events
-  version: 1.0.0
+  version: 1.1.0
   description: |
     The events the console's own services exchange: the state service's resource stream
-    (`state.resources`), the drift service's findings (`drift.findings`) and the identity service's
-    changes (`identity.changes`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    (`state.resources`) and stacks (`state.stacks`), the drift service's findings (`drift.findings`)
+    and compliance scores (`drift.scorecards`), the identity service's changes (`identity.changes`), and
+    the cost service's budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
     **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
@@ -33,8 +34,10 @@ info:
 
     **Keys are deterministic** and consumers de-duplicate on them, never on `id`:
     `<type>:<wfrn>:<version>` on `state.resources`, `<type>:<wfrn>:<findingId>:<version>` on
-    `drift.findings` and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
-    subject id is the account, policy, role, group, user, key or quota id). A producer that retries
+    `drift.findings`, `<type>:<accountId>:<budgetId>:<version>` on `cost.events` (a threshold crossed is
+    `<type>:<accountId>:<budgetId>:<period>-<threshold>`, a chargeback month `<type>:<accountId>:<month>:<version>`)
+    and `<type>:<accountId>:<subjectId>:<version>` on `identity.changes` (the
+    subject id is the account, policy, role, group, user, key, quota, access request, guardrail or access review id). A producer that retries
     publishes the same key; a re-emitted event gets a new `id` and the same `key`.
 
     **Partitions.** `state.resources` and `drift.findings` are partitioned by `wfrn`, so one
@@ -43,17 +46,37 @@ info:
 
     **The resource state machine** (`ResourceState`, the lifecycle classes of P-06): `ResourceRequested`
     opens a resource in `pending`; `UpdateRequested` makes it `updating`; `DeleteRequested` makes it
-    `deleting`. The three job events are the same types whatever the job: `ProvisioningStarted`
+    `deleting`; `RetryRequested` makes a `failed` resource `pending` again, for a rerun of its create.
+    The three job events are the same types whatever the job: `ProvisioningStarted`
     keeps the state it finds (`pending`, `updating` or `deleting`); `ProvisioningSucceeded` makes a
-    created or updated resource `active`; `ProvisioningFailed` makes a created resource `failed`
-    and returns an updated or deleted one to `active` (the resource is still there as it was),
+    created, retried or updated resource `active`; `ProvisioningFailed` makes a created or retried
+    resource `failed` and returns an updated or deleted one to `active` (the resource is still there as it was),
     with the failure in `data`. A succeeded delete job is recorded as `Deleted` alone, never as a
     `ProvisioningSucceeded` first: `Deleted` is the tombstone (`GET /v1/wfrn/{wfrn}` answers 410
     for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete job or the platform retiring
-    the resource; `Imported` opens a resource straight in `active`;
+    the resource; `Imported` opens a resource straight in `active`; `Transferred` moves an `active`
+    resource to another account, `deleted` here for good with `transferredTo` naming the wfrn that
+    opens there with `Imported` (`source: transfer`, `transferredFrom`);
     `Observed`, `DriftDetected`, `DriftResolved` and `Tagged` change the resource's observed truth,
     drift flag and tags without changing its state. `data.state` on every event is the state after
     it, so a consumer never needs the table above.
+
+    **Stacks** (`state.stacks`, hub decision 33): a stack launched from a blueprint is decided by
+    the state service and executed by the BFF. Every stack event carries the stack's `state`,
+    `operation` and `version`, the `step` it is about when it is about one, and `ready`: the steps
+    that may start now, each with `action` (`create` or `delete`), `attempt`, the
+    `idempotencyKey` the BFF uses for the step's mint or delete, the `type` and `service`, and the
+    resolved `input` (plus the child's `wfrn` and the teardown's `reason` for a delete). The BFF
+    starts every ready step it reads, as the person in `actor` of the stack's `StackRequested`
+    (or `StackTeardownRequested`); a step announced twice has the same key, so a replay is
+    harmless. `StackRequested` opens a stack in `pending`; `StackStepStarted` says a step took its
+    child (the mint); `StackStepSucceeded` that the child is active; `StackStepFailed` that a step
+    failed and stopped the stack (`failed`, or still `deleting` in a teardown); `StackStepRetried`
+    that a failed child is being created again; `StackLaunched` ends a launch in `active` with the
+    outputs; `StackResumed` announces again what could not start; `StackTeardownRequested` makes
+    it `deleting`; `StackStepDeleting` says a child's delete started; `StackStepRemoved` that a
+    step left the stack (`outcome`: `deleted`, `retained` or `skipped`); `StackDeleted` ends it.
+    Keys are `<type>:<stack wfrn>:<version>`, partitioned by the stack's wfrn.
 
     **wfrns** travel in the envelope (`context.wfrn`, and `aggregateId` on `state.resources`),
     never in the Kafka key alone, and are the partition key verbatim.
@@ -84,10 +107,39 @@ channels:
       deleteRequested: { $ref: '#/components/messages/deleteRequested' }
       deleted: { $ref: '#/components/messages/deleted' }
       imported: { $ref: '#/components/messages/imported' }
+      retryRequested: { $ref: '#/components/messages/retryRequested' }
+      transferred: { $ref: '#/components/messages/transferred' }
     bindings:
       kafka:
         topic: state.resources
         partitions: 24
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: wfrn
+    x-retention: 30d
+  stateStacks:
+    address: state.stacks
+    title: Stacks
+    description: 'Every change of a stack launched from a blueprint, with the steps the BFF starts now, published by the state service. Partitioned by the stack''s wfrn, kept 30 days.'
+    messages:
+      stackRequested: { $ref: '#/components/messages/stackRequested' }
+      stackStepStarted: { $ref: '#/components/messages/stackStepStarted' }
+      stackStepSucceeded: { $ref: '#/components/messages/stackStepSucceeded' }
+      stackStepFailed: { $ref: '#/components/messages/stackStepFailed' }
+      stackStepRetried: { $ref: '#/components/messages/stackStepRetried' }
+      stackLaunched: { $ref: '#/components/messages/stackLaunched' }
+      stackResumed: { $ref: '#/components/messages/stackResumed' }
+      stackTeardownRequested: { $ref: '#/components/messages/stackTeardownRequested' }
+      stackStepDeleting: { $ref: '#/components/messages/stackStepDeleting' }
+      stackStepRemoved: { $ref: '#/components/messages/stackStepRemoved' }
+      stackDeleted: { $ref: '#/components/messages/stackDeleted' }
+    bindings:
+      kafka:
+        topic: state.stacks
+        partitions: 12
         replicas: 3
         topicConfiguration:
           cleanup.policy: [delete]
@@ -114,6 +166,24 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: wfrn
     x-retention: 30d
+  driftScorecards:
+    address: drift.scorecards
+    title: Compliance scorecards
+    description: 'A resource''s rule evaluations changed, or an account''s daily score was recorded (WP 9.6). Partitioned by accountId, so one account''s changes are in order; kept 30 days. Keys: `EvaluationChanged:<wfrn>:<version>` and `ScoreSnapshotted:<accountId>:<day>`.'
+    messages:
+      evaluationChanged: { $ref: '#/components/messages/evaluationChanged' }
+      scoreSnapshotted: { $ref: '#/components/messages/scoreSnapshotted' }
+    bindings:
+      kafka:
+        topic: drift.scorecards
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 30d
   identityChanges:
     address: identity.changes
     title: Identity changes
@@ -127,6 +197,8 @@ channels:
       accessKeyChanged: { $ref: '#/components/messages/accessKeyChanged' }
       quotaChanged: { $ref: '#/components/messages/quotaChanged' }
       accessRequestChanged: { $ref: '#/components/messages/accessRequestChanged' }
+      guardrailChanged: { $ref: '#/components/messages/guardrailChanged' }
+      accessReviewChanged: { $ref: '#/components/messages/accessReviewChanged' }
     bindings:
       kafka:
         topic: identity.changes
@@ -138,6 +210,25 @@ channels:
         bindingVersion: 0.5.0
     x-partition-key: accountId
     x-retention: 90d, compacted by key
+  costEvents:
+    address: cost.events
+    title: Cost and budgets
+    description: Budgets created, changed and deleted, thresholds crossed and months published to finance, by the cost service (decision 25). Partitioned by accountId, kept 90 days.
+    messages:
+      budgetChanged: { $ref: '#/components/messages/budgetChanged' }
+      budgetThresholdCrossed: { $ref: '#/components/messages/budgetThresholdCrossed' }
+      chargebackPublished: { $ref: '#/components/messages/chargebackPublished' }
+    bindings:
+      kafka:
+        topic: cost.events
+        partitions: 6
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 7776000000
+        bindingVersion: 0.5.0
+    x-partition-key: accountId
+    x-retention: 90d
 operations:
   publishResourceState:
     action: send
@@ -147,6 +238,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/stateResources' }
     summary: The BFF (live updates), the indexer and the drift service follow resources
+  publishStacks:
+    action: send
+    channel: { $ref: '#/channels/stateStacks' }
+    summary: The state service publishes every stack change and the steps that may start
+  followStacks:
+    action: receive
+    channel: { $ref: '#/channels/stateStacks' }
+    summary: 'The BFF starts the ready steps (mint and create, or delete) and pushes stack pages live'
   publishFindings:
     action: send
     channel: { $ref: '#/channels/driftFindings' }
@@ -155,6 +254,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/driftFindings' }
     summary: The state service (drift flag), the BFF and the indexer follow findings
+  publishScorecards:
+    action: send
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The drift service publishes evaluation changes and daily scores
+  followScorecards:
+    action: receive
+    channel: { $ref: '#/channels/driftScorecards' }
+    summary: The BFF (live updates, notifications) and the weekly digest follow compliance
   publishIdentityChanges:
     action: send
     channel: { $ref: '#/channels/identityChanges' }
@@ -163,6 +270,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/identityChanges' }
     summary: Every service refreshes its authorization cache from here
+  publishCostEvents:
+    action: send
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The cost service publishes budget changes, alerts and chargeback months
+  followCostEvents:
+    action: receive
+    channel: { $ref: '#/channels/costEvents' }
+    summary: The BFF (budget.alert on the live stream) and notifications (WP 7.5) follow budget alerts
 components:
   messageTraits:
     consoleEvent:
@@ -314,6 +429,30 @@ components:
             properties:
               type: { const: DeleteRequested }
               data: { $ref: '#/components/schemas/DeleteRequestedData' }
+    retryRequested:
+      name: RetryRequested
+      title: A failed create is retried
+      summary: The resource is pending again; the rerun job's events end the retry as they end a create
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: RetryRequested }
+              data: { $ref: '#/components/schemas/RetryRequestedData' }
+    transferred:
+      name: Transferred
+      title: The resource moved to another account
+      summary: 'The wfrn becomes a tombstone that names the wfrn it became, for good; the new wfrn opens in the other account with Imported (source: transfer)'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: Transferred }
+              data: { $ref: '#/components/schemas/TransferredData' }
     deleted:
       name: Deleted
       title: The resource is gone
@@ -338,6 +477,137 @@ components:
             properties:
               type: { const: Imported }
               data: { $ref: '#/components/schemas/ImportedData' }
+    stackRequested:
+      name: StackRequested
+      title: A stack was launched
+      summary: 'The stack is pending; ready holds the steps that wait for nothing'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackRequested }
+              data: { $ref: '#/components/schemas/StackRequestedData' }
+    stackStepStarted:
+      name: StackStepStarted
+      title: A step took its child
+      summary: The BFF minted the child for the ready step
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepStarted }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepSucceeded:
+      name: StackStepSucceeded
+      title: A step is done
+      summary: 'Its child is active; ready holds the steps that waited only on it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepSucceeded }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepFailed:
+      name: StackStepFailed
+      title: A step failed
+      summary: The child failed, or the BFF could not start the step; the stack stops
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepFailed }
+              data: { $ref: '#/components/schemas/StackStepFailedData' }
+    stackStepRetried:
+      name: StackStepRetried
+      title: A failed child is created again
+      summary: 'The child was retried (decision 24); the stack is pending again when no other step has failed'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepRetried }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackLaunched:
+      name: StackLaunched
+      title: A stack is active
+      summary: Every step is done; the outputs are resolved
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackLaunched }
+              data: { $ref: '#/components/schemas/StackLaunchedData' }
+    stackResumed:
+      name: StackResumed
+      title: A stack is resumed
+      summary: ready holds every step announced again
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackResumed }
+              data: { $ref: '#/components/schemas/StackEventData' }
+    stackTeardownRequested:
+      name: StackTeardownRequested
+      title: A stack is being torn down
+      summary: 'The stack is deleting; ready holds the first deletes'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackTeardownRequested }
+              data: { $ref: '#/components/schemas/StackTeardownData' }
+    stackStepDeleting:
+      name: StackStepDeleting
+      title: A step's child is being deleted
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepDeleting }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepRemoved:
+      name: StackStepRemoved
+      title: A step left the stack
+      summary: 'Deleted, retained or skipped; ready holds the deletes that waited only on it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepRemoved }
+              data: { $ref: '#/components/schemas/StackStepRemovedData' }
+    stackDeleted:
+      name: StackDeleted
+      title: A stack is deleted
+      summary: Every step left the stack
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackDeleted }
+              data: { $ref: '#/components/schemas/StackEventData' }
     findingOpened:
       name: FindingOpened
       title: A drift finding was opened
@@ -376,10 +646,44 @@ components:
                   findingId: { type: string }
                   resolution: { $ref: '#/components/schemas/Resolution' }
                   by: { type: string }
-                  jobId: { type: string, description: The revert job, for a reverted finding }
+                  jobId: { type: string, description: "The revert job, for a reverted finding" }
+    evaluationChanged:
+      name: EvaluationChanged
+      title: A resource's rule evaluations changed
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: EvaluationChanged }
+              aggregate: { const: evaluation }
+              aggregateId: { $ref: '#/components/schemas/Wfrn' }
+              context:
+                type: object
+                required: [accountId, region, wfrn]
+              data: { $ref: '#/components/schemas/EvaluationChangedData' }
+    scoreSnapshotted:
+      name: ScoreSnapshotted
+      title: An account's daily compliance score was recorded
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsoleEvent'
+          - type: object
+            required: [context, data]
+            properties:
+              type: { const: ScoreSnapshotted }
+              aggregate: { const: scorecard }
+              aggregateId: { $ref: '#/components/schemas/AccountId' }
+              context:
+                type: object
+                required: [accountId]
+              data: { $ref: '#/components/schemas/ScoreSnapshottedData' }
     accountChanged:
       name: AccountChanged
-      title: An account was created, changed or suspended
+      title: An account was created, changed, suspended or closed
       traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
       payload:
         allOf:
@@ -492,6 +796,105 @@ components:
             properties:
               type: { const: AccessRequestChanged }
               aggregate: { const: access-request }
+    guardrailChanged:
+      name: GuardrailChanged
+      title: An organization guardrail began, changed or stopped applying to the account
+      summary: 'One event per account the guardrail touches (`context.accountId`); `deleted` where it no longer applies. The account''s authorization version moves with it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: GuardrailChanged }
+              aggregate: { const: guardrail }
+    accessReviewChanged:
+      name: AccessReviewChanged
+      title: An access review campaign was started, decided, closed, cancelled or expired
+      summary: 'The snapshot is the campaign with its counts, plus `item` (the item decided) on a decision. Actions: `created` when it starts, `updated` on each decision, when the last decision closes it and when it is cancelled, `expired` when its due date closes it. A revoke, or an access the due date expires, also publishes the person''s UserChanged'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/IdentityEvent'
+          - type: object
+            properties:
+              type: { const: AccessReviewChanged }
+              aggregate: { const: access-review }
+    budgetChanged:
+      name: BudgetChanged
+      title: A budget was created, changed or deleted
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetChanged }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, action]
+                properties:
+                  budgetId: { type: string }
+                  action: { type: string, enum: [created, updated, deleted] }
+                  name: { type: string }
+                  amount: { type: number }
+                  currency: { type: string }
+                  thresholds: { type: array, items: { type: integer } }
+                  blockCreates: { type: boolean }
+                  tag:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      value: { type: string }
+    budgetThresholdCrossed:
+      name: BudgetThresholdCrossed
+      title: A budget's spend crossed one of its thresholds this month
+      summary: At most once per budget, month and threshold; `key` is `BudgetThresholdCrossed:<accountId>:<budgetId>:<period>-<threshold>`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: BudgetThresholdCrossed }
+              aggregate: { const: budget }
+              data:
+                type: object
+                required: [version, budgetId, name, period, threshold, percent, spent, amount, currency]
+                properties:
+                  budgetId: { type: string }
+                  name: { type: string }
+                  period: { type: string, description: YYYY-MM }
+                  threshold: { type: integer }
+                  percent: { type: number }
+                  spent: { type: number }
+                  amount: { type: number }
+                  forecast: { type: number }
+                  currency: { type: string }
+                  blockCreates: { type: boolean, description: 'At 100 and over: creates in the scope are now refused' }
+    chargebackPublished:
+      name: ChargebackPublished
+      title: An account's month was closed and its chargeback published to finance
+      summary: One per account and month; `key` is `ChargebackPublished:<accountId>:<month>:1`
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/CostEvent'
+          - type: object
+            properties:
+              type: { const: ChargebackPublished }
+              aggregate: { const: chargeback }
+              data:
+                type: object
+                required: [version, month, total, currency, sha256]
+                properties:
+                  month: { type: string }
+                  total: { type: number }
+                  currency: { type: string }
+                  sha256: { type: string, description: "The sha256 of the account's rows as CSV" }
+                  rows: { type: integer }
+                  costCentre: { type: string }
   schemas:
     Wfrn:
       type: string
@@ -523,7 +926,7 @@ components:
         seq: { type: integer, minimum: 1, description: "The publisher's outbox sequence, one total order per service" }
         type: { type: string }
         at: { type: string, format: date-time }
-        aggregate: { type: string, description: 'What the event is about: resource, finding, or an identity subject kind' }
+        aggregate: { type: string, description: 'What the event is about: resource, finding, evaluation, scorecard, or an identity subject kind' }
         aggregateId: { type: string, description: 'The wfrn, the finding id, or the identity subject id' }
         actor: { type: string, description: The console user or service that caused it }
         onBehalfOf: { $ref: '#/components/schemas/OnBehalfOf' }
@@ -568,8 +971,8 @@ components:
               properties:
                 version: { type: integer, minimum: 1, description: "The resource's state version after this event" }
                 state: { $ref: '#/components/schemas/ResourceState', description: "The resource's state after this event" }
-                resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
-                jobId: { type: string, description: The platform job, when one is involved }
+                resourceType: { type: string, description: "The type segment of the wfrn, repeated for consumers that filter by type" }
+                jobId: { type: string, description: "The platform job, when one is involved" }
     FindingEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
@@ -592,21 +995,65 @@ components:
                   type: array
                   items: { $ref: '#/components/schemas/DriftField' }
                 observedAt: { type: string, format: date-time }
+    CostEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [context, data]
+          properties:
+            aggregate: { type: string, enum: [budget, chargeback] }
+            aggregateId: { type: string, description: 'The budget id, or `<accountId>:<month>` for a chargeback month' }
+            context:
+              type: object
+              required: [accountId]
     IdentityEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
         - type: object
           required: [data]
           properties:
-            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request], description: The subject kind }
+            aggregate: { type: string, enum: [account, user, group, role, policy, accessKey, quota, access-request, guardrail, access-review], description: The subject kind }
             aggregateId: { type: string, description: The subject id (the accountId for an account) }
             data:
               type: object
               required: [version, action]
               properties:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
-                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired] }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired, closed] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
+    EvaluationChangedData:
+      type: object
+      required: [version, type, passed, failed, changes]
+      properties:
+        version: { type: integer, minimum: 1, description: "The resource's evaluation version after this event" }
+        type: { type: string, description: The resource type }
+        passed: { type: integer }
+        failed: { type: integer }
+        changes:
+          type: array
+          description: The rules whose status changed; `none` where the rule did not apply before or does not apply now
+          items:
+            type: object
+            required: [pack, ruleId, severity, from, to]
+            properties:
+              pack: { type: string }
+              ruleId: { type: string }
+              severity: { type: string, enum: [info, warning, critical] }
+              from: { type: string, enum: [pass, fail, error, none] }
+              to: { type: string, enum: [pass, fail, error, none] }
+              message: { type: string }
+    ScoreSnapshottedData:
+      type: object
+      required: [version, day, score, packs]
+      properties:
+        version: { type: integer, minimum: 1, description: 'The day as days since 1970-01-01, which only grows' }
+        day: { type: string, format: date }
+        score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+        previousScore: { type: [integer, 'null'], description: "The last snapshot's score, when there is one" }
+        packs:
+          type: object
+          additionalProperties: { type: [integer, 'null'] }
+        failed: { type: integer }
     DriftField:
       type: object
       required: [path]
@@ -638,6 +1085,10 @@ components:
             registryId: { type: string, description: The platform's registry id }
             providerId: { type: string }
             attributes: { type: object, additionalProperties: true }
+            builtFrom:
+              type: array
+              description: The registry ids of what the resource was built from, as the job that registered it recorded them (P-02); absent when the registry names none
+              items: { type: string }
     ProvisioningFailedData:
       allOf:
         - $ref: '#/components/schemas/JobData'
@@ -693,6 +1144,13 @@ components:
         - type: object
           properties:
             reason: { type: string }
+    RetryRequestedData:
+      type: object
+      required: [workflow]
+      properties:
+        retryOf: { type: string, description: The failed job the retry follows }
+        workflow: { type: string, description: 'The workflow the retry runs, the create workflow unless the request named another' }
+        jobId: { type: string, description: 'The rerun job, when it was started before the retry was recorded' }
     DeletedData:
       type: object
       required: [tombstoneUntil]
@@ -700,11 +1158,114 @@ components:
         jobId: { type: string }
         registryId: { type: string }
         tombstoneUntil: { type: string, format: date-time, description: 'Until when GET /v1/wfrn/{wfrn} answers 410' }
+    TransferredData:
+      type: object
+      required: [transferredTo, toAccountId]
+      properties:
+        transferredTo: { $ref: '#/components/schemas/Wfrn', description: The wfrn it became }
+        toAccountId: { $ref: '#/components/schemas/AccountId' }
+        registryId: { type: string }
+        reason: { type: string }
     ImportedData:
       type: object
       required: [source, registryId, attributes]
       properties:
-        source: { type: string, enum: [backfill, discover] }
+        source: { type: string, enum: [backfill, discover, transfer] }
         registryId: { type: string }
         providerId: { type: string }
         attributes: { type: object, additionalProperties: true }
+        transferredFrom: { $ref: '#/components/schemas/Wfrn', description: 'With source transfer: the wfrn it was in the other account' }
+        tags:
+          type: object
+          description: With source transfer, the tags it carried
+          additionalProperties: { type: string }
+        builtFrom:
+          type: array
+          description: The registry ids of what the resource was built from, when the registry or the import names them
+          items: { type: string }
+    StackEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [context, data]
+          properties:
+            aggregate: { const: stack }
+            aggregateId: { $ref: '#/components/schemas/Wfrn' }
+            context:
+              type: object
+              required: [accountId, region, wfrn]
+    StackEventData:
+      type: object
+      required: [version, state, operation]
+      properties:
+        version: { type: integer, minimum: 1, description: "The stack's version after this event" }
+        state: { type: string, enum: [pending, active, failed, deleting, deleted], description: "The stack's state after this event" }
+        operation: { type: string, enum: [launch, teardown] }
+        blueprint: { type: string }
+        name: { type: string, description: "The stack's name" }
+        ready:
+          type: array
+          description: The steps the BFF starts now
+          items: { $ref: '#/components/schemas/ReadyStep' }
+    ReadyStep:
+      type: object
+      required: [step, action, attempt, idempotencyKey, type, service]
+      properties:
+        step: { type: string, description: The resource id of the blueprint }
+        action: { type: string, enum: [create, delete] }
+        attempt: { type: integer, minimum: 1 }
+        idempotencyKey: { type: string, description: "The Idempotency-Key of the step's mint or delete; the same for the same attempt" }
+        type: { type: string }
+        service: { type: string }
+        input: { type: object, description: 'The create input, or the delete input beyond its subject, references resolved', additionalProperties: true }
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: The child to delete }
+        reason: { type: string, description: "The teardown's reason" }
+    StackRequestedData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [blueprint, blueprintVersion, name]
+          properties:
+            blueprintVersion: { type: string }
+            parameters: { type: object, additionalProperties: true }
+    StackStepData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [step]
+          properties:
+            step: { type: string }
+            attempt: { type: integer, minimum: 1 }
+            wfrn: { $ref: '#/components/schemas/Wfrn', description: "The step's child" }
+    StackStepFailedData:
+      allOf:
+        - $ref: '#/components/schemas/StackStepData'
+        - type: object
+          required: [action, code]
+          properties:
+            action: { type: string, enum: [create, delete] }
+            code: { type: string }
+            message: { type: string }
+    StackLaunchedData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          properties:
+            outputs: { type: object, additionalProperties: { type: string } }
+    StackTeardownData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string }
+            retain:
+              type: array
+              items: { type: string }
+    StackStepRemovedData:
+      allOf:
+        - $ref: '#/components/schemas/StackStepData'
+        - type: object
+          required: [outcome]
+          properties:
+            outcome: { type: string, enum: [deleted, retained, skipped] }

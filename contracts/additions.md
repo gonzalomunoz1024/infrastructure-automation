@@ -1,6 +1,6 @@
 # What this service serves beyond the pinned contract
 
-Nothing, at hub `b0a0d52` (`contracts.lock`). The additions the BFF asked for while it built the
+Nothing, at hub `37a99d6` (`contracts.lock`). The additions the BFF asked for while it built the
 console's resource lists on 2026-10-23 (`GET /v1/counts`, the `drift` parameter, the seven sorts,
 HTML-safe highlights, the status scoped to the caller's account, `GET /internal/sources`, the 404s
 for people on the index's own surface, 503 when the BFF's keys cannot be read) are in the hub's

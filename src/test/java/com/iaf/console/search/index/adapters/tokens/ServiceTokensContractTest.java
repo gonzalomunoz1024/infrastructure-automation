@@ -42,9 +42,9 @@ class ServiceTokensContractTest {
         JsonNode operation = contract.path("paths").path("/internal/v1/token").path("post");
         assertThat(operation.path("operationId").asText()).isEqualTo("issueServiceToken");
         JsonNode content = operation.path("requestBody").path("content").path("application/x-www-form-urlencoded");
-        assertThat(content.path("encoding").path("audience").path("explode").asBoolean()).as("audience is sent once per service").isTrue();
         JsonNode request = contract.path("components").path("schemas").path("ServiceTokenRequest");
         assertThat(content.path("schema").path("$ref").asText()).endsWith("/ServiceTokenRequest");
+        assertThat(request.path("properties").path("audience").path("type").asText()).as("one audience per token (decision 35)").isEqualTo("string");
         assertThat(strings(request.path("properties").path("grant_type").path("enum"))).contains(ServiceTokens.GRANT_TYPE);
         assertThat(strings(request.path("properties").path("client_assertion_type").path("enum"))).contains(ServiceTokens.ASSERTION_TYPE);
 
@@ -53,6 +53,7 @@ class ServiceTokensContractTest {
             new ServiceTokens(WebClient.create(), bff.url(), () -> Mono.just("assertion"), ServiceCredentials.SERVICE, Duration.ofSeconds(5), clock)
                     .token("console-state-service").block();
             MultiValueMap<String, String> sent = bff.forms().get(0);
+            assertThat(sent.get("audience")).as("sent once").containsExactly("console-state-service");
             assertThat(sent.keySet()).as("every required field").containsAll(strings(request.path("required")));
             assertThat(request.path("properties").fieldNames()).toIterable().as("and nothing the contract does not name").containsAll(sent.keySet());
         }
