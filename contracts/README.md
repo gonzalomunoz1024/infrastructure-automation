@@ -8,7 +8,7 @@ branch validates everything here.
 
 | Path | What it is | Status |
 | --- | --- | --- |
-| `platform/openapi-target.yaml` | The platform's HTTP API as it will be after P-01 to P-21 (`platform-changes/README.md`), OpenAPI 3.1: every operation the console uses, with `operationId`, tags, `x-scopes` and `x-platform-change`, the P-02, P-04, P-13 and P-21 headers as reusable parameters, opt-in paging with a `Link` header, the generated-route convention and the sample workflows' routes as concrete paths | the contract the console is built against |
+| `platform/openapi-target.yaml` | The platform's HTTP API as it will be after P-01 to P-23 (`platform-changes/README.md`), OpenAPI 3.1: every operation the console uses, with `operationId`, tags, `x-scopes` and `x-platform-change`, the P-02, P-04, P-13 and P-21 headers as reusable parameters, opt-in paging with a `Link` header, the generated-route convention and the sample workflows' routes as concrete paths | the contract the console is built against |
 | `platform/asyncapi-target.yaml` | The platform's event feed after P-01, AsyncAPI 3.0: the envelope, the four topics with partition keys and retention, and a `data` schema for every event type of the first catalog plus P-19's `content.published` and the audit topic's events | the contract the console's consumers are built against |
 | `platform/used-operations.txt` | One operation id per line of every target operation the console uses; the nightly check reads it | kept in step with the target |
 | `platform/openapi-c9529d5.json` | The platform's own OpenAPI document captured at `c9529d5`, read-only, for reference and for the local run of the platform check | pinned |
