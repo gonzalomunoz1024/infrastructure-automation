@@ -1,6 +1,6 @@
 import { lifecycleOf, validateAgainst, type LifecycleClass, type Problem, type Schema } from '@iaf/console-kit'
 import { idOfWfrn, serviceOf, titleOf } from '../lib/descriptors'
-import type { ActivityEntry, BffJobDetail, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
+import type { ActivityEntry, BffJobDetail, BlastRadius, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Dependent, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
 import type { MockData } from './data'
 import { ADMIN_ROLE, accountOf, authorize, quotaOf, rolesOf, type Decision } from './directory'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
@@ -173,7 +173,7 @@ export function wfrnPatternOf(data: MockData, s: RouteContext['session'], rt: Re
 }
 
 /** The accounts of the directory, in order: a sample with none of its own belongs to one by its owner. */
-function accountIdsOf(data: MockData): string[] {
+export function accountIdsOf(data: MockData): string[] {
   return data.directory.accounts.map((a) => a.accountId)
 }
 
@@ -308,9 +308,71 @@ function lastJobOf(data: MockData, r: Resource): JobSummary | undefined {
   return data.jobs.find((j) => st.jobs[j.id] && st.jobs[j.id].resourceId === r.id)
 }
 
-function refOf(data: MockData, s: RouteContext['session'], r: Resource): ResourceRef {
+export function refOf(data: MockData, s: RouteContext['session'], r: Resource): ResourceRef {
   const rt = typeOf(data, r.type)
   return { wfrn: rt ? wfrnOfResource(data, s, rt, r) : (r.wfrn ?? r.id), type: r.type, name: r.name ?? r.id, state: rt ? stateOfResource(data, rt, r) : undefined }
+}
+
+/** A resource that is not deleted (a tombstone depends on nothing and nothing depends on it). */
+function isLive(data: MockData, r: Resource): boolean {
+  const rt = typeOf(data, r.type)
+  return !rt || classOf(rt, r.status) !== 'deleted'
+}
+
+/** The live resources built from this one, one hop away. */
+export function liveDependentsOf(data: MockData, r: Resource): Resource[] {
+  return data.resources.filter((x) => x.builtFrom?.includes(r.id) && isLive(data, x))
+}
+
+/** The most dependents the walk names before it stops (the BFF's limit). */
+export const BLAST_RADIUS_LIMIT = 500
+
+/**
+ * What depends on the roots within `depth` hops (BFF BlastRadius): every account counted, only
+ * the session's account named, nearest first; a dependent the roots share is counted once, and
+ * an edge is shown only between resources the session may see.
+ */
+export function blastRadiusOf(data: MockData, s: RouteContext['session'], roots: Resource[], depth = 3): BlastRadius {
+  const accounts = accountIdsOf(data)
+  const accountOf = (x: Resource) => accountOfResource(x, accounts)
+  const rootIds = new Set(roots.map((r) => r.id))
+  const depthOf = new Map<string, number>()
+  const found: Resource[] = []
+  const links: { from: Resource; to: Resource }[] = []
+  let truncated = false
+  let frontier = roots
+  for (let d = 1; d <= depth && frontier.length > 0 && !truncated; d++) {
+    const next: Resource[] = []
+    for (const parent of frontier) {
+      for (const x of liveDependentsOf(data, parent)) {
+        links.push({ from: parent, to: x })
+        if (rootIds.has(x.id) || depthOf.has(x.id)) continue
+        if (found.length >= BLAST_RADIUS_LIMIT) {
+          truncated = true
+          break
+        }
+        depthOf.set(x.id, d)
+        found.push(x)
+        next.push(x)
+      }
+    }
+    frontier = next
+  }
+  const counts = new Map<string, number>()
+  for (const x of found) counts.set(accountOf(x), (counts.get(accountOf(x)) ?? 0) + 1)
+  const visible = (x: Resource) => accountOf(x) === s.accountId
+  const named = found.filter(visible).sort((a, b) => (depthOf.get(a.id) ?? 0) - (depthOf.get(b.id) ?? 0) || (a.name ?? a.id).localeCompare(b.name ?? b.id))
+  const wfrnOf = (x: Resource) => refOf(data, s, x).wfrn
+  return {
+    resource: roots.length === 1 ? refOf(data, s, roots[0]) : undefined,
+    total: found.length,
+    direct: found.filter((x) => depthOf.get(x.id) === 1).length,
+    byAccount: [...counts].map(([accountId, count]) => ({ accountId, count, current: accountId === s.accountId })).sort((a, b) => Number(b.current) - Number(a.current) || b.count - a.count),
+    dependents: named.map((x): Dependent => ({ ...refOf(data, s, x), id: x.id, depth: depthOf.get(x.id) })),
+    edges: links.filter((l) => visible(l.from) && visible(l.to)).map((l) => ({ from: wfrnOf(l.from), to: wfrnOf(l.to), via: l.to.createdBy?.workflow })),
+    depth,
+    truncated,
+  }
 }
 
 /** How often the drift service compares every resource (the plan's hourly scan). */
