@@ -5,7 +5,7 @@ import { isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
 import { decidedBy, denialOf, denialTitle, layerDescription, layerLabel, type Decision, type Denial } from '../lib/permissions'
 import { useMutation, useQuery } from '../lib/queries'
-import { MANAGED_ROLES, ROLE_SUMMARY } from '../lib/session'
+import { MANAGED_ROLES, ROLE_SUMMARY, roleLabel } from '../lib/session'
 import type { AccessRequest } from '../lib/types'
 import { useConsole } from './console'
 import { Hint } from './Hint'
@@ -163,6 +163,13 @@ export function RefusalDialog({ request, onClose }: { request: RefusalRequest; o
   )
 }
 
+/** The request a 409 answered with: the same requester's pending ask for the same role. */
+function pendingOf(e: unknown): AccessRequest | null {
+  if (!isApiError(e) || e.status !== 409) return null
+  const body = e.body as Partial<AccessRequest> | null
+  return body && typeof body.requestId === 'string' && body.status === 'pending' && typeof body.role === 'string' ? (body as AccessRequest) : null
+}
+
 function RequestAccess({ denied: d, sent, onSent, onClose, accountName }: { denied: Denial; sent: AccessRequest | null; onSent: (r: AccessRequest) => void; onClose: () => void; accountName: string }) {
   const { account } = useConsole()
   const [role, setRole] = useState(d.suggestedRole ?? 'operator')
@@ -170,23 +177,29 @@ function RequestAccess({ denied: d, sent, onSent, onClose, accountName }: { deni
   const people = useQuery(['iam-users', 'names', account.id], () => bff.iam.users.list({ limit: 200 }))
   const nameOf = (id: string) => people.data?.items.find((u) => u.userId === id)?.name ?? id
   const send = useMutation((input: { action: string; resource?: string; role: string; reason: string; layer: Denial['layer'] }) => bff.accessRequests.create(input), { invalidates: ['access-requests'] })
-  const tooShort = reason.trim().length < 10
-  const errorText = send.error ? (isApiError(send.error) ? send.error.error : String(send.error)) : undefined
-  const duplicate = isApiError(send.error) && send.error.status === 409
+  const empty = reason.trim().length === 0
+  // a second ask for the same role answers 409 with the request still pending: show that one
+  const already = pendingOf(send.error)
+  const errorText = send.error && !already ? (isApiError(send.error) ? send.error.error : String(send.error)) : undefined
+  const shown = sent ?? already
 
-  if (sent) {
-    const approvers = (sent.approvers ?? []).map(nameOf)
+  if (shown) {
+    // the requester may be an approver too, but never decides their own
+    const approvers = (shown.approvers ?? []).filter((a) => a !== shown.requester.userId).map(nameOf)
     return (
-      <div role="status" className="rounded-lg border border-healthy/30 bg-healthy-tint p-4" data-request-sent={sent.requestId}>
+      <div role="status" className="rounded-lg border border-healthy/30 bg-healthy-tint p-4" data-request-sent={shown.requestId}>
         <div className="flex items-start gap-2">
           <Icon name="check" size={16} className="mt-0.5 shrink-0 text-healthy" />
           <div className="min-w-0 text-sm">
-            <p className="font-medium text-primary">Request sent{approvers.length ? ` to ${approvers.join(', ')}` : ''}</p>
-            <p className="mt-0.5 text-secondary">
-              You asked for the <span className="font-medium text-primary">{sent.role}</span> role in {accountName}. The admins see it in their notifications and decide there; you will see the answer under your access requests.
+            <p className="font-medium text-primary">
+              {sent ? 'Request sent' : 'You asked already'}
+              {approvers.length ? ` to ${approvers.join(', ')}` : ''}
             </p>
-            <Link to={pathFor('iam-request', { id: sent.requestId })} onClick={onClose} className="mt-2 inline-flex items-center gap-1 font-medium text-accent transition-opacity hover:opacity-70">
-              View request <span className="font-mono text-caption">{sent.requestId}</span>
+            <p className="mt-0.5 text-secondary">
+              {sent ? 'You asked' : `On ${new Date(shown.requestedAt).toLocaleDateString()} you asked`} for the <span className="font-medium text-primary">{roleLabel(shown.role)}</span> role in {accountName}, and it is still pending. Its approvers see it in their notifications and decide there; you will see the answer under your access requests.
+            </p>
+            <Link to={pathFor('iam-request', { id: shown.requestId })} onClick={onClose} className="mt-2 inline-flex items-center gap-1 font-medium text-accent transition-opacity hover:opacity-70">
+              View request <span className="font-mono text-caption">{shown.requestId}</span>
             </Link>
           </div>
         </div>
@@ -200,31 +213,24 @@ function RequestAccess({ denied: d, sent, onSent, onClose, accountName }: { deni
       className="rounded-lg border border-stroke-light bg-surface-secondary p-4"
       onSubmit={(e) => {
         e.preventDefault()
-        if (tooShort) return
+        if (empty) return
         void send.mutate({ action: d.action, resource: d.resource, role, reason: reason.trim(), layer: d.layer }).then((r) => r && onSent(r))
       }}
     >
       <h3 id="request-access" className="text-sm font-semibold text-primary">
         Request access
       </h3>
-      <p className="mt-0.5 text-caption text-secondary">{d.layer === 'platform' ? `The platform's role for ${accountName} is widened by the platform team; the admins of the account forward your request to them.` : `Asks the admins of ${accountName} to put you in a group that carries the role.`}</p>
+      <p className="mt-0.5 text-caption text-secondary">{d.layer === 'platform' ? `The platform's role for ${accountName} is widened by the platform team; the admins of the account forward your request to them.` : `Asks the approvers of ${accountName} (its admins, and any group they let decide) to put you in a group that carries the role.`}</p>
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[12rem_1fr]">
         <Field label="Role to request" htmlFor="request-role">
-          <Select ariaLabel={`Role to request: ${role}`} value={role} onChange={setRole} options={MANAGED_ROLES.map((r) => ({ value: r, label: r, hint: ROLE_SUMMARY[r] }))} />
+          <Select ariaLabel={`Role to request: ${roleLabel(role)}`} value={role} onChange={setRole} options={MANAGED_ROLES.map((r) => ({ value: r, label: roleLabel(r), hint: ROLE_SUMMARY[r] }))} />
         </Field>
-        <Field label="Why you need it" hint="At least ten characters. The admins read it." htmlFor="request-reason" error={errorText} required>
-          <Textarea id="request-reason" value={reason} onChange={(e) => setReason(e.target.value)} rows={3} required minLength={10} maxLength={1000} invalid={!!errorText} placeholder="What you are trying to do, and for how long you need it" />
+        <Field label="Why you need it" hint="The approvers read it. Up to 2,000 characters." htmlFor="request-reason" error={errorText} required>
+          <Textarea id="request-reason" value={reason} onChange={(e) => setReason(e.target.value)} rows={3} required maxLength={2000} invalid={!!errorText} placeholder="What you are trying to do, and for how long you need it" />
         </Field>
       </div>
-      {duplicate && (
-        <p className="mt-2 text-caption text-secondary">
-          <Link to={pathFor('iam-requests')} onClick={onClose} className="text-accent transition-opacity hover:opacity-70">
-            See your access requests
-          </Link>
-        </p>
-      )}
       <div className="mt-3 flex justify-end">
-        <Button type="submit" variant="primary" icon="send" loading={send.loading} disabled={tooShort || send.loading}>
+        <Button type="submit" variant="primary" icon="send" loading={send.loading} disabled={empty || send.loading}>
           Send request
         </Button>
       </div>
@@ -251,7 +257,8 @@ export function ActionButton({ decision, what, phase, variant = 'secondary', siz
   const refusal = useRefusal()
   if (!decision.allowed && decision.denied) {
     const d = decision.denied
-    const note = `Not allowed: ${d.reason}. Select to see why.`
+    // the headline, not the service's reason: that names the whole wfrn, too long for a tooltip
+    const note = `Not allowed: ${denialTitle(d)}. Select to see why.`
     return (
       <Hint label={note} className={className}>
         <Button variant={variant} size={size} icon="lock" data-denied={d.layer} onClick={() => refusal.show({ denied: d, what })}>

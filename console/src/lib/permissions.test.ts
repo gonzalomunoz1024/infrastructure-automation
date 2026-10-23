@@ -80,11 +80,12 @@ describe('the words of a refusal', () => {
 
 describe('adminOnly', () => {
   it('lets admins through and greys everyone else with a requestable console-iam denial', () => {
-    expect(adminOnly(['viewer', 'admin'], 'iam:create', 'Add a user')).toBe(ALLOWED)
+    expect(adminOnly(['viewer', 'account-admin'], 'iam:create', 'Add a user')).toBe(ALLOWED)
     const d = adminOnly(['viewer', 'operator'], 'iam:create', 'Add a user')
     expect(d.allowed).toBe(false)
-    expect(d.denied).toMatchObject({ layer: 'console-iam', action: 'iam:create', role: 'operator, viewer', requestable: true, suggestedRole: 'admin' })
-    expect(d.denied?.reason).toBe('Only the admin role of this account can add a user; you hold operator, viewer')
-    expect(adminOnly([], 'iam:delete', 'Remove a user').denied?.reason).toBe('Only the admin role of this account can remove a user; you hold no role here')
+    expect(d.denied).toMatchObject({ layer: 'console-iam', action: 'iam:create', role: 'operator, viewer', requestable: true, suggestedRole: 'account-admin' })
+    expect(d.denied?.reason).toBe('Only an Admin of this account can add a user; you hold Operator, Viewer')
+    expect(adminOnly([], 'iam:delete', 'Remove a user').denied?.reason).toBe('Only an Admin of this account can remove a user; you hold no role here')
+    expect(adminOnly(['admin'], 'iam:create', 'Add a user').allowed, 'only the identity service’s name').toBe(false)
   })
 })

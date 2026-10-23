@@ -35,12 +35,13 @@ Phase 1 adds who you are to the console and what you may do:
 - sign-in through the firm's identity provider (OIDC), run by the BFF behind the
   `console_session` cookie; the console reads the session, never the cookie
 - the account picker with the role you hold in each account, the region picker, and the
-  notifications bell carrying the access requests an admin has to decide
-- identity and access: users, groups, the four managed roles with their policies statement by
-  statement, access keys (the secret shown once, rotation, revocation, quotas) and access requests
+  notifications bell carrying the access requests that name you among their approvers
+- identity and access: users, groups, the four managed roles (and any custom role, such as the
+  approvers') with their policies statement by statement, access keys (the secret shown once,
+  rotation, revocation, two usable a person), quotas with requests for more, and access requests
 - a refusal view on every denied action, naming the layer that decided (the account's console
-  IAM policies, or the platform's own role for the account), the statement, and your role, with
-  Request access sending an approval to the account's admins
+  IAM policies, or the platform's own role for the account), the statement when one denied, and
+  your role, with Request access sending the ask to the account's approvers
 - every button that would run a denied action is drawn locked and opens the refusal instead
 
 Phase 0 built the shell and the read-only pages:
@@ -103,31 +104,41 @@ CONSOLE_BFF=http://localhost:18081 CONSOLE_PLATFORM=http://localhost:18090 npm r
 Live, the sign-in page has one button, "Continue with company SSO", which sends the browser to
 `/auth/login?returnTo=/#/...`; the BFF runs the OIDC code flow and comes back with the cookie.
 In mock mode the sign-in page stands in for the identity provider and lists the people the
-BFF's demo profile knows; the mock keeps the "cookie" in this browser's localStorage. The session
-user travels to the platform-fake as `X-User`, which is how it names the caller until the BFF
-fronts the platform's reads in phase 3.
+identity service's demo seed knows; the mock keeps the "cookie" in this browser's localStorage.
+The session user travels to the platform-fake as `X-User`, which is how it names the caller
+until the BFF fronts the platform's reads in phase 3. The mock's user ids are the short names;
+the BFF's and the identity service's are `user_<name>`, which the pages never parse.
 
-| Person  | Compute (123456789012)                          | Data (210987654321)             |
-| ------- | ----------------------------------------------- | ------------------------------- |
-| gonzalo | admin (groups team-compute, team-platform, admin) | admin (group admin)             |
-| dana    | operator (team-compute, developer)              |                                 |
-| mateo   | operator (team-compute, ops)                    |                                 |
-| mia     | viewer (team-platform, compute-approvers, platform-approvers) |                   |
-| raj     |                                                 | operator (team-data, data-approvers) |
-| ana     |                                                 | operator (team-data, developer, dba) |
+| Person               | Compute (123456789012)                          | Data (210987654321)        |
+| -------------------- | ----------------------------------------------- | -------------------------- |
+| gonzalo, Gonzalo Munoz | account-admin (owners)                        | account-admin (owners)     |
+| dana, Dana Reyes     | operator, approver (members, compute-approvers) |                            |
+| mateo, Mateo Silva   | operator (members)                              |                            |
+| mia, Mia Chen        | viewer, approver (viewers, compute-approvers)   |                            |
+| raj, Raj Patel       |                                                 | operator, approver (members, data-approvers) |
+| ana, Ana Costa       |                                                 | operator, viewer (members, viewers) |
+| noah, Noah Berg      | no account: known to the identity provider, refused by the console at sign-in | |
 
-The managed roles: `viewer` reads; `operator` reads and makes every change that is not
-destructive; `admin` does everything, including deletions and identity and access; `auditor`
-reads, the audit trail included. `Data`'s platform service account holds only `compute:read`,
-so creating a virtual machine there is refused by the platform layer, not by console IAM.
+Every account is born with the identity service's four managed groups and roles: `owners`
+(account-admin, which can be neither deleted nor left without a member, and keeps its role),
+`members` (operator; the owning team joins it), `viewers` (viewer) and `auditors` (auditor). The
+managed policies: `viewer` reads, asks for access and for more quota; `operator` makes every
+change that is not a delete, IAM, a quota or the account, and reads IAM; `account-admin` does
+everything; `auditor` reads, the audit trail included, and cannot ask for access. The custom
+`approver` role (policy `approver`, statement `approve`) reads and decides the account's access
+requests; the approvers groups carry it. The pages show account-admin as Admin. `Data`'s platform
+service account holds only `compute:read`, so creating a virtual machine there is refused by the
+platform layer, not by console IAM; IAM, access requests, quotas and the account are the identity
+service's alone, and the platform layer never decides them.
 
 The gate-1 story, in mock mode: sign in as Mia (viewer), open Virtual machines, press the locked
 Create: the refusal names console IAM and that no statement of `viewer` allows `compute:create`,
-and offers Request access. Send it; sign in as Gonzalo: the bell shows one request to decide;
-approve it. Sign in as Mia again: Mia now holds `operator` and Create is no longer locked. Sign in
-as Dana and open a machine: Delete is refused by statement `DenyDestructive` of policy
-`managed-operator`. Sign in as Raj in Data: Create is refused by the platform, scope
-`compute:write` missing on `svc-data`.
+and offers Request access, which goes to the approvers other than Mia: Dana and Gonzalo. Send
+it; sign in as Gonzalo: the bell shows one request to decide; approve it. Sign in as Mia again:
+Mia now holds `operator` (through `members`) and Create is no longer locked. Sign in as Dana and
+open a machine: Delete is refused because no statement allows it (the operator's `changes` allow
+leaves `*:delete` out), and the role's page shows that carve-out. Sign in as Raj in Data: Create
+is refused by the platform, scope `compute:write` missing on `svc-data`.
 
 ## Checks
 
@@ -263,27 +274,45 @@ type, so the feed must subscribe to every one).
     scope and service account, whether access can be requested and which managed role would
     allow it. `RefusalDialog` draws the two layers in the order they decide, marks the one that
     refused, lists the facts, and holds the Request access form. The identity service decides
-    with explicit deny first, then any allow, else deny; the platform layer checks the account's
-    service-account scopes after console IAM allowed.
+    with the first matching deny, else the first matching allow (an allow's `notActions` carved
+    out of it), else a default deny that names the role and the weakest managed role that would
+    allow it; the platform layer checks the account's service-account scopes after console IAM
+    allowed.
 16. **Identity and access writes are greyed for everyone but admins before any call.**
-    `adminOnly()` is the console's own rule for phase 1 (the managed roles are fixed, only
-    `admin` writes IAM); it greys the button with a requestable denial that suggests `admin`.
+    `adminOnly()` is the console's own rule for phase 1 (only account-admin writes IAM); it
+    greys the button with a requestable denial that suggests `account-admin`.
     The server's answer, with the statement that decided, replaces it the moment a call is
     refused. Every IAM write carries an `Idempotency-Key` and, where the identity service
     versions the resource, `If-Match`.
 17. **Access requests are the approval path.** Request access in a refusal posts to
-    `/console/v1/access-requests` (reason of ten characters or more, the role suggested by the
-    refusal); the account's admins see it in the bell and on the access requests page and decide
-    it there; an approval puts the requester in the group that grants the role, and their next
-    session or a refresh of their roles picks it up. A duplicate pending request answers 409 and
-    the dialog links to the open one.
+    `/console/v1/access-requests` (a reason of 1 to 2,000 characters, the role suggested by the
+    refusal); the request names its approvers (the members of the groups whose policies allow
+    `access-request:decide`), who see it in the bell and on the access requests page and decide
+    it there, never their own; an approval puts the requester in the managed group of the role
+    (else the first group holding it), and their next session or a refresh of their roles picks
+    it up. A second ask for the same role answers 409 with the pending request as the body, and
+    the dialog shows that one. A request pending for more than 30 days is served `expired`.
+    Reading the account's requests takes `access-request:list`; the identity service answers
+    anyone else with their own only, so the console knows the queue is readable from the roles
+    that read it (account-admin, auditor) or from an answer showing more than the person's own.
+    Quotas are asked of the platform team the same way: the access keys page lists the
+    account's quotas (`jobs-per-minute` from the platform's bucket, `access-keys`, and
+    `resources.<service>` per service) and lets a member ask for a higher limit
+    (`:request-increase`, a reason of 10 to 1,000 characters, one open request per quota). The
+    requester or an admin withdraws it while it waits; the platform team decides, never the
+    account's own admins.
 18. **The mock BFF is the same pure handler, with a session store.** `console/src/mock/server.ts`
     speaks the BFF's contract next to the platform's: `/auth/login` with `login_hint` (the demo
     identity provider), `/auth/logout`, the session, accounts, regions, the types with decisions,
-    identity and access, and access requests, over an in-memory directory
-    (`console/src/mock/directory.ts`) that mirrors the BFF's demo people, the managed policies
-    and the two accounts' platform scopes. The browser installer keeps the session in
-    localStorage, so a reload stays signed in and a sign-out clears it.
+    identity and access, quotas and access requests, over an in-memory directory
+    (`console/src/mock/directory.ts`) that seeds and decides as the identity service does: its
+    demo people and approvers, the managed groups, roles and policies (statements in order,
+    `notActions` carved out of an allow, the first deny wins, else the first allow, else a
+    default deny naming the weakest managed role that would allow it), access keys, quotas and
+    access requests, and the two accounts' platform scopes. One choice is stricter than the
+    identity service: an approver never decides their own request. The browser installer keeps
+    the session and the directory in localStorage, so a reload stays signed in and keeps what
+    was changed, and a sign-out clears the session.
 19. **The list asks the server for everything it shows.** The filter bar's tokens become the
     BFF's list parameters: free text `q`, Status `state`, Drift `drift`, `Tag: <key>` `tag.<key>`,
     each with `=` and one value per property (the newest wins). A token the BFF cannot answer is

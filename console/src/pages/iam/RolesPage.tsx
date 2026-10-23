@@ -6,17 +6,18 @@ import { LaterButton, PHASES } from '../../app/Phase'
 import { Link, href, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
-import { ROLE_SUMMARY, roleTone, type ManagedRole } from '../../lib/session'
+import { ROLE_SUMMARY, roleLabel, roleTone, type ManagedRole } from '../../lib/session'
 import type { IamPolicy, IamRole, IamStatement } from '../../lib/types'
 import { GroupLinks, RoleTags, sortRoles } from './common'
 
 /*
- * Roles: the four managed roles every account has, each a bundle of policies whose statements
- * decide. A refusal names the statement; this is where to read it in full. Custom roles and
- * policies arrive with phase 7.
+ * Roles: the four managed roles every account has, and any custom role the account holds (the
+ * approvers' role), each a bundle of policies whose statements decide. A refusal names the
+ * statement; this is where to read it in full. Writing custom roles and policies arrives with
+ * phase 7.
  */
 
-const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', admin: 'shield', auditor: 'audit' }
+const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', 'account-admin': 'shield', auditor: 'audit', approver: 'check' }
 
 function iconOf(role: string): IconName {
   return ROLE_ICON[role] ?? 'shield'
@@ -37,7 +38,7 @@ export default function IamRolesPage(_props: PageProps) {
     <>
       <PageHeader
         title="Roles"
-        subtitle={`What each managed role may do in ${account.name}, statement by statement. Groups grant roles; people never hold one directly.`}
+        subtitle={`What each role may do in ${account.name}, statement by statement. Groups grant roles; people never hold one directly.`}
         actions={
           <LaterButton phase={7} variant="primary" icon="plus">
             Create role
@@ -49,7 +50,7 @@ export default function IamRolesPage(_props: PageProps) {
       ) : roles.loading ? (
         <SkeletonText lines={6} />
       ) : (
-        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2" aria-label="Managed roles">
+        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2" aria-label="Roles">
           {list.map((r) => {
             const granting = (groups.data?.items ?? []).filter((g) => g.roles?.includes(r.roleId))
             return (
@@ -62,7 +63,8 @@ export default function IamRolesPage(_props: PageProps) {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-primary">{r.name}</span>
+                          <span className="text-sm font-semibold text-primary">{roleLabel(r.name)}</span>
+                          {roleLabel(r.name) !== r.name && <span className="font-mono text-caption text-tertiary">{r.name}</span>}
                           {r.builtIn !== false && (
                             <Tag size="sm" outline>
                               managed
@@ -88,7 +90,7 @@ export default function IamRolesPage(_props: PageProps) {
           })}
         </ul>
       )}
-      <p className="mt-6 text-caption text-tertiary">Custom roles and policies, written in the same statements, arrive with {PHASES[7]}.</p>
+      <p className="mt-6 text-caption text-tertiary">Writing custom roles and policies in the console, in the same statements, arrives with {PHASES[7]}.</p>
     </>
   )
 }
@@ -110,12 +112,24 @@ const statementColumns: TableColumn<IamStatement>[] = [
     key: 'actions',
     header: 'Actions',
     render: (s) => (
-      <span className="flex flex-wrap gap-1">
-        {s.actions.map((a) => (
-          <code key={a} className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-caption text-primary">
-            {a}
-          </code>
-        ))}
+      <span className="flex flex-col gap-1">
+        <span className="flex flex-wrap gap-1">
+          {s.actions.map((a) => (
+            <code key={a} className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-caption text-primary">
+              {a}
+            </code>
+          ))}
+        </span>
+        {!!s.notActions?.length && (
+          <span className="flex flex-wrap items-center gap-1" data-not-actions>
+            <span className="text-caption text-tertiary">except</span>
+            {s.notActions.map((a) => (
+              <code key={a} className="rounded border border-separator px-1.5 py-0.5 font-mono text-caption text-secondary">
+                {a}
+              </code>
+            ))}
+          </span>
+        )}
       </span>
     ),
   },
@@ -168,13 +182,14 @@ export function IamRolePage({ route }: PageProps) {
     <>
       <PageHeader
         back={back}
-        eyebrow="Managed role"
+        eyebrow={r.builtIn === false ? 'Custom role' : 'Managed role'}
         title={
           <span className="flex flex-wrap items-center gap-2">
             <span className="flex size-8 items-center justify-center rounded-md bg-accent-tint text-accent">
               <Icon name={iconOf(r.roleId)} size={16} />
             </span>
-            {r.name}
+            {roleLabel(r.name)}
+            {roleLabel(r.name) !== r.name && <span className="font-mono text-caption font-normal text-tertiary">{r.name}</span>}
             {held && (
               <DotTag size="sm" tone={roleTone(r.roleId)}>
                 you hold it
@@ -211,7 +226,7 @@ export function IamRolePage({ route }: PageProps) {
             </Section>
           ))
         )}
-        <p className="text-caption text-tertiary">How a decision is made: an explicit deny in any statement wins; otherwise any allow grants; otherwise the action is denied. The platform then checks the account’s own scopes.</p>
+        <p className="text-caption text-tertiary">How a decision is made: an explicit deny in any statement wins; otherwise any allow grants, except the actions it lists after except; otherwise the action is denied. The platform then checks the account’s own scopes.</p>
       </div>
     </>
   )

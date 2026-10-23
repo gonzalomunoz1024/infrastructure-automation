@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { MANAGED_ROLES, getSession, getSessionState, hasRole, isAdmin, meOf, primaryRole, resetSessionState, returnToOf, roleTone, rolesOf, secondsLeft, setSessionState, signInUrl, type Session } from './session'
+import { MANAGED_ROLES, getSession, isManagedRole, roleLabel, getSessionState, hasRole, isAdmin, meOf, primaryRole, resetSessionState, returnToOf, roleTone, rolesOf, secondsLeft, setSessionState, signInUrl, type Session } from './session'
 
 const session: Session = {
   user: { userId: 'mia', email: 'mia@example.com', name: 'Mia Lund', groups: ['team-platform'] },
@@ -27,9 +27,10 @@ describe('the session store', () => {
 
 describe('roles', () => {
   it('lists the managed roles and ranks them', () => {
-    expect([...MANAGED_ROLES]).toEqual(['viewer', 'operator', 'admin', 'auditor'])
+    expect([...MANAGED_ROLES]).toEqual(['viewer', 'operator', 'account-admin', 'auditor'])
     expect(primaryRole(['viewer', 'operator'])).toBe('operator')
-    expect(primaryRole(['auditor', 'admin', 'viewer'])).toBe('admin')
+    expect(primaryRole(['auditor', 'account-admin', 'viewer'])).toBe('account-admin')
+    expect(primaryRole(['viewer', 'approver'])).toBe('viewer')
     expect(primaryRole(['viewer', 'auditor'])).toBe('auditor')
     expect(primaryRole(['custom-a', 'custom-b'])).toBe('custom-a')
     expect(primaryRole([])).toBeNull()
@@ -41,17 +42,27 @@ describe('roles', () => {
     expect(rolesOf(null)).toEqual([])
     expect(hasRole(session, 'viewer')).toBe(true)
     expect(isAdmin(session)).toBe(false)
-    expect(isAdmin({ ...session, account: { ...session.account, roles: ['admin'] } })).toBe(true)
-    expect(roleTone('admin')).toBe('warning')
+    expect(isAdmin({ ...session, account: { ...session.account, roles: ['account-admin'] } })).toBe(true)
+    expect(isAdmin({ ...session, account: { ...session.account, roles: ['admin'] } }), 'only the identity service’s name').toBe(false)
+    expect(roleTone('account-admin')).toBe('warning')
     expect(roleTone('operator')).toBe('accent')
     expect(roleTone('auditor')).toBe('healthy')
     expect(roleTone('viewer')).toBe('neutral')
     expect(roleTone(null)).toBe('neutral')
   })
 
+  it('labels the managed roles and names a custom one as it is', () => {
+    expect(roleLabel('account-admin')).toBe('Admin')
+    expect(roleLabel('operator')).toBe('Operator')
+    expect(roleLabel('approver')).toBe('approver')
+    expect(roleLabel('')).toBe('no role')
+    expect(isManagedRole('auditor')).toBe(true)
+    expect(isManagedRole('approver')).toBe(false)
+  })
+
   it('shapes the person the phase-0 pages read', () => {
     expect(meOf(session)).toEqual({ id: 'mia', name: 'Mia Lund', email: 'mia@example.com', roles: ['viewer'], teams: ['team-platform', 'compute-approvers'], admin: false })
-    expect(meOf({ ...session, user: { userId: 'x', email: 'x@example.com' }, account: { accountId: '1', name: 'a', roles: ['admin'] } })).toMatchObject({ name: 'x@example.com', admin: true, teams: undefined })
+    expect(meOf({ ...session, user: { userId: 'x', email: 'x@example.com' }, account: { accountId: '1', name: 'a', roles: ['account-admin'] } })).toMatchObject({ name: 'x@example.com', admin: true, teams: undefined })
   })
 })
 

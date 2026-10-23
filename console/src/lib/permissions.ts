@@ -1,3 +1,4 @@
+import { ADMIN_ROLE, roleLabel } from './session'
 import type { BffConsoleType, Denial, DenialLayer } from './types'
 
 /*
@@ -99,14 +100,16 @@ export function denialOf(e: unknown): Denial | null {
 
 /**
  * The console's own rule for identity and access in phase 1: the managed roles are fixed, and
- * only admin writes IAM. The pages grey an IAM action for everyone else with this decision; the
- * BFF's answer, with the statement that decided, replaces it the moment a call is refused.
+ * only account-admin (shown as Admin) writes IAM. The pages grey an IAM action for everyone else
+ * with this decision; the BFF's answer, with the statement that decided, replaces it the moment
+ * a call is refused.
  */
 export function adminOnly(roles: readonly string[], action: string, what: string): Decision {
-  if (roles.includes('admin')) return ALLOWED
+  if (roles.includes(ADMIN_ROLE)) return ALLOWED
   const role = roles.length ? [...roles].sort().join(', ') : null
+  const held = roles.length ? [...roles].sort().map(roleLabel).join(', ') : 'no role here'
   return {
     allowed: false,
-    denied: { layer: 'console-iam', action, reason: `Only the admin role of this account can ${what.charAt(0).toLowerCase()}${what.slice(1)}; you hold ${role ?? 'no role here'}`, role: role ?? undefined, requestable: true, suggestedRole: 'admin' },
+    denied: { layer: 'console-iam', action, reason: `Only an Admin of this account can ${what.charAt(0).toLowerCase()}${what.slice(1)}; you hold ${held}`, role: role ?? undefined, requestable: true, suggestedRole: ADMIN_ROLE },
   }
 }

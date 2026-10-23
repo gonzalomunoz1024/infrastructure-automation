@@ -3,14 +3,14 @@ import { Badge, EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, c
 import { BrandLockup } from './BrandMark'
 import { RoleTag } from './RoleTag'
 import { UserMenuButton } from './UserMenuButton'
-import { usePendingAccessRequests } from './access'
+import { useAccessRequestQueue } from './access'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
 import { formatAccountId } from '../lib/accounts'
 import { isApiError } from '../lib/api'
 import { bff, signOut, switchAccount, switchIdentity, switchRegion } from '../lib/bff'
 import { useQuery } from '../lib/queries'
-import { primaryRole } from '../lib/session'
+import { primaryRole, roleLabel } from '../lib/session'
 import { PHASES } from './Phase'
 
 /*
@@ -226,15 +226,14 @@ function MenuHeading({ children }: { children: ReactNode }) {
 }
 
 function NotificationsBell() {
-  const { account, admin } = useConsole()
-  const pending = usePendingAccessRequests(account.id, admin)
-  const items = admin ? (pending.data?.items ?? []) : []
+  const queue = useAccessRequestQueue()
+  const items = queue.toDecide
   const count = items.length
   return (
     <HeaderMenu label={count ? `Notifications, ${count} to decide` : 'Notifications'} icon="bell" role="dialog" width="w-80" badge={count}>
       {(close) =>
         count === 0 ? (
-          <EmptyState compact icon="bell" title="Nothing to decide" message={admin ? `Access requests to approve land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
+          <EmptyState compact icon="bell" title="Nothing to decide" message={queue.readable ? `Access requests waiting for you land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
         ) : (
           <div>
             <MenuHeading>Access requests to decide</MenuHeading>
@@ -243,7 +242,7 @@ function NotificationsBell() {
                 <li key={r.requestId}>
                   <Link to={pathFor('iam-request', { id: r.requestId })} onClick={close} className="block px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
                     <span className="block text-primary">
-                      {r.requester.name ?? r.requester.userId} asks for <span className="font-medium">{r.role}</span>
+                      {r.requester.name ?? r.requester.userId} asks for <span className="font-medium">{roleLabel(r.role)}</span>
                     </span>
                     <span className="block truncate font-mono text-caption text-tertiary">
                       {r.action} · {relativeTime(r.requestedAt)}
@@ -315,7 +314,7 @@ function AccountPicker() {
   }
   return (
     <HeaderMenu
-      label={`Account: ${account.name} ${formatAccountId(account.id)}${role ? `, your role ${role}` : ''}`}
+      label={`Account: ${account.name} ${formatAccountId(account.id)}${role ? `, your role ${roleLabel(role)}` : ''}`}
       icon="users"
       text={
         <span className="flex items-center gap-1.5">

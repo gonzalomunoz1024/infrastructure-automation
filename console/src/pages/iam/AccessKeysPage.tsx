@@ -1,18 +1,20 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { Button, Card, ConfirmDialog, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
-import { CopyableId, ErrorState, When } from '@iaf/console-kit'
+import { Button, Card, ConfirmDialog, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, Textarea, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
+import { CopyableId, DotTag, ErrorState, When } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { Link, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
-import type { AccessKey, AccessKeyCreated, IamUser, Quota } from '../../lib/types'
+import type { AccessKey, AccessKeyCreated, IamUser, Quota, QuotaRequest } from '../../lib/types'
 import { KeyStatusTag, personLabel, useIamWrite } from './common'
 
 /*
  * Access keys: what a script or an MCP client presents to the platform's API on behalf of a
- * person, scoped to one account. Everyone manages their own keys; admins see and manage
- * everyone's. The secret part is shown once, when the key is created or rotated, and never kept
- * in clear.
+ * person, scoped to one account. Everyone manages their own keys, two usable ones at most;
+ * admins see and manage everyone's. The secret part is shown once, when the key is created or
+ * rotated, and never kept in clear. Beside them, the account's quotas: any member asks the
+ * platform team for a higher limit (one open request per quota), and the requester or an admin
+ * withdraws it while it waits.
  */
 
 const EXPIRY = [
@@ -41,12 +43,15 @@ export default function IamAccessKeysPage({ route }: PageProps) {
   const { account, me, admin } = useConsole()
   const write = useIamWrite()
   const filterUser = admin ? route.query.user || '' : ''
-  const keys = useQuery(['iam', 'keys', account.id, filterUser || 'all'], () => bff.iam.accessKeys.list({ limit: 200, userId: filterUser || undefined }))
+  // a person's own keys, or for an admin everyone's (or one person's)
+  const owner = admin ? filterUser || undefined : me.id
+  const keys = useQuery(['iam', 'keys', account.id, owner ?? 'all'], () => bff.iam.accessKeys.list({ limit: 200, userId: owner }))
   const quotas = useQuery(['iam', 'quotas', account.id], () => bff.iam.quotas.list())
   const users = useQuery(['iam', 'users', account.id], () => bff.iam.users.list({ limit: 200 }), { enabled: admin })
   const [creating, setCreating] = useState(false)
   const [shown, setShown] = useState<{ key: AccessKeyCreated; rotated: boolean } | null>(null)
   const [confirm, setConfirm] = useState<{ kind: 'revoke' | 'rotate'; key: AccessKey } | null>(null)
+  const [asking, setAsking] = useState<Quota | null>(null)
   const rows = useMemo(() => keys.data?.items ?? [], [keys.data])
   const people = useMemo(() => users.data?.items ?? [], [users.data])
   const nameOf = (userId: string) => personLabel(people.find((u) => u.userId === userId) ?? { userId })
@@ -123,16 +128,13 @@ export default function IamAccessKeysPage({ route }: PageProps) {
       </PageHeader>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">{keys.error ? <ErrorState error={keys.error} title="Could not load the access keys" onRetry={() => void keys.refetch()} /> : <Table<AccessKey> caption={`Access keys of ${account.name}`} columns={columns} rows={rows} rowKey={(k) => k.keyId} loading={keys.loading} defaultSort={{ key: 'createdAt', dir: 'desc' }} emptyIcon="key" emptyTitle="No access keys yet" emptyMessage="Create one to call the platform’s API or connect an MCP client. The secret is shown once." />}</div>
-        <Card title="Quotas" subtitle="What this account may hold and how much is used" className="h-fit">
+        <Card title="Quotas" subtitle="What this account may hold and how much is used. The platform team raises a limit when asked." className="h-fit">
           {quotas.error ? (
             <ErrorState error={quotas.error} compact title="Could not load the quotas" onRetry={() => void quotas.refetch()} />
           ) : (
-            <ul className="space-y-4">
+            <ul className="space-y-4" aria-label="Quotas">
               {(quotas.data?.items ?? []).map((q) => (
-                <li key={q.key}>
-                  <ProgressBar label={`${quotaLabel(q.key)}: ${q.used} of ${q.limit}${q.burst ? ` (burst ${q.burst})` : ''}`} showLabel value={q.used} max={q.limit} tone={quotaTone(q)} size="sm" />
-                  <p className="mt-1 text-caption2 text-tertiary">{q.source === 'platform' ? 'Set by the platform for the account' : q.source === 'override' ? 'Raised for this account' : 'The default for every account'}</p>
-                </li>
+                <QuotaItem key={q.key} quota={q} onAsk={setAsking} />
               ))}
               {quotas.data && quotas.data.items.length === 0 && <li className="text-caption text-tertiary">No quotas apply.</li>}
             </ul>
@@ -151,9 +153,113 @@ export default function IamAccessKeysPage({ route }: PageProps) {
         />
       )}
       {shown && <SecretDialog created={shown.key} rotated={shown.rotated} onClose={() => setShown(null)} />}
+      {asking && <QuotaIncreaseDialog quota={asking} onClose={() => setAsking(null)} />}
       {confirm?.kind === 'revoke' && <ConfirmDialog title={`Revoke ${confirm.key.keyId}?`} tone="danger" icon="trash" confirmLabel="Revoke" onClose={() => setConfirm(null)} onConfirm={() => revoke(confirm.key)} message="Anything using this key is refused from now on. This cannot be undone; create a new key instead if it is still needed." />}
       {confirm?.kind === 'rotate' && <ConfirmDialog title={`Rotate ${confirm.key.keyId}?`} tone="warning" icon="refresh" confirmLabel="Rotate" onClose={() => setConfirm(null)} onConfirm={() => rotate(confirm.key)} message="A new secret is issued for the same key id. The old secret keeps working for a short grace period so you can switch clients over." />}
     </>
+  )
+}
+
+/** 'resources.compute' → 'Compute resources'; 'jobs-per-minute' → 'Jobs per minute'. */
+export function quotaTitle(key: string): string {
+  if (key.startsWith('resources.')) {
+    const service = key.slice('resources.'.length)
+    return `${service.charAt(0).toUpperCase()}${service.slice(1)} resources`
+  }
+  return quotaLabel(key)
+}
+
+/** A higher limit than the current one: half as much again, in a round number. */
+export function suggestedLimit(limit: number): number {
+  const step = limit >= 1000 ? 100 : limit >= 100 ? 10 : 1
+  return Math.max(limit + 1, Math.ceil((limit * 1.5) / step) * step)
+}
+
+function QuotaItem({ quota: q, onAsk }: { quota: Quota; onAsk: (q: Quota) => void }) {
+  const { account, me, admin } = useConsole()
+  const write = useIamWrite()
+  const pendingId = q.pendingRequestId
+  const pending = useQuery<QuotaRequest>(['iam', 'quota-requests', account.id, pendingId ?? 'none'], () => bff.iam.quotaRequests.get(pendingId!), { enabled: !!pendingId })
+  const [busy, setBusy] = useState(false)
+  const r = pending.data
+  const title = quotaTitle(q.key)
+  const withdraw = async (request: QuotaRequest) => {
+    setBusy(true)
+    await write('Withdraw a quota request', () => bff.iam.quotaRequests.withdraw(request.requestId).then(() => true), { title: 'Request withdrawn', message: `${title} keeps its limit of ${q.limit.toLocaleString()}.` })
+    setBusy(false)
+  }
+  return (
+    <li data-quota={q.key}>
+      <ProgressBar label={`${title}: ${q.used.toLocaleString()} of ${q.limit.toLocaleString()}${q.burst ? ` (burst ${q.burst.toLocaleString()})` : ''}`} showLabel value={q.used} max={q.limit} tone={quotaTone(q)} size="sm" />
+      <p className="mt-1 text-caption2 text-tertiary">{q.source === 'platform' ? 'Set by the platform for the account' : q.source === 'override' ? 'Raised for this account' : 'The default for every account'}</p>
+      {pendingId ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1" data-quota-pending={pendingId}>
+          <DotTag size="sm" tone="warning" pulse>
+            increase pending
+          </DotTag>
+          <span className="text-caption text-secondary">
+            {r ? `${r.requestedLimit.toLocaleString()} asked by ${r.requestedBy === me.id ? 'you' : r.requestedBy}; the platform team decides.` : 'The platform team decides.'}
+          </span>
+          {r && (r.requestedBy === me.id || admin) && (
+            <Button size="sm" variant="ghost" loading={busy} onClick={() => void withdraw(r)} aria-label={`Withdraw the request for more ${title.toLowerCase()}`}>
+              Withdraw
+            </Button>
+          )}
+        </div>
+      ) : (
+        <Button size="sm" variant="ghost" icon="plus" className="mt-1" onClick={() => onAsk(q)} aria-label={`Request an increase of ${title.toLowerCase()}`}>
+          Request an increase
+        </Button>
+      )}
+    </li>
+  )
+}
+
+function QuotaIncreaseDialog({ quota: q, onClose }: { quota: Quota; onClose: () => void }) {
+  const write = useIamWrite()
+  const title = quotaTitle(q.key)
+  const [limit, setLimit] = useState(String(suggestedLimit(q.limit)))
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [tried, setTried] = useState(false)
+  const asked = Number(limit)
+  const limitError = !Number.isInteger(asked) || asked <= q.limit ? `More than the current ${q.limit.toLocaleString()}, as a whole number.` : undefined
+  const reasonError = reason.trim().length < 10 ? 'Say why in 10 characters or more.' : undefined
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setTried(true)
+    if (busy || limitError || reasonError) return
+    setBusy(true)
+    const sent = await write('Request a quota increase', () => bff.iam.quotas.requestIncrease(q.key, { limit: asked, reason: reason.trim() }), { title: 'Increase requested', message: `The platform team decides on ${asked.toLocaleString()} ${title.toLowerCase()}.` })
+    setBusy(false)
+    if (sent) onClose()
+  }
+
+  return (
+    <Modal onClose={onClose} label={`Request more ${title.toLowerCase()}`} width="max-w-lg">
+      <form onSubmit={(e) => void submit(e)} noValidate>
+        <OverlayHeader title={`Request more ${title.toLowerCase()}`} subtitle={`Now ${q.used.toLocaleString()} of ${q.limit.toLocaleString()} in use. The platform team decides; the account’s admins cannot raise it themselves.`} icon="plus" />
+        <OverlayBody>
+          <div className="space-y-5">
+            <Field label="New limit" htmlFor="quota-limit" error={tried ? limitError : undefined} required>
+              <Input id="quota-limit" data-autofocus type="number" inputMode="numeric" min={q.limit + 1} step={1} value={limit} onChange={(e) => setLimit(e.target.value)} />
+            </Field>
+            <Field label="Why" htmlFor="quota-reason" hint="The platform team reads it. 10 to 1,000 characters." error={tried ? reasonError : undefined} required>
+              <Textarea id="quota-reason" rows={3} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="The storage team moves 300 machines here next month" />
+            </Field>
+          </div>
+        </OverlayBody>
+        <OverlayFooter>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" loading={busy}>
+            Send request
+          </Button>
+        </OverlayFooter>
+      </form>
+    </Modal>
   )
 }
 

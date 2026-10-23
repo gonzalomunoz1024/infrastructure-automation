@@ -3,7 +3,7 @@ import catalogSample from './samples/catalog.json'
 import resourcesSample from './samples/resources.json'
 import jobsSample from './samples/jobs.json'
 import type { CatalogEntry, JobSummary, Me, PlatformEvent, Resource, ResourceType } from '../lib/types'
-import { ACCOUNTS, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, membershipsOf, type Directory } from './directory'
+import { ACCOUNTS, ADMIN_ROLE, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, membershipsOf, type Directory } from './directory'
 
 /*
  * The mock's dataset: the platform's captured samples (console/src/mock/samples, from the
@@ -107,7 +107,7 @@ function usersOf(dir: Directory): Record<string, Me> {
   const out: Record<string, Me> = {}
   for (const p of dir.people) {
     const first = membershipsOf(dir, p.id)[0]
-    out[p.id] = { id: p.id, name: p.name, email: p.email, roles: first?.roles ?? [], teams: first?.groups ?? [], admin: first?.roles?.includes('admin') || undefined }
+    out[p.id] = { id: p.id, name: p.name, email: p.email, roles: first?.roles ?? [], teams: first?.groups ?? [], admin: first?.roles?.includes(ADMIN_ROLE) || undefined }
   }
   return out
 }

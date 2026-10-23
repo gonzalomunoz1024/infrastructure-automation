@@ -2,7 +2,7 @@ import { get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, BffConsoleType, BffRegion, ConsoleResource, DemoPerson, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, ResourceCounts, ResourceFilters, SearchHit, Suggestion } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, BffConsoleType, BffRegion, ConsoleResource, DemoPerson, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
@@ -79,6 +79,14 @@ export const bff = {
     },
     quotas: {
       list: () => page<Quota>(b('/iam/quotas')),
+      get: (quotaKey: string) => get<Quota>(b(`/iam/quotas/${enc(quotaKey)}`)),
+      /** opens an ask the platform team decides; 409 while one is open for the key */
+      requestIncrease: (quotaKey: string, body: QuotaRequestInput) => request<QuotaRequest>('POST', b(`/iam/quotas/${enc(quotaKey)}:request-increase`), body, writeHeaders()),
+    },
+    quotaRequests: {
+      get: (requestId: string) => get<QuotaRequest>(b(`/iam/quota-requests/${enc(requestId)}`)),
+      /** by its requester or an admin; 409 once decided */
+      withdraw: (requestId: string) => request<void>('DELETE', b(`/iam/quota-requests/${enc(requestId)}`), undefined, writeHeaders()),
     },
   },
 
@@ -95,9 +103,10 @@ export const bff = {
     put: (body: Preferences) => request<Preferences>('PUT', b('/preferences'), body, writeHeaders()),
   },
 
-  /* access requests: from a refusal to the account's admins */
+  /* access requests: from a refusal to the account's approvers */
   accessRequests: {
-    list: (params?: { scope?: 'mine' | 'account'; status?: string } & ListParams) => page<AccessRequest>(b('/access-requests'), params),
+    /** everyone's own (requester = them); the account's queue (no requester, or someone else's) needs access-request:list */
+    list: (params?: { requester?: string; status?: AccessRequestStatus } & ListParams) => page<AccessRequest>(b('/access-requests'), params),
     get: (requestId: string) => get<AccessRequest>(b(`/access-requests/${enc(requestId)}`)),
     create: (body: AccessRequestInput) => request<AccessRequest>('POST', b('/access-requests'), body, writeHeaders()),
     decide: (requestId: string, body: { decision: 'approve' | 'reject'; comment?: string }) => request<AccessRequest>('POST', b(`/access-requests/${enc(requestId)}:decide`), body, writeHeaders()),

@@ -6,6 +6,7 @@ import { ActionButton } from '../../app/Refusal'
 import { Link, href, navigate, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
+import { ADMIN_ROLE } from '../../lib/session'
 import type { AccessKey, IamGroup, IamUser } from '../../lib/types'
 import { GroupLinks, GroupPicker, KeyStatusTag, RoleTags, UserStatusTag, groupIdsOf, personLabel, rolesFromGroups, useAdminDecision, useIamWrite } from './common'
 
@@ -84,7 +85,7 @@ function AddUserDialog({ groups, onClose }: { groups: IamGroup[]; onClose: () =>
   const write = useIamWrite()
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
-  const [picked, setPicked] = useState<string[]>(() => groups.filter((g) => g.roles?.includes('viewer') && !g.roles.includes('admin')).slice(0, 1).map((g) => g.groupId))
+  const [picked, setPicked] = useState<string[]>(() => groups.filter((g) => g.roles?.includes('viewer') && !g.roles.includes(ADMIN_ROLE)).slice(0, 1).map((g) => g.groupId))
   const [busy, setBusy] = useState(false)
   const valid = EMAIL.test(email.trim()) && picked.length > 0
 
