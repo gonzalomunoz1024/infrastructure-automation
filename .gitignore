@@ -1,0 +1,10 @@
+# made by every run: dev keys, env files, the platform token, the checked-out services, the seed
+.work/
+# test results, the Playwright report and the containers' logs
+artifacts/
+test-results/
+playwright-report/
+# dependencies, never committed
+node_modules/
+# local exploration
+journey/explore-tmp/
