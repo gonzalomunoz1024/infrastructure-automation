@@ -2,8 +2,8 @@ import resourceTypesSample from './samples/resource-types.json'
 import catalogSample from './samples/catalog.json'
 import resourcesSample from './samples/resources.json'
 import jobsSample from './samples/jobs.json'
-import type { CatalogEntry, JobSummary, Me, PlatformEvent, Resource, ResourceType } from '../lib/types'
-import { ACCOUNTS, ADMIN_ROLE, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, membershipsOf, type Directory } from './directory'
+import type { CatalogEntry, JobSummary, PlatformEvent, Resource, ResourceType } from '../lib/types'
+import { ACCOUNTS, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, type Directory } from './directory'
 import { emptyConsoleState, type MockConsoleState } from './commands'
 
 /*
@@ -21,9 +21,6 @@ export interface MockData {
   catalog: CatalogEntry[]
   resources: Resource[]
   jobs: JobSummary[]
-  regions: unknown[]
-  /** the platform's own identities (GET /api/v1/me by X-User), derived from the directory */
-  users: Record<string, Me>
   events: PlatformEvent[]
   directory: Directory
   partition: string
@@ -154,16 +151,6 @@ function withContext(resources: Resource[]): Resource[] {
   })
 }
 
-/** The platform's view of each person: the roles and groups of their first account, as the platform-fake answers /me. */
-function usersOf(dir: Directory): Record<string, Me> {
-  const out: Record<string, Me> = {}
-  for (const p of dir.people) {
-    const first = membershipsOf(dir, p.id)[0]
-    out[p.id] = { id: p.id, name: p.name, email: p.email, roles: first?.roles ?? [], teams: first?.groups ?? [], admin: first?.roles?.includes(ADMIN_ROLE) || undefined }
-  }
-  return out
-}
-
 const EVENT_TYPES = ['job.started', 'job.step', 'job.finished', 'resource.registered', 'resource.updated'] as const
 
 function backlog(resources: Resource[], jobs: JobSummary[]): PlatformEvent[] {
@@ -202,8 +189,6 @@ export function buildMockData(): MockData {
     catalog,
     resources,
     jobs,
-    regions: [{ metadata: { name: MOCK_REGION, title: 'Global' }, spec: { partition: MOCK_PARTITION, status: 'available', environments: ['dev', 'test', 'prod'] } }],
-    users: usersOf(directory),
     events: backlog(resources, jobs),
     directory,
     partition: MOCK_PARTITION,

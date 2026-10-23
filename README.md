@@ -126,10 +126,10 @@ Phase 0 built the shell and the read-only pages:
 - the top bar with the Services menu, the unified search (Cmd+K or Ctrl+K), notifications,
   help, the account picker, the region picker and the user menu
 - a collapsible sidebar per service, breadcrumbs, and a status bar with the build, the contracts
-  pin, the platform's health and the theme toggle
+  pin, the console's health (the BFF's) and the theme toggle
 - the console home, a landing page per service, a list per resource type, a resource page with
   its tabs, the requests list and one request, identity and access, settings, sign-in
-- a development-only platform feed over server-sent events
+- a development-only live feed of the account over server-sent events (the BFF's `/console/v1/events`)
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
 What the console does not do yet is still shown, and says which phase brings it: custom roles and
@@ -152,15 +152,19 @@ Node 22 and npm 10.
 npm ci
 ```
 
-Against the platform (the `platform-fake-app` of console-libs listens on 18090; the Vite dev
-server proxies `/api` and `/actuator` to `CONSOLE_PLATFORM`, which defaults to that address):
+Against the BFF (the `console-bff` service, listening on 18081; its `demo` profile embeds the
+platform-fake and a demo identity provider). The BFF is the only backend the browser talks to:
+the Vite dev server proxies `/console`, `/auth`, `/demo-idp` and `/actuator/health` to
+`CONSOLE_BFF`, which defaults to `http://localhost:18081`, and nothing to the platform. The BFF
+reads the platform on the person's behalf; the edge must never route the platform's `/api/v1`
+from browsers.
 
 ```sh
-CONSOLE_PLATFORM=http://localhost:18090 npm run dev
+CONSOLE_BFF=http://localhost:18081 npm run dev
 ```
 
-With no platform at all, in mock mode: the same endpoints are answered in the browser from the
-samples captured from the platform-fake (`console/src/mock/samples`), with the planned hints
+With no backend at all, in mock mode: the BFF's endpoints are answered in the browser, built from
+the samples captured from the platform-fake (`console/src/mock/samples`), with the planned hints
 added to the vm type so both the hinted and the default paths show:
 
 ```sh
@@ -169,21 +173,11 @@ npm run dev:mock
 
 Both serve `http://localhost:3000`.
 
-The session, the sign-in and identity and access come from the BFF (the `console-bff` service,
-listening on 18081; its `demo` profile embeds the platform-fake and a demo identity provider).
-The dev server proxies `/auth`, `/console` and `/demo-idp` to `CONSOLE_BFF`, which defaults to
-`http://localhost:18081`:
-
-```sh
-CONSOLE_BFF=http://localhost:18081 CONSOLE_PLATFORM=http://localhost:18090 npm run dev
-```
-
 Live, the sign-in page has one button, "Continue with company SSO", which sends the browser to
 `/auth/login?returnTo=/#/...`; the BFF runs the OIDC code flow and comes back with the cookie.
 In mock mode the sign-in page stands in for the identity provider and lists the people the
 identity service's demo seed knows; the mock keeps the "cookie" in this browser's localStorage.
-The session user travels to the platform-fake as `X-User`, which is how it names the caller
-until the BFF fronts the platform's reads in phase 3. The mock's user ids are the short names;
+The browser never names the person itself: the session cookie does, on every call. The mock's user ids are the short names;
 the BFF's and the identity service's are `user_<name>`, which the pages never parse.
 
 | Person               | Compute (123456789012)                          | Data (210987654321)        |
@@ -632,8 +626,9 @@ console/
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
                   access (the pending requests query), commands (running a change and explaining
                   its failure), CodeDisclosure, GettingStarted, the router, the console context
-  src/lib/        api (fetch, traceparent, X-User, X-Csrf-Token, ETag cache, paging), bff (the
-                  BFF client, sign-in, sign-out, switching), session, permissions, sse, queries,
+  src/lib/        api (fetch to the BFF only, traceparent, X-Csrf-Token, ETag cache, paging, the
+                  step-up door), bff (the BFF client, sign-in, sign-out, switching), kit (the
+                  BFF's answers in the kit's shapes), events (the live event types), session, permissions, sse, queries,
                   descriptors, accounts, regions, recent, store, resourceList (the list's
                   filters, sorts, columns and counts), listState (the list in the query),
                   preferences (saved views and columns), keyed, csv, code (view as code), plain
@@ -642,7 +637,8 @@ console/
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
                   (scales, ticks, time labels and the keyboard's steps)
-  src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
+  src/mock/       the mock server (the BFF), types (the BFF's type descriptors), live (the live
+                  feed per account), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),

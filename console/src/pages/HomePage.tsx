@@ -3,7 +3,7 @@ import { ErrorState, Section, StatusBadge } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
 import { PHASES } from '../app/Phase'
 import { Link, pathFor, type PageProps } from '../app/router'
-import { api } from '../lib/api'
+import { bff } from '../lib/bff'
 import type { ConsoleService } from '../lib/descriptors'
 import { useQuery } from '../lib/queries'
 import { useRecent, type RecentItem } from '../lib/recent'
@@ -18,7 +18,7 @@ const RECENT_ICON: Record<RecentItem['kind'], IconName> = { service: 'grid', typ
 export default function HomePage(_props: PageProps) {
   const { services, loading, error, refetch, me, account, region } = useConsole()
   const recent = useRecent()
-  const jobs = useQuery(['jobs', 'latest'], () => api.jobs({ limit: 5 }))
+  const jobs = useQuery(['jobs', 'latest'], () => bff.jobs.list({ limit: 5 }))
 
   return (
     <>
@@ -89,18 +89,21 @@ export default function HomePage(_props: PageProps) {
             ) : (
               <ul className="divide-y divide-stroke-light overflow-hidden rounded-lg border border-stroke-light" aria-label="Latest requests">
                 {jobs.data.items.map((j) => (
-                  <li key={j.id}>
-                    <Link to={pathFor('request', { id: j.id })} className="flex items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
+                  <li key={j.jobId}>
+                    <Link to={pathFor('request', { id: j.jobId })} className="flex items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-primary">{j.title}</span>
+                        <span className="block truncate text-primary">{j.title ?? j.workflow}</span>
                         <span className="block truncate font-mono text-caption text-tertiary">
-                          {j.id} · {j.requester}
+                          {j.jobId}
+                          {j.requester ? ` · ${j.requester}` : ''}
                         </span>
                       </span>
                       <StatusBadge status={j.status} size="sm" />
-                      <time className="hidden shrink-0 text-caption text-tertiary sm:inline" dateTime={j.startedAt}>
-                        {relativeTime(j.startedAt)}
-                      </time>
+                      {j.startedAt && (
+                        <time className="hidden shrink-0 text-caption text-tertiary sm:inline" dateTime={j.startedAt}>
+                          {relativeTime(j.startedAt)}
+                        </time>
+                      )}
                     </Link>
                   </li>
                 ))}

@@ -152,7 +152,7 @@ export function roleTone(role: string | null | undefined): Tone {
   }
 }
 
-/** The session's person in the shape the phase-0 pages read (GET /api/v1/me). */
+/** The session's person in the shape the pages read. */
 export function meOf(session: Session): Me {
   const roles = rolesOf(session)
   return {

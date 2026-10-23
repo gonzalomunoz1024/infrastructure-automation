@@ -5,11 +5,11 @@ import { useConsole, useRouteType } from '../app/console'
 import { ExplainedError } from '../app/commands'
 import { MenuButton, MenuSeparator } from '../app/MenuButton'
 import { ActionButton, ActionMenuItem } from '../app/Refusal'
-import { Link, navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
+import { navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
-import { api, isApiError } from '../lib/api'
+import { isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
-import { idOfWfrn, singularOf, wfrnOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
+import { idOfWfrn, partsOfWfrn, singularOf, wfrnOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
 import { ALLOWED } from '../lib/permissions'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { invalidate, useQuery } from '../lib/queries'
@@ -21,17 +21,17 @@ import { ActionDrawer } from './resource/ActionDrawer'
 import { EDIT_NOT_OFFERED, EditDrawer } from './resource/EditDrawer'
 import { TagsDrawer } from './resource/TagsDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
-import { DriftFact, TabContent, tabId } from './resource/tabs'
+import { DriftFact, TabContent, ownerOf, tabId } from './resource/tabs'
 
 /*
  * One resource (WP 3.3): its facts, what is happening to it, and the tabs its descriptor lists.
- * The record comes from the platform and the console's view of it (state, the request in flight,
- * drift, tags, what this person may do) from the BFF; either alone is enough to draw the page.
+ * Everything comes from the BFF (GET /console/v1/r/{type}/{wfrn}): the attributes, the state and
+ * what the provider last reported, the request in flight, drift, tags and what this person may do.
  * Actions holds the type's workflows, each opening a drawer with its form, a preview and the
  * same request as code; a destructive verb sits beside it and asks for the name before it runs.
  * Edit configuration opens the type's update workflow (`?action=edit`), and Create similar opens
  * the create wizard from this resource.
- * While a request runs on the resource the page follows it and reads the record again when it
+ * While a request runs on the resource the page follows it and reads its trail again when it
  * ends.
  */
 
@@ -49,11 +49,9 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const id = idOfWfrn(wfrnParam) ?? wfrnParam
   const noun = singularOf(type.title).toLowerCase()
 
-  const record = useQuery(['resource', type.plural, id], () => api.resourceOf(type.plural, id))
-  const resource = record.data
-  const named = resource ? wfrnOf(resource, type, wfrnContext) : null
-  // the wfrn the link carried names the resource for the BFF; a bare id gets the derived one
-  const wfrn = wfrnParam.startsWith('wfrn:') ? wfrnParam : (named?.wfrn ?? wfrnParam)
+  // the wfrn the link carried names the resource for the BFF; a bare id gets the one derived from the account and region
+  const derived = !wfrnParam.startsWith('wfrn:')
+  const wfrn = derived ? wfrnOf({ id, type: type.name, status: '', attributes: {}, owner: '', visibility: '', createdBy: { jobId: '', workflow: '' }, builtFrom: [], createdAt: '' }, type, wfrnContext).wfrn : wfrnParam
 
   const view = useQuery(['console-resource', type.name, wfrn], () => bff.resources.get(type.name, wfrn))
   const deleted = isApiError(view.error) && view.error.status === 410
@@ -63,23 +61,22 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const lastJob = deleted ? undefined : detail?.lastJob
   const open = isOpenStatus(lastJob?.status)
 
-  // follow the request in flight; when it ends, read the record and its trail again
+  // follow the request in flight; when it ends, read its trail again
   usePoll(open, () => void view.refetch())
   const wasOpen = useRef(open)
-  const refetchRecord = record.refetch
   useEffect(() => {
     if (wasOpen.current && !open) {
-      void refetchRecord()
       for (const prefix of [`console-activity/${type.name}`, `console-drift/${type.name}`, 'resources', 'jobs']) invalidate(prefix)
     }
     wasOpen.current = open
-  }, [open, refetchRecord, type.name])
+  }, [open, type.name])
 
+  const reported = typeof detail?.observed?.status === 'string' && detail.observed.status ? detail.observed.status : undefined
   useEffect(() => {
-    const label = detail?.name ?? resource?.name
+    const label = detail?.name
     if (!label) return
-    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, wfrn), label, hint: `${type.title} · ${resource?.status ?? detail?.state ?? ''}` })
-  }, [detail?.name, detail?.state, resource?.name, resource?.status, type, wfrn])
+    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, wfrn), label, hint: `${type.title} · ${reported ?? detail?.state ?? ''}` })
+  }, [detail?.name, detail?.state, reported, type, wfrn])
 
   // the Drift tab counts the fields that drifted, as its table lists them
   const drifted = detail?.finding?.status === 'open' ? detail.finding.fields.length : 0
@@ -100,21 +97,20 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const tagging = route.query.action === 'tags' && !deleted
   const current: ConsoleAction | undefined = route.query.action && !editing && !tagging && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
 
-  // a deleted resource has no live view and, once live, often no platform record either: its tombstone is the page
-  if (!resource && !detail && !deleted) {
-    if (record.loading || view.loading) return <SkeletonRows n={4} />
-    const why = deleted ? record.error : (view.error ?? record.error)
-    return <ExplainedError error={why} what={`Load this ${noun}`} onRetry={() => void Promise.all([record.refetch(), view.refetch()])} />
+  if (!detail && !deleted) {
+    if (view.loading) return <SkeletonRows n={4} />
+    return <ExplainedError error={view.error} what={`Load this ${noun}`} onRetry={() => void view.refetch()} />
   }
 
-  const name = detail?.name ?? resource?.name ?? id
-  const status = resource?.status ?? detail?.state ?? (deleted ? 'deleted' : 'unknown')
+  // a deleted resource keeps the name the page last read of it
+  const name = detail?.name ?? view.data?.name ?? id
+  // what the provider last reported (ready, building), else the lifecycle state
+  const status = reported ?? detail?.state ?? (deleted ? 'deleted' : 'unknown')
   const flight = detail && (detail.state === 'pending' || detail.state === 'updating' || detail.state === 'deleting') && !deleted ? detail.state : null
-  const attributes = resource?.attributes ?? detail?.attributes ?? {}
+  const attributes = detail?.attributes ?? {}
   // the BFF runs a verb only on an active or failed resource (409 otherwise): say so before the form opens
   const lifecycle = detail?.state ?? (isLifecycleClass(type.lifecycle[status]) ? type.lifecycle[status] : undefined)
   const waitNote = open ? 'Waits for the request in flight to end' : lifecycle && lifecycle !== 'active' && lifecycle !== 'failed' ? `Runs once the ${noun} is active` : undefined
-  const createdBy = resource?.createdBy
 
   const onAccepted = (accepted: CommandAccepted, action: ConsoleAction) => {
     closeAction()
@@ -135,7 +131,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         subtitle={
           <span className="flex flex-wrap items-center gap-2">
             <WfrnText wfrn={wfrn} size="md" max={0} />
-            {named?.derived && !wfrnParam.startsWith('wfrn:') && (
+            {derived && (
               <Tag size="sm" outline title="Derived by the console from the account and region in the header, until the platform mints it">
                 derived
               </Tag>
@@ -144,8 +140,8 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         }
         actions={
           <>
-            <IconButton label="Refresh" onClick={() => void Promise.all([record.refetch(), view.refetch()])}>
-              <Icon name="refresh" size={16} className={cx((record.fetching || view.fetching) && 'animate-spin')} />
+            <IconButton label="Refresh" onClick={() => void view.refetch()}>
+              <Icon name="refresh" size={16} className={cx(view.fetching && 'animate-spin')} />
             </IconButton>
             {deleted ? (
               // nothing runs on a deleted resource: the menu stays where it was, disabled
@@ -206,26 +202,9 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         className="mb-8"
         items={[
           { label: 'Status', value: <LifecycleBadge status={flight ?? status} lifecycle={flight ?? (isLifecycleClass(type.lifecycle[status]) ? type.lifecycle[status] : undefined)} /> },
-          { label: 'Owner', value: resource?.owner ?? (typeof attributes.owner === 'string' ? attributes.owner : undefined) },
-          ...(resource ? [{ label: 'Visibility', value: resource.visibility || <span className="text-tertiary">not set</span> }] : []),
-          { label: 'Created', value: <When at={resource?.createdAt ?? detail?.createdAt} /> },
-          { label: 'Updated', value: <When at={resource?.updatedAt ?? detail?.updatedAt} /> },
-          ...(createdBy
-            ? [
-                {
-                  label: 'Created by',
-                  value: (
-                    <span className="flex flex-wrap items-center gap-x-1.5">
-                      <span className="font-mono">{createdBy.workflow}</span>
-                      {createdBy.version && <span className="text-tertiary">v{createdBy.version}</span>}
-                      <Link to={pathFor('request', { id: createdBy.jobId })} className="font-mono text-accent transition-opacity hover:opacity-70">
-                        {createdBy.jobId}
-                      </Link>
-                    </span>
-                  ),
-                },
-              ]
-            : []),
+          { label: 'Owner', value: ownerOf(detail) },
+          { label: 'Created', value: <When at={detail?.createdAt} /> },
+          { label: 'Updated', value: <When at={detail?.updatedAt} /> },
           ...(detail
             ? [
                 {
@@ -234,15 +213,15 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
                 },
               ]
             : []),
-          { label: 'Account', value: <span className="font-mono">{formatAccountId(resource?.accountId ?? wfrnContext.account)}</span> },
-          { label: 'Region', value: resource?.region ?? detail?.region ?? wfrnContext.region },
-          ...(detail?.providerId || resource?.providerId ? [{ label: 'Provider id', value: <CopyableId id={(detail?.providerId ?? resource?.providerId)!} /> }] : []),
+          { label: 'Account', value: <span className="font-mono">{formatAccountId(partsOfWfrn(wfrn)?.account ?? wfrnContext.account)}</span> },
+          { label: 'Region', value: detail?.region ?? partsOfWfrn(wfrn)?.region ?? wfrnContext.region },
+          ...(detail?.providerId ? [{ label: 'Provider id', value: <CopyableId id={detail.providerId} /> }] : []),
         ]}
       />
 
       <Tabs<string> tabs={tabs} value={tab?.id ?? ''} onChange={setTab} ariaLabel={`${type.title} sections`} className="mb-5" />
       <div role="tabpanel" aria-label={tab?.label}>
-        <TabContent label={tab?.label ?? ''} type={type} wfrn={wfrn} record={resource} detail={detail} viewError={view.error} />
+        <TabContent label={tab?.label ?? ''} type={type} wfrn={wfrn} detail={detail} viewError={view.error} />
       </div>
 
       {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} onClose={closeAction} onAccepted={onAccepted} />}

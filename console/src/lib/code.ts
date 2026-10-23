@@ -5,7 +5,7 @@ import type { CommandInput } from './types'
 
 /*
  * View as code (WP 3.5): every wizard, action and record in the console can be taken away as
- * a CLI line, a REST call (the BFF's, and the platform's own), a workflow run manifest for a
+ * a CLI line, a REST call (the console's own, the one the page makes), a workflow run manifest for a
  * Git repository, or plain JSON and YAML. The texts are built here, from the type, the action
  * and what the person typed; the kit's CodeView shows them.
  */
@@ -51,16 +51,6 @@ function commandFlags(body: CommandInput): string[] {
   return flags
 }
 
-/** The platform's own path for an action, with the subject filled in ("/api/v1/vms/{vmId}:restart" → "/api/v1/vms/vm-demo01:restart"). */
-export function platformPath(action: ConsoleAction, subjectId?: string): string {
-  return action.path.replace(/\{[^}]+\}/g, subjectId ?? '<id>')
-}
-
-function idOf(wfrn: string): string {
-  const i = wfrn.lastIndexOf('/')
-  return i >= 0 ? wfrn.slice(i + 1) : wfrn
-}
-
 /** A `kind: WorkflowRun` manifest: the request as a file a Git repository (and the CLI's `apply`) can carry. */
 export function workflowRunYaml(req: Exclude<CodeRequest, { kind: 'record' }>): string {
   const action = req.kind === 'update' ? (req.action ?? null) : req.action
@@ -100,7 +90,7 @@ function masked(req: CodeRequest): CodeRequest {
   return { ...req, body: { ...req.body, input: out } } as CodeRequest
 }
 
-/** The samples for one request or record: CLI, REST (BFF), REST (platform), workflow YAML, JSON. */
+/** The samples for one request or record: CLI, REST (the console's call), workflow YAML, JSON. */
 export function codeSamplesFor(request: CodeRequest): CodeSample[] {
   const req = masked(request)
   const origin = originOf(req.context)
@@ -109,23 +99,21 @@ export function codeSamplesFor(request: CodeRequest): CodeSample[] {
   const type = req.type
 
   if (req.kind === 'record') {
-    const id = idOf(req.wfrn)
     return [
-      { id: 'json', label: 'JSON', language: 'json', code: `${JSON.stringify(req.record, null, 2)}\n`, note: 'The record as the platform holds it.' },
+      { id: 'json', label: 'JSON', language: 'json', code: `${JSON.stringify(req.record, null, 2)}\n`, note: 'The record as the console reads it.' },
       { id: 'yaml', label: 'YAML', language: 'yaml', code: `${toYaml(req.record)}\n` },
       { id: 'cli', label: 'CLI', language: 'shell', code: cliCommand([CLI, type.service, cliVerb('get', type), req.wfrn], globalFlags(req.context)), note: `${CLI} is the generated console CLI; add --output yaml for YAML.` },
       {
         id: 'rest',
         label: 'REST',
         language: 'shell',
-        code: `# through the console (what this page reads)\n${curlCommand({ method: 'GET', url: `${bff}/r/${enc(type.name)}/${enc(req.wfrn)}`, headers: { Cookie: 'console_session=<your session>' } })}\n\n# straight from the platform\n${curlCommand({ method: 'GET', url: `${origin}/api/v1/${enc(type.plural)}/${enc(id)}`, headers: { 'X-User': '<you>' } })}`,
+        code: `# through the console (what this page reads)\n${curlCommand({ method: 'GET', url: `${bff}/r/${enc(type.name)}/${enc(req.wfrn)}`, headers: { Cookie: 'console_session=<your session>' } })}`,
         note: CSRF_NOTE,
       },
     ]
   }
 
   const body = req.body
-  const subjectId = req.kind === 'create' ? undefined : idOf(req.wfrn)
   const verb = req.kind === 'create' ? 'create' : req.kind === 'update' ? 'update' : req.action.verb
   const words = [CLI, type.service, cliVerb(verb, type), ...(req.kind === 'create' ? [] : [req.wfrn])]
   const cli = cliCommand(words, [...globalFlags(req.context), ...commandFlags(body)])
@@ -136,22 +124,9 @@ export function codeSamplesFor(request: CodeRequest): CodeSample[] {
   const ifMatch: Record<string, string> = req.kind === 'update' && req.version !== undefined ? { 'If-Match': String(req.version) } : {}
   const bffCall = curlCommand({ method: bffMethod, url: bffUrl, headers: { 'Idempotency-Key': KEY_PLACEHOLDER, ...ifMatch, 'X-Csrf-Token': '<the session’s csrfToken>', Cookie: 'console_session=<your session>' }, body })
 
-  const action = req.kind === 'update' ? (req.action ?? null) : req.action
-  const subject = action ? (action.subject ?? subjectFor(action, type)) : undefined
-  // the reason the console carries beside an update's input is the workflow's own operational input on the platform (P-08)
-  const reason = req.kind === 'update' && body.reason && action?.input.properties?.reason ? { reason: body.reason } : {}
-  const platformCall = action
-    ? curlCommand({
-        method: action.method,
-        url: `${origin}${platformPath(action, subjectId)}`,
-        headers: { 'X-User': '<you>', 'X-On-Behalf-Of': `account:${req.context.accountId}`, 'Idempotency-Key': KEY_PLACEHOLDER },
-        body: req.kind !== 'create' ? { ...body.input, ...reason, ...(subject ? { [subject]: subjectId } : {}) } : body.input,
-      })
-    : `# the platform runs the type's update workflow for a PATCH through the console; it has no direct path of its own`
-
   return [
     { id: 'cli', label: 'CLI', language: 'shell', code: cli, note: `${CLI} is the generated console CLI. It returns the request id to follow; add --wait to block until the job ends.` },
-    { id: 'rest', label: 'REST', language: 'shell', code: `# through the console\n${bffCall}\n\n# straight from the platform\n${platformCall}`, note: CSRF_NOTE },
+    { id: 'rest', label: 'REST', language: 'shell', code: `# through the console\n${bffCall}`, note: CSRF_NOTE },
     { id: 'workflow', label: 'Workflow YAML', language: 'yaml', code: workflowRunYaml(req), note: `A WorkflowRun manifest: commit it and ${CLI} apply -f runs it, so the change is reviewed like code.` },
     { id: 'json', label: 'JSON', language: 'json', code: `${JSON.stringify(body, null, 2)}\n`, note: 'The body the console sends.' },
   ]

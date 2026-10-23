@@ -116,27 +116,51 @@ test.describe('the console shell in mock mode', () => {
     await expectNoSeriousA11y(page, 'request')
   })
 
-  test('the platform feed shows the platform\'s events as they happen', async ({ page }) => {
+  test('the live feed shows the account\'s updates from the BFF as they happen', async ({ page }) => {
+    // every fetch the page makes, the mock's included, and every request that leaves it
+    await page.addInitScript(() => {
+      const seen: string[] = []
+      ;(window as unknown as { __fetched: string[] }).__fetched = seen
+      const watch = (f: typeof fetch): typeof fetch => (input, init) => {
+        seen.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+        return f(input, init)
+      }
+      // the mock puts its own fetch in place later; whatever is put there is watched too
+      let current = watch(window.fetch.bind(window))
+      Object.defineProperty(window, 'fetch', {
+        configurable: true,
+        get: () => current,
+        set: (f: typeof fetch) => { current = watch(f) },
+      })
+    })
+    const left: string[] = []
+    page.on('request', (r) => left.push(new URL(r.url()).pathname))
     await signInAsGonzalo(page)
-    await page.getByRole('button', { name: 'Platform feed' }).click()
-    const drawer = page.getByRole('dialog', { name: 'Platform feed' })
+    await page.getByRole('button', { name: 'Live feed' }).click()
+    const drawer = page.getByRole('dialog', { name: 'Live feed' })
     await expect(drawer).toBeVisible()
+    await expect(drawer.getByText('GET /console/v1/events')).toBeVisible()
     await expect(drawer.getByText('Live', { exact: true })).toBeVisible()
-    // the platform names every server-sent event after its type; the drawer hears them all and shows the type
+    // the BFF names every server-sent event after its type; the drawer hears them all and shows the type
     const events = drawer.getByRole('list', { name: 'Events' })
     const items = events.getByRole('listitem')
     await expect(items.first()).toBeVisible()
-    await expect(items.first().getByText(/^(job|batch|resource|resource-type|workflow|provider|region|content|release|audit)\./)).toBeVisible()
+    await expect(items.first().getByText(/^(job\.updated|resource\.[a-z-]+|types\.changed|region\.changed)$/)).toBeVisible()
     const before = await items.count()
     await expect.poll(() => items.count(), { timeout: 10_000, message: 'a live event arrives' }).toBeGreaterThan(before)
-    // paused, the list holds still; an event opens to its envelope
+    // paused, the list holds still; an event opens to the event itself
     await drawer.getByRole('button', { name: 'Pause' }).click()
     const first = items.first()
     await first.getByRole('button').first().click()
     await expect(first.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true')
-    await expect(first.getByText('specVersion')).toBeVisible()
+    await expect(first.getByText('wfrn', { exact: false }).first()).toBeVisible()
     await page.screenshot({ path: shot('feed-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'feed')
+    // the browser talked to the BFF alone, and never named the person itself
+    const fetched = await page.evaluate(() => (window as unknown as { __fetched: string[] }).__fetched)
+    expect(fetched.length).toBeGreaterThan(0)
+    expect(fetched.filter((u) => /\/api\/v1\//.test(u))).toEqual([])
+    expect(left.filter((p) => p.startsWith('/api/'))).toEqual([])
   })
 
   test('signing out returns to the door and remembers where you were going', async ({ page }) => {

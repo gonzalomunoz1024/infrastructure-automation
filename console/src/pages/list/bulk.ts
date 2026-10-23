@@ -11,9 +11,9 @@ import { answeredInputs } from '../resource/ActionDrawer'
  * says cannot run, and the words the confirmation asks for. Pure, so the rules are tested.
  */
 
-/** The verbs a list's selection can run in one request: the type's actions with a batch route, create aside. */
+/** The verbs a list's selection can run in one request: the type's actions the descriptor marks bulk, create aside. */
 export function bulkVerbsOf(type: ConsoleType): ConsoleAction[] {
-  return type.actions.filter((a) => a.verb !== 'create' && !!a.batchPath)
+  return type.actions.filter((a) => a.verb !== 'create' && a.bulk)
 }
 
 export type RolloutPreset = 'own' | 'two' | 'all'

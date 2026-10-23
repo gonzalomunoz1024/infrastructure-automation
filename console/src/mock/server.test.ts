@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { createMockServer, etagOf, parseCursor, stepsOf, type MockRequest } from './server'
 import { buildMockData, nextMockEvent } from './data'
-import type { ConsoleResource, JobDetail, JobSummary, Lineage, Me, PlatformEvent, Preferences, Resource, ResourceCounts, ResourceType, SearchHit, Suggestion } from '../lib/types'
+import type { BffJobDetail, BffJobSummary, BffLineage, ConsoleResource, JobSummary, Page, Preferences, ResourceCounts, SearchHit, Suggestion } from '../lib/types'
 import { countsOf } from './resources'
+import { liveEventsOf } from './live'
 
 const server = createMockServer()
 const get = (url: string, headers: Record<string, string> = {}) => server.handle({ method: 'GET', url, headers })
@@ -20,7 +21,6 @@ describe('the dataset', () => {
     expect(vms.every((r) => r.wfrn?.startsWith('wfrn:wf:compute:global:123456789012:vm/') && r.accountId === '123456789012')).toBe(true)
     expect(data.resources.filter((r) => r.type === 'database').every((r) => !r.wfrn && r.accountId === '210987654321')).toBe(true)
     expect(data.jobs.length).toBe(50)
-    expect(data.users.gonzalo).toMatchObject({ id: 'gonzalo', name: 'Gonzalo Munoz' })
     expect(data.events.length).toBeGreaterThan(0)
   })
 
@@ -34,95 +34,95 @@ describe('the dataset', () => {
   })
 })
 
-describe('identity', () => {
-  it('needs the X-User header and answers the platform view of each person: their first account', () => {
-    expect(get('/api/v1/me').status).toBe(401)
-    expect(get('/api/v1/me', { 'x-user': 'nobody' }).status).toBe(401)
-    const res = get('/api/v1/me', { 'x-user': 'ana' })
-    expect(res.status).toBe(200)
-    expect(body<Me>(res)).toMatchObject({ id: 'ana', roles: ['operator', 'viewer'], teams: ['members', 'viewers'] })
-    expect(body<Me>(get('/api/v1/me', { 'x-user': 'mia' }))).toMatchObject({ id: 'mia', roles: ['viewer', 'approver'] })
-    expect(body<Me>(get('/api/v1/me', { 'x-user': 'gonzalo' }))).toMatchObject({ id: 'gonzalo', roles: ['account-admin'], admin: true })
+describe('only the BFF', () => {
+  it('answers nothing on the platform’s paths: the browser never reads them', () => {
+    for (const path of ['/api/v1/me', '/api/v1/resource-types', '/api/v1/catalog', '/api/v1/regions', '/api/v1/vms', '/api/v1/resources/vm-demo01', '/api/v1/resources/image-demo01/lineage', '/api/v1/jobs', '/api/v1/events', '/actuator/info']) {
+      expect(get(path).status).toBe(404)
+      expect(get(path, { 'x-user': 'gonzalo' }).status).toBe(404)
+    }
+    expect(server.handle({ method: 'POST', url: '/api/v1/vms', headers: {} } as MockRequest).status).toBe(404)
+  })
+
+  it('reports its health', () => {
+    expect(body<{ status: string }>(get('/actuator/health')).status).toBe('UP')
   })
 })
 
-describe('descriptors', () => {
-  it('carry an ETag and answer 304 to a matching If-None-Match', () => {
-    const first = get('/api/v1/resource-types')
+describe('the BFF: descriptors, resources, lineage, jobs and the live feed', () => {
+  it('describes every type with its schema, states, hints, observe block and verbs, behind an ETag', () => {
+    const b = bff()
+    b.signIn('dana')
+    const first = b.call('GET', '/console/v1/types')
     expect(first.status).toBe(200)
+    const items = body<{ items: BffConsoleType[] }>(first).items
+    expect(items.map((t) => t.key).sort()).toEqual(['compute/vm', 'data/database', 'platform/environment', 'platform/image', 'platform/volume'])
+    const vm = items.find((t) => t.key === 'compute/vm')!
+    expect(vm).toMatchObject({ type: 'vm', plural: 'vms', title: 'Virtual machines', owner: 'team-compute', states: ['building', 'ready', 'deprecated', 'retired'], observe: { supported: true, metrics: true, discover: true } })
+    expect(vm.schema?.properties?.cpu).toBeDefined()
+    expect(vm.list?.columns?.length).toBeGreaterThan(0)
+    expect(vm.actions.find((a) => a.verb === 'restart')).toMatchObject({ workflow: 'vm-restart', bulk: true, allowed: true })
+    // a producer workflow creates its type
+    expect(items.find((t) => t.type === 'image')!.actions.find((a) => a.workflow === 'build-vm-image')).toMatchObject({ verb: 'build', effect: 'create' })
+    // the defaults are the console's: no list or tabs of the BFF's own for a type without hints
+    expect(items.find((t) => t.type === 'database')).toMatchObject({ list: { columns: [] }, detail: { tabs: [] } })
     const etag = first.headers?.ETag
-    expect(etag).toMatch(/^W\/"resource-types-/)
-    expect(body<ResourceType[]>(first)).toHaveLength(5)
-    const again = get('/api/v1/resource-types', { 'if-none-match': etag ?? '' })
-    expect(again.status).toBe(304)
-    expect(again.body).toBeUndefined()
-    expect(get('/api/v1/catalog').headers?.ETag).toMatch(/^W\/"catalog-/)
+    expect(b.call('GET', '/console/v1/types', undefined, { 'if-none-match': etag ?? '' }).status).toBe(304)
     expect(etagOf('x', { a: 1 })).toBe(etagOf('x', { a: 1 }))
     expect(etagOf('x', { a: 1 })).not.toBe(etagOf('x', { a: 2 }))
   })
 
-  it('serves one global region, as a file with metadata and spec', () => {
-    expect(body<{ metadata: { name: string } }[]>(get('/api/v1/regions'))).toEqual([{ metadata: { name: 'global', title: 'Global' }, spec: { partition: 'wf', status: 'available', environments: ['dev', 'test', 'prod'] } }])
-    expect(get('/api/v1/regions/global').status).toBe(200)
-    expect(get('/api/v1/regions/mars').status).toBe(404)
-  })
-})
-
-describe('resources', () => {
-  it('pages a collection with limit and after, the next cursor in the Link header', () => {
-    const first = get('/api/v1/vms?limit=50')
-    expect(first.status).toBe(200)
-    const rows = body<Resource[]>(first)
-    expect(rows).toHaveLength(50)
-    expect(first.headers?.Link).toBe('</api/v1/vms?limit=50&after=c50>; rel="next"')
-    expect(first.headers?.['X-Total-Count']).toBe(String(server.data.resources.filter((r) => r.type === 'vm').length))
-    const second = get('/api/v1/vms?limit=50&after=c50')
-    expect(body<Resource[]>(second)[0].id).not.toBe(rows[0].id)
+  it('pages a type’s resources with limit and after, the next cursor in the body', () => {
+    const b = bff()
+    b.signIn('dana')
+    const first = body<Page<ConsoleResource>>(b.call('GET', '/console/v1/r/vm?limit=50'))
+    expect(first.items).toHaveLength(50)
+    expect(first.next).toBe('c50')
+    const second = body<Page<ConsoleResource>>(b.call('GET', '/console/v1/r/vm?limit=50&after=c50'))
+    expect(second.items[0].wfrn).not.toBe(first.items[0].wfrn)
     expect(parseCursor('c50')).toBe(50)
     expect(parseCursor('nope')).toBe(0)
-    const last = get('/api/v1/vms?limit=500')
-    expect(last.headers?.Link).toBeUndefined()
+    expect(body<Page<ConsoleResource>>(b.call('GET', '/console/v1/r/vm?limit=200&after=c200')).next).toBeNull()
+    // what the provider last reported rides beside the lifecycle state
+    expect(first.items.every((r) => typeof r.observed?.status === 'string')).toBe(true)
   })
 
-  it('filters by status, owner and free text', () => {
-    expect(body<Resource[]>(get('/api/v1/vms?status=building&limit=500')).every((r) => r.status === 'building')).toBe(true)
-    expect(body<Resource[]>(get('/api/v1/resources?type=database&limit=500')).map((r) => r.id)).toEqual(['database-demo01', 'database-demo02'])
-    expect(body<Resource[]>(get('/api/v1/resources?q=orders-db')).map((r) => r.id)).toEqual(['database-demo01'])
-    expect(body<Resource[]>(get('/api/v1/resources?owner=team-platform&limit=500')).every((r) => r.owner === 'team-platform')).toBe(true)
+  it('resolves a lineage within the account, by wfrn, in both directions', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const image = body<Page<ConsoleResource>>(b.call('GET', '/console/v1/r/image?limit=200')).items.find((r) => r.wfrn.endsWith('/image-demo01'))!
+    const lineage = body<BffLineage>(b.call('GET', `/console/v1/r/image/${encodeURIComponent(image.wfrn)}/lineage`))
+    expect(lineage.resource.wfrn).toBe(image.wfrn)
+    expect(lineage.edges.filter((e) => e.to === image.wfrn)).toEqual([])
+    expect(lineage.edges.filter((e) => e.from === image.wfrn).length).toBeGreaterThan(5)
+    expect(b.call('GET', `/console/v1/r/image/${encodeURIComponent(image.wfrn.replace('image-demo01', 'nope'))}/lineage`).status).toBe(404)
   })
 
-  it('serves one resource by its collection or the registry, and 404 otherwise', () => {
-    expect(body<Resource>(get('/api/v1/vms/vm-demo01'))).toMatchObject({ id: 'vm-demo01', type: 'vm' })
-    expect(body<Resource>(get('/api/v1/resources/database-demo01'))).toMatchObject({ id: 'database-demo01' })
-    expect(get('/api/v1/vms/database-demo01').status).toBe(404)
-    expect(get('/api/v1/unicorns').status).toBe(404)
-    expect(get('/api/v1/resources/nope').status).toBe(404)
+  it('lists the account’s jobs newest first with filters, and details one with steps', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const jobs = body<Page<BffJobSummary>>(b.call('GET', '/console/v1/jobs?limit=10')).items
+    expect(jobs).toHaveLength(10)
+    expect((jobs[0].startedAt ?? '') >= (jobs[9].startedAt ?? '')).toBe(true)
+    expect(jobs.every((j) => typeof j.jobId === 'string' && typeof j.channel === 'string')).toBe(true)
+    expect(body<Page<BffJobSummary>>(b.call('GET', '/console/v1/jobs?status=failed&limit=200')).items.every((j) => j.status === 'failed')).toBe(true)
+    const failed = b.srv.data.jobs.find((j) => j.status === 'failed')!
+    const detail = body<BffJobDetail>(b.call('GET', `/console/v1/jobs/${failed.id}`))
+    expect(detail.steps?.some((s) => s.status === 'failed')).toBe(true)
+    expect(b.call('GET', '/console/v1/jobs/job_nope').status).toBe(404)
   })
 
-  it('resolves a lineage from builtFrom in both directions', () => {
-    const lineage = body<Lineage>(get('/api/v1/resources/image-demo01/lineage'))
-    expect(lineage.resource.id).toBe('image-demo01')
-    expect(lineage.builtFrom).toEqual([])
-    expect(lineage.dependents.length).toBeGreaterThan(5)
-    const env = body<Lineage>(get('/api/v1/resources/environment-demo01/lineage'))
-    expect(env.builtFrom.map((r) => r.id)).toEqual(['database-demo01', 'database-demo02', 'vm-demo01', 'vm-demo02'])
-    expect(get('/api/v1/resources/nope/lineage').status).toBe(404)
+  it('plays the live feed of one account only, job events folded into job.updated', () => {
+    const data = buildMockData()
+    const compute = liveEventsOf(data.events, '123456789012')
+    expect(compute.length).toBeGreaterThan(0)
+    expect(compute.every((e) => !e.event.type.startsWith('job.') || e.event.type === 'job.updated')).toBe(true)
+    expect(compute.find((e) => e.event.type === 'job.updated')?.event.data).toMatchObject({ jobId: expect.any(String), event: expect.stringMatching(/^job\./) })
+    expect(liveEventsOf(data.events, '210987654321')).toEqual([])
+    expect(liveEventsOf(data.events, '123456789012', 3).map((e) => e.id)).toEqual(compute.filter((e) => Number(e.id) > 3).map((e) => e.id))
   })
 })
 
 describe('jobs', () => {
-  it('lists newest first with filters, and details one with steps', () => {
-    const jobs = body<JobSummary[]>(get('/api/v1/jobs?limit=10'))
-    expect(jobs).toHaveLength(10)
-    expect(jobs[0].startedAt >= jobs[9].startedAt).toBe(true)
-    expect(body<JobSummary[]>(get('/api/v1/jobs?status=failed&limit=500')).every((j) => j.status === 'failed')).toBe(true)
-    const failed = server.data.jobs.find((j) => j.status === 'failed')
-    const detail = body<JobDetail>(get(`/api/v1/jobs/${failed?.id}`))
-    expect(detail.steps?.some((s) => s.status === 'failed')).toBe(true)
-    expect(detail.error?.class).toBe(failed?.errorClass)
-    expect(get('/api/v1/jobs/job_nope').status).toBe(404)
-  })
-
   it('draws the steps from the status', () => {
     const base: JobSummary = { id: 'j', workflow: 'w', title: 't', version: '1', status: 'succeeded', requester: 'ana', channel: 'rest', startedAt: '2026-10-01T00:00:00Z', kind: 'single' }
     expect(stepsOf(base).map((s) => s.status)).toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded'])
@@ -134,22 +134,6 @@ describe('jobs', () => {
       ['register', 'skipped'],
     ])
     expect(stepsOf({ ...base, kind: 'batch', status: 'running', progress: { done: 1, total: 6, failed: 0 } }).map((s) => s.id)).toEqual(['validate', 'approve', 'rollout', 'apply', 'register'])
-  })
-})
-
-describe('events and the rest', () => {
-  it('serves the events after a sequence number', () => {
-    const all = body<{ items: PlatformEvent[]; next: string | null }>(get('/api/v1/events'))
-    expect(all.items.length).toBe(server.data.events.length)
-    const after = body<{ items: PlatformEvent[]; next: string | null }>(get('/api/v1/events?after=3&limit=2'))
-    expect(after.items.map((e) => e.seq)).toEqual([4, 5])
-    expect(after.next).toBe('5')
-  })
-
-  it('reports health, refuses writes and 404s the unknown', () => {
-    expect(body<{ status: string }>(get('/actuator/health')).status).toBe('UP')
-    expect(server.handle({ method: 'POST', url: '/api/v1/vms', headers: {} } as MockRequest).status).toBe(405)
-    expect(get('/api/v2/anything').status).toBe(404)
   })
 })
 

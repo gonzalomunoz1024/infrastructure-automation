@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildMockData } from '../../mock/data'
+import { describeTypes } from '../../mock/types'
 import { createMockServer, csrfTokenOf, memorySessionStore } from '../../mock/server'
 import { ApiError, type ApiErrorBody } from '../../lib/api'
 import { codeSamplesFor, workflowRunYaml } from '../../lib/code'
@@ -16,7 +17,7 @@ import { changedFields, diffRows, editBody, editSchemaOf, editStart, editWaitNot
  */
 
 const data = buildMockData()
-const vm = composeTypes(data.resourceTypes, data.catalog).find((t) => t.name === 'vm') as ConsoleType
+const vm = composeTypes(describeTypes(data)).find((t) => t.name === 'vm') as ConsoleType
 const schema = editSchemaOf(vm.update!, vm)
 const WEB02 = 'wfrn:wf:compute:global:123456789012:vm/vm-demo03'
 
@@ -108,7 +109,7 @@ describe('someone changed it first', () => {
 })
 
 describe('the edit as code', () => {
-  it('is a PATCH carrying the version, the update workflow’s CLI verb, its platform call and its manifest', () => {
+  it('is a PATCH carrying the version, the update workflow’s CLI verb and its manifest, through the console only', () => {
     const req = { kind: 'update' as const, type: vm, wfrn: WEB02, body: { input: { memoryGb: 32 }, reason: 'more room' }, action: vm.update, version: 3, context: { accountId: '123456789012', region: 'global', origin: 'https://console.example.test' } }
     const samples = codeSamplesFor(req)
     expect(samples[0].code).toContain(`iaf compute update-vm ${WEB02}`)
@@ -116,13 +117,11 @@ describe('the edit as code', () => {
     const rest = samples[1].code
     expect(rest).toContain(`curl -X PATCH https://console.example.test/console/v1/r/vm/${encodeURIComponent(WEB02)}`)
     expect(rest).toContain("'If-Match: 3'")
-    expect(rest).toContain('curl -X PATCH https://console.example.test/api/v1/vms/vm-demo03')
-    // the platform call names the VM it changes and carries the reason as the workflow's own input; the console's keeps it beside the input
-    const [throughConsole, platform] = rest.split('# straight from the platform')
-    expect(platform).toContain('"vmId": "vm-demo03"')
-    expect(platform).toContain('"reason": "more room"')
-    expect(throughConsole).not.toContain('vmId')
-    expect(throughConsole).toContain('"input": {\n    "memoryGb": 32\n  },\n  "reason": "more room"')
+    // the console names the VM in the path and keeps the reason beside the input; nothing goes straight to the platform
+    expect(rest).not.toContain('/api/v1')
+    expect(rest).not.toContain('X-User')
+    expect(rest).not.toContain('vmId')
+    expect(rest).toContain('"input": {\n    "memoryGb": 32\n  },\n  "reason": "more room"')
     expect(samples[0].code).toContain("--reason 'more room'")
     const yaml = workflowRunYaml(req)
     expect(yaml).toContain('  workflow: update-vm')

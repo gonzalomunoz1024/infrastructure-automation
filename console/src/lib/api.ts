@@ -1,17 +1,16 @@
 import { nextCursorFromLink } from '@iaf/console-kit'
-import { parseRegions } from './regions'
 import { MOCK, getSession, returnToOf, setSessionState } from './session'
-import type { CatalogEntry, Denial, Health, JobDetail, JobSummary, Lineage, Me, Page, PlatformEvent, Problem, Region, Resource, ResourceType } from './types'
+import type { Denial, Page, Problem } from './types'
 
 /*
- * The console's API client: fetch with a traceparent on every call, the session's identity on
- * every request (X-User for the platform's own endpoints, X-Csrf-Token on every write to the
- * BFF), JSON errors turned into a typed ApiError that carries the Denial of a refusal, an ETag
- * cache for the descriptors (resource types, catalog, regions) persisted in localStorage, and
- * cursor paging for lists (P-05). A 401 from the BFF signs the browser out.
+ * The console's API client for the BFF, the only backend the browser talks to: fetch with a
+ * traceparent on every call, X-Csrf-Token on every write (the session cookie names the person;
+ * the browser never names them itself), JSON errors turned into a typed ApiError that carries
+ * the Denial of a refusal, an ETag cache for the type descriptors persisted in localStorage, and
+ * cursor paging for lists (P-05). A path that is not the BFF's is refused before it leaves the
+ * browser. A 401 from the BFF signs the browser out.
  */
 
-export const API_BASE = '/api/v1'
 export const CACHE_PREFIX = 'console-cache:'
 
 /* ----------------------------------------------------------------------------
@@ -48,8 +47,10 @@ export class ApiError extends Error {
   readonly denied?: Denial
   /** the traceparent the failed request carried */
   readonly traceparent?: string
+  /** the BFF answered it (only the BFF may ask for a step-up) */
+  readonly fromBff: boolean
 
-  constructor(status: number, body: ApiErrorBody | null, fallback?: string, retryAfter?: number, trace?: string) {
+  constructor(status: number, body: ApiErrorBody | null, fallback?: string, retryAfter?: number, trace?: string, fromBff = false) {
     const error = body?.error ?? fallback ?? (status === 0 ? 'Platform unreachable' : `Request failed (${status})`)
     super(error)
     this.name = 'ApiError'
@@ -62,6 +63,7 @@ export class ApiError extends Error {
     this.correlationId = typeof body?.correlationId === 'string' && body.correlationId ? body.correlationId : undefined
     this.denied = isDenial(body?.denied) ? body.denied : undefined
     this.traceparent = trace
+    this.fromBff = fromBff
   }
 
   get unreachable(): boolean {
@@ -80,13 +82,36 @@ export class ApiError extends Error {
     return this.status === 403
   }
 
-  /** The sign-in URL a 403 asks the browser to visit before a sensitive action (step-up). */
+  /** The sign-in URL a BFF's 403 asks the browser to visit before a sensitive action (step-up): only ever a path of this console under /auth/. */
   get stepUp(): string | null {
+    if (!this.fromBff) return null
     // the BFF marks a step-up with detail.stepUp (contracts/additions.md), whatever its error says
     if (this.status !== 403 || (this.error !== 'step-up.required' && (this.detail as { stepUp?: unknown } | undefined)?.stepUp !== true)) return null
-    const login = (this.detail as { login?: unknown } | undefined)?.login
-    return typeof login === 'string' && login.startsWith('/') ? login : null
+    return safeStepUpPath((this.detail as { login?: unknown } | undefined)?.login)
   }
+}
+
+const STEP_UP_BASE = 'https://console.invalid'
+
+/**
+ * The step-up door, when it is one: a path of this console under `/auth/`. Anything that could
+ * leave the console is refused: another host (`//host`, `/\host`), a scheme, a backslash, a
+ * control character or space, or any path outside `/auth/`.
+ */
+export function safeStepUpPath(login: unknown): string | null {
+  if (typeof login !== 'string' || !login.startsWith('/auth/')) return null
+  // a browser strips tabs and newlines and reads a backslash as a slash: none may be in the path
+  for (let i = 0; i < login.length; i++) {
+    const c = login.charCodeAt(i)
+    if (c <= 0x20 || c === 0x7f || c === 0x5c) return null
+  }
+  let url: URL
+  try {
+    url = new URL(login, STEP_UP_BASE)
+  } catch {
+    return null
+  }
+  return url.origin === STEP_UP_BASE && url.pathname.startsWith('/auth/') ? login : null
 }
 
 /**
@@ -149,28 +174,28 @@ export function qs(params?: QueryParams): string {
   return s ? `?${s}` : ''
 }
 
-const enc = encodeURIComponent
 
 /** The BFF's own paths: the session, the console API, sign-in and the demo identity provider. */
 export function isBffPath(path: string): boolean {
   return path.startsWith('/console/') || path.startsWith('/auth/') || path.startsWith('/demo-idp/')
 }
 
+/** The BFF's health, the one path outside its API the console reads. */
+export const HEALTH_PATH = '/actuator/health'
+
+/** The path a call goes to: the BFF's own, never the platform's or another host. */
 export function resolveUrl(path: string): string {
-  if (/^https?:\/\//.test(path) || path.startsWith('/api/') || path.startsWith('/actuator') || isBffPath(path)) return path
-  return `${API_BASE}${path}`
+  if (isBffPath(path) || path === HEALTH_PATH) return path
+  throw new Error(`The console calls only the BFF, not ${path}`)
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
-/** Accept, traceparent, the session's user as X-User, the CSRF token on writes, and anything extra. */
+/** Accept, traceparent, the CSRF token on writes, and anything extra; who is calling is the session cookie's to say. */
 export function requestHeaders(extra?: Record<string, string>, method = 'GET'): Record<string, string> {
   const h: Record<string, string> = { Accept: 'application/json', traceparent: traceparent() }
   const session = getSession()
-  if (session) {
-    h['X-User'] = session.user.userId
-    if (!SAFE_METHODS.has(method.toUpperCase())) h['X-Csrf-Token'] = session.csrfToken
-  }
+  if (session && !SAFE_METHODS.has(method.toUpperCase())) h['X-Csrf-Token'] = session.csrfToken
   return { ...h, ...extra }
 }
 
@@ -192,7 +217,7 @@ async function fail(res: Response, trace: string | undefined, path: string): Pro
   } catch {
     retryAfter = undefined
   }
-  const error = new ApiError(res.status, body, res.statusText || undefined, retryAfter, trace)
+  const error = new ApiError(res.status, body, res.statusText || undefined, retryAfter, trace, isBffPath(path))
   // the BFF says the session is gone: back to the door, remembering nothing but the route
   if (res.status === 401 && isBffPath(path) && getSession()) setSessionState({ status: 'signed-out', session: null })
   // a sensitive action wants a fresh sign-in: the BFF names the door to use
@@ -204,8 +229,9 @@ async function fail(res: Response, trace: string | undefined, path: string): Pro
 async function send(method: string, path: string, body: unknown, opts: RequestOptions): Promise<{ res: Response; trace: string }> {
   const headers = requestHeaders({ ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...opts.headers }, method)
   const trace = headers.traceparent
+  const url = resolveUrl(path)
   try {
-    const res = await fetch(resolveUrl(path), {
+    const res = await fetch(url, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -284,11 +310,12 @@ export function clearDescriptorCache() {
 
 /**
  * GET with If-None-Match: a 304 answers from the cache, a fresh body replaces it. When the
- * platform cannot be reached or fails, the last good copy still answers, so the shell keeps
- * drawing its navigation.
+ * BFF cannot be reached or fails, the last good copy still answers, so the shell keeps drawing
+ * its navigation. `key` names the copy (the path by default); a copy that holds one person's
+ * decisions is keyed by them.
  */
-export async function cachedGet<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const cached = readCache<T>(path)
+export async function cachedGet<T>(path: string, opts: RequestOptions = {}, key = path): Promise<T> {
+  const cached = readCache<T>(key)
   const headers = { ...opts.headers, ...(cached?.etag ? { 'If-None-Match': cached.etag } : {}) }
   let answer: { res: Response; trace: string }
   try {
@@ -304,7 +331,7 @@ export async function cachedGet<T>(path: string, opts: RequestOptions = {}): Pro
     return fail(res, trace, path)
   }
   const body = await parseBody<T>(res)
-  writeCache(path, { etag: res.headers.get('ETag'), body, at: Date.now() })
+  writeCache(key, { etag: res.headers.get('ETag'), body, at: Date.now() })
   return body
 }
 
@@ -322,48 +349,7 @@ export async function page<T>(path: string, params?: QueryParams, opts: RequestO
   return { items, next: fromBody ?? nextCursorFromLink(res.headers.get('Link')) }
 }
 
-/* ----------------------------------------------------------------------------
-   The platform client (/api/v1): what the BFF does not serve yet
-   ------------------------------------------------------------------------- */
-
 export interface ListParams extends QueryParams {
   limit?: number
   after?: string
 }
-
-export const api = {
-  /* the platform's own identity call: who the X-User header names */
-  me: () => get<Me>('/me'),
-
-  /* descriptors, cached by ETag */
-  resourceTypes: () => cachedGet<ResourceType[]>('/resource-types'),
-  catalog: () => cachedGet<CatalogEntry[]>('/catalog'),
-  regions: async (): Promise<Region[]> => parseRegions(await cachedGet<unknown>('/regions')),
-
-  /* resources: the generated read endpoints /api/v1/{plural} and /{plural}/{id}, and the registry */
-  resourcesOf: (plural: string, params?: ListParams) => page<Resource>(`/${enc(plural)}`, params),
-  resourceOf: (plural: string, id: string) => get<Resource>(`/${enc(plural)}/${enc(id)}`),
-  resources: (params?: ListParams) => page<Resource>('/resources', params),
-  resource: (id: string) => get<Resource>(`/resources/${enc(id)}`),
-  lineage: (id: string) => get<Lineage>(`/resources/${enc(id)}/lineage`),
-
-  /* requests (jobs) */
-  jobs: (params?: ListParams) => page<JobSummary>('/jobs', params),
-  job: (id: string) => get<JobDetail>(`/jobs/${enc(id)}`),
-
-  /* the platform feed */
-  events: (params?: { after?: string | number; limit?: number; types?: string }) => page<PlatformEvent>('/events', params),
-  eventsStreamUrl: (after?: string | null) => `${API_BASE}/events/stream${qs({ after })}`,
-
-  /* platform */
-  health: async (): Promise<Health> => {
-    try {
-      return await get<Health>('/actuator/health')
-    } catch (e) {
-      if (isApiError(e) && e.status === 503 && e.body && typeof e.body.status === 'string') return e.body as unknown as Health
-      throw e
-    }
-  },
-}
-
-export type Api = typeof api
