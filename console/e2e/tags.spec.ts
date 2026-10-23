@@ -27,6 +27,26 @@ async function choose(page: Page, label: string, option: string | RegExp) {
   await expect(page.getByRole('button', { name: selectNamed(label) })).toContainText(option)
 }
 
+async function signOut(page: Page) {
+  await page.goto('/#/settings')
+  await page.getByRole('button', { name: 'Sign out' }).click()
+  await expect(page).toHaveURL(/#\/signin/)
+}
+
+/** Creates a resource group of the machines that carry one tag, from the list's dialog; ends on the group's page. */
+async function createGroup(page: Page, name: string, tag: [string, string]) {
+  await page.goto('/#/resource-groups')
+  await page.getByRole('button', { name: 'Create group' }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Create a resource group' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill(name)
+  await dialog.getByRole('checkbox', { name: 'Virtual machines' }).click()
+  await dialog.getByRole('textbox', { name: 'Tag name, row 1' }).fill(tag[0])
+  await dialog.getByRole('textbox', { name: /Tag value, row 1/ }).fill(tag[1])
+  await dialog.getByRole('button', { name: 'Create group' }).click()
+  await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
+}
+
 /** The create wizard for a VM, filled up to its Tags step. */
 async function vmUpToTags(page: Page, name: string) {
   await page.goto('/#/console/compute/vm/create')
@@ -156,6 +176,81 @@ test.describe('tags and resource groups in mock mode', () => {
     await expect(page.getByText('team=checkout').first()).toBeVisible()
   })
 
+  test('Gonzalo creates a resource group, reads its resources, changes it and deletes it by typing its name', async ({ page }) => {
+    await signInAs(page, /Continue as Gonzalo Munoz/, '/resource-groups')
+    await expect(page.getByRole('heading', { name: 'Resource groups', level: 1 })).toBeVisible()
+    await expect(page.getByText('No resource groups yet')).toBeVisible()
+    await expectNoSeriousA11y(page, 'resource groups, none yet')
+
+    // a name the BFF does not take is named on its field, before anything is sent
+    await page.getByRole('button', { name: 'Create group' }).first().click()
+    const dialog = page.getByRole('dialog', { name: 'Create a resource group' })
+    await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill('compute prod')
+    await dialog.getByRole('button', { name: 'Create group' }).click()
+    await expect(dialog.getByText("a group's name is 1 to 128 letters, digits, '.', '_' or '-'")).toBeVisible()
+    await expect(dialog.getByText("a group's query names at least one tag")).toBeVisible()
+    await expectNoSeriousA11y(page, 'create a resource group')
+    await page.keyboard.press('Escape')
+
+    await createGroup(page, 'compute-prod', ['environment', 'prod'])
+    const table = page.getByRole('table', { name: 'Resources of compute-prod' }).or(page.getByRole('grid', { name: 'Resources of compute-prod' }))
+    await expect(page.getByRole('link', { name: 'web-01' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'api-01' }), 'a dev machine is not in a prod group').toHaveCount(0)
+    await expect(table.first()).toBeVisible()
+    await expectNoSeriousA11y(page, 'a resource group')
+    await page.screenshot({ path: shot('resource-group-desktop'), fullPage: true })
+
+    // a change of its description and query, against the version it read
+    await page.getByRole('button', { name: 'Edit' }).click()
+    const edit = page.getByRole('dialog', { name: 'Edit compute-prod' })
+    await edit.getByRole('textbox', { name: 'Description' }).fill('Every production machine')
+    await edit.getByRole('button', { name: 'Save changes' }).click()
+    await expect(edit).toHaveCount(0)
+    await expect(page.getByText('Every production machine').first()).toBeVisible()
+
+    // the list has it, then the delete asks for its name
+    await page.goto('/#/resource-groups')
+    await expect(page.getByRole('link', { name: 'compute-prod' })).toBeVisible()
+    await page.screenshot({ path: shot('resource-groups-desktop'), fullPage: true })
+    await page.getByRole('link', { name: 'compute-prod' }).click()
+    await page.getByRole('button', { name: 'Delete' }).click()
+    await expect(page).toHaveURL(/action=delete/)
+    const confirm = page.getByRole('dialog', { name: /Delete compute-prod/ })
+    const go = confirm.getByRole('button', { name: 'Delete group' })
+    await expect(go).toBeDisabled()
+    await confirm.getByRole('textbox').fill('compute-prod')
+    await go.click()
+    await expect(page).toHaveURL(/#\/resource-groups$/)
+    await expect(page.getByText('No resource groups yet')).toBeVisible()
+  })
+
+  test('Mia, a viewer, meets the writes greyed before any call, with the reason', async ({ page }) => {
+    await signInAs(page, /Continue as Gonzalo Munoz/, '/resource-groups')
+    await createGroup(page, 'web-tier', ['owner', 'team-compute'])
+    await signOut(page)
+    await signInAs(page, /Continue as Mia Chen/, '/resource-groups')
+
+    // Create group is locked, and says why
+    const create = page.getByRole('button', { name: /^Create group/ }).first()
+    await expect(create).toHaveAttribute('data-denied', 'console-iam')
+    await create.click()
+    const why = page.getByRole('dialog')
+    await expect(why.getByRole('heading', { name: /You can.t create a resource group here/ })).toBeVisible()
+    await expect(why).toContainText('resource-groups:create')
+    await page.keyboard.press('Escape')
+
+    // she reads the group, but its Edit and Delete are locked
+    await page.getByRole('link', { name: 'web-tier' }).click()
+    await expect(page.getByRole('heading', { name: 'web-tier', level: 1 })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Edit/ })).toHaveAttribute('data-denied', 'console-iam')
+    await expect(page.getByRole('button', { name: /^Delete/ })).toHaveAttribute('data-denied', 'console-iam')
+    await expectNoSeriousA11y(page, 'a resource group as a viewer')
+
+    // and a resource's tags: Manage tags is locked before any call
+    await page.goto(`/#${vmPage('vm-demo01', '?tab=tags')}`)
+    await expect(page.getByRole('tabpanel').getByRole('button', { name: /^Manage tags/ })).toHaveAttribute('data-denied', 'console-iam')
+  })
+
   test('the Tags step and the Tags drawer fit a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await signInAs(page, /Continue as Dana Reyes/, '/console/compute')
@@ -174,5 +269,10 @@ test.describe('tags and resource groups in mock mode', () => {
     await expectNoHorizontalOverflow(page)
     await expectNoSeriousA11y(page, 'Tag Editor at phone width')
     await page.screenshot({ path: shot('tag-editor-phone'), fullPage: true })
+
+    await page.goto('/#/resource-groups')
+    await expect(page.getByRole('heading', { name: 'Resource groups', level: 1 })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+    await expectNoSeriousA11y(page, 'resource groups at phone width')
   })
 })

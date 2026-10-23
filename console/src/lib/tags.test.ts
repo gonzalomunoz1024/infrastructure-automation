@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { allowedSentence, andList, applyProblems, changeProblems, draftOf, draftTags, emptyTagsDraft, groupChangeProblems, keysOf, missingTags, newGroupProblems, newTagRow, policyProblems, requiredValue, rowErrors, tagAccepts, tagDefault, tagRulesOf, tagSentence, type RequiredTag } from './tags'
+import { allowedSentence, andList, applyProblems, changeProblems, draftOf, draftTags, emptyTagsDraft, groupChangeProblems, groupDecision, keysOf, missingTags, newGroupProblems, newTagRow, policyProblems, requiredValue, rowErrors, tagAccepts, tagDefault, tagRulesOf, tagSentence, type RequiredTag } from './tags'
 
 /* The tag rules as the BFF words them: required tags at create, what a change may not do, the Tag Editor's body, a group's query, and the create form's draft. */
 
@@ -90,6 +90,13 @@ describe('a resource group’s body', () => {
     const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`t${i}`, 'v']))
     expect(newGroupProblems({ name: 'bad name', description: 'x'.repeat(513), query: { types: [], tags: many } }, known).map((p) => p.code)).toEqual(['group.name', 'length', 'length'])
     expect(newGroupProblems({ name: 'g', query: { types: [], tags: { 'a/b': 'x' } } }, known)[0]).toMatchObject({ code: 'tag.name', field: '/query/tags/a~1b' })
+  })
+
+  it('greys a write for the roles that cannot make it: an operator creates and changes, only an admin deletes', () => {
+    expect(groupDecision(['operator'], 'create', 'Create resource groups').allowed).toBe(true)
+    expect(groupDecision(['operator'], 'delete', 'Delete resource groups').denied).toMatchObject({ layer: 'console-iam', action: 'resource-groups:delete', suggestedRole: 'account-admin', reason: 'Only an Admin of this account can delete resource groups; you hold Operator' })
+    expect(groupDecision(['viewer'], 'update', 'Change resource groups').denied?.reason).toBe('Only an Operator or an Admin of this account can change resource groups; you hold Viewer')
+    expect(groupDecision(['account-admin'], 'delete', 'Delete resource groups').allowed).toBe(true)
   })
 
   it('never changes a group’s name', () => {

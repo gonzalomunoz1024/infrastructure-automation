@@ -1,6 +1,8 @@
 import type { Problem } from '@iaf/console-kit'
 import { get, page, qs, request } from './api'
 import { BFF_BASE, idempotencyKey } from './bff'
+import { ALLOWED, type Decision } from './permissions'
+import { ADMIN_ROLE, roleLabel } from './session'
 import type { ConsoleResource, Denial, Page } from './types'
 
 /*
@@ -421,4 +423,24 @@ export function rowErrors(rows: readonly TagRow[], required: readonly RequiredTa
 export function andList(words: readonly string[]): string {
   if (words.length <= 1) return words.join('')
   return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`
+}
+
+/* ----------------------------------------------------------------------------
+   Who may change resource groups, before any call (README decision 16's way)
+   ------------------------------------------------------------------------- */
+
+/**
+ * What the managed roles allow on resource groups (`resource-groups:<verb>`): every role reads, an
+ * operator also creates and changes, and only an admin deletes. The pages grey a write with this
+ * decision; the BFF's Denial replaces it the moment a call is refused.
+ */
+export function groupDecision(roles: readonly string[], verb: 'create' | 'update' | 'delete', what: string): Decision {
+  const may = verb === 'delete' ? roles.includes(ADMIN_ROLE) : roles.includes(ADMIN_ROLE) || roles.includes('operator')
+  if (may) return ALLOWED
+  const held = roles.length ? [...roles].sort().map(roleLabel).join(', ') : 'no role here'
+  const who = verb === 'delete' ? 'an Admin' : 'an Operator or an Admin'
+  return {
+    allowed: false,
+    denied: { layer: 'console-iam', action: `resource-groups:${verb}`, reason: `Only ${who} of this account can ${what.charAt(0).toLowerCase()}${what.slice(1)}; you hold ${held}`, role: roles[0], requestable: true, suggestedRole: verb === 'delete' ? ADMIN_ROLE : 'operator' },
+  }
 }
