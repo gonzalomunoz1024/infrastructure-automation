@@ -1,10 +1,12 @@
 package com.iaf.console.bff.jobs.domain;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.iaf.console.platform.model.Batch;
 import com.iaf.console.platform.model.JobDetail;
 import com.iaf.console.platform.model.JobStep;
 import com.iaf.console.platform.model.JobSummary;
@@ -33,6 +35,7 @@ public record JobView(
         Object preview,
         Attention attention,
         List<JobView> children,
+        BatchView batch,
         List<String> can) {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -51,10 +54,32 @@ public record JobView(
     public record Attention(String step, List<String> options, Instant since) {
     }
 
+    /**
+     * A batch's rollout as it goes: the policy it runs under, each wave released so far (its share
+     * of the rows, size and status), and every row with the resource it runs on and its child job;
+     * {@code stoppedReason} once the failures stopped it. The rows' inputs stay out: the console
+     * shows a request's input from its own copy, never from a platform read.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record BatchView(Rollout rollout, List<WaveView> waves, List<RowView> rows, String stoppedReason) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Rollout(List<Integer> waves, Integer maxParallel, Integer stopIfFailedPercent) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record WaveView(int index, int percent, int size, String status, Instant startedAt, Instant endedAt) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record RowView(int index, String wfrn, String jobId, String status, String error, Integer wave) {
+    }
+
     public static JobView summary(JobSummary job) {
         return new JobView(job.id(), job.workflow(), job.title(), job.version(), job.status() == null ? "unknown" : job.status().id(), requesterOf(job.requester(),
                 job.onBehalfOf()), job.context() == null ? null : job.context().wfrn(), job.startedAt(), job.endedAt(), job.durationMs(), kindOf(job.kind()),
-                progress(job.progress()), job.errorClass(), job.failedStep(), null, null, null, null, null, null, null, null);
+                progress(job.progress()), job.errorClass(), job.failedStep(), null, null, null, null, null, null, null, null, null);
     }
 
     public static JobView detail(JobDetail job, List<Object> approvals, List<String> can) {
@@ -64,7 +89,35 @@ public record JobView(
         return new JobView(job.id(), job.workflow(), job.title(), job.version(), job.status() == null ? "unknown" : job.status().id(),
                 requesterOf(job.requester(), job.onBehalfOf()), job.context() == null ? null : job.context().wfrn(), job.startedAt(), job.endedAt(),
                 job.durationMs(), kindOf(job.kind()), progress(job.progress()), job.errorClass(), job.failedStep(), job.input(), job.output(), steps,
-                approvals, job.preview(), attention, children, can);
+                approvals, job.preview(), attention, children, batch(job), can);
+    }
+
+    private static BatchView batch(JobDetail job) {
+        Batch b = job.batch();
+        if (b == null) {
+            return null;
+        }
+        Map<String, String> wfrnByJob = new HashMap<>();
+        Map<Integer, String> wfrnByRow = new HashMap<>();
+        if (job.children() != null) {
+            for (JobSummary child : job.children()) {
+                String wfrn = child.context() == null ? null : child.context().wfrn();
+                if (wfrn != null) {
+                    wfrnByJob.put(child.id(), wfrn);
+                    if (child.row() != null) {
+                        wfrnByRow.put(child.row(), wfrn);
+                    }
+                }
+            }
+        }
+        Rollout rollout = b.rollout() == null ? null : new Rollout(b.rollout().waves(), b.rollout().maxParallel(), b.rollout().stopIfFailedPercent());
+        List<WaveView> waves = b.waves() == null ? List.of() : b.waves().stream()
+                .map(w -> new WaveView(w.index(), w.percent(), w.size(), w.status(), w.startedAt(), w.endedAt())).toList();
+        List<RowView> rows = b.rows() == null ? List.of() : b.rows().stream()
+                .map(r -> new RowView(r.index(), r.jobId() != null && wfrnByJob.containsKey(r.jobId()) ? wfrnByJob.get(r.jobId()) : wfrnByRow.get(r.index()),
+                        r.jobId(), r.status(), r.error(), r.wave()))
+                .toList();
+        return new BatchView(rollout, waves, rows, b.stoppedReason());
     }
 
     private static Step step(JobStep s) {

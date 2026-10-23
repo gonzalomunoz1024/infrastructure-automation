@@ -61,6 +61,11 @@ console:
         service-account: ""
         jwks: ""
         jwks-uri: ""
+      console-cost-service:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""
+        jwks: ""
+        jwks-uri: ""
   oidc:
     issuer: ""                      # the OpenID Connect issuer; discovery is <issuer>/.well-known/openid-configuration
     client-id: console
@@ -118,6 +123,29 @@ console:
       enabled: true                 # follow the platform's feed into the live stream
   web:
     origins: ["http://localhost:3000"]
+  tags:                             # the organization's guardrails: every create through the console names these tags
+    account-ttl: 5m                 # how long an account's owning team is kept
+    required:
+      - key: owner
+        title: Owner
+        description: The team that owns the resource and answers for it
+        default-from: account.owning-team
+      - key: cost-centre
+        title: Cost centre
+        description: Where the resource's cost is charged, like cc-1001
+        pattern: "^cc-[0-9]{4}$"
+        default-from: account       # console.tags.accounts.<accountId>.cost-centre
+      - key: data-class
+        title: Data class
+        description: How sensitive the data on it is
+        values: [public, internal, confidential, restricted]
+        default: internal
+      - key: environment
+        title: Environment
+        description: The environment it serves
+        values: [dev, test, staging, prod]
+        default-from: input.environment
+    accounts: {}                    # console.tags.accounts.<accountId>.<key>: an account's own default
 logging:
   level:
     root: info

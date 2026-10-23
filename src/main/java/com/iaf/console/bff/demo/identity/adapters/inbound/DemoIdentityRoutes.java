@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
@@ -57,6 +58,9 @@ import reactor.core.publisher.Mono;
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
 public class DemoIdentityRoutes {
+
+    /** What the approver groups' policy allows, as the identity service's demo seeds it: reading and deciding the account's access requests. */
+    private static final Set<String> APPROVER_ACTIONS = Set.of("access-request:get", "access-request:list", "access-request:decide");
 
     private static final String PREFIX = IdentityConfiguration.DEMO_PATH;
 
@@ -230,7 +234,7 @@ public class DemoIdentityRoutes {
             for (JsonNode check : body.path("checks")) {
                 String action = check.path("action").asText("");
                 Map<String, Object> d = new LinkedHashMap<>();
-                boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || "access-request:decide".equals(action)
+                boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || APPROVER_ACTIONS.contains(action)
                         && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false));
                 Optional<DemoDirectory.DenyStatement> deny = directory.deniedBy(accountId, action, check.path("resource").asText(null));
                 if (deny.isPresent()) {
@@ -852,7 +856,8 @@ public class DemoIdentityRoutes {
 
     /** Whether the caller may read the account's whole queue: the console itself, or a role whose policy allows the action (admins and auditors). */
     private boolean readsTheQueue(DemoCaller caller, String accountId, String action) {
-        return caller.internal() || ManagedRoles.anyAllows(directory.rolesOf(caller.personSubject(), accountId), action);
+        return caller.internal() || ManagedRoles.anyAllows(directory.rolesOf(caller.personSubject(), accountId), action)
+                || directory.decidesAccessRequests(caller.personSubject(), accountId);
     }
 
     /** A person always sees their own requests; the account's queue needs {@code access-request:list}; someone else's alone is refused. */

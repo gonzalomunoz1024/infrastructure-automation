@@ -3,6 +3,7 @@ package com.iaf.console.bff.resources.adapters.outbound.http;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -90,21 +91,29 @@ public class HttpStatePort implements StatePort {
     @Override
     public Mono<Page<StateResource>> list(AccountScope scope, StateCaller caller, StateQuery query) {
         Function<UriBuilder, URI> uri = b -> {
-            b.path("/v1/resources").queryParam("accountId", scope.accountId()).queryParam("region", scope.region());
-            put(b, "type", query.type());
-            put(b, "state", query.state());
-            put(b, "name", query.name());
-            put(b, "wfrn", query.wfrn());
-            put(b, "sort", query.sort());
+            Map<String, Object> vars = new HashMap<>();
+            b.path("/v1/resources");
+            param(b, vars, "accountId", scope.accountId());
+            param(b, vars, "region", scope.region());
+            param(b, vars, "type", query.type());
+            param(b, vars, "state", query.state());
+            param(b, vars, "name", query.name());
+            param(b, vars, "wfrn", query.wfrn());
+            param(b, vars, "sort", query.sort());
             if (query.drift() != null) {
                 b.queryParam("drift", query.drift());
             }
             if (query.limit() != null) {
                 b.queryParam("limit", query.limit());
             }
-            put(b, "after", query.after());
-            query.tags().forEach((name, value) -> b.queryParam("tag." + name, value));
-            return b.build();
+            param(b, vars, "after", query.after());
+            int i = 0;
+            for (Map.Entry<String, String> tag : query.tags().entrySet()) {
+                String var = "tag" + i++;
+                b.queryParam("tag." + tag.getKey(), "{" + var + "}");
+                vars.put(var, tag.getValue());
+            }
+            return b.build(vars);
         };
         return exchange(client().get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(scope, caller)).accept(MediaType.APPLICATION_JSON),
                 r -> r.bodyToMono(JsonNode.class).map(this::pageOfResources));
@@ -132,12 +141,14 @@ public class HttpStatePort implements StatePort {
     @Override
     public Mono<Page<JsonNode>> events(AccountScope scope, StateCaller caller, String wfrn, Integer limit, String after) {
         Function<UriBuilder, URI> uri = b -> {
+            Map<String, Object> vars = new HashMap<>();
+            vars.put("wfrn", wfrn);
             b.path("/v1/wfrn/{wfrn}/events");
             if (limit != null) {
                 b.queryParam("limit", limit);
             }
-            put(b, "after", after);
-            return b.build(wfrn);
+            param(b, vars, "after", after);
+            return b.build(vars);
         };
         return exchange(client().get().uri(uri).header(HttpHeaders.AUTHORIZATION, bearer(scope, caller)).accept(MediaType.APPLICATION_JSON),
                 r -> r.bodyToMono(JsonNode.class).map(node -> {
@@ -162,6 +173,12 @@ public class HttpStatePort implements StatePort {
     public Mono<StateResource> requestDelete(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Delete command,
             StateCommands.Meta meta) {
         return command(scope, caller, b -> b.path("/v1/wfrn/{wfrn}:request-delete").build(wfrn), command, meta);
+    }
+
+    @Override
+    public Mono<StateResource> requestRetry(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Retry command,
+            StateCommands.Meta meta) {
+        return command(scope, caller, b -> b.path("/v1/wfrn/{wfrn}:request-retry").build(wfrn), command, meta);
     }
 
     @Override
@@ -253,9 +270,11 @@ public class HttpStatePort implements StatePort {
         return new Page<>(items, node.hasNonNull("next") ? node.get("next").asText() : null);
     }
 
-    private static void put(UriBuilder b, String name, String value) {
+    /** A query parameter whose value is a URI variable, so it is encoded strictly: a tag value or a cursor with {@code +}, {@code &} or braces arrives as it was. */
+    private static void param(UriBuilder b, Map<String, Object> vars, String name, String value) {
         if (value != null && !value.isBlank()) {
-            b.queryParam(name, value);
+            b.queryParam(name, "{" + name + "}");
+            vars.put(name, value);
         }
     }
 

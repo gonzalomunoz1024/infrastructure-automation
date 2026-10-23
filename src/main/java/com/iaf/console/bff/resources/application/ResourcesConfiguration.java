@@ -6,11 +6,14 @@ import org.springframework.context.annotation.Configuration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.jobs.application.JobRetries;
+import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.ports.outbound.StatePort;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.application.Sessions;
+import com.iaf.console.bff.tags.application.TagPolicies;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.types.application.Types;
 
@@ -23,7 +26,12 @@ public class ResourcesConfiguration {
 
     @Bean
     public Resources resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, ObjectMapper json) {
-        return new Resources(types, access, sessions, trust, clients, platform, state, search, json);
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, ObjectMapper json) {
+        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, jobs, retries, tagPolicies, json);
+    }
+
+    @Bean
+    public BlastRadii blastRadii(PlatformClients clients) {
+        return new BlastRadii(clients);
     }
 }

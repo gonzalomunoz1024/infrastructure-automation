@@ -4,16 +4,19 @@ The console's backend for frontend: the one service the web app talks to. It sig
 through the enterprise identity provider, keeps their session, tells the web app what each
 resource type looks like and what the signed-in person may do with it, serves the resource pages
 over the state service (list, detail, create, update, verbs, tags, lineage, drift, batches,
-previews), the Requests page (jobs and approvals), streams live changes, and passes IAM calls
-through to the identity service.
+previews), changes them safely (blast radius, required tags, bulk in waves, retry with a fix,
+the Tag Editor, resource groups, launch more like this), the Requests page (jobs and
+approvals), streams live changes, and passes IAM calls through to the identity service.
 It never holds platform credentials in the browser: every platform call is made here, with the
 account's service account and a signed on-behalf-of assertion naming the person.
 
 Work packages of the customer-console plan served here: **1.3** (OIDC sign-in, sessions, CSRF,
 step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type descriptors),
-**3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates), and the
+**3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates), the
 BFF's side of **6.1** (global search, type-ahead and the list's counts, through the search
-indexer).
+indexer), and phase 4: **4.1** (the update convention), **4.2** (delete with dependents, bulk
+in waves, retry, skip and abort), **4.3** (tags, the Tag Editor, resource groups), **4.4**
+(required tags at create), **4.5** (blast radius) and **4.6** (launch more like this).
 
 ## Running it
 
@@ -67,6 +70,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
+| `console.tags.required`, `console.tags.accounts.<accountId>.<key>`, `console.tags.account-ttl` | The tags every create must name (key, title, values or pattern, default, `default-from`: `account.owning-team`, `account` or `input.<field>`), an account's own default values, and how long an account's owning team is kept |
 | `console.live.ring-capacity`, `heartbeat`, `relay.enabled` | The replay ring per account, the SSE heartbeat, and whether this instance follows the platform feed |
 | `console.platform.fake.*` | Demo only: the embedded platform's port, step delay and seed |
 | `console.kafka.*` | With the `kafka` profile: bootstrap servers, group id, topics |
@@ -122,14 +126,18 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | Path | What |
 | --- | --- |
 | `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` | The sign-in |
-| `GET, PUT /console/v1/session`, `GET /console/v1/accounts`, `GET /console/v1/regions` | The session, the memberships, the regions |
+| `GET, PUT /console/v1/session`, `GET /console/v1/accounts`, `GET /console/v1/regions` | The session (with `decisions` on the account's IAM writes, quota and access requests), the memberships, the regions |
 | `GET /console/v1/types`, `GET /console/v1/types/{key}` | The descriptors, with `ETag` and `If-None-Match`, every action with `allowed` and `denied` |
-| `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch` | The account's resources of a type (`q` through the search index, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create, its preview, a batch |
+| `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch`, `POST …:batch:preview` | The account's resources of a type (`q` through the search index, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create with its required tags, its preview, a batch in waves, the batch's preview with each row's problems and what the rows reach |
 | `GET /console/v1/r/{type}:counts` | How many resources the list's filters match: `total`, `byState` for the state chips, `drift`, `cappedAt` |
 | `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and type-ahead, over the types the person may list |
 | `GET, PATCH /console/v1/r/{type}/{wfrn}`, `POST …:{verb}`, `POST …:{verb}:preview` | One resource with `can`, `ETag` and `If-None-Match`; an update (`If-Match`); a verb of the catalog; its preview |
 | `GET …/{wfrn}/activity`, `GET …/drift`, `GET …/lineage`, `PUT …/tags` | The resource's log, its open finding, what it was built from and what depends on it, its tags |
-| `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
+| `GET …/{wfrn}/blast-radius`, `GET …/{wfrn}/clone` | What depends on the resource, in every account (named in the session's); its create form filled from it, for this account or another |
+| `GET /console/v1/tag-policy`, `GET /console/v1/tags/resources`, `POST /console/v1/tags:apply` | The account's required tags with their defaults; the Tag Editor's search across types by tag, and tagging up to 100 resources at once |
+| `GET, POST /console/v1/resource-groups`, `GET, PATCH, DELETE …/{groupId}`, `GET …/{groupId}/resources` | Resource groups: tag queries per account and region (unique names, `ETag` and `If-Match`, `Idempotency-Key` on create) and the resources each one matches |
+| `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel`, `…:retry`, `…:skip`, `…:abort` | The account's jobs, with `can`, a batch's waves and rows; retry (optionally with a fix: input and step), skip a paused step, abort with compensations |
+| `POST /console/v1/jobs/{jobId}/approvals:decide` | Every pending approval of a request and its rows the person may decide, in one call (once per wave) |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
 | `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
@@ -198,6 +206,39 @@ service instead, start its demo (PR #7: port 18082, its own platform-fake on 180
 BFF with `--console.state.url=http://localhost:18082 --console.platform.fake.enabled=false` so
 both talk to the same platform; this composition has not been exercised here yet, as the two
 demos embed their own platform-fake today.
+
+## Changing resources safely (phase 4)
+
+The shapes and refusals are in `contracts/additions.md`; what the BFF does:
+
+- **Blast radius** walks the platform registry's lineage from the resource, up to five levels,
+  and counts what depends on it in every account while naming only the session's account's
+  resources. A delete's preview carries it and denies with `dependents.exist`; the delete itself
+  is a 409 with the dependents, and nothing runs. A batch's preview answers each row's problems
+  and what the rows reach together before anything starts.
+- **Retry** follows the hub's order: the platform runs the job again first (`:rerun` from the
+  failed step, `:retry` for a paused one), then the state service records the retry, so a rerun
+  the platform refuses records nothing. A failed create's resource goes back to `pending`. A fix
+  merges its input over the job's and may name the step to run from; a create keeps its minted
+  name.
+- **Bulk in waves** passes the rollout to the platform's batch route (cumulative percentages, a
+  failure threshold); the job's view shows each wave and row, and one call decides a wave's
+  approvals, each recorded as the person's own platform decision.
+- **Required tags** come from `console.tags.required`, with defaults from the account (its owning
+  team, or a value configured per account), the organisation, or the create's own field. The
+  form is pre-filled from `GET /console/v1/tag-policy`, but the BFF never adds a tag the request
+  left out, so API and MCP callers are held to the same rule. The tags are set on the minted
+  resource before its workflow starts.
+- **The Tag Editor** finds the account's resources across types by tag, as the person may list
+  each type, and tags up to 100 at once, one state service command per resource, each as
+  `<service>:tag` on it allows; required tags may not be removed.
+- **Launch more like this** fills the type's create form from the resource's attributes, or what
+  it was created with, leaving secrets and read-only fields out, suggesting `<name>-copy` when it
+  fits the field, and swapping the source account's default tags for the target's. Every account
+  of the person's is offered, with `<service>:create` decided there.
+- **The session's decisions** answer the account's IAM writes, quota and access-request actions
+  for the person in one batch to the identity service, so the console greys what the person may
+  not do before they press it.
 
 ## Search (WP 6.1, the BFF's side)
 
@@ -273,14 +314,15 @@ needs. `/internal` is never routed by the ingress. The demos keep their dev head
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
-`resources`, `jobs`, `live`, `iam`, `preferences`, `platform`, `identity`, `demo`. Each slice is `domain` (no Spring),
+`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `iam`, `preferences`,
+`platform`, `identity`, `demo`, and `common` for the error handling shared by every slice. Each slice is `domain` (no Spring),
 `ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
 service to the kit's rules and adds one of its own: only `..demo..` packages may depend on
 `platform-fake`.
 
 ## Tests
 
-`./gradlew test` runs 108 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 164 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).

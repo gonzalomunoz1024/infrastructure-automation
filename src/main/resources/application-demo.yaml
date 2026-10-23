@@ -23,6 +23,12 @@ console:
   live:
     relay:
       enabled: true
+  tags:
+    accounts:
+      "123456789012":
+        cost-centre: cc-1001
+      "210987654321":
+        cost-centre: cc-2001
 logging:
   level:
     com.iaf.console.bff: info

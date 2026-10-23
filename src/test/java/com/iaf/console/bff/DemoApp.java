@@ -31,9 +31,6 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
  * context across the test classes that extend this.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = {
-        "server.port=" + DemoApp.PORT,
-        "console.oidc.issuer=" + DemoApp.BASE + "/demo-idp",
-        "console.oidc.redirect-uri=" + DemoApp.BASE + "/auth/callback",
         "console.platform.fake.port=0",
         "console.platform.fake.step-delay=20ms",
         "console.session.secure=false",
@@ -42,8 +39,9 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 @ActiveProfiles("demo")
 public abstract class DemoApp {
 
-    public static final int PORT = 18181;
-    public static final String BASE = "http://localhost:18181";
+    /** The demo's port: {@code CONSOLE_BFF_TEST_PORT} when set, so two builds on one machine keep apart, else 18181. */
+    public static final int PORT = testPort();
+    public static final String BASE = "http://localhost:" + PORT;
     public static final String COMPUTE = "123456789012";
     public static final String DATA = "210987654321";
 
@@ -57,6 +55,13 @@ public abstract class DemoApp {
     public static final RSAKey CLUSTER_KEY = rsaKey("cluster-1");
 
     @DynamicPropertySource
+    static void demoPort(DynamicPropertyRegistry registry) {
+        registry.add("server.port", () -> PORT);
+        registry.add("console.oidc.issuer", () -> BASE + "/demo-idp");
+        registry.add("console.oidc.redirect-uri", () -> BASE + "/auth/callback");
+    }
+
+    @DynamicPropertySource
     static void serviceTokenClients(DynamicPropertyRegistry registry) {
         // dotted map keys: a bracketed one would not merge with application.yaml's entry of the same client
         registry.add("console.trust.clients." + TEST_CLIENT + ".audiences[0]", () -> "console-state-service");
@@ -65,6 +70,11 @@ public abstract class DemoApp {
         registry.add("console.trust.clients.console-search-indexer.service-account", () -> "console:console-search-indexer");
         registry.add("console.trust.kubernetes.issuer", () -> CLUSTER_ISSUER);
         registry.add("console.trust.kubernetes.jwks", () -> new JWKSet(CLUSTER_KEY.toPublicJWK()).toString());
+    }
+
+    private static int testPort() {
+        String port = System.getenv("CONSOLE_BFF_TEST_PORT");
+        return port == null || port.isBlank() ? 18181 : Integer.parseInt(port.trim());
     }
 
     static ECKey ecKey(String kid) {

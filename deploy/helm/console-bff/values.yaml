@@ -50,6 +50,9 @@ config:
       console-drift-service:
         audiences: [console-state-service, console-identity-service]
         serviceAccount: ""
+      console-cost-service:
+        audiences: [console-state-service, console-identity-service]
+        serviceAccount: ""
 
 # One secret, created outside the chart, with these keys:
 #   session-secret           base64 of at least 32 random bytes (console.session.secret)

@@ -56,7 +56,7 @@ class JobsAndApprovalsTest extends DemoApp {
         JsonNode step = job.path("steps").get(0);
         assertFalse(step.path("name").asText().isBlank());
         assertFalse(step.path("status").asText().isBlank());
-        assertTrue(job.path("can").toString().contains("rerun"), job.path("can").toString());
+        assertEquals("[]", job.path("can").toString(), "a create that went through offers no command: " + job.path("status").asText());
         assertTrue(job.has("input"));
     }
 

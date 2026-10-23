@@ -137,8 +137,8 @@ class IamProxyTest extends DemoApp {
         assertEquals(403, someoneElses.status(), someoneElses.body());
         assertEquals("auditor", someoneElses.json().path("denied").path("suggestedRole").asText(), someoneElses.body());
         assertEquals(200, console.get("/console/v1/access-requests/" + requestId, mateo).status(), "the requester reads their own request");
-        Console.Reply notTheirs = console.get("/console/v1/access-requests/" + requestId, console.signIn("dana"));
-        assertEquals(403, notTheirs.status(), "an operator reads no one else's request: " + notTheirs.body());
+        Console.Reply anApprovers = console.get("/console/v1/access-requests/" + requestId, console.signIn("dana"));
+        assertEquals(200, anApprovers.status(), "an approver group's member reads the requests they may decide: " + anApprovers.body());
         Console.Signed gonzalo = console.signIn("gonzalo");
         Console.Reply queue = console.get("/console/v1/access-requests?status=pending&requester=user_mateo", gonzalo);
         assertEquals(200, queue.status(), queue.body());
@@ -200,6 +200,24 @@ class IamProxyTest extends DemoApp {
         Console.Reply withdrawn = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + opened.json().path("requestId").asText(), mia, null,
                 Map.of());
         assertEquals(204, withdrawn.status(), "the requester withdraws their own: " + withdrawn.body());
+    }
+
+    @Test
+    void anOperatorOutsideTheApproverGroupsReadsNoOneElsesRequest() {
+        Console.Signed raj = console.signIn("raj");
+        Console.Reply requested = console.post("/console/v1/access-requests", raj, Map.of("action", "compute:delete", "reason", "I drop the stale data VMs"));
+        assertEquals(202, requested.status(), requested.body());
+        String requestId = requested.json().path("requestId").asText();
+        Console.Signed ana = console.signIn("ana");
+        Console.Reply notTheirs = console.get("/console/v1/access-requests/" + requestId, ana);
+        assertEquals(403, notTheirs.status(), "an operator outside the approver groups reads no one else's request: " + notTheirs.body());
+        assertFalse(console.get("/console/v1/access-requests?status=pending", ana).json().path("items").toString().contains(requestId),
+                "their list holds their own requests only");
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        assertEquals(200, console.put("/console/v1/session", gonzalo, Map.of("accountId", DATA)).status());
+        Console.Reply rejected = console.post("/console/v1/access-requests/" + requestId + ":decide", gonzalo,
+                Map.of("decision", "reject", "comment", "ask the data team lead"));
+        assertEquals(202, rejected.status(), rejected.body());
     }
 
     @Test

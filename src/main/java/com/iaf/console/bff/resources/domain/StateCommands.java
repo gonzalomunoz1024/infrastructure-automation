@@ -31,6 +31,11 @@ public final class StateCommands {
     public record Delete(Long expectedVersion, String actor, String jobId, String workflow, String workflowVersion, String reason) {
     }
 
+    /** {@code POST /v1/wfrn/{wfrn}:request-retry}: a failed resource goes back to pending; {@code jobId} is the rerun that retries it. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Retry(Long expectedVersion, String actor, String jobId, String workflow) {
+    }
+
     /** {@code POST /v1/wfrn/{wfrn}:tag}: the tags to set and the names to drop. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Tag(Long expectedVersion, String actor, Map<String, String> set, List<String> removed) {
