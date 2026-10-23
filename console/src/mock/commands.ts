@@ -5,6 +5,8 @@ import type { MockData } from './data'
 import { ADMIN_ROLE, accountOf, authorize, quotaOf, rolesOf, type Decision } from './directory'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
+import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
+import { applyMonitoringCommand, type MonitoringState } from './monitoring'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -73,6 +75,10 @@ export interface MockConsoleState {
   replies: Record<string, { bodyHash: string; status: number; body: unknown }>
   /** resource groups, the tag policy and the Tag Editor's state (./tags), made on first use */
   tools?: TagsState
+  /** drift decisions, discovery runs and assignments (./drift), made on first use */
+  drift?: DriftState
+  /** alarms and rightsizing decisions (./monitoring), made on first use */
+  monitoring?: MonitoringState
 }
 
 export function emptyConsoleState(): MockConsoleState {
@@ -323,6 +329,11 @@ export function observedAtOf(r: Resource, now: number): string | undefined {
 
 /** The open drift finding of a resource the last scan read, from the drift the samples carry (./resources). */
 export function findingsOf(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, now: number): Finding[] {
+  return openFindingsOf(data, s, rt, r, now, scannedFindingsOf(data, s, rt, r, now))
+}
+
+/** The finding the last scan would open from the drift the samples carry, before anything people decided. */
+export function scannedFindingsOf(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, now: number): Finding[] {
   const observedAt = observedAtOf(r, now)
   const fields = driftOf(r)
   if (!observedAt || fields.length === 0 || classOf(rt, r.status) === 'deleted') return []
@@ -536,6 +547,10 @@ function approvalFor(extra: ConsoleJobExtra, at: number): CommandAccepted['appro
 const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => RouteAnswer> = {
   group: applyTagCommand,
   tags: applyTagCommand,
+  drift: applyDriftCommand,
+  unmanaged: applyDriftCommand,
+  alarm: applyMonitoringCommand,
+  recommendation: applyMonitoringCommand,
 }
 
 /**
@@ -913,7 +928,7 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
       if (method !== 'GET') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
       const d = can(`${service}:get`, wfrn)
       if (!d.allowed) return refused(d, correlation())
-      if (sub === 'drift') return { status: 200, body: { items: findingsOf(data, s, rt, r, now) } }
+      if (sub === 'drift') return { status: 200, body: { items: [...findingsOf(data, s, rt, r, now), ...closedFindingsOf(data, s, rt, r, now)] } }
       if (sub === 'lineage') {
         const byId = new Map(data.resources.map((x) => [x.id, x]))
         const builtFrom = (r.builtFrom ?? []).map((id) => byId.get(id)).filter((x): x is Resource => !!x)

@@ -13,6 +13,7 @@ import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
 import type { ActivityEntry, ConsoleResourceDetail, Finding, Resource, Schema } from '../../lib/types'
+import { MonitoringTab } from './MonitoringTab'
 
 /*
  * The tabs of a resource page. Each reads what it needs: Configuration the record (with the
@@ -51,6 +52,8 @@ export function TabContent({ label, ...props }: TabProps & { label: string }) {
           <ResourceLineage id={record?.id ?? props.wfrn.slice(props.wfrn.lastIndexOf('/') + 1)} />
         </Section>
       )
+    case 'monitoring':
+      return <MonitoringTab {...props} />
     case 'tags':
       return <TagsTab {...props} />
     case 'permissions':

@@ -90,6 +90,8 @@ export type ObserveSpec = {
   interval?: string
   notFound?: 'missing' | 'deleted'
   discover?: { action: string; input?: Record<string, unknown>; items?: string; id?: string }
+  /** P-09: the provider action that answers the resource's metric series (CPU, memory, disk), for the Monitoring tab and rightsizing */
+  metrics?: { action: string; input?: Record<string, unknown>; map?: Record<string, string> }
 }
 
 export type ResourceType = {

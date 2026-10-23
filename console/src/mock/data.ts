@@ -40,8 +40,19 @@ function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
 }
 
+/**
+ * How the drift service reads each type (P-06's `observe`, P-09's `metrics` and `discover`): vms
+ * and databases have a metrics read (the Monitoring tab, alarms, rightsizing) and a discover read
+ * (unmanaged resources); volumes are read for drift only; images and environments not at all.
+ */
+const OBSERVE: Record<string, ResourceType['observe']> = {
+  vm: { provider: 'vsphere', action: 'vm.get', interval: '1h', metrics: { action: 'vm.metrics' }, discover: { action: 'vm.list' } },
+  database: { provider: 'mongodb', action: 'cluster.get', interval: '1h', metrics: { action: 'cluster.metrics' }, discover: { action: 'cluster.list' } },
+  volume: { provider: 'netapp', action: 'volume.get', interval: '6h' },
+}
+
 function withHints(types: ResourceType[]): ResourceType[] {
-  return types.map((rt) => {
+  return withObserve(types).map((rt) => {
     if (rt.name !== 'vm') {
       if (rt.name === 'database' && rt.schema.properties?.secret) {
         const db = clone(rt)
@@ -94,6 +105,10 @@ function generatedVms(): Resource[] {
       updatedAt: createdAt,
     }
   })
+}
+
+function withObserve(types: ResourceType[]): ResourceType[] {
+  return types.map((rt) => (OBSERVE[rt.name] && !rt.observe ? { ...rt, observe: OBSERVE[rt.name] } : rt))
 }
 
 /** vms carry P-05 wfrns and the compute account; databases fall under the data account with no wfrn yet (derived in the browser). */

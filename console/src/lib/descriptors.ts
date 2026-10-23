@@ -48,6 +48,17 @@ export interface ConsoleAction {
 
 export const DEFAULT_TABS = ['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'] as const
 
+/** What the drift service can read of a type through its `observe` block (P-06, P-09). */
+export interface ConsoleObserve {
+  /** the type has an observe read: drift detection covers it */
+  supported: boolean
+  interval?: string
+  /** a metrics read: the Monitoring tab, alarms and rightsizing */
+  metrics: boolean
+  /** a discover read: the unmanaged resources finder lists what the provider has */
+  discover: boolean
+}
+
 export interface ConsoleType {
   name: string
   plural: string
@@ -64,6 +75,7 @@ export interface ConsoleType {
   /** the direction of the default sort: a hint of `-created` sorts newest first */
   defaultSortDir: 'asc' | 'desc'
   tabs: string[]
+  observe: ConsoleObserve
   actions: ConsoleAction[]
   create: ConsoleAction | null
   schema: Schema
@@ -217,9 +229,22 @@ export const TAB_LABELS: Record<string, string> = {
   json: 'JSON',
 }
 
+/** The type's observe block as the console reads it: whether drift, metrics and discovery cover the type. */
+export function observeOf(rt: Pick<ResourceType, 'observe'>): ConsoleObserve {
+  const o = rt.observe
+  return { supported: !!o?.action, interval: o?.interval, metrics: !!o?.metrics?.action, discover: !!o?.discover?.action }
+}
+
+/** The default tabs, with Monitoring after Drift when the type has a metrics read (a type without one shows no tab). */
+export function defaultTabsFor(observe: Pick<ConsoleObserve, 'metrics'>): string[] {
+  const tabs: string[] = [...DEFAULT_TABS]
+  if (observe.metrics) tabs.splice(tabs.indexOf('Drift') + 1, 0, 'Monitoring')
+  return tabs
+}
+
 /** The tabs a type's hint lists, as labels; the defaults when it lists none. */
-export function tabsOf(hinted: unknown): string[] {
-  if (!Array.isArray(hinted)) return [...DEFAULT_TABS]
+export function tabsOf(hinted: unknown, defaults: readonly string[] = DEFAULT_TABS): string[] {
+  if (!Array.isArray(hinted)) return [...defaults]
   const out: string[] = []
   for (const raw of hinted) {
     if (typeof raw !== 'string' || !raw.trim()) continue
@@ -228,7 +253,7 @@ export function tabsOf(hinted: unknown): string[] {
     const label = TAB_LABELS[id] ?? capitalise(word.replace(/[-_]+/g, ' '))
     if (!out.includes(label)) out.push(label)
   }
-  return out.length ? out : [...DEFAULT_TABS]
+  return out.length ? out : [...defaults]
 }
 
 /** `-created` sorts by the created column, newest first; a key no column has falls back to the name. */
@@ -272,6 +297,7 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
   const create = producer ? toAction(producer) : (actions.find((a) => a.verb === 'create') ?? null)
   const columns = columnsOf(rt)
   const sort = sortOf(rt.console?.list?.defaultSort, columns)
+  const observe = observeOf(rt)
   return {
     name: rt.name,
     plural: rt.plural,
@@ -286,7 +312,8 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
     columns,
     defaultSort: sort.key,
     defaultSortDir: sort.dir,
-    tabs: tabsOf(rt.console?.detail?.tabs),
+    tabs: tabsOf(rt.console?.detail?.tabs, defaultTabsFor(observe)),
+    observe,
     actions,
     create,
     schema: rt.schema ?? { type: 'object' },
