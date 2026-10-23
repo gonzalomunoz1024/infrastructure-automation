@@ -66,6 +66,11 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'tag-editor':
     case 'tag-policy':
       return [home, { label: route.def?.title ?? 'Tags' }]
+    case 'drift':
+    case 'unmanaged':
+    case 'alarms':
+    case 'rightsizing':
+      return [home, { label: 'Operations', href: pathFor('drift') }, { label: route.def?.title ?? 'Operations' }]
     case 'settings':
       return [home, { label: 'Settings' }]
     default:

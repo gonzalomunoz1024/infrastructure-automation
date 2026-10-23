@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './api'
-import { explain, explainLine, explainProblem, lowerFirst } from './plain'
+import { codeOf, explain, explainLine, explainProblem, lowerFirst } from './plain'
 
 /* Plain language (WP 3.7): a failed call reads as what happened, why, and what to do next. */
 
@@ -42,6 +42,26 @@ describe('explaining a failed call', () => {
     // an object detail is data for the page, never words
     expect(held.message).not.toContain('[object Object]')
     expect(explain(new ApiError(410, { error: 'resource.deleted', detail: { deletedAt: '2026-10-23T10:00:00Z' } })).title).toBe('This resource was deleted')
+  })
+
+  it('reads a drift code whether it stands alone or opens the error, as the drift service writes them', () => {
+    expect(explain(new ApiError(409, { error: 'finding.closed', detail: { resolution: 'accepted' } })).title).toBe('This finding is already closed')
+    const reverting = explain(new ApiError(409, { error: 'finding.reverting: a revert job is running', detail: { revertJobId: 'job_1' } }))
+    expect(reverting.title).toBe('A revert is already running')
+    expect(reverting.message).not.toContain('[object Object]')
+    expect(explain(new ApiError(409, { error: 'finding.notRevertable (cpu is not set by update-vm)' })).next).toBe('Accept the provider’s values, or ignore the fields.')
+    expect(explain(new ApiError(400, { error: 'unmanaged.unknownAccount' })).title).toBe('No such account')
+    expect(codeOf('finding.closedish')).toBeUndefined()
+    expect(codeOf('revert.needsPerson; the workflow waits for input')).toBe('revert.needsPerson')
+    expect(codeOf(undefined)).toBeUndefined()
+  })
+
+  it('explains the monitoring and rightsizing refusals, waiting as long as a busy read asks', () => {
+    expect(explain(new ApiError(404, { error: 'metrics.notSupported', detail: 'Volumes have no metrics read: their provider publishes none' }))).toMatchObject({ title: 'This type keeps no metrics', message: 'There is nothing to chart, and no alarm can watch it. Volumes have no metrics read: their provider publishes none' })
+    expect(explain(new ApiError(429, { error: 'observe.budget' }, undefined, 12))).toMatchObject({ title: 'Too many metrics reads for now', next: 'Wait 12 seconds and try again.', retryable: true })
+    expect(explain(new ApiError(409, { error: 'recommendation.closed', detail: 'This recommendation is applied already, through request job_1' }), 'Resize web-02')).toMatchObject({ title: 'This recommendation is already settled', retryable: false })
+    expect(explain(new ApiError(409, { error: 'recommendation.notApplicable' }))).toMatchObject({ title: 'The console cannot carry this out', retryable: false })
+    expect(explain(new ApiError(409, { error: 'recommendation.changing' }))).toMatchObject({ next: 'Wait for it to finish, then apply the recommendation again.', retryable: true })
   })
 
   it('explains a call that never reached a server, a cancelled one and a plain error', () => {

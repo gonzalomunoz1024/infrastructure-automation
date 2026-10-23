@@ -6,6 +6,8 @@ import { APPROVER_ROLE, accountOf, authorize, quotaOf, type Decision } from './d
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
 import { applyJobCommand, settleBatches, type MockBatch } from './jobs'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
+import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
+import { applyMonitoringCommand, type MonitoringState } from './monitoring'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -102,6 +104,10 @@ export interface MockConsoleState {
   replies: Record<string, { bodyHash: string; status: number; body: unknown }>
   /** resource groups, the tag policy and the Tag Editor's state (./tags), made on first use */
   tools?: TagsState
+  /** drift decisions, discovery runs and assignments (./drift), made on first use */
+  drift?: DriftState
+  /** alarms and rightsizing decisions (./monitoring), made on first use */
+  monitoring?: MonitoringState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
 }
@@ -255,6 +261,12 @@ export function inputSchemaOf(entry: CatalogEntry, subject: string | undefined):
   if (!subject) return schema
   const { [subject]: _dropped, ...rest } = schema.properties ?? {}
   return { ...schema, properties: rest, required: (schema.required ?? []).filter((n) => n !== subject) }
+}
+
+/** The fields an update may change: the x-console `mutable` ones. */
+export function updateSchemaOf(rt: ResourceType): Schema {
+  const props = Object.entries(rt.schema?.properties ?? {}).filter(([, p]) => p?.['x-console']?.mutable === true)
+  return { type: 'object', properties: Object.fromEntries(props) }
 }
 
 /** What an update workflow's input may carry besides its subject (P-08): the mutable fields it changes, and operational inputs such as its reason. */
@@ -456,6 +468,11 @@ export function observedAtOf(r: Resource, now: number): string | undefined {
 
 /** The open drift finding of a resource the last scan read, from the drift the samples carry (./resources). */
 export function findingsOf(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, now: number): Finding[] {
+  return openFindingsOf(data, s, rt, r, now, scannedFindingsOf(data, s, rt, r, now))
+}
+
+/** The finding the last scan would open from the drift the samples carry, before anything people decided. */
+export function scannedFindingsOf(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, now: number): Finding[] {
   const observedAt = observedAtOf(r, now)
   const fields = driftOf(r)
   if (!observedAt || fields.length === 0 || classOf(rt, r.status) === 'deleted') return []
@@ -681,6 +698,10 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   // called through, since the modules import this one and may not have loaded when it does
   group: (data, cmd) => applyTagCommand(data, cmd),
   tags: (data, cmd) => applyTagCommand(data, cmd),
+  drift: (data, cmd) => applyDriftCommand(data, cmd),
+  unmanaged: (data, cmd) => applyDriftCommand(data, cmd),
+  alarm: (data, cmd) => applyMonitoringCommand(data, cmd),
+  recommendation: (data, cmd) => applyMonitoringCommand(data, cmd),
   job: (data, cmd) => applyJobCommand(data, cmd),
   batch: (data, cmd) => applyJobCommand(data, cmd),
 }
@@ -1037,7 +1058,7 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
       if (method !== 'GET') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
       const d = can(`${service}:get`, wfrn)
       if (!d.allowed) return refused(d, correlation())
-      if (sub === 'drift') return { status: 200, body: { items: findingsOf(data, s, rt, r, now) } }
+      if (sub === 'drift') return { status: 200, body: { items: [...findingsOf(data, s, rt, r, now), ...closedFindingsOf(data, s, rt, r, now)] } }
       if (sub === 'blast-radius') {
         const raw = params.get('depth')
         const depth = raw === null || raw === '' ? 3 : Number(raw)

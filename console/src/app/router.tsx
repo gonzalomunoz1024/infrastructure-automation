@@ -30,6 +30,10 @@ export type RouteName =
   | 'group'
   | 'tag-editor'
   | 'tag-policy'
+  | 'drift'
+  | 'unmanaged'
+  | 'alarms'
+  | 'rightsizing'
   | 'settings'
   | 'not-found'
 
@@ -67,6 +71,11 @@ export const ROUTES: RouteDef[] = [
   { name: 'group', pattern: '/resource-groups/:id', title: 'Resource group' },
   { name: 'tag-editor', pattern: '/tag-editor', title: 'Tag Editor' },
   { name: 'tag-policy', pattern: '/tag-policy', title: 'Required tags' },
+  // operations (phase 5): drift, what the providers have that nobody manages, alarms and rightsizing
+  { name: 'drift', pattern: '/operations/drift', title: 'Drift' },
+  { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
+  { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
+  { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 
