@@ -110,6 +110,9 @@ contract lacks, so a new one goes to the hub first).
 
 ## Running it
 
+The service listens on 18083 (`CONSOLE_IDENTITY_PORT` overrides it). The state service has 18082,
+the BFF 18081 and platform-fake-app 18090.
+
 ```bash
 # the libraries, once (until console-libs is on GitHub Packages)
 cd ../console-libs && ./gradlew publishToMavenLocal :build-logic:publishToMavenLocal -x test

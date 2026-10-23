@@ -1,4 +1,4 @@
-# platform-fake embedded in this process (with the demo profile: a one-JVM demo on 18082).
+# platform-fake embedded in this process (with the demo profile: a one-JVM demo on 18083).
 console:
   identity:
     platform:
