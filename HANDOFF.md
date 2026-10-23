@@ -13,8 +13,8 @@ Read in this order:
 
 1. This file, top to bottom (about 40 minutes).
 2. `handoff/DEVIN-PLAYBOOK.md`: how to split the work across sub-agents and in what order.
-3. `handoff/HUB-README-STACK-SNAPSHOT.md`: the hub README with all 35 decisions (the copy on
-   `console-root` itself only has decisions 1 to 10, because no hub PR has merged yet).
+3. `README.md` on `console-root`: the hub README with all 35 decisions (every hub PR is merged;
+   `handoff/HUB-README-STACK-SNAPSHOT.md` is the same text as it stood before the merge).
 4. `handoff/services/<service>.md` for the service a sub-agent owns.
 5. `handoff/PLAN-SNAPSHOT.md`: the full product plan (a Markdown copy of the plan document,
    which lives at a claude.ai URL you cannot open).
@@ -27,128 +27,44 @@ status reports in the same hour; they were not re-run for this handoff. Anything
 progress but had **not pushed** is lost to you unless it later appears on GitHub; section 6 says
 which items are at risk.
 
-## Branch model: why there are about 95 branches
+## Branches (consolidated 2026-10-23 at about 21:05 UTC)
 
-You will see about 95 branches. That is deliberate, and here is why.
+The repository has **one branch per service plus the hub**. Every topic, phase, `-wip` and
+stack branch was merged into its service branch with merge commits, every conflict resolved
+(both sides' features kept; where two versions of the same thing differed, the newest work and
+every security fix won). All pull requests are merged or closed; none is open. There is nothing
+left to merge: work directly on these branches, or cut a short-lived branch from one and PR it
+back into it.
 
-### Why one orphan branch per service
+**Keep these branches** (everything else is a leftover the owner will delete; ignore it):
 
-Gonzalo's rule (hub decision 8): **every service is conceptually its own repository**, and each will move to a repository of its own later. For now they all live in this one GitHub repository. Each is an **orphan branch**: a branch with its own root commit and no shared history with `main` or with any other service.
+| Branch | What it is | Head | CI at consolidation |
+|---|---|---|---|
+| `main` | The platform. Never touch it. | c9529d5 | green |
+| `console-root` | The hub: decisions 1 to 35, contracts, overlays, rule packs, blueprints, platform-changes plan, and this handoff with `handoff/` and `handoff/context/` | (this commit) | green (`npm run check`) |
+| `console-libs` | Shared Gradle libraries, platform-client, platform-fake | 64cd773 | **red** (Build and test). The tree is identical to the old `console-libs--phase-0` head cd6f535, which was green, so this looks like a flaky test: re-run it |
+| `console-web` | The React console (phases 0 to 7 and 9) | b3d3416 | **red** (Lint). Not checked after the merge; fix the lint, then typecheck and tests |
+| `console-bff` | The BFF | 1e63a77 | **red** (Build and test). Not compiled after the merge; expect compile errors from the WIP streams listed in its README |
+| `console-identity-service` | Accounts, IAM, authorization | 173de12 | green |
+| `console-state-service` | Resource inventory, lineage, time travel, blueprints and stacks, load seeder | 559caf3 | green |
+| `console-drift-service` | Drift, the shadow-infrastructure finder, monitoring, rightsizing, scorecards, the 10M scan WIP | ec73e59 | green |
+| `console-search-indexer` | Search, counts, transfers, load tests | 8e5d398 | green |
+| `console-cost-service` | Cost, budgets, chargeback | c3bc075 | green |
+| `console-e2e` | The whole-system compose and Playwright journey | ac56ddb | **red** (`./e2e.sh` journey); expected until BFF and web build |
+| `console-sdk` | TypeScript and Java SDKs and the CLI | 338a4e0 | green |
 
-- That gives each service its own history, its own build (Gradle or npm), its own CI workflow, its own `README.md` and its own Helm chart. When it moves out, it moves with `git push <new-repo> console-x:main`, and nothing from other services comes along.
-- `main` is the automation platform. It is finished, and nothing ever merges into it (decision 7).
-- `console-root` is the **hub**, also orphan. It holds no service code. It holds the cross-service contracts, the decisions, the type overlays, rule packs, blueprints and the platform-changes plan.
+**Unfinished work merged in.** Each service README has an "Unfinished (merged in as work in
+progress)" section: the BFF's ChatOps, notifications, API-client keys and time travel routes;
+the web's blueprints and compliance, team dashboards and service health, and move-to-account and
+phone-view streams; the drift service's 10M scan run.
 
-The orphan roots: `console-root` (hub), `console-libs`, `console-bff`, `console-identity-service`, `console-state-service`, `console-drift-service`, `console-search-indexer`, `console-cost-service`, `console-web`, `console-sdk`, `console-e2e`. A root branch only moves when a PR merges into it, and **no PR has merged yet**. So every root still holds only its first scaffold commit.
+**Old names in this file.** Sections below may still name old branches (`console-bff--phase-9`,
+`console-web--p7-*`, `-wip` branches) or PR numbers. Read every such name as "now on the
+service branch it starts with": for example `console-bff--org` is on `console-bff`. A WP that
+says "branch X from Y" means: work on the service branch.
 
-### Why each service has a stack of `<service>--<topic>` branches
-
-- **Work never goes on a root directly.** Each work package (a phase of the plan or a topic) is a branch `<service>--<topic>` with a PR into the branch below it.
-- **Nothing has merged.** Gonzalo reviews and merges, and the build moved faster than review. So phase 4 could not start from a merged phase 3. It started from the unmerged phase 3 branch, and its PR targets that branch so the PR shows only phase 4's diff.
-- **The result is a stack per service.** Each PR's base is the PR below it, and the newest branch contains everything beneath it.
-- **Some branches sit beside each other instead of on top.** For example, web phase 9 was cut from phase 3b in parallel with phase 4. Each of those merges the newer base in before its own merge.
-- **Branches with no PR** (for example `console-bff--assistant`, `console-bff--clients`, the `console-web--p7-*` streams) are work pushed by parallel workers. It was meant to be merged into a phase branch, not reviewed on its own.
-- **Two branches with the same SHA** (for example `console-bff--org` and `--blueprints`, or `console-web--p7-mobile`, `--p7-dashboards` and `--phase-5-security`) means a stream was created but had not committed anything of its own yet.
-
-### What the `-wip` branches are
-
-At 19:55 UTC Gonzalo asked every session to stop and push everything. Work that was mid-way (uncommitted, not compiling, or tests unfinished) was committed as-is to a **`-wip` snapshot branch** beside the stream it belonged to: `console-web--p7-<stream>-wip`, `console-web--phase-5-security-wip`, `console-bff--security-wip`, `console-bff--drift-merge-wip`, `console-drift-service--scorecards-wip`.
-
-- **A `-wip` branch is raw material, not a PR.** It may not build. To finish one, diff it against its stream (`git diff console-web--p7-state console-web--p7-state-wip`), finish the work on the stream branch, and delete the `-wip` branch once its contents are carried over.
-- **The table "Unfinished at handoff"** above says what each one was doing.
-
-### What `console-root--stack` is
-
-The hub has 15 open PRs, and many of them edit the same files: the decisions table, the BFF contract, the events contract, the platform-changes counts. Merged one by one, they would conflict.
-
-- **The stack branch.** The hub steward (the search indexer session) kept `console-root--stack` (draft PR #30, **never merged**). It holds every open hub PR merged in the agreed order, one merge commit per "turn" (turn 1 = #2 … turn 15 = #46), with each conflict resolved.
-- **It is a preview and a cheat sheet.** It is the only place where decisions 1 to 35 all exist together. When you merge the real PRs into `console-root`, copy each conflict resolution from the matching turn commit. The order and resolutions are in `handoff/MERGE-ORDER-SNAPSHOT.md`.
-- **Other `console-root--*` branches** are the individual hub PRs (contract changes a service needed). `console-root--handoff` is this handoff (PR #50).
-
-### Diagrams per service (PR number, branch, ← means "PR into")
-
-Heads are in `handoff/BRANCH-HEADS.md`. "no PR" means the branch was pushed but never opened as a PR.
-
-```
-HUB  console-root (723c819)
- ├─ #2  console-root--phase-0
- │   ├─ #25 --contract-descriptions
- │   ├─ #11 --search-indexer-contract ── #20 --search-copilot-contract
- │   ├─ #15 --state-retry ─┬─ #18 --cost-contract ── #22 --identity-contract
- │   │                     └─ #27 --state-phase-9 ── #39 --state-blueprints
- │   ├─ #14 --drift-contract ── #17 --drift-finder-monitoring ── #19 --scorecards-contract
- │   └─ #16 --phase-9-web (BFF phase 9) ── #38 --bff-clients ── #46 --single-audience
- ├─ #30 console-root--stack   (draft, never merged: all 15 merged in order = the preview)
- └─ #50 console-root--handoff (this handoff, docs only)
-
-console-libs
- └─ #4 console-libs--phase-0
-
-console-identity-service
- └─ #8 --phase-1 ── #24 --phase-7
-
-console-state-service
- └─ #7 --phase-2 ── #33 --phase-9 ─┬─ #45 --blueprints
-                                   └─ #48 --load
-
-console-search-indexer
- └─ #10 --phase-6 ── #29 --phase-9 ── #35 --transfers ── #44 --load ── #47 --state-load (also needs state #48)
-
-console-drift-service
- └─ #12 --phase-5 ── #32 --finder-and-monitoring ─┬─ #21 --scorecards        (+ --scorecards-wip snapshot)
-                                                  └─ #53 --scan-load (draft, WIP)
-
-console-cost-service
- └─ #28 --phase-7
-
-console-bff
- └─ #6 --phase-1 ── #26 --phase-4 ─┬─ #34 --cost ── #51 --phase-9 ── #52 --org
-                                   │                    no-PR streams off phase 9: --assistant, --blueprints, --search-p9,
-                                   │                    --history, --clients, --notifications, --chatops
-                                   └─ #42 --drift      (+ --drift-merge-wip: phase-4 fixes merged in, 2 compile errors)
-     --security-next (= phase-1 head 27a2ffe, unverified items) and --security-wip (snapshot)
-
-console-web
- └─ #3 --phase-0 ; #5 --phase-1 ── #9 --phase-3a ── #13 --phase-3b ─┬─ #37 --phase-4 ── #41 --phase-5 ─┬─ #54 --phase-7 (draft)
-                                                                    │                                  │    streams merged into it: --p7-<stream>
-                                                                    │                                  │    (access, blueprints, cli, dashboards, mobile,
-                                                                    │                                  │     notify, personal, policies, state), each with
-                                                                    │                                  │     a -wip snapshot where work was mid-way
-                                                                    │                                  └─ --phase-5-security (+ -wip)
-                                                                    └─ #23 --phase-9 ─┬─ #31 --phase-9-explainer ── #36 --phase-9-retry
-                                                                                      ├─ #40 --phase-9-home
-                                                                                      ├─ #43 --phase-9-copilot
-                                                                                      └─ #49 --phase-9-cost
-     --resource-fixes (no PR)
-
-console-sdk    single orphan branch, no PR yet (TypeScript and Java SDKs and CLI)
-console-e2e    └─ #55 console-e2e--journey (draft)
-```
-
-If a base above disagrees with GitHub, GitHub wins: `gh pr view <n> --json baseRefName,headRefName`. For a branch with no PR, find where it came from with `git merge-base --fork-point` or by comparing `git log --oneline <a>..<b>` against the candidates.
-
-### How to merge (once Gonzalo says go)
-
-1. Merge **bottom-up**, one PR at a time, in the order of section 5: the hub first, then libs, then each service from its lowest PR up.
-2. Merge with **"Create a merge commit"** only. Never squash or rebase. Children already contain their parents' commits, and a squash would make every child conflict with its own history. `.gitleaksignore` files also pin commit SHAs.
-3. **Retarget the children after each merge.** When `--phase-1` merges into `console-bff`, change #26's base to `console-bff`. Deleting the merged branch makes GitHub retarget automatically. Then re-run the child's CI, and merge the root into the child if GitHub shows conflicts.
-4. **Side branches** (the web phase 9 PRs, drift #21 and #53, BFF #42 beside #34): merge the updated root into them first, then merge them.
-5. **Fold streams before you merge.**
-   - Merge each `--p7-*` and BFF no-PR stream into its phase branch (or open a PR for it) before that phase merges.
-   - Carry each `-wip` snapshot's finished work onto its stream, then delete the snapshot.
-6. **Hub:** replay the turns of `console-root--stack` against `console-root`, PR by PR, using its resolutions. Then close #30.
-
-### How to collapse the stack once merged
-
-When every PR of a service has merged, the root branch (`console-bff`, …) holds everything.
-
-- Delete every `<service>--*` topic branch and every `-wip` branch for it (`git push origin --delete <branch>`). Their commits stay in the root's history.
-- Re-pin each service's `contracts.lock` to the merged `console-root` commit (WP H-2).
-- Close and delete `console-root--stack`.
-- New work then starts as a single `<service>--<topic>` branch off the root, one PR deep, which is the normal model from then on.
-- When a service moves to its own repository, push its root as that repository's `main`: `git push git@…/console-bff.git console-bff:main`.
-
-Until everything has merged, **start new work from the newest branch of the service** (the top of its diagram), not from the root, which lags.
+**Services pin hub contracts** in `contracts.lock` to older hub commits (stack turns or PR heads).
+Re-pin each to the current `console-root` commit (WP H-2) before changing contracts.
 
 ## Final status at handoff (about 19:55 UTC)
 
@@ -420,76 +336,30 @@ README are the text equivalent.
 
 ---
 
-## 4. Repository layout, branches and PRs
+## 4. Repository layout
 
-Repository: `github.com/gonzalomunoz1024/infrastructure-automation`. Clone shallow per branch;
-the repo has many orphan histories.
+Repository: `github.com/gonzalomunoz1024/infrastructure-automation`. The service branches are
+orphan histories (they share no root with `main` or each other), so clone per branch:
+`git clone --single-branch -b <branch> <repo>`. The branch list and CI state are in "Branches"
+at the top of this file.
 
-### 4.1 Hub (`console-root`, base 723c819)
-
-`console-root` itself only holds the plan-era README, `contracts/`, `type-overlays/`,
-`platform-changes/`. **All the real hub content is in open PRs.** The branch
-`console-root--stack` (draft PR #30, never merged) is all 15 hub PRs merged in order with the
-conflicts resolved, and is the only place every decision exists together. Treat
-`console-root--stack` as the hub's truth until the PRs merge. It contains: `contracts/openapi/*.yaml`
-(one per service), `contracts/asyncapi/console-events.yaml`, `contracts/platform/*`,
-`contracts/wfrn/*`, `contracts/schemas/*`, `type-overlays/`, `rule-packs/`, `blueprints/`,
-`scripts/check-contracts.mjs` (`npm run check`, uses OPA 1.4.2), and `platform-changes/README.md`.
-
-Hub PRs (all open, base in brackets): #2 phase 0 [console-root], #25 descriptions [phase-0],
-#11 search 1.1.0 [phase-0], #20 search 1.2.0 [#11], #15 retry, decision 24 [phase-0], #18 cost,
-decision 25 + P-22 [#15], #22 identity, decision 28 [#18], #14 drift [phase-0], #17 drift
-finder [#14], #19 scorecards, decision 26 [#17], #27 state 1.1.0, decisions 29/30 + P-23 [#15],
-#39 blueprints, decision 33 [#27], #16 BFF phase 9, decision 27 [phase-0], #38 API clients,
-notifications, org admins, decisions 31/32/34 [#16], #46 single audience, decision 35 [#38],
-#30 the stack (draft).
+The hub (`console-root`) holds: `contracts/openapi/*.yaml` (one per service),
+`contracts/asyncapi/console-events.yaml`, `contracts/platform/*`, `contracts/wfrn/*`,
+`contracts/schemas/*`, `type-overlays/`, `rule-packs/`, `blueprints/`,
+`scripts/check-contracts.mjs` (`npm run check`, uses OPA 1.4.2) and `platform-changes/README.md`.
+`MERGE-ORDER.md` there is the record of how the 15 hub PRs were merged; it needs no action.
 
 Numbers: **next free decision is 36, next free platform change is P-24.** A new P also adds a
 PR row in `platform-changes/README.md` section 5, widens `PLATFORM_CHANGE` in
 `scripts/check-contracts.mjs`, and updates the counts (23 changes, 14 PRs, about 2,185 minutes).
 
-### 4.2 Service branches and PR stacks
-
-Every service PR is stacked: each topic branch is based on the previous one. Head SHAs as of
-18:55 UTC.
-
-| Service | Stack (PR: head branch → base) | Head |
-|---|---|---|
-| console-libs | #4 `console-libs--phase-0` → `console-libs` | 6861ed5 |
-| console-web | #3 `--phase-0` → `console-web`; #5 `--phase-1` → `console-web`; #9 `--phase-3a` → phase-1; #13 `--phase-3b` → 3a; #37 `--phase-4` → 3b; #41 `--phase-5` → phase-4; #23 `--phase-9` → 3b; #31 `--phase-9-explainer` → phase-9; #36 `--phase-9-retry` → explainer (merges phase 4 in); #40 `--phase-9-home` → phase-9; #43 `--phase-9-copilot` → phase-9; #49 `--phase-9-cost` → phase-9 | #41 8b7980c, #43 563fd5b, #36 03676ef |
-| console-bff | #6 `--phase-1` → `console-bff`; #26 `--phase-4` → phase-1; #34 `--cost` → phase-4; #42 `--drift` → phase-4. Pushed without a PR: `console-bff--org` (2dfa817), `console-bff--search-p9` (16d0d05). **Not on GitHub:** `console-bff--phase-9` | #26 7e3b5d4, #34 69c0853, #42 1096484 |
-| console-identity-service | #8 `--phase-1` → root; #24 `--phase-7` → phase-1 | #24 317bc40 |
-| console-state-service | #7 `--phase-2` → root; #33 `--phase-9` → phase-2; #45 `--blueprints` → phase-9; #48 `--load` → phase-9 | #33 61ef5d1, #45 6ce9ba1, #48 90ee637 |
-| console-drift-service | #12 `--phase-5` → root; #32 `--finder-and-monitoring` → phase-5; #21 `--scorecards` → phase-5 | #32 1f6e4ce, #21 ad9cbcc |
-| console-search-indexer | #10 `--phase-6` → root; #29 `--phase-9` → phase-6; #35 `--transfers` → phase-9; #44 `--load` → transfers; #47 `--state-load` → load | #35 200dba4, #44 cc4701f, #47 3133b09 |
-| console-cost-service | #28 `--phase-7` → `console-cost-service` | 8ca4409 |
-
-The newest branch of each service is where new work starts: cut `<service>--<topic>` from it.
-
 ---
 
-## 5. Merge order
+## 5. Merging
 
-Nothing has merged. Merge only with Gonzalo's go-ahead. Rules: "Create a merge commit" only, never
-squash or rebase (children carry parents' commits; `.gitleaksignore` pins commits); merge one PR
-at a time, bottom of each stack first; after each merge retarget its children to the service root
-(GitHub does it when the merged branch is deleted); re-run CI on the child before merging it.
-
-1. **Hub first**, turns 1 to 15 exactly as `handoff/MERGE-ORDER-SNAPSHOT.md` (read it; turns 10
-   to 14 need `console-root` merged in first with the stack's recorded resolution, which you can
-   copy from the turn commits on `console-root--stack`): #2, #25, #11, #20, #15, #18, #22, #14,
-   #17, #19, #27, #39, #16, #38, #46. Then close #30.
-2. **console-libs** #4, then publish libs (WP L-1) so services can stop building libs in CI.
-3. Services in any order, each bottom-up:
-   - identity #8, #24
-   - state #7, #33, #45, #48
-   - indexer #10, #29, #35, #44, #47 (#47 also needs state #48's seeder; merge after it)
-   - drift #12, #32, #21, then #53 when finished (#21 and #53 are both based on #32)
-   - cost #28
-   - BFF #6, #26, then #34 and #42 (both on phase-4; the second needs the first merged in), then #51 phase 9 and #52 org, then the no-PR streams once they have PRs
-   - web #3, #5, #9, #13, #37, #41, then #23, #31, #36, #40, #43, #49 (the phase 9 PRs were cut from phase-3b; merge `console-web` into each before its merge)
-4. After each service merges, re-pin its `contracts.lock` to the merged `console-root` commit
-   (WP H-2).
+Nothing is left to merge. Every hub PR is on `console-root`, and every service's branches are
+on its service branch. For new work: a short-lived branch from the service branch, a PR back into
+it, "Create a merge commit" (never squash or rebase; `.gitleaksignore` pins commits).
 
 ---
 
@@ -580,12 +450,12 @@ Each WP lists: goal, branch, depends on, files, acceptance, commands. WP ids are
 
 ### Phase R: recover and verify (do first, 30 min, lane 0)
 
-**R-1 Inventory what exists.** Start from the 19:05 UTC update table at the top. `git ls-remote --heads origin`; compare with section 4. For each
-branch marked "at risk" in section 6, check whether it appeared after this handoff (the build
-sessions may have pushed later). Record the result in a new section of `HANDOFF.md` on your own
-branch. Run `gh pr list --state all` and `gh pr checks` per PR. Acceptance: a table of every
-branch, PR, head and CI state, and the list of at-risk items that are truly missing (they become
-rebuild WPs below).
+**R-1 Make every kept branch green.** The consolidation merged code without building it. In
+"Branches" at the top, `console-libs` (likely flaky: re-run), `console-web` (Lint), `console-bff`
+(Build and test) and `console-e2e` (journey) are red. Fix libs first, then BFF and web (their
+merges combined the phase 9 line with the phase 4/5/7 line and the security fixes; WIP streams
+may not compile), then e2e. Acceptance: CI green on all eleven console branches. Record anything
+you had to cut from a WIP stream in that service's README "Unfinished" section.
 
 ### Phase S: security and decision 35, in lockstep (lane 1, 240 min total)
 
