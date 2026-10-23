@@ -196,11 +196,16 @@ export function MetricChart({ series, from, to, stepMs, thresholds = [], stale, 
                   </text>
                 </g>
               ))}
-              {ticks.map((t) => (
-                <text key={t} x={x(t)} y={HEIGHT - 6} textAnchor="middle" className="fill-tertiary text-caption2 tabular-nums">
-                  {timeLabel(t, to - from)}
-                </text>
-              ))}
+              {ticks.map((t) => {
+                const label = timeLabel(t, to - from)
+                // a label that would run past the chart's right edge ends at it instead
+                const atEnd = x(t) + label.length * 3.5 > width - 1
+                return (
+                  <text key={t} x={atEnd ? width - 1 : x(t)} y={HEIGHT - 6} textAnchor={atEnd ? 'end' : 'middle'} className="fill-tertiary text-caption2 tabular-nums">
+                    {label}
+                  </text>
+                )
+              })}
               {runs.map((run) => (
                 <g key={run[0].t}>
                   {run.length > 1 && <path d={`${pathOf(run, x, y)} L${x(run[run.length - 1].t).toFixed(1)} ${y(domain.min).toFixed(1)} L${x(run[0].t).toFixed(1)} ${y(domain.min).toFixed(1)} Z`} className="fill-current" opacity={0.09} stroke="none" />}

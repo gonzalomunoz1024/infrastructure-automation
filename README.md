@@ -10,6 +10,18 @@ contracts this build pins.
 
 ## What is here (phases 0, 1 and 3)
 
+Phase 5 watches the resources once they run:
+
+- a Monitoring tab on each resource whose type keeps metrics: a chart per series over 1 hour to
+  7 days with its latest, average and highest in words, a crosshair the keyboard moves and a table
+  view, the alarms drawn on the charts as labelled lines and listed below them, created, edited and
+  deleted in a small dialog
+- the Alarms page: the account's alarms, firing first, filtered by state, each leading to its
+  resource's Monitoring tab
+- the Rightsizing page: the idle and oversized resources found in the last 14 days of metrics, the
+  largest saving first, each resized or deleted through its type's own workflow, or dismissed for
+  good or for 7, 30 or 90 days
+
 Phase 3b makes the console change resources, with the request in view at every step:
 
 - a create wizard for every type a workflow creates, generated from the workflow's input schema:
@@ -428,6 +440,30 @@ type, so the feed must subscribe to every one).
     than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
     review's quota rule and the Quotas card count `resources.<type>` with one function
     (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+46. **A metric series is a function of the resource and the time, so every reader agrees.** The
+    mock (`mock/monitoring.ts`) works each point out of the resource, its size and the moment (a
+    working day in UTC, quieter weekends, disks filling slowly), so a chart, an alarm and the
+    rightsizing pass read the same numbers. A read keeps the contract's defaults (24 hours, a point
+    every 5 minutes up to a day, else hourly), answers at most 500 points, needs
+    `<service>:observe`, and past 120 reads a minute answers 429 `observe.budget` with a wait.
+47. **Alarms are judged when they are read, by the average the chart shows.** An alarm watches one
+    series of one resource, above or below a threshold, averaged over 1 to 1440 minutes; its state
+    (OK, In alarm, Not enough data) and since when are worked out from the series at each read, as
+    the drift service's minute-by-minute evaluation would leave them, so they never go stale. The
+    console picks the id (`PUT /console/v1/alarms/{id}`), so a retried create replaces rather than
+    doubles; writing one needs `<service>:update` on the resource, reading them `get`.
+48. **A recommendation runs through the type's own workflow, on behalf of the person.** The daily
+    pass (05:00 UTC) reads 14 days of p95 CPU and memory: both under 5% is idle (delete it), both
+    under 30% oversized (the smallest size that keeps p95 under 60%, never a larger one). Apply
+    starts the update workflow with that size, or the delete workflow with `confirm: true` once the
+    name is typed; the recommendation is `applied` with its job id at the 202, so the page links
+    the request at once. A dismissal keeps its reason, for good or until its date.
+49. **Charts are drawn by hand and say in words what they show.** `pages/resource/MetricChart.tsx`
+    draws SVG with the theme's tokens: one accent line over a faint area, four value ticks, a few
+    time ticks, thresholds as dashed labelled lines. Each chart is titled with its unit, sums itself
+    up in a line (latest, average, highest) and turns into a table; its plot is a slider whose
+    arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
+    chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
 
 ## Layout of the code
 
