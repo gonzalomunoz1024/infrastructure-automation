@@ -73,7 +73,8 @@ public class PlatformConfiguration {
         }
         if (assertion != null) {
             log.info("calling the state and identity services with service tokens from {}", auth.tokenUrl());
-            return ServiceCredentials.tokens(new ServiceTokens(webClients.clone().build(), URI.create(auth.tokenUrl()), assertion, ServiceCredentials.SERVICE, clock));
+            return ServiceCredentials.tokens(new ServiceTokens(webClients.clone().build(), URI.create(auth.tokenUrl()), assertion, ServiceCredentials.SERVICE,
+                    auth.tokenTimeout(), clock));
         }
         if (properties.state().devHeaders()) {
             return ServiceCredentials.devHeaders();
@@ -85,7 +86,7 @@ public class PlatformConfiguration {
     @Bean
     public StateServicePort stateService(WebClient.Builder webClients, SearchProperties properties, ServiceCredentials credentials) {
         SearchProperties.StateSettings s = properties.state();
-        WebClient web = webClients.clone().baseUrl(s.url()).filter(credentials.filterFor(STATE_SERVICE))
+        WebClient web = WebClients.within(webClients, s.timeout()).baseUrl(s.url()).filter(credentials.filterFor(STATE_SERVICE))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(16 * 1024 * 1024)).build();
         return new HttpStateService(web);
     }
@@ -93,7 +94,8 @@ public class PlatformConfiguration {
     @Bean
     public AccountsPort accounts(WebClient.Builder webClients, SearchProperties properties, ServiceCredentials credentials) {
         if (properties.identity().configured()) {
-            WebClient web = webClients.clone().baseUrl(properties.identity().url()).filter(credentials.filterFor(IDENTITY_SERVICE)).build();
+            SearchProperties.IdentitySettings identity = properties.identity();
+            WebClient web = WebClients.within(webClients, identity.timeout()).baseUrl(identity.url()).filter(credentials.filterFor(IDENTITY_SERVICE)).build();
             return new HttpIdentityAccounts(web);
         }
         return new ConfiguredAccounts(properties.rebuild().accounts());

@@ -78,7 +78,8 @@ public class IndexConfiguration {
         @Bean
         public OpenSearchIndex openSearchIndex(WebClient.Builder webClients, SearchProperties properties, Clock clock) {
             SearchProperties.OpenSearchSettings os = properties.search().opensearch();
-            WebClient.Builder builder = webClients.clone().baseUrl(os.url()).codecs(c -> c.defaultCodecs().maxInMemorySize(32 * 1024 * 1024));
+            WebClient.Builder builder = WebClients.within(webClients, os.timeout()).baseUrl(os.url())
+                    .codecs(c -> c.defaultCodecs().maxInMemorySize(32 * 1024 * 1024));
             if (os.username() != null && !os.username().isBlank()) {
                 builder.defaultHeaders(h -> h.setBasicAuth(os.username(), os.password() == null ? "" : os.password()));
             }

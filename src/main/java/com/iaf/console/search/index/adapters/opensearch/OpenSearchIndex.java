@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -38,6 +39,7 @@ import com.iaf.console.search.index.ports.outbound.SearchIndexPort;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClientRequest;
 
 /**
  * The index in OpenSearch, over its REST API. Everything goes through an alias ({@code console-resources}
@@ -57,6 +59,8 @@ public final class OpenSearchIndex implements SearchIndexPort {
 
     private static final Logger log = LoggerFactory.getLogger(OpenSearchIndex.class);
     private static final int MAX_TOTAL = 10_000;
+    /** A delete by query answers only once it is done, which on a big index takes far longer than the calls' timeout. */
+    private static final Duration BY_QUERY_TIMEOUT = Duration.ofMinutes(10);
     /** Where a document without a name sorts by name: after every name. */
     static final String NO_NAME = "￿";
 
@@ -509,6 +513,11 @@ public final class OpenSearchIndex implements SearchIndexPort {
                     return b.build(alias);
                 })
                 .contentType(MediaType.APPLICATION_JSON).bodyValue(body.toString())
+                .httpRequest(r -> {
+                    if (r.getNativeRequest() instanceof HttpClientRequest request) {
+                        request.responseTimeout(BY_QUERY_TIMEOUT);
+                    }
+                })
                 .exchangeToMono(r -> r.statusCode().is2xxSuccessful() ? r.bodyToMono(JsonNode.class) : OpenSearchIndex.<JsonNode>failure(r))
                 .map(n -> n.path("deleted").asLong());
     }

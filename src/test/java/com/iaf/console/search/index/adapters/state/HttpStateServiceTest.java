@@ -5,6 +5,7 @@ import static com.iaf.console.search.index.domain.Fixtures.T0;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +49,7 @@ class HttpStateServiceTest {
         TestClock clock = new TestClock(Instant.parse("2026-10-23T12:00:00Z"));
         String key = new ECKeyGenerator(Curve.P_256).keyID("indexer-1").generate().toJSONString();
         return ServiceCredentials.tokens(new ServiceTokens(WebClient.create(), bff.url(),
-                ClientAssertion.signed(key, ServiceCredentials.SERVICE, "console-bff", clock), ServiceCredentials.SERVICE, clock));
+                ClientAssertion.signed(key, ServiceCredentials.SERVICE, "console-bff", clock), ServiceCredentials.SERVICE, Duration.ofSeconds(5), clock));
     }
 
     @Test

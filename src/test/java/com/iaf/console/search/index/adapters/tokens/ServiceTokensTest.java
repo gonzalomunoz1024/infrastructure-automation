@@ -54,11 +54,19 @@ class ServiceTokensTest {
     }
 
     private ServiceTokens tokens(ClientAssertion assertion) {
-        return new ServiceTokens(WebClient.create(), bff.url(), assertion, ServiceCredentials.SERVICE, clock);
+        return tokens(assertion, Duration.ofSeconds(5));
+    }
+
+    private ServiceTokens tokens(ClientAssertion assertion, Duration timeout) {
+        return new ServiceTokens(WebClient.create(), bff.url(), assertion, ServiceCredentials.SERVICE, timeout, clock);
     }
 
     private ServiceTokens signedTokens() {
-        return tokens(ClientAssertion.signed(key.toJSONString(), ServiceCredentials.SERVICE, "console-bff", clock));
+        return signedTokens(Duration.ofSeconds(5));
+    }
+
+    private ServiceTokens signedTokens(Duration timeout) {
+        return tokens(ClientAssertion.signed(key.toJSONString(), ServiceCredentials.SERVICE, "console-bff", clock), timeout);
     }
 
     @Test
@@ -142,6 +150,17 @@ class ServiceTokensTest {
         bff.failNext(503, 503, 503);
         assertThatThrownBy(() -> tokens.token(STATE).block()).hasMessageContaining("503");
         assertThat(tokens.token(STATE).block()).as("the BFF is back").isEqualTo("tok-2-" + STATE);
+    }
+
+    @Test
+    void aBffThatDoesNotAnswerHoldsUpNoCallPastTheTimeLimit() {
+        ServiceTokens tokens = signedTokens(Duration.ofMillis(250));
+        bff.delay(Duration.ofSeconds(4));
+        assertThatThrownBy(() -> tokens.token(STATE).block(Duration.ofSeconds(3))).as("each of the three tries given up on")
+                .hasMessageContaining("within 250ms");
+        assertThat(bff.forms()).hasSize(3);
+        bff.delay(Duration.ZERO);
+        assertThat(tokens.token(STATE).block(Duration.ofSeconds(3))).as("a new request, not the stalled one").isEqualTo("tok-4-" + STATE);
     }
 
     @Test

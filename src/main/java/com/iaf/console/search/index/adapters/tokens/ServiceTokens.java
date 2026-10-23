@@ -27,7 +27,8 @@ import reactor.util.retry.Retry;
  * {@code contracts/openapi/console-bff.yaml}): OAuth 2.0 client credentials with a JWT client
  * assertion, one token per callee, so a token one service sees is no good at another. A token is
  * reused for 80% of its life; then the next call asks again (calls at the same moment share the
- * request), and while the BFF cannot answer, the old token serves until shortly before it ends.
+ * request), and while the BFF cannot answer, the old token serves until shortly before it ends. A
+ * request has a time limit, so a BFF that never answers holds up no call for longer.
  */
 public final class ServiceTokens {
 
@@ -44,14 +45,17 @@ public final class ServiceTokens {
     private final URI tokenUrl;
     private final ClientAssertion assertion;
     private final String clientId;
+    private final Duration timeout;
     private final Clock clock;
     private final ConcurrentMap<String, Slot> slots = new ConcurrentHashMap<>();
 
-    public ServiceTokens(WebClient web, URI tokenUrl, ClientAssertion assertion, String clientId, Clock clock) {
+    /** {@code timeout} is how long one request to the BFF may take. */
+    public ServiceTokens(WebClient web, URI tokenUrl, ClientAssertion assertion, String clientId, Duration timeout, Clock clock) {
         this.web = web;
         this.tokenUrl = tokenUrl;
         this.assertion = assertion;
         this.clientId = clientId;
+        this.timeout = timeout;
         this.clock = clock;
     }
 
@@ -143,7 +147,10 @@ public final class ServiceTokens {
         }
     }
 
-    /** One request; a retry signs a new assertion, since the BFF takes each jti once. */
+    /**
+     * One request, given up after the timeout (the callers share it, so it must end); a retry signs
+     * a new assertion, since the BFF takes each jti once.
+     */
     private Mono<Issued> ask(String audience) {
         return assertion.next().flatMap(jwt -> {
             MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
@@ -156,6 +163,7 @@ public final class ServiceTokens {
                     .body(BodyInserters.fromFormData(form))
                     .exchangeToMono(r -> r.statusCode().is2xxSuccessful() ? r.bodyToMono(JsonNode.class).map(this::issued) : refusal(r));
         })
+                .timeout(timeout)
                 .retryWhen(Retry.backoff(2, Duration.ofMillis(200)).maxBackoff(Duration.ofSeconds(2))
                         .filter(e -> !(e instanceof Refused refused) || refused.status() >= 500)
                         .onRetryExhaustedThrow((spec, signal) -> signal.failure()))

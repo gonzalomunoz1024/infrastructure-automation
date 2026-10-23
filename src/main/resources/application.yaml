@@ -66,6 +66,7 @@ console:
     # 23), asked for with the pod's projected service-account token (the file) or, outside a cluster,
     # a JWT signed with this service's registered key (a private EC JWK with a kid)
     token-url: ${CONSOLE_AUTH_TOKEN_URL:http://localhost:18081/internal/v1/token}
+    token-timeout: 5s
     client-assertion-file: ${CONSOLE_AUTH_CLIENT_ASSERTION_FILE:}
     client-key: ${CONSOLE_AUTH_CLIENT_KEY:}
   index:

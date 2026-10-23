@@ -113,7 +113,9 @@ accounts a full rebuild walks) as itself, with service tokens the BFF issues it 
 `issueServiceToken` in `contracts/openapi/console-bff.yaml`). It asks `POST /internal/v1/token`
 with OAuth 2.0 client credentials and a JWT client assertion, one token per callee
 (`audience=console-state-service`, `audience=console-identity-service`), keeps each token for 80%
-of its five minutes, and asks once more when a callee answers 401. The assertion is the pod's
+of its five minutes, and asks once more when a callee answers 401. A request to the BFF is given
+up on after `console.auth.token-timeout` (5 s) and tried twice more; while the BFF cannot answer,
+the current token serves until shortly before it ends. The assertion is the pod's
 projected service-account token (audience `console-bff`, the chart mounts it and the BFF knows
 `system:serviceaccount:<namespace>:console-search-indexer`) or, outside a cluster, a one-minute JWT
 signed with `CONSOLE_AUTH_CLIENT_KEY`, whose public half the BFF registers for the client
@@ -130,6 +132,10 @@ the BFF's signing key never leaves it.
 - **Rebuild** one account or all: `POST /v1/index:rebuild` with `{"accountId": "…"}` or `{}` as a
   console service; follow it at `/v1/index/rebuilds/{runId}`.
 - **Housekeeping** removes tombstones past their 90 days every hour.
+- **Timeouts**: a callee silent for its timeout is given up on, so none holds up a poll for good:
+  `console.search.opensearch.timeout` (10 s; a delete by query, answered only once it is done, has
+  10 minutes), `console.state.timeout` and `console.identity.timeout` (30 s), and the BFF's token
+  endpoint above.
 
 ## Build and test
 

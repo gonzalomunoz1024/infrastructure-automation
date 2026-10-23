@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,7 +50,7 @@ class ServiceTokensContractTest {
 
         try (StubTokenServer bff = StubTokenServer.start()) {
             TestClock clock = new TestClock(Instant.parse("2026-10-23T12:00:00Z"));
-            new ServiceTokens(WebClient.create(), bff.url(), () -> Mono.just("assertion"), ServiceCredentials.SERVICE, clock)
+            new ServiceTokens(WebClient.create(), bff.url(), () -> Mono.just("assertion"), ServiceCredentials.SERVICE, Duration.ofSeconds(5), clock)
                     .token("console-state-service").block();
             MultiValueMap<String, String> sent = bff.forms().get(0);
             assertThat(sent.keySet()).as("every required field").containsAll(strings(request.path("required")));
