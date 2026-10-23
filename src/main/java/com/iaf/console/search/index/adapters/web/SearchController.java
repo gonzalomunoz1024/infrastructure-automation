@@ -30,8 +30,8 @@ import reactor.core.publisher.Mono;
 /**
  * The search surface of the contract ({@code contracts/openapi/console-search-indexer.yaml}): the
  * search, the type-ahead, a list's counts and plain English read as a filter, each as one account,
- * the caller's own unless the caller is internal and names one; an internal caller may count
- * several.
+ * the caller's own unless the caller is internal and names one; an internal caller, or one of the
+ * counting services (hub decision 35), may count several.
  */
 @RestController
 public final class SearchController {
@@ -109,8 +109,9 @@ public final class SearchController {
             throw new InvalidInputException("too many accounts",
                     List.of(Problem.error("maxItems", "/accountId", "at most " + MAX_ACCOUNTS + " accounts in one call")));
         }
-        List<AccountScope> scopes = accounts.isEmpty() ? List.of(scopeOf(principal, null, query))
-                : accounts.stream().map(a -> scopeOf(principal, a, query)).toList();
+        String inRegion = query.region() != null ? query.region() : principal.region() != null ? principal.region() : defaultRegion;
+        List<AccountScope> scopes = accounts.isEmpty() ? List.of(principal.countScope(null, inRegion))
+                : accounts.stream().map(a -> principal.countScope(a, inRegion)).toList();
         return queries.counts(scopes, query, by);
     }
 

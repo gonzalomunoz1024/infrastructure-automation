@@ -14,6 +14,7 @@ import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 
 import com.iaf.console.search.auth.domain.ConsolePrincipal;
+import com.iaf.console.search.auth.domain.InternalCallers;
 
 import reactor.core.publisher.Mono;
 
@@ -37,10 +38,12 @@ public final class ConsoleAuthWebFilter implements WebFilter, Ordered {
 
     private final JwtVerifier verifier;
     private final boolean devHeaders;
+    private final InternalCallers callers;
     private final String defaultRegion;
 
-    public ConsoleAuthWebFilter(JwtVerifier verifier, boolean devHeaders, String defaultRegion) {
+    public ConsoleAuthWebFilter(JwtVerifier verifier, boolean devHeaders, InternalCallers callers, String defaultRegion) {
         this.verifier = verifier;
+        this.callers = callers;
         this.devHeaders = devHeaders;
         this.defaultRegion = defaultRegion;
     }
@@ -81,8 +84,14 @@ public final class ConsoleAuthWebFilter implements WebFilter, Ordered {
                 String region = headers.getFirst(REGION_HEADER);
                 List<String> groups = split(headers.getFirst(GROUPS_HEADER));
                 List<String> roles = split(headers.getFirst(ROLES_HEADER));
+                // the same callers as a token's: a service not on the list is refused here too
+                ConsolePrincipal.Access access = callers.access(account, service);
+                if (access == null) {
+                    return unauthorized(exchange, "unauthorized");
+                }
                 ConsolePrincipal principal = new ConsolePrincipal(user != null ? user : service != null ? service : "dev",
-                        account == null || account.isBlank() ? null : account, region != null ? region : defaultRegion, groups, roles, service);
+                        access == ConsolePrincipal.Access.ACCOUNT ? account : null, region != null ? region : defaultRegion, groups, roles, service,
+                        access);
                 exchange.getAttributes().put(ConsolePrincipal.ATTRIBUTE, principal);
                 return chain.filter(exchange);
             }

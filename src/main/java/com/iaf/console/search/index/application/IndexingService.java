@@ -82,6 +82,9 @@ public final class IndexingService {
 
     /** Reads a resource from the state service and writes what it is now. */
     public Mono<EventOutcome> refetch(AccountScope scope, String wfrn) {
+        if (!inScope(scope, wfrn)) {
+            return Mono.just(new EventOutcome.Ignored("the wfrn is not in the account read"));
+        }
         metrics.refetched();
         return Mono.zip(index.find(scope, wfrn).map(java.util.Optional::of).defaultIfEmpty(java.util.Optional.empty()),
                 state.find(scope, wfrn).map(java.util.Optional::of).defaultIfEmpty(java.util.Optional.empty()))
@@ -107,7 +110,8 @@ public final class IndexingService {
     /** The document of a resource the state service serves, as a rebuild writes it. */
     public Mono<IndexedResource> documentOf(StateResource resource, AccountScope scope) {
         String wfrn = resource.wfrn();
-        if (wfrn == null || !Wfrn.isValid(wfrn)) {
+        if (!inScope(scope, wfrn)) {
+            // a rebuild of one account writes that account's documents only, whatever the state service answers
             return Mono.empty();
         }
         String type = resource.type() != null ? resource.type() : Wfrn.parse(wfrn).type();
@@ -115,6 +119,10 @@ public final class IndexingService {
         return Mono.zip(types.find(type).defaultIfEmpty(ResourceTypeHints.unknown(type)),
                 previous.map(java.util.Optional::of).defaultIfEmpty(java.util.Optional.empty()))
                 .flatMap(t -> Mono.justOrEmpty(Documents.fromState(resource, t.getT1(), t.getT2().orElse(null))));
+    }
+
+    private static boolean inScope(AccountScope scope, String wfrn) {
+        return wfrn != null && Wfrn.isValid(wfrn) && Wfrn.parse(wfrn).account().equals(scope.accountId());
     }
 
     private Mono<EventOutcome> settle(AccountScope scope, EventOutcome outcome, String type, Instant at) {

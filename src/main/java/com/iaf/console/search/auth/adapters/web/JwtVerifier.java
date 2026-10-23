@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.iaf.console.search.auth.domain.ConsolePrincipal;
+import com.iaf.console.search.auth.domain.InternalCallers;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
@@ -28,9 +29,10 @@ import reactor.core.publisher.Mono;
 /**
  * Verifies the console's internal JWTs: ES256, signed by the BFF, whose JWKS is fetched over HTTP
  * and kept for a while (and fetched again once when a token names a key id the set does not
- * hold, for a rotation). The claims: {@code iss} the BFF, {@code aud} this service (or
- * {@code console}), {@code exp} in the future, {@code sub} who, {@code acct} the account (absent
- * on a service token), {@code region}, {@code groups}, {@code roles} and {@code svc}.
+ * hold, for a rotation). The claims: {@code iss} the BFF, {@code aud} this service and nothing
+ * else (hub decision 35), {@code exp} in the future, {@code sub} who, {@code acct} the account (absent
+ * on a service token, which is let in only from the {@link InternalCallers}), {@code region},
+ * {@code groups}, {@code roles} and {@code svc}.
  */
 public final class JwtVerifier {
 
@@ -52,25 +54,28 @@ public final class JwtVerifier {
     private final String jwksUri;
     private final String issuer;
     private final List<String> audiences;
+    private final InternalCallers callers;
     private final Clock clock;
     private final AtomicReference<Mono<JWKSet>> jwks = new AtomicReference<>();
     private final AtomicReference<Instant> lastRefresh = new AtomicReference<>(Instant.EPOCH);
 
-    public JwtVerifier(WebClient web, String jwksUri, String issuer, List<String> audiences, Clock clock) {
+    public JwtVerifier(WebClient web, String jwksUri, String issuer, List<String> audiences, InternalCallers callers, Clock clock) {
         this.web = web;
         this.jwksUri = jwksUri;
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
+        this.callers = Objects.requireNonNull(callers, "callers");
         this.clock = clock;
         this.jwks.set(fetch());
     }
 
     /** A verifier over a fixed key set, for tests and for a service that ships the BFF's keys. */
-    public JwtVerifier(JWKSet keys, String issuer, List<String> audiences, Clock clock) {
+    public JwtVerifier(JWKSet keys, String issuer, List<String> audiences, InternalCallers callers, Clock clock) {
         this.web = null;
         this.jwksUri = null;
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
+        this.callers = Objects.requireNonNull(callers, "callers");
         this.clock = clock;
         this.jwks.set(Mono.just(keys));
     }
@@ -121,8 +126,8 @@ public final class JwtVerifier {
             throw new InvalidToken("issuer '" + claims.getIssuer() + "' is not trusted");
         }
         List<String> aud = claims.getAudience() == null ? List.of() : claims.getAudience();
-        if (!audiences.isEmpty() && aud.stream().noneMatch(audiences::contains)) {
-            throw new InvalidToken("audience " + aud + " is not this service");
+        if (aud.size() != 1 || !audiences.contains(aud.get(0))) {
+            throw new InvalidToken("audience " + aud + " is not this service alone");
         }
         String subject = claims.getSubject();
         if (subject == null || subject.isBlank()) {
@@ -133,7 +138,11 @@ public final class JwtVerifier {
         String svc = claims.getStringClaim("svc");
         List<String> groups = strings(claims.getClaim("groups"));
         List<String> roles = strings(claims.getClaim("roles"));
-        return new ConsolePrincipal(subject, acct == null || acct.isBlank() ? null : acct, region, groups, roles, svc);
+        ConsolePrincipal.Access access = callers.access(acct, svc);
+        if (access == null) {
+            throw new InvalidToken(svc == null || svc.isBlank() ? "neither acct nor svc" : "service '" + svc + "' may not call as itself");
+        }
+        return new ConsolePrincipal(subject, access == ConsolePrincipal.Access.ACCOUNT ? acct : null, region, groups, roles, svc, access);
     }
 
     private static List<String> strings(Object claim) {
