@@ -302,6 +302,40 @@ cannot move (409 `account.shredded`), since masked values must never travel as r
 the BFF re-homes the platform's record (P-23), the feed's events about the old wfrn apply to the
 new one, following up to eight moves.
 
+## Load
+
+The state side of WP 6.2 has two parts:
+
+- The seeder lives here. `./gradlew seedEstate` writes a synthetic estate into MongoDB through the
+  service's own inventory and adapters (`src/load`). Each resource is imported (`backfill`) and
+  tagged, so its two events, the projection and its indexes are what the service writes. Nothing
+  reaches the outbox.
+- The Gatling simulation lives with the search indexer's harness (`console-search-indexer`,
+  `src/gatling`, `StateSimulation`).
+
+The estate is laid out the way the indexer's is, so both tests work in the same accounts:
+- the largest account holds a tenth of everything, a million of ten million;
+- the other accounts share the rest by a Zipf law;
+- there are five types and the tags `env`, `team`, `cost-centre` and a unique `cmdb`.
+
+The settings are `load.mongo`, `load.database`, `load.size`, `load.accounts`, `load.seed`,
+`load.largestShare`, `load.concurrency` (64) and `load.from`. Use `load.from` to resume a run that
+was cut short.
+
+```sh
+./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.mongo=mongodb://mongo:27017
+```
+
+The service then runs with the simulation's JWKS:
+
+```sh
+--spring.profiles.active=demo,mongo --console.auth.dev-headers=false --console.ingest.enabled=false \
+  --console.auth.jwks-uri=http://<gatling host>:18999/.well-known/jwks.json
+```
+
+The demo profile is used only for the platform's resource types (the fake). The simulation's
+README section has the run.
+
 ## Storage
 
 MongoDB, one database (`console_state`) per deployment; indexes are created at start by each adapter.
