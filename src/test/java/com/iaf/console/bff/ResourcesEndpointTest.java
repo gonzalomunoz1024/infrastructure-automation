@@ -88,10 +88,14 @@ class ResourcesEndpointTest extends DemoApp {
             assertEquals(wfrn, lineage.json().path("resource").path("wfrn").asText());
             assertEquals(404, console.getAt(VM + "/{wfrn}/drift", gonzalo, Map.of(), wfrn).status(), "no finding yet");
 
-            Console.Reply tagged = console.sendAt(HttpMethod.PUT, VM + "/{wfrn}/tags", gonzalo, Map.of("env", "dev", "team", "web"), Map.of(), wfrn);
+            Map<String, String> tags = new java.util.HashMap<>(ResourceFixtures.TAGS);
+            tags.putAll(Map.of("env", "dev", "team", "web"));
+            Console.Reply tagged = console.sendAt(HttpMethod.PUT, VM + "/{wfrn}/tags", gonzalo, tags, Map.of(), wfrn);
             assertEquals(200, tagged.status(), tagged.body());
             assertEquals("web", tagged.json().path("team").asText());
-            Console.Reply retagged = console.sendAt(HttpMethod.PUT, VM + "/{wfrn}/tags", gonzalo, Map.of("env", "prod"), Map.of(), wfrn);
+            Map<String, String> retags = new java.util.HashMap<>(ResourceFixtures.TAGS);
+            retags.put("env", "prod");
+            Console.Reply retagged = console.sendAt(HttpMethod.PUT, VM + "/{wfrn}/tags", gonzalo, retags, Map.of(), wfrn);
             assertEquals(200, retagged.status(), retagged.body());
             assertFalse(retagged.json().has("team"), "a tag the body leaves out is removed");
             Console.Reply byTag = console.get(VM + "?tag.env=prod", gonzalo);
@@ -187,7 +191,7 @@ class ResourcesEndpointTest extends DemoApp {
         assertNotNull(batch.json().path("jobId").asText(null));
         Console.Reply created = console.post(VM + ":batch", gonzalo, Map.of("verb", "create", "items", List.of(
                 Map.of("input", Map.of("name", "bulk-01")), Map.of("input", Map.of("name", "bulk-02"))),
-                "defaults", Map.of("image", imageId(), "size", "small")));
+                "defaults", Map.of("image", imageId(), "size", "small"), "tags", ResourceFixtures.TAGS));
         assertEquals(202, created.status(), created.body());
         assertEquals(2, created.json().path("wfrns").size(), "a create batch answers the minted names: " + created.body());
         assertEquals(400, console.post(VM + ":batch", gonzalo, Map.of("verb", "restart", "items", List.of(Map.of("input", Map.of())))).status(),
@@ -210,7 +214,7 @@ class ResourcesEndpointTest extends DemoApp {
 
     private String createVm(Console.Signed as, String name) {
         Console.Reply created = console.send(HttpMethod.POST, VM, as, Map.of("input", Map.of("name", name, "image", imageId(), "size", "small",
-                "environment", "dev"), "labels", Map.of("ticket", "INC-1")), Map.of("Idempotency-Key", "create-" + name + "-" + System.nanoTime()));
+                "environment", "dev"), "labels", Map.of("ticket", "INC-1"), "tags", ResourceFixtures.TAGS), Map.of("Idempotency-Key", "create-" + name + "-" + System.nanoTime()));
         assertEquals(202, created.status(), created.body());
         String wfrn = created.json().path("wfrn").asText();
         assertNotNull(created.json().path("jobId").asText(null), created.body());

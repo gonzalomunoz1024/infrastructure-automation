@@ -54,6 +54,8 @@ import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.application.Sessions;
 import com.iaf.console.bff.session.domain.Session;
+import com.iaf.console.bff.tags.application.TagPolicies;
+import com.iaf.console.bff.tags.domain.TagPolicy;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.types.application.Types;
 import com.iaf.console.bff.types.domain.ConsoleAction;
@@ -119,10 +121,11 @@ public class Resources {
     private final BlastRadii radii;
     private final Jobs jobs;
     private final JobRetries retries;
+    private final TagPolicies tagPolicies;
     private final ObjectMapper json;
 
     public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, ObjectMapper json) {
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, ObjectMapper json) {
         this.types = types;
         this.access = access;
         this.sessions = sessions;
@@ -134,6 +137,7 @@ public class Resources {
         this.radii = radii;
         this.jobs = jobs;
         this.retries = retries;
+        this.tagPolicies = tagPolicies;
         this.json = json;
     }
 
@@ -250,7 +254,11 @@ public class Resources {
 
     // ---- commands
 
-    /** Mints the name, then starts the type's create workflow with it in the job's context. */
+    /**
+     * Checks the required tags (400 {@code tags.required} or {@code tags.invalid} with a problem on
+     * each {@code /tags/<key>}), mints the name, sets the tags on it, then starts the type's create
+     * workflow with the name in the job's context.
+     */
     public Mono<CommandAccepted> create(Session session, String type, CommandInput body, String requestId, String idempotencyKey) {
         return types.byType(session, type).flatMap(t -> {
             ConsoleAction action = actionOf(t, "create");
@@ -258,12 +266,14 @@ public class Resources {
             return access.require(session, actionName, AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type()))
                     .then(sessions.requireFreshFor(session, actionName))
                     .then(Mono.fromRunnable(() -> requireFields(action, body.input())))
+                    .then(requireTags(session, body.tags(), "/tags"))
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
                         Map<String, Object> input = inputFor(action, entry, body, null);
                         StateCommands.Mint mint = new StateCommands.Mint(t.type(), session.region(), nameOf(input), entry.workflow(),
                                 json.valueToTree(input), session.user().userId());
                         return state.mint(scope(session), caller(session), mint, new StateCommands.Meta(idempotencyKey, requestId))
+                                .flatMap(minted -> tagMinted(session, minted, body.tags(), idempotencyKey, requestId))
                                 .flatMap(minted -> start(session, entry, Map.of(), input, options(session, requestId, idempotencyKey, minted.wfrn(), body))
                                         .map(accepted -> new CommandAccepted(minted.wfrn(), accepted.jobId(), requestId,
                                                 approval(action, accepted.status()))));
@@ -271,15 +281,53 @@ public class Resources {
         });
     }
 
+    /** The create workflow's preview, with the console's {@code tags.required} or {@code tags.invalid} deny while the tags fall short. */
     public Mono<PreviewView> previewCreate(Session session, String type, CommandInput body, String requestId) {
         return types.byType(session, type).flatMap(t -> {
             ConsoleAction action = actionOf(t, "create");
             String actionName = AccessCheck.action(t.service(), action.verb());
             return access.require(session, actionName, AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type()))
                     .then(types.entry(session, action.workflow()))
-                    .flatMap(entry -> preview(session, entry, Map.of(), inputFor(action, entry, body, null), options(session, requestId, null, null, body),
-                            Map.of()));
+                    .flatMap(entry -> Mono.zip(preview(session, entry, Map.of(), inputFor(action, entry, body, null), options(session, requestId, null, null, body),
+                            Map.of()), tagPolicies.forAccount(session.accountId())))
+                    .map(both -> withTagRules(both.getT1(), both.getT2().check(body.tags(), "/tags")));
         });
+    }
+
+    /** The preview with a deny per kind of tag problem: {@code tags.required} names the missing keys, {@code tags.invalid} the wrong ones. */
+    private static PreviewView withTagRules(PreviewView view, List<Problem> problems) {
+        PreviewView out = view;
+        for (String code : List.of(TagPolicy.REQUIRED, TagPolicy.INVALID)) {
+            List<Problem> these = problems.stream().filter(p -> code.equals(p.code())).toList();
+            if (!these.isEmpty()) {
+                out = out.withRule(code, PreviewView.DENY, (TagPolicy.REQUIRED.equals(code) ? "required tags are missing: " : "tags with values they may not take: ")
+                        + String.join(", ", TagPolicy.keysOf(these)));
+            }
+        }
+        return out;
+    }
+
+    /** 400 when the tags lack a required one or give one a value it may not take. */
+    private Mono<Void> requireTags(Session session, Map<String, String> tags, String prefix) {
+        return tagPolicies.forAccount(session.accountId()).flatMap(policy -> {
+            List<Problem> problems = policy.check(tags, prefix);
+            return problems.isEmpty() ? Mono.<Void>empty() : Mono.<Void>error(new InvalidInputException(tagSentence(problems), problems));
+        });
+    }
+
+    private static String tagSentence(List<Problem> problems) {
+        boolean missing = problems.stream().anyMatch(p -> TagPolicy.REQUIRED.equals(p.code()));
+        return missing ? "a create names every required tag: " + String.join(", ", TagPolicy.keysOf(problems)) : "some tags have values they may not take";
+    }
+
+    /** Sets a minted resource's tags before its workflow starts (none given, nothing to set). */
+    private Mono<StateResource> tagMinted(Session session, StateResource minted, Map<String, String> tags, String idempotencyKey, String requestId) {
+        if (tags == null || tags.isEmpty()) {
+            return Mono.just(minted);
+        }
+        String key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey + ":tags";
+        StateCommands.Tag command = new StateCommands.Tag(null, session.user().userId(), tags, List.of());
+        return state.tag(scope(session), caller(session), minted.wfrn(), command, new StateCommands.Meta(key, requestId));
     }
 
     /** Starts the update workflow on the registry's record, then records the requested changes on the state service. */
@@ -402,12 +450,16 @@ public class Resources {
         Map<String, String> wanted = tags == null ? Map.of() : tags;
         return subject(session, type, wfrn).flatMap(s -> {
             String actionName = AccessCheck.action(s.type().service(), TAG_VERB);
-            return access.require(session, actionName, wfrn).then(Mono.defer(() -> {
+            return access.require(session, actionName, wfrn).then(tagPolicies.forAccount(session.accountId())).flatMap(policy -> {
                 List<String> removed = s.resource().tags().keySet().stream().filter(name -> !wanted.containsKey(name)).toList();
+                List<Problem> problems = policy.checkChange(s.resource().tags(), wanted, removed, "/tags");
+                if (!problems.isEmpty()) {
+                    return Mono.error(new InvalidInputException("the required tags stay on the resource with values they may take", problems));
+                }
                 StateCommands.Tag command = new StateCommands.Tag(s.resource().version(), session.user().userId(), wanted, removed);
                 return state.tag(scope(session), caller(session), wfrn, command, new StateCommands.Meta(idempotencyKey, requestId))
                         .map(StateResource::tags);
-            }));
+            });
         });
     }
 
@@ -441,7 +493,7 @@ public class Resources {
                                     List.of(Problem.error("batch.too-large", "/items", entry.workflow() + " takes at most " + max + " rows in one batch, not "
                                             + body.items().size()))));
                         }
-                        Mono<List<Row>> rows = create ? mintRows(session, t, entry, action, body, requestId, idempotencyKey)
+                        Mono<List<Row>> rows = create ? requireRowTags(session, body).then(mintRows(session, t, entry, action, body, requestId, idempotencyKey))
                                 : existingRows(session, t, entry, action, body)
                                         .flatMap(found -> "delete".equals(body.verb()) ? refuseDependents(session, found) : Mono.just(found));
                         return rows.flatMap(prepared -> {
@@ -477,13 +529,17 @@ public class Resources {
             boolean delete = "delete".equals(body.verb());
             return access.require(session, actionName, typePattern(session, t)).then(Mono.defer(() -> {
                 if ("create".equals(body.verb())) {
-                    List<BatchPreview.Row> rows = new ArrayList<>();
-                    for (int i = 0; i < body.items().size(); i++) {
-                        Map<String, Object> input = new LinkedHashMap<>(body.defaults());
-                        input.putAll(body.items().get(i).input());
-                        rows.add(new BatchPreview.Row(i, null, nameOf(input), null, null, null, missingFields(action, input, "/items/" + i + "/input")));
-                    }
-                    return Mono.just(new BatchPreview(body.verb(), rows, null, decision(rows)));
+                    return tagPolicies.forAccount(session.accountId()).map(policy -> {
+                        List<BatchPreview.Row> rows = new ArrayList<>();
+                        for (int i = 0; i < body.items().size(); i++) {
+                            Map<String, Object> input = new LinkedHashMap<>(body.defaults());
+                            input.putAll(body.items().get(i).input());
+                            List<Problem> problems = new ArrayList<>(missingFields(action, input, "/items/" + i + "/input"));
+                            problems.addAll(policy.check(body.tagsOf(i), "/items/" + i + "/tags"));
+                            rows.add(new BatchPreview.Row(i, null, nameOf(input), null, null, null, problems));
+                        }
+                        return new BatchPreview(body.verb(), rows, null, decision(rows));
+                    });
                 }
                 return Flux.range(0, body.items().size()).flatMapSequential(i -> previewRow(session, t, body.items().get(i), i, delete), RADIUS_CONCURRENCY)
                         .collectList()
@@ -578,10 +634,23 @@ public class Resources {
             String key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey + "#" + i;
             StateCommands.Mint mint = new StateCommands.Mint(t.type(), session.region(), nameOf(input), entry.workflow(), json.valueToTree(input),
                     session.user().userId());
+            Map<String, String> tags = body.tagsOf(i);
             mints.add(state.mint(scope(session), caller(session), mint, new StateCommands.Meta(key, requestId))
+                    .flatMap(minted -> tagMinted(session, minted, tags, key, requestId))
                     .map(minted -> new Row(minted.wfrn(), row.input(), minted)));
         }
         return Flux.concat(mints).collectList();
+    }
+
+    /** A create batch's rows each name every required tag (the batch's tags, the row's over them); 400 with the problems of every row. */
+    private Mono<Void> requireRowTags(Session session, BatchInput body) {
+        return tagPolicies.forAccount(session.accountId()).flatMap(policy -> {
+            List<Problem> problems = new ArrayList<>();
+            for (int i = 0; i < body.items().size(); i++) {
+                problems.addAll(policy.check(body.tagsOf(i), "/items/" + i + "/tags"));
+            }
+            return problems.isEmpty() ? Mono.<Void>empty() : Mono.<Void>error(new InvalidInputException(tagSentence(problems), problems));
+        });
     }
 
     private Mono<List<Row>> existingRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body) {
