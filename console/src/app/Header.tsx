@@ -443,6 +443,7 @@ function UserButton() {
       items={[
         { id: 'iam', label: 'Identity and access', icon: 'shield', onSelect: () => navigate(pathFor('iam')) },
         { id: 'settings', label: 'Settings', icon: 'settings', onSelect: () => navigate(pathFor('settings')) },
+        { id: 'mobile', label: 'Phone view: approvals and drift', icon: 'approval', onSelect: () => navigate(pathFor('mobile')) },
         { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => void switchIdentity() },
         {
           id: 'sign-out',

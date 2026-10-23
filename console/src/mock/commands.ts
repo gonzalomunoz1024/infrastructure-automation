@@ -8,6 +8,7 @@ import { applyJobCommand, settleBatches, type MockBatch } from './jobs'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
 import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
 import { applyMonitoringCommand, type MonitoringState } from './monitoring'
+import { applyTransferCommand, type TransferState } from './transfer'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -108,6 +109,8 @@ export interface MockConsoleState {
   drift?: DriftState
   /** alarms and rightsizing decisions (./monitoring), made on first use */
   monitoring?: MonitoringState
+  /** moves to another account (./transfer), made on first use */
+  transfers?: TransferState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
 }
@@ -138,7 +141,7 @@ export interface RouteAnswer {
 }
 
 export interface RouteContext {
-  session: { userId: string; accountId: string; region: string }
+  session: { userId: string; accountId: string; region: string; authTime?: string }
   body: Record<string, unknown>
   headers: Record<string, string>
   now: number
@@ -704,6 +707,7 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   recommendation: (data, cmd) => applyMonitoringCommand(data, cmd),
   job: (data, cmd) => applyJobCommand(data, cmd),
   batch: (data, cmd) => applyJobCommand(data, cmd),
+  transfer: (data, cmd) => applyTransferCommand(data, cmd),
 }
 
 /**

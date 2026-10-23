@@ -47,6 +47,8 @@ const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
+const MobilePage = lazy(() => import('../pages/mobile/MobilePage'))
+const MobileRequestPage = lazy(() => import('../pages/mobile/MobileRequestPage'))
 
 /*
  * The frame around every page: a skip link, the header, a sidebar when the route is inside a
@@ -82,6 +84,8 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
   settings: SettingsPage,
+  mobile: MobilePage,
+  'mobile-request': MobileRequestPage,
   'not-found': NotFoundPage,
 }
 
@@ -113,6 +117,8 @@ export function AppShell({ route }: { route: Route }) {
   }, [error, offline, toast])
 
   const Page = PAGES[route.name]
+  // a page that stands alone (the phone view) draws its own frame
+  if (route.def?.bare) return <StandalonePage route={route} Page={Page} />
 
   return (
     <RefusalProvider>
@@ -137,6 +143,18 @@ export function AppShell({ route }: { route: Route }) {
         {feed && <PlatformFeed onClose={() => setFeed(false)} />}
         {drawer && nav && <SectionDrawer nav={nav} onClose={() => setDrawerFor(null)} />}
       </div>
+    </RefusalProvider>
+  )
+}
+
+function StandalonePage({ route, Page }: { route: Route; Page: ComponentType<PageProps> }) {
+  return (
+    <RefusalProvider>
+      <ErrorBoundary resetKey={route.path} label="This page">
+        <Suspense fallback={<PageLoading />}>
+          <Page route={route} />
+        </Suspense>
+      </ErrorBoundary>
     </RefusalProvider>
   )
 }

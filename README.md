@@ -10,6 +10,14 @@ contracts this build pins.
 
 ## What is here (phases 0, 1, 3, 4 and 5)
 
+Phase 7 moves a resource to another account, and phase 9 adds a phone view:
+
+- Move to another account on a resource's page: the accounts you may create it in, why it moves,
+  what moves and what does not, its name typed to confirm and a fresh sign-in; the old link then
+  says where it went and links there
+- an installable phone view (`#/m`, from the user menu) of the approvals waiting for you, the
+  account's drift with Revert, and your requests with their status, drawn for 360 px first
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -621,12 +629,51 @@ type, so the feed must subscribe to every one).
     arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
     chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
 
+105. **A move asks each account's own policies, then a fresh sign-in.** Move to another account
+     (Actions on a resource's page, `?action=transfer`) offers only the accounts the person works
+     in, each locked with the reason where their role there may not create the type; it needs a
+     reason, says what moves and what does not, and asks for the resource's name before
+     `POST /console/v1/r/{type}/{wfrn}:transfer` with `confirm: true`. Both ends are decided by
+     the account's roles and policies (identity's authorize, as hub decision 30 has the BFF do),
+     not the platform's role for the account, since the move and the re-home run under the
+     console's own scopes. The targets come from `GET /console/v1/r/{type}/{wfrn}/transfer-targets`,
+     the console's own read until the hub contract has one.
+106. **The step-up keeps the form.** A move refused for a stale sign-in (the BFF's step-up 403)
+     shows Sign in again in the drawer; live it goes through the identity provider and back to the
+     same `?action=transfer` link (`stepUpReturn` in `lib/api.ts`), in mock mode the mock signs
+     the same person in again in place. The chosen account and the reason wait in sessionStorage
+     per wfrn, so the drawer opens filled in and the person confirms again. In mock mode a sign-in
+     older than 10 minutes is stale for a move.
+107. **A moved resource's old link is a pointer, never a dead end.** The old wfrn answers 410
+     `resource.transferred` with `transferredTo`; its page says "This resource moved to
+     <account>" with a link built from the new wfrn's own parts (a value that is not a wfrn with a
+     12-digit account is never followed), scoped to that account so the session switches to it.
+     After a move the console switches to the target account and opens the resource under its new
+     wfrn. In mock mode (`console/src/mock/transfer.ts`) the record keeps its id, takes the wfrn
+     the target mints, its tags follow it, a move back makes the first name live again, and the
+     journal replays every move; the refusals are the contract's (`resource.busy`,
+     `resource.notActive`, `account.shredded`, 400 for the same account, 403 for either end), and
+     `lib/transfer.ts` words each by its code.
+108. **The phone view stands outside the shell.** `#/m` (and `#/m/requests/:id`) draw their own
+     bar, a three-way tab bar (Approvals, Drift, Requests) and cards for 360 px first, every
+     control at least 48 px tall; the user menu links to it. It decides with the calls the rest of
+     the console uses: a request's approvals through `approvals:decide`, an access request through
+     its `:decide`, a finding's Revert as on the Drift page, each with the same permission rules
+     (the BFF's `canDecide`, the approvers list, the type's `update`). What waits on a request
+     comes from the contract's `GET /console/v1/approvals`, which the mock now answers
+     (`mock/approvals.ts`).
+109. **Installable, with nothing cached.** `console/public/manifest.webmanifest` starts at `/#/m`,
+     `display: standalone`, with 192 and 512 px icons and a maskable one drawn from the console's
+     mark. There is no service worker: every answer comes from the BFF when it is asked for, so
+     a phone never shows an approval or a finding that is no longer true.
+
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift, monitoring), their helpers and screenshots
+                  tags, bulk, drift, monitoring, mobile), their helpers and screenshots
+  public/         the web app manifest and its icons (the phone view is installable)
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -641,12 +688,15 @@ console/
                   (the tag policy, Tag Editor, resource group and clone client, and their rules),
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
-                  (scales, ticks, time labels and the keyboard's steps)
+                  (scales, ticks, time labels and the keyboard's steps), transfer (moving a
+                  resource to another account, its refusals in words), mobile (the phone view's
+                  approvals list and words)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),
-                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
+                  monitoring (series, alarms and the rightsizing pass), transfer (moves to
+                  another account), approvals (what waits for the person), and the browser installer,
                   with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
@@ -658,8 +708,10 @@ console/
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
                   resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
-                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
-                  and its MetricChart sit with its other tabs
+                  and Rightsizing pages and the alarm dialog, src/pages/mobile/ the phone view and
+                  its request page; the resource page's Monitoring tab
+                  and its MetricChart sit with its other tabs, and its Move to another account
+                  drawer (TransferDrawer) with its actions
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

@@ -35,6 +35,8 @@ export type RouteName =
   | 'alarms'
   | 'rightsizing'
   | 'settings'
+  | 'mobile'
+  | 'mobile-request'
   | 'not-found'
 
 export interface RouteDef {
@@ -77,6 +79,9 @@ export const ROUTES: RouteDef[] = [
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
+  // the phone view (phase 9): approvals, drift and requests, outside the shell
+  { name: 'mobile', pattern: '/m', title: 'Approvals', bare: true },
+  { name: 'mobile-request', pattern: '/m/requests/:id', title: 'Request', bare: true },
 ]
 
 /** The identity and access section: the overview and every page under it. */
