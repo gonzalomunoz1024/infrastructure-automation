@@ -185,7 +185,7 @@ function CreateKeyDialog({ people, self, onClose, onCreated }: { people: IamUser
         <OverlayBody>
           <div className="space-y-5">
             <Field label="Description" htmlFor="key-description" hint="What uses it, so it can be found and revoked later.">
-              <Input id="key-description" autoFocus value={description} onChange={(e) => setDescription(e.target.value)} placeholder="CI pipeline for the storage team" />
+              <Input id="key-description" data-autofocus value={description} onChange={(e) => setDescription(e.target.value)} placeholder="CI pipeline for the storage team" />
             </Field>
             <Field label="Expires" hint="Shorter is safer; a key can be rotated before it expires.">
               <Select ariaLabel={`Expires: ${EXPIRY.find((e) => e.value === expiry)?.label ?? expiry}`} value={expiry} onChange={setExpiry} options={EXPIRY} />

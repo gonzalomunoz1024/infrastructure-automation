@@ -1,4 +1,4 @@
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Quota } from '../lib/types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, SavedView } from '../lib/types'
 
 /*
  * The mock's identity directory: the two demo accounts, the six people the demo identity
@@ -152,6 +152,8 @@ export interface Directory {
   /** `<account>/<user>` → version, bumped by every change to the user's groups */
   userVersions: Record<string, number>
   counters: { groups: number; keys: number; requests: number }
+  /** by person: what `/console/v1/preferences` keeps (phase 3) */
+  preferences?: Record<string, Preferences>
 }
 
 export function buildDirectory(): Directory {
@@ -626,3 +628,47 @@ export function decideAccessRequest(dir: Directory, accountId: string, requestId
 }
 
 export type { DenialLayer, IamStatement }
+
+/* ----------------------------------------------------------------------------
+   Preferences (phase 3): one object per person, replaced whole, with a version
+   ------------------------------------------------------------------------- */
+
+export function preferencesOf(dir: Directory, userId: string): Preferences {
+  return dir.preferences?.[userId] ?? { version: 0 }
+}
+
+/** Replaces the person's preferences; a stale `version` is a 409, as another tab moved first. */
+export function putPreferences(dir: Directory, userId: string, next: unknown): Preferences {
+  if (!next || typeof next !== 'object' || Array.isArray(next)) throw new DirectoryError(400, 'Preferences are an object')
+  const incoming = next as Preferences
+  const current = preferencesOf(dir, userId)
+  if (incoming.version !== undefined && incoming.version !== (current.version ?? 0)) throw new DirectoryError(409, `Preferences moved on to version ${current.version ?? 0}; read them again`)
+  if (incoming.theme !== undefined && !['system', 'light', 'dark'].includes(incoming.theme)) throw new DirectoryError(400, 'theme is system, light or dark')
+  if (incoming.columns !== undefined && (typeof incoming.columns !== 'object' || incoming.columns === null || Array.isArray(incoming.columns))) throw new DirectoryError(400, 'columns maps a type key to column names')
+  if (incoming.savedViews !== undefined && (typeof incoming.savedViews !== 'object' || incoming.savedViews === null || Array.isArray(incoming.savedViews))) throw new DirectoryError(400, 'savedViews maps a type key to views')
+  const problem = incoming.savedViews ? savedViewsProblem(incoming.savedViews) : null
+  if (problem) throw new DirectoryError(400, problem)
+  const saved: Preferences = { ...incoming, version: (current.version ?? 0) + 1 }
+  dir.preferences = { ...(dir.preferences ?? {}), [userId]: saved }
+  return saved
+}
+
+/** The BFF's rules for saved views: ids `v_…`, names of 1 to 80 characters unique in a type ignoring case, 50 a type, 50 filters a view of 1,024 characters at most, a creation time. */
+function savedViewsProblem(byType: Record<string, unknown>): string | null {
+  for (const [type, views] of Object.entries(byType)) {
+    if (!Array.isArray(views)) return `savedViews.${type} is a list`
+    if (views.length > 50) return `savedViews.${type} keeps 50 views at most`
+    const names = new Set<string>()
+    for (const v of views as Partial<SavedView>[]) {
+      if (typeof v?.id !== 'string' || !/^v_[A-Za-z0-9_-]{1,64}$/.test(v.id)) return `A saved view's id is v_ and up to 64 letters, digits, _ or -`
+      if (typeof v.name !== 'string' || v.name.trim().length === 0 || v.name.length > 80) return `A saved view's name is 1 to 80 characters`
+      const key = v.name.trim().toLowerCase()
+      if (names.has(key)) return `Two views of ${type} are called "${v.name}"`
+      names.add(key)
+      if (!Array.isArray(v.filters) || v.filters.length > 50) return `A saved view keeps 50 filters at most`
+      if (v.filters.some((f) => typeof f?.value !== 'string' || f.value.length > 1024)) return `A saved filter's value is 1,024 characters at most`
+      if (typeof v.createdAt !== 'string' || Number.isNaN(Date.parse(v.createdAt))) return `A saved view carries when it was created`
+    }
+  }
+  return null
+}

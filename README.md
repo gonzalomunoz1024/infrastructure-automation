@@ -8,7 +8,27 @@ This branch is shaped like the repository it will become: an npm workspace at th
 CI, no platform files. The hub branch `console-root` holds the plan, the decisions and the
 contracts this build pins.
 
-## What is here (phase 0 and phase 1)
+## What is here (phases 0, 1 and 3a)
+
+Phase 3a makes the lists work at the size the console is built for, and the whole console usable
+with the keyboard alone:
+
+- a service's landing page counts each type's resources by lifecycle state and drift (the BFF's
+  counts, "1,000+" past their cap), and each count opens the list filtered to it
+- the list filters by status, drift, tags and free text, and sorts by name, created or updated,
+  all on the server; it pages by cursor (25 to 200 rows) and keeps all of it in its link
+- saved views (the filters, sort and page size under a name, up to 50 a type) and the column
+  choice live in the person's preferences at the BFF, so they follow the person to any browser
+- rows are selected one by one or a page at a time, and the page or the selection exports as CSV
+  with the columns on screen
+- the palette (Cmd+K or Ctrl+K, or /) finds services, resource types, resources from the search
+  index, a pasted wfrn, the actions (create any type; on a resource's page, its type's actions),
+  the pages and the settings (appearance, account, region, sign out); an action runs the same
+  decision as its button, so a refused one opens the refusal
+- WCAG 2.2 AA: a skip link first on every page, menus and panels by keyboard, dialogs that give
+  the focus back to what opened them, notes that stay on screen, the dark appearance at AA, and
+  axe in every journey, in both appearances and at phone width
+- each page loads as its own chunk
 
 Phase 1 adds who you are to the console and what you may do:
 
@@ -104,7 +124,7 @@ so creating a virtual machine there is refused by the platform layer, not by con
 The gate-1 story, in mock mode: sign in as Mia (viewer), open Virtual machines, press the locked
 Create: the refusal names console IAM and that no statement of `viewer` allows `compute:create`,
 and offers Request access. Send it; sign in as Gonzalo: the bell shows one request to decide;
-approve it. Sign in as Mia again: she holds `operator` and Create is no longer locked. Sign in
+approve it. Sign in as Mia again: Mia now holds `operator` and Create is no longer locked. Sign in
 as Dana and open a machine: Delete is refused by statement `DenyDestructive` of policy
 `managed-operator`. Sign in as Raj in Data: Create is refused by the platform, scope
 `compute:write` missing on `svc-data`.
@@ -116,7 +136,7 @@ npm run lint              # eslint over every workspace
 npm run typecheck         # tsc -b in every workspace
 npm test                  # vitest in every workspace
 npm run build             # vite build
-npm run e2e               # the shell and the identity journeys in Playwright, in mock mode
+npm run e2e               # the shell, identity, list and keyboard journeys in Playwright, in mock mode
 npm run contracts:verify  # the copied contracts still match contracts.lock
 ```
 
@@ -182,9 +202,15 @@ type, so the feed must subscribe to every one).
    read at 4.4:1), light tertiary text `#6b6b70` (5.3:1 on white; secondary stays the darker of
    the two), the light accent `#0066cc` (5.6:1, and white on it 5.6:1) and the light critical red
    `#d70015` (5.4:1 both ways; Atlas's `#ff3b30` reads at 3.3:1 under the white text of a danger
-   button, which phase 1 makes pressable to open a refusal); dark tertiary text becomes `#98989d`. The
-   dark accent stays Atlas's `#0a84ff`, on which white text reads at 3.65:1, and so does the dark
-   critical red: notes for P-14, since the console only overrides and never edits Atlas.
+   button, which phase 1 makes pressable to open a refusal); dark tertiary text becomes `#98989d`.
+   The light values are set on `:root:not(.dark)`: on a plain `:root` they outranked Atlas's
+   `.dark` block (same specificity, later in the cascade) and the dark appearance drew `#636366`
+   on black. In the dark, Atlas's accent `#0a84ff` and red `#ff453a` read well as text but carry
+   white text at 3.65:1 and 3.4:1, and no one colour does both; so the fills under white text
+   (`.bg-accent.text-white`, `.bg-critical.text-white`: primary and danger buttons, the accent and
+   critical badges, a done step, the sidebar's count) take `#0066cc` and `#d70015` in the dark too
+   (5.6:1 and 5.4:1, 4.8:1 and 4.6:1 under the buttons' hover brightness). Notes for P-14, since
+   the console only overrides and never edits Atlas: an on-accent fill token would replace them.
 6. **Status colour is in the dot.** `LifecycleBadge` (resource states) and `StatusBadge` (jobs
    and steps), both in console-kit, show a coloured dot next to a label in the primary text
    colour, instead of Atlas's `StateTag`, whose coloured text does not reach AA on its tints; the
@@ -258,21 +284,58 @@ type, so the feed must subscribe to every one).
     (`console/src/mock/directory.ts`) that mirrors the BFF's demo people, the managed policies
     and the two accounts' platform scopes. The browser installer keeps the session in
     localStorage, so a reload stays signed in and a sign-out clears it.
+19. **The list asks the server for everything it shows.** The filter bar's tokens become the
+    BFF's list parameters: free text `q`, Status `state`, Drift `drift`, `Tag: <key>` `tag.<key>`,
+    each with `=` and one value per property (the newest wins). A token the BFF cannot answer is
+    dropped, never applied in the browser to one page, which would misstate the rest. Only name,
+    created and updated sort (the state service's orders). The count is
+    `GET /console/v1/r/{type}:counts` (total, by state, drifted, `cappedAt`), "1,000+" at the cap;
+    without it the list says how many rows are on the page.
+20. **The page's query is the list's state.** `f` (the tokens), `sort`, `size` and `view`, with
+    the defaults left out and written with replace, so Back leaves the list instead of undoing a
+    filter. The cursor trail and the selection are keyed by that state (`useKeyedState`), so a new
+    filter starts on page 1 with nothing selected, and no effect has to reset them.
+21. **Saved views and columns are the person's preferences.** `GET` and `PUT
+    /console/v1/preferences` keep `savedViews` and `columns` per type key behind the version the
+    BFF hands out (ids `v_…`, names of 1 to 80 characters unique in a type ignoring case, 50 views
+    a type, 50 filters a view); a write that meets another tab's newer version (409) reads it,
+    applies the change again and retries. The local copy names its owner, so a browser shared by
+    two people never shows one person's views to the other. The mock checks the same rules.
+22. **Dropdowns are WAI-ARIA menu buttons.** `MenuButton`: Enter, Space or Down opens a menu on
+    its first item and Up on its last; the arrows, Home and End move; Escape closes it on its
+    button, even when the focus was lost inside; Tab moves on. A panel (the column chooser) keeps
+    the browser's Tab order and closes when the focus leaves. Panels slide back inside the
+    viewport, so none hangs off a phone. The notes of the later-phase and refused buttons are
+    `Hint`s instead of Atlas's CSS tooltip, which is always in the layout and widened the page
+    under a button at a phone's edge: shown only on hover or focus, under `<body>`, kept on
+    screen, dismissed with Escape, and hoverable (WCAG 1.4.13).
+23. **Dialogs focus their first field with `data-autofocus`.** Atlas's overlay remembers what had
+    the focus when it opened and gives it back when it closes; React's `autoFocus` moves the
+    focus into the dialog first, so the dialog gave the focus back to itself and the person
+    landed on the page's body.
+24. **Each page is a chunk of its own.** The shell loads the sign-in page eagerly and every other
+    page with `React.lazy`, under a quiet loading state, so the first load carries the shell and
+    one page. "Skip to content", the first stop of the Tab order, focuses `#main`.
+
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journey and its screenshots
+  e2e/            the Playwright journeys (shell, identity, list, keyboard), their helpers and
+                  screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
-                  ServiceSidebar, Breadcrumbs, Footer, Search, PlatformFeed, Refusal (the
-                  refusal dialog and ActionButton), access (the pending requests query), the
-                  router, the console context
+                  ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
+                  Refusal (the refusal dialog and ActionButton), MenuButton, Hint, access (the
+                  pending requests query), the router, the console context
   src/lib/        api (fetch, traceparent, X-User, X-Csrf-Token, ETag cache, paging), bff (the
                   BFF client, sign-in, sign-out, switching), session, permissions, sse, queries,
-                  descriptors, accounts, regions, recent, store
+                  descriptors, accounts, regions, recent, store, resourceList (the list's
+                  filters, sorts, columns and counts), listState (the list in the query),
+                  preferences (saved views and columns), keyed, csv
   src/mock/       the mock server (platform and BFF), the directory, the dataset and the browser
                   installer, with the samples
-  src/pages/      one file per page; src/pages/iam/ the identity and access pages
+  src/pages/      one file per page; src/pages/iam/ the identity and access pages,
+                  src/pages/list/ the list's saved views menu and column chooser
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

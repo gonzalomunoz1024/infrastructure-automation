@@ -50,15 +50,16 @@ test.describe('the console shell in mock mode', () => {
     const rows = grid.getByRole('row')
     await expect(rows.nth(1)).toBeVisible()
     await expect(grid.locator('[data-wfrn^="wfrn:wf:compute:global:123456789012:vm/"]').first()).toBeAttached()
-    await expect(page.getByText(/virtual machines on this page/)).toBeVisible()
+    // the count is the BFF's, for the whole account, not the page's
+    await expect(page.getByText(/^\d[\d,]*\+? virtual machines$/)).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Compute pages' }).getByRole('link', { name: 'Virtual machines' })).toHaveAttribute('aria-current', 'page')
     await page.screenshot({ path: shot('list-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'list')
 
-    // the first machine
-    const first = rows.nth(1)
-    const name = (await first.getByRole('gridcell').first().innerText()).trim()
-    await first.click()
+    // the first machine, opened by its name (the first cell is its checkbox)
+    const nameCell = rows.nth(1).getByRole('gridcell').nth(1)
+    const name = (await nameCell.innerText()).trim()
+    await nameCell.click()
     await expect(page).toHaveURL(/#\/console\/compute\/vm\/wfrn%3A/)
     await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Configuration' })).toHaveAttribute('aria-selected', 'true')

@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { Button, Field, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, Select, Textarea, Tooltip, cx, type ButtonSize, type ButtonVariant, type IconName } from '@iaf/ui'
+import { Button, Field, Icon, Modal, OverlayBody, OverlayFooter, OverlayHeader, Select, Textarea, cx, type ButtonSize, type ButtonVariant, type IconName } from '@iaf/ui'
 import { DotTag, Facts, Mono } from '@iaf/console-kit'
 import { isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
@@ -8,6 +8,7 @@ import { useMutation, useQuery } from '../lib/queries'
 import { MANAGED_ROLES, ROLE_SUMMARY } from '../lib/session'
 import type { AccessRequest } from '../lib/types'
 import { useConsole } from './console'
+import { Hint } from './Hint'
 import { LaterButton } from './Phase'
 import { RoleTag } from './RoleTag'
 import { Link, pathFor } from './router'
@@ -252,12 +253,12 @@ export function ActionButton({ decision, what, phase, variant = 'secondary', siz
     const d = decision.denied
     const note = `Not allowed: ${d.reason}. Select to see why.`
     return (
-      <Tooltip label={note} side="bottom" className={className}>
+      <Hint label={note} className={className}>
         <Button variant={variant} size={size} icon="lock" data-denied={d.layer} onClick={() => refusal.show({ denied: d, what })}>
           {children}
           <span className="sr-only">. {note}</span>
         </Button>
-      </Tooltip>
+      </Hint>
     )
   }
   if (phase) {

@@ -2,7 +2,8 @@ import { serviceOf } from '../lib/descriptors'
 import type { Session } from '../lib/session'
 import type { AccessKey, AccessRequest, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
-import { DirectoryError, accessKeyOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, isMember, membershipsOf, personOf, quotasOf, removeGroup, removeUser, revokeAccessKey, rotateAccessKey, updateGroup, updateUser, userOf, usersOf, type Decision } from './directory'
+import { DirectoryError, accessKeyOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, isMember, membershipsOf, personOf, preferencesOf, putPreferences, quotasOf, removeGroup, removeUser, revokeAccessKey, rotateAccessKey, updateGroup, updateUser, userOf, usersOf, type Decision } from './directory'
+import { consoleResourcesOf, countsOf, filterConsoleResources, searchConsoleResources, sortConsoleResources, suggestFrom, type ResourceContext } from './resources'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -463,7 +464,43 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
     }
 
-    if (path.startsWith('/console/v1/r/') || path === '/console/v1/jobs' || path.startsWith('/console/v1/jobs/')) return { status: 404, body: { error: `${path} is not served by the mock yet: the console reads resources and jobs from /api/v1 until phase 3` } }
+    /* resources, as the state service lists them for the account; search and suggestions over the same rows */
+    const rctx: ResourceContext = { partition: data.partition, region: s.region, accountId: s.accountId }
+    const accountIds = dir.accounts.map((a) => a.accountId)
+    const rowsOf = (typeName: string) => consoleResourcesOf(typeName, data, rctx, accountIds)
+    m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})(:counts)?$/.exec(path)
+    if (m && method === 'GET') {
+      const typeName = m[1]
+      const rt = data.resourceTypes.find((t) => t.name === typeName || t.plural === typeName)
+      if (!rt) return notFound(`Type ${typeName}`)
+      const listDecision = can(`${serviceOf(rt)}:list`, `wfrn:${data.partition}:${serviceOf(rt)}:${s.region}:${s.accountId}:${rt.name}/*`)
+      if (!listDecision.allowed) return refused(listDecision)
+      const matching = filterConsoleResources(rowsOf(rt.name), params)
+      if (m[2]) return { status: 200, body: countsOf(matching) }
+      return pagedBody(sortConsoleResources(matching, params.get('sort')), params)
+    }
+    if (path === '/console/v1/search' && method === 'GET') {
+      const needle = params.get('q') ?? ''
+      if (!needle.trim()) return { status: 400, body: { error: 'q is required' } }
+      const typeName = params.get('type')
+      const types = typeName ? data.resourceTypes.filter((t) => t.name === typeName || t.plural === typeName) : data.resourceTypes
+      const hits = types.flatMap((t) => searchConsoleResources(rowsOf(t.name), needle)).sort((a, b) => b.score - a.score || (a.name ?? '').localeCompare(b.name ?? ''))
+      return pagedBody(hits, params)
+    }
+    if (path === '/console/v1/suggest' && method === 'GET') {
+      const needle = params.get('q') ?? ''
+      if (!needle.trim()) return { status: 400, body: { error: 'q is required' } }
+      const limit = Math.min(20, Math.max(1, Number(params.get('limit') ?? 8) || 8))
+      const rows = data.resourceTypes.flatMap((t) => rowsOf(t.name))
+      return { status: 200, body: { items: suggestFrom(rows, data.resourceTypes, needle, limit) } }
+    }
+    if (path === '/console/v1/preferences') {
+      if (method === 'GET') return { status: 200, body: preferencesOf(dir, s.userId) }
+      if (method === 'PUT') return { status: 200, body: putPreferences(dir, s.userId, body) }
+      return { status: 405, body: { error: `${method} is not allowed on the preferences` } }
+    }
+
+    if (path.startsWith('/console/v1/r/') || path === '/console/v1/jobs' || path.startsWith('/console/v1/jobs/')) return { status: 404, body: { error: `${path} is not served by the mock yet: the detail, the commands and the jobs arrive with phase 3` } }
     return notFound(`Path ${path}`)
   }
 

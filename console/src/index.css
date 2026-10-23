@@ -14,8 +14,12 @@
    white on #0066cc 5.6:1; #d70015 on #ffffff 5.4:1, white on #d70015 5.4:1
    (Atlas's #ff3b30 reads at 3.3:1 under white text). Secondary stays darker
    than tertiary, as the hierarchy wants.
+
+   The light values hold in the light only (`:root:not(.dark)`): on a plain
+   `:root` they outrank Atlas's `.dark` block, which has the same specificity
+   and comes first, and the dark appearance drew #636366 on black (3.5:1).
    ========================================================================== */
-:root {
+:root:not(.dark) {
   --color-text-secondary: #636366;
   --color-text-tertiary: #6b6b70;
   --color-neutral: #0066cc;
@@ -28,6 +32,21 @@
 .dark {
   /* 5.8:1 on the dark surface, 4.7:1 on its secondary surface */
   --color-text-tertiary: #98989d;
+}
+
+/* In the dark, Atlas's accent (#0a84ff) and red (#ff453a) read well as text
+   (5.8:1 and 6.2:1 on black) but carry white text at 3.65:1 and 3.4:1, and no
+   one colour does both. So the fills under white text (the primary and danger
+   buttons, the accent and critical badges, a done step, the sidebar's count)
+   take the light appearance's #0066cc and #d70015 in the dark too: 5.6:1 and
+   5.4:1, and 4.8:1 and 4.6:1 under the buttons' 110% hover brightness. A note
+   for P-14: an on-accent fill token in Atlas would replace these two rules. */
+.dark .bg-accent.text-white {
+  background-color: #0066cc;
+}
+
+.dark .bg-critical.text-white {
+  background-color: #d70015;
 }
 
 html,

@@ -83,7 +83,7 @@ function ServicesMenu() {
         className={cx('flex h-9 items-center gap-1 rounded-md px-2 text-sm font-medium transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
       >
         <Icon name="grid" size={16} />
-        <span className="hidden sm:inline">Services</span>
+        <span className="sr-only sm:not-sr-only">Services</span>
         <Icon name="chevron-down" size={12} className={cx('transition-transform duration-150', open && 'rotate-180')} />
       </button>
       {open && (
