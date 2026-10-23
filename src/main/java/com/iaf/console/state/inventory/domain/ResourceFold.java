@@ -80,6 +80,10 @@ public final class ResourceFold {
                 b.workflow = Json.text(data, "workflow");
                 b.requestedBy = event.actor();
                 b.attributes = Json.copy(Json.objectField(data, "input"));
+                ObjectNode stack = Json.objectField(data, "stack");
+                if (stack != null && Json.text(stack, "wfrn") != null && Json.text(stack, "step") != null) {
+                    b.stack = new StackRef(Json.text(stack, "wfrn"), Json.text(stack, "step"), null);
+                }
             }
             case IMPORTED -> {
                 b.registryId = Json.text(data, "registryId");

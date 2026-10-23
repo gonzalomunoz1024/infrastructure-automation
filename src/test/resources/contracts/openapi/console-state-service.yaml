@@ -2,7 +2,7 @@ openapi: 3.1.0
 x-status: draft
 info:
   title: console-state-service
-  version: 1.1.0
+  version: 1.2.0
   summary: The console's own record of every resource, named by wfrn, from the first request to the tombstone.
   description: |
     Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
@@ -62,6 +62,14 @@ info:
     re-import (`:transfer`): its wfrn becomes a tombstone kept for good as an alias of the new
     wfrn, which opens in the other account with the same registry id. Accounts never move between
     organizations, and a wfrn is never reused.
+
+    **Blueprints and stacks.** A blueprint (`blueprints/*.yaml` on the hub, pinned here) is launched
+    as a stack, `wfrn:<partition>:blueprints:<region>:<account>:stack/stack-<ulid>`, one request
+    whose steps are child resources created in dependency order and torn down in reverse. This
+    service decides and the BFF executes: each step that may start is announced as `ready` (on the
+    stack and on `state.stacks`) with its resolved input and an idempotency key; the BFF mints the
+    child naming `stack` and starts its job as for any create, or deletes it as for any delete. A
+    child that fails stops the stack and nothing is rolled back; retrying the child resumes it.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -71,6 +79,8 @@ tags:
   - name: Commands
   - name: Relationships
   - name: Activity
+  - name: Blueprints
+  - name: Stacks
   - name: Health
 security:
   - consoleJwt: []
@@ -800,6 +810,235 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/blueprints:
+    get:
+      operationId: listBlueprints
+      summary: The blueprints a stack can be launched from
+      description: 'Every blueprint the service pinned from the hub (`blueprints/*.yaml`), the same for every account; one page, `next` always null.'
+      tags: [Blueprints]
+      responses:
+        '200':
+          description: The blueprints, by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BlueprintSummary' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/blueprints/{name}:
+    parameters:
+      - $ref: '#/components/parameters/BlueprintName'
+    get:
+      operationId: getBlueprint
+      summary: One blueprint, as the launch form draws it
+      tags: [Blueprints]
+      responses:
+        '200':
+          description: The blueprint
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Blueprint' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/blueprints/{name}:plan:
+    parameters:
+      - $ref: '#/components/parameters/BlueprintName'
+    post:
+      operationId: planStack
+      summary: What launching the blueprint would do
+      description: 'Checks the parameters as a launch would (400 with `problems`) and answers the steps in their waves with each input resolved as far as it can be before anything exists (references to other resources stay as text), how many resources of each type it creates and the authorizations the BFF asks the identity service for before it launches: `blueprints:launch` on the stack and `<service>:create` on each type. Changes nothing.'
+      tags: [Blueprints]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StackPlanRequest' }
+      responses:
+        '200':
+          description: The plan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StackPlan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/stacks:
+    get:
+      operationId: listStacks
+      summary: List the account's stacks
+      description: 'Newest first; a deleted stack stays listed for 90 days with `state: deleted`.'
+      tags: [Stacks]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/StackState' }
+        - name: blueprint
+          in: query
+          schema: { type: string }
+        - name: name
+          in: query
+          description: A stack name prefix
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: A page of stacks
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Stack' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: launchStack
+      summary: Launch a stack from a blueprint
+      description: 'Checks the parameters (400 with `problems`), records `StackRequested` (`pending`, operation `launch`) and announces the first wave on `state.stacks`: the steps whose resources wait for nothing, each with its resolved input and the idempotency key the BFF mints the child with. 409 `stack.nameTaken` when a stack of the account that is not deleted has the name, 409 `blueprint.versionChanged` when `version` names another version than the pinned one. Idempotent on `Idempotency-Key`.'
+      tags: [Stacks]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LaunchRequest' }
+      responses:
+        '201':
+          description: The stack, `pending`, with its first steps `ready`
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stack' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/stacks/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/StackWfrnPath'
+    get:
+      operationId: getStack
+      summary: One stack, its steps and, once active, its outputs
+      tags: [Stacks]
+      responses:
+        '200':
+          description: The stack
+          headers:
+            ETag:
+              description: The stack's version
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stack' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/stacks/{wfrn}/events:
+    parameters:
+      - $ref: '#/components/parameters/StackWfrnPath'
+    get:
+      operationId: listStackEvents
+      summary: A stack's log, oldest first
+      description: 'The same events as the `state.stacks` messages; `after` is a version.'
+      tags: [Stacks]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: A page of the log
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/StackEvent' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/stacks/{wfrn}:teardown:
+    parameters:
+      - $ref: '#/components/parameters/StackWfrnPath'
+    post:
+      operationId: teardownStack
+      summary: Tear a stack down
+      description: 'Records `StackTeardownRequested` (`deleting`, operation `teardown`): steps that never took a child are skipped, retained ones (`deletionPolicy: retain`, or named in `retain`) leave the stack with their resource in place, and each other child is deleted through its type''s delete workflow once nothing in the stack that depends on it is left; a child still being created is deleted when its create ends. A teardown of a stack already deleting changes nothing but `retain`, which is how a delete that keeps failing is given up on. 409 `stack.deleted` for a deleted stack.'
+      tags: [Stacks]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TeardownRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/StackUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/stacks/{wfrn}:resume:
+    parameters:
+      - $ref: '#/components/parameters/StackWfrnPath'
+    post:
+      operationId: resumeStack
+      summary: Start again what a stack could not
+      description: 'Records `StackResumed` and announces again every step that is ready, every step the BFF could not start (failed with no child, at the next attempt) and, in a teardown, every delete that failed (at the next attempt). A child whose create failed is retried on the child (`:request-retry`, decision 24); the stack follows it. Changes nothing when nothing waits.'
+      tags: [Stacks]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StackCommand' }
+      responses:
+        '200': { $ref: '#/components/responses/StackUpdated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/stacks/{wfrn}/steps/{step}:report-failure:
+    parameters:
+      - $ref: '#/components/parameters/StackWfrnPath'
+      - name: step
+        in: path
+        required: true
+        description: The resource id of the blueprint
+        schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,31}$' }
+    post:
+      operationId: reportStackStepFailure
+      summary: The BFF could not start a step
+      description: 'For a `ready` step whose mint, create job or delete job the BFF could not start (the platform refused the input, the person may no longer, a quota): records `StackStepFailed` and stops the stack (`failed`; in a teardown it stays `deleting`). 409 `stack.stepMoved` when the step is no longer ready at that attempt.'
+      tags: [Stacks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StepFailure' }
+      responses:
+        '200': { $ref: '#/components/responses/StackUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 components:
   securitySchemes:
     consoleJwt:
@@ -837,6 +1076,17 @@ components:
       required: false
       description: The same key with the same body answers the first result for 24 hours; with another body it is 409
       schema: { type: string, maxLength: 255 }
+    BlueprintName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{2,40}$' }
+    StackWfrnPath:
+      name: wfrn
+      in: path
+      required: true
+      description: The stack's wfrn, percent-encoded
+      schema: { $ref: '#/components/schemas/Wfrn' }
     ConsoleRequestId:
       name: X-Console-Request-Id
       in: header
@@ -848,6 +1098,13 @@ components:
       description: '`true` when the command was a replay of an Idempotency-Key and this is the first result, replayed'
       schema: { type: boolean }
   responses:
+    StackUpdated:
+      description: The stack after the command, with its new version
+      headers:
+        Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Stack' }
     ResourceUpdated:
       description: The resource after the command, with its new version
       headers:
@@ -998,6 +1255,7 @@ components:
         eventHash: { type: string, pattern: '^sha256:[0-9a-f]{64}$', description: 'The hash of its last event, the head of its chain' }
         deletedAt: { type: string, format: date-time }
         tombstoneUntil: { type: string, format: date-time, description: 'Until when the name answers 410 (90 days after deletedAt)' }
+        stack: { $ref: '#/components/schemas/StackRef', description: 'The stack step it was created for; a stack''s resource does not move to another account (409 `resource.inStack`) while the stack holds it' }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     Tombstone:
@@ -1059,6 +1317,7 @@ components:
         workflow: { type: string, description: The create workflow about to start }
         input: { type: object, description: "The create input, redacted before it is stored", additionalProperties: true }
         actor: { type: string }
+        stack: { $ref: '#/components/schemas/StackRef', description: 'The ready step this resource is created for: the mint takes the step (running), once per attempt, and answers 409 `stack.stepNotReady` when the step is not ready at that attempt' }
     ImportRequest:
       type: object
       required: [type, region, registryId, attributes, source]
@@ -1358,3 +1617,314 @@ components:
         reason: { type: string, maxLength: 1000 }
         expectedVersion: { type: integer, description: 'Refuse with 409 when the resource''s version is not this one' }
         actor: { type: string, description: 'The console user, when the BFF sends the command for one' }
+    StackRef:
+      type: object
+      description: 'The stack step a resource was created for (hub decision 33)'
+      required: [wfrn, step]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        step: { type: string, description: The resource id of the blueprint }
+        attempt: { type: integer, minimum: 1, description: 'On a mint: the attempt of the ready step it answers' }
+    BlueprintSummary:
+      type: object
+      required: [name, version, title, description, owner, resources]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        title: { type: string }
+        description: { type: string }
+        owner: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        resources:
+          type: object
+          description: How many resources of each type it launches
+          additionalProperties: { type: integer }
+    BlueprintParameter:
+      type: object
+      required: [type, title, required]
+      properties:
+        type: { type: string, enum: [string, integer, boolean] }
+        title: { type: string }
+        description: { type: string }
+        required: { type: boolean, description: True when it has no default }
+        default: { type: [string, integer, boolean] }
+        enum:
+          type: array
+          items: { type: [string, integer] }
+        pattern: { type: string }
+        minimum: { type: integer }
+        maximum: { type: integer }
+        x-resource:
+          type: object
+          description: The value is the registry id of a registered resource of this type
+          properties:
+            type: { type: string }
+    BlueprintResource:
+      type: object
+      required: [type, service, dependsOn, deletionPolicy]
+      properties:
+        type: { type: string }
+        service: { type: string, description: 'The service of its wfrn, and of the IAM action that creates it' }
+        title: { type: string }
+        input: { type: object, description: "The create workflow's input, references unresolved", additionalProperties: true }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        dependsOn:
+          type: array
+          description: 'Every resource it waits for: its own dependsOn and the resources its references name'
+          items: { type: string }
+        deletionPolicy: { type: string, enum: [delete, retain] }
+        deleteInput: { type: object, additionalProperties: true }
+    BlueprintOutput:
+      type: object
+      required: [title, value]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        value: { type: string, description: 'Text with references, resolved when the stack is active' }
+    Blueprint:
+      type: object
+      description: 'A blueprint as the launch form draws it: the hub''s `blueprints/<name>.yaml` as JSON, with each resource''s service and dependencies'
+      required: [name, version, title, description, owner, parameters, resources, outputs, waves]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        title: { type: string }
+        description: { type: string }
+        owner: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        parameters:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/BlueprintParameter' }
+        resources:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/BlueprintResource' }
+        outputs:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/BlueprintOutput' }
+        waves:
+          type: array
+          description: 'The resource ids by depth: wave n holds the resources whose longest chain of dependencies is n long'
+          items:
+            type: array
+            items: { type: string }
+    StackName:
+      type: string
+      description: 'Unique among the account''s stacks that are not deleted'
+      pattern: '^[a-z][a-z0-9-]{2,24}$'
+    StackPlanRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { $ref: '#/components/schemas/StackName' }
+        parameters: { type: object, additionalProperties: true }
+    StackPlan:
+      type: object
+      required: [blueprint, version, name, parameters, steps, creates, authorize]
+      properties:
+        blueprint: { type: string }
+        version: { type: string }
+        name: { $ref: '#/components/schemas/StackName' }
+        parameters: { type: object, description: 'The parameters with their defaults', additionalProperties: true }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [step, type, service, wave, dependsOn, deletionPolicy]
+            properties:
+              step: { type: string }
+              type: { type: string }
+              service: { type: string }
+              title: { type: string }
+              wave: { type: integer, minimum: 0 }
+              dependsOn:
+                type: array
+                items: { type: string }
+              input: { type: object, description: 'Resolved as far as it can be: references to other resources stay as text', additionalProperties: true }
+              deletionPolicy: { type: string, enum: [delete, retain] }
+        creates:
+          type: object
+          description: How many resources of each type, for the quota check
+          additionalProperties: { type: integer }
+        authorize:
+          type: array
+          description: 'What the BFF authorizes with the identity service before it launches'
+          items:
+            type: object
+            required: [action, resource]
+            properties:
+              action: { type: string, description: 'blueprints:launch, or <service>:create' }
+              resource: { type: string, description: 'The stack''s wfrn pattern, or the type''s wfrn pattern in the account' }
+    LaunchRequest:
+      type: object
+      required: [blueprint, name]
+      properties:
+        blueprint: { type: string }
+        version: { type: string, description: 'The version the person saw; 409 blueprint.versionChanged when the pinned one is another' }
+        name: { $ref: '#/components/schemas/StackName' }
+        parameters: { type: object, additionalProperties: true }
+        tags:
+          type: object
+          description: The stack's tags
+          maxProperties: 50
+          additionalProperties: { type: string, maxLength: 256 }
+        actor: { type: string, description: The console user who launches it }
+    StackCommand:
+      type: object
+      properties:
+        expectedVersion: { type: integer, description: 'Refuse with 409 when the stack''s version is not this one' }
+        actor: { type: string, description: 'The console user, when the BFF sends the command for one' }
+    TeardownRequest:
+      allOf:
+        - $ref: '#/components/schemas/StackCommand'
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string, minLength: 10, maxLength: 1000, description: 'Why, kept on the stack and given to delete workflows as ${teardown.reason}' }
+            retain:
+              type: array
+              description: 'Steps to leave in place: their resources stay in the account and leave the stack'
+              items: { type: string }
+    StepFailure:
+      type: object
+      required: [attempt, action, code]
+      properties:
+        attempt: { type: integer, minimum: 1, description: The attempt of the ready step }
+        action: { type: string, enum: [create, delete] }
+        code: { type: string, description: 'Why, as a code: platform.invalidInput, iam.denied, quota.exceeded, workflow.missing' }
+        message: { type: string, maxLength: 2000 }
+        actor: { type: string }
+    StackState:
+      type: string
+      description: 'pending while it launches, active once every step is done, failed when a step failed and stopped it, deleting while it is torn down, deleted at the end'
+      enum: [pending, active, failed, deleting, deleted]
+    StepState:
+      type: string
+      description: 'waiting on its dependencies, ready to start (announced), running (its child is being created), done (its child is active), failed, deleting (its child is being deleted), and at teardown deleted, retained or skipped (it never took a child)'
+      enum: [waiting, ready, running, done, failed, deleting, deleted, retained, skipped]
+    ReadyStep:
+      type: object
+      description: 'A step the BFF starts now, as `ready` on `state.stacks` and on the stack'
+      required: [step, action, attempt, idempotencyKey, type, service]
+      properties:
+        step: { type: string }
+        action: { type: string, enum: [create, delete] }
+        attempt: { type: integer, minimum: 1 }
+        idempotencyKey: { type: string, description: 'The Idempotency-Key the BFF mints with (create) or records the delete with (delete): the same key for the same attempt' }
+        type: { type: string }
+        service: { type: string }
+        input: { type: object, description: 'The create input, or the delete input beyond its subject, references resolved', additionalProperties: true }
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: 'The child to delete (delete)' }
+        reason: { type: string, description: 'The teardown''s reason (delete)' }
+    StackStep:
+      type: object
+      required: [step, type, service, state, attempt, dependsOn, deletionPolicy]
+      properties:
+        step: { type: string, description: The resource id of the blueprint }
+        type: { type: string }
+        service: { type: string }
+        title: { type: string }
+        state: { $ref: '#/components/schemas/StepState' }
+        action: { type: string, enum: [create, delete], description: 'What a ready, running, deleting or failed step does' }
+        attempt: { type: integer, minimum: 1 }
+        dependsOn:
+          type: array
+          items: { type: string }
+        deletionPolicy: { type: string, enum: [delete, retain] }
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: 'The child, once the step took one' }
+        childState: { $ref: '#/components/schemas/ResourceState', description: 'The child''s state as the stack last saw it' }
+        ready: { $ref: '#/components/schemas/ReadyStep', description: 'While ready: what the BFF starts' }
+        error:
+          type: object
+          description: Why it failed
+          properties:
+            code: { type: string }
+            message: { type: string }
+            at: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+    Stack:
+      type: object
+      required: [wfrn, accountId, region, name, blueprint, blueprintVersion, state, operation, version, parameters, steps, createdAt, updatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: 'wfrn:<partition>:blueprints:<region>:<account>:stack/stack-<ulid>' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        name: { $ref: '#/components/schemas/StackName' }
+        blueprint: { type: string }
+        blueprintVersion: { type: string }
+        state: { $ref: '#/components/schemas/StackState' }
+        operation: { type: string, enum: [launch, teardown] }
+        version: { type: integer, description: Grows by one per event }
+        parameters: { type: object, description: The parameters it was launched with and their defaults, additionalProperties: true }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        launchedBy: { type: string }
+        teardownReason: { type: string }
+        teardownBy: { type: string }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/StackStep' }
+        outputs:
+          type: object
+          description: 'Resolved once it is active'
+          additionalProperties:
+            type: object
+            required: [title, value]
+            properties:
+              title: { type: string }
+              description: { type: string }
+              value: { type: string }
+        failure:
+          type: object
+          description: 'The step that stopped it, while it is failed'
+          properties:
+            step: { type: string }
+            code: { type: string }
+            message: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        deletedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, description: 'When a deleted stack leaves the list (90 days after deletedAt)' }
+    StackEvent:
+      type: object
+      description: 'One entry of a stack''s log, the same shape as the `state.stacks` message (contracts/asyncapi/console-events.yaml)'
+      required: [specVersion, dataVersion, id, key, type, at, aggregate, aggregateId, context, data]
+      properties:
+        specVersion: { type: string, const: '1.0' }
+        dataVersion: { type: integer, minimum: 1 }
+        id: { type: string }
+        key: { type: string, description: '`<type>:<stack wfrn>:<version>`' }
+        seq: { type: integer }
+        type: { type: string, enum: [StackRequested, StackStepStarted, StackStepSucceeded, StackStepFailed, StackStepRetried, StackLaunched, StackResumed, StackTeardownRequested, StackStepDeleting, StackStepRemoved, StackDeleted] }
+        at: { type: string, format: date-time }
+        aggregate: { type: string, const: stack }
+        aggregateId: { $ref: '#/components/schemas/Wfrn' }
+        actor: { type: string }
+        context:
+          type: object
+          required: [accountId, region, wfrn]
+          properties:
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            region: { $ref: '#/components/schemas/RegionName' }
+            wfrn: { $ref: '#/components/schemas/Wfrn' }
+            consoleRequestId: { type: string }
+        traceparent: { type: string }
+        data:
+          type: object
+          required: [version, state, operation]
+          properties:
+            version: { type: integer }
+            state: { $ref: '#/components/schemas/StackState' }
+            operation: { type: string, enum: [launch, teardown] }
+            step: { type: string }
+            ready:
+              type: array
+              items: { $ref: '#/components/schemas/ReadyStep' }
+          additionalProperties: true

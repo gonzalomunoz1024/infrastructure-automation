@@ -19,8 +19,12 @@ public final class Commands {
         }
     }
 
-    /** {@code POST /v1/resources:mint}. */
-    public record Mint(String type, String region, String name, String workflow, ObjectNode input, Meta meta) {
+    /** {@code POST /v1/resources:mint}; {@code stack} names the ready stack step the resource is created for, if any. */
+    public record Mint(String type, String region, String name, String workflow, ObjectNode input, Meta meta, StackRef stack) {
+
+        public Mint(String type, String region, String name, String workflow, ObjectNode input, Meta meta) {
+            this(type, region, name, workflow, input, meta, null);
+        }
     }
 
     /** {@code POST /v1/resources:import}; {@code builtFrom} is the registry's lineage (registry ids), when known. */

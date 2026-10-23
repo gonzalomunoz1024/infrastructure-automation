@@ -29,7 +29,9 @@ class ContractsLockTest {
             "contracts/asyncapi/console-events.yaml", "src/test/resources/contracts/asyncapi/console-events.yaml",
             "contracts/platform/openapi-target.yaml", "src/test/resources/contracts/platform/openapi-target.yaml",
             "contracts/platform/asyncapi-target.yaml", "src/test/resources/contracts/platform/asyncapi-target.yaml",
-            "contracts/wfrn/fixtures.json", "src/test/resources/contracts/wfrn/fixtures.json");
+            "contracts/wfrn/fixtures.json", "src/test/resources/contracts/wfrn/fixtures.json",
+            "blueprints/web-app.yaml", "src/main/resources/blueprints/web-app.yaml",
+            "blueprints/dev-sandbox.yaml", "src/main/resources/blueprints/dev-sandbox.yaml");
 
     @Test
     void everyCopyMatchesTheLock() throws IOException {

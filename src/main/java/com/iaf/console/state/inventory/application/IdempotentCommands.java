@@ -40,8 +40,13 @@ public final class IdempotentCommands {
 
     /** Runs the command under the key (or just runs it when there is none) and answers what the caller gets. */
     public Mono<Outcome> run(AccountScope scope, String key, String body, int status, Supplier<Mono<Resource>> command) {
+        return runJson(scope, key, body, status, () -> Mono.defer(command).map(IdempotentCommands::masked));
+    }
+
+    /** The same for any command whose answer is a JSON body (a stack's, for one). */
+    public Mono<Outcome> runJson(AccountScope scope, String key, String body, int status, Supplier<Mono<ObjectNode>> command) {
         if (key == null || key.isBlank()) {
-            return Mono.defer(command).map(r -> new Outcome(status, masked(r), false));
+            return Mono.defer(command).map(r -> new Outcome(status, r, false));
         }
         if (key.length() > 255) {
             return Mono.error(new IllegalArgumentException("Idempotency-Key is at most 255 characters"));
@@ -51,7 +56,7 @@ public final class IdempotentCommands {
         return keys.find(id)
                 .flatMap(stored -> replay(stored, hash))
                 .switchIfEmpty(Mono.defer(() -> Mono.defer(command).flatMap(r -> {
-                    IdempotencyKeyPort.StoredResponse mine = new IdempotencyKeyPort.StoredResponse(id, hash, status, masked(r), clock.instant());
+                    IdempotencyKeyPort.StoredResponse mine = new IdempotencyKeyPort.StoredResponse(id, hash, status, r, clock.instant());
                     return keys.save(mine, ttl).flatMap(stored -> stored.at().equals(mine.at()) && stored.bodyHash().equals(hash)
                             ? Mono.just(new Outcome(status, mine.body(), false))
                             : replay(stored, hash));

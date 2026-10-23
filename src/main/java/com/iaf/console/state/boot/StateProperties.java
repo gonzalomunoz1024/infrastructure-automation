@@ -18,6 +18,7 @@ public record StateProperties(
         AuthSettings auth,
         CryptoSettings crypto,
         TrailSettings trail,
+        StackSettings stacks,
         DemoSettings demo) {
 
     public StateProperties {
@@ -30,6 +31,7 @@ public record StateProperties(
         auth = auth == null ? new AuthSettings(null, null, null, null, null) : auth;
         crypto = crypto == null ? new CryptoSettings(null) : crypto;
         trail = trail == null ? new TrailSettings(null, null, null, null, null, null, null) : trail;
+        stacks = stacks == null ? new StackSettings(null, null, null, null, null, null) : stacks;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
     }
 
@@ -121,6 +123,22 @@ public record StateProperties(
             grace = grace == null ? Duration.ofMinutes(5) : grace;
             interval = interval == null ? Duration.ofMinutes(1) : interval;
             backfill = backfill == null ? Duration.ofHours(24) : backfill;
+        }
+    }
+
+    /**
+     * Stacks (hub decision 33): whether the sweeper runs and how often, how many stacks a pass looks
+     * at, how long a claimed child may stay unrecorded, how long a ready step waits before it is
+     * announced again, and how long a deleted stack stays listed.
+     */
+    public record StackSettings(Boolean sweeper, Duration interval, Integer batch, Duration missingAfter, Duration reannounceAfter, Duration retention) {
+        public StackSettings {
+            sweeper = sweeper == null || sweeper;
+            interval = interval == null ? Duration.ofSeconds(30) : interval;
+            batch = batch == null ? 500 : batch;
+            missingAfter = missingAfter == null ? Duration.ofMinutes(10) : missingAfter;
+            reannounceAfter = reannounceAfter == null ? Duration.ofMinutes(5) : reannounceAfter;
+            retention = retention == null ? Duration.ofDays(90) : retention;
         }
     }
 

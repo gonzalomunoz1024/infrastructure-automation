@@ -9,6 +9,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.state.inventory.domain.Commands;
 import com.iaf.console.state.auth.domain.ConsolePrincipal;
 import com.iaf.console.state.inventory.domain.DriftField;
+import com.iaf.console.state.inventory.domain.StackRef;
+import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.Problem;
 
 /** The request bodies of the contract, and the commands they become. */
 public final class Requests {
@@ -25,9 +28,27 @@ public final class Requests {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record MintRequest(String type, String region, String name, String workflow, ObjectNode input, String actor) implements Acting {
+    public record MintRequest(String type, String region, String name, String workflow, ObjectNode input, String actor, StackRefBody stack) implements Acting {
         Commands.Mint command(String actingAs, String requestId) {
-            return new Commands.Mint(type, region, name, workflow, input, new Commands.Meta(null, actingAs, requestId));
+            return new Commands.Mint(type, region, name, workflow, input, new Commands.Meta(null, actingAs, requestId),
+                    stack == null ? null : stack.ref());
+        }
+    }
+
+    /** The stack step a mint is for (hub decision 33). */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record StackRefBody(String wfrn, String step, Integer attempt) {
+        StackRef ref() {
+            if (wfrn == null || wfrn.isBlank() || step == null || step.isBlank()) {
+                throw new InvalidInputException("a stack step names the stack's wfrn and the step",
+                        List.of(Problem.error("required", wfrn == null || wfrn.isBlank() ? "/stack/wfrn" : "/stack/step", "required")));
+            }
+            try {
+                com.iaf.console.wfrn.Wfrn.parse(wfrn);
+            } catch (IllegalArgumentException e) {
+                throw new InvalidInputException("not a wfrn", List.of(Problem.error("wfrn", "/stack/wfrn", e.getMessage())));
+            }
+            return new StackRef(wfrn, step, attempt);
         }
     }
 

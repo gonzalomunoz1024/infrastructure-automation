@@ -37,6 +37,11 @@ public final class ResourceDecider {
         Json.putIf(data, "name", command.name());
         data.put("workflow", command.workflow());
         Json.setIf(data, "input", command.input());
+        if (command.stack() != null) {
+            ObjectNode stack = data.putObject("stack");
+            stack.put("wfrn", command.stack().wfrn());
+            stack.put("step", command.stack().step());
+        }
         return event(null, id, ResourceEventType.RESOURCE_REQUESTED, now, command.meta(), null, data);
     }
 
