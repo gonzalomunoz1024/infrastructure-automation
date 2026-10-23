@@ -7,8 +7,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
-import com.iaf.console.bff.identity.application.IdentityProperties;
 import com.iaf.console.bff.trust.application.Trust;
+import com.iaf.console.bff.trust.application.TrustProperties;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
 import com.nimbusds.jose.jwk.ECKey;
@@ -16,20 +16,27 @@ import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 
-/** Verifies the BFF's internal JWTs the way the identity service does: ES256 by kid, iss, aud, exp. */
+/**
+ * Verifies the BFF's internal JWTs the way the console's services do (hub decision 35): ES256 by
+ * kid, iss, exactly the one audience of the stand-in asked ({@code aud} naming anything else, or
+ * more than one service, is refused), exp; a token without {@code acct} only from a service
+ * principal allowed to call that service as itself ({@code svc} equal to {@code sub}: the BFF, or
+ * a client registered for the audience).
+ */
 public class DemoTokens {
 
     private final Trust trust;
-    private final IdentityProperties identity;
+    private final TrustProperties trustProperties;
     private final Clock clock;
 
-    public DemoTokens(Trust trust, IdentityProperties identity, Clock clock) {
+    public DemoTokens(Trust trust, TrustProperties trustProperties, Clock clock) {
         this.trust = trust;
-        this.identity = identity;
+        this.trustProperties = trustProperties;
         this.clock = clock;
     }
 
-    public Optional<DemoCaller> verify(String authorization) {
+    /** The caller of a stand-in whose service id is {@code audience}; empty when the token is not one it accepts. */
+    public Optional<DemoCaller> verify(String authorization, String audience) {
         if (authorization == null || !authorization.regionMatches(true, 0, "Bearer ", 0, 7)) {
             return Optional.empty();
         }
@@ -43,8 +50,7 @@ public class DemoTokens {
             if (!trust.issuer().equals(claims.getIssuer())) {
                 return Optional.empty();
             }
-            List<String> audience = claims.getAudience() == null ? List.of() : claims.getAudience();
-            if (!audience.contains(identity.serviceName()) && !audience.contains(Trust.CONSOLE_AUDIENCE)) {
+            if (!List.of(audience).equals(claims.getAudience())) {
                 return Optional.empty();
             }
             Date exp = claims.getExpirationTime();
@@ -56,9 +62,26 @@ public class DemoTokens {
             if (raw instanceof List<?> list) {
                 list.forEach(g -> groups.add(String.valueOf(g)));
             }
-            return Optional.of(new DemoCaller(claims.getSubject(), claims.getStringClaim("acct"), claims.getStringClaim(Trust.SERVICE_CLAIM), groups));
+            String accountId = claims.getStringClaim("acct");
+            String service = claims.getStringClaim(Trust.SERVICE_CLAIM);
+            if (accountId == null && !servicePrincipal(service, claims.getSubject(), audience)) {
+                return Optional.empty();
+            }
+            return Optional.of(new DemoCaller(claims.getSubject(), accountId, service, groups));
         } catch (ParseException | JOSEException e) {
             return Optional.empty();
         }
+    }
+
+    /** The BFF itself, or a client registered for the audience, naming itself as both svc and sub. */
+    private boolean servicePrincipal(String service, String subject, String audience) {
+        if (service == null || !service.equals(subject)) {
+            return false;
+        }
+        if (service.equals(trust.issuer())) {
+            return true;
+        }
+        TrustProperties.Client client = trustProperties.clients().get(service);
+        return client != null && client.audiences().contains(audience);
     }
 }

@@ -1,12 +1,15 @@
 package com.iaf.console.bff.trust.application;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HexFormat;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -16,6 +19,7 @@ import com.iaf.console.bff.trust.domain.IssuedServiceToken;
 import com.iaf.console.bff.trust.domain.ServiceTokenException;
 import com.iaf.console.bff.trust.domain.ServiceTokenRequest;
 import com.iaf.console.bff.trust.ports.outbound.ClientKeysPort;
+import com.iaf.console.bff.trust.ports.outbound.UsedAssertionsPort;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSVerifier;
@@ -35,9 +39,10 @@ import reactor.core.publisher.Mono;
  * client assertion, either the caller's projected Kubernetes service-account token (the cluster's
  * issuer, audience {@code console-bff}, a registered service account) or a JWT the caller signed
  * with its own registered key ({@code iss} and {@code sub} its id, audience {@code console-bff},
- * short, its {@code jti} used once). The client is authenticated first; only then are the
- * audiences it asked for checked against the ones registered for it. The answer is the BFF's own
- * internal JWT for those audiences, with no account: the console-internal principal.
+ * short, its {@code jti} used once across every replica). A service-account token lives an hour
+ * at most and is redeemed once too (by jti, else by its hash); every client has a token bucket. The client is authenticated first; only then is the audience
+ * it asked for checked: exactly one (hub decision 35), registered for it. The answer is the BFF's
+ * own internal JWT for that one service, with no account.
  */
 public class ServiceTokens {
 
@@ -49,13 +54,16 @@ public class ServiceTokens {
     private final Trust trust;
     private final TrustProperties properties;
     private final ClientKeysPort keys;
+    private final UsedAssertionsPort used;
+    private final ClientRateLimits rates;
     private final Clock clock;
-    private final AssertionReplays replays = new AssertionReplays();
 
-    public ServiceTokens(Trust trust, TrustProperties properties, ClientKeysPort keys, Clock clock) {
+    public ServiceTokens(Trust trust, TrustProperties properties, ClientKeysPort keys, UsedAssertionsPort used, Clock clock) {
         this.trust = trust;
         this.properties = properties;
         this.keys = keys;
+        this.used = used;
+        this.rates = new ClientRateLimits(properties.rateLimit().burst(), properties.rateLimit().perMinute(), clock);
         this.clock = clock;
     }
 
@@ -86,19 +94,22 @@ public class ServiceTokens {
             String kid = jwt.getHeader().getKeyID();
             Mono<JWK> key = claimant.cluster() ? keys.clusterKey(kid) : keys.clientKey(claimant.id(), kid);
             return key.switchIfEmpty(Mono.error(() -> ServiceTokenException.invalidClient("no key registered for " + claimant.id() + " has the id " + kid)))
-                    .map(k -> {
+                    .flatMap(k -> {
                         verify(jwt, k);
                         Instant now = clock.instant();
                         checkTimes(claims, claimant, now);
                         checkAudience(claims);
-                        if (!claimant.cluster()) {
-                            checkFirstUse(claimant, claims, now);
+                        if (!rates.tryAcquire(claimant.id())) {
+                            throw ServiceTokenException.slowDown(claimant.id() + " asked for more service tokens than its rate allows",
+                                    rates.retryAfterSeconds(claimant.id()));
                         }
-                        List<String> audiences = audiences(claimant, request.audiences());
-                        IssuedServiceToken issued = trust.issueServiceToken(claimant.id(), audiences);
-                        log.info("issued a service token to {} for {} ({})", claimant.id(), audiences,
-                                claimant.cluster() ? "service-account token" : "signed assertion");
-                        return issued;
+                        return firstUse(claimant, claims, request.clientAssertion().trim()).map(first -> {
+                            String audience = audience(claimant, request.audiences());
+                            IssuedServiceToken issued = trust.issueServiceToken(claimant.id(), audience);
+                            log.info("issued a service token to {} for {} ({})", claimant.id(), audience,
+                                    claimant.cluster() ? "service-account token" : "signed assertion");
+                            return issued;
+                        });
                     });
         }).doOnError(ServiceTokenException.class, e -> log.warn("refused a service token: {} ({})", e.error(), e.getMessage()));
     }
@@ -182,7 +193,11 @@ public class ServiceTokens {
         }
     }
 
-    /** Unexpired and already valid; a client's own assertion also carries iat and lives a few minutes at most. */
+    /**
+     * Unexpired and already valid; a client's own assertion also carries iat and lives a few minutes
+     * at most, a cluster's service-account token {@code max-token-lifetime} at most (from its iat,
+     * or from now without one).
+     */
     private void checkTimes(JWTClaimsSet claims, Claimant claimant, Instant now) {
         if (claims.getExpirationTime() == null) {
             throw ServiceTokenException.invalidClient("the assertion needs exp");
@@ -195,6 +210,11 @@ public class ServiceTokens {
             throw ServiceTokenException.invalidClient("the assertion is not valid yet");
         }
         if (claimant.cluster()) {
+            Instant from = claims.getIssueTime() == null ? now : claims.getIssueTime().toInstant();
+            Duration max = properties.kubernetes().maxTokenLifetime();
+            if (Duration.between(from, exp).compareTo(max) > 0) {
+                throw ServiceTokenException.invalidClient("the service-account token lives longer than " + max.toSeconds() + "s");
+            }
             return;
         }
         if (claims.getIssueTime() == null) {
@@ -209,42 +229,56 @@ public class ServiceTokens {
         }
     }
 
+    /** Exactly this service: an assertion naming another audience beside it could be replayed there. */
     private void checkAudience(JWTClaimsSet claims) {
-        List<String> aud = claims.getAudience() == null ? List.of() : claims.getAudience();
-        if (!aud.contains(properties.issuer())) {
-            throw ServiceTokenException.invalidClient("the assertion is not for " + properties.issuer());
+        if (!List.of(properties.issuer()).equals(claims.getAudience())) {
+            throw ServiceTokenException.invalidClient("the assertion's audience must be exactly " + properties.issuer());
         }
     }
 
-    private void checkFirstUse(Claimant claimant, JWTClaimsSet claims, Instant now) {
+    /**
+     * The assertion's first use across the deployment, or a refusal: a client's own assertion by its
+     * jti (which it must carry), a cluster's service-account token (with {@code single-use}) by its
+     * jti, or by its hash when it has none; each is remembered until it would have expired.
+     */
+    private Mono<Boolean> firstUse(Claimant claimant, JWTClaimsSet claims, String assertion) {
         String jti = claims.getJWTID();
-        if (blank(jti)) {
-            throw ServiceTokenException.invalidClient("the assertion needs a jti");
+        Instant forgetAfter = claims.getExpirationTime().toInstant().plus(SKEW);
+        String key;
+        if (claimant.cluster()) {
+            if (!properties.kubernetes().singleUse()) {
+                return Mono.just(true);
+            }
+            key = "cluster:" + claimant.id() + ":" + (blank(jti) ? "sha256:" + sha256(assertion) : "jti:" + jti);
+        } else {
+            if (blank(jti)) {
+                return Mono.error(ServiceTokenException.invalidClient("the assertion needs a jti"));
+            }
+            key = "client:" + claimant.id() + ":" + jti;
         }
-        if (!replays.firstUse(claimant.id(), jti, claims.getExpirationTime().toInstant().plus(SKEW), now)) {
-            throw ServiceTokenException.invalidClient("the assertion was used before");
+        return used.firstUse(key, forgetAfter).flatMap(first -> first ? Mono.just(true)
+                : Mono.error(ServiceTokenException.invalidClient("the assertion was used before")));
+    }
+
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is missing", e);
         }
     }
 
-    /** The audiences asked for, each registered for the client; every registered one when none is asked for. */
-    private static List<String> audiences(Claimant claimant, List<String> asked) {
-        List<String> registered = claimant.client().audiences();
-        if (registered.isEmpty()) {
-            throw ServiceTokenException.invalidTarget(claimant.id() + " is registered for no audience");
+    /** The one audience asked for, registered for the client; none or several is {@code invalid_target}. */
+    private static String audience(Claimant claimant, List<String> asked) {
+        if (asked.size() != 1) {
+            throw ServiceTokenException.invalidTarget(asked.isEmpty() ? "name the one service the token is for in audience"
+                    : "a token is for one service; ask once per service, not for " + String.join(", ", asked));
         }
-        if (asked.isEmpty()) {
-            return registered;
+        String audience = asked.get(0);
+        if (!claimant.client().audiences().contains(audience)) {
+            throw ServiceTokenException.invalidTarget(claimant.id() + " may not get tokens for " + audience);
         }
-        List<String> refused = new ArrayList<>();
-        for (String audience : asked) {
-            if (!registered.contains(audience)) {
-                refused.add(audience);
-            }
-        }
-        if (!refused.isEmpty()) {
-            throw ServiceTokenException.invalidTarget(claimant.id() + " may not get tokens for " + String.join(", ", refused));
-        }
-        return asked;
+        return audience;
     }
 
     private static boolean blank(String value) {

@@ -25,11 +25,17 @@ public record TrustProperties(
         @DefaultValue("5m") Duration serviceTokenLifetime,
         @DefaultValue("5m") Duration clientAssertionMaxLifetime,
         @DefaultValue Kubernetes kubernetes,
-        Map<String, Client> clients) {
+        Map<String, Client> clients,
+        @DefaultValue RateLimit rateLimit) {
 
     public TrustProperties {
-        kubernetes = kubernetes == null ? new Kubernetes(null, null, null, null, null) : kubernetes;
+        kubernetes = kubernetes == null ? new Kubernetes(null, null, null, null, null, Duration.ofHours(1), true) : kubernetes;
         clients = clients == null ? Map.of() : Map.copyOf(clients);
+        rateLimit = rateLimit == null ? new RateLimit(10, 30) : rateLimit;
+    }
+
+    /** How many service tokens one client may ask for: {@code burst} at once, then {@code perMinute}. */
+    public record RateLimit(@DefaultValue("10") int burst, @DefaultValue("30") int perMinute) {
     }
 
     /**
@@ -37,9 +43,16 @@ public record TrustProperties(
      * cluster's service-account issuer, its keys inline ({@code jwks}) or where to read them
      * ({@code jwksUri}), with the CA its TLS is checked against and a bearer token to read them
      * with (the API server wants one; the files are read again on every fetch, as the kubelet
-     * rotates them).
+     * rotates them). A service-account token may live {@code maxTokenLifetime} at most (from its
+     * {@code iat}, or from now when it has none, to its {@code exp}); with {@code singleUse} each one
+     * is redeemed once, by its {@code jti} or else by its hash, until it expires.
      */
-    public record Kubernetes(String issuer, String jwksUri, String jwks, String caFile, String tokenFile) {
+    public record Kubernetes(String issuer, String jwksUri, String jwks, String caFile, String tokenFile,
+            @DefaultValue("1h") Duration maxTokenLifetime, @DefaultValue("true") boolean singleUse) {
+
+        public Kubernetes {
+            maxTokenLifetime = maxTokenLifetime == null ? Duration.ofHours(1) : maxTokenLifetime;
+        }
 
         public boolean enabled() {
             return issuer != null && !issuer.isBlank();

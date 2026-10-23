@@ -60,8 +60,14 @@ public class SessionConfiguration {
     }
 
     @Bean
-    public Sessions sessions(SessionStore store, CsrfTokens csrf, StepUpPolicy stepUp, RegionsPort regions, SessionProperties properties, Clock clock) {
-        return new Sessions(store, csrf, stepUp, regions, properties, clock);
+    public MembershipChanges membershipChanges(SessionProperties properties, Clock clock) {
+        return new MembershipChanges(properties.rolesRefreshInterval(), clock);
+    }
+
+    @Bean
+    public Sessions sessions(SessionStore store, CsrfTokens csrf, StepUpPolicy stepUp, RegionsPort regions, PrincipalResolverPort resolver,
+            MembershipChanges changes, SessionProperties properties, Clock clock) {
+        return new Sessions(store, csrf, stepUp, regions, resolver, changes, properties, clock);
     }
 
     /** The server's secret, held as a bean so the two codecs share it. */
