@@ -103,6 +103,8 @@ profiles.
 | `console.outbox.relay.*` | on, `1s` | The service kit's outbox relay |
 | `console.trail.enabled`, `period`, `grace`, `interval`, `backfill` | on, `1h`, `5m`, `1m`, `24h` | The trail's digests: the period each seals (aligned to the epoch), the grace for late events, how often the digester looks, how far back its first pass reaches |
 | `console.trail.signing-key`, `key-id` | `CONSOLE_TRAIL_SIGNING_KEY`, generated | The private EC JWK (P-256) that signs digests; without one each process makes its own, and every public half is kept so old digests still verify |
+| `console.stacks.sweeper`, `interval`, `batch` | on, `30s`, `500` | The stack sweeper: how often it looks at the stacks still moving, and how many per pass |
+| `console.stacks.missing-after`, `reannounce-after`, `retention` | `10m`, `5m`, `90d` | When a claimed child never recorded fails its step, when a ready step nobody started is announced again, how long a deleted stack is kept |
 | `console.demo.platform-port`, `step-delay`, `seed` | `18090`, `250ms`, `20261023` | The embedded fake platform (`demo` profile) |
 
 ## The API
@@ -139,6 +141,13 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `GET /v1/wfrn/{wfrn}/events:verify` | Checks the resource's hash chain: versions, hashes and links |
 | `GET /v1/wfrn/{wfrn}/revert-plan` | "Revert to this" for `version` or `at`: the merge patch for `:request-update`, the tag changes for `:tag`, every changed field; `possible` false with a `reason` when it cannot be |
 | `POST /v1/wfrn/{wfrn}:transfer` | `{toAccountId, reason}`: moves an idle, active resource to another account of the organization and answers the resource it became (hub decision 30) |
+| `GET /v1/blueprints`, `/v1/blueprints/{name}` | The blueprints the service pins from the hub (`blueprints/*.yaml`), and one with its parameters, resources (each with its type's service), outputs and `waves` (hub decision 33) |
+| `POST /v1/blueprints/{name}:plan` | `{name, parameters}`: what a launch would do, nothing changed: the parameters with their defaults, each step's wave and input as far as it is known before the stack runs, the creates per type, and `authorize` (`blueprints:launch` on the stack, `<service>:create` per type) for the BFF to check before it launches |
+| `POST /v1/stacks` | 201, a `pending` stack (`wfrn:<p>:blueprints:<region>:<account>:stack/stack-<ulid>`) and its first wave announced on `state.stacks`; `{blueprint, version?, name, parameters, tags}`, 409 `stack.nameTaken` for the name of a live stack of the account, 409 `blueprint.versionChanged` when `version` is not the pinned one |
+| `GET /v1/stacks`, `/v1/stacks/{wfrn}`, `/v1/stacks/{wfrn}/events` | The account's stacks newest first (`state`, `blueprint`, `name` prefix, cursor pages); one stack with its steps, each step's `ready` (what the BFF starts now) and the outputs once active, `ETag` its version; its log as `state.stacks` envelopes, `after` a version |
+| `POST /v1/stacks/{wfrn}:teardown` | `{reason, retain?, expectedVersion?}`: deletes the children in reverse dependency order through each type's delete workflow; `deletionPolicy: retain` resources and the steps named in `retain` stay in the account; on a stack already deleting, `retain` leaves more in place |
+| `POST /v1/stacks/{wfrn}:resume` | Announces again what is ready and readies what could not start (a step the BFF reported, a failed delete) at its next attempt; 409 `stack.deleted` once deleted |
+| `POST /v1/stacks/{wfrn}/steps/{step}:report-failure` | `{attempt, action, code, message}`: the BFF could not start a ready step (refused by IAM, a job that would not start); the step fails and stops the launch; the same report again changes nothing |
 | `POST /internal/accounts/{id}:transfer` | For the BFF's service token: `{toAccountId, region, reason, limit}` moves an account's active resources (at most `limit`, 1,000 by default, 10,000 at most) and lists each move and what stayed; run it again while `more` |
 | `POST /internal/import` | For services: `{accountId, region, owner}`; with an `owner` (the team whose resources get names) the platform's backfill mints the missing wfrns first (the console-internal service account holds `resources:backfill`; a token without it, or a call without an owner, imports what already carries a wfrn), then the account's resources are taken under management |
 | `POST /internal/rebuild`, `/internal/reap`, `/internal/accounts/{id}:shred`, `GET /internal/feed` | Operations: rebuild from the snapshot, run the reaper now, destroy an account's data key, the feed's status |
@@ -302,6 +311,42 @@ cannot move (409 `account.shredded`), since masked values must never travel as r
 the BFF re-homes the platform's record (P-23), the feed's events about the old wfrn apply to the
 new one, following up to eight moves.
 
+## Blueprints and stacks
+
+A blueprint (`kind: Blueprint`, hub [`blueprints/`](https://github.com/gonzalomunoz1024/infrastructure-automation/tree/console-root/blueprints))
+is a set of resources launched and torn down as one request: parameters, resources whose inputs
+may reference the parameters, the stack and each other (`${resources.vm.registryId}`), and
+outputs. The service pins the hub's blueprints beside its contracts (`contracts.lock`), reads them
+at start (`BlueprintParser`: shape, references, cycles) and owns every stack (hub decision 33):
+
+- **The service decides, the BFF executes.** A launch checks the parameters, records the stack and
+  announces each ready step on `state.stacks` with its resolved input and an idempotency key
+  (`stack-<ulid>:<step>:<action>:<attempt>`). The BFF authorizes and runs it as it runs any create
+  or delete, for the person who launched the stack, so IAM, previews and policies apply per child.
+- **The mint is where a step takes its child.** `POST /v1/resources:mint` with `stack {wfrn, step,
+  attempt}` asks the stack first: only a ready create step takes a child, once per attempt, and the
+  same mint again answers the same child. A teardown that came first refuses it, so a child is never
+  created behind a stack's back. The child carries `stack` for good; while the stack holds it, a
+  `:transfer` is a 409 `resource.inStack`.
+- **Progress is level-triggered.** Every change to a stack's child (registered, failed, deleted)
+  makes the stack look at its children again and move on: the next steps become ready with their
+  references resolved, the stack becomes `active` with its outputs, or a failure stops it. A
+  sweeper (`console.stacks.sweeper`) does the same for every stack still moving, announces
+  again a step ready for `reannounce-after` that nobody started (a lost message), and fails a step
+  whose minted child was never recorded within `missing-after`.
+- **Nothing is rolled back.** A failed child stops the launch (`failed`, `failure` names the step);
+  retrying the child (`:request-retry`, decision 24) resumes it when the retry succeeds, and
+  `:resume` readies a step the BFF could not start at its next attempt. A teardown deletes each
+  child once nothing left in the stack depends on it; a failed delete stops it (the stack stays
+  `deleting` with `failure` set) until `:resume` tries again or a teardown retains that step.
+- **A stack runs on what it was launched with.** Each step keeps its input and delete input
+  templates and the stack its output templates, so pinning a newer blueprint never changes a stack
+  already running.
+
+The stack document is written before its events are logged and published; a process that dies
+between the two leaves the stack right and its log one decision short, which the next decision
+does not repair. The stack's `version` still counts every event, so a gap is visible.
+
 ## Storage
 
 MongoDB, one database (`console_state`) per deployment; indexes are created at start by each adapter.
@@ -315,6 +360,8 @@ MongoDB, one database (`console_state`) per deployment; indexes are created at s
 | `trail_digests` | `_id` `<accountId>:<region>:<from>`, `fromNs`, `toNs`, `doc` (the digest) | `{accountId, region, fromNs}` | hashed `_id` |
 | `trail_keys`, `trail_progress` | the public JWKs by `kid`; the digester's checkpoint (`throughNs`) | `_id` | not needed |
 | `feed_checkpoints` | `_id` feed, `seq` (`$max` only) | `_id` | not needed |
+| `stacks` | `_id` wfrn, `accountId`, `region`, `name`, `blueprint`, `state`, `inFlight`, `version`, `createdAtNs`, `updatedAtNs`, `liveName` (while not deleted), `expiresAt` (once deleted), `doc` | unique partial `{accountId, region, liveName}` (one live stack per name), `{accountId, region, -createdAtNs, -_id}` (the list), `{inFlight, updatedAtNs}` (the sweeper, partial), TTL `expiresAt` | `{accountId, _id}` |
+| `stack_events` | `_id` the event's key, `wfrn`, `accountId`, `region`, `version`, `doc` | unique `{wfrn, version}` | hashed `wfrn` |
 | `outbox`, `processed_events` | the service kit's | the service kit's | hashed |
 
 Lists are one indexed query with a `(sortValue, wfrn)` cursor; the kit's cursors are opaque and
@@ -335,6 +382,9 @@ com.iaf.console.state
 │   │                             ChangeRequests, PlatformEventHandler, JobOutcomes, RegistryImporter,
 │   │                             PendingReaper, Relationships
 │   └── adapters.{web,mongo,memory,platform,kafka}
+├── stack                         blueprints and stacks (hub decision 33): Blueprint, BlueprintParser,
+│                                 References, ParameterCheck, StackDecider; Stacks (the inventory's
+│                                 StackMembershipPort), StackQueries, StackSweeper; the stores
 ├── trail                         the sealed trail: Digest, DigestRoot, DigestSigner, EvidencePack;
 │                                 TrailDigester, ActivityTrail; TrailDigestPort and its adapters
 ├── auth                          ConsolePrincipal, JwtVerifier (the BFF's JWKS), ConsoleAuthWebFilter
@@ -366,6 +416,8 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 16 | The trail is sealed by the service itself | A per-resource chain is race-free on versions and verifies one resource alone; hourly signed digests per account make deleting or editing a whole event detectable, the way CloudTrail's digest files do; keys' public halves are kept so rotation never orphans a digest |
 | 17 | Revert is a plan, never an action | The person confirms the change and it runs through the type's update workflow, its preview and IAM like any other update |
 | 18 | A move is a re-import, the tombstone written first (hub decision 30) | A wfrn names its account, so moving means a new name; writing the tombstone first keeps a registry id from being live twice, and the old name answers where it went for good |
+| 19 | Stacks are decided here and executed by the BFF (hub decision 33) | The service cannot start platform jobs and should not: the BFF already authorizes and starts every create and delete for a person, so a stack's children get the same IAM, previews and policies; the stack, which sees every child's state, decides what may start, and the mint is the one place a step takes a child |
+| 20 | No rollback; teardown in reverse, retain by policy or by name | Deleting what a half-built stack made would destroy work a retry can finish, and only `vm` has a delete workflow today; the person decides with `:resume`, a child's retry or `:teardown` |
 | 21 | One audience, and an allow-list of services (hub decision 35) | A token minted for another service, or for several, must not work here; a token without an account is a service acting as itself, and only the services that call this one are trusted to name any account |
 | 22 | Registry reads by id are vouched for | The console reads the registry with its own privileged token, so a registry id recorded on a resource pulls in a record only when it is bound to no other name or account, or the console's own tombstones show it moved the resource there |
 | 23 | `:transfer` stays a person's command, authorized by the BFF | The BFF authorizes both ends (`<service>:delete` here, `<service>:create` there, hub decision 30) with the person's own token, and only the BFF holds tokens for this audience; a service-only route would hide who moved it |

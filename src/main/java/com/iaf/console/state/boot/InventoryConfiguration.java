@@ -49,6 +49,7 @@ import com.iaf.console.state.inventory.ports.outbound.IdempotencyKeyPort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceEventStorePort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceProjectionPort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceTypesPort;
+import com.iaf.console.state.inventory.ports.outbound.StackMembershipPort;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import reactor.core.Disposable;
@@ -174,9 +175,9 @@ public class InventoryConfiguration {
     @Bean
     public InventoryService inventoryService(ResourceLoader loader, ResourceEventStorePort events, ResourceProjectionPort projection,
             ResourceTypesPort types, SensitiveData sensitive, ResourceEventPublisher publisher, InventoryMetrics metrics, Clock clock,
-            StateProperties properties) {
+            StateProperties properties, StackMembershipPort stacks) {
         return new InventoryService(loader, events, projection, types, sensitive, publisher, metrics, clock, properties.wfrn().partition(),
-                properties.state().tombstoneTtl());
+                properties.state().tombstoneTtl(), stacks);
     }
 
     @Bean

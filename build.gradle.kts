@@ -24,6 +24,7 @@ dependencies {
     implementation("com.nimbusds:nimbus-jose-jwt:10.10")
     implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
+    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml")
 
     testImplementation(testFixtures("com.iaf.console:platform-client:$libsVersion"))
     testImplementation("org.testcontainers:junit-jupiter")

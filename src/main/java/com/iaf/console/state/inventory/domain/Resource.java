@@ -19,7 +19,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * built from (the registry's lineage, resolved to wfrns by the relationship reads), and
  * {@code eventHash} the hash of its latest event: the head of its log's hash chain. A resource moved
  * to another account is a tombstone with {@code transferredTo}, its new wfrn, kept as an alias for
- * good; the resource it became names it in {@code transferredFrom}.
+ * good; the resource it became names it in {@code transferredFrom}. {@code stack} names the stack
+ * step it was created for, when a blueprint launched it.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record Resource(
@@ -52,7 +53,8 @@ public record Resource(
         @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> builtFrom,
         String eventHash,
         String transferredTo,
-        String transferredFrom) {
+        String transferredFrom,
+        StackRef stack) {
 
     public Resource {
         Objects.requireNonNull(wfrn, "wfrn");
@@ -132,6 +134,7 @@ public record Resource(
         String eventHash;
         String transferredTo;
         String transferredFrom;
+        StackRef stack;
 
         Builder() {
         }
@@ -167,12 +170,13 @@ public record Resource(
             eventHash = r.eventHash;
             transferredTo = r.transferredTo;
             transferredFrom = r.transferredFrom;
+            stack = r.stack;
         }
 
         public Resource build() {
             return new Resource(wfrn, accountId, region, type, service, name, state, version, registryId, providerId, attributes, changes,
                     observed, observedStatus, observedAt, drift, tags, requestedBy, workflow, lastJobId, lastError, source, createdAt, updatedAt,
-                    deletedAt, tombstoneUntil, builtFrom, eventHash, transferredTo, transferredFrom);
+                    deletedAt, tombstoneUntil, builtFrom, eventHash, transferredTo, transferredFrom, stack);
         }
     }
 }

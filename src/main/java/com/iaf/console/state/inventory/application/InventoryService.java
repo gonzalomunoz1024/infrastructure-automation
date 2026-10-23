@@ -31,6 +31,7 @@ import com.iaf.console.state.inventory.domain.TombstoneException;
 import com.iaf.console.state.inventory.ports.outbound.ResourceEventStorePort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceProjectionPort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceTypesPort;
+import com.iaf.console.state.inventory.ports.outbound.StackMembershipPort;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -65,10 +66,18 @@ public final class InventoryService {
     private final Clock clock;
     private final String partition;
     private final Duration tombstoneTtl;
+    private final StackMembershipPort stacks;
 
     public InventoryService(ResourceLoader loader, ResourceEventStorePort events, ResourceProjectionPort projection, ResourceTypesPort types,
             SensitiveData sensitive, ResourceEventPublisher publisher, InventoryMetrics metrics, Clock clock, String partition,
             Duration tombstoneTtl) {
+        this(loader, events, projection, types, sensitive, publisher, metrics, clock, partition, tombstoneTtl, StackMembershipPort.NONE);
+    }
+
+    public InventoryService(ResourceLoader loader, ResourceEventStorePort events, ResourceProjectionPort projection, ResourceTypesPort types,
+            SensitiveData sensitive, ResourceEventPublisher publisher, InventoryMetrics metrics, Clock clock, String partition,
+            Duration tombstoneTtl, StackMembershipPort stacks) {
+        this.stacks = stacks;
         this.loader = loader;
         this.events = events;
         this.projection = projection;
@@ -83,14 +92,23 @@ public final class InventoryService {
 
     // opening resources
 
-    /** Mints a wfrn and records {@code ResourceRequested}: the resource is pending, version 1. */
+    /**
+     * Mints a wfrn and records {@code ResourceRequested}: the resource is pending, version 1. A mint
+     * for a stack step first lets the step take the new wfrn (hub decision 33), so a step takes one
+     * child per attempt; the same mint again answers that child.
+     */
     public Mono<Resource> mint(AccountScope scope, Commands.Mint command) {
         requireRegion(command.region());
         return knownType(command.type())
                 .flatMap(type -> {
                     ResourceIdentity id = ResourceIdentity.mint(partition, type.service(), command.region(), scope.accountId(), command.type());
-                    ResourceEvent event = ResourceDecider.mint(id, command, clock.instant());
-                    return commit(null, event, type);
+                    if (command.stack() == null) {
+                        return commit(null, ResourceDecider.mint(id, command, clock.instant()), type);
+                    }
+                    return stacks.claim(scope, command.stack(), command.type(), command.region(), id.wfrn(), command.meta().actor(),
+                            command.meta().requestId())
+                            .flatMap(wfrn -> loader.load(scope, wfrn).switchIfEmpty(Mono.defer(() -> commit(null,
+                                    ResourceDecider.mint(ResourceIdentity.of(wfrn), command, clock.instant()), type))));
                 })
                 .doOnSuccess(r -> metrics.command("mint", "ok"));
     }
@@ -204,7 +222,9 @@ public final class InventoryService {
                         return ResourceIdentity.of(current.transferredTo()).accountId().equals(to) ? completeTransfer(current)
                                 : Mono.error(new TombstoneException(current.tombstone()));
                     }
-                    return typeOrUnknown(current.type()).flatMap(type -> {
+                    return stacks.holds(current).flatMap(held -> held ? Mono.<ResourceTypeInfo>error(new ConflictException(
+                            "resource.inStack: a stack's resource stays in the stack's account; tear the stack down or retain it first",
+                            Map.of("stack", current.stack().wfrn(), "step", current.stack().step()))) : typeOrUnknown(current.type())).flatMap(type -> {
                         ResourceIdentity there = ResourceIdentity.mint(partition, current.service() != null ? current.service() : type.service(),
                                 current.region(), to, current.type());
                         return sensitive.attributesInClear(current) // before anything is written: a shredded account moves nothing
@@ -335,7 +355,11 @@ public final class InventoryService {
                     metrics.event(stored.type().wire());
                     Mono<Void> tombstone = after.deleted() && after.tombstoneUntil() != null ? events.expireAt(after.wfrn(), after.tombstoneUntil())
                             : Mono.empty();
-                    return projection.upsert(after).then(tombstone).then(publisher.publish(stored, after)).thenReturn(after);
+                    Mono<Void> stack = after.stack() == null ? Mono.empty() : stacks.changed(after).onErrorResume(e -> {
+                        log.warn("stack {} did not look at {} again: {}", after.stack().wfrn(), after.wfrn(), e.toString());
+                        return Mono.empty();
+                    });
+                    return projection.upsert(after).then(tombstone).then(publisher.publish(stored, after)).then(stack).thenReturn(after);
                 });
     }
 
