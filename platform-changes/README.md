@@ -29,6 +29,8 @@ covers what changes on the platform side so that plan can work, and why.
   P-06, P-09, P-10, P-12 and sections 2, 5, 6, 8 and 11. Two of its findings are risks on the
   platform today, whatever the console does: platform reads are not isolated by tenant (P-18),
   and registry ids can collide and silently merge (P-05).
+- Extended 2026-10-23 with P-22 (price lists over the API and a type's price binding) for the
+  console's cost service (hub decision 25, work packages 7.3, 9.3 and 9.9).
 
 Contents
 
@@ -57,6 +59,7 @@ Contents
    - [P-19 Publishing resource types](#p-19-publishing-resource-types)
    - [P-20 Job retention and a global job stream](#p-20-job-retention-and-a-global-job-stream)
    - [P-21 Idempotency for every verb](#p-21-idempotency-for-every-verb)
+   - [P-22 Price lists over the API and a type's price binding](#p-22-price-lists-over-the-api-and-a-types-price-binding)
 5. [Order of work and pull requests](#5-order-of-work-and-pull-requests)
 6. [Compatibility: what existing callers see](#6-compatibility-what-existing-callers-see)
 7. [Testing](#7-testing)
@@ -94,7 +97,7 @@ The console is a new client of the platform, not a rewrite of it. These stay exa
 
 ## 2. The changes at a glance
 
-Twenty-one changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
+Twenty-two changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
 tests and doc updates but not review time. "Needed by" is the first console roadmap phase that
 relies on the change.
 
@@ -121,8 +124,9 @@ relies on the change.
 | P-19 | Publishing resource types through change requests, stored in MongoDB, with a `content.published` event | `resources`, `workflows` (change requests), `common/content` | Phase 3 | 120 |
 | P-20 | Job retention (TTL and archive for `runs_jobs` and `runs_events`) and a cross-replica job event stream with cursor resume | `runs`, `common/events`, `config` | Phase 2 | 105 |
 | P-21 | Idempotency for every verb: `DELETE` and `PATCH`, capacity sized to peak, context headers in the fingerprint | `gateway` | Phase 2 | 60 |
+| P-22 | Price lists readable over the API; a ResourceType's optional `cost` block naming the price that prices its resources | `resources` (price lists, ResourceType), `packages/workflow-checks`, sample content | Phase 7 | 60 |
 
-Total: about 2,065 agent minutes. Sections 5 and 6 cover how they split into pull requests and
+Total: about 2,125 agent minutes. Sections 5 and 6 cover how they split into pull requests and
 what each one risks for existing callers.
 
 ## 3. Rules every change follows
@@ -1302,9 +1306,57 @@ with the same key answers 422; eviction metric under a forced small cap.
 
 **Done when** a double-clicked console delete starts exactly one job.
 
+### P-22 Price lists over the API and a type's price binding
+
+**Why.** The console shows what resources cost (WP 7.3), keeps budgets and forecasts (9.3) and
+sends finance a monthly chargeback (9.9), all from the console's cost service (hub decision 25).
+The prices exist already: `kind: PriceList` content (`providers/team-platform/list-prices.yaml`)
+is what a run's preview charges per month. But nothing outside the platform can read a price list,
+and nothing says which price prices a resource that already exists: a preview prices a run's
+actions, while the cost service prices a VM that has been running for months, and after its CPU
+count changed. Copying the prices into the console would let the two drift apart, so the platform
+serves its own.
+
+**What changes.**
+
+1. **Price lists are readable.** `GET /api/v1/price-lists` answers every published `kind:
+   PriceList` (a handful: one array, with an `ETag` that changes when any is published) and
+   `GET /api/v1/price-lists/{name}` one, each with its `version` and `hash` once P-19 publishes
+   content through change requests. Scope `registry:read`, so the `console-internal` preset (P-03)
+   has it already. A publish emits `content.published` with `kind: PriceList`, which the cost
+   service follows to re-price.
+2. **A type names its price.** `kind: ResourceType` gains an optional `cost` block beside P-06's
+   `console` and `observe`:
+
+   ```yaml
+   cost:
+     priceList: list-prices      # a kind: PriceList by name
+     provider: vsphere           # the price's provider and action, as the list names them
+     action: vm.create
+     by: cpu                     # the attribute whose value picks a per-value price
+   ```
+
+   A type without it is unpriced (the console says so; it does not guess).
+3. **Checks** in both twins (`packages/workflow-checks`, `scripts/check-workflows.mjs`):
+   `cost.priceList.unknown` (error), `cost.price.unknown` (the list has no price for that
+   provider and action, error), `cost.by.mismatch` (the binding's `by` is not the price's, error),
+   `cost.by.unknownField` (not a field of the type's schema, error), and `cost.missing` (info, a
+   type with a `producedBy` workflow and a priced create action but no binding).
+4. **Sample content** (with P-15): `vm.yaml` binds `list-prices` `vsphere` `vm.create` by `cpu`,
+   `database.yaml` binds `mongodb` `cluster.create` by `tier`; the hub's overlays show both.
+
+**Compatibility.** Additive: a new read and an optional block. Previews keep charging exactly as
+today.
+
+**Tests.** The two reads with and without the scope; `ETag` and `If-None-Match`; each check's
+finding on a broken sample; `content.published` on a price list publish.
+
+**Done when** the console's cost service reads the platform's price lists and bindings instead of
+its bundled copy, by configuration (`console.cost.pricing.source=platform`).
+
 ## 5. Order of work and pull requests
 
-A suggested split for the platform team, when they take the changes on: twelve pull requests against
+A suggested split for the platform team, when they take the changes on: thirteen pull requests against
 the platform's `main`. Each is reviewable alone, keeps CI green and changes nothing for existing
 callers. The lanes show what can run in parallel. The console team opens none of them.
 
@@ -1322,10 +1374,11 @@ callers. The lanes show what can run in parallel. The console team opens none of
 | 10 | P-18, P-21 (caller-scoped reads, idempotency for every verb) | 4 | D | 150 | 1 |
 | 11 | P-19 (publishing resource types) | 1 | A | 120 | 3 |
 | 12 | P-20 (job retention, global job stream) | 2 | C | 105 | 2 |
+| 13 | P-22 (price lists over the API, the `cost` block and its checks) | 1, 11 | A | 60 | 7 |
 
 P-17 rides with each PR. PR 10 should go first in lane D after PR 4, because it closes a data
 exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 720 minutes. With
-four lanes the whole set is about 2,065 minutes of work done in roughly 900 minutes of elapsed
+four lanes the whole set is about 2,125 minutes of work done in roughly 900 minutes of elapsed
 working time.
 
 ## 6. Compatibility: what existing callers see
@@ -1537,13 +1590,13 @@ workflow:
 
 ## 11. Building the console against the target API
 
-Decided 2026-10-23: the console assumes all twenty-one changes are rolled out. Every console
+Decided 2026-10-23: the console assumes all twenty-two changes are rolled out. Every console
 service is written against the platform as this document describes it, not against today's API:
 the event feed on Kafka (P-01), delegation (P-02), console service accounts (P-03), job context
 and cursors (P-04), wfrns, collision-safe keys and paging in the registry (P-05), ResourceType
 blocks (P-06), regions (P-07), the verb conventions (P-08), observe and list reads (P-09),
 account quotas (P-10), caller-scoped reads (P-18), published resource types (P-19), the global
-job stream (P-20) and idempotency for every verb (P-21). There are no interim adapters, no
+job stream (P-20), idempotency for every verb (P-21) and readable price lists with a type's price binding (P-22). There are no interim adapters, no
 workarounds and no pilot limits; the scale targets apply from the first release.
 
 How that works while the platform team builds the changes:

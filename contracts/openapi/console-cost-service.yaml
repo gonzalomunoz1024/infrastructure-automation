@@ -1,0 +1,925 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-cost-service
+  version: 1.0.0
+  summary: What the console's resources cost, by account, service, type, tag and cost centre; budgets with forecasts and alerts; monthly chargeback for finance.
+  description: |
+    Work packages 7.3 (cost by account, service and tag), 9.3 (budgets and forecasts) and 9.9
+    (chargeback) of the customer-console plan; decision 25 on the hub.
+
+    **Where the numbers come from.** Every resource is priced from the platform's price lists
+    (`kind: PriceList`, read through P-22) by the price binding its type declares (the type's
+    `cost` block, P-06 as extended by P-22: which price list, provider action and attribute set
+    the rate). The attribute is read from what the provider last observed when there is an
+    observation, else from the desired attributes, so a drifted resource costs what it really is.
+    A resource is charged while it exists at the provider: `active`, `updating` and `deleting`;
+    `pending`, `failed` and `deleted` cost nothing. A monthly rate accrues by the second, as
+    `monthly / days in that month` per day, so a resource that lives a whole month costs exactly
+    its monthly rate. A type with no binding, or a value with no price, costs 0 and is counted
+    under `unpriced`, so a page can say what it leaves out. Amounts are in the price list's
+    currency (USD), as JSON numbers rounded to cents at the edge only.
+
+    **How it is kept.** The service follows `state.resources` (or polls the state service's lists
+    without Kafka), reads the changed resource as itself (a service token from the BFF, hub
+    decision 23) and records the change of rate as a pair of signed deltas at the time the state
+    service says the resource changed. A day closes 30 minutes after it ends into rollups per
+    account, region, service, type and tag set; a late event re-closes its day. Reports read the
+    closed rollups plus the open day from the deltas, so every query is bounded by the number of
+    distinct tag sets, not by the number of resources.
+
+    **Forecasts.** The month to date plus the current run rate for the rest of the month; `low`
+    and `high` widen with the day-to-day variation of the last 14 closed days (two standard
+    deviations, never below what is already spent).
+
+    **Account scope.** A person's token (`acct`) reads its own account only; naming another
+    answers 404, never 403. The console's own services (`svc`, no `acct`) name accounts with
+    `accountId`, which may repeat: that is how the BFF serves the organization view, after it
+    decided `cost:list` on each account. Prices and estimates belong to no account.
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`; `limit` is 1 to 200, 50 by default.
+
+    **Errors.** `{ error, problems?, correlationId?, detail? }`: 400 bad input (problems name the
+    parameter), 401 no valid JWT, 404 unknown or another account's, 409 a version that moved
+    (`If-Match`) or a key reused with another body (`Idempotency-Key`), 503 the BFF's signing keys
+    cannot be read now (with `Retry-After`).
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Cost
+  - name: Budgets
+  - name: Chargeback
+  - name: Pricing
+  - name: Ledger
+    description: The console's own services and operators
+  - name: Health
+security:
+  - consoleJwt: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /v1/cost:
+    get:
+      operationId: getCost
+      summary: Cost over a date range, grouped and filtered
+      description: >-
+        The Cost Explorer's one query. `from` and `to` are dates (UTC) and the range is half-open;
+        at most 366 days by day and 37 months by month. `groupBy` is `service`, `type`, `account`,
+        `region`, `costCentre` or `tag:<key>`; `groups` holds the `top` largest groups and one
+        `__other` group with the rest, and every point of `series` splits the same way.
+        `forecast` is present when the range covers today's month.
+      tags: [Cost]
+      parameters:
+        - $ref: '#/components/parameters/AccountIds'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Granularity'
+        - $ref: '#/components/parameters/GroupBy'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/ServiceFilter'
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/RegionFilter'
+        - $ref: '#/components/parameters/TagFilter'
+        - name: wfrn
+          in: query
+          description: One resource's cost (an exact wfrn)
+          schema: { $ref: '#/components/schemas/Wfrn' }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CostReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /v1/wfrn/{wfrn}/cost:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceCost
+      summary: One resource's rate, month to date and the price behind it
+      tags: [Cost]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+      responses:
+        '200':
+          description: The resource's cost
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/cost:estimate:
+    post:
+      operationId: estimateCost
+      summary: What a resource of a type with these attributes would cost a month
+      description: >-
+        For a create wizard's review when the provider's plan names no price, for the drift
+        service's unmanaged resources and for the copilot. Belongs to no account.
+      tags: [Cost]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EstimateRequest' }
+      responses:
+        '200':
+          description: The estimate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Estimate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/price-lists:
+    get:
+      operationId: listPriceLists
+      summary: The price lists in force and the types they price
+      tags: [Pricing]
+      responses:
+        '200':
+          description: Every price list (a handful), on one page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next, bindings]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceList' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+                  bindings:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/budgets:
+    get:
+      operationId: listBudgets
+      summary: The account's budgets with this month's status
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page, by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Budget' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createBudget
+      summary: Create a monthly budget for the account or a tag within it
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '201':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/budgets/{budgetId}:
+    parameters:
+      - $ref: '#/components/parameters/BudgetIdPath'
+    get:
+      operationId: getBudget
+      summary: A budget with this month's status
+      tags: [Budgets]
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateBudget
+      summary: Replace a budget's name, amount, thresholds and create block
+      description: The scope never changes; a budget for another scope is a new budget. `If-Match` is the version's ETag.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Budget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+    delete:
+      operationId: deleteBudget
+      summary: Delete a budget
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/budgets/{budgetId}/periods:
+    parameters:
+      - $ref: '#/components/parameters/BudgetIdPath'
+    get:
+      operationId: listBudgetPeriods
+      summary: How the budget did month by month, newest first
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BudgetStatus' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/budgets:check:
+    post:
+      operationId: checkBudgets
+      summary: Whether a create may go ahead under the account's budgets
+      description: >-
+        The BFF asks before a create's preview and before the create itself. A budget with
+        `blockCreates` that is over this month (spent at or above its amount) and whose scope
+        covers the new resource's tags is a `deny` rule `budget.exceeded`; a budget whose
+        forecast with the new resource is over is a `warn` rule `budget.forecast-over`. The
+        decision is `deny` when any rule denies.
+      tags: [Budgets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetCheckRequest' }
+      responses:
+        '200':
+          description: The decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BudgetCheck' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/chargeback:
+    get:
+      operationId: getChargeback
+      summary: A month's cost by cost centre, account, service and, optionally, one tag
+      description: >-
+        A closed month is final: it was published to finance with the sha256 of its CSV, and
+        reading it again answers the same rows. The current month is provisional and moves.
+      tags: [Chargeback]
+      parameters:
+        - $ref: '#/components/parameters/AccountIds'
+        - $ref: '#/components/parameters/Month'
+        - $ref: '#/components/parameters/ChargebackTag'
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChargebackReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/chargeback.csv:
+    get:
+      operationId: exportChargeback
+      summary: The same report as CSV, as finance receives it
+      description: 'Columns: month, cost_centre, account_id, account_name, service, tag_key, tag_value, amount, currency, final.'
+      tags: [Chargeback]
+      parameters:
+        - $ref: '#/components/parameters/AccountIds'
+        - $ref: '#/components/parameters/Month'
+        - $ref: '#/components/parameters/ChargebackTag'
+      responses:
+        '200':
+          description: The CSV (RFC 4180, UTF-8, a header row)
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Content-Sha256: { schema: { type: string }, description: 'The sha256 of the body; for a final month, the one published' }
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/ledger:sync:
+    post:
+      operationId: syncLedger
+      summary: Re-read one account or all from the state service and correct every rate
+      description: The console's own services only; a person's token gets 404. Idempotent on `Idempotency-Key`; 409 while one runs.
+      tags: [Ledger]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accountId: { $ref: '#/components/schemas/AccountId' }
+      responses:
+        '202':
+          description: Started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/ledger/syncs/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getLedgerSync
+      summary: A sync's progress
+      tags: [Ledger]
+      responses:
+        '200':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/ledger/status:
+    get:
+      operationId: getLedgerStatus
+      summary: How far the ledger has got
+      description: The console's own services only; a person's token gets 404.
+      tags: [Ledger]
+      responses:
+        '200':
+          description: The status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LedgerStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "The BFF's internal ES256 JWT (iss console-bff, aud console-cost-service), a person's (acct) or a service token (svc, no acct)"
+  parameters:
+    AccountId:
+      name: accountId
+      in: query
+      required: false
+      description: "The console's own services name the account; a person's token reads its own"
+      schema: { $ref: '#/components/schemas/AccountId' }
+    AccountIds:
+      name: accountId
+      in: query
+      required: false
+      description: "The console's own services name one or more accounts (repeat the parameter, at most 500); a person's token reads its own"
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 500
+        items: { $ref: '#/components/schemas/AccountId' }
+    WfrnPath:
+      name: wfrn
+      in: path
+      required: true
+      description: Percent-encoded
+      schema: { $ref: '#/components/schemas/Wfrn' }
+    BudgetIdPath:
+      name: budgetId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^bud_[0-9a-hjkmnp-tv-z]{26}$' }
+    From:
+      name: from
+      in: query
+      required: true
+      description: The first day, inclusive (UTC)
+      schema: { type: string, format: date }
+    To:
+      name: to
+      in: query
+      required: true
+      description: The day after the last, exclusive (UTC)
+      schema: { type: string, format: date }
+    Granularity:
+      name: granularity
+      in: query
+      required: false
+      schema: { type: string, enum: [day, month], default: day }
+    GroupBy:
+      name: groupBy
+      in: query
+      required: false
+      description: '`service`, `type`, `account`, `region`, `costCentre` or `tag:<key>`; absent means one total'
+      schema: { type: string, pattern: '^(service|type|account|region|costCentre|tag:[a-z0-9-]{1,32})$' }
+    Top:
+      name: top
+      in: query
+      required: false
+      description: How many groups to name; the rest are summed into `__other`
+      schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+    ServiceFilter:
+      name: service
+      in: query
+      required: false
+      schema: { type: string }
+    TypeFilter:
+      name: type
+      in: query
+      required: false
+      schema: { type: string }
+    RegionFilter:
+      name: region
+      in: query
+      required: false
+      schema: { $ref: '#/components/schemas/RegionName' }
+    TagFilter:
+      name: tag.<key>
+      in: query
+      required: false
+      description: Only resources whose tag `<key>` is the value; several tags all apply
+      schema: { type: string }
+      x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+    Month:
+      name: month
+      in: query
+      required: true
+      schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+    ChargebackTag:
+      name: tag
+      in: query
+      required: false
+      description: A tag key to split each row by its value (rows without the tag get an empty value)
+      schema: { type: string, pattern: '^[a-z0-9-]{1,32}$' }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 255 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The ETag the budget was read with; required on PUT (428 without it), optional on DELETE
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid JWT
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: The version moved, or an idempotency key was reused with another body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PreconditionRequired:
+      description: A PUT without If-Match
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: "The BFF's signing keys cannot be read now"
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+      description: The next page, null on the last one
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO 4217; every price list in force today is USD
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/Problem' }
+        correlationId: { type: string }
+        detail: { type: object, additionalProperties: true }
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        field: { type: string, description: The parameter or a JSON pointer into the body }
+        message: { type: string }
+        level: { type: string, enum: [error, warning] }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    CostGroup:
+      type: object
+      required: [key, label, total]
+      properties:
+        key: { type: string, description: 'The group''s value (a service, type, account id, region, cost centre or tag value); `__none` for resources without the tag, `__other` for the groups past `top`' }
+        label: { type: string, description: 'What to show: the account''s name for an account, "No <key> tag", "Other"' }
+        total: { type: number }
+    CostPoint:
+      type: object
+      required: [start, total, groups]
+      properties:
+        start: { type: string, format: date, description: The day, or the first of the month }
+        total: { type: number }
+        groups:
+          type: object
+          description: The point's amount per group key of `groups`
+          additionalProperties: { type: number }
+        provisional: { type: boolean, description: 'The point holds today, which is still open' }
+    Forecast:
+      type: object
+      required: [monthEnd, low, high, method]
+      properties:
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        monthToDate: { type: number }
+        monthEnd: { type: number, description: The month's expected total }
+        low: { type: number }
+        high: { type: number }
+        method: { type: string, enum: [run-rate], description: 'Month to date plus the current run rate for the days left; the band is two standard deviations of the last 14 closed days'' change' }
+    CostReport:
+      type: object
+      required: [currency, from, to, granularity, total, groups, series, runRate, asOf, source, unpriced]
+      properties:
+        currency: { $ref: '#/components/schemas/Currency' }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        granularity: { type: string, enum: [day, month] }
+        groupBy: { type: string }
+        total: { type: number }
+        groups:
+          type: array
+          description: Largest first; empty without groupBy
+          items: { $ref: '#/components/schemas/CostGroup' }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/CostPoint' }
+        forecast: { $ref: '#/components/schemas/Forecast' }
+        runRate:
+          type: object
+          required: [monthly]
+          description: What the resources the filters select cost a month at today's rates
+          properties:
+            monthly: { type: number }
+            resources: { type: integer, description: How many charged resources make it up }
+        asOf: { type: string, format: date-time, description: 'How fresh the numbers are: the newest change the ledger has applied' }
+        closedThrough: { type: string, format: date, description: The last closed day; later points are provisional }
+        source: { type: string, enum: [list-prices], description: 'Priced from the platform''s price lists' }
+        unpriced:
+          type: object
+          required: [resources]
+          description: Charged resources the filters select that no price covers, today
+          properties:
+            resources: { type: integer }
+            types:
+              type: array
+              items: { type: string }
+        accounts:
+          type: array
+          description: With groupBy account or costCentre, the accounts named, with their names and cost centres
+          items:
+            type: object
+            required: [accountId]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              name: { type: string }
+              costCentre: { type: string }
+    PriceRule:
+      type: object
+      required: [priceList, provider, action]
+      properties:
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The attribute whose value picks the price, when the price depends on one }
+        value: { description: The attribute's value the price was picked by }
+    ResourceCost:
+      type: object
+      required: [wfrn, accountId, type, service, charged, monthly, monthToDate, currency, source]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        service: { type: string }
+        state: { type: string }
+        charged: { type: boolean, description: 'Whether the resource is charged now (it exists at the provider)' }
+        monthly: { type: number, description: 'Its monthly rate now; 0 when not charged or unpriced' }
+        monthToDate: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        since: { type: string, format: date-time, description: When the current rate started }
+        source: { type: string, enum: [list-prices, unpriced] }
+        rule: { $ref: '#/components/schemas/PriceRule' }
+        pricedFrom: { type: string, enum: [observed, desired], description: 'Whether the attribute came from the provider''s last observation or the desired attributes' }
+        history:
+          type: array
+          description: The rates of the last 13 months, newest first
+          items:
+            type: object
+            required: [from, monthly]
+            properties:
+              from: { type: string, format: date-time }
+              to: { type: string, format: date-time }
+              monthly: { type: number }
+    EstimateRequest:
+      type: object
+      required: [type, attributes]
+      properties:
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        attributes: { type: object, additionalProperties: true }
+        count: { type: integer, minimum: 1, maximum: 10000, default: 1, description: For a batch create }
+    Estimate:
+      type: object
+      required: [type, monthly, currency, source]
+      properties:
+        type: { type: string }
+        monthly: { type: number, description: All of `count` together }
+        unitMonthly: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        source: { type: string, enum: [list-prices, unpriced] }
+        rule: { $ref: '#/components/schemas/PriceRule' }
+        detail: { type: string, description: 'One line for the wizard, e.g. "4 vCPU at $77.00 a month (list prices)"' }
+    PriceList:
+      type: object
+      required: [name, currency, prices, version]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        version: { type: string, description: The platform content version it was read at }
+        prices:
+          type: array
+          items:
+            type: object
+            required: [provider, action, monthly]
+            properties:
+              provider: { type: string }
+              action: { type: string }
+              by: { type: string }
+              monthly:
+                description: A flat monthly price, or a price per value of `by`
+                oneOf:
+                  - type: number
+                  - type: object
+                    additionalProperties: { type: number }
+    PriceBinding:
+      type: object
+      required: [type, priceList, provider, action]
+      description: "A type's `cost` block (P-06 as extended by P-22): which price prices its resources"
+      properties:
+        type: { type: string }
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The resource attribute whose value is looked up in the price's map }
+    BudgetScope:
+      type: object
+      required: [accountId]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        tag:
+          type: object
+          description: Only resources with this tag value count
+          required: [key, value]
+          properties:
+            key: { type: string, pattern: '^[a-z0-9-]{1,32}$' }
+            value: { type: string, maxLength: 256 }
+    BudgetInput:
+      type: object
+      required: [name, amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        scope: { $ref: '#/components/schemas/BudgetScope', description: 'On create only; accountId defaults to the caller''s' }
+        amount: { type: number, exclusiveMinimum: 0, maximum: 1000000000, description: The monthly amount }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          description: Percentages of the amount that send an alert, at most once each a month
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          default: [80, 100]
+          items: { type: integer, minimum: 1, maximum: 1000 }
+        blockCreates: { type: boolean, default: false, description: 'Refuse creates in its scope while it is over' }
+    BudgetStatus:
+      type: object
+      required: [period, amount, spent, forecast, percent, state, alertsSent]
+      properties:
+        period: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        amount: { type: number, description: The amount in force for the period }
+        spent: { type: number }
+        forecast: { type: number, description: The month's expected total; equal to spent for a closed month }
+        percent: { type: number, description: spent / amount × 100 }
+        forecastPercent: { type: number }
+        state: { type: string, enum: [ok, forecast-over, over] }
+        alertsSent:
+          type: array
+          description: The thresholds crossed this period, in the order they were crossed
+          items: { type: integer }
+        asOf: { type: string, format: date-time }
+    Budget:
+      type: object
+      required: [budgetId, name, scope, amount, currency, thresholds, blockCreates, version, createdAt, status]
+      properties:
+        budgetId: { type: string }
+        name: { type: string }
+        scope: { $ref: '#/components/schemas/BudgetScope' }
+        amount: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          items: { type: integer }
+        blockCreates: { type: boolean }
+        version: { type: integer }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/BudgetStatus' }
+    BudgetCheckRequest:
+      type: object
+      required: [accountId]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        service: { type: string }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        monthly: { type: number, minimum: 0, description: "The new resources' monthly cost, from the preview or an estimate; 0 when unknown" }
+    BudgetCheck:
+      type: object
+      required: [decision, rules]
+      properties:
+        decision: { type: string, enum: [allow, deny] }
+        rules:
+          type: array
+          items:
+            type: object
+            required: [id, result, message, budgetId]
+            properties:
+              id: { type: string, enum: [budget.exceeded, budget.forecast-over] }
+              result: { type: string, enum: [deny, warn] }
+              message: { type: string, description: 'e.g. "The budget Compute monthly is over: $10,412.00 of $10,000.00 spent in 2026-10"' }
+              budgetId: { type: string }
+              budgetName: { type: string }
+              percent: { type: number }
+    ChargebackRow:
+      type: object
+      required: [costCentre, accountId, service, amount]
+      properties:
+        costCentre: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        service: { type: string }
+        tag:
+          type: object
+          properties:
+            key: { type: string }
+            value: { type: string }
+        amount: { type: number }
+    ChargebackReport:
+      type: object
+      required: [month, currency, final, total, rows, generatedAt]
+      properties:
+        month: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        final: { type: boolean, description: 'The month is closed and was published to finance' }
+        total: { type: number }
+        rows:
+          type: array
+          description: By cost centre, account, service and tag value
+          items: { $ref: '#/components/schemas/ChargebackRow' }
+        generatedAt: { type: string, format: date-time }
+        sha256: { type: string, description: "For a final month, the sha256 of the published CSV of every account" }
+    SyncRun:
+      type: object
+      required: [runId, status, startedAt]
+      properties:
+        runId: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        status: { type: string, enum: [running, succeeded, failed] }
+        resources: { type: integer }
+        corrected: { type: integer, description: Rates that were wrong and got a correcting delta }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        error: { type: string }
+    LedgerStatus:
+      type: object
+      required: [source, closedThrough, resources]
+      properties:
+        source: { type: string, enum: [kafka, poll] }
+        lastEventAt: { type: string, format: date-time }
+        lagSeconds: { type: number }
+        closedThrough: { type: string, format: date }
+        resources: { type: integer, description: Resources with a rate }
+        unpriced: { type: integer }
+        priceListsVersion: { type: string }
