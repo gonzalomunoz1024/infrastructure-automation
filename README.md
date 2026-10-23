@@ -330,7 +330,8 @@ type, so the feed must subscribe to every one).
 21. **Saved views and columns are the person's preferences.** `GET` and `PUT
     /console/v1/preferences` keep `savedViews` and `columns` per type key behind the version the
     BFF hands out (ids `v_…`, names of 1 to 80 characters unique in a type ignoring case, 50 views
-    a type, 50 filters a view); a write that meets another tab's newer version (409) reads it,
+    a type, 50 filters a view with the filter bar's operators, a sort on one column, pages of 1 to
+    200); a write that meets another tab's newer version (409) reads it,
     applies the change again and retries. The local copy names its owner, so a browser shared by
     two people never shows one person's views to the other. The mock checks the same rules.
 22. **Dropdowns are WAI-ARIA menu buttons.** `MenuButton`: Enter, Space or Down opens a menu on
