@@ -39,6 +39,9 @@ export function ResourcePicker({ type, value, onChange, createWith, ariaLabel, r
   }, [list.data, required, value])
 
   const empty = !list.loading && (list.data?.length ?? 0) === 0
+  const placeholder = list.loading ? 'Loading…' : list.error ? 'Could not load' : `Pick ${/^[aeiou]/i.test(type) ? 'an' : 'a'} ${type}`
+  // named by its label and the text it shows (WCAG 2.5.3): "Image id: ubuntu-24.04-cis-l1"
+  const shown = options.find((o) => o.value === value)?.label ?? placeholder
   const createHref = createWith ? links.workflow(createWith) : null
 
   return (
@@ -51,8 +54,8 @@ export function ResourcePicker({ type, value, onChange, createWith, ariaLabel, r
             value={value}
             onChange={onChange}
             options={options}
-            ariaLabel={ariaLabel}
-            placeholder={list.loading ? 'Loading…' : list.error ? 'Could not load' : `Pick a ${type}`}
+            ariaLabel={`${ariaLabel}: ${shown}`}
+            placeholder={placeholder}
             disabled={disabled}
             className="min-w-0 flex-1"
           />

@@ -2,6 +2,7 @@ import { Card, Icon, StatusDot, Tag, cx, formatNumber, plural, type DotKind, typ
 import { useConsoleKit } from './provider'
 import type { PolicyDecision, Preview } from './types'
 import { EffectTag, TextLink } from './common'
+import { DotTag } from './DotTag'
 
 /*
  * The blast radius before a run: what each step will do, which resources it touches, what it
@@ -31,6 +32,12 @@ export function viaLabel(via: string): string {
   return via.startsWith('built from') ? via : `via ${via}`
 }
 
+/** The id a wfrn ends in ("…:vm/vm-demo01" → "vm-demo01"), for a link when the preview names resources by wfrn. */
+function idOfRef(wfrn: string | undefined): string | undefined {
+  const m = wfrn && /^wfrn:[^:]*:[^:]*:[^:]*:[^:]*:[^/]+\/(.+)$/.exec(wfrn)
+  return m ? m[1] : undefined
+}
+
 function ruleDot(result: string): DotKind {
   const r = result.toLowerCase()
   if (r === 'allow' || r === 'pass' || r === 'passed' || r === 'ok' || r === 'true') return 'healthy'
@@ -50,6 +57,8 @@ export interface PreviewCardProps {
 export function PreviewCard({ preview, compact, title = 'Preview', className }: PreviewCardProps) {
   const { links } = useConsoleKit()
   const decision = DECISION[preview.policy.decision] ?? DECISION.allow
+  const rules = preview.policy.rules ?? []
+  const saving = !!preview.cost && preview.cost.monthly < 0
   const counts = preview.steps.reduce(
     (acc, s) => {
       acc[s.effect] = (acc[s.effect] ?? 0) + 1
@@ -58,16 +67,14 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
     {} as Record<string, number>,
   )
   // a count never breaks from its effect when the subtitle wraps in a narrow column ("2 / create")
-  const summary = (['create', 'change', 'delete', 'read'] as const).filter((e) => counts[e]).map((e) => `${counts[e]}\u00a0${e}`)
+  const summary = (['create', 'change', 'delete', 'read'] as const).filter((e) => counts[e]).map((e) => `${counts[e]}\u00a0${counts[e] === 1 ? e : `${e}s`}`)
 
   return (
     <Card
       title={title}
-      subtitle={`${preview.workflow} · ${preview.version}${summary.length ? ` · ${summary.join(', ')}` : ''}`}
+      subtitle={[preview.workflow, preview.version, summary.length ? summary.join(', ') : undefined].filter(Boolean).join(' · ') || undefined}
       actions={
-        <Tag tone={decision.tone} dot>
-          {decision.label}
-        </Tag>
+        <DotTag tone={decision.tone}>{decision.label}</DotTag>
       }
       className={className}
       data-testid="preview-card"
@@ -103,16 +110,20 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
               <p className="text-caption text-tertiary">No registered resource is affected.</p>
             ) : (
               <ul className="flex flex-wrap gap-1.5">
-                {preview.affectedResources.map((r) => (
-                  <li key={`${r.type}-${r.id}`}>
-                    <TextLink to={links.resource({ id: r.id, type: r.type })} className="inline-flex items-center gap-1 rounded-full border border-stroke-light px-2 py-0.5 text-caption">
-                      <Icon name="resource" size={11} />
-                      <span className="text-primary">{r.name || r.id}</span>
-                      <span className="text-tertiary">{r.type}</span>
-                      {r.via && <span className="text-tertiary">· {viaLabel(r.via)}</span>}
-                    </TextLink>
-                  </li>
-                ))}
+                {preview.affectedResources.map((r) => {
+                  const id = r.id ?? idOfRef(r.wfrn) ?? r.wfrn ?? ''
+                  return (
+                    <li key={`${r.type}-${r.wfrn ?? id}`}>
+                      <TextLink to={links.resource({ id, type: r.type, wfrn: r.wfrn })} className="inline-flex items-center gap-1 rounded-full border border-stroke-light px-2 py-0.5 text-caption">
+                        <Icon name="resource" size={11} />
+                        <span className="text-primary">{r.name || id}</span>
+                        <span className="text-tertiary">{r.type}</span>
+                        {r.via && <span className="text-tertiary">· {viaLabel(r.via)}</span>}
+                        {!r.via && r.state && <span className="text-tertiary">· {r.state}</span>}
+                      </TextLink>
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </div>
@@ -121,9 +132,9 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
         <div className="min-w-0 space-y-4">
           {preview.cost && (
             <div className="rounded-md bg-surface-secondary p-3">
-              <div className="text-caption text-tertiary">Monthly cost</div>
-              <div className="mt-0.5 text-title3 font-semibold tabular-nums text-primary">
-                {formatNumber(preview.cost.monthly, { digits: 2 })} <span className="text-footnote font-normal text-secondary">{preview.cost.currency}</span>
+              <div className="text-caption text-tertiary">{saving ? 'Monthly saving' : 'Monthly cost'}</div>
+              <div className="mt-0.5 text-title3 font-semibold tabular-nums text-primary" data-testid="preview-cost">
+                {formatNumber(Math.abs(preview.cost.monthly), { digits: 2 })} <span className="text-footnote font-normal text-secondary">{preview.cost.currency}</span>
               </div>
               {preview.cost.detail && (
                 <div className="mt-1 text-caption text-secondary" title="Where the number comes from">
@@ -137,14 +148,16 @@ export function PreviewCard({ preview, compact, title = 'Preview', className }: 
           <div className="rounded-md border border-stroke-light p-3">
             <div className="flex items-center justify-between gap-2">
               <StatusDot kind={decision.dot} label={decision.label} />
-              <Tag size="sm" outline mono>
-                {preview.policy.engine}
-              </Tag>
+              {preview.policy.engine && (
+                <Tag size="sm" outline mono>
+                  {preview.policy.engine}
+                </Tag>
+              )}
             </div>
             <p className="mt-1 text-caption text-secondary">{decision.detail}</p>
-            {preview.policy.rules.length > 0 && (
-              <ul className="mt-2 space-y-1.5 border-t border-stroke-light pt-2" aria-label={plural(preview.policy.rules.length, 'policy rule')}>
-                {preview.policy.rules.map((r) => (
+            {rules.length > 0 && (
+              <ul className="mt-2 space-y-1.5 border-t border-stroke-light pt-2" aria-label={plural(rules.length, 'policy rule')}>
+                {rules.map((r) => (
                   <li key={r.id} className="flex items-start gap-2 text-caption">
                     <StatusDot kind={ruleDot(r.result)} size="sm" className="mt-1.5" />
                     <div className="min-w-0">

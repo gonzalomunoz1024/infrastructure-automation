@@ -1,4 +1,6 @@
 import type { Directory } from './directory'
+import { replayConsole, type ConsoleCommand } from './commands'
+import type { MockData } from './data'
 import { createMockServer, memorySessionStore, nextMockEvent, type MockServer, type MockSession, type MockSessionStore } from './server'
 
 /*
@@ -15,6 +17,7 @@ const LIVE_EVERY_MS = 2_000
 export const MOCK_SESSION_KEY = 'console-mock-session'
 /** versioned: a browser that kept an older directory's shape starts again from the seed */
 export const MOCK_DIRECTORY_KEY = 'console-mock-directory-v2'
+export const MOCK_JOURNAL_KEY = 'console-mock-journal'
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /** The directory the browser kept, over the fresh one; a write saves it again. */
@@ -36,6 +39,29 @@ export function saveDirectory(dir: Directory, storage: Pick<Storage, 'setItem'> 
     storage.setItem(MOCK_DIRECTORY_KEY, JSON.stringify(dir))
   } catch {
     /* storage unavailable: the directory lives for this page */
+  }
+}
+
+/** The journal of what the console created or changed, replayed onto the fresh dataset so a reload keeps it. */
+export function restoreConsole(data: MockData, storage: Pick<Storage, 'getItem'> = localStorage, now = Date.now()): boolean {
+  try {
+    const raw = storage.getItem(MOCK_JOURNAL_KEY)
+    if (!raw) return false
+    const saved = JSON.parse(raw) as unknown
+    if (!Array.isArray(saved)) return false
+    const journal = saved.filter((c): c is ConsoleCommand => !!c && typeof c === 'object' && typeof (c as ConsoleCommand).kind === 'string' && typeof (c as ConsoleCommand).at === 'number')
+    replayConsole(data, journal, now)
+    return journal.length > 0
+  } catch {
+    return false
+  }
+}
+
+export function saveConsole(data: MockData, storage: Pick<Storage, 'setItem'> = localStorage) {
+  try {
+    storage.setItem(MOCK_JOURNAL_KEY, JSON.stringify((data.console?.journal ?? []).slice(-200)))
+  } catch {
+    /* storage unavailable: the changes live for this page */
   }
 }
 
@@ -146,6 +172,7 @@ async function bodyOf(init: RequestInit | undefined, input: RequestInfo | URL): 
 
 export function installMock(server: MockServer = createMockServer(undefined, storageSessionStore())): MockServer {
   restoreDirectory(server.data.directory)
+  restoreConsole(server.data)
   const realFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -154,7 +181,10 @@ export function installMock(server: MockServer = createMockServer(undefined, sto
     await delay(20 + Math.random() * 60)
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
     const res = server.handle({ method, url: url.pathname + url.search, headers: headersOf(init, input), body: await bodyOf(init, input) })
-    if (!SAFE_METHODS.has(method) && url.pathname.startsWith('/console/') && res.status < 400) saveDirectory(server.data.directory)
+    if (!SAFE_METHODS.has(method) && url.pathname.startsWith('/console/') && res.status < 400) {
+      saveDirectory(server.data.directory)
+      saveConsole(server.data)
+    }
     const empty = res.status === 204 || res.status === 304 || res.body === undefined
     return new Response(empty ? null : JSON.stringify(res.body), { status: res.status, headers: { ...(empty ? {} : { 'Content-Type': 'application/json' }), ...res.headers } })
   }

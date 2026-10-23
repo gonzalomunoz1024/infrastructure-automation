@@ -24,9 +24,9 @@ describe('SchemaForm', () => {
   it('renders one labelled control per property, with ids from the prefix', () => {
     const html = text(renderToString(<SchemaForm schema={RESTART_INPUT} value={defaultsFor(RESTART_INPUT)} onChange={() => {}} idPrefix="run" />))
     for (const id of ['run-reason', 'run-graceful', 'run-waitSeconds', 'run-tags', 'run-labels']) expect(html).toContain(`id="${id}"`)
-    // listboxes name themselves; no label points at an id that does not exist
-    expect(html).toContain('aria-label="VM"')
-    expect(html).toContain('aria-label="environment"')
+    // listboxes name themselves by their label and the text they show (WCAG 2.5.3); no label points at an id that does not exist
+    expect(html).toContain('aria-label="VM: ')
+    expect(html).toContain('aria-label="environment: dev"')
     expect(html).toContain('Shown to the approver')
     expect(html).toContain('create one with create-vm')
   })
@@ -110,17 +110,17 @@ describe('an input with two forms', () => {
     expect(html).toContain('Use an existing image')
     expect(html).toContain('Build one first')
     // the id form is the inventory picker; the build form is not open
-    expect(html).toContain('aria-label="Image id"')
+    expect(html).toContain('aria-label="Image id: ')
     expect(html).not.toContain('id="run-image-create-os"')
   })
 
   it("expands the producer's input inline for a build request", () => {
     const html = text(renderToString(<SchemaForm schema={CREATE_VM_INPUT} value={{ name: 'web-01', image: { create: { hardening: 'cis1' } } }} onChange={() => {}} idPrefix="run" />))
     expect(html).toContain('Build a new image with build-vm-image first; the job continues with its id')
-    expect(html).toContain('aria-label="Operating system"')
+    expect(html).toContain('aria-label="Operating system: ')
     expect(html).toContain('id="run-image-create-hardening"')
     expect(html).toContain('value="cis1"')
-    expect(html).not.toContain('aria-label="Image id"')
+    expect(html).not.toContain('aria-label="Image id: ')
   })
 
   it('shows a 400 problem at image.create.os under that nested field', () => {
@@ -140,9 +140,9 @@ describe('an input with two forms', () => {
     expect(html).toContain('os must be one of ubuntu-2404, rhel-9')
     expect(html).toContain('name is required')
     // the nested field is the one marked, not the outer one
-    const outer = html.slice(html.indexOf('Use an existing image'), html.indexOf('aria-label="Operating system"'))
+    const outer = html.slice(html.indexOf('Use an existing image'), html.indexOf('aria-label="Operating system: '))
     expect(outer).not.toContain('os must be one of')
-    const inner = html.slice(html.indexOf('aria-label="Operating system"'))
+    const inner = html.slice(html.indexOf('aria-label="Operating system: '))
     expect(inner).toContain('os must be one of ubuntu-2404, rhel-9')
     // the only text input with a problem is the name
     expect(html.match(/aria-invalid="true"/g)).toHaveLength(1)

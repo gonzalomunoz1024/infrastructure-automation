@@ -4,6 +4,7 @@ import resourcesSample from './samples/resources.json'
 import jobsSample from './samples/jobs.json'
 import type { CatalogEntry, JobSummary, Me, PlatformEvent, Resource, ResourceType } from '../lib/types'
 import { ACCOUNTS, ADMIN_ROLE, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, membershipsOf, type Directory } from './directory'
+import { emptyConsoleState, type MockConsoleState } from './commands'
 
 /*
  * The mock's dataset: the platform's captured samples (console/src/mock/samples, from the
@@ -26,6 +27,8 @@ export interface MockData {
   directory: Directory
   partition: string
   regionName: string
+  /** what the console changed through the BFF's resource and job endpoints (phase 3): journaled and replayed */
+  console?: MockConsoleState
 }
 
 export const MOCK_PARTITION = DIRECTORY_PARTITION
@@ -156,6 +159,7 @@ export function buildMockData(): MockData {
     directory,
     partition: MOCK_PARTITION,
     regionName: MOCK_REGION,
+    console: emptyConsoleState(),
   }
 }
 

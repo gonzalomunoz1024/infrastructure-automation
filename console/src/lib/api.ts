@@ -1,6 +1,6 @@
 import { nextCursorFromLink } from '@iaf/console-kit'
 import { parseRegions } from './regions'
-import { MOCK, getSession, setSessionState } from './session'
+import { MOCK, getSession, returnToOf, setSessionState } from './session'
 import type { CatalogEntry, Denial, Health, JobDetail, JobSummary, Lineage, Me, Page, PlatformEvent, Problem, Region, Resource, ResourceType } from './types'
 
 /*
@@ -82,10 +82,23 @@ export class ApiError extends Error {
 
   /** The sign-in URL a 403 asks the browser to visit before a sensitive action (step-up). */
   get stepUp(): string | null {
-    if (this.status !== 403 || this.error !== 'step-up.required') return null
+    // the BFF marks a step-up with detail.stepUp (contracts/additions.md), whatever its error says
+    if (this.status !== 403 || (this.error !== 'step-up.required' && (this.detail as { stepUp?: unknown } | undefined)?.stepUp !== true)) return null
     const login = (this.detail as { login?: unknown } | undefined)?.login
     return typeof login === 'string' && login.startsWith('/') ? login : null
   }
+}
+
+/**
+ * A step-up's sign-in URL, coming back to the hash route the person is on: the BFF builds its
+ * `returnTo` from the Referer, which never carries the fragment, so the console names the route
+ * itself (a delete's `?action=delete` opens its drawer again on the way back).
+ */
+export function stepUpReturn(login: string, hash: string): string {
+  const at = login.indexOf('?')
+  const sp = new URLSearchParams(at >= 0 ? login.slice(at + 1) : '')
+  if (hash && hash !== '#' && hash !== '#/') sp.set('returnTo', returnToOf(hash))
+  return `${at >= 0 ? login.slice(0, at) : login}?${sp.toString()}`
 }
 
 export function isApiError(e: unknown): e is ApiError {
@@ -184,7 +197,7 @@ async function fail(res: Response, trace: string | undefined, path: string): Pro
   if (res.status === 401 && isBffPath(path) && getSession()) setSessionState({ status: 'signed-out', session: null })
   // a sensitive action wants a fresh sign-in: the BFF names the door to use
   const stepUp = error.stepUp
-  if (stepUp && !MOCK && typeof window !== 'undefined') window.location.assign(stepUp)
+  if (stepUp && !MOCK && typeof window !== 'undefined') window.location.assign(stepUpReturn(stepUp, window.location.hash))
   throw error
 }
 

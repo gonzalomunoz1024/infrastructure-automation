@@ -1,15 +1,20 @@
-import { Card, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
-import { CopyableId, ErrorState, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
+import { useState } from 'react'
+import { Button, Card, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
+import { ConfirmDialog, CopyableId, ErrorState, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
+import { useCommand } from '../app/commands'
 import { pathOfWfrn, useConsole } from '../app/console'
 import { LaterButton } from '../app/Phase'
 import { href, type PageProps } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { api } from '../lib/api'
+import { bff } from '../lib/bff'
+import { isOpenStatus, usePoll } from '../lib/poll'
 import { useQuery } from '../lib/queries'
 
 /*
  * One request: its facts, what went wrong if it did, the steps it ran, and its input and
- * outputs as the platform holds them.
+ * outputs as the platform holds them. While it runs the page follows it, and its requester or an
+ * admin of the account can cancel it (the BFF's job says who may).
  */
 
 export default function RequestPage({ route }: PageProps) {
@@ -18,6 +23,12 @@ export default function RequestPage({ route }: PageProps) {
   const q = useQuery(['job', id], () => api.job(id))
   const now = useNow()
   const job = q.data
+  const running = !!job && isOpenStatus(job.status)
+  // the console's copy of the job says whether this person may cancel it
+  const mine = useQuery(['bff-job', id], () => bff.jobs.get(id), { enabled: running })
+  const cmd = useCommand()
+  const [cancelling, setCancelling] = useState(false)
+  usePoll(running, () => void q.refetch())
 
   if (q.loading) return <SkeletonRows n={4} />
   if (q.error && !job) return <ErrorState error={q.error} title="Could not load this request" onRetry={q.refetch} />
@@ -39,11 +50,13 @@ export default function RequestPage({ route }: PageProps) {
               <Icon name="refresh" size={16} className={cx(q.fetching && 'animate-spin')} />
             </IconButton>
             {open ? (
-              <LaterButton phase={3} variant="secondary" icon="stop">
-                Cancel
-              </LaterButton>
+              mine.data?.can?.cancel !== false && (
+                <Button variant="secondary" icon="stop" loading={cmd.busy} onClick={() => setCancelling(true)}>
+                  Cancel request
+                </Button>
+              )
             ) : job.status === 'failed' ? (
-              <LaterButton phase={3} variant="secondary" icon="refresh">
+              <LaterButton phase={4} variant="secondary" icon="refresh">
                 Retry
               </LaterButton>
             ) : null}
@@ -109,6 +122,29 @@ export default function RequestPage({ route }: PageProps) {
         <Section title="Input">{job.input ? <JsonView value={job.input} defaultExpanded={2} /> : <p className="text-sm text-tertiary">No input recorded.</p>}</Section>
         <Section title="Outputs">{job.outputs ? <JsonView value={job.outputs} defaultExpanded={2} /> : <p className="text-sm text-tertiary">{open ? 'Nothing yet.' : 'No outputs recorded.'}</p>}</Section>
       </div>
+
+      {cancelling && (
+        <ConfirmDialog
+          title="Cancel this request?"
+          tone="warning"
+          icon="stop"
+          confirmLabel="Cancel request"
+          cancelLabel="Keep it running"
+          message={
+            <>
+              The platform stops <span className="font-medium text-primary">{job.title}</span> at its next safe point. Steps that already ran are not undone; a create stopped before it finished leaves nothing behind.
+            </>
+          }
+          onConfirm={async () => {
+            await cmd.run('Cancel this request', () => bff.jobs.cancel(id), {
+              invalidates: ['jobs', 'bff-job', 'console-resource', 'console-activity', 'resources'],
+              done: () => ({ title: 'Request cancelled', message: 'The platform stops it at its next safe point.' }),
+            })
+            void q.refetch()
+          }}
+          onClose={() => setCancelling(false)}
+        />
+      )}
     </>
   )
 }

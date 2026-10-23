@@ -77,6 +77,45 @@ describe('PreviewCard', () => {
     expect(html).toContain('1 create, 1 delete')
   })
 
+  it('names the BFF’s resources by wfrn, links them by the id the wfrn ends in, and shows their state', () => {
+    const preview: Preview = {
+      steps: [{ id: 'delete', name: 'Delete the VM', effect: 'delete' }],
+      affectedResources: [
+        { wfrn: 'wfrn:wf:compute:global:123456789012:vm/vm-gen-001', type: 'vm', name: 'gen-001', state: 'active' },
+        { wfrn: 'wfrn:wf:platform:global:123456789012:volume/vol-9', type: 'volume', state: 'active' },
+      ],
+      cost: { monthly: -38.5, currency: 'EUR' },
+      policy: { decision: 'needs-approval' },
+    }
+    const html = text(renderToString(<PreviewCard preview={preview} />))
+    expect(html).toContain('href="#/resources/vm-gen-001"')
+    expect(html).toContain('href="#/resources/vol-9"')
+    expect(html).toContain('>vol-9<')
+    expect(html).toContain('· active')
+    // a negative figure is what the change saves
+    expect(html).toContain('Monthly saving')
+    expect(html).toContain('38.5')
+    expect(html).not.toContain('-38.5')
+    // no workflow or version: the subtitle keeps only what it has, and no rules list
+    expect(html).toMatch(/>1\sdelete</)
+    expect(html).not.toContain('undefined')
+    expect(html).not.toContain('policy rule')
+  })
+
+  it('draws the decision as a dot and words, never coloured text alone', () => {
+    const html = text(renderToString(<PreviewCard preview={{ ...PREVIEW, policy: { decision: 'deny', rules: [{ id: 'quota', result: 'deny', message: 'The account is at its VM quota' }] } }} />))
+    expect(html).toContain('The account is at its VM quota')
+    expect(html).toContain('1 policy rule')
+    // the tone is the dot's; the word stays in the primary text colour
+    expect(html).toContain('<span aria-hidden="true" class="h-1.5 w-1.5 shrink-0 rounded-full bg-critical"></span><span class="truncate">Denied</span>')
+    expect(html).not.toMatch(/text-critical[^>]*>Denied/)
+  })
+
+  it('counts in words: one change, two changes', () => {
+    const preview: Preview = { ...PREVIEW, steps: [{ id: 'a', name: 'A', effect: 'change' }, { id: 'b', name: 'B', effect: 'change' }, { id: 'c', name: 'C', effect: 'read' }] }
+    expect(text(renderToString(<PreviewCard preview={preview} />))).toContain('2\u00a0changes, 1\u00a0read')
+  })
+
   it('shows the note once when the backend already put it in the detail', () => {
     expect(withoutSkippedNote('set · not taken in the dry run')).toBe('set')
     expect(withoutSkippedNote('not taken in the dry run')).toBeUndefined()

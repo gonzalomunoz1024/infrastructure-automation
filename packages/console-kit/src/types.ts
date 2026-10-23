@@ -165,13 +165,16 @@ export type CatalogEntry = {
 }
 
 export type PolicyDecision = 'allow' | 'deny' | 'needs-approval'
+/** A resource a preview touches: the platform names it by id, the BFF by wfrn (hub ResourceRef); either links. */
+export type PreviewResource = { id?: string; wfrn?: string; type: string; name?: string; via?: string; state?: string }
 export type Preview = {
-  workflow: string
-  version: string
-  steps: { id: string; name: string; effect: Effect; detail?: string; skipped?: true }[]
-  affectedResources: { id: string; type: string; name: string; via: string }[]
-  cost?: { monthly: number; currency: string; detail: string }
-  policy: { decision: PolicyDecision; rules: { id: string; result: string; message: string }[]; engine: 'mock' | 'opa' }
+  workflow?: string
+  version?: string
+  steps: { id: string; name: string; effect: Effect | string; detail?: string; skipped?: true }[]
+  affectedResources: PreviewResource[]
+  /** a negative monthly figure is a saving (a delete) */
+  cost?: { monthly: number; currency: string; detail?: string }
+  policy: { decision: PolicyDecision; rules?: { id: string; result: string; message: string }[]; engine?: 'mock' | 'opa' | string }
 }
 
 /* ----------------------------------------------------------------------------

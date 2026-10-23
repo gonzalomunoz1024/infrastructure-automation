@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { Button, ConfirmDialog, EmptyState, Field, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Skeleton, SkeletonText, Table, plural, type TableColumn } from '@iaf/ui'
-import { CopyableId, DotTag, ErrorState, Facts, Section, When } from '@iaf/console-kit'
+import { Button, EmptyState, Field, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, Skeleton, SkeletonText, Table, plural, type TableColumn } from '@iaf/ui'
+import { ConfirmDialog, CopyableId, DotTag, ErrorState, Facts, Section, When } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { ActionButton } from '../../app/Refusal'
 import { Link, href, navigate, pathFor, type PageProps } from '../../app/router'

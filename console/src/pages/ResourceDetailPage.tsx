@@ -1,22 +1,33 @@
-import { useEffect, useMemo } from 'react'
-import { EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tabs, Tag, cx } from '@iaf/ui'
-import { CopyableId, ErrorState, ExternalLink, Facts, LifecycleBadge, ResourceLineage, Section, StatusBadge, When, WfrnText, formatField, formatValue, groupFields, titleCase, xConsoleOf } from '@iaf/console-kit'
+import { useEffect, useMemo, useRef } from 'react'
+import { Button, Icon, IconButton, PageHeader, SkeletonRows, Tabs, Tag, cx, useToast } from '@iaf/ui'
+import { CopyableId, Facts, LifecycleBadge, When, WfrnText, isLifecycleClass, mutableFields } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
-import { PHASES } from '../app/Phase'
-import { ActionButton } from '../app/Refusal'
+import { ExplainedError } from '../app/commands'
+import { MenuButton, MenuSeparator } from '../app/MenuButton'
+import { ActionButton, ActionMenuItem } from '../app/Refusal'
 import { Link, navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
-import { api } from '../lib/api'
-import { idOfWfrn, wfrnOf, type ConsoleType } from '../lib/descriptors'
-import { useQuery } from '../lib/queries'
+import { api, isApiError } from '../lib/api'
+import { bff } from '../lib/bff'
+import { idOfWfrn, singularOf, wfrnOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
+import { isOpenStatus, usePoll } from '../lib/poll'
+import { invalidate, useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
-import type { Resource, Schema } from '../lib/types'
+import { verbsOf } from '../lib/verbs'
+import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
+import { ActionDrawer } from './resource/ActionDrawer'
+import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
+import { DriftFact, TabContent, tabId } from './resource/tabs'
 
 /*
- * One resource: its facts, then the tabs the descriptor lists. Configuration shows the schema's
- * fields in their groups; Relationships draws the lineage; JSON shows the record as the platform
- * holds it. Drift, Tags and Permissions say which phase brings them.
+ * One resource (WP 3.3): its facts, what is happening to it, and the tabs its descriptor lists.
+ * The record comes from the platform and the console's view of it (state, the request in flight,
+ * drift, tags, what this person may do) from the BFF; either alone is enough to draw the page.
+ * Actions holds the type's workflows, each opening a drawer with its form, a preview and the
+ * same request as code; a destructive verb sits beside it and asks for the name before it runs.
+ * While a request runs on the resource the page follows it and reads the record again when it
+ * ends.
  */
 
 export default function ResourceDetailPage({ route }: PageProps) {
@@ -26,42 +37,95 @@ export default function ResourceDetailPage({ route }: PageProps) {
   return <ResourceDetail key={route.params.wfrn} type={type} route={route} />
 }
 
-function tabId(label: string): string {
-  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-}
-
 function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const { wfrnContext, decide } = useConsole()
+  const toast = useToast()
   const wfrnParam = route.params.wfrn
   const id = idOfWfrn(wfrnParam) ?? wfrnParam
-  const q = useQuery(['resource', type.plural, id], () => api.resourceOf(type.plural, id))
-  const resource = q.data
+  const noun = singularOf(type.title).toLowerCase()
+
+  const record = useQuery(['resource', type.plural, id], () => api.resourceOf(type.plural, id))
+  const resource = record.data
   const named = resource ? wfrnOf(resource, type, wfrnContext) : null
-  const tabs = useMemo(() => type.tabs.map((label) => ({ id: tabId(label), label })), [type.tabs])
-  const tab = tabs.find((t) => t.id === route.query.tab) ?? tabs[0]
-  const setTab = (next: string) => navigate(pathFor('resource', route.params, { tab: next === tabs[0]?.id ? undefined : next }, { accountId: route.accountId }), { replace: true })
+  // the wfrn the link carried names the resource for the BFF; a bare id gets the derived one
+  const wfrn = wfrnParam.startsWith('wfrn:') ? wfrnParam : (named?.wfrn ?? wfrnParam)
+
+  const view = useQuery(['console-resource', type.name, wfrn], () => bff.resources.get(type.name, wfrn))
+  const deleted = isApiError(view.error) && view.error.status === 410
+  // a query keeps its last answer on an error: once deleted, the live view (drift, tags, verbs) is gone
+  const detail = deleted ? undefined : view.data
+  const tombstone = deleted && isApiError(view.error) ? tombstoneOf(view.error.body) : undefined
+  const lastJob = deleted ? undefined : detail?.lastJob
+  const open = isOpenStatus(lastJob?.status)
+
+  // follow the request in flight; when it ends, read the record and its trail again
+  usePoll(open, () => void view.refetch())
+  const wasOpen = useRef(open)
+  const refetchRecord = record.refetch
+  useEffect(() => {
+    if (wasOpen.current && !open) {
+      void refetchRecord()
+      for (const prefix of [`console-activity/${type.name}`, `console-drift/${type.name}`, 'resources', 'jobs']) invalidate(prefix)
+    }
+    wasOpen.current = open
+  }, [open, refetchRecord, type.name])
 
   useEffect(() => {
-    if (!resource) return
-    const w = wfrnOf(resource, type, wfrnContext)
-    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, w.wfrn), label: resource.name ?? resource.id, hint: `${type.title} · ${resource.status}` })
-  }, [resource, type, wfrnContext])
+    const label = detail?.name ?? resource?.name
+    if (!label) return
+    pushRecent({ kind: 'resource', href: resourcePath(type.service, type.name, wfrn), label, hint: `${type.title} · ${resource?.status ?? detail?.state ?? ''}` })
+  }, [detail?.name, detail?.state, resource?.name, resource?.status, type, wfrn])
 
-  if (q.loading) return <SkeletonRows n={4} />
-  if (q.error && !resource) return <ErrorState error={q.error} title={`Could not load this ${type.title.toLowerCase()}`} onRetry={q.refetch} />
-  if (!resource || !named) return <EmptyState icon={type.icon} title="Nothing here" message="The platform answered without a resource." />
+  // the Drift tab counts the fields that drifted, as its table lists them
+  const drifted = detail?.finding?.status === 'open' ? detail.finding.fields.length : 0
+  const tabs = useMemo(() => type.tabs.map((label) => ({ id: tabId(label), label, count: tabId(label) === 'drift' && drifted ? drifted : undefined })), [type.tabs, drifted])
+  const tab = tabs.find((t) => t.id === route.query.tab) ?? tabs[0]
+  const go = (query: Record<string, string | undefined>) => navigate(pathFor('resource', route.params, { ...route.query, ...query }, { accountId: route.accountId }), { replace: true })
+  const setTab = (next: string) => go({ tab: next === tabs[0]?.id ? undefined : next })
+  const openAction = (verb: string) => go({ action: verb })
+  const closeAction = () => go({ action: undefined })
 
-  const actions = type.actions.filter((a) => a.verb !== 'create').slice(0, 3)
+  const verbs = verbsOf(type)
+  const operate = verbs.filter((a) => !a.destructive)
+  const destructive = verbs.filter((a) => a.destructive)
+  const editable = mutableFields(type.schema).length > 0
+  const current: ConsoleAction | undefined = route.query.action && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
+
+  if (!resource && !detail) {
+    if (record.loading || view.loading) return <SkeletonRows n={4} />
+    const why = deleted ? record.error : (view.error ?? record.error)
+    return <ExplainedError error={why} what={`Load this ${noun}`} onRetry={() => void Promise.all([record.refetch(), view.refetch()])} />
+  }
+
+  const name = detail?.name ?? resource?.name ?? id
+  const status = resource?.status ?? detail?.state ?? 'unknown'
+  const flight = detail && (detail.state === 'pending' || detail.state === 'updating' || detail.state === 'deleting') && !deleted ? detail.state : null
+  const attributes = resource?.attributes ?? detail?.attributes ?? {}
+  // the BFF runs a verb only on an active or failed resource (409 otherwise): say so before the form opens
+  const lifecycle = detail?.state ?? (isLifecycleClass(type.lifecycle[status]) ? type.lifecycle[status] : undefined)
+  const waitNote = open ? 'Waits for the request in flight to end' : lifecycle && lifecycle !== 'active' && lifecycle !== 'failed' ? `Runs once the ${noun} is active` : undefined
+  const createdBy = resource?.createdBy
+
+  const onAccepted = (accepted: CommandAccepted, action: ConsoleAction) => {
+    closeAction()
+    toast.toast({
+      tone: 'healthy',
+      title: `${action.title} requested`,
+      message: accepted.approval ? `It waits for an approver${accepted.approval.group ? ` from ${accepted.approval.group}` : ''}, then runs.` : `Request ${accepted.jobId} is running.`,
+      action: { label: 'View request', onClick: () => navigate(pathFor('request', { id: accepted.jobId })) },
+    })
+    void view.refetch()
+  }
 
   return (
     <>
       <PageHeader
         eyebrow={type.title}
-        title={resource.name ?? resource.id}
+        title={name}
         subtitle={
           <span className="flex flex-wrap items-center gap-2">
-            <WfrnText wfrn={named.wfrn} size="md" max={0} />
-            {named.derived && (
+            <WfrnText wfrn={wfrn} size="md" max={0} />
+            {named?.derived && !wfrnParam.startsWith('wfrn:') && (
               <Tag size="sm" outline title="Derived by the console from the account and region in the header, until the platform mints it">
                 derived
               </Tag>
@@ -70,153 +134,103 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
         }
         actions={
           <>
-            <IconButton label="Refresh" onClick={() => void q.refetch()}>
-              <Icon name="refresh" size={16} className={cx(q.fetching && 'animate-spin')} />
+            <IconButton label="Refresh" onClick={() => void Promise.all([record.refetch(), view.refetch()])}>
+              <Icon name="refresh" size={16} className={cx((record.fetching || view.fetching) && 'animate-spin')} />
             </IconButton>
-            {actions.map((a) => (
-              <ActionButton key={a.workflow} decision={decide(type, a.verb)} what={a.title} phase={3} variant={a.destructive ? 'danger' : 'secondary'} icon={a.destructive ? 'trash' : undefined}>
-                {a.title}
-              </ActionButton>
-            ))}
+            {deleted ? (
+              // nothing runs on a deleted resource: the menu stays where it was, disabled
+              <Button variant="secondary" iconRight="chevron-down" disabled>
+                Actions
+              </Button>
+            ) : (
+              <MenuButton
+                label={`Actions for ${name}`}
+                align="right"
+                width="w-80"
+                content={
+                  <>
+                    {operate.map((a) => (
+                      <ActionMenuItem key={a.workflow} decision={decide(type, a.verb)} what={a.title} verb={a.verb} icon="play" description={a.description} unavailable={waitNote} onSelect={() => openAction(a.verb)}>
+                        {a.title}
+                      </ActionMenuItem>
+                    ))}
+                    {operate.length > 0 && <MenuSeparator />}
+                    {editable && (
+                      <ActionMenuItem decision={decide(type, 'update')} what={`Edit this ${noun}`} verb="update" icon="edit" phase={4}>
+                        Edit configuration
+                      </ActionMenuItem>
+                    )}
+                    <ActionMenuItem decision={decide(type, 'update')} what="Manage tags" verb="tag" icon="tag" phase={4}>
+                      Manage tags
+                    </ActionMenuItem>
+                    {type.create && (
+                      <ActionMenuItem decision={decide(type, 'create')} what={`Create a ${noun} like this one`} verb="clone" icon="copy" phase={4}>
+                        Create similar
+                      </ActionMenuItem>
+                    )}
+                  </>
+                }
+              >
+                Actions
+              </MenuButton>
+            )}
+            {!deleted &&
+              destructive.map((a) => (
+                <ActionButton key={a.workflow} decision={decide(type, a.verb)} what={a.title} verb={a.verb} variant="danger" icon="trash" disabled={!!waitNote} onClick={() => openAction(a.verb)}>
+                  {a.title}
+                </ActionButton>
+              ))}
           </>
         }
       />
+
+      {deleted ? <DeletedBanner noun={noun} at={tombstone?.deletedAt} until={tombstone?.tombstoneUntil} className="mb-6" /> : <JobBanner type={type} job={lastJob} name={name} className={lastJob && (open || lastJob.status === 'failed') ? 'mb-6' : undefined} />}
 
       <Facts
         columns={4}
         className="mb-8"
         items={[
-          { label: 'Status', value: <LifecycleBadge status={resource.status} lifecycle={type.lifecycle[resource.status]} /> },
-          { label: 'Owner', value: resource.owner },
-          { label: 'Visibility', value: resource.visibility || <span className="text-tertiary">not set</span> },
-          { label: 'Created', value: <When at={resource.createdAt} /> },
-          { label: 'Updated', value: <When at={resource.updatedAt} /> },
-          {
-            label: 'Created by',
-            value: (
-              <span className="flex flex-wrap items-center gap-x-1.5">
-                <span className="font-mono">{resource.createdBy.workflow}</span>
-                {resource.createdBy.version && <span className="text-tertiary">v{resource.createdBy.version}</span>}
-                <Link to={pathFor('request', { id: resource.createdBy.jobId })} className="font-mono text-accent transition-opacity hover:opacity-70">
-                  {resource.createdBy.jobId}
-                </Link>
-              </span>
-            ),
-          },
-          { label: 'Account', value: <span className="font-mono">{formatAccountId(resource.accountId ?? wfrnContext.account)}</span> },
-          { label: 'Region', value: resource.region ?? wfrnContext.region },
-          ...(resource.providerId ? [{ label: 'Provider id', value: <CopyableId id={resource.providerId} /> }] : []),
+          { label: 'Status', value: <LifecycleBadge status={flight ?? status} lifecycle={flight ?? (isLifecycleClass(type.lifecycle[status]) ? type.lifecycle[status] : undefined)} /> },
+          { label: 'Owner', value: resource?.owner ?? (typeof attributes.owner === 'string' ? attributes.owner : undefined) },
+          ...(resource ? [{ label: 'Visibility', value: resource.visibility || <span className="text-tertiary">not set</span> }] : []),
+          { label: 'Created', value: <When at={resource?.createdAt ?? detail?.createdAt} /> },
+          { label: 'Updated', value: <When at={resource?.updatedAt ?? detail?.updatedAt} /> },
+          ...(createdBy
+            ? [
+                {
+                  label: 'Created by',
+                  value: (
+                    <span className="flex flex-wrap items-center gap-x-1.5">
+                      <span className="font-mono">{createdBy.workflow}</span>
+                      {createdBy.version && <span className="text-tertiary">v{createdBy.version}</span>}
+                      <Link to={pathFor('request', { id: createdBy.jobId })} className="font-mono text-accent transition-opacity hover:opacity-70">
+                        {createdBy.jobId}
+                      </Link>
+                    </span>
+                  ),
+                },
+              ]
+            : []),
+          ...(detail
+            ? [
+                {
+                  label: 'Drift',
+                  value: <DriftFact detail={detail} />,
+                },
+              ]
+            : []),
+          { label: 'Account', value: <span className="font-mono">{formatAccountId(resource?.accountId ?? wfrnContext.account)}</span> },
+          { label: 'Region', value: resource?.region ?? detail?.region ?? wfrnContext.region },
+          ...(detail?.providerId || resource?.providerId ? [{ label: 'Provider id', value: <CopyableId id={(detail?.providerId ?? resource?.providerId)!} /> }] : []),
         ]}
       />
 
       <Tabs<string> tabs={tabs} value={tab?.id ?? ''} onChange={setTab} ariaLabel={`${type.title} sections`} className="mb-5" />
       <div role="tabpanel" aria-label={tab?.label}>
-        <TabContent label={tab?.label ?? ''} type={type} resource={resource} wfrn={named.wfrn} />
+        <TabContent label={tab?.label ?? ''} type={type} wfrn={wfrn} record={resource} detail={detail} viewError={view.error} />
       </div>
+
+      {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} onClose={closeAction} onAccepted={onAccepted} />}
     </>
-  )
-}
-
-function TabContent({ label, type, resource, wfrn }: { label: string; type: ConsoleType; resource: Resource; wfrn: string }) {
-  switch (tabId(label)) {
-    case 'configuration':
-      return <Configuration type={type} resource={resource} />
-    case 'drift':
-      return <EmptyState icon="pulse" title={`Drift detection arrives with ${PHASES[3]}`} message="The console will compare what the platform recorded with what the provider reports, and offer to bring them back together." />
-    case 'activity':
-      return <Activity resource={resource} wfrn={wfrn} />
-    case 'relationships':
-      return (
-        <Section title="Lineage" description="What this was built from, and what was built from it.">
-          <ResourceLineage id={resource.id} />
-        </Section>
-      )
-    case 'tags':
-      return <EmptyState icon="tag" title="No tags yet" message={`Tagging resources arrives with ${PHASES[2]}.`} />
-    case 'permissions':
-      return <EmptyState icon="shield" title={`Permissions arrive with ${PHASES[2]}`} message={`Today the platform records one principal for this resource: its owner team, ${resource.owner}.`} />
-    case 'json':
-      return <JsonView value={resource} defaultExpanded={2} rawToggle maxHeight="max-h-[40rem]" />
-    default:
-      return <EmptyState icon="document" title={`Nothing to show under ${label} yet`} message="This section is listed by the type's descriptor but the console has nothing for it in phase 0." />
-  }
-}
-
-function FieldLabel({ name, schema }: { name: string; schema: Schema | undefined }) {
-  const x = xConsoleOf(schema)
-  const label = schema?.title ?? titleCase(name)
-  return (
-    <span className="flex items-center gap-1.5">
-      {label}
-      {x.help && (
-        <ExternalLink href={x.help} ariaLabel={`Help for ${label}`} className="text-tertiary transition-colors hover:text-accent">
-          <Icon name="help" size={12} />
-        </ExternalLink>
-      )}
-    </span>
-  )
-}
-
-function Configuration({ type, resource }: { type: ConsoleType; resource: Resource }) {
-  const props = type.schema.properties ?? {}
-  // a form keeps ungrouped fields in place; a page reads better with them together, first
-  const grouped = groupFields(type.schema)
-  const ungrouped = grouped.filter((g) => g.group === null).flatMap((g) => g.names)
-  const groups = [...(ungrouped.length ? [{ group: 'Attributes', names: ungrouped }] : []), ...grouped.filter((g) => g.group !== null)]
-  const known = new Set(Object.keys(props))
-  const extra = Object.keys(resource.attributes ?? {}).filter((k) => !known.has(k))
-  if (groups.length === 0 && extra.length === 0) return <EmptyState compact icon="document" title="No attributes" message="This type has no schema fields and the resource carries no attributes." />
-  return (
-    <div className="space-y-8">
-      {groups.map((g) => (
-        <Section key={g.group ?? 'default'} title={g.group ?? 'Attributes'}>
-          <Facts columns={3} items={g.names.map((name) => ({ label: <FieldLabel name={name} schema={props[name]} />, value: formatField(type.schema, name, resource.attributes?.[name]) }))} />
-        </Section>
-      ))}
-      {extra.length > 0 && (
-        <Section title="Other attributes" description="Recorded on the resource, not in its schema.">
-          <Facts columns={3} items={extra.map((name) => ({ label: titleCase(name), value: formatValue(resource.attributes?.[name]) }))} />
-        </Section>
-      )}
-    </div>
-  )
-}
-
-function Activity({ resource, wfrn }: { resource: Resource; wfrn: string }) {
-  const jobs = useQuery(['jobs', 'activity', resource.id], () => api.jobs({ limit: 200 }))
-  const related = (jobs.data?.items ?? []).filter((j) => (j.wfrn === wfrn || j.id === resource.createdBy.jobId) && j.id !== resource.createdBy.jobId)
-  return (
-    <Section title="Activity" description="The requests that created or changed this resource.">
-      <ol className="divide-y divide-stroke-light overflow-hidden rounded-lg border border-stroke-light" aria-label="Activity">
-        <li className="flex items-center gap-3 px-3 py-2.5 text-sm">
-          <Icon name="sparkles" size={15} className="shrink-0 text-tertiary" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-primary">
-              Registered by <span className="font-mono">{resource.createdBy.workflow}</span>
-            </span>
-            <Link to={pathFor('request', { id: resource.createdBy.jobId })} className="block truncate font-mono text-caption text-accent transition-opacity hover:opacity-70">
-              {resource.createdBy.jobId}
-            </Link>
-          </span>
-          <When at={resource.createdAt} className="shrink-0 text-caption text-tertiary" />
-        </li>
-        {related.map((j) => (
-          <li key={j.id}>
-            <Link to={pathFor('request', { id: j.id })} className="flex items-center gap-3 px-3 py-2.5 text-sm transition-colors hover:bg-surface-secondary">
-              <Icon name="job" size={15} className="shrink-0 text-tertiary" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-primary">{j.title}</span>
-                <span className="block truncate font-mono text-caption text-tertiary">
-                  {j.id} · {j.requester}
-                </span>
-              </span>
-              <StatusBadge status={j.status} size="sm" />
-              <When at={j.startedAt} className="hidden shrink-0 text-caption text-tertiary sm:inline" />
-            </Link>
-          </li>
-        ))}
-      </ol>
-      {!jobs.loading && related.length === 0 && <p className="mt-2 text-caption text-tertiary">No other request has touched this resource{jobs.error ? ' that the console could load' : ''}.</p>}
-    </Section>
   )
 }

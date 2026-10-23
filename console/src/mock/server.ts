@@ -1,8 +1,8 @@
-import { lifecycleOf } from '@iaf/console-kit'
-import { lifecycleMapOf, serviceOf } from '../lib/descriptors'
+import { serviceOf } from '../lib/descriptors'
 import type { Session } from '../lib/session'
 import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
+import { liveRowOf, resourceRoutes, settleConsole, usedByTypeOf } from './commands'
 import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, preferencesOf, putPreferences, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
 import { consoleResourcesOf, countsOf, filterConsoleResources, searchConsoleResources, sortConsoleResources, suggestFrom, type ResourceContext } from './resources'
 
@@ -278,17 +278,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
   /** The account's live resources by type, for the `resources.<type>` quotas: what the state service counts (tombstones left out) and reports to the identity service. */
   const typeNames = [...new Set(data.resourceTypes.map((rt) => rt.name))]
-  const lifecycles = new Map(data.resourceTypes.map((rt) => [rt.name, lifecycleMapOf(rt)]))
-  const usedOf = (accountId: string): Record<string, number> => {
-    const out: Record<string, number> = Object.fromEntries(typeNames.map((t) => [t, 0]))
-    for (const r of data.resources) {
-      const lifecycle = lifecycles.get(r.type)
-      if (!lifecycle || (r.accountId && r.accountId !== accountId)) continue
-      if ((lifecycle[r.status] ?? lifecycleOf(r.status)) === 'deleted') continue
-      out[r.type] = (out[r.type] ?? 0) + 1
-    }
-    return out
-  }
+  // the create review's quota rule counts with the same function, so the two always agree
+  const usedOf = (accountId: string): Record<string, number> => ({ ...Object.fromEntries(typeNames.map((t) => [t, 0])), ...usedByTypeOf(data, accountId) })
   seedQuotaOverrides(dir, Object.fromEntries(dir.accounts.map((a) => [a.accountId, usedOf(a.accountId)])))
 
   const consoleRoutes = (req: MockRequest, s: MockSession, path: string, params: URLSearchParams, method: string): MockResponse => {
@@ -559,7 +550,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* resources, as the state service lists them for the account; search and suggestions over the same rows */
     const rctx: ResourceContext = { partition: data.partition, region: s.region, accountId: s.accountId }
     const accountIds = dir.accounts.map((a) => a.accountId)
-    const rowsOf = (typeName: string) => consoleResourcesOf(typeName, data, rctx, accountIds)
+    // each row as the console's own requests left it, the same as the resource page reads it
+    const rowsOf = (typeName: string) => consoleResourcesOf(typeName, data, rctx, accountIds, (r) => liveRowOf(data, s, r, now()))
     m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})(:counts)?$/.exec(path)
     if (m && method === 'GET') {
       const typeName = m[1]
@@ -592,7 +584,9 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       return { status: 405, body: { error: `${method} is not allowed on the preferences` } }
     }
 
-    if (path.startsWith('/console/v1/r/') || path === '/console/v1/jobs' || path.startsWith('/console/v1/jobs/')) return { status: 404, body: { error: `${path} is not served by the mock yet: the detail, the commands and the jobs arrive with phase 3` } }
+    /* resources, previews, activity, drift, lineage, tags and jobs (phase 3) */
+    const answered = resourceRoutes(data, { session: s, body, headers: req.headers, now: now() }, path, params, method)
+    if (answered) return answered
     return notFound(`Path ${path}`)
   }
 
@@ -601,6 +595,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     const path = url.pathname.replace(/\/+$/, '') || '/'
     const params = url.searchParams
     const method = req.method.toUpperCase()
+    // the jobs the console started move on the clock: approvals land, applies finish, resources settle
+    settleConsole(data, now())
 
     /* the demo identity provider and the BFF */
     if (path === '/demo-idp/people' && method === 'GET') return { status: 200, body: { items: demoPeople(dir), next: null } }
@@ -678,7 +674,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       const id = decodeURIComponent(m[1])
       const job = data.jobs.find((j) => j.id === id)
       if (!job) return notFound('Job')
-      const detail: JobDetail = { ...job, steps: stepsOf(job), input: { requestedBy: job.requester, channel: job.channel }, error: job.status === 'failed' ? { class: job.errorClass, step: job.failedStep, message: `${job.failedStep ?? 'apply'} failed` } : undefined }
+      const console = data.console?.jobs[id]
+      const detail: JobDetail = { ...job, steps: stepsOf(job), input: console?.input ?? { requestedBy: job.requester, channel: job.channel }, outputs: console?.output, error: job.status === 'failed' ? { class: job.errorClass, step: job.failedStep, message: `${job.failedStep ?? 'apply'} failed` } : undefined }
       return { status: 200, body: detail }
     }
 

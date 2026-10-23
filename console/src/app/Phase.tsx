@@ -9,6 +9,9 @@ import { Hint } from './Hint'
 export const PHASES: Record<number, string> = {
   2: 'phase 2 (notifications, favourites and tags)',
   3: 'phase 3 (creating and changing resources)',
+  // the hub's build order (console-root README): 4 edits, tags, clone, bulk and retry; 5 drift
+  4: 'phase 4 (editing, tags, clone, bulk actions and retrying a failed request)',
+  5: 'phase 5 (drift: revert, accept and ignore)',
   7: 'phase 7 (custom roles and policies)',
 }
 

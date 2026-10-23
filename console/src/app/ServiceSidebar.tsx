@@ -43,7 +43,7 @@ export function serviceNav(service: ConsoleService, route: Route): NavSection {
         label: t.title,
         icon: t.icon,
         href: pathFor('type', { service: service.id, type: t.name }),
-        active: (route.name === 'type' || route.name === 'resource') && route.params.type === t.name,
+        active: (route.name === 'type' || route.name === 'create' || route.name === 'resource') && route.params.type === t.name,
       })),
     ],
   }

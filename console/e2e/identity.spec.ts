@@ -99,14 +99,16 @@ test.describe('identity and access in mock mode', () => {
     await expect(page.locator('header [data-role="operator"]')).toBeVisible()
     const unlocked = createButton(page)
     await expect(unlocked).not.toHaveAttribute('data-denied')
-    await expect(unlocked).toHaveAttribute('data-phase', '3')
+    // phase 3 builds the create wizard: the unlocked button is live and opens it
+    await expect(unlocked).not.toHaveAttribute('data-phase')
     await page.goto(`/#/iam/access-requests/${requestId}`)
     await expect(page.getByText(/You now hold Operator/)).toBeVisible()
   })
 
   test('an operator is refused a delete that no statement allows, and reads why on the role', async ({ page }) => {
     await signInAs(page, /Continue as Dana Reyes/, '/console/compute/vm')
-    await expect(createButton(page)).toHaveAttribute('data-phase', '3')
+    await expect(createButton(page)).not.toHaveAttribute('data-phase')
+    await expect(createButton(page)).not.toHaveAttribute('data-denied')
     const grid = page.getByRole('grid', { name: 'Virtual machines' })
     const row = grid.getByRole('row').nth(1)
     await expect(row).toBeVisible()

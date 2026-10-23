@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { Button, ConfirmDialog, Field, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, plural, useToast } from '@iaf/ui'
-import { OPERATOR_LABEL, type FilterToken } from '@iaf/console-kit'
+import { Button, Field, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, plural, useToast } from '@iaf/ui'
+import { ConfirmDialog, OPERATOR_LABEL, type FilterToken } from '@iaf/console-kit'
 import { MenuButton, MenuHeading, MenuItem, MenuSeparator } from '../../app/MenuButton'
 import type { ConsoleType } from '../../lib/descriptors'
 import { stateToView, viewToState, type ListState } from '../../lib/listState'

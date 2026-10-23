@@ -4,7 +4,7 @@
  */
 
 export type { CatalogEntry, ConsoleHints, JobStatus, JobStep, JobSummary, Lineage, LifecycleClass, Problem, Resource, ResourceType, Schema, XConsole } from '@iaf/console-kit'
-import type { JobStep, JobSummary } from '@iaf/console-kit'
+import type { JobStatus, JobStep, JobSummary } from '@iaf/console-kit'
 
 /** GET /api/v1/me */
 export interface Me {
@@ -302,13 +302,22 @@ export interface DemoPerson {
 }
 
 /* ----------------------------------------------------------------------------
-   The BFF's resource rows (console-bff.yaml ConsoleResource), search and preferences
+   The BFF's resource rows (console-bff.yaml ConsoleResource), search and preferences; the
+   resource page's detail, previews, activity, drift and jobs follow below
    ------------------------------------------------------------------------- */
 
 /** The state service's lifecycle state of a resource. */
 export type ResourceState = 'pending' | 'active' | 'updating' | 'deleting' | 'deleted' | 'failed'
 
 export const RESOURCE_STATES: readonly ResourceState[] = ['pending', 'active', 'updating', 'deleting', 'deleted', 'failed']
+
+/** A resource named by its wfrn, in previews, lineage and findings. */
+export interface ResourceRef {
+  wfrn: string
+  type: string
+  name?: string
+  state?: ResourceState | string
+}
 
 /** A resource as `GET /console/v1/r/{type}` lists it: the state service's row, the account's view. */
 export interface ConsoleResource {
@@ -326,7 +335,8 @@ export interface ConsoleResource {
   tags: Record<string, string>
   createdAt: string
   updatedAt: string
-  lastJob?: JobSummary
+  /** the change in flight or the last one, as the BFF summarises a job */
+  lastJob?: BffJobSummary
 }
 
 /** The filters `GET /console/v1/r/{type}` and its `:counts` take: free text, a state, drift and tags. */
@@ -407,4 +417,112 @@ export interface Preferences {
   /** per type key, the views the person saved */
   savedViews?: Record<string, SavedView[]>
   version?: number
+}
+
+/* ----------------------------------------------------------------------------
+   The resource page, the create wizard and the Actions menu (console-bff.yaml, phase 3): a
+   resource's detail, the command bodies, previews, activity, drift findings and jobs
+   ------------------------------------------------------------------------- */
+
+export interface ConsoleResourceDetail extends ConsoleResource {
+  finding?: Finding
+  jobs?: BffJobSummary[]
+  builtFrom?: ResourceRef[]
+  dependents?: ResourceRef[]
+  /** the verbs the signed-in person may run on this resource */
+  can: string[]
+  observedAt?: string
+  /** the provider's own id, kept beside the wfrn */
+  providerId?: string
+}
+
+/** The body of every create, update and verb call (CommandInput). */
+export interface CommandInput {
+  input: Record<string, unknown>
+  /** a destructive verb needs it */
+  confirm?: boolean
+  /** up to 1000 characters, kept with the job */
+  reason?: string
+  /** up to 16 labels kept with the job, values up to 128 characters */
+  labels?: Record<string, string>
+}
+
+/** What a create, update or verb answers: 202 with the job that carries it out. */
+export interface CommandAccepted {
+  wfrn: string
+  jobId: string
+  requestId: string
+  approval?: { approvalId?: string; group?: string; status?: string; timeout?: string }
+}
+
+/** One step of a preview, with what it will do. */
+export interface PreviewStep {
+  id: string
+  name: string
+  effect: 'create' | 'change' | 'delete' | 'read' | 'none' | 'unknown' | string
+  detail?: string
+  skipped?: true
+}
+
+/** The blast radius the BFF judged before a run (hub Preview). */
+export interface ConsolePreview {
+  workflow?: string
+  version?: string
+  steps: PreviewStep[]
+  affectedResources: ResourceRef[]
+  cost?: { monthly: number; currency: string; detail: string }
+  policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules?: { id: string; result: string; message: string }[]; engine?: string }
+}
+
+/** One line of a resource's activity trail: a platform event, or a job that touched it. */
+export interface ActivityEntry {
+  at: string
+  kind: 'event' | 'job'
+  type?: string
+  actor?: string
+  job?: BffJobSummary
+  data?: unknown
+}
+
+/** A drift finding: the fields where what the provider reports differs from what was asked for. */
+export interface Finding {
+  findingId: string
+  wfrn: string
+  status: 'open' | 'closed'
+  severity: 'info' | 'warning' | 'critical'
+  fields: { path: string; expected: unknown; observed: unknown }[]
+  openedAt: string
+  observedAt?: string
+  closedAt?: string
+  resolution?: string
+  can?: ('revert' | 'accept' | 'ignore')[]
+}
+
+/** A job as the BFF lists it: the platform's summary with its id spelled `jobId`. */
+export interface BffJobSummary {
+  jobId: string
+  workflow: string
+  status: JobStatus | string
+  title?: string
+  version?: string
+  requester?: string
+  wfrn?: string
+  startedAt?: string
+  endedAt?: string
+  durationMs?: number
+  kind?: 'single' | 'batch' | string
+  progress?: { done: number; total: number; failed: number }
+  errorClass?: string
+  failedStep?: string
+}
+
+export interface BffJobDetail extends BffJobSummary {
+  input?: Record<string, unknown>
+  output?: Record<string, unknown>
+  steps?: JobStep[]
+  approvals?: { approvalId?: string; group?: string; status: string; decidedBy?: string; decidedAt?: string }[]
+  preview?: ConsolePreview
+  attention?: { step: string; options: string[]; since: string }
+  children?: BffJobSummary[]
+  can?: { cancel?: boolean; retry?: boolean; skip?: boolean; abort?: boolean; rerun?: boolean }
 }

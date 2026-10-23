@@ -333,7 +333,7 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
           {x.help && (
             <>
               {' '}
-              <ExternalLink href={x.help} ariaLabel={`Help for ${label}`} className="inline-flex items-center gap-0.5">
+              <ExternalLink href={x.help} ariaLabel={`Learn more about ${label}`} className="inline-flex items-center gap-0.5">
                 Learn more
                 <Icon name="external" size={10} />
               </ExternalLink>
@@ -389,16 +389,19 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
       control = <ResourcePicker id={id} type={pickerType ?? xr.type} value={typeof v === 'string' ? v : ''} onChange={(s) => set(name, s || undefined)} createWith={xr.orCreateWith ?? xr.createWith} ariaLabel={label} required={isReq} disabled={fieldDisabled} />
     } else if (prop.enum) {
       labelFor = undefined
-      const options = prop.enum.map((e) => ({ value: String(e), label: String(e) }))
+      const choices = prop.enum.map((e) => ({ value: String(e), label: String(e) }))
+      const options = isReq ? choices : [{ value: '', label: 'Not set' }, ...choices]
+      // named by its label and the text it shows (WCAG 2.5.3): "Size: small"
+      const shown = options.find((o) => o.value === stringValue)?.label ?? 'Choose…'
       control = (
         <Select
-          ariaLabel={label}
+          ariaLabel={`${label}: ${shown}`}
           value={stringValue}
           onChange={(s) => {
             const raw = prop.enum?.find((e) => String(e) === s)
             set(name, s === '' ? undefined : (raw ?? s))
           }}
-          options={isReq ? options : [{ value: '', label: 'Not set' }, ...options]}
+          options={options}
           placeholder="Choose…"
           disabled={fieldDisabled}
         />

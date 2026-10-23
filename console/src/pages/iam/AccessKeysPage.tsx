@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { Button, Card, ConfirmDialog, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, Textarea, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
-import { CopyableId, DotTag, ErrorState, When } from '@iaf/console-kit'
+import { Button, Card, CopyButton, Field, Icon, IconButton, Input, Modal, OverlayBody, OverlayFooter, OverlayHeader, PageHeader, ProgressBar, Select, Table, Textarea, plural, type ProgressTone, type TableColumn } from '@iaf/ui'
+import { ConfirmDialog, CopyableId, DotTag, ErrorState, When } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { Link, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
