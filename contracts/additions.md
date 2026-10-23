@@ -38,6 +38,108 @@ service, with these details the contract does not spell out yet:
 - `POST /r/{type}:batch` answers 400 `bulk.unsupported` for a verb without a batch route and
   400 `required` for a row without `wfrn` on a verb other than create.
 
+## Changing resources safely (phase 4)
+
+New in phase 4. Every shape below is served by the demo profile as written.
+
+**Blast radius (WP 4.5).** `GET /r/{type}/{wfrn}/blast-radius?depth=` (1 to 5, 3 by default; as
+`<service>:get` on the wfrn allows) answers what depends on the resource:
+
+```yaml
+BlastRadius:
+  resource: ResourceRef
+  total: integer          # dependents within depth, every account
+  direct: integer         # those that depend on the resource itself
+  byAccount: [{ accountId, count, current }]   # current: the session's account
+  dependents: [{ wfrn, type, name, state, id, depth }]   # named in the session's account only, nearest first; other accounts are counted
+  edges: [{ from, to, via }]                  # wfrns; via is the lineage relation
+  depth: integer
+  truncated: boolean      # true when the walk stopped at 500 dependents
+```
+
+- The verb preview `POST /r/{type}/{wfrn}:{verb}:preview` of a delete or a destructive verb
+  carries `blastRadius`, and its named dependents join `affectedResources`. A delete's preview
+  with live dependents has `policy.decision: deny` with the rule `dependents.exist`. A delete
+  whose workflow publishes no preview still answers, with the console's part alone.
+- A delete (`POST /r/{type}/{wfrn}:delete`) while live resources depend on it is a 409:
+  `{ error: "dependents.exist", message, problems, correlationId, detail: { dependents:
+  [Dependent], total, byAccount } }`. Nothing runs.
+- `POST /r/{type}:batch:preview` takes the `:batch` body and answers, before anything runs:
+  `{ verb, items: [{ index, wfrn, name, state, dependents, named: [Dependent], problems }],
+  affected: BlastRadius (what the rows reach together, a shared dependent counted once),
+  policy }`. A row's problems: `not-found`, `state`, `dependents.exist` (a delete row),
+  `required` (a create row's missing field), `tags.required` / `tags.invalid` (a create row's
+  tags). `policy.decision` is `deny` with one rule per kind of problem.
+- A batch delete with a row that has live dependents is a 409 `dependents.exist` with
+  `detail.rows: [{ wfrn, dependents, total }]`.
+
+**Retry, skip, abort (WP 4.2).** On `GET /console/v1/jobs/{jobId}`, `can` lists what the policies
+allow and the platform offers: `cancel` (running), `retry`, `skip`, `abort`.
+
+- `POST /console/v1/jobs/{jobId}:retry` → 202 `CommandAccepted { wfrn, jobId, requestId,
+  approval }`. A job paused on a failed step (`needs-attention`) resumes with the same `jobId`. A
+  failed, cancelled or rolled-back job runs again as a new job (the platform's `:rerun`, from its
+  failed step, or from its first step when it rolled back), judged like the first request
+  (`<service>:<verb>` on its wfrn, a fresh sign-in for a destructive one). A finished batch runs
+  its failed rows again. A failed create's resource goes back to `pending` on the state service
+  (`RetryRequested` in its activity, naming the rerun as `jobId` and the failed job as
+  `retryOf`). 409 `job.not-failed` with `detail.status` when there is nothing to retry; 409 when
+  the resource moved on (a create whose resource is no longer failed).
+- `POST /console/v1/jobs/{jobId}:skip` with optional `{ step }` (the step the job waits on when
+  left out) → 202 `CommandAccepted`, the same `jobId`; asks what the request's own action asks.
+- `POST /console/v1/jobs/{jobId}:abort` → 202 `CommandAccepted`; the compensations run and the
+  job ends `rolled-back` or `failed`; asks `jobs:cancel`.
+- Skip and abort of a job that is not paused are a 409 `job.not-paused` with `detail.status`.
+
+**Bulk in waves (WP 4.2).** `POST /r/{type}:batch` takes `rollout: { waves: [percent...],
+maxParallel, stopIfFailedPercent }` (cumulative percentages, the workflow's own rollout when left
+out). More rows than the workflow takes in one batch is a 400 `batch.too-large` at `/items`.
+
+- The batch's job (`GET /console/v1/jobs/{jobId}`) carries `progress { done, total, failed }`,
+  `children` (the rows' jobs), and
+  `batch: { rollout, waves: [{ index, percent, size, status, startedAt, endedAt }], rows: [{
+  index, wfrn, jobId, status, error, wave }], stoppedReason }`. A row names its wfrn once its job
+  started.
+- While the batch runs, its `approvals` include its rows' pending approvals, each with
+  `canDecide`.
+- `POST /console/v1/jobs/{jobId}/approvals:decide { decision: approve|reject, comment? }` decides
+  every pending approval of the request and its rows that the person may decide, each as their
+  own platform decision: 202 `{ decision, decided: [approvalId], left: [{ approvalId, jobId,
+  reason }] }`. `left` names the approvals of a group the person is not in, the person's own
+  request, or one decided a moment ago. It asks `approvals:decide` (403 with a Denial for a
+  viewer). Call it once per wave.
+
+**Required tags (WP 4.4).** `GET /console/v1/tag-policy` (or `?account=<id>` for another account
+of the person's, else 404) answers `{ accountId, required: [RequiredTag] }`:
+
+```yaml
+RequiredTag:
+  key: string             # owner, cost-centre, data-class, environment
+  title: string
+  description: string
+  values: [string]        # when the tag takes one of a list (data-class, environment)
+  pattern: string         # when it takes a pattern (cost-centre: ^cc-[0-9]{4}$)
+  default: string         # what the create form pre-fills
+  defaultFrom: string     # account | organization | input.<field> (copy the create's own field)
+```
+
+- Every create names every required tag itself: `POST /r/{type} { input, tags }`, and
+  `:batch { verb: create, tags, items: [{ input, tags }] }` (the batch's tags, a row's over them).
+  The BFF never adds one the request left out, so API and MCP callers are held to it too.
+- A missing or blank tag is a 400 `tags.required`, a value outside the tag's list or pattern a
+  400 `tags.invalid`, each with a problem at `/tags/<key>` (`/items/<i>/tags/<key>` in a batch).
+  Nothing is minted.
+- `POST /r/{type}:preview { input, tags }` answers `policy.decision: deny` with the rule
+  `tags.required` (message: the missing keys) or `tags.invalid` while the tags fall short.
+- The tags are set on the minted resource before its workflow starts, so the resource carries
+  them from `pending` on.
+- `PUT /r/{type}/{wfrn}/tags` may not remove a required tag the resource carries (400
+  `tags.required` at `/tags/<key>`) or give one a value it may not take (400 `tags.invalid`). A
+  resource that never carried one (imported, or older than the policy) is not made to.
+- Configuration: `console.tags.required` (key, title, description, values or pattern, default,
+  default-from: `account.owning-team`, `account`, `input.<field>`); `console.tags.accounts.<accountId>.<key>`
+  for an account's own value until the identity service's account record carries one.
+
 ## Search
 
 `GET /console/v1/search` and `GET /console/v1/suggest` are served as the contract says, through
