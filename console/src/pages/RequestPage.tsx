@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Card, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
+import { Button, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
 import { ConfirmDialog, CopyableId, ErrorState, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
 import { useCommand } from '../app/commands'
 import { pathOfWfrn, useConsole } from '../app/console'
@@ -10,6 +10,7 @@ import { api } from '../lib/api'
 import { bff } from '../lib/bff'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { useQuery } from '../lib/queries'
+import { FailureExplainer } from './explain/FailureExplainer'
 
 /*
  * One request: its facts, what went wrong if it did, the steps it ran, and its input and
@@ -97,22 +98,7 @@ export default function RequestPage({ route }: PageProps) {
         ]}
       />
 
-      {(job.status === 'failed' || job.error) && (
-        <Card title="What went wrong" subtitle={job.failedStep ? `In step ${job.failedStep}` : undefined} className="mb-8">
-          <div className="flex items-start gap-3 text-sm">
-            <Icon name="alert-triangle" size={18} className="mt-0.5 shrink-0 text-critical" />
-            <div className="min-w-0 space-y-1">
-              {job.errorClass && (
-                <div>
-                  <span className="text-secondary">Class </span>
-                  <span className="font-mono text-primary">{job.errorClass}</span>
-                </div>
-              )}
-              <p className="text-primary">{job.error?.message ?? 'The platform recorded a failure without a message.'}</p>
-            </div>
-          </div>
-        </Card>
-      )}
+      {(job.status === 'failed' || job.status === 'needs-attention' || job.error) && <FailureExplainer jobId={job.id} status={job.status} fallback={{ errorClass: job.errorClass, message: job.error?.message, step: job.failedStep }} className="mb-8" />}
 
       <Section title="Steps" description="What the workflow ran, in order." className="mb-8">
         {job.steps?.length ? <StepTimeline steps={job.steps} children={job.children} highlight={job.failedStep} defaultOpen={job.failedStep ? [job.failedStep] : []} /> : <EmptyState compact icon="list" title="No steps recorded" message="The platform kept only this request's summary." />}

@@ -5,6 +5,7 @@ import { buildMockData, nextMockEvent, type MockData } from './data'
 import { liveRowOf, resourceRoutes, settleConsole, usedByTypeOf } from './commands'
 import { assistantRoutes } from './assistant'
 import { costRoutes } from './cost'
+import { explanationRoutes } from './explain'
 import { insightRoutes } from './insights'
 import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, preferencesOf, putPreferences, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
 import { consoleResourcesOf, countsOf, filterConsoleResources, searchConsoleResources, sortConsoleResources, suggestFrom, type ResourceContext } from './resources'
@@ -550,9 +551,9 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
     }
 
-    /* phase 9: the executive home's numbers, cost and budgets, the copilot */
+    /* phase 9: the executive home's numbers, cost and budgets, the copilot, the failure explainer */
     const phase9 = { session: s, body, headers: req.headers, now: now() }
-    const beyond = insightRoutes(data, phase9, path, params, method) ?? costRoutes(data, phase9, path, params, method) ?? assistantRoutes(data, phase9, path, params, method)
+    const beyond = insightRoutes(data, phase9, path, params, method) ?? costRoutes(data, phase9, path, params, method) ?? assistantRoutes(data, phase9, path, params, method) ?? explanationRoutes(data, phase9, path, params, method)
     if (beyond) return beyond
 
     /* resources, as the state service lists them for the account; search and suggestions over the same rows */
