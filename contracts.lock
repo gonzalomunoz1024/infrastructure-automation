@@ -1,0 +1,8 @@
+# Contracts copied from the customer console hub, pinned by commit. ContractsLockTest checks the copies
+# under src/main/resources/contracts match these hashes; re-pin when the hub moves.
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root
+commit: 025e8c7
+files:
+  contracts/openapi/console-identity-service.yaml: sha256:7fc53d4f7571b31fbc65b7ca975b166bf945dbc9c03889b5742badd3362fc518
+  contracts/asyncapi/console-events.yaml: sha256:4fe1a2a5a9e2ba5eac9a4606909246c60879b67c6392e056dfee1d01f5db3a18

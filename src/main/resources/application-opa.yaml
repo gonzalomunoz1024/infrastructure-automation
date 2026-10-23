@@ -1,0 +1,5 @@
+# Decisions from an OPA that polls this service's bundle.
+console:
+  identity:
+    authz:
+      opa-url: ${CONSOLE_OPA_URL:http://localhost:8181}

@@ -1,0 +1,67 @@
+# The identity service's defaults. Profiles: mongo (MongoDB instead of memory), kafka (the outbox
+# relay publishes to Kafka), opa (decisions come from an OPA holding this service's bundle), vault
+# (platform service account tokens in Vault), demo (dev headers, the demo seed, platform-fake on
+# 18090), fake (platform-fake embedded in this process).
+server:
+  port: 18082
+
+spring:
+  application:
+    name: console-identity-service
+  jackson:
+    default-property-inclusion: non_null
+  # the stores are in memory unless the mongo profile is on, which turns these back on
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+      - org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration
+
+console:
+  identity:
+    partition: wf
+    region: global
+    platform:
+      base-url: http://localhost:18090
+      # admin-token: the console's admin service account (P-03); without it the dev header names the user
+      dev-user: gonzalo
+      catalog-refresh: 5m
+    auth:
+      issuer: console-bff
+      audiences: [console-identity-service, console]
+      # jwks or jwks-uri: the BFF's signing keys; the demo profile points at the BFF's JWKS endpoint
+      jwks-refresh: 5m
+      max-lifetime: 1h
+      skew: 30s
+      dev-headers: false
+      # bundle-token: what OPA presents for GET /internal/opa/bundles/console-authz.tar.gz
+    authz:
+      opa-url: http://localhost:8181
+      cache-ttl: 2s
+    vault:
+      base-url: http://localhost:8200
+      mount: secret
+      path-prefix: console/accounts
+  outbox:
+    relay:
+      enabled: true
+      interval: 1s
+  platform-fake:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.iaf.console: info
