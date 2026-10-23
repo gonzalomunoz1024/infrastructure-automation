@@ -192,6 +192,7 @@ paths:
               properties:
                 name: { type: string, maxLength: 64 }
                 owningTeam: { type: string, description: The platform team that owns the account's resources }
+                costCentre: { type: string, maxLength: 64, description: The finance cost centre the account is charged to }
                 ownerEmail: { type: string, format: email }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
       responses:
@@ -220,7 +221,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       operationId: updateAccount
-      summary: Change an account's name, status or default region
+      summary: Change an account's name, status, default region or cost centre
       tags: [Accounts]
       parameters:
         - $ref: '#/components/parameters/IfMatch'
@@ -235,6 +236,7 @@ paths:
                 name: { type: string, maxLength: 64 }
                 status: { $ref: '#/components/schemas/AccountStatus' }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
+                costCentre: { type: string, maxLength: 64 }
       responses:
         '200':
           description: The account
@@ -1218,6 +1220,7 @@ components:
         name: { type: string }
         status: { $ref: '#/components/schemas/AccountStatus' }
         owningTeam: { type: string }
+        costCentre: { type: string, maxLength: 64, description: 'The finance cost centre the account is charged to (decision 2): chargeback rows and the executive home''s spend by team group by it; absent until an admin sets it, when the cost service falls back to owningTeam' }
         defaultRegion: { $ref: '#/components/schemas/RegionName' }
         platformServiceAccountId: { type: string, description: 'The platform service account bound to this account (P-03); its token is never in this record: GET /v1/accounts/{accountId}/platform-credentials tells the console''s own services where it is' }
         version: { type: integer }

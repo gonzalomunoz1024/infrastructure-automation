@@ -26,6 +26,7 @@
     },
     "console": { "$ref": "resource-type.schema.json#/$defs/console" },
     "observe": { "$ref": "resource-type.schema.json#/$defs/observe" },
+    "cost": { "$ref": "resource-type.schema.json#/$defs/cost" },
     "schema": {
       "description": "Patches to the type's schema, by field",
       "type": "object",

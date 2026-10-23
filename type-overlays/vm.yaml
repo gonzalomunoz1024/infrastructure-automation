@@ -33,6 +33,11 @@ observe:
   # No `list` block: vm.list takes no paging input at c9529d5 (its input is `environment` only), so
   # the type is observed one resource at a time on the slowest tier until the provider team adds a
   # paged read (P-09, item 3).
+cost:                               # P-22: priced by list-prices' vm.create rate per vCPU
+  priceList: list-prices
+  provider: vsphere
+  action: vm.create
+  by: cpu
 schema:
   properties:
     name:
