@@ -56,8 +56,9 @@ public class PlatformConfiguration {
                 throw e;
             }
             int aligned = DemoWorld.alignSingleReads(fake);
-            log.info("demo: the fake platform listens on {} with accounts {} and {}; {} provider object(s) read as recorded", fake.baseUrl(),
-                    fake.demo().compute().accountId(), fake.demo().data().accountId(), aligned);
+            int sized = DemoWorld.sizeUnmanagedVms(fake);
+            log.info("demo: the fake platform listens on {} with accounts {} and {}; {} provider object(s) read as recorded, {} unmanaged VM(s) sized",
+                    fake.baseUrl(), fake.demo().compute().accountId(), fake.demo().data().accountId(), aligned, sized);
             return fake;
         }
 

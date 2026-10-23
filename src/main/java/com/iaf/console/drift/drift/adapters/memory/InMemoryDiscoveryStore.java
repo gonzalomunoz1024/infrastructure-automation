@@ -48,13 +48,14 @@ public final class InMemoryDiscoveryStore implements DiscoveryStorePort {
     }
 
     @Override
-    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, int limit, String after) {
+    public Mono<Page<UnmanagedObject>> listUnmanaged(AccountScope scope, String type, String region, String owner, int limit, String after) {
         return Mono.fromSupplier(() -> {
             String from = after == null || after.isBlank() ? null : CursorPaging.decode(after).id();
             List<Map.Entry<String, UnmanagedObject>> fetched = unmanaged.entrySet().stream()
                     .filter(e -> scope.accountId().equals(e.getValue().accountId()))
                     .filter(e -> type == null || type.equals(e.getValue().type()))
                     .filter(e -> region == null || region.equals(e.getValue().region()))
+                    .filter(e -> owned(e.getValue(), scope.accountId(), owner))
                     .filter(e -> from == null || e.getKey().compareTo(from) > 0)
                     .sorted(Map.Entry.comparingByKey(Comparator.naturalOrder()))
                     .limit(limit + 1L)
@@ -80,5 +81,23 @@ public final class InMemoryDiscoveryStore implements DiscoveryStorePort {
     @Override
     public Mono<Void> deleteUnmanaged(AccountScope scope, String type, String region, String providerId) {
         return Mono.fromRunnable(() -> unmanaged.remove(key(scope.accountId(), type, region, providerId)));
+    }
+
+    @Override
+    public Flux<UnmanagedObject> findCopies(String type, String region, String providerId) {
+        return Flux.fromIterable(List.copyOf(unmanaged.values()))
+                .filter(o -> type.equals(o.type()) && region.equals(o.region()) && providerId.equals(o.providerId()));
+    }
+
+    /** The owner filter of a list: {@code mine} is guessed to be or assigned to the account, {@code unknown} has no guess. */
+    static boolean owned(UnmanagedObject o, String accountId, String owner) {
+        if (MINE.equals(owner)) {
+            return o.ownerGuess() != null && accountId.equals(o.ownerGuess().accountId())
+                    || o.assignment() != null && accountId.equals(o.assignment().accountId());
+        }
+        if (UNKNOWN.equals(owner)) {
+            return o.ownerGuess() == null;
+        }
+        return true;
     }
 }

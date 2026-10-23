@@ -26,7 +26,8 @@ import reactor.core.publisher.Mono;
  * The resource types from the platform ({@code GET /api/v1/resource-types}, P-06), read with the
  * ETag and kept for a short while; when the platform cannot be reached the last good set serves.
  * What drift keeps of a type: its observe action and list/discover reads, the ignored fields, the
- * interval, what not-found means, and which fields the update workflow may change.
+ * interval, what not-found means, and which fields the update workflow may change; for monitoring
+ * and rightsizing, its metrics read and the numeric values its schema allows for a field.
  */
 public final class PlatformResourceTypes implements ResourceTypesPort {
 
@@ -99,12 +100,17 @@ public final class PlatformResourceTypes implements ResourceTypesPort {
     public static TypeInfo info(ResourceType type) {
         Set<String> mutable = new HashSet<>();
         List<String> fields = new ArrayList<>();
+        Map<String, List<Double>> enums = new HashMap<>();
         if (type.schema() != null) {
             JsonNode properties = type.schema().path("properties");
             properties.fieldNames().forEachRemaining(field -> {
                 fields.add(field);
                 if (properties.path(field).path("x-console").path("mutable").asBoolean(false)) {
                     mutable.add(field);
+                }
+                List<Double> allowed = numbers(properties.path(field).path("enum"));
+                if (!allowed.isEmpty()) {
+                    enums.put(field, allowed);
                 }
             });
         }
@@ -128,6 +134,25 @@ public final class PlatformResourceTypes implements ResourceTypesPort {
                 observe != null && observe.list() != null,
                 observe != null && observe.discover() != null,
                 Set.copyOf(mutable),
-                List.copyOf(fields));
+                List.copyOf(fields),
+                observe == null || observe.metrics() == null || observe.metrics().action() == null ? null
+                        : new TypeInfo.Metrics(observe.metrics().action(),
+                                observe.metrics().map() == null ? List.of() : List.copyOf(observe.metrics().map().keySet())),
+                enums);
+    }
+
+    /** The values of a schema {@code enum} when every one is a number; empty otherwise (a list of names is no size). */
+    private static List<Double> numbers(JsonNode values) {
+        if (!values.isArray() || values.isEmpty()) {
+            return List.of();
+        }
+        List<Double> out = new ArrayList<>();
+        for (JsonNode v : values) {
+            if (!v.isNumber()) {
+                return List.of();
+            }
+            out.add(v.asDouble());
+        }
+        return List.copyOf(out);
     }
 }

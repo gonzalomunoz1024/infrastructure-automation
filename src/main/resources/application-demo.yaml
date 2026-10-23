@@ -8,6 +8,7 @@ console:
     step-delay: 250ms
   auth:
     dev-headers: true
+    authorization: roles   # no identity service in the demo: the caller's managed roles decide its writes
   state:
     mode: embedded
   # the demos keep the dev headers (hub decision 23): X-Console-Service names this service
@@ -33,3 +34,23 @@ console:
     webhooks:
       vsphere:
         secret: demo-vsphere-webhook-secret
+
+---
+# Monitoring and rightsizing in the demo: the fake platform's types have no metrics read, so the
+# demo makes up CPU, memory and disk series for its VMs (two idle, one oversized, one busy), and the
+# utilisation pass wakes soon after the start, so recommendations show within a minute.
+console:
+  monitoring:
+    metrics:
+      mode: demo
+      demo:
+        types: [vm]
+        idle: [batch-01, shop-01]
+        oversized: [web-02]
+        busy: [cache-01]
+    alarms:
+      interval: 30s
+    rightsizing:
+      interval: 1h
+      check-interval: 10m
+      initial-delay: 20s

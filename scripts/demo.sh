@@ -21,13 +21,14 @@ ACCOUNT="123456789012"
 HDR_ACCOUNT="X-Console-Account: $ACCOUNT"
 HDR_USER="X-Console-User: dana"
 HDR_GROUPS="X-Console-Groups: team-compute,developer"
+HDR_ROLES="X-Console-Roles: operator"
 HDR_SERVICE="X-Console-Service: console-bff"
 cd "$(dirname "$0")/.."
 
 json() { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), indent=2))' 2>/dev/null || cat; }
 field() { python3 -c "import json,sys; d=json.load(sys.stdin); print(d$1)"; }
 urlencode() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
-as_dana() { curl -sS -H "$HDR_ACCOUNT" -H "$HDR_USER" -H "$HDR_GROUPS" "$@"; }
+as_dana() { curl -sS -H "$HDR_ACCOUNT" -H "$HDR_USER" -H "$HDR_GROUPS" -H "$HDR_ROLES" "$@"; }
 
 # the watched dev VMs of the account, one per line: wfrn, vSphere id, name
 dev_vms() {

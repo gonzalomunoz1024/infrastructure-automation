@@ -64,6 +64,30 @@ console:
   identity:
     base-url: http://localhost:18083
     timeout: 10s
+  # monthly costs of unmanaged objects (WP 5.3) and of resources to rightsize (WP 9.22): the cost
+  # service's list-price estimates (POST /v1/cost:estimate, audience console-cost-service) at
+  # base-url, or, with base-url empty, this price list per type: a base a month, a rate per unit of
+  # a numeric attribute, and the attribute whose value picks a price. Keys with capitals are
+  # bracketed so they bind as written.
+  cost:
+    base-url: ""
+    timeout: 5s
+    currency: USD
+    basis: list-prices
+    prices:
+      vm:
+        monthly: 5.00
+        per:
+          cpu: 14.60
+          "[memoryGb]": 3.65
+      database:
+        by: tier
+        choices:
+          "[M10]": 57.00
+          "[M30]": 388.00
+      volume:
+        per:
+          "[sizeGb]": 0.10
   # how this service names itself to the state and identity services (hub decision 23): a service
   # token from the BFF, authenticated by the pod's projected service-account token (assertion-file,
   # in a cluster) or by a JWT signed with this service's own registered EC key (signing-key-file,
@@ -86,7 +110,9 @@ console:
     jwks-uri: http://localhost:18081/.well-known/jwks.json
     jwks-timeout: 10s     # a slower fetch of the BFF's keys fails; the next request fetches again
     issuer: console-bff
-    audiences: [console-drift-service, console]
+    audiences: [console-drift-service]   # a token's aud must be exactly one of these (hub decision 35)
+    service-callers: [console-bff]       # the services whose tokens may name no account
+    authorization: identity              # a person's writes are checked here too: identity (POST /v1/authorize) or roles (demos)
     dev-headers: false
   temporal:
     target: localhost:7233
@@ -119,3 +145,38 @@ management:
 logging:
   level:
     com.iaf.console: info
+
+---
+# Monitoring and rightsizing (WP 9.21, 9.22), in their own document so the drift settings above stay
+# as they are. Series come from each type's metrics read (P-09 observe.metrics) with the account's own
+# platform credential, under the observe budget above; the demo profile makes them up instead.
+console:
+  monitoring:
+    metrics:
+      mode: platform      # platform (the type's metrics read) or demo (made-up series, demo only)
+      max-range: 92d      # GET /v1/metrics: the longest range one read may ask for
+      max-steps: 5000     # and the most steps it may hold
+    alarms:
+      enabled: true
+      interval: 1m        # every alarm is evaluated this often (the contract says every minute)
+      concurrency: 4      # resources read at once by one evaluation
+    rightsizing:
+      enabled: true
+      interval: 24h       # each resource's utilisation is read once in this
+      check-interval: 1h  # the loop wakes this often and reads the resources whose turn has come
+      initial-delay: 1m   # the first wake after a start
+      window: 14d         # how far back a read reaches (only since the resource's last change of size)
+      step: 1h            # one point per this
+      min-history: 7d     # the points a judgement needs, at that step (168)
+      idle-cpu: 5         # 95th percentiles in percent: both under these is idle (delete)
+      idle-memory: 10
+      oversized-cpu: 20   # under one of these shrinks that dimension
+      oversized-memory: 30
+      target-p95: 60      # to the smallest allowed size that keeps its 95th percentile under this
+      cpu-series: cpuPercent
+      memory-series: memoryPercent
+      cpu-field: cpu      # the size fields a resize sets
+      memory-field: memoryGb
+      min-cpu: 1          # a size without allowed values is halved down to these
+      min-memory: 2
+      concurrency: 4      # resources read at once by one pass

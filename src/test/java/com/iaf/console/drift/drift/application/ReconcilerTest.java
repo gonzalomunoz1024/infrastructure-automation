@@ -248,6 +248,17 @@ class ReconcilerTest {
         }
 
         @Override
+        public Mono<com.iaf.console.drift.drift.domain.FindingStats> countWindow(com.iaf.console.kit.scope.AccountScope scope, Instant since,
+                Instant until) {
+            return delegate.countWindow(scope, since, until);
+        }
+
+        @Override
+        public Mono<com.iaf.console.drift.drift.domain.FindingStats> countWindowEveryAccount(Instant since, Instant until) {
+            return delegate.countWindowEveryAccount(since, until);
+        }
+
+        @Override
         public Mono<Finding> findOpenByWfrn(String wfrn) {
             return Mono.just(staleOpen);
         }

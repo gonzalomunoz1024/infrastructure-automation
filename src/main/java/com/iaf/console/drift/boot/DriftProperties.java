@@ -20,7 +20,8 @@ public record DriftProperties(
         ServiceTokenSettings serviceTokens,
         TemporalSettings temporal,
         KafkaSettings kafka,
-        DemoSettings demo) {
+        DemoSettings demo,
+        CostSettings cost) {
 
     public DriftProperties {
         region = region == null || region.isBlank() ? "global" : region;
@@ -29,11 +30,12 @@ public record DriftProperties(
         state = state == null ? new StateSettings(null, null, null) : state;
         identity = identity == null ? new IdentitySettings(null, null) : identity;
         platform = platform == null ? new PlatformSettings(null, null, null, null, null) : platform;
-        auth = auth == null ? new AuthSettings(null, null, null, null, null) : auth;
+        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null) : auth;
         serviceTokens = serviceTokens == null ? new ServiceTokenSettings(null, null, null, null, null, null, null, null) : serviceTokens;
         temporal = temporal == null ? new TemporalSettings(null, null, null, null) : temporal;
         kafka = kafka == null ? new KafkaSettings(null, null, null, null) : kafka;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
+        cost = cost == null ? new CostSettings(null, null, null, null, null) : cost;
     }
 
     /** The partition of every wfrn this service mints ({@code wf} for the firm's one partition). */
@@ -140,6 +142,29 @@ public record DriftProperties(
         }
     }
 
+    /**
+     * Where the monthly cost of an unmanaged object or a resource comes from: the cost service's
+     * estimates ({@code POST /v1/cost:estimate}) at {@code base-url}, or, with no base-url, the
+     * price list here, per type.
+     */
+    public record CostSettings(String baseUrl, Duration timeout, String currency, String basis, Map<String, PriceSettings> prices) {
+        public CostSettings {
+            baseUrl = baseUrl == null ? "" : baseUrl.trim();
+            timeout = timeout == null ? Duration.ofSeconds(5) : timeout;
+            currency = currency == null || currency.isBlank() ? "USD" : currency;
+            basis = basis == null || basis.isBlank() ? "list-prices" : basis;
+            prices = prices == null ? Map.of() : Map.copyOf(prices);
+        }
+
+        public boolean service() {
+            return !baseUrl.isEmpty();
+        }
+    }
+
+    /** One type's list price: a base a month, a rate per unit of numeric attributes, and the attribute whose value picks a price. */
+    public record PriceSettings(Double monthly, Map<String, Double> per, String by, Map<String, Double> choices) {
+    }
+
     /** The identity service, which answers an account's platform credential (hub decision 18). */
     public record IdentitySettings(String baseUrl, Duration timeout) {
         public IdentitySettings {
@@ -186,13 +211,29 @@ public record DriftProperties(
     }
 
     /** How callers are authenticated: the BFF's JWKS, its issuer, the audiences this service answers to, and the dev headers switch. */
-    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, Duration jwksTimeout) {
+    /**
+     * Who may call: tokens of {@code issuer} from the JWKS, for exactly one of {@code audiences}; a token
+     * for no account only from one of {@code serviceCallers} (hub decision 35); and how a person's
+     * writes are authorized here too, {@code identity} (the identity service decides) or {@code roles}
+     * (the token's managed roles, for the demos).
+     */
+    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, Duration jwksTimeout,
+            List<String> serviceCallers, String authorization) {
         public AuthSettings {
             jwksUri = jwksUri == null ? "http://localhost:18081/.well-known/jwks.json" : jwksUri;
             jwksTimeout = jwksTimeout == null ? Duration.ofSeconds(10) : jwksTimeout;
             issuer = issuer == null ? "console-bff" : issuer;
-            audiences = audiences == null || audiences.isEmpty() ? List.of("console-drift-service", "console") : List.copyOf(audiences);
+            audiences = audiences == null || audiences.isEmpty() ? List.of("console-drift-service") : List.copyOf(audiences);
             devHeaders = devHeaders != null && devHeaders;
+            serviceCallers = serviceCallers == null || serviceCallers.isEmpty() ? List.of("console-bff") : List.copyOf(serviceCallers);
+            authorization = authorization == null || authorization.isBlank() ? "identity" : authorization;
+            if (!authorization.equals("identity") && !authorization.equals("roles")) {
+                throw new IllegalArgumentException("console.auth.authorization is identity or roles, not " + authorization);
+            }
+        }
+
+        public boolean byRoles() {
+            return authorization.equals("roles");
         }
     }
 

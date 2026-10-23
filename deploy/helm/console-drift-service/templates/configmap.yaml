@@ -60,6 +60,9 @@ data:
         dev-headers: false
       identity:
         base-url: {{ .Values.console.identity.baseUrl | quote }}
+      cost:
+        base-url: {{ .Values.console.cost.baseUrl | quote }}
+        timeout: {{ .Values.console.cost.timeout }}
       service-tokens:
         mode: bff
         token-url: {{ .Values.serviceTokens.tokenUrl | quote }}
@@ -72,6 +75,8 @@ data:
         jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
+        service-callers: {{ toJson .Values.console.auth.serviceCallers }}
+        authorization: {{ .Values.console.auth.authorization | quote }}
         dev-headers: false
       temporal:
         target: {{ .Values.temporal.target | quote }}
