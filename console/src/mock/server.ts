@@ -21,6 +21,9 @@ import { policyRoutes } from './policies'
 import { stateRoutes } from './state'
 import { quotaRoutes } from './quotas'
 import { personalRoutes } from './personal'
+import { blueprintRoutes } from './blueprints'
+import { scorecardRoutes } from './scorecards'
+import { subscriptionRoutes } from './subscriptions'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -535,6 +538,9 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* notifications, their settings, chat links and weekly digests (phase 7) */
     const notified = notificationRoutes(data, routeCtx, path, params, method)
     if (notified) return notified
+    /* blueprints and stacks, compliance scorecards and event subscriptions (phase 9) */
+    const planned = blueprintRoutes(data, routeCtx, path, params, method) ?? scorecardRoutes(data, routeCtx, path, params, method) ?? subscriptionRoutes(data, routeCtx, path, params, method)
+    if (planned) return planned
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)

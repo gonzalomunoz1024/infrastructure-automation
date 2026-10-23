@@ -12,7 +12,8 @@ import { codeSamplesFor } from '../../lib/code'
 import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
-import type { ActivityEntry, ConsoleResourceDetail, Schema } from '../../lib/types'
+import type { ActivityEntry, ConsoleResourceDetail, Resource, Schema } from '../../lib/types'
+import { ComplianceTab } from './ComplianceTab'
 import { DriftTab } from './DriftTab'
 import { EDIT_NOT_OFFERED, editWaitNote } from './EditDrawer'
 import { HeldButton } from './HeldButton'
@@ -52,6 +53,8 @@ export function TabContent({ label, ...props }: TabProps & { label: string }) {
       return <Configuration {...props} />
     case 'drift':
       return <DriftTab {...props} />
+    case 'compliance':
+      return <ComplianceTab {...props} />
     case 'activity':
       return <ActivityTab {...props} />
     case 'relationships':

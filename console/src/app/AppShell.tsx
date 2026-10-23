@@ -63,6 +63,15 @@ const ActivityTrailPage = lazy(() => import('../pages/state/ActivityTrailPage'))
 const AsOfPage = lazy(() => import('../pages/state/AsOfPage'))
 const ResourceMapPage = lazy(() => import('../pages/state/ResourceMapPage'))
 const ServiceQuotasPage = lazy(() => import('../pages/quotas/ServiceQuotasPage'))
+const BlueprintsPage = lazy(() => import('../pages/blueprints/BlueprintsPage'))
+const BlueprintPage = lazy(() => import('../pages/blueprints/BlueprintsPage').then((m) => ({ default: m.BlueprintPage })))
+const LaunchPage = lazy(() => import('../pages/blueprints/LaunchPage'))
+const StacksPage = lazy(() => import('../pages/blueprints/StacksPage'))
+const StackPage = lazy(() => import('../pages/blueprints/StacksPage').then((m) => ({ default: m.StackPage })))
+const ScorecardPage = lazy(() => import('../pages/compliance/ScorecardPage'))
+const HeatmapPage = lazy(() => import('../pages/compliance/ScorecardPage').then((m) => ({ default: m.HeatmapPage })))
+const FailingPage = lazy(() => import('../pages/compliance/FailingPage'))
+const SubscriptionsPage = lazy(() => import('../pages/subscriptions/EventSubscriptionsPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
 const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
@@ -129,6 +138,15 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'as-of': AsOfPage,
   map: ResourceMapPage,
   'service-quotas': ServiceQuotasPage,
+  blueprints: BlueprintsPage,
+  blueprint: BlueprintPage,
+  'blueprint-launch': LaunchPage,
+  stacks: StacksPage,
+  stack: StackPage,
+  compliance: ScorecardPage,
+  'compliance-org': HeatmapPage,
+  'compliance-rule': FailingPage,
+  subscriptions: SubscriptionsPage,
   settings: SettingsPage,
   device: DevicePage,
   'iam-cli': CliSessionsPage,

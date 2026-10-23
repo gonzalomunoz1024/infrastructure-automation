@@ -98,6 +98,22 @@ Phase 7 remembers each person's places and raises quotas:
   to the platform team, the account's requests with their status, and the platform team deciding
   them there, never their own; a create the quota refuses links straight to the request
 
+Phase 7 launches stacks, weighs a change's risk, scores compliance and sends events out:
+
+- Blueprints lists the stacks the platform teams publish; a blueprint's page shows its waves,
+  parameters and outputs, and Launch is a wizard (the parameters drawn from the schema, the
+  account's required tags, then the plan by wave with every authorization decided) that sends one
+  request and opens the stack's page, which follows it through each resource, links every child
+  and its request, shows the outputs once active and the events; Teardown deletes in reverse order
+  with a reason, optional steps to keep and the name typed; Resume starts again what failed
+- every preview (the action, edit and bulk drawers, the create review) and every request page
+  carries a change risk score from 0 to 100 with its reasons; a high score says it needs an approver
+- Scorecard scores the account by rule pack and severity with a 30-day trend, the organization
+  heat map scores every account you may read, a rule lists its failing resources and Remediate
+  runs the rule's fix, and the resource page has a Compliance tab
+- Event subscriptions sends the events you pick to a webhook (https only, shown as text), a Kafka
+  topic or a Slack channel; each is created, tested with one sample event and deleted
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -923,6 +939,44 @@ type, so the feed must subscribe to every one).
     ask for more than the rules give at once is the one that waits, so the earlier journeys ask for
     150 access keys, past the access keys rule's 100.
 
+100. **Blueprints and stacks go through the BFF, on routes the contract does not have yet.** The
+    state service owns them (state OpenAPI 1.2.0, hub decision 33); the browser calls only
+    `/console/v1/blueprints`, `/console/v1/blueprints/{name}:plan`, `/console/v1/stacks`,
+    `/console/v1/stacks/{wfrn}` (with `/events`, `:teardown` and `:resume`), which mirror the state
+    service's `/v1` routes one for one. The console adds three fields: each plan authorization
+    says `allowed` and, when refused, the `denied` layer; each step its child's `name` and current
+    `jobId`; the stack `can` (`teardown`, `resume`) for this person. They are a gap for the BFF
+    contract. A launch's children are ordinary creates, tagged `stack: <name>` and with the stack's
+    tags, so they show up in every list and need each type's own create.
+101. **A teardown is one request that needs every child's delete; a resume never relaunches.**
+    Teardown deletes the stack's resources the last wave first, keeps what the blueprint retains
+    and what the person ticks, wants a reason of 10 to 1000 characters and the name typed, and is
+    refused unless the person holds `blueprints:teardown` and `<service>:delete` on each deleted
+    child, so an Operator (who may not delete) launches and follows a stack but an Admin tears it
+    down. Resume is offered when the stack failed, or stopped deleting: it retries a paused child
+    in place or reruns an ended one, then goes on. The mock reads a stack's state from its
+    children's requests at every read, so it never goes stale and replays after a reload.
+102. **Change risk is worked out in the console, in one pure function, until the BFF carries it.**
+    `lib/risk.ts` adds points, capped at 100: delete 30, update 10, create 5; production 30; 10 or
+    50 targets 10 or 20; 1, 5 or 20 dependents 10, 20 or 30, plus 10 across accounts; restricted
+    data 10, confidential 5; 1 or 3 failed requests in 30 days 10 or 15; drift 5; a cost change of
+    500 a month or more 10. Below 30 is low, below 60 medium, else high, and high says it needs an
+    approver. Nothing enforces that yet: the gap is a `risk` block on the BFF's preview and job,
+    and a policy rule that asks for approval on a high score.
+103. **Event subscriptions are a BFF route the contract does not have.** `GET` and `POST
+    /console/v1/event-subscriptions`, `GET` and `DELETE /console/v1/event-subscriptions/{id}`,
+    `POST /console/v1/event-subscriptions/{id}:test` and `GET .../{id}/deliveries` (a gap): the
+    events are the topics' own (`state.resources`, `drift.findings`, `state.stacks`,
+    `drift.scorecards`), at most 20 per account, names unique. A webhook address is https only and is
+    data, drawn as text and never as a link; its signing secret is written once and never read back.
+    An Operator or an Admin creates and tests; only an Admin deletes.
+104. **Scorecards are read as the contract has them; a fix is a person's request.** The scorecard,
+    packs, heat map, failing list, `:remediate` and the resource's `/compliance` are the BFF
+    contract's routes. A workflow fix runs the rule's workflow through the type's own verb (needs
+    `scorecards:remediate` and that verb) and is followed until the resource passes; a tags fix
+    sets the tags at once. The resource page's Compliance tab comes after Drift in every type's
+    default tabs.
+
 ## Layout of the code
 
 ```
@@ -962,7 +1016,9 @@ console/
                   time travel, lineage and map reads, and their words), trail (the chain's
                   checks), sha256, timeTravel (replay and diff), graph (the map's layout and
                   keyboard), personal (recent visits, favourites and pinned types), quotas
-                  (Service Quotas, the rules and their words)
+                  (Service Quotas, the rules and their words), risk (the change risk score),
+                  blueprints, scorecards and subscriptions (their clients and words), roleGate
+                  (the console's own actions)
   src/mock/       the mock server (the BFF), types (the BFF's type descriptors), live (the live
                   feed per account), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
@@ -975,7 +1031,9 @@ console/
                   boundaries, guardrails and the simulator, over the directory's `decide`), state
                   (the chained and sealed trail, time travel, lineage and the map) with es256
                   (the demo keys), quotas (the rules, the account's requests and the platform
-                  team's decision), personal (recent visits and favourites), and the browser
+                  team's decision), personal (recent visits and favourites), blueprints (the
+                  catalog, stacks on a clock), scorecards (the rule packs, their evaluations and
+                  fixes), subscriptions (targets and test deliveries), and the browser
                   installer, with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews, elevations and CLI sign-ins among them), src/pages/iam/policies/ the
@@ -998,7 +1056,9 @@ console/
                   and LineageView sit with its other tabs; src/pages/personal/ the home's
                   Recently visited and Favourites panels, the star and the pin, src/pages/quotas/
                   the Service Quotas page, its request and decision dialogs and the create's
-                  quota note
+                  quota note; src/pages/blueprints/ the catalog, a blueprint, the launch wizard,
+                  stacks and a stack; risk/ the risk card; compliance/ the scorecard, heat map and
+                  failing resources; subscriptions/ the event subscriptions; resource/ComplianceTab
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

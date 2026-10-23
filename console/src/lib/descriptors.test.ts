@@ -68,7 +68,7 @@ describe('the defaults over the raw samples', () => {
   })
 
   it('keeps the default tabs when the descriptor lists none', () => {
-    expect(byName('vm').tabs).toEqual(['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'])
+    expect(byName('vm').tabs).toEqual(['Configuration', 'Drift', 'Compliance', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'])
     expect(composed.every((t) => t.tabs.join() === DEFAULT_TABS.join())).toBe(true)
   })
 

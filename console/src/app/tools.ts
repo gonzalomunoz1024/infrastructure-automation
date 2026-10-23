@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations' | 'quotas' | 'organization' | 'developer' | 'history'
+export type ToolSectionId = 'tags' | 'operations' | 'automation' | 'compliance' | 'quotas' | 'organization' | 'developer' | 'history'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -38,6 +38,8 @@ export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'developer', title: 'Developer tools', icon: 'terminal', subtitle: 'The shell, the API, the CLI and SDKs' },
   { id: 'history', title: 'Activity and history', icon: 'history', subtitle: 'The trail, the past and the map' },
   { id: 'quotas', title: 'Service Quotas', icon: 'chart', subtitle: 'The account’s limits and requests to raise them' },
+  { id: 'automation', title: 'Automation', icon: 'workflow', subtitle: 'Blueprints, stacks and event subscriptions' },
+  { id: 'compliance', title: 'Compliance', icon: 'shield', subtitle: 'Scorecards and the rules they check' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -55,6 +57,11 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'as-of', section: 'history', label: 'Inventory as of a date', icon: 'calendar', hint: 'The account’s resources as they were on a day', keywords: 'time travel history past snapshot point in time', routes: ['as-of'] },
   { route: 'map', section: 'history', label: 'Resource map', icon: 'git-branch', hint: 'What is built from what, across types and accounts', keywords: 'graph dependencies lineage topology map', routes: ['map'] },
   { route: 'service-quotas', section: 'quotas', label: 'Service Quotas', icon: 'chart', hint: 'What the account may hold, and requests to raise a limit', keywords: 'quotas limits increase raise request approve rules', routes: ['service-quotas'] },
+  { route: 'blueprints', section: 'automation', label: 'Blueprints', icon: 'layers', hint: 'Stacks of resources launched and torn down as one', keywords: 'blueprints templates stacks launch catalog', routes: ['blueprints', 'blueprint', 'blueprint-launch'] },
+  { route: 'stacks', section: 'automation', label: 'Stacks', icon: 'resource', hint: 'What was launched from a blueprint, and where it is', keywords: 'stacks teardown resume', routes: ['stacks', 'stack'] },
+  { route: 'subscriptions', section: 'automation', label: 'Event subscriptions', icon: 'bell', hint: 'Send resource events to a webhook, Kafka or Slack', keywords: 'events webhook kafka slack notify subscribe', routes: ['subscriptions'] },
+  { route: 'compliance', section: 'compliance', label: 'Scorecard', icon: 'shield', hint: 'How the account scores against each rule pack', keywords: 'compliance scorecard rules packs score remediate', routes: ['compliance', 'compliance-rule'] },
+  { route: 'compliance-org', section: 'compliance', label: 'Organization', icon: 'chart', hint: 'Every account’s score by pack', keywords: 'heat map organization accounts compliance', routes: ['compliance-org'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

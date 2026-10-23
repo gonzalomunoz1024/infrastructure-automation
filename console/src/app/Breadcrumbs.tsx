@@ -94,6 +94,22 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, { label: 'Activity and history', href: pathFor('activity') }, { label: route.def?.title ?? 'Activity and history' }]
     case 'service-quotas':
       return [home, { label: 'Service Quotas' }]
+    case 'blueprints':
+    case 'stacks':
+    case 'subscriptions':
+      return [home, { label: route.def?.title ?? 'Automation' }]
+    case 'blueprint':
+      return [home, { label: 'Blueprints', href: pathFor('blueprints') }, { label: route.params.name }]
+    case 'blueprint-launch':
+      return [home, { label: 'Blueprints', href: pathFor('blueprints') }, { label: route.params.name, href: pathFor('blueprint', { name: route.params.name }) }, { label: 'Launch' }]
+    case 'stack':
+      return [home, { label: 'Stacks', href: pathFor('stacks') }, { label: route.query.name ?? 'Stack' }]
+    case 'compliance':
+      return [home, { label: 'Scorecard' }]
+    case 'compliance-org':
+      return [home, { label: 'Scorecard', href: pathFor('compliance') }, { label: 'Organization' }]
+    case 'compliance-rule':
+      return [home, { label: 'Scorecard', href: pathFor('compliance') }, { label: route.params.rule }]
     case 'settings':
       return [home, { label: 'Settings' }]
     case 'iam-cli':

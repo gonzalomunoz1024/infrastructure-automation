@@ -50,6 +50,15 @@ export type RouteName =
   | 'as-of'
   | 'map'
   | 'service-quotas'
+  | 'blueprints'
+  | 'blueprint'
+  | 'blueprint-launch'
+  | 'stacks'
+  | 'stack'
+  | 'compliance'
+  | 'compliance-org'
+  | 'compliance-rule'
+  | 'subscriptions'
   | 'settings'
   | 'device'
   | 'iam-cli'
@@ -125,6 +134,16 @@ export const ROUTES: RouteDef[] = [
   { name: 'map', pattern: '/history/map', title: 'Resource map' },
   // Service Quotas (phase 7): the account's limits, the rules that raise them, and the requests
   { name: 'service-quotas', pattern: '/service-quotas', title: 'Service Quotas' },
+  // automation and compliance (phase 7): blueprints and their stacks, scorecards, event subscriptions
+  { name: 'blueprints', pattern: '/blueprints', title: 'Blueprints' },
+  { name: 'blueprint', pattern: '/blueprints/:name', title: 'Blueprint' },
+  { name: 'blueprint-launch', pattern: '/blueprints/:name/launch', title: 'Launch a stack' },
+  { name: 'stacks', pattern: '/stacks', title: 'Stacks' },
+  { name: 'stack', pattern: '/stacks/:wfrn', title: 'Stack' },
+  { name: 'compliance', pattern: '/compliance', title: 'Scorecard' },
+  { name: 'compliance-org', pattern: '/compliance/organization', title: 'Organization heat map' },
+  { name: 'compliance-rule', pattern: '/compliance/:pack/:rule', title: 'Failing resources' },
+  { name: 'subscriptions', pattern: '/event-subscriptions', title: 'Event subscriptions' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
   // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
   { name: 'device', pattern: '/device', title: 'Sign in the CLI' },

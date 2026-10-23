@@ -54,7 +54,7 @@ export interface ConsoleAction {
   batch?: { max: number; rollout: Rollout }
 }
 
-export const DEFAULT_TABS = ['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'] as const
+export const DEFAULT_TABS = ['Configuration', 'Drift', 'Compliance', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'] as const
 
 /** What the drift service can read of a type through its `observe` block (P-06, P-09). */
 export interface ConsoleObserve {

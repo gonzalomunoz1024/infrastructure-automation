@@ -15,6 +15,7 @@ import { cleanInput, useSubmissionKey } from '../../lib/submission'
 import type { BlastRadius, CommandAccepted, CommandInput, ConsolePreview } from '../../lib/types'
 import { BlastRadiusCard, radiusLine, radiusOfRefusal } from './BlastRadius'
 import { HeldButton } from './HeldButton'
+import { ResourceRisk } from '../risk/RiskCard'
 
 /*
  * One workflow run on one resource, from the detail page's Actions (or a `?action=<verb>` link):
@@ -184,6 +185,7 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
                   </div>
                 )}
                 <PreviewCard preview={preview.data} compact title="What will happen" />
+                <ResourceRisk type={type} wfrn={wfrn} verb={action.verb} destructive={action.destructive} preview={preview.data} compact className="mt-4" />
               </>
             ) : null}
             {heldBack ? (

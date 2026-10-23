@@ -16,6 +16,7 @@ import { BatchSection } from './request/BatchSection'
 import { FailureCard } from './request/FailureCard'
 import { childrenOf, decidedLine } from './request/parts'
 import { RetryDialog } from './request/RetryDialog'
+import { RequestRisk } from './risk/RiskCard'
 
 /*
  * One request, as the BFF holds it (WP 4.2): its facts; the step it paused on and the ways on
@@ -150,6 +151,8 @@ export default function RequestPage({ route }: PageProps) {
       {paused && <AttentionCard job={job} busy={cmd.busy} onRetry={() => void retry()} onRetryWithChanges={() => setAsking('retry')} onSkip={() => setAsking('skip')} onAbort={() => setAsking('abort')} />}
 
       <FailureCard job={job} busy={cmd.busy} onRetry={retry} />
+
+      <RequestRisk job={job} className="mb-8" />
 
       <ApprovalsCard job={job} busy={cmd.busy} onDecide={decide} />
 

@@ -12,6 +12,9 @@ import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } 
 import { applyMonitoringCommand, type MonitoringState } from './monitoring'
 import { applyCliCommand, type CliState } from './cli'
 import { applyNotificationCommand, followNotifications, type NotificationsState } from './notifications'
+import { applyBlueprintCommand, settleStacks, type BlueprintsState } from './blueprints'
+import { applyScorecardCommand, type ScorecardsState } from './scorecards'
+import { applySubscriptionCommand, type SubscriptionsState } from './subscriptions'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -118,6 +121,12 @@ export interface MockConsoleState {
   notifications?: NotificationsState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
+  /** stacks launched from blueprints (./blueprints), made on first use */
+  blueprints?: BlueprintsState
+  /** scorecard remediations (./scorecards), made on first use */
+  scorecards?: ScorecardsState
+  /** event subscriptions and their test deliveries (./subscriptions), made on first use */
+  subscriptions?: SubscriptionsState
 }
 
 export function emptyConsoleState(): MockConsoleState {
@@ -717,6 +726,9 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   cli: (data, cmd) => applyCliCommand(data, cmd),
   notification: (data, cmd) => applyNotificationCommand(data, cmd),
   'chat-link': (data, cmd) => applyNotificationCommand(data, cmd),
+  stack: (data, cmd) => applyBlueprintCommand(data, cmd),
+  scorecard: (data, cmd) => applyScorecardCommand(data, cmd),
+  subscription: (data, cmd) => applySubscriptionCommand(data, cmd),
 }
 
 /**
@@ -930,6 +942,7 @@ export function settleConsole(data: MockData, now: number) {
     st.inFlight = st.inFlight.filter((x) => x !== f)
   }
   settleBatches(data, now)
+  settleStacks(data, now)
   // what ended, paused or waits for an approver notifies the people it concerns, at the moment it happened
   followNotifications(data, now)
 }

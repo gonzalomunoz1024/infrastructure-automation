@@ -21,6 +21,7 @@ import { MissingType } from './parts'
 import { isTagProblem, stepOfProblems, stepsFor, withTypeHints } from './create/steps'
 import { TagsStep, tagsStepProblems } from './create/TagsStep'
 import { keepDraft, noteWords, takeDraft } from './create/clone'
+import { CreateRisk } from './risk/RiskCard'
 
 /*
  * The create wizard (WP 3.3), generated from the type's create workflow: its input schema makes
@@ -299,7 +300,10 @@ function Wizard({ type, action, clone, lost, prefill }: { type: ConsoleType; act
           ) : preview.error ? (
             <FailureNote failure={explain(preview.error, 'Preview this request')} onRetry={() => void preview.refetch()} />
           ) : preview.data ? (
-            <PreviewCard preview={preview.data} title={`${title}${typeof input.name === 'string' ? `: ${input.name}` : ''}`} />
+            <>
+              <PreviewCard preview={preview.data} title={`${title}${typeof input.name === 'string' ? `: ${input.name}` : ''}`} />
+              <CreateRisk input={input} tags={tags} preview={preview.data} className="mt-4" />
+            </>
           ) : null}
           {policy === 'deny' && <p className="mt-3 text-sm text-critical">Policy refuses this request as it stands, so it cannot be created. Change the values above, or ask the account’s admins.</p>}
           {policy === 'deny' && <QuotaRefusalNote preview={preview.data} type={type.name} title={type.title} />}
