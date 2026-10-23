@@ -67,6 +67,7 @@ public class DemoStateRoutes {
                 .andRoute(GET(PREFIX + "/v1/wfrn/{wfrn}"), this::get)
                 .andRoute(POST(PREFIX + "/v1/wfrn/{wfrn}:request-update"), r -> command(r, (c, body) -> store.requestUpdate(c.accountId(), r.pathVariable("wfrn"), body, c.subject(), key(r), requestId(r))))
                 .andRoute(POST(PREFIX + "/v1/wfrn/{wfrn}:request-delete"), r -> command(r, (c, body) -> store.requestDelete(c.accountId(), r.pathVariable("wfrn"), body, c.subject(), key(r), requestId(r))))
+                .andRoute(POST(PREFIX + "/v1/wfrn/{wfrn}:request-retry"), r -> command(r, (c, body) -> store.requestRetry(c.accountId(), r.pathVariable("wfrn"), body, c.subject(), key(r), requestId(r))))
                 .andRoute(POST(PREFIX + "/v1/wfrn/{wfrn}:tag"), r -> command(r, (c, body) -> store.tag(c.accountId(), r.pathVariable("wfrn"), body, c.subject(), key(r), requestId(r))));
     }
 
@@ -206,6 +207,9 @@ public class DemoStateRoutes {
         }
         if (e instanceof ConflictException conflict) {
             return json(HttpStatus.CONFLICT, body(e.getMessage(), conflict.detail()));
+        }
+        if (e instanceof DemoStateStore.Gone gone) {
+            return json(HttpStatus.GONE, gone.tombstone());
         }
         if (e instanceof InvalidInputException invalid) {
             Map<String, Object> body = new LinkedHashMap<>();

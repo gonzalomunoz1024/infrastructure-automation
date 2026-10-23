@@ -24,24 +24,31 @@ import com.iaf.console.platform.model.Resource;
 final class ResourceFixtures {
 
     static final String VM = "/console/v1/r/vm";
+    /** The four tags every create carries (owner, cost centre, data class, environment). */
+    static final Map<String, String> TAGS = Map.of("environment", "dev", "owner", "team-compute", "cost-centre", "cc-1001", "data-class", "internal");
 
     private ResourceFixtures() {
     }
 
     /** A VM created through the console and made active by the feed; its wfrn. */
     static String createVm(Console console, PlatformClients clients, Console.Signed as, String name) {
-        return createVm(console, clients, as, name, Map.of("environment", "dev", "owner", "team-compute", "cost-centre", "cc-1001",
-                "data-class", "internal"));
+        return createVm(console, clients, as, name, TAGS);
     }
 
     static String createVm(Console console, PlatformClients clients, Console.Signed as, String name, Map<String, String> tags) {
+        Console.Reply created = startVm(console, clients, as, name, tags);
+        String wfrn = created.json().path("wfrn").asText();
+        awaitState(console, as, wfrn, "active");
+        return wfrn;
+    }
+
+    /** The accepted create of a VM, not waited for: its {@code wfrn} and {@code jobId}. */
+    static Console.Reply startVm(Console console, PlatformClients clients, Console.Signed as, String name, Map<String, String> tags) {
         Console.Reply created = console.send(HttpMethod.POST, VM, as, Map.of("input", Map.of("name", name, "image", imageId(clients), "size", "small",
                 "environment", "dev"), "tags", tags), Map.of("Idempotency-Key", "create-" + name + "-" + System.nanoTime()));
         assertEquals(202, created.status(), created.body());
-        String wfrn = created.json().path("wfrn").asText();
         assertNotNull(created.json().path("jobId").asText(null), created.body());
-        awaitState(console, as, wfrn, "active");
-        return wfrn;
+        return created;
     }
 
     static void awaitState(Console console, Console.Signed as, String wfrn, String state) {

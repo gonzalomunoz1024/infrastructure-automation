@@ -34,5 +34,8 @@ public interface StatePort {
 
     Mono<StateResource> requestDelete(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Delete command, StateCommands.Meta meta);
 
+    /** A failed resource back to {@code pending}, before its failed job runs again; 409 {@code resource.notFailed} otherwise. */
+    Mono<StateResource> requestRetry(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Retry command, StateCommands.Meta meta);
+
     Mono<StateResource> tag(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Tag command, StateCommands.Meta meta);
 }

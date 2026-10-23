@@ -53,6 +53,7 @@ public class DemoStateStore implements FeedListener {
     public static final String PLATFORM = "platform";
     private static final Logger log = LoggerFactory.getLogger(DemoStateStore.class);
     private static final Duration TOMBSTONE = Duration.ofDays(90);
+    private static final int ENDED_JOBS = 10_000;
     private static final String ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -108,12 +109,36 @@ public class DemoStateStore implements FeedListener {
     private final Map<String, Answer> replays = new ConcurrentHashMap<>();
     private final Map<String, String> servicesByType = new ConcurrentHashMap<>();
     private final AtomicLong eventIds = new AtomicLong();
+    /** The end of every recent job, so a change recorded after its job already ended is settled at once, as the state service does. */
+    private final Map<String, FeedEvent> endedJobs = new LinkedHashMap<>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, FeedEvent> eldest) {
+            return size() > ENDED_JOBS;
+        }
+    };
 
     public DemoStateStore(PlatformClients clients, LiveHub hub, ObjectMapper json, Clock clock) {
         this.clients = clients;
         this.hub = hub;
         this.json = json;
         this.clock = clock;
+    }
+
+    /** A command on a deleted resource: 410 with its tombstone. */
+    public static final class Gone extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        private final transient Tombstone tombstone;
+
+        Gone(Tombstone tombstone) {
+            super("resource deleted");
+            this.tombstone = tombstone;
+        }
+
+        public Tombstone tombstone() {
+            return tombstone;
+        }
     }
 
     // ---- reads
@@ -281,6 +306,7 @@ public class DemoStateStore implements FeedListener {
         data.put("workflow", text(body, "workflow"));
         bump(row);
         event(row, "UpdateRequested", actor, text(body, "jobId"), requestId, data);
+        settleIfEnded(text(body, "jobId"));
         return remember(key, new Answer(row.resource(), false));
     }
 
@@ -303,7 +329,44 @@ public class DemoStateStore implements FeedListener {
         }
         bump(row);
         event(row, "DeleteRequested", actor, text(body, "jobId"), requestId, data);
+        settleIfEnded(text(body, "jobId"));
         return remember(key, new Answer(row.resource(), false));
+    }
+
+    /**
+     * {@code :request-retry}: a failed resource goes back to {@code pending} before its failed job
+     * runs again, with {@code RetryRequested} ({@code retryOf} the failed job); anything but a
+     * failed resource is a 409 {@code resource.notFailed}.
+     */
+    public synchronized Answer requestRetry(String accountId, String wfrn, JsonNode body, String actor, String key, String requestId) {
+        Answer replay = replay(key);
+        if (replay != null) {
+            return replay;
+        }
+        Row row = live(accountId, wfrn);
+        expectVersion(row, body);
+        if (!StateResource.FAILED.equals(row.state)) {
+            throw new ConflictException("resource.notFailed", Map.of("state", row.state));
+        }
+        row.state = StateResource.PENDING;
+        ObjectNode data = json.createObjectNode();
+        if (text(body, "jobId") != null) {
+            data.put("retryOf", text(body, "jobId"));
+        }
+        if (text(body, "workflow") != null) {
+            data.put("workflow", text(body, "workflow"));
+        }
+        bump(row);
+        event(row, "RetryRequested", actor, null, requestId, data);
+        return remember(key, new Answer(row.resource(), false));
+    }
+
+    /** A change recorded after its job already ended takes the job's outcome now. */
+    private void settleIfEnded(String jobId) {
+        FeedEvent ended = jobId == null ? null : endedJobs.get(jobId);
+        if (ended != null) {
+            jobFinished(ended);
+        }
     }
 
     public synchronized Answer tag(String accountId, String wfrn, JsonNode body, String actor, String key, String requestId) {
@@ -357,7 +420,8 @@ public class DemoStateStore implements FeedListener {
     private synchronized void jobStarted(FeedEvent event) {
         String wfrn = event.context() == null ? null : event.context().wfrn();
         Row row = wfrn == null ? null : rows.get(wfrn);
-        if (row == null || !row.live()) {
+        if (row == null || !row.live() || StateResource.ACTIVE.equals(row.state) || StateResource.FAILED.equals(row.state)) {
+            // as the state service: a job that starts on a resource with no change in flight is no event
             return;
         }
         String jobId = text(event.data(), "jobId") != null ? text(event.data(), "jobId") : event.aggregateId();
@@ -375,6 +439,9 @@ public class DemoStateStore implements FeedListener {
             return;
         }
         String jobId = text(event.data(), "jobId") != null ? text(event.data(), "jobId") : event.aggregateId();
+        if (jobId != null) {
+            endedJobs.put(jobId, event);
+        }
         String status = text(event.data(), "status");
         String requestId = event.context().consoleRequestId();
         if ("succeeded".equals(status)) {
@@ -534,7 +601,7 @@ public class DemoStateStore implements FeedListener {
             throw NotFoundException.of("resource", wfrn);
         }
         if (!row.live()) {
-            throw new ConflictException("the resource is deleted", Map.of("state", row.state));
+            throw new Gone(new Tombstone("resource deleted", row.wfrn, row.deletedAt, row.tombstoneUntil, row.version));
         }
         return row;
     }

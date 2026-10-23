@@ -77,6 +77,7 @@ import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.platform.model.Lineage;
 import com.iaf.console.platform.model.PolicyDecision;
 import com.iaf.console.platform.model.PolicyRule;
+import com.iaf.console.platform.model.RerunRequest;
 import com.iaf.console.platform.model.Resource;
 import com.iaf.console.platform.model.RetryRequest;
 import com.iaf.console.platform.model.RolloutPolicy;
@@ -302,6 +303,10 @@ public class Resources {
                                                 log.warn("job {} runs on {} but the state service refused the update: {}", accepted.jobId(), wfrn, e.getMessage());
                                                 return Mono.just(s.resource());
                                             })
+                                            .onErrorResume(GoneException.class, e -> {
+                                                log.warn("job {} runs on {}, which was deleted meanwhile", accepted.jobId(), wfrn);
+                                                return Mono.just(s.resource());
+                                            })
                                             .thenReturn(new CommandAccepted(wfrn, accepted.jobId(), requestId, approval(action, accepted.status())));
                                 });
                     });
@@ -342,6 +347,8 @@ public class Resources {
                                                 log.warn("job {} runs on {} but the state service refused the delete: {}", accepted.jobId(), wfrn, e.getMessage());
                                                 return Mono.just(s.resource());
                                             })
+                                            // the delete already finished: the state service holds the tombstone
+                                            .onErrorResume(GoneException.class, e -> Mono.just(s.resource()))
                                             .thenReturn(answer);
                                 });
                     });
@@ -609,9 +616,12 @@ public class Resources {
     /**
      * Runs a failed request again: the job's workflow with the job's input on the same resource, as
      * the original action allows (a create's on the type's pattern; a delete also needs a fresh
-     * sign-in and still no live dependents). A failed or rolled-back job becomes a new job from its
-     * failed step, a paused one resumes, a finished batch runs its failed rows again. The state
-     * service hears of a retried update or delete as of the first one, after the platform took it.
+     * sign-in and still no live dependents). A paused job resumes ({@code :retry}); a failed one is
+     * rerun from its failed step and a rolled-back one from its first ({@code :rerun}, a new job with
+     * the source job's context and input); a finished batch runs its failed rows again. A failed
+     * create first goes back to pending on the state service ({@code :request-retry}, as a create
+     * mints before it starts); a retried update or delete is recorded as the first one was, after
+     * the platform took it.
      */
     public Mono<CommandAccepted> retry(Session session, String jobId, String requestId, String idempotencyKey) {
         return jobs.detail(session, jobId).flatMap(job -> {
@@ -621,6 +631,7 @@ public class Resources {
             return retries.target(session, job).flatMap(target -> access.require(session, target.actionName(), target.resource())
                     .then(sessions.requireFreshFor(session, target.actionName()))
                     .then(Mono.defer(() -> retrySubject(session, target, job.status() == JobStatus.NEEDS_ATTENTION)))
+                    .flatMap(subject -> beforeRetry(session, job, target, subject, requestId, idempotencyKey))
                     .flatMap(subject -> retryOnPlatform(session, job, target, requestId, idempotencyKey)
                             .flatMap(started -> retried(session, job, target, subject, started, requestId, idempotencyKey))));
         });
@@ -645,11 +656,25 @@ public class Resources {
             }
             if (target.is("update") && !resume) {
                 requireState(r, null, StateResource.ACTIVE, StateResource.FAILED);
+            } else if (target.is("create") && !resume) {
+                requireState(r, null, StateResource.FAILED);
             } else if (!target.is("create") && !r.live()) {
                 throw new ConflictException("the resource is " + r.state(), Map.of("state", r.state()));
             }
             return Mono.just(Optional.of(r));
         });
+    }
+
+    /** A failed create goes back to pending on the state service before its job runs again, so the trail shows who retried. */
+    private Mono<Optional<StateResource>> beforeRetry(Session session, JobDetail job, JobRetries.Target target, Optional<StateResource> subject,
+            String requestId, String idempotencyKey) {
+        if (subject.isEmpty() || !target.is("create") || !StateResource.FAILED.equals(subject.get().state())) {
+            return Mono.just(subject);
+        }
+        StateResource failed = subject.get();
+        StateCommands.Retry retry = new StateCommands.Retry(failed.version(), session.user().userId(), job.id(), job.workflow());
+        return state.requestRetry(scope(session), caller(session), failed.wfrn(), retry, new StateCommands.Meta(idempotencyKey, requestId))
+                .map(Optional::of);
     }
 
     private Mono<Started> retryOnPlatform(Session session, JobDetail job, JobRetries.Target target, String requestId, String idempotencyKey) {
@@ -663,9 +688,17 @@ public class Resources {
             }
         }
         final RequestOptions chosen = options;
-        return clients.forAccount(scope(session))
-                .flatMap(p -> target.batch() ? p.retryFailedRows(job.id(), chosen) : p.retryJob(job.id(), new RetryRequest(null, null), chosen))
-                .map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
+        return clients.forAccount(scope(session)).flatMap(p -> {
+            if (target.batch()) {
+                return p.retryFailedRows(job.id(), chosen);
+            }
+            if (job.status() == JobStatus.NEEDS_ATTENTION) {
+                return p.retryJob(job.id(), new RetryRequest(null, null), chosen);
+            }
+            String from = JobRetries.rerunFrom(job)
+                    .orElseThrow(() -> new ConflictException("the job ran no step to run again from", Map.of("jobId", job.id())));
+            return p.rerunJob(job.id(), new RerunRequest(from, null), chosen);
+        }).map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
     }
 
     /** After the platform took the retry: a new update or delete job is recorded on the state service like the first. */
@@ -691,7 +724,7 @@ public class Resources {
         return recorded.onErrorResume(ConflictException.class, e -> {
             log.warn("retry job {} runs on {} but the state service refused to record it: {}", started.jobId(), target.wfrn(), e.getMessage());
             return Mono.just(subject.get());
-        }).thenReturn(answer);
+        }).onErrorResume(GoneException.class, e -> Mono.just(subject.get())).thenReturn(answer);
     }
 
     private static Boolean approvalOf(String status) {

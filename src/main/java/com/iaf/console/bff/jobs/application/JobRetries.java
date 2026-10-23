@@ -1,5 +1,7 @@
 package com.iaf.console.bff.jobs.application;
 
+import java.util.Optional;
+
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.session.domain.Session;
@@ -53,6 +55,18 @@ public class JobRetries {
             return status.terminal() && job.progress() != null && job.progress().failed() != null && job.progress().failed() > 0;
         }
         return status == JobStatus.FAILED || status == JobStatus.ROLLED_BACK || status == JobStatus.NEEDS_ATTENTION;
+    }
+
+    /**
+     * The step a finished job runs again from: a failed job from its failed step, a rolled-back one
+     * from its first step, since the compensations undid the steps before the failure.
+     */
+    public static Optional<String> rerunFrom(JobDetail job) {
+        String first = job.steps() == null || job.steps().isEmpty() ? null : job.steps().get(0).id();
+        if (job.status() == JobStatus.ROLLED_BACK) {
+            return Optional.ofNullable(first != null ? first : job.failedStep());
+        }
+        return Optional.ofNullable(job.failedStep() != null ? job.failedStep() : first);
     }
 
     public static boolean isBatch(JobDetail job) {

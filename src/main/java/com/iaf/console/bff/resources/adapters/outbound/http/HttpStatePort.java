@@ -165,6 +165,12 @@ public class HttpStatePort implements StatePort {
     }
 
     @Override
+    public Mono<StateResource> requestRetry(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Retry command,
+            StateCommands.Meta meta) {
+        return command(scope, caller, b -> b.path("/v1/wfrn/{wfrn}:request-retry").build(wfrn), command, meta);
+    }
+
+    @Override
     public Mono<StateResource> tag(AccountScope scope, StateCaller caller, String wfrn, StateCommands.Tag command, StateCommands.Meta meta) {
         return command(scope, caller, b -> b.path("/v1/wfrn/{wfrn}:tag").build(wfrn), command, meta);
     }

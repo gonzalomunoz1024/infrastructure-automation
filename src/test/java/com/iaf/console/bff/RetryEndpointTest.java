@@ -32,7 +32,8 @@ import com.iaf.console.platform.client.RequestOptions;
  * WP 4.2 and gate 4's first line: a VM's memory edited through the console, then edits the
  * provider fails (vCenter down), retried from their job. A job paused on the failure resumes; one
  * that ended failed runs again as a new job on the same VM, which the state service hears of like
- * the first update. A job that went through cannot be retried, and a viewer may not retry.
+ * the first update. A failed create goes back to pending on the state service, then runs again
+ * from its failed step. A job that went through cannot be retried, and a viewer may not retry.
  */
 class RetryEndpointTest extends DemoApp {
 
@@ -112,6 +113,37 @@ class RetryEndpointTest extends DemoApp {
     }
 
     @Test
+    void aFailedCreateGoesBackToPendingAndRunsAgainFromItsFailedStep() throws Exception {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        vCenterDownOnce("vm.create");
+        Console.Reply created = ResourceFixtures.startVm(console, clients, gonzalo, "retry-create-01", ResourceFixtures.TAGS);
+        String wfrn = created.json().path("wfrn").asText();
+        String failed = created.json().path("jobId").asText();
+        awaitStatus(gonzalo, failed, "needs-attention");
+        abortOnThePlatform(failed);
+        ResourceFixtures.awaitState(console, gonzalo, wfrn, "failed");
+        assertTrue(job(gonzalo, failed).path("can").toString().contains("retry"));
+
+        Console.Reply retried = console.send(HttpMethod.POST, "/console/v1/jobs/" + failed + ":retry", gonzalo, null, Map.of("Idempotency-Key", "retry-" + failed));
+        assertEquals(202, retried.status(), retried.body());
+        assertEquals(wfrn, retried.json().path("wfrn").asText());
+        String again = retried.json().path("jobId").asText();
+        assertNotEquals(failed, again, "a failed create runs again as a new job");
+        JsonNode requested = stream(activity(gonzalo, wfrn)).filter(e -> "RetryRequested".equals(e.path("type").asText())).findFirst()
+                .orElseThrow(() -> new AssertionError("no RetryRequested in " + activity(gonzalo, wfrn)));
+        assertEquals(failed, requested.path("data").path("retryOf").asText(), "the trail names the job retried: " + requested);
+        assertEquals("user_gonzalo", requested.path("actor").asText(), "and who retried: " + requested);
+
+        ResourceFixtures.awaitState(console, gonzalo, wfrn, "active");
+        JsonNode rerun = job(gonzalo, again);
+        assertEquals("succeeded", rerun.path("status").asText(), rerun.toString());
+        assertEquals(wfrn, rerun.path("wfrn").asText(), "the rerun keeps the VM's name: " + rerun);
+
+        Console.Reply twice = console.post("/console/v1/jobs/" + failed + ":retry", gonzalo, null);
+        assertEquals(409, twice.status(), "the VM is no longer failed: " + twice.body());
+    }
+
+    @Test
     void aJobOutsideTheAccountCannotBeRetried() {
         Console.Signed gonzalo = console.signIn("gonzalo");
         String computeJob = console.get("/console/v1/jobs?workflow=create-vm", gonzalo).json().path("items").get(0).path("jobId").asText();
@@ -122,8 +154,16 @@ class RetryEndpointTest extends DemoApp {
     // ---- helpers
 
     private void vCenterDownOnce() throws Exception {
-        fake.world().mutate(JSON.readTree("{\"provider\":\"vsphere\",\"action\":\"vm.update\",\"fail\":{\"class\":\"unavailable\","
+        vCenterDownOnce("vm.update");
+    }
+
+    private void vCenterDownOnce(String action) throws Exception {
+        fake.world().mutate(JSON.readTree("{\"provider\":\"vsphere\",\"action\":\"" + action + "\",\"fail\":{\"class\":\"unavailable\","
                 + "\"message\":\"vCenter is down\",\"retryable\":false,\"times\":1}}"));
+    }
+
+    private JsonNode activity(Console.Signed as, String wfrn) {
+        return console.getAt(VM + "/{wfrn}/activity", as, Map.of(), wfrn).json().path("items");
     }
 
     private String edit(Console.Signed as, String wfrn, int memoryGb) {
