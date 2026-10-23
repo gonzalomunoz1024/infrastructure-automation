@@ -16,7 +16,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * The OPA bundle: a gzipped tar with {@code .manifest} (revision = the global revision, roots
- * {@code console}), {@code console/data.json} (the accounts) and {@code console/authz.rego}. Built
+ * {@code console}), {@code console/data.json} (the accounts and the guardrails) and {@code console/authz.rego}. Built
  * from the current snapshot and kept until the revision moves; the ETag is the revision.
  */
 public final class Bundles {
@@ -59,7 +59,8 @@ public final class Bundles {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (GZIPOutputStream gzip = new GZIPOutputStream(out); Tar tar = new Tar(gzip)) {
                 tar.entry(".manifest", json.writeValueAsBytes(Map.of("revision", Long.toString(compiled.revision()), "roots", new String[] {"console"})));
-                tar.entry("console/data.json", json.writeValueAsBytes(Map.of("accounts", compiled.accounts(), "version", compiled.revision())));
+                tar.entry("console/data.json",
+                        json.writeValueAsBytes(Map.of("accounts", compiled.accounts(), "guardrails", compiled.guardrails(), "version", compiled.revision())));
                 tar.entry("console/authz.rego", rego);
             }
             return new Bundle(compiled.revision(), out.toByteArray());

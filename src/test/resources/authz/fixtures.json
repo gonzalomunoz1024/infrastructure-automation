@@ -411,6 +411,231 @@
               ]
             }
           }
+        },
+        "345678901234": {
+          "status": "active",
+          "version": 3,
+          "guardrails": [
+            "gr_deny_prod_delete",
+            "gr_regions"
+          ],
+          "users": {
+            "usr_ops": {
+              "status": "active",
+              "groups": [
+                "ops"
+              ]
+            },
+            "usr_bounded": {
+              "status": "active",
+              "groups": [
+                "bounded"
+              ]
+            },
+            "usr_two": {
+              "status": "active",
+              "groups": [
+                "bounded",
+                "readers"
+              ]
+            },
+            "usr_elevated": {
+              "status": "active",
+              "groups": [
+                "readers"
+              ],
+              "grants": [
+                {
+                  "role": "ops",
+                  "until": 4102444800,
+                  "kind": "elevation"
+                }
+              ]
+            },
+            "usr_expired": {
+              "status": "active",
+              "groups": [
+                "readers"
+              ],
+              "grants": [
+                {
+                  "role": "ops",
+                  "until": 946684800,
+                  "kind": "elevation"
+                }
+              ]
+            },
+            "usr_glass": {
+              "status": "active",
+              "groups": [],
+              "grants": [
+                {
+                  "role": "admin",
+                  "until": 4102444800,
+                  "kind": "break-glass"
+                }
+              ]
+            }
+          },
+          "groups": {
+            "ops": {
+              "roles": [
+                "ops"
+              ]
+            },
+            "bounded": {
+              "roles": [
+                "bounded-ops"
+              ]
+            },
+            "readers": {
+              "roles": [
+                "reader"
+              ]
+            }
+          },
+          "roles": {
+            "ops": {
+              "policies": [
+                "pol_ops"
+              ]
+            },
+            "bounded-ops": {
+              "policies": [
+                "pol_ops"
+              ],
+              "boundary": "pol_compute_only"
+            },
+            "reader": {
+              "policies": [
+                "pol_reader"
+              ]
+            },
+            "admin": {
+              "policies": [
+                "pol_all"
+              ]
+            },
+            "viewer": {
+              "policies": [
+                "pol_reader"
+              ]
+            },
+            "operator": {
+              "policies": [
+                "pol_ops"
+              ],
+              "boundary": "pol_missing"
+            }
+          },
+          "policies": {
+            "pol_ops": {
+              "name": "ops",
+              "statements": [
+                {
+                  "sid": "changes",
+                  "effect": "allow",
+                  "actions": [
+                    "*:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:345678901234:*"
+                  ]
+                }
+              ]
+            },
+            "pol_compute_only": {
+              "name": "compute-only",
+              "statements": [
+                {
+                  "sid": "compute",
+                  "effect": "allow",
+                  "actions": [
+                    "compute:*"
+                  ],
+                  "resources": [
+                    "wfrn:wf:compute:*:345678901234:*"
+                  ]
+                },
+                {
+                  "sid": "no-delete",
+                  "effect": "deny",
+                  "actions": [
+                    "compute:delete"
+                  ],
+                  "resources": [
+                    "*"
+                  ]
+                }
+              ]
+            },
+            "pol_reader": {
+              "name": "reader",
+              "statements": [
+                {
+                  "sid": "reads",
+                  "effect": "allow",
+                  "actions": [
+                    "*:get",
+                    "*:list"
+                  ],
+                  "resources": [
+                    "wfrn:wf:*:*:345678901234:*"
+                  ]
+                }
+              ]
+            },
+            "pol_all": {
+              "name": "all",
+              "statements": [
+                {
+                  "sid": "everything",
+                  "effect": "allow",
+                  "actions": [
+                    "*:*"
+                  ],
+                  "resources": [
+                    "*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "guardrails": {
+        "gr_deny_prod_delete": {
+          "name": "no-prod-deletes",
+          "statements": [
+            {
+              "sid": "prod",
+              "effect": "deny",
+              "actions": [
+                "*:delete"
+              ],
+              "resources": [
+                "*"
+              ],
+              "conditions": {
+                "tag.env": "prod"
+              }
+            }
+          ]
+        },
+        "gr_regions": {
+          "name": "global-only",
+          "statements": [
+            {
+              "sid": "global",
+              "effect": "allow",
+              "actions": [
+                "*:*"
+              ],
+              "resources": [
+                "wfrn:wf:*:global:*:*"
+              ]
+            }
+          ]
         }
       }
     }
@@ -987,6 +1212,273 @@
           "requestable": false
         }
       ]
+    },
+    {
+      "name": "a guardrail's deny wins over a role's allow",
+      "input": {
+        "principal": {
+          "userId": "usr_ops",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1",
+            "context": {
+              "tags": {
+                "env": "prod"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "scope": "guardrail",
+          "guardrailId": "gr_deny_prod_delete",
+          "statement": "prod",
+          "requestable": false,
+          "reason": "denied by guardrail no-prod-deletes, statement prod"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "an action outside every guardrail's allow is refused",
+      "input": {
+        "principal": {
+          "userId": "usr_ops",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:eu-1:345678901234:vm/vm-2"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "scope": "guardrail",
+          "requestable": false,
+          "reason": "outside the organization's guardrails"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "inside the guardrails a role allows",
+      "input": {
+        "principal": {
+          "userId": "usr_ops",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1",
+            "context": {
+              "tags": {
+                "env": "dev"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "scope": "policy",
+          "role": "ops",
+          "policyId": "pol_ops",
+          "statement": "changes"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "a permission boundary caps what its role grants",
+      "input": {
+        "principal": {
+          "userId": "usr_bounded",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "data:update",
+            "resource": "wfrn:wf:data:global:345678901234:database/db-1"
+          },
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          },
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "scope": "boundary",
+          "policyId": "pol_compute_only",
+          "role": "bounded-ops",
+          "requestable": false,
+          "reason": "outside the permission boundary compute-only of role bounded-ops"
+        },
+        {
+          "allowed": true,
+          "scope": "policy",
+          "role": "bounded-ops",
+          "policyId": "pol_ops",
+          "statement": "changes"
+        },
+        {
+          "allowed": false,
+          "scope": "boundary",
+          "policyId": "pol_compute_only",
+          "role": "bounded-ops"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "another role allows what a boundary refused",
+      "input": {
+        "principal": {
+          "userId": "usr_two",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "data:get",
+            "resource": "wfrn:wf:data:global:345678901234:database/db-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "reader",
+          "policyId": "pol_reader",
+          "statement": "reads",
+          "scope": "policy"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "a role held for a while allows until it ends",
+      "input": {
+        "principal": {
+          "userId": "usr_elevated",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          },
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "ops",
+          "elevated": true,
+          "scope": "policy"
+        },
+        {
+          "allowed": true,
+          "role": "ops",
+          "elevated": true
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "an ended grant allows nothing and no bounded managed role is suggested",
+      "input": {
+        "principal": {
+          "userId": "usr_expired",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:restart",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          },
+          {
+            "action": "compute:get",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": false,
+          "reason": "no policy allows compute:restart on wfrn:wf:compute:global:345678901234:vm/vm-1"
+        },
+        {
+          "allowed": true,
+          "role": "reader"
+        }
+      ],
+      "version": 3
+    },
+    {
+      "name": "break-glass access is a grant, inside the guardrails",
+      "input": {
+        "principal": {
+          "userId": "usr_glass",
+          "accountId": "345678901234",
+          "groups": []
+        },
+        "checks": [
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1"
+          },
+          {
+            "action": "compute:delete",
+            "resource": "wfrn:wf:compute:global:345678901234:vm/vm-1",
+            "context": {
+              "tags": {
+                "env": "prod"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "admin",
+          "elevated": true,
+          "statement": "everything"
+        },
+        {
+          "allowed": false,
+          "scope": "guardrail",
+          "guardrailId": "gr_deny_prod_delete"
+        }
+      ],
+      "version": 3
     }
   ]
 }

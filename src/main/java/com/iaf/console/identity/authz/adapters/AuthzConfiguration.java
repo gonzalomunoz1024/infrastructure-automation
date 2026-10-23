@@ -24,6 +24,11 @@ import com.iaf.console.identity.authz.ports.outbound.AuthzVersionPort;
 import com.iaf.console.identity.authz.ports.outbound.DecisionPort;
 import com.iaf.console.identity.common.IdentityProperties;
 import com.iaf.console.identity.iam.ports.outbound.GroupStore;
+import com.iaf.console.identity.common.auth.AccessGuard;
+import com.iaf.console.identity.iam.application.IamSupport;
+import com.iaf.console.identity.iam.ports.outbound.ActionCatalogPort;
+import com.iaf.console.identity.authz.application.PolicySimulations;
+import com.iaf.console.identity.iam.ports.outbound.GuardrailStore;
 import com.iaf.console.identity.iam.ports.outbound.PolicyStore;
 import com.iaf.console.identity.iam.ports.outbound.RoleStore;
 import com.iaf.console.identity.principals.ports.outbound.MembershipStore;
@@ -49,8 +54,8 @@ public class AuthzConfiguration {
 
     @Bean
     public Compiler authzCompiler(AccountStore accounts, UserStore users, MembershipStore memberships, GroupStore groups, RoleStore roles,
-            PolicyStore policies, AuthzVersionPort versions) {
-        return new Compiler(accounts, users, memberships, groups, roles, policies, versions);
+            PolicyStore policies, GuardrailStore guardrails, AuthzVersionPort versions) {
+        return new Compiler(accounts, users, memberships, groups, roles, policies, guardrails, versions);
     }
 
     @Bean
@@ -78,9 +83,15 @@ public class AuthzConfiguration {
     }
 
     @Bean
+    public PolicySimulations policySimulations(Snapshots snapshots, RoleStore roles, GroupStore groups, ActionCatalogPort catalog, AccessGuard guard,
+            IamSupport support, Clock clock) {
+        return new PolicySimulations(snapshots, roles, groups, catalog, guard, support, clock);
+    }
+
+    @Bean
     @Profile("!opa")
-    public DecisionPort inProcessDecisions(Snapshots snapshots) {
-        return new InProcessDecisions(snapshots);
+    public DecisionPort inProcessDecisions(Snapshots snapshots, Clock clock) {
+        return new InProcessDecisions(snapshots, clock);
     }
 
     @Bean

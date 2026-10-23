@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -27,9 +28,11 @@ import com.iaf.console.identity.common.idempotency.IdempotencyPort;
 import com.iaf.console.identity.common.idempotency.IdempotencyPort.Outcome;
 import com.iaf.console.identity.common.idempotency.MongoIdempotency;
 import com.iaf.console.identity.iam.adapters.mongo.MongoGroupStore;
+import com.iaf.console.identity.iam.adapters.mongo.MongoGuardrailStore;
 import com.iaf.console.identity.iam.adapters.mongo.MongoPolicyStore;
 import com.iaf.console.identity.iam.adapters.mongo.MongoRoleStore;
 import com.iaf.console.identity.iam.domain.Group;
+import com.iaf.console.identity.iam.domain.Guardrail;
 import com.iaf.console.identity.iam.domain.Policy;
 import com.iaf.console.identity.iam.domain.Role;
 import com.iaf.console.identity.iam.domain.Statement;
@@ -209,6 +212,11 @@ class MongoStoresTest {
         assertThat(roles.delete(SCOPE, "rol_2").block()).isFalse();
         assertThat(roles.findAll(SCOPE).collectList().block()).containsExactly(r);
 
+        Role bounded = Role.create("rol_4", ACCOUNT, "bounded", null, List.of("pol_1"), false, NOW).bounded("pol_1");
+        roles.insert(bounded).block();
+        assertThat(roles.findByName(SCOPE, "bounded").block()).as("the boundary is kept").isEqualTo(bounded);
+        assertThat(roles.delete(SCOPE, "rol_4").block()).isTrue();
+
         Group g = Group.create("grp_1", ACCOUNT, "sre", "SRE", List.of("rol_1"), List.of("corp-sre"), false, NOW);
         groups.insert(g).block();
         groups.insert(Group.create("grp_2", OTHER, "sre", null, List.of(), List.of("corp-sre", "corp-data"), false, NOW)).block();
@@ -225,6 +233,31 @@ class MongoStoresTest {
         assertThat(groups.delete(SCOPE, "grp_1").block()).isTrue();
         assertThat(groups.findAll(SCOPE).collectList().block()).isEmpty();
         assertThat(groups.findEverything().collectList().block()).hasSize(1);
+    }
+
+    @Test
+    void guardrails() {
+        MongoGuardrailStore store = new MongoGuardrailStore(mongo);
+        store.ensureIndexes().block();
+        Guardrail g = Guardrail.create("gr_2", "no-prod-deletes", "Production is deleted by change request only", List.of(new Statement("prod-deletes",
+                Statement.Effect.deny, List.of("*:delete"), null, List.of("wfrn:wf:*"), Map.of("tag.env", "prod", "region", List.of("global")))), List.of(ACCOUNT),
+                NOW);
+        store.insert(g).block();
+        store.insert(Guardrail.create("gr_1", "global-only", null, List.of(Statement.allow("global", List.of("*:*"), List.of("wfrn:wf:*:global:*"))),
+                List.of(Guardrail.EVERY_ACCOUNT), NOW)).block();
+        assertThatThrownBy(() -> store.insert(Guardrail.create("gr_3", "no-prod-deletes", null, List.of(), List.of(OTHER), NOW)).block())
+                .as("names are unique in the organization").isInstanceOf(ConflictException.class);
+        assertThat(store.findById("gr_2").block()).as("conditions with dotted keys come back as written").isEqualTo(g);
+        assertThat(store.findAll().map(Guardrail::guardrailId).collectList().block()).as("in id order").containsExactly("gr_1", "gr_2");
+        Guardrail moved = g.changed(null, null, null, List.of(OTHER), NOW.plusSeconds(1));
+        assertThat(store.update(moved, 1).block()).isEqualTo(moved);
+        assertThat(store.update(moved, 1).block()).as("a stale version").isNull();
+        assertThatThrownBy(() -> store.update(moved.changed("global-only", null, null, null, NOW.plusSeconds(2)), 2).block()).isInstanceOf(ConflictException.class);
+        assertThat(store.findById("gr_2").block().appliesTo(OTHER)).isTrue();
+        assertThat(store.delete("gr_2").block()).isTrue();
+        assertThat(store.delete("gr_2").block()).isFalse();
+        assertThat(store.findById("gr_2").block()).isNull();
+        assertThat(store.findAll().collectList().block()).hasSize(1);
     }
 
     @Test

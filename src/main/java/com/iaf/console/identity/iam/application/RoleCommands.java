@@ -54,7 +54,8 @@ public final class RoleCommands {
                     return policies.findAll(scope).collectList().flatMap(all -> {
                         List<String> policyIds = IamSupport.resolve(input.policies() == null ? List.of() : input.policies(), all, Policy::policyId,
                                 Policy::name, "policies", "policy");
-                        Role role = Role.create(ids.role(), accountId, input.name(), input.description(), policyIds, false, clock.instant());
+                        Role role = Role.create(ids.role(), accountId, input.name(), input.description(), policyIds, false, clock.instant())
+                                .bounded(boundary(input.boundary(), null, input.name(), all));
                         return roles.insert(role)
                                 .flatMap(stored -> events.changed(IdentityEvents.Subject.ROLE, stored.roleId(), accountId, caller.actor(), stored.version(),
                                         "created", stored).thenReturn(stored));
@@ -76,13 +77,32 @@ public final class RoleCommands {
                             }
                             return policies.findAll(scope).collectList().flatMap(all -> {
                                 List<String> policyIds = IamSupport.resolve(input.policies(), all, Policy::policyId, Policy::name, "policies", "policy");
-                                Role changed = current.changed(input.name(), input.description(), policyIds, clock.instant());
+                                Role changed = current.changed(input.name(), input.description(), policyIds, clock.instant())
+                                        .bounded(boundary(input.boundary(), current.boundary(), current.name(), all));
                                 return roles.update(changed, current.version())
                                         .switchIfEmpty(Mono.error(new ConflictException("the role moved on; read it again")))
                                         .flatMap(stored -> events.changed(IdentityEvents.Subject.ROLE, stored.roleId(), accountId, caller.actor(),
                                                 stored.version(), "updated", stored).thenReturn(stored));
                             });
                         }));
+    }
+
+    /**
+     * The boundary a role ends with: {@code requested} null keeps {@code current}, empty removes it,
+     * else the policy it names (id or name). The account-admin role takes none: it is how an
+     * account recovers from a boundary that went too far.
+     */
+    private static String boundary(String requested, String current, String roleName, List<Policy> all) {
+        if (requested == null) {
+            return current;
+        }
+        if (requested.isBlank()) {
+            return null;
+        }
+        if (ManagedIam.ACCOUNT_ADMIN.equals(roleName)) {
+            throw new ConflictException("the account-admin role takes no permission boundary");
+        }
+        return IamSupport.one(requested, all, Policy::policyId, Policy::name, "boundary", "policy").policyId();
     }
 
     public Mono<Void> delete(Caller caller, String accountId, String roleId) {

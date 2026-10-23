@@ -24,12 +24,15 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Users, groups, roles, policies | `GET/POST .../users`, `GET/PATCH/DELETE .../users/{userId}`; the same for `groups`, `roles` and `policies` (`PUT` replaces a policy) |
 | Access keys | `GET/POST .../access-keys`, `GET/DELETE .../access-keys/{keyId}`, `POST .../access-keys/{keyId}:rotate` |
 | Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal) |
-| Authorization | `POST /v1/authorize`, `GET /internal/opa/bundles/console-authz.tar.gz` |
+| Guardrails | `GET/POST /v1/guardrails`, `GET/PATCH/DELETE /v1/guardrails/{guardrailId}` (internal), `GET .../guardrails` (the ones that apply to the account) |
+| Authorization | `POST /v1/authorize`, `POST .../policy-simulations`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `9edd017`; nothing is served beyond it (`ContractCoverageTest` fails on an operation the
-contract lacks, so a new one goes to the hub first).
+pin is hub `0cace24` (hub PR #22, decision 28, stacked on the cost contract of #18); nothing is
+served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
+to the hub first). The cost contract's `Account.costCentre` is not stored yet: it comes with the
+account lifecycle work on this branch.
 
 ## How it decides
 
@@ -58,6 +61,29 @@ contract lacks, so a new one goes to the hub first).
   `cost`, `search`, `access-request`). A deny wins; without an allow the decision says which managed
   role would have allowed it (`requestable`, `suggestedRole`), so the console can offer an access
   request.
+- **Permission boundaries.** A role may name one of the account's policies as its `boundary`:
+  its allows count only where the boundary allows too (no deny of the boundary matches, an allow
+  does), so an admin can let a team write its own roles without letting it grant more than the
+  boundary. Another role's allow still counts. A refusal for this reason has `scope: boundary`,
+  names the boundary as `policyId` and is not requestable. `boundary: ""` removes it; the
+  `account-admin` role takes none (it is how an account undoes a boundary that went too far), and
+  a policy that bounds a role cannot be deleted.
+- **Guardrails.** The organization's statements over every role of the accounts they target
+  (`accounts: ["*"]`, now and later, or account ids), as AWS's service control policies are. Only
+  the internal principal writes them (the BFF, for an organization admin; anyone else gets a 404).
+  A matching deny refuses whatever a role allows; once any guardrail of an account allows
+  something, an action none of them allows is refused ("outside the organization's guardrails").
+  They are read before the account's policies, so the reason names them; the refusal has
+  `scope: guardrail` (and `guardrailId` for a deny) and is not requestable. Every change is a
+  `GuardrailChanged` in each account it touches (`deleted` where it no longer applies), which also
+  moves those accounts' versions. An account's people who may `iam:list` see the ones that apply
+  there.
+- **Policy simulator.** `POST .../policy-simulations` answers checks for a person, a role (by id
+  or name) or a set of groups (by id or name) exactly as `/v1/authorize` would, over the current
+  data with up to ten unsaved policies laid over it and, for a role, a draft boundary in place of
+  its own. Nothing is written. Unsaved documents show as `simulated:policy-<n>` and
+  `simulated:boundary` in the results. It needs `iam:get` on the person or the roles, `iam:list`
+  for groups.
 - **One evaluator, two engines.** `authz/domain/Evaluator` decides in process; the same policy is
   written in Rego (`src/main/resources/opa/console/authz.rego`) and served as a bundle with the
   compiled accounts as data. The `opa` profile makes the service ask an OPA that polls the bundle
@@ -65,7 +91,8 @@ contract lacks, so a new one goes to the hub first).
   the first difference. `AuthorizeResponse.version` is the account's version; the bundle revision
   (and its ETag) is the global revision, bumped on every identity change.
 - **Refusals.** A 403 carries `denied: {layer, action, resource, reason, role?, policyId?,
-  statement?, requestable, suggestedRole?}` so the BFF can show why and offer the request.
+  statement?, requestable, suggestedRole?, scope?, guardrailId?}` so the BFF can show why, and
+  what refused it (a policy, a role's boundary or a guardrail), and offer the request.
 - **Access requests.** A person asks for a role after a refusal (`{action, resource?, role?, reason}`;
   without `role` the managed role the denial suggests). The request goes to the members of the
   groups whose policies allow `access-request:decide` (the owners, plus any custom approver group);

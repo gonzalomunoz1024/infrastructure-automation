@@ -58,6 +58,10 @@ public final class Ids {
         return "areq_" + ulid();
     }
 
+    public String guardrail() {
+        return "gr_" + ulid();
+    }
+
     public String event() {
         return "evt_" + ulid();
     }
