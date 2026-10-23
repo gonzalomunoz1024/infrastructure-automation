@@ -6,6 +6,13 @@ console:
       dev-headers: true
       jwks-uri: http://localhost:18081/.well-known/jwks.json
       bundle-token: demo-bundle-token
+    # the demo shows a rule approving at once: an operator may be account-admin for two hours
+    elevations:
+      auto-approval:
+        - name: operators-admin-two-hours
+          roles: [account-admin]
+          requester-roles: [operator]
+          max-minutes: 120
     platform:
       base-url: http://localhost:18090
       dev-user: gonzalo

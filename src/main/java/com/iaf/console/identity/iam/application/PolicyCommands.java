@@ -9,6 +9,7 @@ import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.identity.iam.domain.Policy;
 import com.iaf.console.identity.iam.domain.PolicyValidation;
+import com.iaf.console.identity.iam.domain.Role;
 import com.iaf.console.identity.iam.ports.outbound.ActionCatalogPort;
 import com.iaf.console.identity.iam.ports.outbound.PolicyStore;
 import com.iaf.console.identity.iam.ports.outbound.RoleStore;
@@ -85,7 +86,7 @@ public final class PolicyCommands {
                             if (current.builtIn()) {
                                 return Mono.error(new ConflictException("a managed policy cannot be deleted"));
                             }
-                            return roles.findAll(scope).filter(r -> r.policies().contains(policyId)).map(r -> r.name()).collectList()
+                            return roles.findAll(scope).filter(r -> r.policies().contains(policyId) || policyId.equals(r.boundary())).map(Role::name).collectList()
                                     .flatMap(holders -> holders.isEmpty() ? Mono.empty()
                                             : Mono.error(new ConflictException("the policy is held by " + String.join(", ", holders), holders)))
                                     .then(policies.delete(scope, policyId))

@@ -1,5 +1,6 @@
 package com.iaf.console.identity.quotas.adapters.mongo;
 
+import java.time.Instant;
 import java.util.List;
 
 import org.bson.Document;
@@ -19,6 +20,7 @@ import com.mongodb.MongoException;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.FindOneAndReplaceOptions;
 import com.mongodb.client.model.IndexModel;
+import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.Indexes;
 import com.mongodb.client.model.ReplaceOptions;
 import com.mongodb.client.model.ReturnDocument;
@@ -29,13 +31,15 @@ import reactor.core.publisher.Mono;
 
 /**
  * Collections {@code quota_overrides} ({@code _id} account and key) and {@code quota_requests}
- * ({@code _id} the request id; the version beside the record, which never serves it); the change
- * versions are sequences named {@code quota-changes:<accountId>:<key>}.
+ * ({@code _id} the request id; the version beside the record, which never serves it, and
+ * {@code ruleApprovedAt}, epoch nanoseconds, on a request a rule approved, for the cooldown); the
+ * change versions are sequences named {@code quota-changes:<accountId>:<key>}.
  */
 public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
 
     static final String OVERRIDES = "quota_overrides";
     static final String REQUESTS = "quota_requests";
+    static final String RULE_APPROVED_AT = "ruleApprovedAt";
 
     private final Mongo mongo;
 
@@ -47,7 +51,8 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
     public Mono<Void> ensureIndexes() {
         return mongo.indexes(OVERRIDES, List.of(new IndexModel(Indexes.ascending("accountId", "key"))))
                 .then(mongo.indexes(REQUESTS, List.of(new IndexModel(Indexes.ascending("accountId", "key", "status")),
-                        new IndexModel(Indexes.ascending("accountId", "status", "_id")))));
+                        new IndexModel(Indexes.ascending("accountId", "status", "_id")),
+                        new IndexModel(Indexes.ascending("accountId", "key", RULE_APPROVED_AT), new IndexOptions().sparse(true)))));
     }
 
     @Override
@@ -108,6 +113,13 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
     }
 
     @Override
+    public Mono<Instant> lastRuleApproval(AccountScope scope, String key) {
+        return Mono.from(mongo.collection(REQUESTS).find(Filters.and(Filters.eq("accountId", scope.accountId()), Filters.eq("key", key),
+                        Filters.exists(RULE_APPROVED_AT))).sort(Sorts.descending(RULE_APPROVED_AT)).first())
+                .map(d -> Mongo.fromNanos(((Number) d.get(RULE_APPROVED_AT)).longValue()));
+    }
+
+    @Override
     public Mono<Long> nextChangeVersion(AccountScope scope, String key) {
         return mongo.nextSequence("quota-changes:" + scope.accountId() + ":" + key);
     }
@@ -119,7 +131,11 @@ public final class MongoQuotaStore implements QuotaStore, MongoIndexed {
     }
 
     private Document request(QuotaRequest r) {
-        return new Document("_id", r.requestId()).append("accountId", r.accountId()).append("key", r.quotaKey()).append("status", r.status().name())
-                .append("version", r.version()).append(Mongo.DOC, mongo.doc(r));
+        Document d = new Document("_id", r.requestId()).append("accountId", r.accountId()).append("key", r.quotaKey()).append("status", r.status().name())
+                .append("version", r.version());
+        if (r.approvedByRule()) {
+            d.append(RULE_APPROVED_AT, Mongo.nanos(r.decidedAt()));
+        }
+        return d.append(Mongo.DOC, mongo.doc(r));
     }
 }

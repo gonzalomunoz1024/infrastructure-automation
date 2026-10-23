@@ -18,14 +18,18 @@ public record ActionCatalog(Map<String, Set<String>> verbsByService, Set<String>
     public static final Set<String> READ_VERBS = Set.of("get", "list", "observe", "history");
 
     /** The console's own services and their verbs, independent of the platform. */
-    public static final Map<String, Set<String>> CONSOLE_SERVICES = Map.of(
-            "iam", Set.of("get", "list", "create", "update", "delete", "manage"),
-            "account", Set.of("get", "list", "update"),
-            "quota", Set.of("get", "list", "set", "request-increase"),
-            "audit", Set.of("get", "list", "export"),
-            "cost", Set.of("get", "list"),
-            "search", Set.of("query"),
-            "access-request", Set.of("get", "list", "create", "decide"));
+    public static final Map<String, Set<String>> CONSOLE_SERVICES = Map.ofEntries(
+            Map.entry("iam", Set.of("get", "list", "create", "update", "delete", "manage")),
+            Map.entry("account", Set.of("get", "list", "update")),
+            Map.entry("quota", Set.of("get", "list", "set", "request-increase")),
+            Map.entry("audit", Set.of("get", "list", "export")),
+            Map.entry("cost", Set.of("get", "list", "export")),
+            Map.entry("budgets", Set.of("get", "list", "create", "update", "delete")),
+            Map.entry("search", Set.of("query")),
+            Map.entry("access-request", Set.of("get", "list", "create", "decide")),
+            Map.entry("access-review", Set.of("get", "list", "create", "decide", "cancel")),
+            Map.entry("elevation", Set.of("get", "list", "create", "decide", "revoke")),
+            Map.entry("blueprints", Set.of("get", "list", "launch", "teardown", "resume")));
 
     public ActionCatalog {
         Map<String, Set<String>> copy = new TreeMap<>();

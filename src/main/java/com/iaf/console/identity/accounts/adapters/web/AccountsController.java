@@ -11,8 +11,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.iaf.console.identity.accounts.application.AccountClosure;
 import com.iaf.console.identity.accounts.application.AccountCommands;
 import com.iaf.console.identity.accounts.application.AccountQueries;
+import com.iaf.console.identity.accounts.application.CloseAccount;
 import com.iaf.console.identity.accounts.application.CreateAccount;
 import com.iaf.console.identity.accounts.application.UpdateAccount;
 import com.iaf.console.identity.accounts.domain.Account;
@@ -25,16 +27,18 @@ import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
-/** {@code /v1/accounts}: the contract's Accounts tag and the internal platform-credentials read. */
+/** {@code /v1/accounts}: the contract's Accounts tag, the internal closure and the internal platform-credentials read. */
 @RestController
 public class AccountsController {
 
     private final AccountCommands commands;
     private final AccountQueries queries;
+    private final AccountClosure closure;
 
-    public AccountsController(AccountCommands commands, AccountQueries queries) {
+    public AccountsController(AccountCommands commands, AccountQueries queries, AccountClosure closure) {
         this.commands = commands;
         this.queries = queries;
+        this.closure = closure;
     }
 
     @GetMapping("/v1/accounts")
@@ -58,6 +62,12 @@ public class AccountsController {
     public Mono<Account> update(Caller caller, @PathVariable String accountId, @RequestBody UpdateAccount body,
             @RequestHeader(name = "If-Match", required = false) String ifMatch) {
         return commands.update(caller, accountId, body, Versions.ifMatch(ifMatch));
+    }
+
+    @PostMapping("/v1/accounts/{accountId}:close")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public Mono<Account> close(Caller caller, @PathVariable String accountId, @RequestBody CloseAccount body) {
+        return closure.close(caller, accountId, body);
     }
 
     @GetMapping("/v1/accounts/{accountId}/platform-credentials")

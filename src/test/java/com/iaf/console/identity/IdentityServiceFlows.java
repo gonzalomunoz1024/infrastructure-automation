@@ -41,13 +41,18 @@ import com.iaf.console.identity.authz.Tars;
 import com.iaf.console.identity.demo.DemoSeed;
 import com.iaf.console.identity.iam.application.GroupCommands;
 import com.iaf.console.identity.iam.application.IamSupport;
+import com.iaf.console.identity.iam.application.ManagedPolicyUpgrade;
 import com.iaf.console.identity.iam.application.PolicyCommands;
 import com.iaf.console.identity.iam.application.RoleCommands;
+import com.iaf.console.identity.iam.domain.Policy;
+import com.iaf.console.identity.iam.domain.Statement;
+import com.iaf.console.identity.iam.ports.outbound.PolicyStore;
 import com.iaf.console.identity.principals.application.PrincipalCommands;
 import com.iaf.console.identity.principals.ports.outbound.UserStore;
 import com.iaf.console.kit.events.EventEnvelope;
 import com.iaf.console.kit.outbox.OutboxEntry;
 import com.iaf.console.kit.outbox.OutboxPort;
+import com.iaf.console.kit.scope.AccountScope;
 
 /** The flows of the contract, end to end over HTTP: the same tests run on the in-memory stores and on MongoDB. */
 abstract class IdentityServiceFlows extends WithService {
@@ -76,6 +81,10 @@ abstract class IdentityServiceFlows extends WithService {
     GroupCommands groupCommands;
     @Autowired
     IamSupport iamSupport;
+    @Autowired
+    PolicyStore policyStore;
+    @Autowired
+    ManagedPolicyUpgrade managedPolicyUpgrade;
     @Autowired
     Clock clock;
 
@@ -119,6 +128,10 @@ abstract class IdentityServiceFlows extends WithService {
 
     static Map<String, Object> check(String action, String resource) {
         return Map.of("action", action, "resource", resource);
+    }
+
+    static Map<String, Object> check(String action, String resource, Map<String, Object> context) {
+        return Map.of("action", action, "resource", resource, "context", context);
     }
 
     static Map<String, Object> authorize(String userId, String accountId, List<Map<String, Object>> checks) {
@@ -276,6 +289,29 @@ abstract class IdentityServiceFlows extends WithService {
     }
 
     @Test
+    void aRetriedKeyMintNeverAnswersOrKeepsTheSecretAgain() {
+        Seeded s = newAccount();
+        String keys = s.base() + "/access-keys";
+        String key = "mint-" + UUID.randomUUID();
+        Map<String, Object> mint = Map.of("userId", s.ownerId(), "description", "ci runner");
+        JsonNode first = body(send(POST, keys, s.owner(), mint, Map.of("Idempotency-Key", key)).expectStatus().isCreated()
+                .expectHeader().valueEquals("Cache-Control", "no-store"));
+        String secret = first.get("secretPart").asText();
+        assertThat(secret).hasSize(43);
+        String replay = send(POST, keys, s.owner(), mint, Map.of("Idempotency-Key", key)).expectStatus().isEqualTo(CONFLICT)
+                .expectHeader().valueEquals("Idempotent-Replay", "true").expectBody(String.class).returnResult().getResponseBody();
+        assertThat(replay).contains("carried out already").doesNotContain(secret);
+        assertThat(texts(call(GET, keys + "?userId=" + s.ownerId(), s.owner(), null, OK).get("items"), "keyId"))
+                .as("the retry minted nothing").containsExactly(first.get("keyId").asText());
+
+        String rotateKey = "rotate-" + UUID.randomUUID();
+        String rotate = keys + "/" + first.get("keyId").asText() + ":rotate";
+        String rotated = body(send(POST, rotate, s.owner(), null, Map.of("Idempotency-Key", rotateKey)).expectStatus().is2xxSuccessful()).get("secretPart").asText();
+        assertThat(send(POST, rotate, s.owner(), null, Map.of("Idempotency-Key", rotateKey)).expectStatus().isEqualTo(CONFLICT)
+                .expectBody(String.class).returnResult().getResponseBody()).doesNotContain(rotated);
+    }
+
+    @Test
     void accessKeysAreMintedRotatedAndRevoked() {
         Seeded s = newAccount();
         String mia = addUser(s, "mia", "viewers");
@@ -354,14 +390,17 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(bucket.get("limit").asInt()).as("the platform's bucket moved too").isEqualTo(120);
         call(PUT, quotas + "/jobs-per-minute", internal(), Map.of("limit", -1), BAD_REQUEST);
 
-        JsonNode accepted = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 200, "reason", "the team needs more test machines"),
+        // 250 is more than the default rule doubles a limit to, so the platform team decides it
+        JsonNode accepted = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 250, "reason", "the team needs more test machines"),
                 ACCEPTED);
         String requestId = accepted.get("requestId").asText();
         assertThat(requestId).startsWith("qreq_");
         assertThat(accepted.get("status").asText()).isEqualTo("open");
         assertThat(accepted.get("quotaKey").asText()).isEqualTo("resources.vm");
         assertThat(accepted.get("currentLimit").asInt()).isEqualTo(100);
-        assertThat(accepted.get("requestedLimit").asInt()).isEqualTo(200);
+        assertThat(accepted.get("requestedLimit").asInt()).isEqualTo(250);
+        assertThat(accepted.get("routedTo").asText()).isEqualTo("platform-team");
+        assertThat(accepted.has("decidedBy")).isFalse();
         assertThat(accepted.get("accountId").asText()).isEqualTo(s.accountId());
         assertThat(accepted.get("requestedBy").asText()).isEqualTo(mia);
         assertThat(accepted.get("requestedAt").asText()).isNotBlank();
@@ -374,15 +413,16 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode request = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
         assertThat(request.get("status").asText()).isEqualTo("open");
         assertThat(request.get("requestedBy").asText()).isEqualTo(mia);
-        assertThat(request.get("requestedLimit").asInt()).isEqualTo(200);
+        assertThat(request.get("requestedLimit").asInt()).isEqualTo(250);
 
-        JsonNode raised = call(PUT, quotas + "/resources.vm", internal(), Map.of("limit", 200), OK);
-        assertThat(raised.get("limit").asInt()).isEqualTo(200);
+        JsonNode raised = call(PUT, quotas + "/resources.vm", internal(), Map.of("limit", 250), OK);
+        assertThat(raised.get("limit").asInt()).isEqualTo(250);
         assertThat(raised.get("source").asText()).isEqualTo("override");
         assertThat(raised.has("pendingRequestId")).isFalse();
         JsonNode moot = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
         assertThat(moot.get("status").asText()).as("a limit at or above the ask approves the request").isEqualTo("approved");
-        assertThat(moot.get("grantedLimit").asInt()).isEqualTo(200);
+        assertThat(moot.get("grantedLimit").asInt()).isEqualTo(250);
+        assertThat(moot.get("routedTo").asText()).as("the routing stays on the record").isEqualTo("platform-team");
         assertThat(moot.has("version")).as("the version is never served").isFalse();
 
         JsonNode approvedView = call(GET, s.base() + "/quota-requests/" + requestId, viewer, null, OK);
@@ -390,7 +430,7 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(approvedView.get("decidedAt").asText()).isNotBlank();
 
         // an admin withdraws someone else's open request; a decided one is a 409
-        JsonNode second = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 5, "reason", "need more databases now"), ACCEPTED);
+        JsonNode second = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 300, "reason", "need more databases now"), ACCEPTED);
         String secondId = second.get("requestId").asText();
         send(DELETE, s.base() + "/quota-requests/" + secondId, s.owner(), null, Map.of()).expectStatus().isNoContent();
         assertThat(call(GET, s.base() + "/quota-requests/" + secondId, viewer, null, OK).get("status").asText()).isEqualTo("withdrawn");
@@ -399,7 +439,7 @@ abstract class IdentityServiceFlows extends WithService {
         // the requester withdraws their own; an operator may not withdraw another person's
         String dana = addUser(s, "dana", "members");
         String operator = bearer(dana, s.accountId(), List.of("members"));
-        JsonNode third = call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 7, "reason", "need more networks now"), ACCEPTED);
+        JsonNode third = call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 300, "reason", "need more networks now"), ACCEPTED);
         String thirdId = third.get("requestId").asText();
         JsonNode refused = call(DELETE, s.base() + "/quota-requests/" + thirdId, operator, null, FORBIDDEN);
         assertThat(refused.get("denied").get("action").asText()).isEqualTo("quota:set");
@@ -476,6 +516,75 @@ abstract class IdentityServiceFlows extends WithService {
         call(GET, quotas + "/nonsense", s.owner(), null, NOT_FOUND);
         call(GET, s.base() + "/quota-requests/qreq_nope", s.owner(), null, NOT_FOUND);
         assertThat(texts(call(GET, quotas, s.owner(), null, OK).get("items"), "key")).contains("resources.vm");
+    }
+
+    @Test
+    void anIncreaseARuleCoversIsApprovedAtOnce() {
+        Seeded s = newAccount();
+        String mia = addUser(s, "mia", "viewers");
+        String viewer = bearer(mia, s.accountId(), List.of("viewers"));
+        String quotas = s.base() + "/quotas";
+
+        // the rules are there for anyone signed in to read
+        JsonNode rules = call(GET, "/v1/quota-rules", viewer, null, OK);
+        assertThat(rules.get("approver").asText()).isEqualTo("platform-team");
+        assertThat(texts(rules.get("items"), "name")).containsExactly("resources-double", "access-keys-double", "jobs-half-again");
+        JsonNode doubling = rules.get("items").get(0);
+        assertThat(strings(doubling.get("keys"))).containsExactly("resources.*");
+        assertThat(doubling.get("maxFactor").asDouble()).isEqualTo(2.0);
+        assertThat(doubling.get("maxLimit").asInt()).isEqualTo(1000);
+        assertThat(doubling.get("cooldown").asText()).isEqualTo("PT720H");
+        web.get().uri("/v1/quota-rules").exchange().expectStatus().isUnauthorized();
+
+        // within the rule: approved by it as it is asked, the limit set
+        JsonNode approved = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 200, "reason", "the team needs more test machines"),
+                ACCEPTED);
+        assertThat(approved.get("status").asText()).isEqualTo("approved");
+        assertThat(approved.get("decidedBy").asText()).isEqualTo("rule:resources-double");
+        assertThat(approved.get("grantedLimit").asInt()).isEqualTo(200);
+        assertThat(approved.get("currentLimit").asInt()).isEqualTo(100);
+        assertThat(approved.get("comment").asText()).contains("resources-double");
+        assertThat(approved.get("decidedAt").asText()).isNotBlank();
+        assertThat(approved.has("routedTo")).isFalse();
+        JsonNode vm = call(GET, quotas + "/resources.vm", viewer, null, OK);
+        assertThat(vm.get("limit").asInt()).isEqualTo(200);
+        assertThat(vm.get("source").asText()).isEqualTo("override");
+        assertThat(vm.has("pendingRequestId")).isFalse();
+
+        // the cooldown: the same key goes to the platform team for a while, another key does not wait
+        JsonNode cooling = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 300, "reason", "and a few more machines after all"),
+                ACCEPTED);
+        assertThat(cooling.get("status").asText()).isEqualTo("open");
+        assertThat(cooling.get("routedTo").asText()).isEqualTo("platform-team");
+        call(DELETE, s.base() + "/quota-requests/" + cooling.get("requestId").asText(), viewer, null, NO_CONTENT);
+        assertThat(call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 150, "reason", "a few more test databases"), ACCEPTED)
+                .get("decidedBy").asText()).isEqualTo("rule:resources-double");
+        assertThat(call(POST, quotas + "/access-keys:request-increase", viewer, Map.of("limit", 100, "reason", "keys for the new build agents"), ACCEPTED)
+                .get("decidedBy").asText()).isEqualTo("rule:access-keys-double");
+        assertThat(call(GET, quotas + "/access-keys", viewer, null, OK).get("limit").asInt()).isEqualTo(100);
+
+        // beyond the factor, or above the rule's maximum, it is routed; an ask that is no increase is a 400
+        assertThat(call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 201, "reason", "a lot more networks"), ACCEPTED)
+                .get("routedTo").asText()).isEqualTo("platform-team");
+        call(PUT, quotas + "/resources.image", internal(), Map.of("limit", 600), OK);
+        JsonNode capped = call(POST, quotas + "/resources.image:request-increase", viewer, Map.of("limit", 1100, "reason", "images for every branch build"),
+                ACCEPTED);
+        assertThat(capped.get("status").asText()).as("twice 600 but above 1,000").isEqualTo("open");
+        JsonNode same = call(POST, quotas + "/resources.volume:request-increase", viewer, Map.of("limit", 100, "reason", "the same as now, by mistake"),
+                BAD_REQUEST);
+        assertThat(same.get("problems").get(0).get("code").asText()).isEqualTo("not-an-increase");
+        assertThat(same.get("problems").get(0).get("field").asText()).isEqualTo("limit");
+        call(POST, quotas + "/resources.volume:request-increase", viewer, Map.of("limit", 50, "reason", "lower, which is no increase"), BAD_REQUEST);
+
+        // the approval is one QuotaChanged, by the person who asked, with the request the rule decided
+        List<EventEnvelope> vmEvents = outbox.after(0, 100_000).filter(e -> s.accountId().equals(e.partitionKey())).map(OutboxEntry::event)
+                .filter(e -> "QuotaChanged".equals(e.type()) && "resources.vm".equals(e.aggregateId())).collectList().block();
+        assertThat(vmEvents).isNotNull();
+        assertThat(vmEvents).extracting(e -> e.data().get("action").asText()).containsExactly("approved", "updated", "updated");
+        EventEnvelope byRule = vmEvents.get(0);
+        assertThat(byRule.actor()).isEqualTo(mia);
+        assertThat(byRule.data().get("snapshot").get("limit").asInt()).isEqualTo(200);
+        assertThat(byRule.data().get("snapshot").get("request").get("decidedBy").asText()).isEqualTo("rule:resources-double");
     }
 
     @Test
@@ -916,6 +1025,374 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode approved = call(POST, requests + "/" + ownId + ":decide", s.owner(), Map.of("decision", "approve"), ACCEPTED);
         assertThat(approved.get("status").asText()).isEqualTo("approved");
         assertThat(strings(call(GET, s.users() + "/" + dana, s.owner(), null, OK).get("groups"))).contains("owners");
+    }
+
+    @Test
+    void aPermissionBoundaryCapsWhatARoleGrants() {
+        Seeded s = newAccount();
+        String dana = addUser(s, "dana", "viewers");
+        String b = s.base();
+        String computeOnly = call(POST, b + "/policies", s.owner(), Map.of("name", "compute-only", "statements", List.of(Map.of("sid", "compute", "effect",
+                "allow", "actions", List.of("compute:*"), "resources", List.of("wfrn:wf:compute:*")))), CREATED).get("policyId").asText();
+        JsonNode role = call(POST, b + "/roles", s.owner(), Map.of("name", "bounded-operator", "policies", List.of("managed-operator"), "boundary",
+                "compute-only"), CREATED);
+        String roleId = role.get("roleId").asText();
+        assertThat(role.get("boundary").asText()).as("named, kept by id").isEqualTo(computeOnly);
+        call(POST, b + "/groups", s.owner(), Map.of("name", "sre", "roles", List.of("bounded-operator"), "members", List.of(dana)), CREATED);
+
+        // the role allows every change but deletes and IAM; the boundary lets only compute's through, and another role's allow still counts
+        String db = "wfrn:wf:data:global:" + s.accountId() + ":db/db-1";
+        JsonNode decisions = call(POST, "/v1/authorize", s.owner(), authorize(dana, s.accountId(), List.of(check("compute:restart", s.vm("vm-1")),
+                check("data:update", db), check("data:get", db))), OK).get("decisions");
+        assertThat(decisions.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(decisions.get(0).get("role").asText()).isEqualTo("bounded-operator");
+        JsonNode bounded = decisions.get(1);
+        assertThat(bounded.get("allowed").asBoolean()).isFalse();
+        assertThat(bounded.get("scope").asText()).isEqualTo("boundary");
+        assertThat(bounded.get("policyId").asText()).isEqualTo(computeOnly);
+        assertThat(bounded.get("role").asText()).isEqualTo("bounded-operator");
+        assertThat(bounded.get("reason").asText()).isEqualTo("outside the permission boundary compute-only of role bounded-operator");
+        assertThat(bounded.get("requestable").asBoolean()).as("asking for a role does not lift a boundary").isFalse();
+        assertThat(decisions.get(2).get("allowed").asBoolean()).isTrue();
+        assertThat(decisions.get(2).get("role").asText()).isEqualTo("viewer");
+        EventEnvelope created = outbox.after(0, 100_000).filter(e -> roleId.equals(e.event().aggregateId())).map(OutboxEntry::event).blockFirst();
+        assertThat(created).isNotNull();
+        assertThat(created.data().get("snapshot").get("boundary").asText()).isEqualTo(computeOnly);
+
+        // an empty boundary removes it, an id sets it again, a change that leaves it out keeps it
+        JsonNode cleared = body(send(PATCH, b + "/roles/" + roleId, s.owner(), Map.of("boundary", ""), Map.of("If-Match", "1")).expectStatus().isOk());
+        assertThat(cleared.has("boundary")).isFalse();
+        assertThat(cleared.get("version").asLong()).isEqualTo(2);
+        assertThat(call(POST, "/v1/authorize", s.owner(), authorize(dana, s.accountId(), List.of(check("data:update", db))), OK).get("decisions").get(0)
+                .get("allowed").asBoolean()).isTrue();
+        assertThat(call(PATCH, b + "/roles/" + roleId, s.owner(), Map.of("boundary", computeOnly), OK).get("boundary").asText()).isEqualTo(computeOnly);
+        JsonNode described = call(PATCH, b + "/roles/" + roleId, s.owner(), Map.of("description", "Operates compute only"), OK);
+        assertThat(described.get("boundary").asText()).isEqualTo(computeOnly);
+        assertThat(described.get("version").asLong()).isEqualTo(4);
+
+        // the account-admin role takes none (it is how an account undoes a boundary), a boundary names a policy of the account, and a bounding policy stays
+        String adminRoleId = idOf(call(GET, b + "/roles", s.owner(), null, OK).get("items"), "name", "account-admin", "roleId");
+        call(PATCH, b + "/roles/" + adminRoleId, s.owner(), Map.of("boundary", "compute-only"), CONFLICT);
+        JsonNode unknown = call(POST, b + "/roles", s.owner(), Map.of("name", "ghost-bounded", "policies", List.of("managed-viewer"), "boundary", "nonexistent"),
+                BAD_REQUEST);
+        assertThat(unknown.get("problems").get(0).get("field").asText()).isEqualTo("boundary");
+        JsonNode held = call(DELETE, b + "/policies/" + computeOnly, s.owner(), null, CONFLICT);
+        assertThat(held.get("error").asText()).contains("bounded-operator");
+        call(PATCH, b + "/roles/" + roleId, bearer(dana, s.accountId(), List.of("viewers", "sre")), Map.of("boundary", ""), FORBIDDEN);
+    }
+
+    @Test
+    void guardrailsHoldOverEveryRoleInTheAccountsTheyTarget() {
+        Seeded s = newAccount();
+        Seeded other = newAccount();
+        String mia = addUser(s, "mia", "viewers");
+        String name = "no-prod-deletes-" + next() + "-" + RUN;
+        Map<String, Object> prodDeletes = Map.of("sid", "prod-deletes", "effect", "deny", "actions", List.of("*:delete"), "resources", List.of("wfrn:wf:*"),
+                "conditions", Map.of("tag.env", "prod"));
+        Map<String, Object> input = Map.of("name", name, "description", "Production is deleted by change request only", "statements", List.of(prodDeletes),
+                "accounts", List.of(s.accountId()));
+
+        // the organization's, never an account's: anyone but the internal principal gets a 404
+        call(POST, "/v1/guardrails", s.owner(), input, NOT_FOUND);
+        call(GET, "/v1/guardrails", s.owner(), null, NOT_FOUND);
+        call(POST, "/v1/guardrails", internal(), Map.of("name", name, "statements", List.of(prodDeletes)), BAD_REQUEST);
+        call(POST, "/v1/guardrails", internal(), Map.of("name", name, "statements", List.of(prodDeletes), "accounts", List.of("*", s.accountId())), BAD_REQUEST);
+        JsonNode nowhere = call(POST, "/v1/guardrails", internal(), Map.of("name", name, "statements", List.of(prodDeletes), "accounts", List.of(s.accountId(),
+                "999999999999")), BAD_REQUEST);
+        assertThat(nowhere.get("problems").get(0).get("field").asText()).isEqualTo("accounts[1]");
+        call(POST, "/v1/guardrails", internal(), Map.of("name", name, "statements", List.of(Map.of("effect", "deny", "actions", List.of("compute:teleport"),
+                "resources", List.of("wfrn:wf:*"))), "accounts", List.of(s.accountId())), BAD_REQUEST);
+
+        Map<String, Object> prod = Map.of("tags", Map.of("env", "prod"));
+        long before = call(POST, "/v1/authorize", s.owner(), authorize(s.ownerId(), s.accountId(), List.of(check("compute:get", s.vm("vm-1")))), OK).get("version")
+                .asLong();
+        JsonNode created = call(POST, "/v1/guardrails", internal(), input, CREATED);
+        String guardrailId = created.get("guardrailId").asText();
+        assertThat(guardrailId).startsWith("gr_");
+        assertThat(created.get("version").asLong()).isEqualTo(1);
+        assertThat(strings(created.get("accounts"))).containsExactly(s.accountId());
+        call(POST, "/v1/guardrails", internal(), input, CONFLICT);
+
+        // a matching deny refuses whatever a role allows, the admin's too; it holds only where it matches and only in the accounts it targets
+        JsonNode answer = call(POST, "/v1/authorize", s.owner(), authorize(s.ownerId(), s.accountId(), List.of(check("compute:delete", s.vm("vm-1"), prod),
+                check("compute:delete", s.vm("vm-2")), check("compute:restart", s.vm("vm-1"), prod))), OK);
+        JsonNode refused = answer.get("decisions").get(0);
+        assertThat(refused.get("allowed").asBoolean()).isFalse();
+        assertThat(refused.get("scope").asText()).isEqualTo("guardrail");
+        assertThat(refused.get("guardrailId").asText()).isEqualTo(guardrailId);
+        assertThat(refused.get("statement").asText()).isEqualTo("prod-deletes");
+        assertThat(refused.get("reason").asText()).isEqualTo("denied by guardrail " + name + ", statement prod-deletes");
+        assertThat(refused.get("requestable").asBoolean()).as("no role of the account lifts a guardrail").isFalse();
+        assertThat(refused.has("policyId")).isFalse();
+        assertThat(answer.get("decisions").get(1).get("allowed").asBoolean()).isTrue();
+        assertThat(answer.get("decisions").get(2).get("allowed").asBoolean()).isTrue();
+        assertThat(answer.get("version").asLong()).as("the account's decisions moved on").isGreaterThan(before);
+        assertThat(call(POST, "/v1/authorize", other.owner(), authorize(other.ownerId(), other.accountId(), List.of(check("compute:delete", other.vm("vm-1"),
+                prod))), OK).get("decisions").get(0).get("allowed").asBoolean()).isTrue();
+        JsonNode simulated = call(POST, s.base() + "/policy-simulations", s.owner(), Map.of("principal", Map.of("userId", s.ownerId()), "checks",
+                List.of(check("compute:delete", s.vm("vm-1"), prod))), OK).get("results").get(0);
+        assertThat(simulated.get("guardrailId").asText()).isEqualTo(guardrailId);
+
+        // a change, under If-Match: a statement with no condition refuses an IAM write, with the guardrail in the denial
+        Map<String, Object> noUserDeletes = Map.of("sid", "keep-users", "effect", "deny", "actions", List.of("iam:delete"), "resources",
+                List.of("wfrn:wf:iam:*:*:user/*"));
+        String one = "/v1/guardrails/" + guardrailId;
+        send(PATCH, one, internal(), Map.of("statements", List.of(prodDeletes, noUserDeletes)), Map.of("If-Match", "2")).expectStatus().isEqualTo(CONFLICT);
+        JsonNode changed = body(send(PATCH, one, internal(), Map.of("statements", List.of(prodDeletes, noUserDeletes)), Map.of("If-Match", "1")).expectStatus()
+                .isOk());
+        assertThat(changed.get("version").asLong()).isEqualTo(2);
+        assertThat(changed.get("name").asText()).isEqualTo(name);
+        assertThat(changed.get("statements")).hasSize(2);
+        JsonNode denied = call(DELETE, s.users() + "/" + mia, s.owner(), null, FORBIDDEN).get("denied");
+        assertThat(denied.get("layer").asText()).isEqualTo("console-iam");
+        assertThat(denied.get("action").asText()).isEqualTo("iam:delete");
+        assertThat(denied.get("scope").asText()).isEqualTo("guardrail");
+        assertThat(denied.get("guardrailId").asText()).isEqualTo(guardrailId);
+        assertThat(denied.get("requestable").asBoolean()).isFalse();
+
+        // an allow-list: once a guardrail of an account allows anything, an action none of them allows is refused
+        JsonNode globalOnly = call(POST, "/v1/guardrails", internal(), Map.of("name", "global-only-" + next() + "-" + RUN, "statements", List.of(
+                Map.of("sid", "global", "effect", "allow", "actions", List.of("*:*"), "resources", List.of("wfrn:wf:*:global:*")),
+                Map.of("sid", "identity", "effect", "allow", "actions", List.of("*:*"), "resources", List.of("wfrn:wf:iam:*"))), "accounts", List.of(s.accountId())),
+                CREATED);
+        String globalOnlyId = globalOnly.get("guardrailId").asText();
+        String elsewhere = "wfrn:wf:compute:eu-west-1:" + s.accountId() + ":vm/vm-1";
+        JsonNode regions = call(POST, "/v1/authorize", s.owner(), authorize(s.ownerId(), s.accountId(), List.of(check("compute:get", elsewhere),
+                check("compute:get", s.vm("vm-1")))), OK).get("decisions");
+        assertThat(regions.get(0).get("allowed").asBoolean()).isFalse();
+        assertThat(regions.get(0).get("reason").asText()).isEqualTo("outside the organization's guardrails");
+        assertThat(regions.get(0).get("scope").asText()).isEqualTo("guardrail");
+        assertThat(regions.get(0).has("guardrailId")).as("no one guardrail refused it").isFalse();
+        assertThat(regions.get(1).get("allowed").asBoolean()).isTrue();
+
+        // the account's people who may list its IAM see the guardrails that apply there, in id order
+        List<String> both = new ArrayList<>(List.of(guardrailId, globalOnlyId));
+        java.util.Collections.sort(both);
+        assertThat(texts(call(GET, s.base() + "/guardrails", s.owner(), null, OK).get("items"), "guardrailId")).containsExactlyElementsOf(both);
+        assertThat(texts(call(GET, s.base() + "/guardrails", bearer(mia, s.accountId(), List.of("viewers")), null, OK).get("items"), "guardrailId")).hasSize(2);
+        assertThat(call(GET, other.base() + "/guardrails", other.owner(), null, OK).get("items")).isEmpty();
+        call(GET, other.base() + "/guardrails", s.owner(), null, NOT_FOUND);
+        assertThat(texts(call(GET, "/v1/guardrails?limit=200", internal(), null, OK).get("items"), "guardrailId")).contains(guardrailId, globalOnlyId);
+        assertThat(call(GET, one, internal(), null, OK).get("version").asLong()).isEqualTo(2);
+        call(GET, one, s.owner(), null, NOT_FOUND);
+        call(GET, "/v1/guardrails/gr_nope", internal(), null, NOT_FOUND);
+
+        // retargeting moves it: the account it left is free of it, the one it reached holds it
+        JsonNode moved = body(send(PATCH, one, internal(), Map.of("accounts", List.of(other.accountId())), Map.of("If-Match", "2")).expectStatus().isOk());
+        assertThat(moved.get("version").asLong()).isEqualTo(3);
+        assertThat(call(POST, "/v1/authorize", s.owner(), authorize(s.ownerId(), s.accountId(), List.of(check("compute:delete", s.vm("vm-1"), prod))), OK)
+                .get("decisions").get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(call(POST, "/v1/authorize", other.owner(), authorize(other.ownerId(), other.accountId(), List.of(check("compute:delete", other.vm("vm-1"),
+                prod))), OK).get("decisions").get(0).get("scope").asText()).isEqualTo("guardrail");
+        send(DELETE, one, s.owner(), null, Map.of()).expectStatus().isNotFound();
+        send(DELETE, one, internal(), null, Map.of()).expectStatus().isNoContent();
+        send(DELETE, "/v1/guardrails/" + globalOnlyId, internal(), null, Map.of()).expectStatus().isNoContent();
+        send(DELETE, one, internal(), null, Map.of()).expectStatus().isNotFound();
+        assertThat(call(GET, s.base() + "/guardrails", s.owner(), null, OK).get("items")).isEmpty();
+        assertThat(call(POST, "/v1/authorize", s.owner(), authorize(s.ownerId(), s.accountId(), List.of(check("compute:get", elsewhere))), OK).get("decisions")
+                .get(0).get("allowed").asBoolean()).isTrue();
+
+        // each account it touched heard every change: created, updated, deleted where it no longer applies
+        List<EventEnvelope> events = outbox.after(0, 100_000).map(OutboxEntry::event).filter(e -> "GuardrailChanged".equals(e.type())).collectList().block();
+        assertThat(events).isNotNull();
+        java.util.function.BiFunction<Seeded, String, List<String>> heard = (account, id) -> events.stream()
+                .filter(e -> account.accountId().equals(e.context().accountId()) && id.equals(e.aggregateId())).map(e -> e.data().get("action").asText()).toList();
+        assertThat(heard.apply(s, guardrailId)).containsExactly("created", "updated", "deleted");
+        assertThat(heard.apply(other, guardrailId)).containsExactly("updated", "deleted");
+        assertThat(heard.apply(s, globalOnlyId)).containsExactly("created", "deleted");
+        assertThat(heard.apply(other, globalOnlyId)).isEmpty();
+        EventEnvelope first = events.stream().filter(e -> guardrailId.equals(e.aggregateId())).findFirst().orElseThrow();
+        assertThat(first.aggregate()).isEqualTo("guardrail");
+        assertThat(first.key()).isEqualTo("GuardrailChanged:" + s.accountId() + ":" + guardrailId + ":1");
+        assertThat(first.actor()).isEqualTo("svc:console-bff");
+        assertThat(first.data().get("snapshot").get("name").asText()).isEqualTo(name);
+        EventEnvelope last = events.stream().filter(e -> guardrailId.equals(e.aggregateId())).reduce((a, z) -> z).orElseThrow();
+        assertThat(last.data().get("action").asText()).isEqualTo("deleted");
+        assertThat(last.data().get("version").asLong()).isEqualTo(4);
+        assertThat(last.data().has("snapshot")).isFalse();
+    }
+
+    @Test
+    void aGuardrailForEveryAccountReachesEachOfThem() {
+        Seeded s = newAccount();
+        Seeded other = newAccount();
+        String probe = "probe-" + next() + "-" + RUN;
+        Map<String, Object> tagged = Map.of("tags", Map.of("probe", probe));
+        JsonNode everywhere = call(POST, "/v1/guardrails", internal(), Map.of("name", probe, "statements", List.of(Map.of("sid", "probe", "effect", "deny",
+                "actions", List.of("compute:delete"), "resources", List.of("wfrn:wf:*"), "conditions", Map.of("tag.probe", probe))), "accounts", List.of("*")), CREATED);
+        String id = everywhere.get("guardrailId").asText();
+        for (Seeded account : List.of(s, other)) {
+            assertThat(texts(call(GET, account.base() + "/guardrails", account.owner(), null, OK).get("items"), "guardrailId")).contains(id);
+            JsonNode decision = call(POST, "/v1/authorize", account.owner(), authorize(account.ownerId(), account.accountId(), List.of(check("compute:delete",
+                    account.vm("vm-1"), tagged))), OK).get("decisions").get(0);
+            assertThat(decision.get("guardrailId").asText()).isEqualTo(id);
+        }
+        Seeded later = newAccount();
+        assertThat(call(POST, "/v1/authorize", later.owner(), authorize(later.ownerId(), later.accountId(), List.of(check("compute:delete", later.vm("vm-1"),
+                tagged))), OK).get("decisions").get(0).get("allowed").asBoolean()).as("an account made after it, too").isFalse();
+        send(DELETE, "/v1/guardrails/" + id, internal(), null, Map.of()).expectStatus().isNoContent();
+        assertThat(call(POST, "/v1/authorize", later.owner(), authorize(later.ownerId(), later.accountId(), List.of(check("compute:delete", later.vm("vm-1"),
+                tagged))), OK).get("decisions").get(0).get("allowed").asBoolean()).isTrue();
+        List<EventEnvelope> events = outbox.after(0, 100_000).map(OutboxEntry::event).filter(e -> id.equals(e.aggregateId())).collectList().block();
+        assertThat(events).isNotNull();
+        for (Seeded account : List.of(s, other)) {
+            assertThat(events.stream().filter(e -> account.accountId().equals(e.context().accountId())).map(e -> e.data().get("action").asText()).toList())
+                    .containsExactly("created", "deleted");
+        }
+        assertThat(events.stream().filter(e -> later.accountId().equals(e.context().accountId())).map(e -> e.data().get("action").asText()).toList())
+                .containsExactly("deleted");
+    }
+
+    @Test
+    void thePolicySimulatorDecidesAsAuthorizeWouldAndWritesNothing() {
+        Seeded s = newAccount();
+        String mia = addUser(s, "mia", "viewers");
+        String viewer = bearer(mia, s.accountId(), List.of("viewers"));
+        String simulate = s.base() + "/policy-simulations";
+        String vm = s.vm("vm-1");
+        List<Map<String, Object>> checks = List.of(check("compute:get", vm), check("compute:delete", vm), check("iam:create", "wfrn:wf:iam::" + s.accountId()
+                + ":user/*"));
+
+        // a person: each result is authorize's decision for them, at the same version, with the check it answers
+        JsonNode asMia = call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "checks", checks), OK);
+        JsonNode authorized = call(POST, "/v1/authorize", s.owner(), authorize(mia, s.accountId(), checks), OK);
+        long version = authorized.get("version").asLong();
+        assertThat(asMia.get("version").asLong()).isEqualTo(version);
+        assertThat(asMia.get("results")).hasSize(3);
+        for (int i = 0; i < checks.size(); i++) {
+            com.fasterxml.jackson.databind.node.ObjectNode result = (com.fasterxml.jackson.databind.node.ObjectNode) asMia.get("results").get(i).deepCopy();
+            assertThat(result.remove("action").asText()).isEqualTo(checks.get(i).get("action"));
+            assertThat(result.remove("resource").asText()).isEqualTo(checks.get(i).get("resource"));
+            assertThat(result).isEqualTo(authorized.get("decisions").get(i));
+        }
+
+        // unsaved policies: what they would change, with nothing stored
+        Map<String, Object> draft = Map.of("name", "vm-deleter", "statements", List.of(Map.of("sid", "delete-vms", "effect", "allow", "actions",
+                List.of("compute:delete"), "resources", List.of(s.vm("*")))));
+        JsonNode withDraft = call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "policies", List.of(draft), "checks",
+                List.of(check("compute:delete", vm))), OK).get("results").get(0);
+        assertThat(withDraft.get("allowed").asBoolean()).isTrue();
+        assertThat(withDraft.get("statement").asText()).isEqualTo("delete-vms");
+        assertThat(withDraft.get("policyId").asText()).isEqualTo("simulated:policy-0");
+
+        // a role, by name or id, alone or with a draft boundary in place of its own
+        JsonNode operator = call(POST, simulate, s.owner(), Map.of("principal", Map.of("role", "operator"), "checks", List.of(check("compute:restart", vm),
+                check("compute:delete", vm))), OK).get("results");
+        assertThat(operator.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(operator.get(0).get("role").asText()).isEqualTo("operator");
+        assertThat(operator.get(1).get("allowed").asBoolean()).isFalse();
+        String operatorId = idOf(call(GET, s.base() + "/roles", s.owner(), null, OK).get("items"), "name", "operator", "roleId");
+        Map<String, Object> readsOnly = Map.of("name", "reads-only", "statements", List.of(Map.of("effect", "allow", "actions", List.of("*:get", "*:list"),
+                "resources", List.of("wfrn:wf:*"))));
+        JsonNode capped = call(POST, simulate, s.owner(), Map.of("principal", Map.of("role", operatorId), "boundary", readsOnly, "checks",
+                List.of(check("compute:restart", vm), check("compute:get", vm))), OK).get("results");
+        assertThat(capped.get(0).get("allowed").asBoolean()).isFalse();
+        assertThat(capped.get(0).get("scope").asText()).isEqualTo("boundary");
+        assertThat(capped.get(0).get("policyId").asText()).isEqualTo("simulated:boundary");
+        assertThat(capped.get(0).get("reason").asText()).isEqualTo("outside the permission boundary reads-only of role operator");
+        assertThat(capped.get(1).get("allowed").asBoolean()).isTrue();
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("role", "account-admin"), "boundary", readsOnly, "checks", List.of(check("compute:get", vm))),
+                CONFLICT);
+
+        // a set of groups, by id or name, holds the roles of all of them
+        String viewersId = idOf(call(GET, s.base() + "/groups", s.owner(), null, OK).get("items"), "name", "viewers", "groupId");
+        JsonNode groups = call(POST, simulate, viewer, Map.of("principal", Map.of("groups", List.of(viewersId, "members")), "checks",
+                List.of(check("compute:restart", vm))), OK).get("results").get(0);
+        assertThat(groups.get("allowed").asBoolean()).isTrue();
+        assertThat(groups.get("role").asText()).isEqualTo("operator");
+        assertThat(call(POST, simulate, internal(), Map.of("principal", Map.of("userId", mia), "checks", List.of(check("compute:get", vm))), OK).get("results"))
+                .hasSize(1);
+
+        // nothing was written: the version stands, no policy was made, authorize still refuses
+        JsonNode after = call(POST, "/v1/authorize", s.owner(), authorize(mia, s.accountId(), List.of(check("compute:delete", vm))), OK);
+        assertThat(after.get("version").asLong()).isEqualTo(version);
+        assertThat(after.get("decisions").get(0).get("allowed").asBoolean()).isFalse();
+        assertThat(texts(call(GET, s.base() + "/policies", s.owner(), null, OK).get("items"), "name")).doesNotContain("vm-deleter", "reads-only");
+        assertThat(call(GET, s.base() + "/roles/" + operatorId, s.owner(), null, OK).has("boundary")).isFalse();
+
+        // the request's shape
+        List<Map<String, Object>> one = List.of(check("compute:get", vm));
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia, "role", "operator"), "checks", one), BAD_REQUEST);
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of(), "checks", one), BAD_REQUEST);
+        call(POST, simulate, s.owner(), Map.of("checks", one), BAD_REQUEST);
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "checks", List.of()), BAD_REQUEST);
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "checks", List.of(check("nonsense", vm))), BAD_REQUEST);
+        JsonNode boundaryForAPerson = call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "boundary", readsOnly, "checks", one), BAD_REQUEST);
+        assertThat(boundaryForAPerson.get("problems").get(0).get("field").asText()).isEqualTo("boundary");
+        JsonNode badDraft = call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", mia), "policies", List.of(Map.of("statements", List.of(
+                Map.of("effect", "allow", "actions", List.of("compute:teleport"), "resources", List.of("wfrn:wf:*"))))), "checks", one), BAD_REQUEST);
+        assertThat(badDraft.get("problems").toString()).contains("unknown-action");
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("userId", "usr_nobody"), "checks", one), NOT_FOUND);
+        assertThat(call(POST, simulate, s.owner(), Map.of("principal", Map.of("role", "nonexistent"), "checks", one), BAD_REQUEST).get("problems").get(0)
+                .get("field").asText()).isEqualTo("principal.role");
+        call(POST, simulate, s.owner(), Map.of("principal", Map.of("groups", List.of("nonexistent")), "checks", one), BAD_REQUEST);
+
+        // simulating needs the right to read the principal; another account is a 404
+        call(POST, s.base() + "/groups", s.owner(), Map.of("name", "nobodies"), CREATED);
+        String noah = addUser(s, "noah", "nobodies");
+        String nobody = bearer(noah, s.accountId(), List.of("nobodies"));
+        JsonNode refusedPerson = call(POST, simulate, nobody, Map.of("principal", Map.of("userId", mia), "checks", one), FORBIDDEN).get("denied");
+        assertThat(refusedPerson.get("action").asText()).isEqualTo("iam:get");
+        assertThat(refusedPerson.get("resource").asText()).isEqualTo("wfrn:wf:iam::" + s.accountId() + ":user/" + mia);
+        assertThat(call(POST, simulate, nobody, Map.of("principal", Map.of("groups", List.of("viewers")), "checks", one), FORBIDDEN).get("denied").get("action")
+                .asText()).isEqualTo("iam:list");
+        Seeded other = newAccount();
+        call(POST, other.base() + "/policy-simulations", s.owner(), Map.of("principal", Map.of("userId", other.ownerId()), "checks", one), NOT_FOUND);
+    }
+
+    @Test
+    void aManagedPolicyFromAnEarlierReleaseIsBroughtUpToDate() {
+        Seeded s = newAccount();
+        String dana = addUser(s, "dana", "members");
+        String budgets = "wfrn:wf:budgets::" + s.accountId() + ":budget/*";
+        String cost = "wfrn:wf:cost::" + s.accountId() + ":*";
+        String reviews = "wfrn:wf:iam::" + s.accountId() + ":access-review/*";
+        AccountScope scope = AccountScope.of(s.accountId(), "global", "test");
+        Policy now = policyStore.findByName(scope, "managed-operator").block();
+        assertThat(now).isNotNull();
+        // the operator's policy as an earlier release made it: everything but deletes and IAM, in an account made then
+        Policy earlier = new Policy(now.policyId(), now.accountId(), now.name(), "The operator role's policy", List.of(Statement.allowExcept("changes",
+                List.of("*:*"), List.of("*:delete", "iam:*"), List.of("wfrn:wf:*:*:" + s.accountId() + ":*"))), true, now.version() + 1, now.createdAt(),
+                now.updatedAt());
+        assertThat(policyStore.update(earlier, now.version()).block()).isNotNull();
+        Seeded closed = newAccount();
+        Policy closedNow = policyStore.findByName(AccountScope.of(closed.accountId(), "global", "test"), "managed-operator").block();
+        assertThat(policyStore.update(new Policy(closedNow.policyId(), closedNow.accountId(), closedNow.name(), "old", earlier.statements(), true,
+                closedNow.version() + 1, closedNow.createdAt(), closedNow.updatedAt()), closedNow.version()).block()).isNotNull();
+        call(POST, closed.base() + ":close", internal(), Map.of("reason", "the team left"), ACCEPTED);
+
+        assertThat(managedPolicyUpgrade.run().block()).isEqualTo(1L);
+        Policy upgraded = policyStore.findByName(scope, "managed-operator").block();
+        assertThat(upgraded.policyId()).isEqualTo(now.policyId());
+        assertThat(upgraded.version()).isEqualTo(now.version() + 2);
+        assertThat(upgraded.statements()).isEqualTo(now.statements());
+        assertThat(upgraded.description()).isEqualTo(now.description());
+        assertThat(upgraded.builtIn()).isTrue();
+        assertThat(policyStore.findByName(AccountScope.of(closed.accountId(), "global", "test"), "managed-operator").block().description())
+                .as("a closed account's policies are left as they were").isEqualTo("old");
+        assertThat(managedPolicyUpgrade.run().block()).as("a second run finds nothing to do").isZero();
+
+        EventEnvelope changed = outbox.after(0, 100_000).filter(e -> now.policyId().equals(e.event().aggregateId())).map(OutboxEntry::event).blockLast();
+        assertThat(changed).isNotNull();
+        assertThat(changed.type()).isEqualTo("PolicyChanged");
+        assertThat(changed.actor()).isEqualTo("svc:console-identity-service");
+        assertThat(changed.data().get("action").asText()).isEqualTo("updated");
+        assertThat(changed.data().get("version").asLong()).isEqualTo(now.version() + 2);
+
+        // the account is compiled again: the operator reads budgets, and neither changes them nor exports the chargeback nor reads the reviews
+        JsonNode decisions = call(POST, "/v1/authorize", internal(), authorize(dana, s.accountId(), List.of(check("budgets:list", budgets),
+                check("budgets:create", budgets), check("cost:export", cost), check("access-review:list", reviews))), OK).get("decisions");
+        assertThat(decisions.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(decisions.get(0).get("role").asText()).isEqualTo("operator");
+        assertThat(decisions.get(1).get("allowed").asBoolean()).isFalse();
+        assertThat(decisions.get(1).get("suggestedRole").asText()).isEqualTo("account-admin");
+        assertThat(decisions.get(2).get("allowed").asBoolean()).isFalse();
+        assertThat(decisions.get(2).get("suggestedRole").asText()).isEqualTo("auditor");
+        assertThat(decisions.get(3).get("allowed").asBoolean()).isFalse();
+        JsonNode admin = call(POST, "/v1/authorize", internal(), authorize(s.ownerId(), s.accountId(), List.of(check("budgets:delete", budgets.replace("*",
+                "bud-01jbx9r2m4k9d3c8f5r6t1w0yf")), check("cost:export", cost))), OK).get("decisions");
+        assertThat(admin.get(0).get("allowed").asBoolean()).isTrue();
+        assertThat(admin.get(1).get("allowed").asBoolean()).isTrue();
     }
 
     @Test

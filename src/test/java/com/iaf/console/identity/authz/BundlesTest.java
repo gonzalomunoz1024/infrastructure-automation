@@ -26,7 +26,7 @@ class BundlesTest {
     @Test
     void bundleHoldsManifestDataAndPolicy() throws IOException {
         Bundles bundles = new Bundles(null, Fixtures.JSON);
-        Compiled compiled = new Compiled(LOADED.compiled().accounts(), 42);
+        Compiled compiled = new Compiled(LOADED.compiled().accounts(), LOADED.compiled().guardrails(), 42);
         Bundles.Bundle bundle = bundles.build(compiled);
 
         assertThat(bundle.revision()).isEqualTo(42);
@@ -41,6 +41,8 @@ class BundlesTest {
         assertThat(data.path("version").asLong()).isEqualTo(42);
         assertThat(data.path("accounts").path("123456789012").path("version").asLong()).isEqualTo(7);
         assertThat(data.path("accounts").path("123456789012").path("users").path("usr_viewer").path("groups").get(0).asText()).isEqualTo("viewers");
+        assertThat(data.path("guardrails").path("gr_regions").path("name").asText()).as("the organization's guardrails ride beside the accounts").isEqualTo("global-only");
+        assertThat(data.path("accounts").path("345678901234").path("guardrails")).hasSize(2);
         assertThat(new String(entries.get("console/authz.rego"), StandardCharsets.UTF_8)).contains("package console.authz");
         assertThat(bundles.rego()).contains("import rego.v1");
 
@@ -52,7 +54,7 @@ class BundlesTest {
     @Test
     @EnabledIf("com.iaf.console.identity.authz.Opa#available")
     void opaLoadsTheBundleAndDecidesLikeTheEvaluator() throws IOException {
-        Bundles.Bundle bundle = new Bundles(null, Fixtures.JSON).build(new Compiled(LOADED.compiled().accounts(), 7));
+        Bundles.Bundle bundle = new Bundles(null, Fixtures.JSON).build(new Compiled(LOADED.compiled().accounts(), LOADED.compiled().guardrails(), 7));
         Path dir = Files.createTempDirectory("opa-bundle");
         Path tar = dir.resolve("console-authz.tar.gz");
         Files.write(tar, bundle.bytes());

@@ -2,6 +2,7 @@ package com.iaf.console.identity.demo;
 
 import java.time.Clock;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,10 +14,11 @@ import com.iaf.console.identity.iam.application.GroupCommands;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.identity.iam.application.PolicyCommands;
 import com.iaf.console.identity.iam.application.RoleCommands;
+import com.iaf.console.identity.principals.adapters.directory.InMemoryDirectory;
 import com.iaf.console.identity.principals.application.PrincipalCommands;
 import com.iaf.console.identity.principals.ports.outbound.UserStore;
 
-/** The {@code demo} profile: seeds the demo accounts and people once the service is up. */
+/** The {@code demo} profile: seeds the demo accounts, people and directory once the service is up. */
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
 public class DemoConfiguration {
@@ -27,8 +29,12 @@ public class DemoConfiguration {
         return new DemoSeed(accounts, accountStore, principals, users, policies, roles, groups, support, clock);
     }
 
+    /** Seeds the accounts and people, and the in-memory directory (absent under {@code scim}) with the demo's teams. */
     @Bean
-    public ApplicationRunner demoSeedRunner(DemoSeed seed) {
-        return args -> seed.seed().block();
+    public ApplicationRunner demoSeedRunner(DemoSeed seed, ObjectProvider<InMemoryDirectory> directory) {
+        return args -> {
+            seed.seed().block();
+            directory.ifAvailable(d -> DemoSeed.directory().forEach(d::put));
+        };
     }
 }

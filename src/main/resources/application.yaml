@@ -32,7 +32,10 @@ console:
       catalog-refresh: 5m
     auth:
       issuer: console-bff
-      audiences: [console-identity-service, console]
+      # its own name only (hub decision 23): a token the BFF minted for another service is refused here
+      audiences: [console-identity-service]
+      # whose tokens without an account are the console-internal principal (sub and svc must agree)
+      internal-services: [console-bff, console-search-indexer, console-drift-service, console-cost-service]
       # jwks or jwks-uri: the BFF's signing keys; the demo profile points at the BFF's JWKS endpoint
       jwks-refresh: 5m
       max-lifetime: 1h
@@ -46,6 +49,45 @@ console:
       base-url: http://localhost:8200
       mount: secret
       path-prefix: console/accounts
+    quotas:
+      # who decides an increase no rule approves: the platform team, with the internal :decide (decision 22)
+      approver: platform-team
+      # the first rule that covers the key and the ask approves an increase at once; a rule's
+      # approval of an account's key starts the cooldown of every rule for that key
+      auto-approval:
+        - name: resources-double
+          keys: ["resources.*"]
+          max-factor: 2
+          max-limit: 1000
+          cooldown: 30d
+        - name: access-keys-double
+          keys: [access-keys]
+          max-factor: 2
+          max-limit: 100
+          cooldown: 30d
+        - name: jobs-half-again
+          keys: [jobs-per-minute]
+          max-factor: 1.5
+          max-limit: 600
+          cooldown: 7d
+    lifecycle:
+      # the identity provider group sync (also POST /internal/v1/group-sync:run): a Spring cron expression in its zone
+      group-sync:
+        enabled: true
+        cron: "0 0 2 * * *"
+        zone: UTC
+    elevations:
+      # how long an ask lasts when it names none, and at most; break-glass access lasts at most 4 hours
+      default-minutes: 60
+      max-minutes: 480
+      break-glass-max-minutes: 240
+      # an ask nobody decided expires after this; the sweep also stores ended elevations expired
+      pending-for: 24h
+      sweep-every: 1m
+      # the first rule that covers the role, the person's roles and the duration approves an ask at once.
+      # None by default, so every elevation waits for a person: a rule that grants account-admin lets
+      # its requesters make the role permanent (an admin can change any group), so add one knowingly.
+      auto-approval: []
   outbox:
     relay:
       enabled: true

@@ -58,7 +58,10 @@ final class Fixtures {
                 c.get("expect").forEach(expect::add);
                 cases.add(new Case(c.get("name").asText(), input, expect, c.hasNonNull("version") ? c.get("version").asLong() : null));
             }
-            return new Loaded(root, new Compiled(accounts, 1), cases);
+            Map<String, Compiled.CompiledGuardrail> guardrails = JSON.convertValue(root.path("data").path("console").path("guardrails"),
+                    new TypeReference<Map<String, Compiled.CompiledGuardrail>>() {
+                    });
+            return new Loaded(root, new Compiled(accounts, guardrails, 1), cases);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

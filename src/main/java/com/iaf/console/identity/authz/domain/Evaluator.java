@@ -1,17 +1,24 @@
 package com.iaf.console.identity.authz.domain;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
  * The decision procedure, the twin of {@code opa/console/authz.rego}; the conformance test runs
  * both on the same fixtures. In order: unknown account, service principal, inactive account, not
- * a member, suspended, then the statements of the user's roles (roles by name, policies in role
- * order, statements in document order): the first matching deny wins, else the first matching
- * allow, else a default deny that names the managed role that would allow it.
+ * a member, suspended; then the organization's guardrails that apply to the account (their first
+ * matching deny, then, when any of them allows something, an action none of them allows); then
+ * the statements of the user's roles (the roles of their groups and the roles they hold for a
+ * while, by name; policies in role order; statements in document order): the first matching
+ * deny wins, else the first matching allow whose role's permission boundary also allows it, else
+ * a deny naming the boundary that refused a matching allow, else a default deny that names the
+ * managed role that would allow it.
  */
 public final class Evaluator {
 
@@ -25,7 +32,16 @@ public final class Evaluator {
     record Bound(String role, String policyId, CompiledAccount.CompiledStatement statement) {
     }
 
+    /** A statement of a guardrail, with the guardrail's id and name. */
+    record Rail(String guardrailId, String name, CompiledAccount.CompiledStatement statement) {
+    }
+
     public static Decision decide(Compiled compiled, Principal principal, Check check) {
+        return decide(compiled, principal, check, Instant.now());
+    }
+
+    /** One decision at {@code now}, which says which time-boxed roles still hold. */
+    public static Decision decide(Compiled compiled, Principal principal, Check check, Instant now) {
         CompiledAccount account = principal.accountId() == null ? null : compiled.accounts().get(principal.accountId());
         if (account == null) {
             return Decision.deny("account unknown");
@@ -43,16 +59,43 @@ public final class Evaluator {
         if (!"active".equals(user.status())) {
             return Decision.deny("user suspended");
         }
-        List<Bound> statements = statements(account, user.groups());
+        List<Rail> rails = rails(compiled, account);
+        Rail railDeny = firstRail(principal, user, check, rails, "deny");
+        if (railDeny != null) {
+            return new Decision(false, "denied by guardrail " + railDeny.name() + ", statement " + railDeny.statement().sid(), null,
+                    railDeny.statement().sid(), null, false, null, Decision.GUARDRAIL, railDeny.guardrailId(), null);
+        }
+        if (rails.stream().anyMatch(r -> "allow".equals(r.statement().effect())) && firstRail(principal, user, check, rails, "allow") == null) {
+            return new Decision(false, "outside the organization's guardrails", null, null, null, false, null, Decision.GUARDRAIL, null, null);
+        }
+        Set<String> groupRoles = groupRoles(account, user.groups());
+        // a role from a group is tried first, so elevated marks only what the time-boxed role alone allows
+        List<String> roles = new ArrayList<>(groupRoles);
+        grantRoles(user, now).stream().filter(r -> !groupRoles.contains(r)).forEach(roles::add);
+        List<Bound> statements = statementsOfRoles(account, roles);
         Bound deny = first(principal, user, check, statements, "deny");
         if (deny != null) {
             CompiledAccount.CompiledPolicy policy = account.policies().get(deny.policyId());
             return new Decision(false, "denied by policy " + (policy == null ? deny.policyId() : policy.name()) + ", statement " + deny.statement().sid(),
-                    deny.policyId(), deny.statement().sid(), deny.role(), null, null);
+                    deny.policyId(), deny.statement().sid(), deny.role(), null, null, Decision.POLICY, null, elevated(groupRoles, deny.role()));
         }
-        Bound allow = first(principal, user, check, statements, "allow");
-        if (allow != null) {
-            return new Decision(true, "allowed by role " + allow.role(), allow.policyId(), allow.statement().sid(), allow.role(), null, null);
+        Bound bounded = null;
+        for (Bound b : statements) {
+            if ("allow".equals(b.statement().effect()) && matches(principal, user, check, b.statement())) {
+                if (boundaryPermits(account, principal, user, check, b.role())) {
+                    return new Decision(true, "allowed by role " + b.role(), b.policyId(), b.statement().sid(), b.role(), null, null, Decision.POLICY, null,
+                            elevated(groupRoles, b.role()));
+                }
+                if (bounded == null) {
+                    bounded = b;
+                }
+            }
+        }
+        if (bounded != null) {
+            String boundary = account.roles().get(bounded.role()).boundary();
+            CompiledAccount.CompiledPolicy policy = account.policies().get(boundary);
+            return new Decision(false, "outside the permission boundary " + (policy == null ? boundary : policy.name()) + " of role " + bounded.role(),
+                    boundary, null, bounded.role(), false, null, Decision.BOUNDARY, null, null);
         }
         String reason = "no policy allows " + check.action() + " on " + check.resource();
         for (String role : MANAGED_ORDER) {
@@ -63,15 +106,43 @@ public final class Evaluator {
         return new Decision(false, reason, null, null, null, false, null);
     }
 
-    /** The statements of these groups' roles, in the order the Rego policy uses: roles sorted by name, policies in role order, statements in order. */
-    static List<Bound> statements(CompiledAccount account, List<String> groups) {
-        TreeSet<String> roles = new TreeSet<>();
+    /** The roles the user's groups hold, by name. */
+    static Set<String> groupRoles(CompiledAccount account, List<String> groups) {
+        Set<String> roles = new TreeSet<>();
         for (String group : groups) {
             CompiledAccount.CompiledGroup g = account.groups().get(group);
             if (g != null) {
                 roles.addAll(g.roles());
             }
         }
+        return roles;
+    }
+
+    /** The roles the user holds for a while that still hold at {@code now}. */
+    static Set<String> grantRoles(CompiledAccount.CompiledUser user, Instant now) {
+        Set<String> roles = new TreeSet<>();
+        for (CompiledAccount.CompiledGrant grant : user.grantsOrEmpty()) {
+            if (grant.until() > now.getEpochSecond()) {
+                roles.add(grant.role());
+            }
+        }
+        return roles;
+    }
+
+    private static Boolean elevated(Set<String> groupRoles, String role) {
+        return groupRoles.contains(role) ? null : Boolean.TRUE;
+    }
+
+    /**
+     * The statements of these groups' roles, in the order the Rego policy uses: roles sorted by name
+     * (a user's group roles, then the roles they hold for a while), policies in role order,
+     * statements in order.
+     */
+    static List<Bound> statements(CompiledAccount account, List<String> groups) {
+        return statementsOfRoles(account, new TreeSet<>(groupRoles(account, groups)));
+    }
+
+    static List<Bound> statementsOfRoles(CompiledAccount account, Collection<String> roles) {
         List<Bound> bound = new ArrayList<>();
         for (String role : roles) {
             bound.addAll(statementsOfRole(account, role));
@@ -97,6 +168,52 @@ public final class Evaluator {
         return bound;
     }
 
+    /** The statements of the guardrails that apply to the account, guardrails in the account's order, statements in order. */
+    static List<Rail> rails(Compiled compiled, CompiledAccount account) {
+        List<Rail> rails = new ArrayList<>();
+        for (String id : account.guardrailsOrEmpty()) {
+            Compiled.CompiledGuardrail guardrail = compiled.guardrails().get(id);
+            if (guardrail == null) {
+                continue;
+            }
+            for (CompiledAccount.CompiledStatement s : guardrail.statements()) {
+                rails.add(new Rail(id, guardrail.name(), s));
+            }
+        }
+        return rails;
+    }
+
+    private static Rail firstRail(Principal principal, CompiledAccount.CompiledUser user, Check check, List<Rail> rails, String effect) {
+        for (Rail r : rails) {
+            if (effect.equals(r.statement().effect()) && matches(principal, user, check, r.statement())) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /** Whether the role's permission boundary, when it has one, allows the check: no deny of it matches and an allow does; a missing boundary policy allows nothing. */
+    static boolean boundaryPermits(CompiledAccount account, Principal principal, CompiledAccount.CompiledUser user, Check check, String role) {
+        CompiledAccount.CompiledRole r = account.roles().get(role);
+        if (r == null || r.boundary() == null) {
+            return true;
+        }
+        CompiledAccount.CompiledPolicy boundary = account.policies().get(r.boundary());
+        if (boundary == null) {
+            return false;
+        }
+        boolean allowed = false;
+        for (CompiledAccount.CompiledStatement s : boundary.statements()) {
+            if (matches(principal, user, check, s)) {
+                if ("deny".equals(s.effect())) {
+                    return false;
+                }
+                allowed = allowed || "allow".equals(s.effect());
+            }
+        }
+        return allowed;
+    }
+
     private static Bound first(Principal principal, CompiledAccount.CompiledUser user, Check check, List<Bound> statements, String effect) {
         for (Bound b : statements) {
             if (effect.equals(b.statement().effect()) && matches(principal, user, check, b.statement())) {
@@ -108,7 +225,8 @@ public final class Evaluator {
 
     private static boolean roleAllows(CompiledAccount account, Principal principal, CompiledAccount.CompiledUser user, Check check, String role) {
         List<Bound> statements = statementsOfRole(account, role);
-        return first(principal, user, check, statements, "deny") == null && first(principal, user, check, statements, "allow") != null;
+        return first(principal, user, check, statements, "deny") == null && first(principal, user, check, statements, "allow") != null
+                && boundaryPermits(account, principal, user, check, role);
     }
 
     public static boolean matches(Principal principal, CompiledAccount.CompiledUser user, Check check, CompiledAccount.CompiledStatement s) {

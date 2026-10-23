@@ -82,6 +82,17 @@ public final class IamSupport {
         return List.copyOf(ids);
     }
 
+    /** The one thing a reference (an id or a name) names; a 400 on {@code field} when it names nothing. */
+    public static <T> T one(String reference, List<T> things, Function<T, String> idOf, Function<T, String> nameOf, String field, String what) {
+        for (T t : things) {
+            if (idOf.apply(t).equals(reference) || nameOf.apply(t).equals(reference)) {
+                return t;
+            }
+        }
+        throw new InvalidInputException("the " + field + " is not valid", List.of(Problem.error("unknown", field, "'" + reference + "' is no " + what
+                + " of this account")));
+    }
+
     /** Names for ids, keeping the order; an id that resolves to nothing is kept as is. */
     public static List<String> names(List<String> ids, Map<String, String> nameById) {
         return ids.stream().map(id -> nameById.getOrDefault(id, id)).toList();

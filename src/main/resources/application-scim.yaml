@@ -1,0 +1,10 @@
+# The scim profile: the group sync reads the identity provider's directory over SCIM 2.0 instead of
+# the in-memory one. The token is a secret: it comes from the environment and is never logged.
+console:
+  identity:
+    directory:
+      scim:
+        base-url: ${CONSOLE_SCIM_URL:}
+        token: ${CONSOLE_SCIM_TOKEN:}
+        page-size: 100
+        timeout: 30s

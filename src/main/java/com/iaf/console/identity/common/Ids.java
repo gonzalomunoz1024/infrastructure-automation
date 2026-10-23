@@ -58,6 +58,24 @@ public final class Ids {
         return "areq_" + ulid();
     }
 
+    public String guardrail() {
+        return "gr_" + ulid();
+    }
+
+    public String accessReview() {
+        return "arev_" + ulid();
+    }
+
+    /** One item of an access review: a person and one group they hold. */
+    public String accessReviewItem() {
+        return "arevi_" + ulid();
+    }
+
+    /** A role held for a while: an elevation or break-glass access. */
+    public String elevation() {
+        return "elev_" + ulid();
+    }
+
     public String event() {
         return "evt_" + ulid();
     }

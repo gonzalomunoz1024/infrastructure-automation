@@ -73,7 +73,7 @@ public final class Authorizer implements AccessGuard {
                 return Mono.empty();
             }
             return Mono.error(new DeniedException(new Denial(Denial.CONSOLE_IAM, action, resource, d.reason(), d.role(), d.policyId(), d.statement(),
-                    d.requestable() == null ? Boolean.FALSE : d.requestable(), d.suggestedRole())));
+                    d.requestable() == null ? Boolean.FALSE : d.requestable(), d.suggestedRole(), d.scope(), d.guardrailId())));
         });
     }
 
@@ -98,7 +98,7 @@ public final class Authorizer implements AccessGuard {
             List<String> allowed = new ArrayList<>();
             for (String group : account.groups().keySet()) {
                 CompiledAccount probed = account.withUser(PROBE, new CompiledAccount.CompiledUser("active", List.of(group)));
-                Compiled world = new Compiled(Map.of(accountId, probed), compiled.revision());
+                Compiled world = compiled.only(accountId, probed);
                 if (Evaluator.decide(world, new Principal(PROBE, accountId, null, null), check).allowed()) {
                     allowed.add(group);
                 }

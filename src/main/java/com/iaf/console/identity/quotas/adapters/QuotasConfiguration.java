@@ -18,6 +18,7 @@ import com.iaf.console.identity.quotas.adapters.mongo.MongoQuotaStore;
 import com.iaf.console.identity.quotas.adapters.platform.PlatformQuotaAdapter;
 import com.iaf.console.identity.quotas.application.QuotaCommands;
 import com.iaf.console.identity.quotas.application.QuotaQueries;
+import com.iaf.console.identity.quotas.domain.QuotaRules;
 import com.iaf.console.identity.quotas.ports.outbound.PlatformQuotaPort;
 import com.iaf.console.identity.quotas.ports.outbound.QuotaStore;
 import com.iaf.console.kit.mongo.Mongo;
@@ -52,8 +53,13 @@ public class QuotasConfiguration {
     }
 
     @Bean
-    public QuotaCommands quotaCommands(QuotaStore quotas, PlatformQuotaPort platform, QuotaQueries queries, AccessGuard guard, IdentityEvents events,
-            IamSupport support, Ids ids, Clock clock) {
-        return new QuotaCommands(quotas, platform, queries, guard, events, support, ids, clock);
+    public QuotaRules quotaRules(QuotaRulesProperties properties) {
+        return properties.rules();
+    }
+
+    @Bean
+    public QuotaCommands quotaCommands(QuotaStore quotas, PlatformQuotaPort platform, QuotaQueries queries, QuotaRules rules, AccessGuard guard,
+            IdentityEvents events, IamSupport support, Ids ids, Clock clock) {
+        return new QuotaCommands(quotas, platform, queries, rules, guard, events, support, ids, clock);
     }
 }

@@ -10,6 +10,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -34,9 +35,11 @@ import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
 /**
  * The whole service on a random port against an in-process platform-fake, with a test key that
  * signs the BFF's internal JWTs. Subclasses add the profile (memory, or mongo when a database is
- * at hand) and share one context per configuration.
+ * at hand) and share one context per configuration. A call may take 30 seconds rather than the
+ * client's default 5, so a stall on a busy CI runner is not a failure; a hang still is.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureWebTestClient(timeout = "PT30S")
 abstract class WithService {
 
     static final ObjectMapper JSON = JsonMapper.builder().findAndAddModules().build();
@@ -58,6 +61,15 @@ abstract class WithService {
         registry.add("console.identity.platform.base-url", FAKE::baseUrl);
         registry.add("console.identity.auth.jwks", () -> new JWKSet(KEY.toPublicJWK()).toString());
         registry.add("console.identity.auth.bundle-token", () -> BUNDLE_TOKEN);
+        // the nightly group sync would touch every test's accounts at 02:00 UTC; the lifecycle flows run it on purpose
+        registry.add("console.identity.lifecycle.group-sync.enabled", () -> "false");
+        // the elevation flows run the expiry sweep themselves, at the instants they choose
+        registry.add("console.identity.elevations.sweep-every", () -> "3650d");
+        // the flows exercise a rule approving at once; the service ships none
+        registry.add("console.identity.elevations.auto-approval[0].name", () -> "operators-admin-two-hours");
+        registry.add("console.identity.elevations.auto-approval[0].roles[0]", () -> "account-admin");
+        registry.add("console.identity.elevations.auto-approval[0].requester-roles[0]", () -> "operator");
+        registry.add("console.identity.elevations.auto-approval[0].max-minutes", () -> "120");
     }
 
     private static ECKey generate() {

@@ -115,6 +115,10 @@ public final class InternalJwts {
                 if (service == null || service.isBlank()) {
                     throw new UnauthenticatedException("a token without an account needs svc");
                 }
+                // only a service speaking for itself, and one this service knows, is the internal principal
+                if (!service.equals(subject) || !properties.internalServices().contains(service)) {
+                    throw new UnauthenticatedException("a token without an account must be a known console service's own");
+                }
                 return Caller.internal(service, region);
             }
             if (!AccountScope.isAccountId(account)) {

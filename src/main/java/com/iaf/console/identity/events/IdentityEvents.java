@@ -34,7 +34,10 @@ public final class IdentityEvents {
         POLICY("policy", "PolicyChanged"),
         ACCESS_KEY("accessKey", "AccessKeyChanged"),
         QUOTA("quota", "QuotaChanged"),
-        ACCESS_REQUEST("access-request", "AccessRequestChanged");
+        ACCESS_REQUEST("access-request", "AccessRequestChanged"),
+        GUARDRAIL("guardrail", "GuardrailChanged"),
+        ACCESS_REVIEW("access-review", "AccessReviewChanged"),
+        ELEVATION("elevation", "ElevationChanged");
 
         private final String aggregate;
         private final String type;
