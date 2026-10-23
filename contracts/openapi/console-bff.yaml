@@ -68,8 +68,14 @@ info:
     token at `POST /internal/v1/token`: OAuth 2.0 client credentials authenticated by a JWT client
     assertion (RFC 7523), either the pod's projected Kubernetes service-account token (audience
     `console-bff`) or a JWT the service signs with its own registered EC key. The token lives 5
-    minutes, names only the audiences asked for, carries `sub` and `svc` the service id and no
-    `acct`. The path is in-cluster only; the ingress never routes `/internal`.
+    minutes, names exactly one audience, the service asked for (a client calling two services
+    holds two tokens), and carries `sub` and `svc` the service id and no `acct`. The path is
+    in-cluster only; the ingress never routes `/internal`.
+
+    **Audiences (decision 35).** Every internal JWT the BFF mints names exactly one audience, the
+    service it is for; the shared `console` audience is retired. Every console service rejects a
+    token whose `aud` is not exactly its own service id, and accepts a token without `acct` only
+    from a service principal it lists as allowed to call it as itself.
 
     **wfrns in URLs.** `/console/v1/r/{type}/{wfrn}` takes the wfrn percent-encoded; the type is
     repeated in the path so the same template never serves two shapes, and the BFF answers 404 when
@@ -1877,9 +1883,9 @@ paths:
         never used before. Asymmetric algorithms only (ES256, ES384, RS256, PS256).
 
         The answer is an internal JWT of the BFF (ES256, its JWKS): `iss` `console-bff`, `aud` the
-        services asked for (each registered for the client; all of them when none is asked),
-        `sub` and `svc` the client id, `iat`, `exp`, `jti`, and no `acct`, which every console service
-        treats as the console-internal principal. Errors are RFC 6749 §5.2 bodies. Not routed by
+        one service asked for (registered for the client; decision 35), `sub` and `svc` the client
+        id, `iat`, `exp`, `jti`, and no `acct`. A service accepts it only when it lists the client
+        as a service principal allowed to call it. Errors are RFC 6749 §5.2 bodies. Not routed by
         the ingress: in-cluster callers only.
       tags: [Service tokens]
       security: []
@@ -1888,8 +1894,6 @@ paths:
         content:
           application/x-www-form-urlencoded:
             schema: { $ref: '#/components/schemas/ServiceTokenRequest' }
-            encoding:
-              audience: { style: form, explode: true }
       responses:
         '200':
           description: The token
@@ -1901,7 +1905,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ServiceToken' }
         '400':
-          description: '`invalid_request` (a field is missing or malformed), `unsupported_grant_type`, `invalid_target` (an audience the client is not registered for)'
+          description: '`invalid_request` (a field is missing or malformed), `unsupported_grant_type`, `invalid_target` (no audience, more than one, or one the client is not registered for)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OAuthError' }
@@ -4571,7 +4575,7 @@ components:
           items: { type: string }
     ServiceTokenRequest:
       type: object
-      required: [grant_type, client_assertion_type, client_assertion]
+      required: [grant_type, client_assertion_type, client_assertion, audience]
       properties:
         grant_type:
           type: string
@@ -4587,9 +4591,9 @@ components:
           description: The client's service id; when sent, it must be the assertion's client
           examples: [console-search-indexer]
         audience:
-          type: array
-          description: The services the token is for, sent once per service; every audience registered for the client when absent
-          items: { type: string, examples: [console-state-service] }
+          type: string
+          description: 'The one service the token is for (decision 35): required, sent once'
+          examples: [console-state-service]
     ServiceToken:
       type: object
       required: [access_token, token_type, expires_in, audience]
@@ -4605,8 +4609,8 @@ components:
           description: Seconds the token lives (300); ask again before it ends
           examples: [300]
         audience:
-          type: array
-          items: { type: string }
+          type: string
+          description: The one service the token is for
     OAuthError:
       type: object
       required: [error]

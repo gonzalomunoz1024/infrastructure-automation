@@ -1488,7 +1488,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud` (exactly this service's id, decision 35: a token naming another audience, or more than one, is a 401), `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token, which this service accepts only from the service principals it lists as allowed to call it as themselves, decision 35), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`; the BFF re-reads it at least every 5 minutes and never past a time-boxed role's end), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
     bundleToken:
       type: http
       scheme: bearer
