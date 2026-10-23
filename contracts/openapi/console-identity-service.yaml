@@ -2347,7 +2347,7 @@ components:
         reason: { type: string, minLength: 1, maxLength: 2000 }
         durationMinutes: { type: integer, minimum: 5, maximum: 240, default: 60 }
         approvedBy: { type: string, description: 'The console user who approved it (a user id), never `userId`' }
-        ticket: { type: string, maxLength: 200, description: The incident or support ticket, for the trail }
+        ticket: { type: string, maxLength: 200, description: 'The incident or support ticket, for the trail' }
     Elevation:
       type: object
       required: [elevationId, accountId, kind, user, role, reason, durationMinutes, status, requestedAt, requestedBy]
