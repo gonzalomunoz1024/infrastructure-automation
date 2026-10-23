@@ -28,6 +28,22 @@ rightsizing), through the drift service; the executive home (**9.5**) and the fa
 (**9.2**); and the copilot (**9.1**, hub decision 27), which also reads the failures no rule of the
 explainer knows.
 
+## Unfinished (merged in as work in progress)
+
+Everything the BFF's branches held is merged into this branch. These pieces came in unfinished
+and are not yet checked to compile or pass the tests together:
+
+- **ChatOps (decision 31)**: only the domain records and the chat tokens (`chat+jwt`, one
+  `console-chat-*` audience each) exist. No controllers, stores, Slack or Teams adapters, or wiring.
+- **Notifications (decision 32)**: notifications, digests, the demo mailbox, recent pages and
+  favourites came in as the WIP left them; not checked to be fully wired.
+- **API clients (decision 31)**: the device-code sign-in is done; automation keys
+  (`client_credentials`) and the chat-link device-grant decisions are not served yet.
+- **Time travel and transfers (B-4)**: `StatePort.getAt` (a resource as of a moment), its HTTP
+  adapter and `Tombstone.transferredTo` exist, but no route serves them yet.
+- Not started: the blueprints routes and executor (B-5) and the BFF load tests. Specs are in
+  `handoff/bff-remaining.md` on `console-root`.
+
 ## Running it
 
 ```
