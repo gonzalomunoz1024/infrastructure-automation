@@ -88,6 +88,10 @@ console:
     relay:
       enabled: true
       interval: 1s
+    kafka:
+      # the service kit's producer of drift.findings (kafka profile): the consumer's cluster
+      bootstrap-servers: ${console.kafka.bootstrap-servers}
+      client-id: console-drift-service
 
 management:
   endpoints:

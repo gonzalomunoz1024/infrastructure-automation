@@ -1,6 +1,6 @@
 apiVersion: v2
 name: console-drift-service
-description: The customer console's drift detection: tiered provider reads, findings, one-click revert.
+description: "The customer console's drift detection: tiered provider reads, findings, one-click revert."
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

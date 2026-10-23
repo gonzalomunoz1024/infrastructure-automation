@@ -85,6 +85,14 @@ data:
         relay:
           enabled: {{ .Values.outbox.relay.enabled }}
           interval: {{ .Values.outbox.relay.interval }}
+        # the service kit's producer of drift.findings: the same cluster as the consumer above
+        kafka:
+          bootstrap-servers: {{ .Values.kafka.bootstrapServers | quote }}
+          client-id: console-drift-service
+          {{- with .Values.kafka.properties }}
+          properties:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
     management:
       endpoints:
         web:
