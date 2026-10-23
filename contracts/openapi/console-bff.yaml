@@ -2170,6 +2170,7 @@ components:
         region: { $ref: '#/components/schemas/RegionName' }
         tags:
           type: object
+          description: 'Tag key to value; an empty value means "has the tag", which the list sends as `tag.<key>=`'
           additionalProperties: { type: string }
     SearchInterpretation:
       type: object
