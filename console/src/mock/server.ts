@@ -1,4 +1,5 @@
-import { serviceOf } from '../lib/descriptors'
+import { lifecycleOf } from '@iaf/console-kit'
+import { lifecycleMapOf, serviceOf } from '../lib/descriptors'
 import type { Session } from '../lib/session'
 import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
@@ -274,14 +275,16 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     })
   }
 
-  /** The account's resources by service, for the resources quotas: what the state service reports to the identity service. */
-  const services = [...new Set(data.resourceTypes.map((rt) => serviceOf(rt)))]
+  /** The account's live resources by type, for the `resources.<type>` quotas: what the state service counts (tombstones left out) and reports to the identity service. */
+  const typeNames = [...new Set(data.resourceTypes.map((rt) => rt.name))]
+  const lifecycles = new Map(data.resourceTypes.map((rt) => [rt.name, lifecycleMapOf(rt)]))
   const usedOf = (accountId: string): Record<string, number> => {
-    const byType = new Map(data.resourceTypes.map((rt) => [rt.name, serviceOf(rt)]))
-    const out: Record<string, number> = Object.fromEntries(services.map((sv) => [sv, 0]))
+    const out: Record<string, number> = Object.fromEntries(typeNames.map((t) => [t, 0]))
     for (const r of data.resources) {
-      const sv = byType.get(r.type)
-      if (sv && (!r.accountId || r.accountId === accountId)) out[sv] = (out[sv] ?? 0) + 1
+      const lifecycle = lifecycles.get(r.type)
+      if (!lifecycle || (r.accountId && r.accountId !== accountId)) continue
+      if ((lifecycle[r.status] ?? lifecycleOf(r.status)) === 'deleted') continue
+      out[r.type] = (out[r.type] ?? 0) + 1
     }
     return out
   }
@@ -464,7 +467,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* quotas: the account reads them, members ask for more, the platform team decides */
     if (path === '/console/v1/iam/quotas' && method === 'GET') {
       const d = can('quota:list', iam('quota'))
-      return d.allowed ? { status: 200, body: { items: quotasOf(dir, s.accountId, usedOf(s.accountId), services, at) } } : refused(d)
+      return d.allowed ? { status: 200, body: { items: quotasOf(dir, s.accountId, usedOf(s.accountId), typeNames, at) } } : refused(d)
     }
     m = /^\/console\/v1\/iam\/quotas\/([^/:]+)(?::(request-increase))?$/.exec(path)
     if (m) {
@@ -544,8 +547,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         if (!d.allowed) return refused(d)
         const request = accessRequestOf(dir, s.accountId, requestId, at)
         if (!request) return notFound(`Access request ${requestId}`)
-        // stricter than the identity service, which lets an approver decide their own (reported to it)
-        if (request.requester.userId === s.userId) return refused({ allowed: false, denied: { layer: 'console-iam', action: 'access-request:decide', resource: iam('access-request', requestId), reason: 'Someone else decides your own request', role: d.via?.role, requestable: false } })
+        // nobody decides their own request: the identity service's denial, for approve and reject alike
+        if (request.requester.userId === s.userId) return refused({ allowed: false, denied: { layer: 'console-iam', action: 'access-request:decide', resource: iam('access-request', requestId), reason: 'nobody decides their own access request', requestable: false } })
         const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' ? 'reject' : null
         if (!decision) return { status: 400, body: { error: 'decision is approve or reject' } }
         return { status: 202, body: decideAccessRequest(dir, s.accountId, requestId, decision, s.userId, str(body.comment), at) }

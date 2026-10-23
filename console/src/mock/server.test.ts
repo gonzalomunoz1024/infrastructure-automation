@@ -326,12 +326,18 @@ describe('the BFF: identity and access', () => {
     const b = bff()
     b.signIn('dana')
     const quotas = body<{ items: Quota[] }>(b.call('GET', '/console/v1/iam/quotas')).items
-    expect(quotas.map((q) => q.key)).toEqual(['jobs-per-minute', 'access-keys', 'resources.compute', 'resources.data', 'resources.platform'])
+    // one resources quota per platform resource type, by its name, as the identity service lists them
+    expect(quotas.map((q) => q.key)).toEqual(['jobs-per-minute', 'access-keys', 'resources.database', 'resources.environment', 'resources.image', 'resources.vm', 'resources.volume'])
     expect(quotas.find((q) => q.key === 'access-keys')).toMatchObject({ limit: 50, used: 2, source: 'default' })
-    const compute = quotas.find((q) => q.key === 'resources.compute')!
-    expect(compute.used).toBeGreaterThan(100)
-    expect(compute).toMatchObject({ source: 'override' })
-    expect(compute.limit).toBeGreaterThan(compute.used)
+    const vms = quotas.find((q) => q.key === 'resources.vm')!
+    expect(vms.used).toBeGreaterThan(100)
+    expect(vms).toMatchObject({ source: 'override' })
+    expect(vms.limit).toBeGreaterThan(vms.used)
+    // the count leaves out what the state service keeps only as a tombstone
+    const live = b.srv.data.resources.filter((r) => r.type === 'vm' && (!r.accountId || r.accountId === '123456789012') && r.status !== 'retired')
+    expect(vms.used).toBe(live.length)
+    // Data's databases are not Compute's
+    expect(quotas.find((q) => q.key === 'resources.database')).toMatchObject({ used: 0, limit: 100, source: 'default' })
     expect(b.call('GET', '/console/v1/iam/quotas/nope').status).toBe(404)
 
     expect(b.call('POST', '/console/v1/iam/quotas/access-keys:request-increase', { limit: 80, reason: 'more' })).toMatchObject({ status: 400, body: { error: 'reason is 10 to 1000 characters' } })
@@ -363,18 +369,22 @@ describe('the BFF: access requests', () => {
     const sent = b.call('POST', '/console/v1/access-requests', { action: 'compute:create', resource: 'wfrn:wf:compute:global:123456789012:vm/*', reason: 'I build the team machines', layer: 'console-iam' })
     expect(sent.status).toBe(202)
     const request = body<AccessRequest>(sent)
-    expect(request).toMatchObject({ requester: { userId: 'mia', name: 'Mia Chen', email: 'mia@example.com' }, role: 'operator', status: 'pending', approvers: ['dana', 'gonzalo', 'mia'] })
+    expect(request).toMatchObject({ requester: { userId: 'mia', name: 'Mia Chen', email: 'mia@example.com' }, role: 'operator', status: 'pending', approvers: ['dana', 'gonzalo'] })
     // the same role again answers 409 with the pending request as the body
     expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:update', reason: 'and changing them' })).toMatchObject({ status: 409, body: { requestId: request.requestId, status: 'pending' } })
     expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`).status).toBe(200)
-    // an approver never decides their own
-    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', requestable: false } } })
+    // an approver never decides their own, approve or reject: the identity service's denial
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', reason: 'nobody decides their own access request', requestable: false } } })
+    expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'reject' }).status).toBe(403)
+    // an approver reads the account's queue: asking for someone else's requests answers 200
+    expect(b.call('GET', '/console/v1/access-requests?requester=~someone-else&limit=1')).toMatchObject({ status: 200, body: { items: [] } })
 
     // mateo reads only the requests mateo made, and may not ask for someone else's
     b.signIn('mateo')
     expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items).toEqual([])
     expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => [r.requestId, r.status])).toEqual([['areq_002', 'expired']])
     expect(b.call('GET', '/console/v1/access-requests?requester=mia')).toMatchObject({ status: 403, body: { denied: { action: 'access-request:list', role: 'operator' } } })
+    expect(b.call('GET', '/console/v1/access-requests?requester=~someone-else&limit=1').status).toBe(403)
     expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`)).toMatchObject({ status: 403, body: { denied: { action: 'access-request:get' } } })
     expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', role: 'operator', suggestedRole: 'account-admin' } } })
 

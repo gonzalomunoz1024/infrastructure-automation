@@ -190,7 +190,7 @@ export function buildDirectory(): Directory {
           decidedAt: '2026-10-08T16:02:00Z',
           decidedBy: 'gonzalo',
           comment: 'Welcome to the rotation.',
-          approvers: ['dana', 'gonzalo', 'mia'],
+          approvers: ['gonzalo', 'mia'],
           layer: 'console-iam',
         },
         {
@@ -264,13 +264,13 @@ export function adminsOf(dir: Directory, accountId: string): string[] {
   return [...out].sort()
 }
 
-/** Whom an access request goes to: the members of the groups whose roles allow deciding one, sorted (the requester too, when they are one; they never decide their own). */
-export function approversOf(dir: Directory, accountId: string): string[] {
+/** Whom an access request goes to: the members of the groups whose roles allow deciding one, sorted, except the requester, who never decides their own. */
+export function approversOf(dir: Directory, accountId: string, requesterId?: string): string[] {
   const resource = iamResource(accountId, 'access-request')
   const out = new Set<string>()
   for (const g of dir.groups[accountId] ?? []) {
     if (evaluateRoles(dir, accountId, g.roles ?? [], 'access-request:decide', resource).effect !== 'allow') continue
-    for (const m of g.members ?? []) out.add(m)
+    for (const m of g.members ?? []) if (m !== requesterId) out.add(m)
   }
   return [...out].sort()
 }
@@ -658,7 +658,7 @@ export function rotateAccessKey(dir: Directory, accountId: string, keyId: string
   return { ...key, secretPart: secretPart(), graceUntil: new Date(now + 86_400_000).toISOString() }
 }
 
-/* quotas: resources.<service>, jobs-per-minute (the platform's bucket) and access-keys; the platform team decides increases */
+/* quotas: resources.<type> (one per platform resource type, by its name), jobs-per-minute (the platform's bucket) and access-keys; the platform team decides increases */
 
 export const JOBS_PER_MINUTE = 'jobs-per-minute'
 export const ACCESS_KEYS_QUOTA = 'access-keys'
@@ -670,14 +670,14 @@ export function isQuotaKey(key: string): boolean {
 }
 
 /**
- * The platform team's raises at the mock's start, so no service of the seed runs above its limit:
- * a service already running more than the default gets about half as much again, in hundreds.
+ * The platform team's raises at the mock's start, so no type of the seed holds more than its limit:
+ * a type with more resources than the default gets about half as much again, in hundreds.
  */
 export function seedQuotaOverrides(dir: Directory, usedByAccount: Record<string, Record<string, number>>) {
   for (const [accountId, used] of Object.entries(usedByAccount)) {
     const overrides = (dir.quotaOverrides[accountId] ??= {})
-    for (const [service, n] of Object.entries(used)) {
-      const key = `${RESOURCES_PREFIX}${service}`
+    for (const [type, n] of Object.entries(used)) {
+      const key = `${RESOURCES_PREFIX}${type}`
       if (n > DEFAULT_RESOURCES_LIMIT && overrides[key] === undefined) overrides[key] = Math.ceil((n * 1.5) / 100) * 100
     }
   }
@@ -687,22 +687,22 @@ function openQuotaRequest(dir: Directory, accountId: string, key: string): Quota
   return (dir.quotaRequests[accountId] ?? []).find((r) => r.quotaKey === key && r.status === 'open')
 }
 
-/** One quota as served: the override or the default, the platform's bucket for jobs, the open request. `used` counts the account's resources of a service. */
-export function quotaOf(dir: Directory, accountId: string, key: string, usedByService: Record<string, number>, now = Date.now()): Quota {
+/** One quota as served: the override or the default, the platform's bucket for jobs, the open request. `used` counts the account's live resources of a type, as the state service reports them. */
+export function quotaOf(dir: Directory, accountId: string, key: string, usedByType: Record<string, number>, now = Date.now()): Quota {
   const override = dir.quotaOverrides[accountId]?.[key]
   let q: Quota
   if (key === JOBS_PER_MINUTE) q = override !== undefined ? { key, limit: override, burst: override, used: 0, source: 'override' } : { key, limit: 60, burst: 120, used: 0, source: 'platform' }
   else if (key === ACCESS_KEYS_QUOTA) q = { key, limit: override ?? DEFAULT_ACCESS_KEYS_LIMIT, used: (dir.accessKeys[accountId] ?? []).filter((k) => usable(k, now)).length, source: override !== undefined ? 'override' : 'default' }
-  else q = { key, limit: override ?? DEFAULT_RESOURCES_LIMIT, used: usedByService[key.slice(RESOURCES_PREFIX.length)] ?? 0, source: override !== undefined ? 'override' : 'default' }
+  else q = { key, limit: override ?? DEFAULT_RESOURCES_LIMIT, used: usedByType[key.slice(RESOURCES_PREFIX.length)] ?? 0, source: override !== undefined ? 'override' : 'default' }
   const open = openQuotaRequest(dir, accountId, key)
   return open ? { ...q, pendingRequestId: open.requestId } : q
 }
 
-/** The account's quotas: jobs, access keys, then a resources quota for every service (the console's own aside), then any other override. */
-export function quotasOf(dir: Directory, accountId: string, usedByService: Record<string, number>, services: readonly string[] = Object.keys(usedByService), now = Date.now()): Quota[] {
-  const keys = [JOBS_PER_MINUTE, ACCESS_KEYS_QUOTA, ...[...new Set(services)].filter((s) => !CONSOLE_SERVICES.has(s)).sort().map((s) => `${RESOURCES_PREFIX}${s}`)]
+/** The account's quotas, as the identity service lists them: jobs, access keys, a resources quota for every platform resource type by name, then any other override. */
+export function quotasOf(dir: Directory, accountId: string, usedByType: Record<string, number>, types: readonly string[] = Object.keys(usedByType), now = Date.now()): Quota[] {
+  const keys = [JOBS_PER_MINUTE, ACCESS_KEYS_QUOTA, ...[...new Set(types)].sort().map((t) => `${RESOURCES_PREFIX}${t}`)]
   for (const k of Object.keys(dir.quotaOverrides[accountId] ?? {}).sort()) if (!keys.includes(k)) keys.push(k)
-  return keys.map((k) => quotaOf(dir, accountId, k, usedByService, now))
+  return keys.map((k) => quotaOf(dir, accountId, k, usedByType, now))
 }
 
 export function quotaRequestOf(dir: Directory, accountId: string, requestId: string): QuotaRequest | undefined {
@@ -804,7 +804,7 @@ export function createAccessRequest(dir: Directory, accountId: string, requester
     reason,
     status: 'pending',
     requestedAt: new Date(now).toISOString(),
-    approvers: approversOf(dir, accountId),
+    approvers: approversOf(dir, accountId, requester.userId),
     layer: input.layer ?? 'console-iam',
   }
   dir.accessRequests[accountId] = [request, ...(dir.accessRequests[accountId] ?? [])]

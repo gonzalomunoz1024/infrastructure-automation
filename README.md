@@ -261,17 +261,20 @@ type, so the feed must subscribe to every one).
 17. **Access requests are the approval path.** Request access in a refusal posts to
     `/console/v1/access-requests` (a reason of 1 to 2,000 characters, the role suggested by the
     refusal); the request names its approvers (the members of the groups whose policies allow
-    `access-request:decide`), who see it in the bell and on the access requests page and decide
-    it there, never their own; an approval puts the requester in the managed group of the role
+    `access-request:decide`, the requester left out), who see it in the bell and on the access
+    requests page and decide it there; nobody decides their own, a 403 whose denial says so. An
+    approval puts the requester in the managed group of the role
     (else the first group holding it), and their next session or a refresh of their roles picks
     it up. A second ask for the same role answers 409 with the pending request as the body, and
     the dialog shows that one. A request pending for more than 30 days is served `expired`.
     Reading the account's requests takes `access-request:list`; the identity service answers
-    anyone else with their own only, so the console knows the queue is readable from the roles
-    that read it (account-admin, auditor) or from an answer showing more than the person's own.
+    anyone else's list with their own only and refuses them someone else's, so the console asks
+    once for the requests of a requester nobody is: a 200 says the person reads the queue, a 403
+    that they see their own (account-admin and auditor read it without asking).
     Quotas are asked of the platform team the same way: the access keys page lists the
     account's quotas (`jobs-per-minute` from the platform's bucket, `access-keys`, and
-    `resources.<service>` per service) and lets a member ask for a higher limit
+    `resources.<type>` for every platform resource type by its name, such as `resources.vm`,
+    counting the account's live resources of the type) and lets a member ask for a higher limit
     (`:request-increase`, a reason of 10 to 1,000 characters, one open request per quota). The
     requester or an admin withdraws it while it waits; the platform team decides, never the
     account's own admins.

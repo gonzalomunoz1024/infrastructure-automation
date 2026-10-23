@@ -79,6 +79,8 @@ describe('the people and their accounts, as the identity service seeds them', ()
     const dir = buildDirectory()
     expect(approversOf(dir, COMPUTE)).toEqual(['dana', 'gonzalo', 'mia'])
     expect(approversOf(dir, DATA)).toEqual(['gonzalo', 'raj'])
+    // never the requester of the request at hand
+    expect(approversOf(dir, COMPUTE, 'mia')).toEqual(['dana', 'gonzalo'])
   })
 })
 
@@ -243,20 +245,21 @@ describe('access keys', () => {
 })
 
 describe('quotas', () => {
-  it('serves jobs, access keys and a resources quota per service, the console’s own aside', () => {
+  it('serves jobs, access keys and a resources quota per platform resource type, by name', () => {
     const dir = buildDirectory()
-    const quotas = quotasOf(dir, COMPUTE, { compute: 40, data: 3, iam: 9 }, ['compute', 'data', 'iam'], NOW)
-    expect(quotas.map((q) => q.key)).toEqual(['jobs-per-minute', 'access-keys', 'resources.compute', 'resources.data'])
+    const quotas = quotasOf(dir, COMPUTE, { vm: 40, image: 3 }, ['vm', 'image', 'database', 'vm'], NOW)
+    expect(quotas.map((q) => q.key)).toEqual(['jobs-per-minute', 'access-keys', 'resources.database', 'resources.image', 'resources.vm'])
     expect(quotas[0]).toMatchObject({ limit: 60, burst: 120, source: 'platform' })
     expect(quotas[1]).toMatchObject({ limit: 50, used: 2, source: 'default' })
-    expect(quotas[2]).toMatchObject({ limit: 100, used: 40, source: 'default' })
+    expect(quotas[2]).toMatchObject({ limit: 100, used: 0, source: 'default' })
+    expect(quotas[4]).toMatchObject({ key: 'resources.vm', limit: 100, used: 40, source: 'default' })
   })
 
-  it('raises at the start what the seed already runs above the default', () => {
+  it('raises at the start what the seed already holds above the default', () => {
     const dir = buildDirectory()
-    seedQuotaOverrides(dir, { [COMPUTE]: { compute: 1234, data: 20 } })
-    expect(quotaOf(dir, COMPUTE, 'resources.compute', { compute: 1234 }, NOW)).toMatchObject({ limit: 1900, used: 1234, source: 'override' })
-    expect(quotaOf(dir, COMPUTE, 'resources.data', { data: 20 }, NOW)).toMatchObject({ limit: 100, source: 'default' })
+    seedQuotaOverrides(dir, { [COMPUTE]: { vm: 1234, image: 20 } })
+    expect(quotaOf(dir, COMPUTE, 'resources.vm', { vm: 1234 }, NOW)).toMatchObject({ limit: 1900, used: 1234, source: 'override' })
+    expect(quotaOf(dir, COMPUTE, 'resources.image', { image: 20 }, NOW)).toMatchObject({ limit: 100, source: 'default' })
   })
 
   it('asks the platform team for more, once per key; the requester withdraws, the platform team decides', () => {
@@ -305,7 +308,8 @@ describe('access requests', () => {
     expect(() => createAccessRequest(dir, COMPUTE, mia, { action: 'compute:create', role: 'king', reason: 'machines' }, NOW)).toThrow("'king' is no role of this account")
     expect(() => createAccessRequest(dir, COMPUTE, mia, { action: 'compute:list', reason: 'machines' }, NOW)).toThrow(/allowed already\); name the role/)
     const request = createAccessRequest(dir, COMPUTE, mia, { action: 'compute:create', reason: 'I build the team machines' }, NOW)
-    expect(request).toMatchObject({ accountId: COMPUTE, requester: { userId: 'mia', name: 'Mia Chen' }, action: 'compute:create', role: 'operator', status: 'pending', approvers: ['dana', 'gonzalo', 'mia'], layer: 'console-iam', requestedAt: '2026-10-23T09:00:00.000Z' })
+    // mia is an approver too, but never of a request mia made: the identity service leaves the requester out
+    expect(request).toMatchObject({ accountId: COMPUTE, requester: { userId: 'mia', name: 'Mia Chen' }, action: 'compute:create', role: 'operator', status: 'pending', approvers: ['dana', 'gonzalo'], layer: 'console-iam', requestedAt: '2026-10-23T09:00:00.000Z' })
     expect(request.resource).toBe(`wfrn:wf:*:*:${COMPUTE}:*`)
     let again: unknown
     try {
