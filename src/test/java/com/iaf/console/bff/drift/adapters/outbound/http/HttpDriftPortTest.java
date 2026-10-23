@@ -240,6 +240,12 @@ class HttpDriftPortTest {
         InvalidInputException invalid = assertThrows(InvalidInputException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());
         assertEquals("required", invalid.problems().get(0).code());
         assertEquals("/type", invalid.problems().get(0).field());
+        // the drift service names a field; the BFF's problems point into the body
+        answer(400, "{\"error\":\"invalid\",\"problems\":[{\"code\":\"unmanaged.unknownAccount\",\"field\":\"accountId\",\"message\":\"no such account\"},"
+                + "{\"code\":\"range\",\"field\":\"desired.cpu\",\"message\":\"too many\"}]}");
+        InvalidInputException named = assertThrows(InvalidInputException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());
+        assertEquals("/accountId", named.problems().get(0).field());
+        assertEquals("/desired/cpu", named.problems().get(1).field());
 
         answer(404, "{\"error\":\"finding fnd-1 not found\"}");
         NotFoundException missing = assertThrows(NotFoundException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());

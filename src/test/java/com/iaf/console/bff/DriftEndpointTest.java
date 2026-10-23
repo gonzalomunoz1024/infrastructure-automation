@@ -205,8 +205,9 @@ class DriftEndpointTest extends DemoApp {
         assertEquals("running", started.json().path("status").asText());
         String runId = started.json().path("runId").asText();
         Console.Reply twice = console.post("/console/v1/discover", gonzalo, Map.of("type", "vm"));
-        assertEquals(202, twice.status(), twice.body());
-        assertEquals(runId, twice.json().path("runId").asText(), "one run per type and region: a second start answers the running one");
+        assertEquals(409, twice.status(), twice.body());
+        assertEquals("discover.running", twice.json().path("error").asText(), twice.body());
+        assertEquals(runId, twice.json().path("detail").path("runId").asText(), "one run per type and region: a second start names the running one");
         Console.Reply notDiscoverable = console.post("/console/v1/discover", gonzalo, Map.of("type", "volume"));
         assertEquals(400, notDiscoverable.status(), notDiscoverable.body());
         assertTrue(notDiscoverable.body().contains("type.notDiscoverable"), notDiscoverable.body());

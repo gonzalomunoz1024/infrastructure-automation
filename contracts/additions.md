@@ -318,15 +318,17 @@ details the contract does not spell out yet:
   account or region is a 404. `GET /alarms` with `wfrn` takes a wfrn (400 otherwise).
 - `GET /discover/{runId}` answers any member of the account; a run of another region is a 404.
   `POST /discover` needs `type` (400) of the region's catalogue (404). While a run of the type
-  and region goes on, the drift service answers that run with 202 rather than the 409 the
-  contract's text says; the BFF passes on what it answers.
+  and region goes on, a second start is a 409 `discover.running` with the running run's `runId`
+  in `detail`, so the web app can follow that run instead (a run the drift service has not seen
+  finish within two hours lost its walk and no longer blocks one).
 - Inputs are checked before the drift service is asked: the enums (`status`, `severity`,
   `owner`, `state`, `kind`), the date-times (`openedAfter`, `since`, `until`, `from`, `to`), a
   window whose start is before its end (`since` before `until`, `from` before `to`), `step` as
   an ISO-8601 duration of a minute at least, `until` of an ignore or a dismissal in the future,
   `reason` at most 1000 characters, `note` at most 500, `accountId` 12 digits; each is a 400
   with its problem at `/<field>`.
-- The drift service's refusals pass on: a 400 with its `problems`; a 404; a 409 as the BFF's
+- The drift service's refusals pass on: a 400 with its `problems` (the drift service names a
+  field, `accountId`; the BFF's problems point into the body, `/accountId`); a 404; a 409 as the BFF's
   coded conflict (`error` the drift service's code, such as `finding.reverting`, `message` the
   sentence, `problems`, and `detail` as the drift service gave it, a revert's `jobId` for one);
   a 429 with `Retry-After`; and a 502 with the drift service's `correlationId` (the platform's)

@@ -260,8 +260,8 @@ public class DemoDrift {
 
     /**
      * Starts a scan of a type's provider, one run per type and region at a time: while one runs,
-     * a second start answers it, as the drift service does. Only virtual machines have a discover
-     * read here; another type is 400 {@code type.notDiscoverable}.
+     * a second start is a 409 {@code discover.running} naming it, as the drift service does. Only
+     * virtual machines have a discover read here; another type is 400 {@code type.notDiscoverable}.
      */
     public synchronized DiscoveryRun discover(String accountId, String region, String type, String key) {
         Object replay = replay("discover", accountId, key);
@@ -278,7 +278,8 @@ public class DemoDrift {
         for (RunRow running : runs.values()) {
             if (running.accountId.equals(accountId) && running.type.equals(type) && running.region.equals(region)
                     && DiscoveryRun.RUNNING.equals(running.status)) {
-                return remember("discover", accountId, key, running.view());
+                throw new ConflictException("discover.running: a discovery run of " + type + " in " + region + " is already running",
+                        Map.of("runId", running.runId));
             }
         }
         RunRow run = new RunRow();

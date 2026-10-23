@@ -396,7 +396,7 @@ public class HttpDriftPort implements DriftPort {
             case 400:
                 List<Problem> problems = new ArrayList<>();
                 for (JsonNode p : node.path("problems")) {
-                    problems.add(Problem.error(p.path("code").asText("invalid"), p.hasNonNull("field") ? p.get("field").asText() : null,
+                    problems.add(Problem.error(p.path("code").asText("invalid"), p.hasNonNull("field") ? pointer(p.get("field").asText()) : null,
                             p.path("message").asText(error)));
                 }
                 return new InvalidInputException(error, problems);
@@ -413,6 +413,17 @@ public class HttpDriftPort implements DriftPort {
                 return WebClientResponseException.create(status, error, response.headers().asHttpHeaders(), body.getBytes(StandardCharsets.UTF_8),
                         StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * A problem's field as the JSON pointer the BFF's problems carry: the drift service names the
+     * field ({@code accountId}, {@code desired.cpu}), a pointer passes as it is.
+     */
+    static String pointer(String field) {
+        if (field == null || field.isBlank() || field.startsWith("/")) {
+            return field;
+        }
+        return "/" + field.replace("~", "~0").replace("/", "~1").replace('.', '/');
     }
 
     /** A 409's detail as a map for the coded conflict, without the nulls a copied map refuses. */
