@@ -81,6 +81,9 @@ tags:
   - name: Events
   - name: Search
   - name: Preferences
+  - name: Cost
+    description: The cost service for the session's account or the organization (decision 25)
+  - name: Budgets
   - name: IAM
     description: The identity service for the session's account, passed through
   - name: Access requests
@@ -1117,6 +1120,274 @@ paths:
               schema: { $ref: '#/components/schemas/Preferences' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/cost:
+    get:
+      operationId: getCost
+      summary: The Cost Explorer's query, for the session's account or the organization
+      description: >-
+        The cost service's `getCost` (contracts/openapi/console-cost-service.yaml) with the same
+        parameters and answer. `scope=account` (the default) reads the session's account and needs
+        `cost:list` there; `scope=organization` reads every account of the session's memberships on
+        which `cost:list` is allowed and leaves out the others, naming them in `skippedAccounts`
+        (the executive home's spend by team is `scope=organization&groupBy=costCentre`).
+      tags: [Cost]
+      parameters:
+        - name: scope
+          in: query
+          schema: { type: string, enum: [account, organization], default: account }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
+        - { name: granularity, in: query, schema: { type: string, enum: [day, month], default: day } }
+        - name: groupBy
+          in: query
+          schema: { type: string, pattern: '^(service|type|account|region|costCentre|tag:[a-z0-9-]{1,32})$' }
+        - { name: top, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }
+        - { name: service, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string } }
+        - { name: region, in: query, schema: { $ref: '#/components/schemas/RegionName' } }
+        - name: tag.<key>
+          in: query
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - { name: wfrn, in: query, schema: { $ref: '#/components/schemas/Wfrn' } }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/CostReport'
+                  - type: object
+                    properties:
+                      skippedAccounts:
+                        type: array
+                        description: 'scope=organization: memberships left out because cost:list is denied there'
+                        items: { $ref: '#/components/schemas/AccountId' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/cost/price-lists:
+    get:
+      operationId: listPriceLists
+      summary: The price lists in force and which types they price ("How is this priced?")
+      tags: [Cost]
+      responses:
+        '200':
+          description: The cost service's answer, unchanged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next, bindings]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceList' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+                  bindings:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceBinding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/cost/chargeback:
+    get:
+      operationId: getChargeback
+      summary: A month's chargeback by cost centre, account, service and tag
+      description: Needs `cost:list`; `scope` works as on `/console/v1/cost`.
+      tags: [Cost]
+      parameters:
+        - { name: scope, in: query, schema: { type: string, enum: [account, organization], default: account } }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' } }
+        - { name: tag, in: query, schema: { type: string, pattern: '^[a-z0-9-]{1,32}$' } }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChargebackReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/cost/chargeback.csv:
+    get:
+      operationId: exportChargeback
+      summary: The chargeback as CSV, as finance receives it
+      description: Needs `cost:export` on every account it covers.
+      tags: [Cost]
+      parameters:
+        - { name: scope, in: query, schema: { type: string, enum: [account, organization], default: account } }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' } }
+        - { name: tag, in: query, schema: { type: string, pattern: '^[a-z0-9-]{1,32}$' } }
+      responses:
+        '200':
+          description: The CSV
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Content-Sha256: { schema: { type: string } }
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/r/{type}/{wfrn}/cost:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceCost
+      summary: A resource's monthly rate, month to date, and the price behind it
+      description: Needs `cost:list` on the resource's wfrn.
+      tags: [Cost]
+      responses:
+        '200':
+          description: The cost
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCost' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/budgets:
+    get:
+      operationId: listBudgets
+      summary: The account's budgets with this month's status
+      description: 'Needs `budgets:list`. Each budget carries `can: { update, delete }`.'
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleBudget' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createBudget
+      summary: Create a budget for the session's account, or a tag within it
+      description: Needs `budgets:create`. The scope's accountId is always the session's.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '201':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/budgets/{budgetId}:
+    parameters:
+      - name: budgetId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getBudget
+      summary: A budget with this month's status
+      tags: [Budgets]
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: updateBudget
+      summary: Change a budget's name, amount, thresholds or create block
+      description: Needs `budgets:update` and `If-Match`.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BudgetInput' }
+      responses:
+        '200':
+          description: The budget
+          headers:
+            ETag: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleBudget' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteBudget
+      summary: Delete a budget
+      description: Needs `budgets:delete`.
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/budgets/{budgetId}/periods:
+    parameters:
+      - name: budgetId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: listBudgetPeriods
+      summary: How a budget did month by month, newest first
+      tags: [Budgets]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/BudgetStatus' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     session:
@@ -1598,10 +1869,12 @@ components:
               type: array
               items:
                 type: object
+                description: "The platform's rules, then the console's own: `quota.resources` (the identity service's quota) and `budget.exceeded` (deny) or `budget.forecast-over` (warn) from the cost service's `checkBudgets`, with the budget in `budgetId`"
                 properties:
                   id: { type: string }
                   result: { type: string }
                   message: { type: string }
+                  budgetId: { type: string }
     JobSummary:
       type: object
       required: [jobId, workflow, status]
@@ -1728,7 +2001,7 @@ components:
       type: object
       required: [type, at]
       properties:
-        type: { type: string, description: 'A state.resources or drift.findings event type, or job.updated' }
+        type: { type: string, description: 'A state.resources or drift.findings event type, job.updated, or budget.alert (data: budgetId, name, threshold, percent, period, the cost service''s BudgetThresholdCrossed)' }
         wfrn: { $ref: '#/components/schemas/Wfrn' }
         at: { type: string, format: date-time }
         version: { type: integer }
@@ -1883,3 +2156,254 @@ components:
               n: { type: string }
               e: { type: string }
             additionalProperties: true
+    Currency:
+      type: string
+      pattern: '^[A-Z]{3}$'
+      description: ISO 4217; every price list in force today is USD
+    CostGroup:
+      type: object
+      required: [key, label, total]
+      properties:
+        key: { type: string, description: 'The group''s value (a service, type, account id, region, cost centre or tag value); `__none` for resources without the tag, `__other` for the groups past `top`' }
+        label: { type: string, description: 'What to show: the account''s name for an account, "No <key> tag", "Other"' }
+        total: { type: number }
+    CostPoint:
+      type: object
+      required: [start, total, groups]
+      properties:
+        start: { type: string, format: date, description: The day, or the first of the month }
+        total: { type: number }
+        groups:
+          type: object
+          description: The point's amount per group key of `groups`
+          additionalProperties: { type: number }
+        provisional: { type: boolean, description: 'The point holds today, which is still open' }
+    Forecast:
+      type: object
+      required: [monthEnd, low, high, method]
+      properties:
+        month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        monthToDate: { type: number }
+        monthEnd: { type: number, description: The month's expected total }
+        low: { type: number }
+        high: { type: number }
+        method: { type: string, enum: [run-rate], description: 'Month to date plus the current run rate for the days left; the band is two standard deviations of the last 14 closed days'' change' }
+    CostReport:
+      type: object
+      required: [currency, from, to, granularity, total, groups, series, runRate, asOf, source, unpriced]
+      properties:
+        currency: { $ref: '#/components/schemas/Currency' }
+        from: { type: string, format: date }
+        to: { type: string, format: date }
+        granularity: { type: string, enum: [day, month] }
+        groupBy: { type: string }
+        total: { type: number }
+        groups:
+          type: array
+          description: Largest first; empty without groupBy
+          items: { $ref: '#/components/schemas/CostGroup' }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/CostPoint' }
+        forecast: { $ref: '#/components/schemas/Forecast' }
+        runRate:
+          type: object
+          required: [monthly]
+          description: What the resources the filters select cost a month at today's rates
+          properties:
+            monthly: { type: number }
+            resources: { type: integer, description: How many charged resources make it up }
+        asOf: { type: string, format: date-time, description: 'How fresh the numbers are: the newest change the ledger has applied' }
+        closedThrough: { type: string, format: date, description: The last closed day; later points are provisional }
+        source: { type: string, enum: [list-prices], description: 'Priced from the platform''s price lists' }
+        unpriced:
+          type: object
+          required: [resources]
+          description: Charged resources the filters select that no price covers, today
+          properties:
+            resources: { type: integer }
+            types:
+              type: array
+              items: { type: string }
+        accounts:
+          type: array
+          description: With groupBy account or costCentre, the accounts named, with their names and cost centres
+          items:
+            type: object
+            required: [accountId]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              name: { type: string }
+              costCentre: { type: string }
+    PriceRule:
+      type: object
+      required: [priceList, provider, action]
+      properties:
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The attribute whose value picks the price, when the price depends on one }
+        value: { description: The attribute's value the price was picked by }
+    ResourceCost:
+      type: object
+      required: [wfrn, accountId, type, service, charged, monthly, monthToDate, currency, source]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        type: { type: string }
+        service: { type: string }
+        state: { type: string }
+        charged: { type: boolean, description: 'Whether the resource is charged now (it exists at the provider)' }
+        monthly: { type: number, description: 'Its monthly rate now; 0 when not charged or unpriced' }
+        monthToDate: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        since: { type: string, format: date-time, description: When the current rate started }
+        source: { type: string, enum: [list-prices, unpriced] }
+        rule: { $ref: '#/components/schemas/PriceRule' }
+        pricedFrom: { type: string, enum: [observed, desired], description: 'Whether the attribute came from the provider''s last observation or the desired attributes' }
+        history:
+          type: array
+          description: The rates of the last 13 months, newest first
+          items:
+            type: object
+            required: [from, monthly]
+            properties:
+              from: { type: string, format: date-time }
+              to: { type: string, format: date-time }
+              monthly: { type: number }
+    PriceList:
+      type: object
+      required: [name, currency, prices, version]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        version: { type: string, description: The platform content version it was read at }
+        prices:
+          type: array
+          items:
+            type: object
+            required: [provider, action, monthly]
+            properties:
+              provider: { type: string }
+              action: { type: string }
+              by: { type: string }
+              monthly:
+                description: A flat monthly price, or a price per value of `by`
+                oneOf:
+                  - type: number
+                  - type: object
+                    additionalProperties: { type: number }
+    PriceBinding:
+      type: object
+      required: [type, priceList, provider, action]
+      description: "A type's `cost` block (P-06 as extended by P-22): which price prices its resources"
+      properties:
+        type: { type: string }
+        priceList: { type: string }
+        provider: { type: string }
+        action: { type: string }
+        by: { type: string, description: The resource attribute whose value is looked up in the price's map }
+    BudgetScope:
+      type: object
+      required: [accountId]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        tag:
+          type: object
+          description: Only resources with this tag value count
+          required: [key, value]
+          properties:
+            key: { type: string, pattern: '^[a-z0-9-]{1,32}$' }
+            value: { type: string, maxLength: 256 }
+    BudgetInput:
+      type: object
+      required: [name, amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        scope: { $ref: '#/components/schemas/BudgetScope', description: 'On create only; accountId defaults to the caller''s' }
+        amount: { type: number, exclusiveMinimum: 0, maximum: 1000000000, description: The monthly amount }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          description: Percentages of the amount that send an alert, at most once each a month
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          default: [80, 100]
+          items: { type: integer, minimum: 1, maximum: 1000 }
+        blockCreates: { type: boolean, default: false, description: 'Refuse creates in its scope while it is over' }
+    BudgetStatus:
+      type: object
+      required: [period, amount, spent, forecast, percent, state, alertsSent]
+      properties:
+        period: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+        amount: { type: number, description: The amount in force for the period }
+        spent: { type: number }
+        forecast: { type: number, description: The month's expected total; equal to spent for a closed month }
+        percent: { type: number, description: spent / amount × 100 }
+        forecastPercent: { type: number }
+        state: { type: string, enum: [ok, forecast-over, over] }
+        alertsSent:
+          type: array
+          description: The thresholds crossed this period, in the order they were crossed
+          items: { type: integer }
+        asOf: { type: string, format: date-time }
+    Budget:
+      type: object
+      required: [budgetId, name, scope, amount, currency, thresholds, blockCreates, version, createdAt, status]
+      properties:
+        budgetId: { type: string }
+        name: { type: string }
+        scope: { $ref: '#/components/schemas/BudgetScope' }
+        amount: { type: number }
+        currency: { $ref: '#/components/schemas/Currency' }
+        thresholds:
+          type: array
+          items: { type: integer }
+        blockCreates: { type: boolean }
+        version: { type: integer }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/BudgetStatus' }
+    ChargebackRow:
+      type: object
+      required: [costCentre, accountId, service, amount]
+      properties:
+        costCentre: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        accountName: { type: string }
+        service: { type: string }
+        tag:
+          type: object
+          properties:
+            key: { type: string }
+            value: { type: string }
+        amount: { type: number }
+    ChargebackReport:
+      type: object
+      required: [month, currency, final, total, rows, generatedAt]
+      properties:
+        month: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        final: { type: boolean, description: 'The month is closed and was published to finance' }
+        total: { type: number }
+        rows:
+          type: array
+          description: By cost centre, account, service and tag value
+          items: { $ref: '#/components/schemas/ChargebackRow' }
+        generatedAt: { type: string, format: date-time }
+        sha256: { type: string, description: "For a final month, the sha256 of the published CSV of every account" }
+    ConsoleBudget:
+      allOf:
+        - $ref: '#/components/schemas/Budget'
+        - type: object
+          required: [can]
+          properties:
+            can:
+              type: object
+              required: [update, delete]
+              properties:
+                update: { type: boolean }
+                delete: { type: boolean }

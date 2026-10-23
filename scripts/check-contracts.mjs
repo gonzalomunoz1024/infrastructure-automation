@@ -65,7 +65,7 @@ const collectRefs = (node, out = new Set()) => {
   return out;
 };
 
-const PLATFORM_CHANGE = /^P-(0[1-9]|1[0-9]|2[01])$/;
+const PLATFORM_CHANGE = /^P-(0[1-9]|1[0-9]|2[0-2])$/;
 const CAMEL = /^[a-z][a-zA-Z0-9]*$/;
 const BUILT_IN_COLUMNS = new Set(['name', 'status', 'wfrn', 'owner', 'created', 'updated']);
 
@@ -211,8 +211,13 @@ function checkSchemasAndOverlays() {
   }
   if (vType) ok(`${Object.keys(sampleTypes).length} pinned resource types validate against resource-type.schema.json`);
   const providers = {};
+  const priceLists = {};
   for (const file of filesUnder(join(root, 'contracts/platform/sample-content/providers'), '.yaml')) {
     const doc = readYaml(file);
+    if (doc.kind === 'PriceList') {
+      priceLists[doc.metadata?.name] = { file, prices: doc.spec?.prices ?? [] };
+      continue;
+    }
     const actions = {};
     for (const a of doc.spec?.actions ?? []) if (a?.id) actions[a.id] = a;
     providers[doc.metadata?.name] = { file, actions };
@@ -264,8 +269,21 @@ function checkSchemasAndOverlays() {
         }
       }
     }
-    if (problems.length) fail(`${rel(file)}: columns, observe fields and provider actions`, problems.join('\n'));
-    else ok(`${rel(file)} validates, merges over ${name}.yaml and names real fields and read actions`);
+    const cost = merged.cost;
+    if (cost) {
+      // P-22: the binding names a price that exists, with the same `by`, on a field of the type
+      const list = priceLists[cost.priceList];
+      if (!list) problems.push(`cost.priceList ${cost.priceList} is not a pinned kind: PriceList`);
+      else {
+        const price = list.prices.find((p) => p.provider === cost.provider && p.action === cost.action);
+        if (!price) problems.push(`cost: ${cost.priceList} has no price for ${cost.provider} ${cost.action} (${rel(list.file)})`);
+        else if ((price.by ?? null) !== (cost.by ?? null)) problems.push(`cost.by ${cost.by ?? '(none)'} is not the price's by ${price.by ?? '(none)'}`);
+      }
+      if (!providers[cost.provider]?.actions[cost.action]) problems.push(`cost.action ${cost.action} is not an action of ${cost.provider}`);
+      if (cost.by && !fields.has(cost.by)) problems.push(`cost.by ${cost.by} is not a field of the merged schema`);
+    }
+    if (problems.length) fail(`${rel(file)}: columns, observe fields, price binding and provider actions`, problems.join('\n'));
+    else ok(`${rel(file)} validates, merges over ${name}.yaml and names real fields, read actions and prices`);
   }
   for (const file of filesUnder(join(root, 'type-overlays/regions'), '.yaml')) {
     const region = readYaml(file);
