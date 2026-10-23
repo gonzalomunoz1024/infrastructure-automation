@@ -1,0 +1,10 @@
+apiVersion: v2
+name: console-state-service
+description: The customer console's event-sourced resource inventory, named by wfrn.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - console
+  - inventory
+  - wfrn

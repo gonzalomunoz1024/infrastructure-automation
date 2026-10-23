@@ -1,0 +1,11 @@
+# The demo: the fake platform runs inside this JVM on its own port, seeded with the two console
+# accounts, and this service reads its feed over HTTP. Dev headers stand in for the BFF's JWT.
+console:
+  demo:
+    platform-port: 18090
+    step-delay: 250ms
+  auth:
+    dev-headers: true
+  reaper:
+    interval: 15s
+    pending-timeout: 2m

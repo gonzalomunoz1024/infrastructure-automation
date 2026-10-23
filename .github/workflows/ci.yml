@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        # the MongoDB adapter tests run against it; without CONSOLE_TEST_MONGO_URI they skip
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CONSOLE_TEST_MONGO_URI: mongodb://localhost:27017
+      # the console-libs branch this build takes com.iaf.console:* from until the published
+      # packages exist (hub decision 15); CONSOLE_LIBS_REF moves it to the service branch then
+      CONSOLE_LIBS_REF: ${{ vars.CONSOLE_LIBS_REF || 'console-libs--phase-0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check out console-libs
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CONSOLE_LIBS_REF }}
+          path: .libs
+      - name: Publish console-libs to the local Maven repository
+        # the service resolves mavenLocal first; GitHub Packages serves the same coordinates once
+        # merges to console-libs publish them
+        working-directory: .libs
+        run: ./gradlew publishToMavenLocal -x test --no-daemon
+      - name: Build and test the service
+        run: ./gradlew build --no-daemon
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/
+          if-no-files-found: ignore
+      - name: Keep the jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-state-service.jar
+          path: build/libs/console-state-service.jar
+          if-no-files-found: error
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Install gitleaks
+        # a pinned release built from its module; the Go checksum database verifies the sources
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan the files
+        run: |
+          mkdir -p "$RUNNER_TEMP/tree"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
+          cp .gitleaks.toml "$RUNNER_TEMP/tree/"
+          "$(go env GOPATH)/bin/gitleaks" dir --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml "$RUNNER_TEMP/tree"
+      - name: Scan the new commits
+        # the commits of the pull request or the push; with no range (the first push of a branch)
+        # the commits this branch added since it left the platform's main, whose own history the
+        # platform's CI scans with its own reviewed exceptions; the whole history only when there
+        # is no main to compare with
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          range=""
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          elif git rev-parse --verify -q origin/main > /dev/null; then
+            range="origin/main..HEAD"
+          fi
+          if [ -n "$range" ]; then
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
+          else
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml .
+          fi
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/console-state-service
+          helm template console-state-service deploy/helm/console-state-service > "$RUNNER_TEMP/rendered.yaml"
+          helm template console-state-service deploy/helm/console-state-service \
+            --set ingest.kafka.enabled=true --set autoscaling.enabled=true --set networkPolicy.enabled=true > /dev/null

@@ -1,0 +1,68 @@
+# console-state-service. Profiles: `mongo` stores in MongoDB (else in memory), `kafka` publishes the
+# outbox to Kafka and reads the platform's feed from Kafka (else the outbox stays in memory and the
+# feed is followed over HTTP), `demo` embeds the fake platform in this JVM and accepts dev headers.
+server:
+  port: 18082
+
+spring:
+  application:
+    name: console-state-service
+  autoconfigure:
+    # the kit's MongoDB handle is wired under the mongo profile; without it Boot's client stays off
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+      - org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+console:
+  region: global
+  wfrn:
+    partition: wf
+  state:
+    tombstone-ttl: 90d
+    idempotency-ttl: 24h
+  reaper:
+    enabled: true
+    interval: 60s
+    pending-timeout: 5m
+    job-timeout: 2h
+  ingest:
+    enabled: true
+    rebuild-on-empty: true
+    types: [job.started, job.finished, resource.registered, resource.retired]
+    kafka:
+      bootstrap-servers: localhost:9092
+      group-id: console-state-service
+      topics: [platform.jobs, platform.resources]
+  platform:
+    base-url: http://localhost:18090
+    token: ${CONSOLE_PLATFORM_TOKEN:}
+  auth:
+    jwks-uri: http://localhost:18081/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-state-service, console]
+    dev-headers: false
+  crypto:
+    master-key: ${CONSOLE_MASTER_KEY:}
+  outbox:
+    relay:
+      enabled: true
+      interval: 1s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.iaf.console: info
