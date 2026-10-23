@@ -124,7 +124,7 @@ public final class EmbeddedStateService implements StateServicePort {
 
     @Override
     public Mono<StateResource> getResource(String wfrn) {
-        return seed().then(Mono.justOrEmpty(resources.get(wfrn))).flatMap(this::settled);
+        return seed().then(Mono.defer(() -> Mono.justOrEmpty(resources.get(wfrn)))).flatMap(this::settled);
     }
 
     /**
@@ -282,7 +282,7 @@ public final class EmbeddedStateService implements StateServicePort {
     }
 
     private Mono<StateResource> existing(String wfrn) {
-        return seed().then(Mono.justOrEmpty(resources.get(wfrn))).switchIfEmpty(Mono.error(() -> new StateError(404, "resource.notFound", null)));
+        return seed().then(Mono.defer(() -> Mono.justOrEmpty(resources.get(wfrn)))).switchIfEmpty(Mono.error(() -> new StateError(404, "resource.notFound", null)));
     }
 
     private StateResource bump(ObjectNode node) {
