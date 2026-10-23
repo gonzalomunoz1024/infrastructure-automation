@@ -145,6 +145,25 @@ RequiredTag:
   default-from: `account.owning-team`, `account`, `input.<field>`); `console.tags.accounts.<accountId>.<key>`
   for an account's own value until the identity service's account record carries one.
 
+**Tag Editor (WP 4.3).** As AWS's, in the session's account and region:
+
+- `GET /console/v1/tags/resources?type=&tag.<name>=&limit=&after=` (`type` repeated or comma
+  separated, every type when left out) → `{ items: [ConsoleResource + canTag], next }`: the
+  resources that carry every named tag, in the state service's order; `canTag` is
+  `<service>:tag` on the resource. A type the person may not list is left out, so a page can
+  hold fewer rows than `limit` while `next` goes on. An unknown type is a 400 `type.unknown` at
+  `/types/<i>`.
+- `POST /console/v1/tags:apply { resources: [wfrn] (1 to 100), set: { name: value }, remove:
+  [name] }` → 200 `{ applied: [{ wfrn, tags }], failed: [{ wfrn, error, message, denied? }] }`.
+  Each resource is its own state service command, as `<service>:tag` on it allows; the other
+  tags stay. `failed.error` is `denied` (with the Denial), `not-found` (another account or
+  region, or no such name), `gone`, `conflict`, `invalid` or `error`, in the request's order.
+  `Idempotency-Key` applies per resource.
+- What the body gets wrong is a 400 before anything changes: `required` at `/resources` or
+  `/set`, `tags.too-many-resources` at `/resources`, `tag.name` / `tag.value` at
+  `/set/<name>`, `tags.conflict` (set and removed), `tags.invalid` at `/set/<key>` for a
+  required tag's value, `tags.required` at `/remove/<i>` for a required tag.
+
 ## Search
 
 `GET /console/v1/search` and `GET /console/v1/suggest` are served as the contract says, through
