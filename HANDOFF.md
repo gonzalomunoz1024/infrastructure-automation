@@ -22,6 +22,32 @@ status reports in the same hour; they were not re-run for this handoff. Anything
 progress but had **not pushed** is lost to you unless it later appears on GitHub; section 6 says
 which items are at risk.
 
+## Update 19:05 UTC: most at-risk work is now on GitHub
+
+The build sessions pushed their work in progress just after this file was first written. Read
+this block before sections 4 to 7. Wherever those sections say a branch is "not on GitHub" or "at
+risk", start from the branch listed here instead. **(Heads checked with `git ls-remote` at 19:05
+UTC; nothing below is CI-verified.)**
+
+| Area | Now on GitHub | Head | Start here for |
+|---|---|---|---|
+| BFF phase 9 | draft PR #51 `console-bff--phase-9` → `console-bff--cost` | 9f4768e | B-1 (finish, take out of draft, CI green) |
+| BFF organization admins | draft PR #52 `console-bff--org` → `console-bff--phase-9` | 2dfa817 | B-3 |
+| BFF copilot | branch `console-bff--assistant` (no PR) | 3dc6f40 | B-2 |
+| BFF security fixes | branch `console-bff--security-wip` (no PR) | a36c65b | S-1 |
+| BFF API clients, notifications, SDK | announced as `console-bff--clients`, `console-bff--notifications`, `console-sdk`, but **not on GitHub at 19:05** | - | B-6, B-7 (check again; rebuild if absent) |
+| BFF unstarted work | specs promised as `handoff/bff-remaining.md` on this branch (ChatOps, time travel and transfer, blueprints executor, BFF load tests) | - | B-4, B-5, B-8, P-1 (BFF part) |
+| Drift 10M scan | draft PR #53 `console-drift-service--scan-load` → `--finder-and-monitoring` | 7e8c95d | P-1 (drift). The scan overran the platform-call budget; a shared walk store fix was in progress |
+| Web phase 7 and the rest of 9 | draft PR #54 `console-web--phase-7` → `console-web--phase-5` | 7207de4 | W-1 to W-7, W-9, W-10 |
+| Web phase 7 streams | `console-web--p7-access` (cdbc2ab), `--p7-cli` (b3e39bd), and WIP branches `--p7-blueprints-wip` (340db1a), `--p7-dashboards-wip` (facb1c8), `--p7-mobile-wip` (70046d9), `--p7-notify-wip` (e0d95ce), `--p7-personal-wip` (2b3ac71), `--p7-policies-wip` (dc70827), `--p7-state-wip` (0e3b80f) | see left | Each W stream continues on its own branch and is merged into `console-web--phase-7` |
+| Web security | branch `console-web--phase-5-security-wip` (no PR) | 38eede3 | S-4 |
+| Web cost | PR #49 `console-web--phase-9-cost` → `--phase-9` | 1bb59ec | W-8 |
+| End to end | branches `console-e2e` (dc39076) and `console-e2e--journey` (39259f4); a draft PR is expected | - | E-1, E-2 (continue, do not restart) |
+| State, search | state #45, #47, #48 and search #44 as in section 4 | - | merge train, P-1 |
+
+Mapping streams to WPs (by branch name, unverified): notify = W-1, personal = W-2, cli = W-3,
+policies = W-4, access = W-5, state = W-6, blueprints = W-7, mobile and dashboards = W-9.
+
 ---
 
 ## Contents
@@ -366,7 +392,7 @@ Each WP lists: goal, branch, depends on, files, acceptance, commands. WP ids are
 
 ### Phase R: recover and verify (do first, 30 min, lane 0)
 
-**R-1 Inventory what exists.** `git ls-remote --heads origin`; compare with section 4. For each
+**R-1 Inventory what exists.** Start from the 19:05 UTC update table at the top. `git ls-remote --heads origin`; compare with section 4. For each
 branch marked "at risk" in section 6, check whether it appeared after this handoff (the build
 sessions may have pushed later). Record the result in a new section of `HANDOFF.md` on your own
 branch. Run `gh pr list --state all` and `gh pr checks` per PR. Acceptance: a table of every
