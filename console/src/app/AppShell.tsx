@@ -46,6 +46,10 @@ const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
+const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
+const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
+const ShellPage = lazy(() => import('../pages/developer/ShellPage'))
+const PortalPage = lazy(() => import('../pages/developer/PortalPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
 /*
@@ -82,6 +86,10 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
   settings: SettingsPage,
+  device: DevicePage,
+  'iam-cli': CliSessionsPage,
+  shell: ShellPage,
+  portal: PortalPage,
   'not-found': NotFoundPage,
 }
 

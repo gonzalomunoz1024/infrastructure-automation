@@ -670,3 +670,35 @@ export interface ApprovalsDecided {
   decided: string[]
   left: { approvalId: string; jobId?: string; reason: string }[]
 }
+
+/* ----------------------------------------------------------------------------
+   Device sign-in and API sessions (WP 7.4): the CLI and the SDKs sign in through the browser
+   ------------------------------------------------------------------------- */
+
+/** The clients the device grant knows (hub console-bff.yaml `client_id`). */
+export type ApiClientId = 'console-cli' | 'console-sdk'
+
+/** `GET /console/v1/device-grants/{userCode}`: what asks to sign in as the person, and from where. */
+export interface DeviceGrant {
+  userCode: string
+  clientId: ApiClientId | string
+  status: 'pending' | 'approved' | 'denied' | 'expired'
+  requestedAt: string
+  expiresAt: string
+  /** where the CLI asked from, so the person can tell it is theirs */
+  requestedFrom?: { ip?: string; userAgent?: string }
+  decidedAt?: string
+}
+
+/** `GET /console/v1/api-sessions`: a CLI or SDK signed in with the device grant. */
+export interface ApiSession {
+  id: string
+  clientId: ApiClientId | string
+  createdAt: string
+  lastUsedAt?: string
+  expiresAt: string
+  accountId?: string
+  region?: string
+  userAgent?: string
+  ip?: string
+}

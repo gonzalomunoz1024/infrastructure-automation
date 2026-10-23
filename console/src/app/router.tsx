@@ -35,6 +35,10 @@ export type RouteName =
   | 'alarms'
   | 'rightsizing'
   | 'settings'
+  | 'device'
+  | 'iam-cli'
+  | 'shell'
+  | 'portal'
   | 'not-found'
 
 export interface RouteDef {
@@ -77,6 +81,11 @@ export const ROUTES: RouteDef[] = [
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
+  // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
+  { name: 'device', pattern: '/device', title: 'Sign in the CLI' },
+  { name: 'iam-cli', pattern: '/iam/cli-sign-ins', title: 'CLI sign-ins' },
+  { name: 'shell', pattern: '/shell', title: 'Console shell' },
+  { name: 'portal', pattern: '/developer', title: 'Developer portal' },
 ]
 
 /** The identity and access section: the overview and every page under it. */

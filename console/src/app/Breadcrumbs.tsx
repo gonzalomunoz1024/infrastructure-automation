@@ -73,6 +73,12 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, { label: 'Operations', href: pathFor('drift') }, { label: route.def?.title ?? 'Operations' }]
     case 'settings':
       return [home, { label: 'Settings' }]
+    case 'iam-cli':
+      return [home, iam, { label: 'CLI sign-ins' }]
+    case 'device':
+    case 'shell':
+    case 'portal':
+      return [home, { label: route.def?.title ?? 'Developer tools' }]
     default:
       return [home, { label: 'Not found' }]
   }
