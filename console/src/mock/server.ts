@@ -5,6 +5,7 @@ import { buildMockData, nextMockEvent, type MockData } from './data'
 import { liveRowOf, resourceRoutes, settleConsole, usedByTypeOf } from './commands'
 import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, preferencesOf, putPreferences, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
 import { consoleResourcesOf, countsOf, filterConsoleResources, searchConsoleResources, sortConsoleResources, suggestFrom, type ResourceContext } from './resources'
+import { tagRoutes } from './tags'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -584,8 +585,13 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       return { status: 405, body: { error: `${method} is not allowed on the preferences` } }
     }
 
+    /* the tag policy, the Tag Editor and resource groups (phase 4) */
+    const routeCtx = { session: s, body, headers: req.headers, now: now() }
+    const tagged = tagRoutes(data, routeCtx, path, params, method)
+    if (tagged) return tagged
+
     /* resources, previews, activity, drift, lineage, tags and jobs (phase 3) */
-    const answered = resourceRoutes(data, { session: s, body, headers: req.headers, now: now() }, path, params, method)
+    const answered = resourceRoutes(data, routeCtx, path, params, method)
     if (answered) return answered
     return notFound(`Path ${path}`)
   }

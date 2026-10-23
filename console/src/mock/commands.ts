@@ -4,6 +4,7 @@ import type { ActivityEntry, BffJobDetail, CatalogEntry, CommandAccepted, Comman
 import type { MockData } from './data'
 import { ADMIN_ROLE, accountOf, authorize, quotaOf, rolesOf, type Decision } from './directory'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
+import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -15,9 +16,16 @@ import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBff
  * persists and replays, so what you created is still there after a reload.
  */
 
+/**
+ * What a command does. The resource commands are this module's own; a namespaced kind
+ * (`<module>.<what>`, such as `group.create`) belongs to the module that owns the prefix, which
+ * applies it when it runs and when the journal replays it (MODULE_COMMANDS below).
+ */
+export type ConsoleCommandKind = 'create' | 'update' | 'verb' | 'tags' | 'cancel' | `${string}.${string}`
+
 export interface ConsoleCommand {
   at: number
-  kind: 'create' | 'update' | 'verb' | 'tags' | 'cancel'
+  kind: ConsoleCommandKind
   userId: string
   accountId: string
   region: string
@@ -63,6 +71,8 @@ export interface MockConsoleState {
   jobs: Record<string, ConsoleJobExtra>
   /** Idempotency-Key → the reply it earned, with a hash of the body it came with (P-21) */
   replies: Record<string, { bodyHash: string; status: number; body: unknown }>
+  /** resource groups, the tag policy and the Tag Editor's state (./tags), made on first use */
+  tools?: TagsState
 }
 
 export function emptyConsoleState(): MockConsoleState {
@@ -421,7 +431,7 @@ function quotaRule(data: MockData, s: RouteContext['session'], rt: ResourceType)
     : { id: 'quota.resources', result: 'pass', message: `${title}: ${used} of ${limit} in this account` }
 }
 
-export function previewCreate(data: MockData, s: RouteContext['session'], rt: ResourceType, entry: CatalogEntry | undefined, input: Record<string, unknown>, _now: number): ConsolePreview {
+export function previewCreate(data: MockData, s: RouteContext['session'], rt: ResourceType, entry: CatalogEntry | undefined, input: Record<string, unknown>, _now: number, tags?: unknown): ConsolePreview {
   const service = serviceOf(rt)
   const provider = providerOf(service)
   const noun = nounOf(rt).toLowerCase()
@@ -441,7 +451,7 @@ export function previewCreate(data: MockData, s: RouteContext['session'], rt: Re
   const attrs = attributesOf(rt, input, 'team-' + service)
   steps.push({ id: 'apply', name: `Create ${noun} ${name} in ${provider}`, effect: 'create', detail: Object.entries(attrs).filter(([k]) => k !== 'name' && k !== 'owner').map(([k, v]) => `${k} ${String(v)}`).join(' · ') || undefined })
   steps.push({ id: 'register', name: `Register the ${noun}`, effect: 'create', detail: 'the registry records it with its wfrn and lineage' })
-  const rules: Rule[] = [{ id: 'rbac.role', result: 'pass', message: `Your role allows ${service}:create here` }, quotaRule(data, s, rt)]
+  const rules: Rule[] = [{ id: 'rbac.role', result: 'pass', message: `Your role allows ${service}:create here` }, quotaRule(data, s, rt), ...createTagRules(data, s, rt, input, tags)]
   if (input.environment === 'prod') rules.push({ id: 'environment.prod', result: 'needs-approval', message: 'Production changes wait for compute-approvers' })
   if (entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) rules.push({ id: 'approval.required', result: 'needs-approval', message: `${entry.workflow} always waits for an approval` })
   const missing = refs.length < Object.values(entry?.input?.properties ?? {}).filter((p, i) => p?.['x-resource'] && typeof input[Object.keys(entry?.input?.properties ?? {})[i]] === 'string').length
@@ -522,9 +532,44 @@ function approvalFor(extra: ConsoleJobExtra, at: number): CommandAccepted['appro
   return approval
 }
 
+/** The modules that own a namespaced command kind, by its prefix: they apply it when it runs and when the journal replays it. */
+const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => RouteAnswer> = {
+  group: applyTagCommand,
+  tags: applyTagCommand,
+}
+
+/**
+ * Journals a command and answers it, remembering the answer under the request's Idempotency-Key
+ * (P-21): the same key with the same body answers the first result again, with another body a
+ * 409. Every module's writes go through here, so a reload replays them.
+ */
+export function journaled(data: MockData, ctx: Pick<RouteContext, 'body' | 'headers'>, cmd: ConsoleCommand): RouteAnswer {
+  const st = (data.console ??= emptyConsoleState())
+  const key = ctx.headers['idempotency-key']
+  const bodyHash = idFrom(JSON.stringify(ctx.body ?? null), 12)
+  if (key) {
+    const seen = st.replies[key]
+    if (seen) {
+      if (seen.bodyHash !== bodyHash) return { status: 409, body: { error: 'idempotency.mismatch', detail: 'This Idempotency-Key was already used with a different body; start a new request' } }
+      return { status: seen.status, body: seen.body, headers: { 'Idempotent-Replayed': 'true' } }
+    }
+  }
+  const answer = applyCommand(data, cmd)
+  if (answer.status < 400) {
+    st.journal.push(cmd)
+    if (key) st.replies[key] = { bodyHash, status: answer.status, body: answer.body }
+  }
+  return answer
+}
+
 /** Runs a journaled command against the dataset. Authorization and validation happened before it was journaled. */
 export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
   const st = (data.console ??= emptyConsoleState())
+  const dot = cmd.kind.indexOf('.')
+  if (dot > 0) {
+    const owner = MODULE_COMMANDS[cmd.kind.slice(0, dot)]
+    return owner ? owner(data, cmd) : { status: 404, body: { error: `No command ${cmd.kind}` } }
+  }
   const rt = typeOf(data, cmd.type)
   if (!rt) return { status: 404, body: { error: `No type ${cmd.type}` } }
   const service = serviceOf(rt)
@@ -561,6 +606,8 @@ export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
       region: cmd.region,
     }
     data.resources.unshift(r)
+    // the tags the request named land on the minted resource before its workflow starts
+    if (isRecord(body.tags)) st.tags[wfrn] = Object.fromEntries(Object.entries(body.tags).filter((e): e is [string, string] => typeof e[1] === 'string'))
     const job = newJob(entry?.workflow ?? `create-${rt.name}`, entry?.version ?? '1.0.0', `${entry?.title ?? `Create ${noun.toLowerCase()}`} ${name}`, wfrn, 'running')
     data.jobs.unshift(job)
     const extra: ConsoleJobExtra = { type: rt.name, verb: 'create', wfrn, resourceId, consoleRequestId: requestId, input, reason: body.reason, labels: body.labels, approvals: [] }
@@ -743,23 +790,7 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
   const now = ctx.now
 
   /** journals a command and answers it, remembering the answer under its Idempotency-Key */
-  const run = (cmd: ConsoleCommand): RouteAnswer => {
-    const key = ctx.headers['idempotency-key']
-    const bodyHash = idFrom(JSON.stringify(ctx.body ?? null), 12)
-    if (key) {
-      const seen = st.replies[key]
-      if (seen) {
-        if (seen.bodyHash !== bodyHash) return { status: 409, body: { error: 'idempotency.mismatch', detail: 'This Idempotency-Key was already used with a different body; start a new request' } }
-        return { status: seen.status, body: seen.body, headers: { 'Idempotent-Replayed': 'true' } }
-      }
-    }
-    const answer = applyCommand(data, cmd)
-    if (answer.status < 400) {
-      st.journal.push(cmd)
-      if (key) st.replies[key] = { bodyHash, status: answer.status, body: answer.body }
-    }
-    return answer
-  }
+  const run = (cmd: ConsoleCommand): RouteAnswer => journaled(data, ctx, cmd)
 
   /* jobs */
   if (path === '/console/v1/jobs' && method === 'GET') {
@@ -819,8 +850,10 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
     if (!isRecord(input)) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'The body needs an `input` object with the workflow\'s fields' }])
     const problems = validateAgainst(entry.input, input).filter((p) => p.level === 'error')
     if (problems.length) return problems400(problems)
-    const preview = previewCreate(data, s, rt, entry, input, now)
+    const preview = previewCreate(data, s, rt, entry, input, now, ctx.body.tags)
     if (m[2] === 'preview') return { status: 200, body: preview }
+    const tagged = createTagProblems(data, s, rt, input, ctx.body.tags)
+    if (tagged) return { status: 400, body: { error: tagged.error, detail: tagged.problems.map((p) => p.message).join('; '), problems: tagged.problems } }
     if (typeof ctx.body.reason === 'string' && ctx.body.reason.length > 1000) return problems400([{ level: 'error', code: 'maxLength', field: '/reason', message: 'The reason is longer than 1000 characters' }])
     const denied = policyDenied(preview)
     if (denied) return denied
@@ -873,6 +906,8 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
         if (!d.allowed) return refused(d, correlation())
         const problems = tagProblems(ctx.body)
         if (problems.length) return problems400(problems)
+        const kept = tagChangeProblems(data, s, st.tags[wfrn] ?? toConsoleResource(data, s, rt, r, now).tags, ctx.body as Record<string, string>)
+        if (kept) return { status: 400, body: { error: kept.error, detail: kept.problems.map((p) => p.message).join('; '), problems: kept.problems } }
         return run({ at: now, kind: 'tags', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: ctx.body, ids: {} })
       }
       if (method !== 'GET') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }

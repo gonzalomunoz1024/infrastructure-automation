@@ -2,7 +2,7 @@ import { get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, SearchHit, Suggestion } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, ApprovalsDecided, BatchAccepted, BatchInput, BatchPreview, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, BlastRadius, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
@@ -121,6 +121,12 @@ export const bff = {
     drift: (type: string, wfrn: string) => get<{ items: Finding[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/drift`)),
     lineage: (type: string, wfrn: string) => get<{ resource: ResourceRef; nodes: ResourceRef[]; edges: { from: string; to: string; via?: string }[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/lineage`)),
     setTags: (type: string, wfrn: string, tags: Record<string, string>) => request<Record<string, string>>('PUT', b(`/r/${enc(type)}/${enc(wfrn)}/tags`), tags, keyed()),
+    /** what depends on the resource, within `depth` hops (1 to 5), counted across accounts */
+    blastRadius: (type: string, wfrn: string, depth?: number) => get<BlastRadius>(`${b(`/r/${enc(type)}/${enc(wfrn)}/blast-radius`)}${qs({ depth })}`),
+    /** POST /r/{type}:batch: one request, one row per resource, released in waves */
+    batch: (type: string, body: BatchInput, key?: string) => request<BatchAccepted>('POST', b(`/r/${enc(type)}:batch`), body, keyed(key)),
+    /** every row judged before anything runs */
+    previewBatch: (type: string, body: BatchInput) => request<BatchPreview>('POST', b(`/r/${enc(type)}:batch:preview`), body),
   },
   search: (params: { q: string; type?: string } & ListParams) => page<SearchHit>(b('/search'), params),
   suggest: (q: string, limit = 8) => get<{ items: Suggestion[] }>(`${b('/suggest')}${qs({ q, limit })}`),
@@ -143,6 +149,14 @@ export const bff = {
     list: (params?: JobListParams) => page<BffJobSummary>(b('/jobs'), params),
     get: (jobId: string) => get<BffJobDetail>(b(`/jobs/${enc(jobId)}`)),
     cancel: (jobId: string, key?: string) => request<{ jobId: string; status: string }>('POST', b(`/jobs/${enc(jobId)}:cancel`), undefined, keyed(key)),
+    /** a paused step resumes in the same job; an ended job runs again as a new one (its id in the answer) */
+    retry: (jobId: string, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:retry`), undefined, keyed(key)),
+    /** goes on past the step the job waits on (or the one named) */
+    skip: (jobId: string, step?: string, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:skip`), step ? { step } : undefined, keyed(key)),
+    /** fails the paused step for good: the completed steps' compensations run */
+    abort: (jobId: string, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:abort`), undefined, keyed(key)),
+    /** decides every pending approval of the request and its rows this person may decide, in one call per wave */
+    decideApprovals: (jobId: string, body: { decision: 'approve' | 'reject'; comment?: string }, key?: string) => request<ApprovalsDecided>('POST', b(`/jobs/${enc(jobId)}/approvals:decide`), body, keyed(key)),
   },
 }
 

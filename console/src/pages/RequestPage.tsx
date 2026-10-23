@@ -8,6 +8,7 @@ import { href, type PageProps } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { api } from '../lib/api'
 import { bff } from '../lib/bff'
+import { mayJob } from '../lib/jobs'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { useQuery } from '../lib/queries'
 
@@ -50,7 +51,7 @@ export default function RequestPage({ route }: PageProps) {
               <Icon name="refresh" size={16} className={cx(q.fetching && 'animate-spin')} />
             </IconButton>
             {open ? (
-              mine.data?.can?.cancel !== false && (
+              mayJob(mine.data, 'cancel') !== false && (
                 <Button variant="secondary" icon="stop" loading={cmd.busy} onClick={() => setCancelling(true)}>
                   Cancel request
                 </Button>
