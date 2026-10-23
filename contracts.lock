@@ -2,7 +2,7 @@
 # under src/main/resources/contracts match these hashes; re-pin when the hub moves.
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
 branch: console-root
-commit: cc2de60
+commit: 671c8d7
 files:
-  contracts/openapi/console-identity-service.yaml: sha256:f76ca2ae3fa4e1e6c397e4027d6c75e7f65a6b880ef0d97ba00f4f04b5a57f08
-  contracts/asyncapi/console-events.yaml: sha256:6a87aeacef6078be402713fc7205c74a587a6a4f9135acf19728cc3fa63ea846
+  contracts/openapi/console-identity-service.yaml: sha256:07bb00a70721f5e49e08bed12db5b7ed05a7c49d4f35afe99ad369af2b2ca5df
+  contracts/asyncapi/console-events.yaml: sha256:6761dc193c8a2d07ee83f2459a97e919ee1959685f4816c930b967b3e7912ec0

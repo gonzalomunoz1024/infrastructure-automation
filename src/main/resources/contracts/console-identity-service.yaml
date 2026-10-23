@@ -71,6 +71,8 @@ tags:
     description: A person asks for an action a denial marked requestable; an account admin decides
   - name: Guardrails
     description: 'The organization''s guardrails over every account''s roles, like AWS service control policies; written by the internal principal for an organization admin'
+  - name: Access reviews
+    description: Campaigns in which an account's admins keep or revoke who holds which group; what is left undecided expires at the due date
   - name: Authorization
   - name: Internal
     description: For the console's own services (the `svc` claim) and OPA; a user's JWT answers 404
@@ -1244,6 +1246,178 @@ paths:
           description: The caller's bundle is current
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listAccessReviews
+      summary: An account's access review campaigns
+      description: 'The campaign started last first. Needs `access-review:list` on `wfrn:wf:iam::{accountId}:access-review/*` (access reviews are wfrns of kind `access-review`, ids `arev_` and a ULID, their items `arevi_`), which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions: access-review:*`), so admins, auditors and the internal principal read the reviews.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessReview' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: startAccessReview
+      summary: Start an access review campaign
+      description: 'Account admins (`access-review:create`). The campaign takes who holds which group now: one item per person and group of the account''s active memberships (suspended people are left out), with the role names the group carries. Admins keep or revoke each item until the campaign is due, `dueInDays` after it starts; when every item is decided it is `closed`, and at the due date it closes with each pending item `expired`: the group is taken off the person as a revoke would, decided by `system:access-review`, except the account''s last active owner, whose owners item is kept with a comment. A campaign with nothing to review is closed at once. One open campaign per account: a second answers 409 naming the open one (`detail.reviewId`); a suspended or closed account answers 409. An `AccessReviewChanged` event (subject `access-review`, action `created`) follows. Besides the campaigns people start, a sweep every 15 minutes starts a `scheduled` one, by `system:access-review`, on every active account with none open whose last campaign started 90 days ago or more (with none yet, that was created 90 days ago or more).'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessReviewInput' }
+      responses:
+        '201':
+          description: The campaign, open (closed when there was nothing to review)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The account has an open campaign, named in `detail.reviewId`, or the account is not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReviewConflict' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    get:
+      operationId: getAccessReview
+      summary: One access review campaign
+      description: 'Needs `access-review:get` on the campaign (`wfrn:wf:iam::{accountId}:access-review/{reviewId}`).'
+      tags: [Access reviews]
+      responses:
+        '200':
+          description: The campaign and its counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}/items:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    get:
+      operationId: listAccessReviewItems
+      summary: A campaign's items
+      description: 'In the order they were made, of one decision when `decision` is given. Reading the items is reading the campaign: `access-review:get` on it.'
+      tags: [Access reviews]
+      parameters:
+        - name: decision
+          in: query
+          schema: { $ref: '#/components/schemas/AccessReviewDecision' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessReviewItem' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}/items/{itemId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+      - name: itemId
+        in: path
+        required: true
+        description: 'One of its items (`arevi_…`)'
+        schema: { type: string }
+    post:
+      operationId: decideAccessReviewItem
+      summary: Keep or revoke one person's group
+      description: 'Account admins (`access-review:decide` on the campaign). `keep` leaves the access as it is; `revoke` takes the group off the person''s membership, with the `UserChanged` event any change of their groups publishes, and is recorded without a change when they no longer hold the group. Revoking the account''s last active owner''s owners group answers 409. A decided item is final, and a campaign no longer open or past its due date takes no decision (409; the sweep expires what is still pending). Nobody decides an item about themselves: the person reviewed gets 403, `denied.reason` `nobody reviews their own access`. Each decision publishes an `AccessReviewChanged` (action `updated`) with the campaign''s counts and the item decided; the last one closes the campaign.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessReviewDecisionInput' }
+      responses:
+        '200':
+          description: The item, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReviewItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: The caller is the person the item reviews, or may not decide
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/access-reviews/{reviewId}:cancel:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: reviewId
+        in: path
+        required: true
+        description: 'An access review (`arev_…`)'
+        schema: { type: string }
+    post:
+      operationId: cancelAccessReview
+      summary: Cancel an open campaign
+      description: 'Account admins (`access-review:cancel` on the campaign). The campaign is `cancelled`; its pending items stay pending and never expire. A campaign already closed or cancelled, or past its due date, answers 409. An `AccessReviewChanged` (action `updated`) follows.'
+      tags: [Access reviews]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: The campaign, cancelled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessReview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 components:
   securitySchemes:
     consoleJwt:
@@ -1780,3 +1954,72 @@ components:
         scope: { type: string, enum: [policy, boundary, guardrail], description: 'What decided: a role''s policy, a role''s permission boundary, or a guardrail' }
         guardrailId: { type: string, description: The guardrail whose deny statement decided }
         elevated: { type: boolean, description: 'The deciding role is held for a while (an elevation or break-glass access), not through a group' }
+    AccessReviewInput:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200, description: '`Access review <date>` by default' }
+        dueInDays: { type: integer, minimum: 1, maximum: 90, default: 14, description: How many days the campaign stays open }
+    AccessReviewCounts:
+      type: object
+      required: [total, kept, revoked, expired, pending]
+      properties:
+        total: { type: integer, minimum: 0 }
+        kept: { type: integer, minimum: 0 }
+        revoked: { type: integer, minimum: 0 }
+        expired: { type: integer, minimum: 0 }
+        pending: { type: integer, minimum: 0 }
+    AccessReview:
+      type: object
+      required: [reviewId, name, status, trigger, startedBy, startedAt, dueAt, counts, version]
+      properties:
+        reviewId: { type: string, description: '`arev_` and a ULID' }
+        name: { type: string }
+        status: { type: string, enum: [open, closed, cancelled], description: '`closed` once every item is decided or the due date passed' }
+        trigger: { type: string, enum: [manual, scheduled], description: '`scheduled` for the quarterly campaigns the sweep starts' }
+        startedBy: { type: string, description: 'Who started it; `system:access-review` for a scheduled campaign' }
+        startedAt: { type: string, format: date-time }
+        dueAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: When it closed or was cancelled }
+        counts: { $ref: '#/components/schemas/AccessReviewCounts' }
+        version: { type: integer, minimum: 1, description: 'Grows by one per change; the `AccessReviewChanged` events carry it' }
+    AccessReviewDecision:
+      type: string
+      description: '`expired` is an item still pending at the due date'
+      enum: [pending, keep, revoke, expired]
+    AccessReviewItem:
+      type: object
+      required: [itemId, reviewId, userId, groupId, groupName, roles, decision]
+      properties:
+        itemId: { type: string, description: '`arevi_` and a ULID' }
+        reviewId: { type: string }
+        userId: { type: string }
+        email: { type: string }
+        name: { type: string }
+        groupId: { type: string }
+        groupName: { type: string }
+        roles:
+          type: array
+          description: The names of the roles the group carried when the campaign started
+          items: { type: string }
+        decision: { $ref: '#/components/schemas/AccessReviewDecision' }
+        decidedBy: { type: string, description: 'Who decided; `system:access-review` for what the due date decided' }
+        decidedAt: { type: string, format: date-time }
+        comment: { type: string }
+    AccessReviewDecisionInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [keep, revoke] }
+        comment: { type: string, maxLength: 2000 }
+    AccessReviewConflict:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        detail:
+          type: object
+          description: With an open campaign only
+          required: [reviewId]
+          properties:
+            reviewId: { type: string, description: The open campaign }
+        correlationId: { type: string }

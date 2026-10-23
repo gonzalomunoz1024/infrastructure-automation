@@ -62,6 +62,15 @@ public final class Ids {
         return "gr_" + ulid();
     }
 
+    public String accessReview() {
+        return "arev_" + ulid();
+    }
+
+    /** One item of an access review: a person and one group they hold. */
+    public String accessReviewItem() {
+        return "arevi_" + ulid();
+    }
+
     public String event() {
         return "evt_" + ulid();
     }

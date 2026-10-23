@@ -51,14 +51,15 @@ public final class ManagedIam {
         String everything = IamResources.everything(partition, accountId);
         List<String> all = List.of(everything);
         return List.of(
-                // a person always sees their own access requests; reading the account's is for those who decide them, auditors and admins
+                // a person always sees their own access requests; reading the account's is for those who decide them, auditors and admins;
+                // access reviews are for auditors (who read them) and admins only
                 new ManagedRole(VIEWER, "Reads everything in the account", "managed-viewer", "The viewer role's policy: every read, no change",
                         List.of(Statement.allowExcept("reads", List.of("*:get", "*:list", "*:observe", "*:history", "search:query", "cost:get", "cost:list",
-                                "access-request:create", "quota:request-increase"), List.of("access-request:get", "access-request:list"), all))),
+                                "access-request:create", "quota:request-increase"), List.of("access-request:get", "access-request:list", "access-review:*"), all))),
                 new ManagedRole(OPERATOR, "Reads and every change that is not a delete, no IAM", "managed-operator",
                         "The operator role's policy: everything but deletes and IAM",
                         List.of(Statement.allowExcept("changes", List.of("*:*"), List.of("*:delete", "iam:*", "quota:set", "account:update", "access-request:get",
-                                "access-request:list", "access-request:decide"), all),
+                                "access-request:list", "access-request:decide", "access-review:*"), all),
                                 Statement.allow("iam-reads", List.of("iam:get", "iam:list"), all))),
                 new ManagedRole(ACCOUNT_ADMIN, "Everything in the account, IAM and deletes included", "managed-account-admin",
                         "The account-admin role's policy: everything", List.of(Statement.allow("everything", List.of("*:*"), all))),

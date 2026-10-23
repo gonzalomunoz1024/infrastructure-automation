@@ -187,7 +187,8 @@
                   ],
                   "notActions": [
                     "access-request:get",
-                    "access-request:list"
+                    "access-request:list",
+                    "access-review:*"
                   ]
                 }
               ]
@@ -208,7 +209,8 @@
                     "account:update",
                     "access-request:get",
                     "access-request:list",
-                    "access-request:decide"
+                    "access-request:decide",
+                    "access-review:*"
                   ],
                   "resources": [
                     "wfrn:wf:*:*:123456789012:*"
@@ -1479,6 +1481,148 @@
         }
       ],
       "version": 3
+    },
+    {
+      "name": "viewers do not read access reviews (notActions); auditors would",
+      "input": {
+        "principal": {
+          "userId": "usr_viewer",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "access-review:list",
+            "resource": "wfrn:wf:iam::123456789012:access-review/*"
+          },
+          {
+            "action": "access-review:get",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        }
+      ]
+    },
+    {
+      "name": "operators neither read nor decide access reviews (notActions)",
+      "input": {
+        "principal": {
+          "userId": "usr_operator",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "access-review:get",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          },
+          {
+            "action": "access-review:decide",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "auditor"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "auditors read access reviews, admins start and decide them",
+      "input": {
+        "principal": {
+          "userId": "usr_auditor",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "access-review:list",
+            "resource": "wfrn:wf:iam::123456789012:access-review/*"
+          },
+          {
+            "action": "access-review:get",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          },
+          {
+            "action": "access-review:decide",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "reads"
+        },
+        {
+          "allowed": true,
+          "role": "auditor",
+          "statement": "reads"
+        },
+        {
+          "allowed": false,
+          "requestable": true,
+          "suggestedRole": "account-admin"
+        }
+      ]
+    },
+    {
+      "name": "admins run access reviews",
+      "input": {
+        "principal": {
+          "userId": "usr_admin",
+          "accountId": "123456789012"
+        },
+        "checks": [
+          {
+            "action": "access-review:create",
+            "resource": "wfrn:wf:iam::123456789012:access-review/*"
+          },
+          {
+            "action": "access-review:decide",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          },
+          {
+            "action": "access-review:cancel",
+            "resource": "wfrn:wf:iam::123456789012:access-review/arev_01jbx9r2m4k9d3c8f5r6t1w0ye"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        },
+        {
+          "allowed": true,
+          "role": "account-admin",
+          "statement": "everything"
+        }
+      ]
     }
   ]
 }

@@ -25,11 +25,12 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Access keys | `GET/POST .../access-keys`, `GET/DELETE .../access-keys/{keyId}`, `POST .../access-keys/{keyId}:rotate` |
 | Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal), `GET /v1/quota-rules` |
 | Guardrails | `GET/POST /v1/guardrails`, `GET/PATCH/DELETE /v1/guardrails/{guardrailId}` (internal), `GET .../guardrails` (the ones that apply to the account) |
+| Access reviews | `GET/POST .../access-reviews`, `GET .../access-reviews/{reviewId}`, `GET .../access-reviews/{reviewId}/items`, `POST .../access-reviews/{reviewId}/items/{itemId}:decide`, `POST .../access-reviews/{reviewId}:cancel` |
 | Authorization | `POST /v1/authorize`, `POST .../policy-simulations`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `cc2de60` (hub PR #22, decision 28, stacked on the cost contract of #18); nothing is
+pin is hub `671c8d7` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first). The cost contract's `Account.costCentre` is not stored yet: it comes with the
 account lifecycle work on this branch.
@@ -58,7 +59,7 @@ account lifecycle work on this branch.
   `conditions` (`region`, `account`, `service`, `type`, `requester.user`, `requester.email`,
   `requester.group`, `tag.<name>`, `context.<name>`). Actions are validated against the platform's
   resource types and catalog plus the console's own services (`iam`, `account`, `quota`, `audit`,
-  `cost`, `search`, `access-request`). A deny wins; without an allow the decision says which managed
+  `cost`, `search`, `access-request`, `access-review`). A deny wins; without an allow the decision says which managed
   role would have allowed it (`requestable`, `suggestedRole`), so the console can offer an access
   request.
 - **Permission boundaries.** A role may name one of the account's policies as its `boundary`:
@@ -104,6 +105,31 @@ account lifecycle work on this branch.
   409 with the existing one; a pending request expires after thirty days (a sweep every fifteen
   minutes stores it). Every step publishes `AccessRequestChanged` (`created`, `approved`,
   `rejected`, `expired`) and an approval the `GroupChanged` of the group joined.
+- **Access reviews.** An account admin starts a campaign (`POST .../access-reviews`,
+  `{name?, dueInDays?}`, due in 1 to 90 days, 14 by default): one item per person and group of the
+  account's active memberships (suspended people are left out), with the role names the group
+  carries. Admins keep or revoke each item (`POST .../access-reviews/{reviewId}/items/{itemId}:decide`,
+  `{decision, comment?}`); a revoke takes the group off the person the way the users API does, so
+  the owners guardrail holds and a `UserChanged` follows (the last active owner's owners group is a
+  409), and a person who no longer holds the group is recorded as revoked without a change. A
+  decided item is final, and nobody decides an item about themselves: their `:decide` is a 403
+  whose denial says so. The campaign closes when every item is decided; `:cancel` stops it and
+  leaves its pending items pending. Past the due date it takes neither (a 409), so nothing dodges
+  the expiry. An account has one open campaign at a time (a second start is
+  a 409 naming it in `detail.reviewId`). A sweep every fifteen minutes closes the campaigns past
+  their due date, each pending item expiring as a revoke decided by `system:access-review` (the
+  last active owner's owners item is kept, with a comment), and starts a `scheduled` campaign, by
+  `system:access-review`, on every active account with none open whose last campaign started a
+  cadence ago (or, with none yet, that was created a cadence ago). The settings are under
+  `console.identity.access-reviews` (`sweep-every` 15 minutes, `scheduled.enabled` true,
+  `scheduled.cadence` 90 days, `scheduled.due-in-days` 14). The reviews are the console service
+  `access-review` (`get`, `list`, `create`, `decide`, `cancel`): the managed account-admin policy
+  allows them all, the auditor policy the reads, and the viewer and operator policies leave
+  `access-review:*` out. Managed policies are written when an account is created and not
+  reconciled at start, so the viewers and operators of an account created before then still read
+  the reviews until its policies are migrated. Every change publishes `AccessReviewChanged`
+  (`created`; `updated` on each decision, with the item, and on cancel; `expired` when the due date
+  closes it) with the campaign and its counts. The code is the `accessreviews` slice.
 
 ## Accounts, keys, quotas, events
 
@@ -135,7 +161,7 @@ account lifecycle work on this branch.
   approves it (it is moot); a lower limit leaves it open.
 - Every change appends an `identity.changes` event (`AccountChanged`, `UserChanged`,
   `GroupChanged`, `RoleChanged`, `PolicyChanged`, `AccessKeyChanged`, `QuotaChanged`,
-  `AccessRequestChanged`) in the
+  `AccessRequestChanged`, `GuardrailChanged`, `AccessReviewChanged`) in the
   platform envelope: key `<type>:<accountId>:<subjectId>:<version>`, partition key the account id,
   `data: {version, action, snapshot}`. The outbox relay publishes to Kafka with the `kafka` profile.
   The outbox takes an event whose key it has seen for a replay, so every change moves its
