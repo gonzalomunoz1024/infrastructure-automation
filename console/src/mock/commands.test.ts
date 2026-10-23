@@ -317,9 +317,12 @@ describe('reading resources, drift, lineage and jobs through the BFF', () => {
 
   it('answers drift findings and lineage', () => {
     const dana = bff('dana')
-    expect(body<{ items: Finding[] }>(dana.get(`/console/v1/r/vm/${enc(VM)}/drift`)).items).toEqual([])
+    // the tab lists the open findings first, then the ones closed in the last 30 days (./drift)
+    const quiet = body<{ items: Finding[] }>(dana.get(`/console/v1/r/vm/${enc(VM)}/drift`)).items
+    expect(quiet.filter((f) => f.status === 'open')).toEqual([])
+    expect(quiet.every((f) => f.status === 'closed' && f.resolution)).toBe(true)
     const drift = body<{ items: Finding[] }>(dana.get(`/console/v1/r/vm/${enc(VM2)}/drift`)).items
-    expect(drift).toHaveLength(1)
+    expect(drift.filter((f) => f.status === 'open')).toHaveLength(1)
     expect(drift[0]).toMatchObject({ wfrn: VM2, status: 'open', severity: 'warning', can: ['revert', 'accept', 'ignore'] })
     expect(drift[0].fields[0]).toMatchObject({ path: 'memoryGb' })
     const lineage = body<{ resource: { wfrn: string }; nodes: unknown[]; edges: { from: string; to: string; via?: string }[] }>(dana.get(`/console/v1/r/vm/${enc(VM)}/lineage`))

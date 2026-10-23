@@ -224,7 +224,8 @@ test.describe('resources in mock mode', () => {
     const fields = page.getByRole('table', { name: 'Fields that drifted' })
     await expect(fields).toBeVisible()
     await expect(fields.getByRole('row')).toHaveCount(2)
-    await expect(page.locator('[data-phase="5"]').first()).toBeVisible()
+    // the decisions are live (phase 5): Revert is one click, Accept and Ignore ask first (e2e/drift.spec.ts)
+    await expect(page.locator('[data-finding] [data-verb="revert"]')).toBeEnabled()
     await page.screenshot({ path: shot('drift-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'drift tab')
 

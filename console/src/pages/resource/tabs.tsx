@@ -12,7 +12,8 @@ import { codeSamplesFor } from '../../lib/code'
 import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
-import type { ActivityEntry, ConsoleResourceDetail, Finding, Resource, Schema } from '../../lib/types'
+import type { ActivityEntry, ConsoleResourceDetail, Resource, Schema } from '../../lib/types'
+import { DriftTab } from './DriftTab'
 import { MonitoringTab } from './MonitoringTab'
 
 /*
@@ -182,113 +183,7 @@ function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
 
 /* ---------------------------------------------------------------------------- Drift */
 
-const SEVERITY_TONE = { info: 'neutral', warning: 'warning', critical: 'critical' } as const
-
-function FindingCard({ finding, type }: { finding: Finding; type: ConsoleType }) {
-  const props = type.schema.properties ?? {}
-  return (
-    <article className="rounded-lg border border-stroke-light" data-finding={finding.findingId}>
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-stroke-light px-4 py-3">
-        <DotTag tone={SEVERITY_TONE[finding.severity] ?? 'neutral'}>{titleCase(finding.severity)}</DotTag>
-        <h3 className="text-sm font-medium text-primary">{finding.fields.length === 1 ? 'One field differs from what was asked for' : `${finding.fields.length} fields differ from what was asked for`}</h3>
-        <span className="text-caption text-tertiary">
-          Found <When at={finding.openedAt} />
-          {finding.observedAt && (
-            <>
-              , seen again <When at={finding.observedAt} />
-            </>
-          )}
-        </span>
-      </header>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <caption className="sr-only">Fields that drifted</caption>
-          <thead className="text-caption text-tertiary">
-            <tr>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Field
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Asked for
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Provider reports
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-stroke-light">
-            {finding.fields.map((f) => {
-              const name = f.path.replace(/^attributes\./, '')
-              const x = xConsoleOf(props[name])
-              return (
-                <tr key={f.path}>
-                  <td className="px-4 py-2 text-primary">{props[name]?.title ?? titleCase(name)}</td>
-                  <td className="px-4 py-2 tabular-nums text-primary">{formatValue(f.expected, x)}</td>
-                  <td className="px-4 py-2 tabular-nums text-primary">{formatValue(f.observed, x)}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      <footer className="flex flex-wrap items-center gap-2 border-t border-stroke-light px-4 py-3">
-        <LaterButton phase={5} size="sm" variant="primary" icon="refresh">
-          Revert to what was asked for
-        </LaterButton>
-        <LaterButton phase={5} size="sm">
-          Accept the provider’s values
-        </LaterButton>
-        <LaterButton phase={5} size="sm" variant="ghost">
-          Ignore these fields
-        </LaterButton>
-      </footer>
-    </article>
-  )
-}
-
-function DriftTab({ type, wfrn, detail, viewError }: TabProps) {
-  const findings = useOpenFindings(type, wfrn, detail)
-  if (!detail) return <ViewMissing viewError={viewError} what="Load the drift of this resource" />
-  const status = driftStatusOf(detail)
-  const checked = detail.observedAt
-  const description = (
-    <>
-      The drift service compares what was asked for with what the provider reports, at least hourly; it never changes anything by itself.
-      {checked && (
-        <>
-          {' '}
-          Last checked <When at={checked} />.
-        </>
-      )}
-    </>
-  )
-  let body: ReactNode
-  if (status === 'drifted') {
-    const open = findings.open
-    body = findings.loading ? (
-      <SkeletonRows n={2} rowClassName="h-24" />
-    ) : findings.error ? (
-      <ExplainedError error={findings.error} what="Load the drift findings" onRetry={() => void findings.refetch()} compact />
-    ) : open.length ? (
-      <div className="space-y-4">
-        {open.map((f) => (
-          <FindingCard key={f.findingId} finding={f} type={type} />
-        ))}
-      </div>
-    ) : (
-      <EmptyState compact icon="check" iconClassName="text-healthy" title="No open findings" message="Every difference found earlier has been settled." />
-    )
-  } else if (status === 'in-sync') {
-    body = <EmptyState compact icon="check" iconClassName="text-healthy" title="In sync" message="The provider reports what was asked for." />
-  } else {
-    body = <EmptyState compact icon="pulse" title="Not checked yet" message="The drift service has not compared this resource yet; its first check runs within the hour." />
-  }
-  return (
-    <Section title="Drift" description={description}>
-      {body}
-    </Section>
-  )
-}
+/* The tab's findings, decisions and history live in ./DriftTab. */
 
 /* ---------------------------------------------------------------------------- Activity */
 
