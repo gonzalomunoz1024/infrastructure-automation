@@ -28,9 +28,13 @@ export interface MetricChartProps {
   /** drawn faded while the next range loads */
   stale?: boolean
   className?: string
+  /** the plot's height in pixels; 176 when left out */
+  height?: number
+  /** false leaves out the border and padding, for a chart inside a frame of its own (a dashboard widget) */
+  framed?: boolean
 }
 
-const HEIGHT = 176
+const DEFAULT_HEIGHT = 176
 const MARGIN = { top: 12, right: 12, bottom: 24, left: 44 }
 
 /** The width of an element, followed as it resizes. */
@@ -68,7 +72,7 @@ export function summaryLine(points: readonly ChartPoint[], unit: string | undefi
   return `Latest ${formatMetric(s.latest.v, unit)}, average ${formatMetric(s.average, unit)}, highest ${formatMetric(s.highest.v, unit)} at ${pointLabel(s.highest.t)}.`
 }
 
-export function MetricChart({ series, from, to, stepMs, thresholds = [], stale, className }: MetricChartProps) {
+export function MetricChart({ series, from, to, stepMs, thresholds = [], stale, className, height: HEIGHT = DEFAULT_HEIGHT, framed = true }: MetricChartProps) {
   const titleId = useId()
   const summaryId = useId()
   const [table, setTable] = useState(false)
@@ -110,7 +114,7 @@ export function MetricChart({ series, from, to, stepMs, thresholds = [], stale, 
   }
 
   return (
-    <figure aria-labelledby={titleId} className={cx('min-w-0 rounded-lg border border-stroke-light bg-surface p-4', className)} data-series={series.name}>
+    <figure aria-labelledby={titleId} className={cx('min-w-0', framed && 'rounded-lg border border-stroke-light bg-surface p-4', className)} data-series={series.name}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <figcaption className="min-w-0 flex-1">
           <h3 id={titleId} className="text-subheadline font-semibold text-primary">

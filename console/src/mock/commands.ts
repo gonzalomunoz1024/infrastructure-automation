@@ -15,6 +15,7 @@ import { applyNotificationCommand, followNotifications, type NotificationsState 
 import { applyBlueprintCommand, settleStacks, type BlueprintsState } from './blueprints'
 import { applyScorecardCommand, type ScorecardsState } from './scorecards'
 import { applySubscriptionCommand, type SubscriptionsState } from './subscriptions'
+import { applyDashboardCommand, type DashboardsState } from './dashboards'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -119,6 +120,8 @@ export interface MockConsoleState {
   cli?: CliState
   /** notifications, settings, chat links and digests (./notifications), made on first use */
   notifications?: NotificationsState
+  /** team dashboards (./dashboards), made on first use */
+  dashboards?: DashboardsState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
   /** stacks launched from blueprints (./blueprints), made on first use */
@@ -721,6 +724,7 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   unmanaged: (data, cmd) => applyDriftCommand(data, cmd),
   alarm: (data, cmd) => applyMonitoringCommand(data, cmd),
   recommendation: (data, cmd) => applyMonitoringCommand(data, cmd),
+  dashboard: (data, cmd) => applyDashboardCommand(data, cmd),
   job: (data, cmd) => applyJobCommand(data, cmd),
   batch: (data, cmd) => applyJobCommand(data, cmd),
   cli: (data, cmd) => applyCliCommand(data, cmd),

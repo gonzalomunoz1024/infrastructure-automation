@@ -634,8 +634,8 @@ export function decide(dir: Directory, accountId: string, subject: Subject, chec
   return suggested ? { allowed: false, reason, requestable: true, suggestedRole: suggested } : { allowed: false, reason, requestable: false }
 }
 
-/** The services the console answers for itself (identity, resource groups, access over time, the trail, and phase 9's cost, budgets and insights): the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation', 'activity', 'cost', 'budgets', 'insights'])
+/** The services the console answers for itself (identity, resource groups, access over time, the trail, and phase 9's cost, budgets, insights and team dashboards): the platform's role for the account never decides them. */
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation', 'activity', 'cost', 'budgets', 'insights', 'dashboards'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {

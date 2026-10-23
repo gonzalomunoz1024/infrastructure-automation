@@ -24,6 +24,8 @@ import { personalRoutes } from './personal'
 import { blueprintRoutes } from './blueprints'
 import { scorecardRoutes } from './scorecards'
 import { subscriptionRoutes } from './subscriptions'
+import { dashboardRoutes } from './dashboards'
+import { healthRoutes } from './health'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -541,6 +543,9 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* blueprints and stacks, compliance scorecards and event subscriptions (phase 9) */
     const planned = blueprintRoutes(data, routeCtx, path, params, method) ?? scorecardRoutes(data, routeCtx, path, params, method) ?? subscriptionRoutes(data, routeCtx, path, params, method)
     if (planned) return planned
+    /* team dashboards and service health (phase 9) */
+    const boards = dashboardRoutes(data, routeCtx, path, params, method) ?? healthRoutes(data, routeCtx, path, params, method)
+    if (boards) return boards
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)

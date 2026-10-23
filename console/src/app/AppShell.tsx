@@ -72,6 +72,9 @@ const ScorecardPage = lazy(() => import('../pages/compliance/ScorecardPage'))
 const HeatmapPage = lazy(() => import('../pages/compliance/ScorecardPage').then((m) => ({ default: m.HeatmapPage })))
 const FailingPage = lazy(() => import('../pages/compliance/FailingPage'))
 const SubscriptionsPage = lazy(() => import('../pages/subscriptions/EventSubscriptionsPage'))
+const DashboardsPage = lazy(() => import('../pages/dashboards/DashboardsPage'))
+const DashboardPage = lazy(() => import('../pages/dashboards/DashboardPage'))
+const ServiceHealthPage = lazy(() => import('../pages/health/ServiceHealthPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
 const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
@@ -147,6 +150,9 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'compliance-org': HeatmapPage,
   'compliance-rule': FailingPage,
   subscriptions: SubscriptionsPage,
+  dashboards: DashboardsPage,
+  dashboard: DashboardPage,
+  health: ServiceHealthPage,
   settings: SettingsPage,
   device: DevicePage,
   'iam-cli': CliSessionsPage,

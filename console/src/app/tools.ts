@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations' | 'automation' | 'compliance' | 'quotas' | 'organization' | 'developer' | 'history'
+export type ToolSectionId = 'tags' | 'operations' | 'automation' | 'compliance' | 'quotas' | 'organization' | 'developer' | 'history' | 'insights'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -40,6 +40,7 @@ export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'quotas', title: 'Service Quotas', icon: 'chart', subtitle: 'The account’s limits and requests to raise them' },
   { id: 'automation', title: 'Automation', icon: 'workflow', subtitle: 'Blueprints, stacks and event subscriptions' },
   { id: 'compliance', title: 'Compliance', icon: 'shield', subtitle: 'Scorecards and the rules they check' },
+  { id: 'insights', title: 'Dashboards and health', icon: 'grid', subtitle: 'Team dashboards and how the services are doing' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -62,6 +63,8 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'subscriptions', section: 'automation', label: 'Event subscriptions', icon: 'bell', hint: 'Send resource events to a webhook, Kafka or Slack', keywords: 'events webhook kafka slack notify subscribe', routes: ['subscriptions'] },
   { route: 'compliance', section: 'compliance', label: 'Scorecard', icon: 'shield', hint: 'How the account scores against each rule pack', keywords: 'compliance scorecard rules packs score remediate', routes: ['compliance', 'compliance-rule'] },
   { route: 'compliance-org', section: 'compliance', label: 'Organization', icon: 'chart', hint: 'Every account’s score by pack', keywords: 'heat map organization accounts compliance', routes: ['compliance-org'] },
+  { route: 'dashboards', section: 'insights', label: 'Dashboards', icon: 'grid', hint: 'Boards of charts and counts, kept for yourself or shared with your team', keywords: 'dashboards cloudwatch charts widgets team board', routes: ['dashboards', 'dashboard'] },
+  { route: 'health', section: 'insights', label: 'Service health', icon: 'pulse', hint: 'Whether the platform and the console’s services meet their objectives', keywords: 'status slo availability latency incidents uptime', routes: ['health'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

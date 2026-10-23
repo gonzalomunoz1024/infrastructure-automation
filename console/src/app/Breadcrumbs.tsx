@@ -110,6 +110,12 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, { label: 'Scorecard', href: pathFor('compliance') }, { label: 'Organization' }]
     case 'compliance-rule':
       return [home, { label: 'Scorecard', href: pathFor('compliance') }, { label: route.params.rule }]
+    case 'dashboards':
+      return [home, { label: 'Dashboards' }]
+    case 'dashboard':
+      return [home, { label: 'Dashboards', href: pathFor('dashboards') }, { label: 'Dashboard' }]
+    case 'health':
+      return [home, { label: 'Service health' }]
     case 'settings':
       return [home, { label: 'Settings' }]
     case 'iam-cli':

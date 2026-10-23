@@ -59,6 +59,9 @@ export type RouteName =
   | 'compliance-org'
   | 'compliance-rule'
   | 'subscriptions'
+  | 'dashboards'
+  | 'dashboard'
+  | 'health'
   | 'settings'
   | 'device'
   | 'iam-cli'
@@ -144,6 +147,10 @@ export const ROUTES: RouteDef[] = [
   { name: 'compliance-org', pattern: '/compliance/organization', title: 'Organization heat map' },
   { name: 'compliance-rule', pattern: '/compliance/:pack/:rule', title: 'Failing resources' },
   { name: 'subscriptions', pattern: '/event-subscriptions', title: 'Event subscriptions' },
+  // team dashboards and service health (phase 9)
+  { name: 'dashboards', pattern: '/dashboards', title: 'Dashboards' },
+  { name: 'dashboard', pattern: '/dashboards/:id', title: 'Dashboard' },
+  { name: 'health', pattern: '/health', title: 'Service health' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
   // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
   { name: 'device', pattern: '/device', title: 'Sign in the CLI' },
