@@ -7,6 +7,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.iaf.console.bff.trust.domain.ApiAccessToken;
@@ -43,6 +45,10 @@ public class Trust {
     public static final String API_AUDIENCE = "console-api";
     /** The JOSE type of an access token (RFC 9068), which no internal token carries. */
     public static final JOSEObjectType API_TOKEN_TYPE = new JOSEObjectType("at+jwt");
+    /** The JOSE type of a chat token (decision 31.3), which neither an internal token nor an access token carries. */
+    public static final JOSEObjectType CHAT_TOKEN_TYPE = new JOSEObjectType("chat+jwt");
+    /** Every chat token's audience starts so: {@code console-chat-link}, {@code console-chat-action}. */
+    public static final String CHAT_AUDIENCE_PREFIX = "console-chat-";
     /** How far ahead of this replica's clock another replica may have issued an access token. */
     private static final Duration API_TOKEN_SKEW = Duration.ofSeconds(60);
 
@@ -104,6 +110,9 @@ public class Trust {
     public String mint(InternalToken token) {
         if (API_AUDIENCE.equals(token.audience())) {
             throw new IllegalArgumentException(API_AUDIENCE + " is the audience of the console API's access tokens, never of an internal token");
+        }
+        if (token.audience().startsWith(CHAT_AUDIENCE_PREFIX)) {
+            throw new IllegalArgumentException(token.audience() + " is a chat token's audience, never an internal token's");
         }
         Instant now = clock.instant();
         Instant expires = now.plus(properties.tokenLifetime());
@@ -214,6 +223,66 @@ public class Trust {
                     exp.toInstant(), claims.getJWTID()));
         } catch (ParseException | IllegalArgumentException e) {
             return ApiTokenCheck.refused("a claim is malformed");
+        }
+    }
+
+    /**
+     * A short-lived token of ChatOps (decision 31.3): header {@code typ: chat+jwt}, {@code iss} the
+     * BFF, {@code aud} one {@code console-chat-*} audience alone, {@code iat}, {@code exp},
+     * {@code jti} and the claims given (strings, numbers, booleans). No other console service
+     * accepts its audience, and no verifier of this class but {@link #verifyChatToken} its type.
+     */
+    public String signChatToken(String audience, Map<String, Object> claims, Duration lifetime) {
+        requireChatAudience(audience);
+        Instant now = clock.instant();
+        JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder();
+        claims.forEach(builder::claim);
+        builder.issuer(properties.issuer())
+                .audience(audience)
+                .jwtID(UUID.randomUUID().toString())
+                .issueTime(Date.from(now))
+                .expirationTime(Date.from(now.plus(lifetime)));
+        return sign(builder.build(), CHAT_TOKEN_TYPE);
+    }
+
+    /**
+     * The claims of a chat token of this audience: ES256 under the current or the previous key,
+     * {@code typ: chat+jwt}, {@code iss} the BFF, {@code aud} exactly the one asked, not expired
+     * and not issued later than a minute from now; empty otherwise.
+     */
+    public Optional<Map<String, Object>> verifyChatToken(String compact, String audience) {
+        requireChatAudience(audience);
+        if (compact == null || compact.isBlank() || compact.length() > 4096) {
+            return Optional.empty();
+        }
+        try {
+            SignedJWT jwt = SignedJWT.parse(compact.trim());
+            JWSHeader header = jwt.getHeader();
+            if (!JWSAlgorithm.ES256.equals(header.getAlgorithm()) || header.getType() == null
+                    || !CHAT_TOKEN_TYPE.getType().equals(header.getType().getType())) {
+                return Optional.empty();
+            }
+            ECKey key = verificationKey(header.getKeyID());
+            if (key == null || !jwt.verify(new ECDSAVerifier(key))) {
+                return Optional.empty();
+            }
+            JWTClaimsSet claims = jwt.getJWTClaimsSet();
+            Instant now = clock.instant();
+            Date exp = claims.getExpirationTime();
+            Date iat = claims.getIssueTime();
+            if (!properties.issuer().equals(claims.getIssuer()) || !List.of(audience).equals(claims.getAudience())
+                    || exp == null || !now.isBefore(exp.toInstant()) || iat == null || iat.toInstant().isAfter(now.plus(API_TOKEN_SKEW))) {
+                return Optional.empty();
+            }
+            return Optional.of(claims.getClaims());
+        } catch (ParseException | JOSEException e) {
+            return Optional.empty();
+        }
+    }
+
+    private static void requireChatAudience(String audience) {
+        if (audience == null || !audience.startsWith(CHAT_AUDIENCE_PREFIX) || audience.length() <= CHAT_AUDIENCE_PREFIX.length()) {
+            throw new IllegalArgumentException("a chat token's audience starts with " + CHAT_AUDIENCE_PREFIX);
         }
     }
 
