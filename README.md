@@ -57,6 +57,9 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
+| `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
+| `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
+| `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
@@ -88,6 +91,9 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
   target service, `sub`, `acct`, `region`, `groups`) that the identity and state services verify
   against `/.well-known/jwks.json`. Platform commands carry the account's service-account token and
   a P-02 on-behalf-of assertion signed with the same key.
+* **Service tokens** (hub decision 23): a console service that calls another on its own gets a
+  token from `POST /internal/v1/token`, never a copy of the signing key or a static token. See
+  Service tokens below.
 * **Every refusal names its layer**: a 403 carries `denied` with `layer` `console-iam` (the
   account's policies: action, resource pattern, role, policy, statement, suggested role,
   requestable) or `platform` (the service account's missing scope).
@@ -115,6 +121,7 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
+| `POST /internal/v1/token` | A service token for another console service (client credentials with a JWT client assertion); in-cluster only |
 | `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*` | Demo profile only |
 
 ## Descriptors (P-06)
@@ -202,6 +209,47 @@ service's records directly: the indexer's query syntax (free words and quoted ph
 scores 10, a prefix 6, a contained word 4, the wfrn 2, a tag or attribute 1), HTML-escaped
 highlights, every sort the console offers, and exact counts.
 
+## Service tokens (hub decision 23)
+
+The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
+this service's JWKS alone. A service that calls another on its own (the search indexer reading
+the state service and the accounts, the drift service) asks for a token of its own:
+
+```
+POST /internal/v1/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+&client_assertion=<the assertion>
+&audience=console-state-service&audience=console-identity-service
+```
+
+The answer is `{ access_token, token_type: "Bearer", expires_in: 300, audience }` with
+`Cache-Control: no-store`: an ES256 token with `iss` console-bff, `aud` only the services asked
+for (every registered one when none is), `sub` and `svc` the service id, and no `acct`, which the
+other services treat as the console-internal principal. Refusals are RFC 6749 bodies,
+`{ error, error_description }`: 400 `invalid_request`, `unsupported_grant_type` or
+`invalid_target`, 401 `invalid_client`.
+
+The assertion proves who asks, in one of two ways:
+
+* **In a cluster**, the pod's projected service-account token with audience `console-bff`
+  (re-read from its file on every request, since the kubelet rotates it). The BFF checks it
+  against the cluster's service-account issuer (`console.trust.kubernetes.*`) and maps
+  `system:serviceaccount:<namespace>:<name>` to the client registered with that
+  `service-account`. No secret exists anywhere. The chart turns this on and mounts a token for
+  the API server and the cluster's CA, so the BFF can read the issuer's keys.
+* **Anywhere else** (a laptop, CI, a VM), a JWT the service signs with its own EC or RSA key: `iss`
+  and `sub` its service id, `aud` `console-bff`, `iat`, `exp` at most 5 minutes later (a minute
+  is plenty) and a `jti` used once; the BFF holds the service's public keys
+  (`console.trust.clients.<service>.jwks`, or `jwks-uri`). Replays are refused per replica, so
+  keep assertions short.
+
+Only asymmetric algorithms are accepted (ES256, ES384, RS256, PS256). A new client is a new entry
+under `console.trust.clients` (in the chart, `config.serviceTokens.clients`) with the audiences it
+needs. `/internal` is never routed by the ingress. The demos keep their dev headers.
+
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
@@ -212,7 +260,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 98 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 108 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).
@@ -222,4 +270,7 @@ database (CI starts one).
 `deploy/helm/console-bff` is the chart; `Dockerfile` builds the image from the boot jar. The chart
 expects a secret with the session secret, the trust key, the OIDC client secret, the platform's
 internal token and the MongoDB URI (see `values.yaml`). Run at least two replicas with the `mongo`
-profile, and the `kafka` profile where the console's Kafka is reachable.
+profile, and the `kafka` profile where the console's Kafka is reachable. Service tokens are on by
+default (`config.serviceTokens`): set `kubernetes.issuer` to the cluster's service-account issuer
+(`kubectl get --raw /.well-known/openid-configuration`) and give each client's pods a projected
+service-account token with audience `console-bff`.

@@ -36,6 +36,26 @@ console:
     assertion-lifetime: 30s         # P-02 assertions (the platform allows at most 60s)
     key: ""                         # the private EC JWK (kid, crv P-256, d, x, y) the vault injects; generated at boot when empty
     previous-key: ""                # the key before a rotation, published in the JWKS while tokens signed by it live
+    # Service tokens for the console's other services, POST /internal/v1/token (hub decision 23)
+    service-token-lifetime: 5m      # how long a service token lives
+    client-assertion-max-lifetime: 5m   # the longest a client's own signed assertion may be (exp - iat)
+    kubernetes:                     # projected service-account tokens as client assertions; off while issuer is empty
+      issuer: ""                    # the cluster's service-account issuer (kubectl get --raw /.well-known/openid-configuration)
+      jwks-uri: ""                  # its keys, e.g. https://kubernetes.default.svc/openid/v1/jwks
+      jwks: ""                      # or the keys themselves, as JSON
+      ca-file: ""                   # the CA the jwks-uri's TLS is checked against
+      token-file: ""                # a bearer token to read jwks-uri with (the API server wants one)
+    clients:                        # who may ask, for which services, and how each proves who it is
+      console-search-indexer:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""         # <namespace>:<name> of its Kubernetes service account
+        jwks: ""                    # or the public keys it signs its own assertions with (a JWKS or one JWK, JSON)
+        jwks-uri: ""                # or where to read them
+      console-drift-service:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""
+        jwks: ""
+        jwks-uri: ""
   oidc:
     issuer: ""                      # the OpenID Connect issuer; discovery is <issuer>/.well-known/openid-configuration
     client-id: console

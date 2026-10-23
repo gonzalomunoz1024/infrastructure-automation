@@ -35,6 +35,21 @@ config:
   kafkaBootstrapServers: "kafka:9092"
   liveRelayEnabled: "true"
   extraEnv: []        # - { name: CONSOLE_ACCESS_CACHE_TTL, value: 30s }
+  # Service tokens for the other console services, POST /internal/v1/token (hub decision 23). Each
+  # client proves itself with its pod's projected service-account token (audience console-bff),
+  # which the BFF checks against the cluster's service-account issuer; no secret is involved.
+  serviceTokens:
+    kubernetes:
+      enabled: true
+      issuer: "https://kubernetes.default.svc.cluster.local"   # kubectl get --raw /.well-known/openid-configuration
+      jwksUri: "https://kubernetes.default.svc/openid/v1/jwks"
+    clients:
+      console-search-indexer:
+        audiences: [console-state-service, console-identity-service]
+        serviceAccount: ""   # <namespace>:<name>; empty: <the release's namespace>:console-search-indexer
+      console-drift-service:
+        audiences: [console-state-service, console-identity-service]
+        serviceAccount: ""
 
 # One secret, created outside the chart, with these keys:
 #   session-secret           base64 of at least 32 random bytes (console.session.secret)

@@ -103,6 +103,8 @@ spec:
                   key: {{ .Values.secret.keys.mongoUri }}
             - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
               value: "true"
+            - name: SPRING_APPLICATION_JSON
+              value: {{ include "console-bff.serviceTokens" . | quote }}
             {{- with .Values.config.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -131,9 +133,28 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.config.serviceTokens.kubernetes.enabled }}
+            - name: kube-api
+              mountPath: /var/run/secrets/console/kube-api
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.config.serviceTokens.kubernetes.enabled }}
+        # to read the cluster's service-account keys: a token for the API server and its CA
+        - name: kube-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

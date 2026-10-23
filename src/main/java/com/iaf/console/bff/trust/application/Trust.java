@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.UUID;
 
 import com.iaf.console.bff.trust.domain.InternalToken;
+import com.iaf.console.bff.trust.domain.IssuedServiceToken;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
 import com.iaf.console.platform.assertion.OnBehalfOfAssertions;
 import com.nimbusds.jose.JOSEException;
@@ -24,8 +25,9 @@ import com.nimbusds.jwt.SignedJWT;
 
 /**
  * The BFF as a signer: internal JWTs for the identity and state services ({@code iss} the BFF,
- * {@code aud} the target service and {@code console}, {@code svc console-bff}), P-02 assertions for
- * the platform, and the JWKS every verifier reads. One ES256 key signs both; the JWKS carries the
+ * {@code aud} the target service and {@code console}, {@code svc console-bff}), service tokens for
+ * the console's other services (hub decision 23), P-02 assertions for the platform, and the JWKS
+ * every verifier reads. One ES256 key signs both; the JWKS carries the
  * previous key too while a rotation lasts.
  */
 public class Trust {
@@ -65,6 +67,27 @@ public class Trust {
         return new OnBehalfOfAssertions.Signer(keys.currentKey(), properties.issuer(), properties.platformAudience(), clock, properties.assertionLifetime());
     }
 
+    /**
+     * A service token (hub decision 23) for a console service calling others on its own: {@code aud}
+     * only the services asked for, {@code sub} and {@code svc} the service, no account.
+     */
+    public IssuedServiceToken issueServiceToken(String serviceId, List<String> audiences) {
+        Instant now = clock.instant();
+        Duration lifetime = properties.serviceTokenLifetime();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                .issuer(properties.issuer())
+                .audience(List.copyOf(audiences))
+                .subject(serviceId)
+                .claim(SERVICE_CLAIM, serviceId)
+                .claim("groups", List.of())
+                .claim("roles", List.of())
+                .jwtID(UUID.randomUUID().toString())
+                .issueTime(Date.from(now))
+                .expirationTime(Date.from(now.plus(lifetime)))
+                .build();
+        return new IssuedServiceToken(sign(claims), lifetime.toSeconds(), audiences, serviceId);
+    }
+
     /** A compact JWS for one call to another console service. */
     public String mint(InternalToken token) {
         Instant now = clock.instant();
@@ -85,8 +108,12 @@ public class Trust {
         if (token.region() != null) {
             claims.claim("region", token.region());
         }
+        return sign(claims.build());
+    }
+
+    private String sign(JWTClaimsSet claims) {
         ECKey key = keys.currentKey();
-        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID()).type(JOSEObjectType.JWT).build(), claims.build());
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.ES256).keyID(key.getKeyID()).type(JOSEObjectType.JWT).build(), claims);
         try {
             jwt.sign(new ECDSASigner(key));
         } catch (JOSEException e) {

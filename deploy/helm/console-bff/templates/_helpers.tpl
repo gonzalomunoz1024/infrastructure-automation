@@ -36,3 +36,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The service-token settings (hub decision 23) as Spring JSON: the cluster's service-account issuer,
+read through the projected kube-api volume, and each client with its audiences and service account.
+*/}}
+{{- define "console-bff.serviceTokens" -}}
+{{- $st := .Values.config.serviceTokens -}}
+{{- $clients := dict -}}
+{{- range $id, $c := $st.clients -}}
+{{- $client := dict "audiences" $c.audiences "service-account" ($c.serviceAccount | default (printf "%s:%s" $.Release.Namespace $id)) -}}
+{{- with $c.jwks }}{{ $_ := set $client "jwks" . }}{{ end -}}
+{{- with $c.jwksUri }}{{ $_ := set $client "jwks-uri" . }}{{ end -}}
+{{- $_ := set $clients $id $client -}}
+{{- end -}}
+{{- $trust := dict "clients" $clients -}}
+{{- if $st.kubernetes.enabled -}}
+{{- $_ := set $trust "kubernetes" (dict "issuer" $st.kubernetes.issuer "jwks-uri" $st.kubernetes.jwksUri "ca-file" "/var/run/secrets/console/kube-api/ca.crt" "token-file" "/var/run/secrets/console/kube-api/token") -}}
+{{- end -}}
+{{- dict "console" (dict "trust" $trust) | toJson -}}
+{{- end -}}
