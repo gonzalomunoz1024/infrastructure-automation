@@ -545,7 +545,7 @@ components:
       type: object
       properties:
         expectedVersion: { type: integer, description: 'Refuse with 409 when the resource''s version is not this one' }
-        actor: { type: string, description: The console user, when the BFF sends the command for one }
+        actor: { type: string, description: "The console user, when the BFF sends the command for one" }
     DriftField:
       type: object
       required: [path]
@@ -577,8 +577,8 @@ components:
         version: { type: integer }
         registryId: { type: string, description: 'The platform''s registry id, once registered' }
         providerId: { type: string }
-        attributes: { type: object, description: The desired attributes, as last registered or requested, additionalProperties: true }
-        observed: { type: object, description: What the provider last reported, mapped, additionalProperties: true }
+        attributes: { type: object, description: "The desired attributes, as last registered or requested", additionalProperties: true }
+        observed: { type: object, description: "What the provider last reported, mapped", additionalProperties: true }
         observedAt: { type: string, format: date-time }
         drift: { $ref: '#/components/schemas/Drift' }
         tags:
@@ -658,7 +658,7 @@ components:
         region: { $ref: '#/components/schemas/RegionName' }
         name: { type: string }
         workflow: { type: string, description: The create workflow about to start }
-        input: { type: object, description: The create input, redacted before it is stored, additionalProperties: true }
+        input: { type: object, description: "The create input, redacted before it is stored", additionalProperties: true }
         actor: { type: string }
     ImportRequest:
       type: object
