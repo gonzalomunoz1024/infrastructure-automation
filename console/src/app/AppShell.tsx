@@ -46,6 +46,11 @@ const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
+const NotificationsPage = lazy(() => import('../pages/notify/NotificationsPage'))
+const NotificationSettingsPage = lazy(() => import('../pages/notify/NotificationSettingsPage'))
+const ChatLinkPage = lazy(() => import('../pages/notify/ChatLinkPage'))
+const DigestsPage = lazy(() => import('../pages/notify/DigestsPage'))
+const DigestPage = lazy(() => import('../pages/notify/DigestsPage').then((m) => ({ default: m.DigestPage })))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
 /*
@@ -82,6 +87,11 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
   settings: SettingsPage,
+  notifications: NotificationsPage,
+  'notification-settings': NotificationSettingsPage,
+  'chat-link': ChatLinkPage,
+  digests: DigestsPage,
+  digest: DigestPage,
   'not-found': NotFoundPage,
 }
 

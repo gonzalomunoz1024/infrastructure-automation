@@ -83,6 +83,10 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
       { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'preferences appearance identity', run: () => navigate(pathFor('settings')) },
+      { id: 'page-notifications', group: 'Pages', label: 'Notifications', icon: 'bell', keywords: 'alerts inbox unread', run: () => navigate(pathFor('notifications')) },
+      { id: 'page-notification-settings', group: 'Pages', label: 'Notification settings', icon: 'bell', keywords: 'email slack teams channels alerts preferences', run: () => navigate(pathFor('notification-settings')) },
+      { id: 'page-chat-link', group: 'Pages', label: 'Linked chats', icon: 'link', keywords: 'slack teams chatops link unlink', run: () => navigate(pathFor('chat-link')) },
+      { id: 'page-digests', group: 'Pages', label: 'Weekly digests', icon: 'document', keywords: 'digest summary week report', run: () => navigate(pathFor('digests')) },
       ...TOOLS.map((t) => ({ id: `page-${t.route}`, group: 'Pages', label: t.label, icon: t.icon, keywords: t.keywords, run: () => navigate(toolPath(t)) })),
     )
 

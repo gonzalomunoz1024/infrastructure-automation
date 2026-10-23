@@ -91,7 +91,8 @@ test.describe('identity and access in mock mode', () => {
     await expect(page.getByText('Welcome to the members group')).toBeVisible()
     await page.screenshot({ path: shot('access-request-approved-desktop'), fullPage: true })
     await expect(page.getByRole('button', { name: 'Notifications, 1 to decide' })).toBeHidden()
-    await expect(page.getByRole('button', { name: 'Notifications', exact: true })).toBeVisible()
+    // nothing left to decide; the person's own notifications may still be unread (phase 7)
+    await expect(page.getByRole('button', { name: /^Notifications(, \d+ unread)?$/ })).toBeVisible()
 
     // mia now holds operator and may create
     await signOut(page)

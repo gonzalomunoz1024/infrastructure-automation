@@ -35,6 +35,11 @@ export type RouteName =
   | 'alarms'
   | 'rightsizing'
   | 'settings'
+  | 'notifications'
+  | 'notification-settings'
+  | 'chat-link'
+  | 'digests'
+  | 'digest'
   | 'not-found'
 
 export interface RouteDef {
@@ -77,6 +82,12 @@ export const ROUTES: RouteDef[] = [
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
+  // notifications, linked chats and the weekly digests (phase 7)
+  { name: 'notifications', pattern: '/notifications', title: 'Notifications' },
+  { name: 'notification-settings', pattern: '/settings/notifications', title: 'Notification settings' },
+  { name: 'chat-link', pattern: '/chat-link', title: 'Linked chats' },
+  { name: 'digests', pattern: '/digests', title: 'Weekly digests' },
+  { name: 'digest', pattern: '/digests/:weekStart', title: 'Weekly digest' },
 ]
 
 /** The identity and access section: the overview and every page under it. */
