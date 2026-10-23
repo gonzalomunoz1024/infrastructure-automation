@@ -37,9 +37,11 @@ import com.iaf.console.kit.scope.AccountScope;
 import reactor.core.publisher.Mono;
 
 /**
- * The budgets of the contract. A person's token acts in its own account; the console's own
- * services name the account ({@code accountId} on reads, the scope's on create, the body's on a
- * check). The ETag is the version; a PUT without {@code If-Match} is a 428.
+ * The budgets of the contract. A person's token acts in its own account, and changes a budget only
+ * with the {@code account-admin} role there (403 otherwise, behind the BFF's own {@code budgets:*}
+ * decision); the console services allowed any account name it ({@code accountId} on reads, the
+ * scope's on create, the body's on a check). The ETag is the version; a PUT without
+ * {@code If-Match} is a 428.
  */
 @RestController
 public final class BudgetController {
@@ -66,6 +68,7 @@ public final class BudgetController {
     public Mono<ResponseEntity<BudgetView>> create(ServerWebExchange exchange, @RequestBody BudgetInput body,
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key) {
         ConsolePrincipal principal = Principals.of(exchange);
+        principal.requireBudgetChanges();
         if (key != null && key.length() > 255) {
             throw new InvalidInputException("Idempotency-Key is too long", List.of(Problem.error("maxLength", IDEMPOTENCY_KEY, "at most 255 characters")));
         }
@@ -85,20 +88,24 @@ public final class BudgetController {
     public Mono<ResponseEntity<BudgetView>> replace(ServerWebExchange exchange, @PathVariable String budgetId,
             @RequestParam(required = false) String accountId, @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @RequestBody BudgetInput body) {
+        ConsolePrincipal principal = Principals.of(exchange);
+        principal.requireBudgetChanges();
         AccountScope scope = scope(exchange, accountId, budgetId);
         if (ifMatch == null || ifMatch.isBlank()) {
             throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "If-Match is required: the ETag the budget was read with");
         }
-        return budgets.replace(scope, budgetId, version(ifMatch), body, Principals.of(exchange).subject())
+        return budgets.replace(scope, budgetId, version(ifMatch), body, principal.subject())
                 .map(b -> ResponseEntity.ok().header(HttpHeaders.ETAG, etag(b)).body(b));
     }
 
     @DeleteMapping("/v1/budgets/{budgetId}")
     public Mono<ResponseEntity<Void>> delete(ServerWebExchange exchange, @PathVariable String budgetId,
             @RequestParam(required = false) String accountId, @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch) {
+        ConsolePrincipal principal = Principals.of(exchange);
+        principal.requireBudgetChanges();
         AccountScope scope = scope(exchange, accountId, budgetId);
         Long expected = ifMatch == null || ifMatch.isBlank() || "*".equals(ifMatch.trim()) ? null : version(ifMatch);
-        return budgets.delete(scope, budgetId, expected, Principals.of(exchange).subject()).thenReturn(ResponseEntity.noContent().<Void>build());
+        return budgets.delete(scope, budgetId, expected, principal.subject()).thenReturn(ResponseEntity.noContent().<Void>build());
     }
 
     @GetMapping("/v1/budgets/{budgetId}/periods")

@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -22,7 +23,10 @@ import com.iaf.console.kit.errors.Problem;
 
 import reactor.core.publisher.Mono;
 
-/** The prices in force and estimates from them: they belong to no account, so any valid caller reads them. */
+/**
+ * The prices in force and estimates from them: they belong to no account, so any person reads them,
+ * and any console service allowed them as itself (the BFF and the drift service by default).
+ */
 @RestController
 public final class PricingController {
 
@@ -55,7 +59,8 @@ public final class PricingController {
     }
 
     @GetMapping("/v1/price-lists")
-    public Mono<PriceLists> priceLists() {
+    public Mono<PriceLists> priceLists(ServerWebExchange exchange) {
+        Principals.pricing(exchange);
         return pricing.catalog().map(c -> new PriceLists(c.lists().stream().map(PriceListView::of).toList(), null, c.bindings()));
     }
 
@@ -64,7 +69,8 @@ public final class PricingController {
     }
 
     @PostMapping("/v1/cost:estimate")
-    public Mono<Estimate> estimate(@RequestBody EstimateRequest body) {
+    public Mono<Estimate> estimate(ServerWebExchange exchange, @RequestBody EstimateRequest body) {
+        Principals.pricing(exchange);
         if (body == null || body.type() == null || body.type().isBlank()) {
             return Mono.error(new InvalidInputException("type is required", List.of(Problem.error("required", "/type", "the resource type"))));
         }

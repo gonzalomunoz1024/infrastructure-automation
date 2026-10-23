@@ -35,7 +35,7 @@ public record CostProperties(
                         new AccountSettings("210987654321", "Data platform", "data", null))
                 : List.copyOf(accounts);
         ingest = ingest == null ? new IngestSettings(null, null, null) : ingest;
-        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null, null) : auth;
+        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null, null, null) : auth;
     }
 
     /** Where prices come from ({@code platform}: P-22's API; {@code bundled}: the copy in this jar), and how often they are re-read. */
@@ -144,22 +144,57 @@ public record CostProperties(
     }
 
     /**
-     * How callers are authenticated (the BFF's JWKS, its issuer, the audiences this service answers
-     * to, the dev headers switch), and how this service gets its own tokens from the BFF (hub
-     * decision 23): the token endpoint, how long a request to it may take, and the client
-     * assertion, the projected service-account token's file or this service's own private EC JWK.
+     * How callers are authenticated: the BFF's JWKS, its issuer, the audience this service answers
+     * to (its own name only, hub decision 35: a token must name exactly it), the console services
+     * that may call as themselves by route group, and the dev headers switch. An empty issuer or
+     * audience fails the start, as does the retired shared audience {@code console}: the verifier
+     * has no unchecked mode. Then how this service gets its own tokens from the BFF (hub decision
+     * 23): the token endpoint, how long a request to it may take, and the client assertion, the
+     * projected service-account token's file or this service's own private EC JWK.
      */
-    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, String tokenUrl,
-            Duration tokenTimeout, String clientAssertionFile, String clientKey) {
+    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, InternalServices internalServices, Boolean devHeaders,
+            String tokenUrl, Duration tokenTimeout, String clientAssertionFile, String clientKey) {
         public AuthSettings {
             jwksUri = jwksUri == null ? "http://localhost:18081/.well-known/jwks.json" : jwksUri;
-            issuer = issuer == null ? "console-bff" : issuer;
-            audiences = audiences == null || audiences.isEmpty() ? List.of("console-cost-service", "console") : List.copyOf(audiences);
+            issuer = issuer == null ? "console-bff" : issuer.strip();
+            if (issuer.isEmpty()) {
+                throw new IllegalArgumentException("console.auth.issuer is empty: no token's issuer could be checked");
+            }
+            audiences = audiences == null ? List.of("console-cost-service") : audiences;
+            if (audiences.isEmpty() || audiences.stream().anyMatch(a -> a == null || a.isBlank())) {
+                throw new IllegalArgumentException("console.auth.audiences is empty: a token minted for any service would pass");
+            }
+            audiences = audiences.stream().map(String::strip).toList();
+            if (audiences.contains("console")) {
+                throw new IllegalArgumentException("console.auth.audiences names the shared audience console, retired by hub decision 35");
+            }
+            internalServices = internalServices == null ? new InternalServices(null, null, null) : internalServices;
             devHeaders = devHeaders != null && devHeaders;
             tokenUrl = tokenUrl == null || tokenUrl.isBlank() ? "http://localhost:18081/internal/v1/token" : tokenUrl.trim();
             tokenTimeout = tokenTimeout == null ? Duration.ofSeconds(5) : tokenTimeout;
             clientAssertionFile = clientAssertionFile == null || clientAssertionFile.isBlank() ? null : clientAssertionFile.trim();
             clientKey = clientKey == null || clientKey.isBlank() ? null : clientKey;
+        }
+    }
+
+    /**
+     * The console services that may call as themselves (a token without {@code acct} whose
+     * {@code svc} is its {@code sub}, hub decision 35), by route group: the price lists and
+     * estimates, any account's data (the organization view, budgets, budget checks, chargeback),
+     * and the ledger's operator calls. Any other token without an account is a 401, and a listed
+     * service outside its groups gets 403. A list set here replaces the default whole; empty
+     * allows no service.
+     */
+    public record InternalServices(List<String> pricing, List<String> accounts, List<String> ledger) {
+        public InternalServices {
+            pricing = pricing == null ? List.of("console-bff", "console-drift-service") : stripped(pricing);
+            accounts = accounts == null ? List.of("console-bff") : stripped(accounts);
+            ledger = ledger == null ? List.of("console-bff") : stripped(ledger);
+        }
+
+        /** The ids as written, without the spaces around them; a blank one is refused when the allow list is made. */
+        private static List<String> stripped(List<String> ids) {
+            return ids.stream().map(id -> id == null ? "" : id.strip()).toList();
         }
     }
 }

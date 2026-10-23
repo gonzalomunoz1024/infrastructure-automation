@@ -99,7 +99,7 @@ public final class CostController {
     @PostMapping("/v1/ledger:sync")
     public Mono<ResponseEntity<SyncRun>> sync(ServerWebExchange exchange, @RequestBody(required = false) SyncRequest body,
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key) {
-        Principals.internal(exchange);
+        Principals.ledger(exchange);
         String accountId = body == null || body.accountId() == null || body.accountId().isBlank() ? null : body.accountId().trim();
         if (accountId != null && !AccountScope.isAccountId(accountId)) {
             throw new InvalidInputException("accountId is 12 digits", List.of(Problem.error("pattern", "/accountId", "an account id is 12 digits")));
@@ -112,13 +112,13 @@ public final class CostController {
 
     @GetMapping("/v1/ledger/syncs/{runId}")
     public Mono<SyncRun> syncRun(ServerWebExchange exchange, @PathVariable String runId) {
-        Principals.internal(exchange);
+        Principals.ledger(exchange);
         return syncs.find(runId);
     }
 
     @GetMapping("/v1/ledger/status")
     public Mono<LedgerStatus> status(ServerWebExchange exchange) {
-        Principals.internal(exchange);
+        Principals.ledger(exchange);
         return statuses.status();
     }
 

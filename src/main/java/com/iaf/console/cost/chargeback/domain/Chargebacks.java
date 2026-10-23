@@ -89,15 +89,40 @@ public final class Chargebacks {
         return rows.stream().mapToLong(ChargebackRow::micros).sum();
     }
 
-    /** A CSV cell: quoted when it holds a comma, a quote or a line break; a leading formula character is escaped for spreadsheets. */
+    /**
+     * A text cell of the CSV (RFC 4180), quoted when it holds a comma, a quote or a line break. A
+     * cell a spreadsheet could take for a formula ({@link #formulaLike}) opens as text: it gets a
+     * leading apostrophe and is always quoted, the apostrophe inside the quotes. The amounts are
+     * numbers, written as they are (a credit stays negative), and never pass here.
+     */
     static String cell(String value) {
         String v = value == null ? "" : value;
-        if (!v.isEmpty() && "=+-@".indexOf(v.charAt(0)) >= 0) {
+        boolean formula = formulaLike(v);
+        if (formula) {
             v = "'" + v;
         }
-        if (v.indexOf(',') >= 0 || v.indexOf('"') >= 0 || v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0) {
+        if (formula || v.indexOf(',') >= 0 || v.indexOf('"') >= 0 || v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0) {
             return "\"" + v.replace("\"", "\"\"") + "\"";
         }
         return v;
+    }
+
+    /**
+     * Whether a spreadsheet could read a text cell as a formula: its first character after any
+     * leading whitespace is {@code =}, {@code +}, {@code -} or {@code @}, or it starts with a tab or
+     * a carriage return.
+     */
+    static boolean formulaLike(String v) {
+        if (v.isEmpty()) {
+            return false;
+        }
+        if (v.charAt(0) == '\t' || v.charAt(0) == '\r') {
+            return true;
+        }
+        int i = 0;
+        while (i < v.length() && (Character.isWhitespace(v.charAt(i)) || Character.isSpaceChar(v.charAt(i)))) {
+            i++;
+        }
+        return i < v.length() && "=+-@".indexOf(v.charAt(i)) >= 0;
     }
 }

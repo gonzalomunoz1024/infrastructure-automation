@@ -47,6 +47,10 @@ data:
         jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
+        internal-services:
+          pricing: {{ toJson .Values.console.auth.internalServices.pricing }}
+          accounts: {{ toJson .Values.console.auth.internalServices.accounts }}
+          ledger: {{ toJson .Values.console.auth.internalServices.ledger }}
         dev-headers: false
         token-url: {{ .Values.console.auth.tokenUrl | quote }}
         client-assertion-file: /var/run/secrets/console/token

@@ -97,7 +97,16 @@ console:
   auth:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-cost-service, console]
+    # this service's own name only (hub decision 35): a token must name exactly it; an empty list, or
+    # the retired shared audience console, stops the start
+    audiences: [console-cost-service]
+    # the console services that may call as themselves (a token without acct whose svc is its sub,
+    # hub decision 35), by route group; any other token without acct is a 401, and a listed service
+    # outside its groups gets 403. A list given here replaces its default whole; [] allows none.
+    internalServices:
+      pricing: [console-bff, console-drift-service]   # GET /v1/price-lists, POST /v1/cost:estimate
+      accounts: [console-bff]                          # any account's cost, budgets, budgets:check, chargeback
+      ledger: [console-bff]                            # POST /v1/ledger:sync, its runs, GET /v1/ledger/status
     # this service's own tokens for the state and identity services come from the BFF (hub decision
     # 23), asked for with the pod's projected service-account token: no secret holds them
     tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
