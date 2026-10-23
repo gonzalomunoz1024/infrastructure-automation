@@ -1,6 +1,151 @@
 # console-bff
 
-The customer console's backend for frontend: sign-in and sessions, type descriptors, live
-updates, jobs and approvals, and the IAM pass-through. A Spring WebFlux service on Java 21 built
-with Gradle, shaped like the repository it will become. The hub branch `console-root` holds the
-plan and the contracts this service pins in `contracts.lock`.
+The console's backend for frontend: the one service the web app talks to. It signs people in
+through the enterprise identity provider, keeps their session, tells the web app what each
+resource type looks like and what the signed-in person may do with it, serves the Requests page
+(jobs and approvals), streams live changes, and passes IAM calls through to the identity service.
+It never holds platform credentials in the browser: every platform call is made here, with the
+account's service account and a signed on-behalf-of assertion naming the person.
+
+Work packages of the customer-console plan served here: **1.3** (OIDC sign-in, sessions, CSRF,
+step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type descriptors),
+**3.4** (live updates). The resource pages (3.2, 3.3) and search (4.x) are later packages and are
+listed as such in `RoutesMatchContractTest`.
+
+## Running it
+
+```
+./gradlew bootRun --args='--spring.profiles.active=demo'
+```
+
+The demo profile needs nothing else: it embeds `platform-fake` on port 18090, a small OpenID
+provider at `/demo-idp` with a user picker, and an in-process stand-in of the identity service at
+`/demo-identity`, reached over HTTP by the same adapters that will talk to the real one. Open
+<http://localhost:18081/auth/login?returnTo=/> and pick a person:
+
+| Person | Compute account 123456789012 | Data account 210987654321 |
+| --- | --- | --- |
+| gonzalo | admin | admin |
+| dana | operator, in `compute-approvers` | |
+| mateo | operator | |
+| mia | viewer, in `compute-approvers` | |
+| raj | | operator, in `data-approvers` |
+| ana | | operator |
+| noah | no account: the sign-in answers 403 | |
+
+`GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs
+use. Ports: platform-fake 18090, bff 18081, identity 18082, state 18083, web 3000.
+
+To run against the real services, leave the demo profile off and set the settings below; the
+`mongo` profile keeps sessions and preferences in MongoDB (needed for more than one replica) and
+the `kafka` profile listens to the console's own events (identity changes drop cached decisions).
+
+## Settings
+
+Every setting has a production-safe default in `application.yaml`; set them as environment
+variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
+
+| Setting | What it is |
+| --- | --- |
+| `console.oidc.issuer`, `client-id`, `client-secret`, `redirect-uri`, `scopes`, `groups-claim` | The enterprise identity provider; discovery is read from `<issuer>/.well-known/openid-configuration` |
+| `console.session.secret` | Base64, at least 32 bytes; seals the login ticket and signs CSRF tokens. Generated at boot when empty, which only suits one replica |
+| `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
+| `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
+| `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
+| `console.identity.url`, `console.state.url` | The identity and state services; empty identity URL means the demo stand-in |
+| `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
+| `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
+| `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
+| `console.live.ring-capacity`, `heartbeat`, `relay.enabled` | The replay ring per account, the SSE heartbeat, and whether this instance follows the platform feed |
+| `console.platform.fake.*` | Demo only: the embedded platform's port, step delay and seed |
+| `console.kafka.*` | With the `kafka` profile: bootstrap servers, group id, topics |
+
+## Security model
+
+* **Sign-in** is the authorization-code flow with PKCE (S256), run by this service. The state,
+  verifier, nonce, return path and (for a step-up) the session id travel in a sealed cookie
+  (`console_login`, AES-256-GCM, path `/auth`, 10 minutes), so the callback may land on any
+  replica. The ID token is verified against the provider's JWKS (issuer, audience, expiry, nonce).
+* **The principal** is resolved by the identity service (`POST /v1/principals:resolve`): who the
+  person is in the console and which accounts they belong to, with their managed roles. No account
+  means 403 at sign-in.
+* **The session** is an opaque random id in an `HttpOnly`, `SameSite=Lax`, `Secure` cookie; the
+  server keeps the memberships, the current account and region, and `authTime`. Switching account
+  or region is `PUT /console/v1/session`.
+* **CSRF**: every write under `/console/` and the logout need `X-Csrf-Token`, an HMAC of the
+  session id, which `GET /console/v1/session` hands out; when the browser sends an `Origin` it
+  must be the web app's or this service's own. A missing token is the one 403 without a `denied`
+  block.
+* **Step-up**: destructive actions within the configured max age need a fresh authentication:
+  the API answers 403 with `detail.stepUp` and a login path; `/auth/login?stepUp=true` re-runs the
+  provider with `prompt=login&max_age=0` and refreshes the same session's `authTime`.
+* **Downstream calls** carry a 60-second ES256 JWT minted here (`iss` console-bff, `aud` the
+  target service, `sub`, `acct`, `region`, `groups`) that the identity and state services verify
+  against `/.well-known/jwks.json`. Platform commands carry the account's service-account token and
+  a P-02 on-behalf-of assertion signed with the same key.
+* **Every refusal names its layer**: a 403 carries `denied` with `layer` `console-iam` (the
+  account's policies: action, resource pattern, role, policy, statement, suggested role,
+  requestable) or `platform` (the service account's missing scope).
+
+## Endpoints
+
+The pinned contract is `src/main/resources/contracts/console-bff.yaml` (hub commit in
+`contracts.lock`, checked by `ContractsLockTest`). Beyond it, this service also serves the
+endpoints the web app asked for during phase 1, described in `contracts/additions.md`:
+
+| Path | What |
+| --- | --- |
+| `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` | The sign-in |
+| `GET, PUT /console/v1/session`, `GET /console/v1/accounts`, `GET /console/v1/regions` | The session, the memberships, the regions |
+| `GET /console/v1/types`, `GET /console/v1/types/{key}` | The descriptors, with `ETag` and `If-None-Match`, every action with `allowed` and `denied` |
+| `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
+| `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
+| `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
+| `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns; versioned |
+| `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas}…` | Pass-through to the identity service for the session's account |
+| `GET, POST /console/v1/access-requests`, `POST …/{requestId}:decide` | Request access from a refusal; admins decide |
+| `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
+| `/demo-idp/*`, `/demo-identity/*` | Demo profile only |
+
+## Descriptors (P-06)
+
+A descriptor is a platform resource type plus the catalog entries whose noun is the type. Where
+the type's console block says nothing, the defaults apply: the service from the owner team
+(`team-compute` becomes `compute`), the title from the plural, a generic icon, the list columns
+`name`, `status`, every field with `x-console.column`, then `created`; the usual detail tabs; the
+lifecycle classes by state name (`building` is pending, `ready` active, `retired` deleted). Every
+verb is decided for the session's user against `<service>:<verb>` on
+`wfrn:<partition>:<service>:<region>:<account>:<type>/*`, and the ETag covers both the content and
+those decisions. Descriptors are cached per account and region and dropped when the platform
+publishes content.
+
+## Live updates
+
+One instance follows the platform's event feed with the console's internal service account and
+fans events out per account into a ring (`console.live.ring-capacity` events, one global
+sequence). A browser subscribes once with its session and may send `Last-Event-ID` after a
+reconnect; what the ring still holds is replayed, and when the cursor is older than the ring a
+`resync` event tells the web app to reload. The `kafka` profile adds the console's own events, so
+an identity change drops the cached policy decisions of its account on every instance.
+
+## Layout
+
+One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`, `jobs`,
+`live`, `iam`, `preferences`, `platform`, `identity`, `demo`. Each slice is `domain` (no Spring),
+`ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
+service to the kit's rules and adds one of its own: only `..demo..` packages may depend on
+`platform-fake`.
+
+## Tests
+
+`./gradlew test` runs 72 tests in about a minute: unit tests of the domain and one shared demo
+application on port 18181 for the endpoint tests, which sign in through the demo identity
+provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
+database (CI starts one).
+
+## Deploying
+
+`deploy/helm/console-bff` is the chart; `Dockerfile` builds the image from the boot jar. The chart
+expects a secret with the session secret, the trust key, the OIDC client secret, the platform's
+internal token and the MongoDB URI (see `values.yaml`). Run at least two replicas with the `mongo`
+profile, and the `kafka` profile where the console's Kafka is reachable.

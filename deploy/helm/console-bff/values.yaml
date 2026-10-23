@@ -1,0 +1,103 @@
+# The console BFF. Two replicas behind one service; sessions live in MongoDB (profile mongo) so
+# any replica may serve any request, and the kafka profile keeps cached decisions fresh.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/gonzalomunoz1024/console-bff
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 18081
+
+# The settings every environment names. Lists are comma separated (Spring's relaxed binding).
+config:
+  profiles: "mongo,kafka"
+  oidc:
+    issuer: "https://sso.example.com/realms/console"
+    clientId: "console"
+    redirectUri: "https://console.example.com/auth/callback"
+    groupsClaim: "groups"
+  trustIssuer: "console-bff"
+  identityUrl: "http://console-identity-service"
+  stateUrl: "http://console-state-service"
+  platformBaseUrl: "http://platform"
+  webOrigins: "https://console.example.com"
+  kafkaBootstrapServers: "kafka:9092"
+  liveRelayEnabled: "true"
+  extraEnv: []        # - { name: CONSOLE_ACCESS_CACHE_TTL, value: 30s }
+
+# One secret, created outside the chart, with these keys:
+#   session-secret           base64 of at least 32 random bytes (console.session.secret)
+#   trust-key                the private EC JWK in JSON (console.trust.key)
+#   oidc-client-secret       the identity provider's client secret
+#   platform-internal-token  the console's internal platform service-account token
+#   mongo-uri                mongodb://.../console_bff
+secret:
+  name: console-bff
+  keys:
+    sessionSecret: session-secret
+    trustKey: trust-key
+    oidcClientSecret: oidc-client-secret
+    platformInternalToken: platform-internal-token
+    mongoUri: mongo-uri
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: console.example.com
+  paths:
+    - /auth
+    - /console
+    - /.well-known/jwks.json
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: console-bff

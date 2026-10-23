@@ -1,0 +1,12 @@
+# contracts.lock
+# The hub commit the contracts under src/main/resources/contracts were copied from.
+# ContractsLockTest fails when a copied file drifts from the hash recorded here.
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root
+commit: b00db2dfef1dc683949c66a4ce76e3195637008c
+files:
+  contracts/openapi/console-bff.yaml: sha256:4d4e823088123b1fe587f6016d8f198a62ee427012781b20e55db57cd326303d
+  contracts/openapi/console-identity-service.yaml: sha256:f3d07d6bad59e28e95dc7d73386a56c22cd9145b0b1581b79b5a9a948e2ed5b6
+  contracts/openapi/console-state-service.yaml: sha256:1993f112a5366d03bc4c607f034d5dafd9370e2be617f6a18f8415cd72aecc0a
+  contracts/asyncapi/console-events.yaml: sha256:9c7246c8c8a57a4abd73b3aa9459e03f429a78e1d4ed0a9e81be82e8a33f2111
+  contracts/platform/asyncapi-target.yaml: sha256:e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23
