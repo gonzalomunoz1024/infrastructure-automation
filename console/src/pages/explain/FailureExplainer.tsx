@@ -59,7 +59,7 @@ export function FailureExplainer({ jobId, status, since, onRetry, busy, defaultS
   const x = q.data
   const attention = status === 'needs-attention'
   const step = x?.failedStep?.id ?? fallback?.step
-  const body = retryBodyOf(x?.fix)
+  const body = retryBodyOf(x?.fix, x?.source)
   const decision: Decision = x?.retry ? { allowed: x.retry.allowed, denied: x.retry.denied } : { allowed: true }
   // the page's own retry runs the failed step again as it was; the card offers its own only for a fix that changes the input or the step
   const changes = !!body?.input || (!!body?.fromStep && body.fromStep !== defaultStep)

@@ -44,18 +44,38 @@ export interface JobExplanation {
   links?: { title: string; url: string }[]
 }
 
-/** The retry body a fix asks for, or undefined when it asks for nothing beyond running again. */
-export function retryBodyOf(fix: RetryFix | undefined): RetryFix | undefined {
+/** Inputs no fix may change, whoever wrote it: where the request runs. The BFF refuses them too, with the subject and sensitive fields. */
+const NEVER_FIXED = new Set(['accountId', 'region', 'wfrn'])
+
+/**
+ * The retry body a fix asks for, or undefined when it asks for nothing beyond running again. Only
+ * the rules' fixes may change the input: a copilot's reading is written by a model that has read
+ * provider text, so its fix can at most run a step again, and nothing a prompt slipped into a
+ * failure message can change a value the person might not notice.
+ */
+export function retryBodyOf(fix: RetryFix | undefined, source: JobExplanation['source'] = 'rules'): RetryFix | undefined {
   if (!fix) return undefined
-  const input = fix.input && Object.keys(fix.input).length ? fix.input : undefined
+  const kept = source === 'rules' && fix.input ? Object.entries(fix.input).filter(([k]) => !NEVER_FIXED.has(k)) : []
+  const input = kept.length ? Object.fromEntries(kept) : undefined
   if (!input && !fix.fromStep) return undefined
   return { ...(input ? { input } : {}), ...(fix.fromStep ? { fromStep: fix.fromStep } : {}) }
 }
 
-/** A link the console may follow: its own route (`#/...`), or an https page opened in a new tab; anything else is dropped. */
-export function linkOf(url: string): { href: string; external: boolean } | null {
+/** The hosts an explanation may link out to (runbooks, provider docs): `VITE_CONSOLE_DOCS_HOSTS`, comma-separated; none unless configured. */
+export const DOCS_HOSTS: readonly string[] = String(import.meta.env.VITE_CONSOLE_DOCS_HOSTS ?? '')
+  .split(',')
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean)
+
+/** A link the console may follow: its own route (`#/...`), or an https page on a docs host, opened in a new tab; anything else is dropped. */
+export function linkOf(url: string, hosts: readonly string[] = DOCS_HOSTS): { href: string; external: boolean } | null {
   if (url.startsWith('#/')) return { href: url, external: false }
-  return /^https:\/\/[^\s]+$/i.test(url) ? { href: url, external: true } : null
+  if (!/^https:\/\/[^\s]+$/i.test(url)) return null
+  try {
+    return hosts.includes(new URL(url).hostname.toLowerCase()) ? { href: url, external: true } : null
+  } catch {
+    return null
+  }
 }
 
 export const explainApi = {

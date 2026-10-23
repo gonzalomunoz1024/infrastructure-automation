@@ -642,7 +642,13 @@ To be written with WP 9.1.
     the page's retry does: a viewer sees it locked with the refusal behind it. The card offers it
     only for a fix that changes the input or the step; a fix that only runs the failed step again
     points to the page's Retry instead, so the page never shows the same retry twice.
+    Only the rules' fixes change the input; a copilot's fix, written by a model that has read the
+    provider's text, can at most run a step again, so a prompt slipped into a failure message
+    cannot change a value the person might not notice. No fix changes where the request runs
+    (`accountId`, `region`, `wfrn`); the BFF enforces the same and also refuses the subject and
+    sensitive fields, limiting a fix to the failed step's own non-sensitive inputs.
 69. **An explanation's links are followed only when safe.** A link is a console route (`#/...`) or
-    an https page opened in a new tab; anything else (`javascript:`, `data:`, plain http) is
+    an https page on a docs host (`VITE_CONSOLE_DOCS_HOSTS`, comma-separated, none by default),
+    opened in a new tab; anything else (another host, `javascript:`, `data:`, plain http) is
     dropped (`lib/explain.ts`, `linkOf`), because the copilot and a provider's runbooks write
-    them, not the console.
+    them, not the console, and a phishing link planted in a failure message must not get through.
