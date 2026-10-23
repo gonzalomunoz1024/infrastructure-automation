@@ -103,6 +103,8 @@ tags:
   - name: Cost
     description: The cost service for the session's account or the organization (decision 25)
   - name: Budgets
+  - name: Scorecards
+    description: 'Compliance scorecards (WP 9.6), from the drift service: IAM actions `scorecards:list` and `scorecards:remediate`'
   - name: IAM
     description: The identity service for the session's account, passed through
   - name: Access requests
@@ -581,6 +583,24 @@ paths:
                     items: { $ref: '#/components/schemas/Finding' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/compliance:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceCompliance
+      summary: A resource's compliance evaluations
+      description: Every rule that applies to the resource and its status, failing first, from the drift service. Needs `scorecards:list` and the resource's own get.
+      tags: [Resources, Scorecards]
+      responses:
+        '200':
+          description: The evaluations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResourceCompliance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /console/v1/r/{type}/{wfrn}/lineage:
     parameters:
       - $ref: '#/components/parameters/TypePath'
@@ -682,6 +702,129 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/scorecards:
+    get:
+      operationId: getScorecard
+      summary: The session account's compliance scorecard
+      description: 'The score (0 to 100, null while nothing is scored), by pack, rule and severity, with the daily trend. A score is `100 × Σ weight × passed ÷ Σ weight × (passed + failed)` with critical 10, warning 3, info 1. Needs `scorecards:list`.'
+      tags: [Scorecards]
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 400, default: 30 }
+      responses:
+        '200':
+          description: The scorecard
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scorecard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /console/v1/scorecards/packs:
+    get:
+      operationId: listRulePacks
+      summary: The rule packs, their rules and their one-click fixes
+      tags: [Scorecards]
+      responses:
+        '200':
+          description: The packs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/RulePackSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/scorecards/heatmap:
+    get:
+      operationId: getScorecardHeatmap
+      summary: The organization's heat map
+      description: One row per account of the person's memberships where `scorecards:list` is allowed, with the score by pack; the accounts the person may not see are left out, never shown empty.
+      tags: [Scorecards]
+      responses:
+        '200':
+          description: The heat map, with each account's name
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScorecardHeatmap' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/scorecards/packs/{pack}/rules/{ruleId}/failing:
+    parameters:
+      - $ref: '#/components/parameters/PackName'
+      - $ref: '#/components/parameters/RuleId'
+    get:
+      operationId: listFailingResources
+      summary: The session account's resources that fail a rule, longest failing first
+      tags: [Scorecards]
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Evaluation' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/scorecards/packs/{pack}/rules/{ruleId}:remediate:
+    parameters:
+      - $ref: '#/components/parameters/PackName'
+      - $ref: '#/components/parameters/RuleId'
+    post:
+      operationId: remediateEvaluation
+      summary: Start a rule's one-click fix for a failing resource
+      description: |
+        Needs `scorecards:remediate` on the resource's wfrn and the fix's own action: the
+        workflow's `<service>:<verb>` (with its step-up rule), or `<service>:tag` for a tags fix.
+        The BFF relays the person's `X-On-Behalf-Of` to the drift service; a workflow fix answers
+        202 with the job (it shows on the Requests page like any other), a tags fix 200 with the
+        tags. Never automatic.
+      tags: [Scorecards, Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RemediateRequest' }
+      responses:
+        '200':
+          description: The tags were set
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Remediation' }
+        '202':
+          description: The workflow was started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Remediation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`evaluation.passing`, `remediation.none`, `remediation.unavailable` or `resource.inFlight`, from the drift service'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /console/v1/jobs:
     get:
       operationId: listJobs
@@ -2038,6 +2181,16 @@ components:
       in: path
       required: true
       schema: { type: string, enum: [rotate, request-increase] }
+    PackName:
+      name: pack
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,62}[a-z0-9]$' }
+    RuleId:
+      name: ruleId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,62}[a-z0-9]$' }
     TypePath:
       name: type
       in: path
@@ -2593,6 +2746,211 @@ components:
         wfrn: { $ref: '#/components/schemas/Wfrn' }
         preview: { $ref: '#/components/schemas/Preview' }
         canDecide: { type: boolean }
+    Severity:
+      type: string
+      enum: [info, warning, critical]
+    RuleStatus:
+      type: string
+      enum: [pass, fail, error]
+      description: '`error`: the policy engine could not judge it (counted neither way)'
+    RemediationSpec:
+      type: object
+      required: [title, kind, inputs]
+      properties:
+        title: { type: string }
+        kind: { type: string, enum: [workflow, tags] }
+        verb: { type: string }
+        workflow: { type: string }
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [name, title, type, required]
+            properties:
+              name: { type: string }
+              title: { type: string }
+              type: { type: string, enum: [string, integer, number, boolean] }
+              enum: { type: array, items: {} }
+              default: { description: 'May be a `{{ $resource.<path> }}` template, filled per resource by the caller or left to the service' }
+              required: { type: boolean }
+    RuleSummary:
+      type: object
+      required: [id, title, severity, types]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        types:
+          type: array
+          items: { type: string }
+        remediation: { $ref: '#/components/schemas/RemediationSpec' }
+    RulePackSummary:
+      type: object
+      required: [name, title, version, rules]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        description: { type: string }
+        version: { type: integer }
+        owner: { type: string }
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/RuleSummary' }
+    Counts:
+      type: object
+      required: [passed, failed]
+      properties:
+        passed: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+    RuleScore:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [id, title, severity, score, remediable]
+          properties:
+            id: { type: string }
+            title: { type: string }
+            severity: { $ref: '#/components/schemas/Severity' }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+            remediable: { type: boolean, description: The rule has a one-click fix }
+    PackScore:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [name, title, version, score, rules]
+          properties:
+            name: { type: string }
+            title: { type: string }
+            version: { type: integer }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+            rules:
+              type: array
+              items: { $ref: '#/components/schemas/RuleScore' }
+    TrendPoint:
+      type: object
+      required: [day, score]
+      properties:
+        day: { type: string, format: date }
+        score: { type: [integer, 'null'], minimum: 0, maximum: 100 }
+    Scorecard:
+      allOf:
+        - $ref: '#/components/schemas/Counts'
+        - type: object
+          required: [accountId, score, resources, bySeverity, packs, trend]
+          properties:
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            score: { type: [integer, 'null'], minimum: 0, maximum: 100, description: Null while nothing has been scored }
+            resources: { type: integer, description: Resources with at least one applicable rule }
+            failingResources: { type: integer, description: Resources failing at least one rule }
+            bySeverity:
+              type: object
+              required: [critical, warning, info]
+              properties:
+                critical: { $ref: '#/components/schemas/Counts' }
+                warning: { $ref: '#/components/schemas/Counts' }
+                info: { $ref: '#/components/schemas/Counts' }
+            packs:
+              type: array
+              items: { $ref: '#/components/schemas/PackScore' }
+            trend:
+              type: array
+              description: One point per day with a snapshot, oldest first; today's is the live score
+              items: { $ref: '#/components/schemas/TrendPoint' }
+            evaluatedAt: { type: string, format: date-time, description: When an evaluation of the account last changed }
+    ScorecardHeatmap:
+      type: object
+      required: [packs, rows]
+      properties:
+        packs:
+          type: array
+          items:
+            type: object
+            required: [name, title]
+            properties:
+              name: { type: string }
+              title: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            required: [accountId, score, failed, packs]
+            properties:
+              accountId: { $ref: '#/components/schemas/AccountId' }
+              accountName: { type: string }
+              score: { type: [integer, 'null'] }
+              failed: { type: integer, description: Failing evaluations }
+              packs:
+                type: object
+                description: The pack's score by pack name; null where nothing applies
+                additionalProperties: { type: [integer, 'null'] }
+    Evaluation:
+      type: object
+      required: [wfrn, accountId, region, type, pack, ruleId, severity, status, since, evaluatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        name: { type: string }
+        pack: { type: string }
+        ruleId: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        message: { type: string }
+        since: { type: string, format: date-time, description: When the status last changed }
+        evaluatedAt: { type: string, format: date-time, description: When the resource's evaluations last changed }
+    RuleResult:
+      type: object
+      required: [pack, ruleId, title, severity, status, since, remediable]
+      properties:
+        pack: { type: string }
+        ruleId: { type: string }
+        title: { type: string }
+        severity: { $ref: '#/components/schemas/Severity' }
+        status: { $ref: '#/components/schemas/RuleStatus' }
+        message: { type: string }
+        since: { type: string, format: date-time }
+        remediable: { type: boolean }
+    ResourceCompliance:
+      type: object
+      required: [wfrn, accountId, region, type, passed, failed, results]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        evaluatedAt: { type: string, format: date-time }
+        passed: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          description: The rules that apply, failing first
+          items: { $ref: '#/components/schemas/RuleResult' }
+    RemediateRequest:
+      type: object
+      required: [wfrn]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        input:
+          type: object
+          description: Values for the remediation's inputs, by name; defaults fill the rest
+          additionalProperties: true
+        reason: { type: string, maxLength: 1000 }
+    Remediation:
+      type: object
+      required: [wfrn, pack, ruleId, kind]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        pack: { type: string }
+        ruleId: { type: string }
+        kind: { type: string, enum: [workflow, tags] }
+        jobId: { type: string, description: 'kind workflow: the job' }
+        workflow: { type: string }
+        tags:
+          type: object
+          description: 'kind tags: the tags set'
+          additionalProperties: { type: string }
     Finding:
       type: object
       required: [findingId, wfrn, status, severity, fields, openedAt]
