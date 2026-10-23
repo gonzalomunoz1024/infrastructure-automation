@@ -38,6 +38,7 @@ import com.iaf.console.bff.drift.domain.DriftResults;
 import com.iaf.console.bff.drift.domain.Finding;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.application.TrustProperties;
+import com.iaf.console.kit.errors.ForbiddenException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.TooManyRequestsException;
@@ -246,6 +247,9 @@ class HttpDriftPortTest {
         InvalidInputException named = assertThrows(InvalidInputException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());
         assertEquals("/accountId", named.problems().get(0).field());
         assertEquals("/desired/cpu", named.problems().get(1).field());
+
+        answer(403, "{\"error\":\"compute:update is not allowed on wfrn:wf:compute:global:123456789012:vm/vm-01\"}");
+        assertThrows(ForbiddenException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());
 
         answer(404, "{\"error\":\"finding fnd-1 not found\"}");
         NotFoundException missing = assertThrows(NotFoundException.class, () -> port.getFinding(SCOPE, GONZALO, "fnd-1").block());

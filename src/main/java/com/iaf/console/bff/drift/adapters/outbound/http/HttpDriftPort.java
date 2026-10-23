@@ -46,6 +46,7 @@ import com.iaf.console.bff.drift.domain.UnmanagedObject;
 import com.iaf.console.bff.drift.ports.outbound.DriftPort;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.domain.InternalToken;
+import com.iaf.console.kit.errors.ForbiddenException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
@@ -400,6 +401,9 @@ public class HttpDriftPort implements DriftPort {
                             p.path("message").asText(error)));
                 }
                 return new InvalidInputException(error, problems);
+            case 403:
+                // the drift service checks a person's writes too; the BFF asked first, so this is a policy that changed in between
+                return new ForbiddenException(error);
             case 404:
                 return new NotFoundException(error);
             case 409:

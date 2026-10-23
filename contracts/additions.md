@@ -328,7 +328,7 @@ details the contract does not spell out yet:
   `reason` at most 1000 characters, `note` at most 500, `accountId` 12 digits; each is a 400
   with its problem at `/<field>`.
 - The drift service's refusals pass on: a 400 with its `problems` (the drift service names a
-  field, `accountId`; the BFF's problems point into the body, `/accountId`); a 404; a 409 as the BFF's
+  field, `accountId`; the BFF's problems point into the body, `/accountId`); a 403 (the drift service checks a person's writes too, so a policy that changed after the BFF's own check); a 404; a 409 as the BFF's
   coded conflict (`error` the drift service's code, such as `finding.reverting`, `message` the
   sentence, `problems`, and `detail` as the drift service gave it, a revert's `jobId` for one);
   a 429 with `Retry-After`; and a 502 with the drift service's `correlationId` (the platform's)
