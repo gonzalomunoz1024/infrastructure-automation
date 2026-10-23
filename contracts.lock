@@ -2,11 +2,11 @@
 # The hub commit the contracts under src/main/resources/contracts were copied from.
 # ContractsLockTest fails when a copied file drifts from the hash recorded here.
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
-branch: console-root--cost-contract (PR #18, on console-root--state-retry PR #15)
-commit: e42d2707298b2ed08ccfaf3026529c302f657384
+branch: console-root--stack turn 10 (#15 state-retry, #18 cost, #17 drift, #19 scorecards; MERGE-ORDER.md)
+commit: e7f1404c5953ee5ff04e02619a736421d8007ffb
 files:
-  contracts/openapi/console-bff.yaml: sha256:135d8f9c62ec3cf7a3bc877eca8e8037d47c28dbc429393e675fa1ab03ec59c6
-  contracts/openapi/console-identity-service.yaml: sha256:6b03e95dcb8fad93a8edcd2baae8052dadca8b221349ff2e595bccb1dc43ce97
-  contracts/openapi/console-state-service.yaml: sha256:cf949909ac84cb4799f2b6482a9813cff1cd30da55f19718eafec17e56d89c47
-  contracts/asyncapi/console-events.yaml: sha256:d89063f53b12722a24093fdbe3f3d012977adaffefe372d758516c9ab79b7e75
-  contracts/platform/asyncapi-target.yaml: sha256:e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23
+  contracts/openapi/console-bff.yaml: sha256:57840b97a902de48c0e23703e7268e03ad494081e5d57d811850b2ac16b07705
+  contracts/openapi/console-identity-service.yaml: sha256:d636b2f42393ae041ecd4e719b5ba78e561573f966b2cd2f73715b86c5a0a726
+  contracts/openapi/console-state-service.yaml: sha256:8fccaf14ee27ee05c6c569a001f4beb6403fe6a5287aff93e8eb636dce9083af
+  contracts/asyncapi/console-events.yaml: sha256:2441b2f177a577b083330d83df69123893361ea91c960d3c3a02923f58faea0b
+  contracts/platform/asyncapi-target.yaml: sha256:dbc11dfd34edab9753db14471895c6da0df285107afb7486e83e2b47df7092a3

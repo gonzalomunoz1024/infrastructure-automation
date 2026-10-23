@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.platform.model.CatalogEntry;
 import com.iaf.console.platform.model.ConsoleBlock;
+import com.iaf.console.platform.model.ObserveSpec;
 import com.iaf.console.platform.model.ResourceType;
 
 /** P-06: the defaults a bare resource type gets, and what a console block overrides. */
@@ -88,6 +89,29 @@ class DescriptorsTest {
     }
 
     @Test
+    void metricsNeedAMetricsReadUnlessTheDemoSaysOtherwise() {
+        ObserveSpec observed = new ObserveSpec("vsphere", "vm.get", null, null, null, "15m", null, null, null, null);
+        ObserveSpec measured = new ObserveSpec("vsphere", "vm.get", null, null, null, "15m", null, null, null,
+                new ObserveSpec.MetricsSpec("vm.metrics", null, null));
+        ObserveSpec blank = new ObserveSpec("vsphere", "vm.get", null, null, null, "15m", null, null, null, new ObserveSpec.MetricsSpec(" ", null, null));
+
+        assertFalse(Descriptors.describe(vmObserved(null), List.of()).observe().metrics(), "no observe block, no metrics");
+        assertFalse(Descriptors.describe(vmObserved(observed), List.of()).observe().metrics(), "observed, but no metrics read");
+        assertTrue(Descriptors.describe(vmObserved(measured), List.of()).observe().metrics());
+        assertTrue(Descriptors.hasMetricsRead(vmObserved(measured)));
+        assertFalse(Descriptors.describe(vmObserved(blank), List.of()).observe().metrics(), "a metrics block that names no action reads nothing");
+
+        ConsoleType demo = Descriptors.describe(vmObserved(observed), List.of(), true);
+        assertTrue(demo.observe().metrics(), "the demo's drift stand-in answers metrics for the type");
+        assertTrue(demo.observe().supported());
+        assertEquals(24, demo.etag().length());
+        assertNotEquals(Descriptors.describe(vmObserved(observed), List.of()).etag(), demo.etag(), "the etag follows what the descriptor says");
+        ConsoleType bare = Descriptors.describe(vmObserved(null), List.of(), true);
+        assertTrue(bare.observe().metrics());
+        assertFalse(bare.observe().supported(), "metrics without an observe read");
+    }
+
+    @Test
     void decidedActionsCarryTheDenial() {
         CatalogEntry create = entry("create-bucket", "bucket", "create", "POST", null, false, false, null, "create");
         ConsoleAction action = Descriptors.action(create);
@@ -96,6 +120,10 @@ class DescriptorsTest {
         assertNull(action.allowed(true, denial).denied());
         assertFalse(action.allowed(false, denial).allowed());
         assertEquals(denial, action.allowed(false, denial).denied());
+    }
+
+    private static ResourceType vmObserved(ObserveSpec observe) {
+        return new ResourceType("vm", "vms", "team-compute", null, "public", null, List.of("ready"), "create-vm", "compute", null, observe, 1, "h1");
     }
 
     private static CatalogEntry entry(String workflow, String noun, String verb, String method, String subjectInput, boolean destructive, boolean approval,

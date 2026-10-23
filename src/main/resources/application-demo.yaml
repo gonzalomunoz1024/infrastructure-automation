@@ -1,8 +1,8 @@
 # The demo: everything in one JVM. The platform is platform-fake on port 18090, the identity
 # provider is the built-in /demo-idp with a user picker (login_hint skips it), and the identity
-# service, the state service, the search indexer, the cost service and the drift service's
-# scorecards are built-in stand-ins under /demo-identity, /demo-state, /demo-search, /demo-cost
-# and /demo-drift. Sign in at http://localhost:18081/auth/login.
+# service, the state service, the search indexer, the cost service and the drift service are
+# built-in stand-ins under /demo-identity, /demo-state, /demo-search, /demo-cost and /demo-drift.
+# Sign in at http://localhost:18081/auth/login.
 console:
   oidc:
     issuer: http://localhost:18081/demo-idp
@@ -20,6 +20,8 @@ console:
     url: ""
   drift:
     url: ""
+  types:
+    demo-metrics: [vm]              # platform-fake's vm has no metrics read; the drift stand-in makes its series up
   platform:
     fake:
       enabled: true

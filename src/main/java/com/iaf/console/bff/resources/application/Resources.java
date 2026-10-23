@@ -242,16 +242,6 @@ public class Resources {
         });
     }
 
-    /** The open finding; 404 when the resource has none. */
-    public Mono<FindingView> drift(Session session, String type, String wfrn) {
-        return readable(session, type, wfrn).flatMap(s -> {
-            if (s.resource().drift() == null) {
-                return Mono.error(new NotFoundException("no open finding on " + wfrn));
-            }
-            return can(session, s.type(), s.resource()).map(can -> FindingView.of(s.resource(), findingCan(can)));
-        });
-    }
-
     public Mono<LineageView> lineage(Session session, String type, String wfrn) {
         return readable(session, type, wfrn).flatMap(s -> lineageOf(session, s.resource()).map(lineage -> lineage
                 .map(l -> lineageView(s.resource(), l)).orElseGet(() -> LineageView.alone(s.resource()))));

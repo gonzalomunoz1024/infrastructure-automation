@@ -86,7 +86,9 @@ class ResourcesEndpointTest extends DemoApp {
             Console.Reply lineage = console.getAt(VM + "/{wfrn}/lineage", gonzalo, Map.of(), wfrn);
             assertEquals(200, lineage.status(), lineage.body());
             assertEquals(wfrn, lineage.json().path("resource").path("wfrn").asText());
-            assertEquals(404, console.getAt(VM + "/{wfrn}/drift", gonzalo, Map.of(), wfrn).status(), "no finding yet");
+            Console.Reply drift = console.getAt(VM + "/{wfrn}/drift", gonzalo, Map.of(), wfrn);
+            assertEquals(200, drift.status(), drift.body());
+            assertEquals(0, drift.json().path("items").size(), "no finding yet: " + drift.body());
 
             Map<String, String> tags = new java.util.HashMap<>(ResourceFixtures.TAGS);
             tags.putAll(Map.of("env", "dev", "team", "web"));

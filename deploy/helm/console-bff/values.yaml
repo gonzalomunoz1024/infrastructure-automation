@@ -49,8 +49,8 @@ config:
       console-search-indexer:
         audiences: [console-state-service, console-identity-service]
         serviceAccount: ""   # <namespace>:<name>; empty: <the release's namespace>:console-search-indexer
-      console-drift-service:
-        audiences: [console-state-service, console-identity-service]
+      console-drift-service:   # also the cost service, which it asks for monthly costs
+        audiences: [console-state-service, console-identity-service, console-cost-service]
         serviceAccount: ""
       console-cost-service:
         audiences: [console-state-service, console-identity-service]

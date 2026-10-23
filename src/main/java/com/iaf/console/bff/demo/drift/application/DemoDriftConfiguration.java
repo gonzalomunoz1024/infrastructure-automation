@@ -7,12 +7,25 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.iaf.console.bff.demo.directory.application.DemoDirectory;
 import com.iaf.console.bff.demo.state.application.DemoStateStore;
+import com.iaf.console.bff.trust.application.Trust;
+import com.iaf.console.bff.trust.application.TrustProperties;
 
-/** The demo drift service's scorecards over the demo state stand-in, in the {@code demo} profile only. */
+/**
+ * The drift service's demo stand-in, in the {@code demo} profile only, so the Drift, Monitoring,
+ * shadow-infrastructure, rightsizing and scorecards screens work with nothing else running. It
+ * verifies the BFF's {@code X-On-Behalf-Of} assertions with the BFF's own keys and the platform
+ * audience, as the platform would.
+ */
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
 public class DemoDriftConfiguration {
+
+    @Bean
+    public DemoDrift demoDrift(DemoStateStore store, DemoDirectory directory, Trust trust, TrustProperties trustProperties, Clock clock) {
+        return new DemoDrift(store, directory, trust, trustProperties.platformAudience(), clock);
+    }
 
     @Bean
     public DemoScorecards demoScorecards(DemoStateStore store, ObjectMapper json, Clock clock) {

@@ -9,7 +9,7 @@ import com.iaf.console.bff.common.relay.RelayCall;
 import com.iaf.console.bff.common.relay.RelayClient;
 import com.iaf.console.bff.common.relay.Relayed;
 import com.iaf.console.bff.resources.domain.StateCaller;
-import com.iaf.console.bff.scorecards.application.DriftProperties;
+import com.iaf.console.bff.drift.application.DriftProperties;
 import com.iaf.console.bff.scorecards.application.ScorecardsConfiguration;
 import com.iaf.console.bff.scorecards.ports.outbound.ScorecardsPort;
 import com.iaf.console.bff.trust.application.Trust;

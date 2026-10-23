@@ -1,6 +1,6 @@
 # Endpoints beyond the pinned contract
 
-`contracts.lock` pins the hub's contracts (console-root--cost-contract at e42d270: hub PR #18, on console-root--state-retry). The web
+`contracts.lock` pins the hub's contracts (console-root--stack at turn 10, e7f1404: the hub's merge order through #19, which carries #15, #17, #18 and #19). The web
 app's phase-1 thread asked for the additions below (its note:
 `console-web-phase-1/bff-contract-additions.md`); the hub folded them into the contract at
 29cdcf9 and e8992fb, and this file now only records what this service answers beyond the pinned
@@ -331,6 +331,75 @@ POST /console/v1/scorecards/packs/{pack}/rules/{ruleId}:remediate   { wfrn, inpu
   drift service's 200, 202, 400 (`remediation.input`) and 409 (`evaluation.passing`,
   `remediation.none`, `remediation.unavailable`, `remediation.needsPerson`, `resource.inFlight`)
   come back as they were. PR #19's 409 list leaves out `remediation.needsPerson`.
+
+## Drift
+
+Drift, the shadow-infrastructure finder, monitoring and rightsizing (`/console/v1/findings…`,
+`/discover…`, `/unmanaged…`, `/alarms…`, `/recommendations…` and a resource's `/drift`,
+`/metrics` and `/alarms`) are served as the pinned contract says, through the drift service
+(`console.drift.url`, audience `console.drift.service-name`, `console-drift-service` by default,
+within `console.drift.timeout`, 5s by default), for the session's account and region, with these
+details the contract does not spell out yet:
+
+- Every list asks the policies once per page, for every row at once: a row of a type the person
+  may not list (`<service>:list` on the type's pattern), of another account or region, or (the
+  unmanaged objects) of a type the region does not know is left out, so a page can hold fewer
+  rows than `limit` (1 to 200, 50 by default) while `next`, the drift service's cursor, goes on.
+  With `type`, a type the region does not have is a 400 `type.unknown` at `/type`, and one the
+  person may not list a 403 with a Denial, as that type's own list is.
+- `can` is `[]` on a closed finding and on a recommendation that is not open. On a list,
+  `Finding.can` follows `<service>:update` on its wfrn, `UnmanagedObject.can` (`import`,
+  `assign`) `<service>:create` on its type's pattern, and `Recommendation.can` `apply` as the
+  action's verb allows (`update` for a resize, `delete` for a delete) and `dismiss` as
+  `<service>:update` does.
+- `/r/{type}/{wfrn}/drift` asks `<service>:get` on the wfrn and answers `{ items }`, the
+  resource's open and closed findings (the latest 200). It, `/metrics` and `/alarms` check the
+  wfrn as every resource sub-route does: one that is not a wfrn, of another type than the path's,
+  or of another account or region, is a 404.
+- A revert and an apply also pass the step-up policy (`console.auth.step-up`) for the verb they
+  run: with the default (`*:delete`) only a delete asks for a fresh sign-in, but a policy that
+  names `*:update` covers reverts and resizes too. A delete apply is checked in this order:
+  `<service>:delete`, the fresh sign-in, then `confirm: true`.
+- `PUT /alarms/{alarmId}`: `alarmId` is 1 to 64 of `[A-Za-z0-9_-]` and `name` at most 128
+  characters (400 otherwise); `wfrn` is required and must name the session's account and region
+  (400 when it is not a wfrn, 404 otherwise). Moving an alarm to another resource also needs
+  `<service>:update` on the one it watched. `DELETE` reads the alarm first, so one of another
+  account or region is a 404. `GET /alarms` with `wfrn` takes a wfrn (400 otherwise).
+- `GET /discover/{runId}` answers any member of the account; a run of another region is a 404.
+  `POST /discover` needs `type` (400) of the region's catalogue (404). While a run of the type
+  and region goes on, a second start is a 409 `discover.running` with the running run's `runId`
+  in `detail`, so the web app can follow that run instead (a run the drift service has not seen
+  finish within two hours lost its walk and no longer blocks one).
+- Inputs are checked before the drift service is asked: the enums (`status`, `severity`,
+  `owner`, `state`, `kind`), the date-times (`openedAfter`, `since`, `until`, `from`, `to`), a
+  window whose start is before its end (`since` before `until`, `from` before `to`), `step` as
+  an ISO-8601 duration of a minute at least, `until` of an ignore or a dismissal in the future,
+  `reason` at most 1000 characters, `note` at most 500, `accountId` 12 digits; each is a 400
+  with its problem at `/<field>`.
+- The drift service's refusals pass on: a 400 with its `problems` (the drift service names a
+  field, `accountId`; the BFF's problems point into the body, `/accountId`); a 403 (the drift service checks a person's writes too, so a policy that changed after the BFF's own check); a 404; a 409 as the BFF's
+  coded conflict (`error` the drift service's code, such as `finding.reverting`, `message` the
+  sentence, `problems`, and `detail` as the drift service gave it, a revert's `jobId` for one);
+  a 429 with `Retry-After`; and a 502 with the drift service's `correlationId` (the platform's)
+  and `detail`.
+- Every write forwards `Idempotency-Key` and sends `X-Console-Request-Id` (`req_` and the
+  request's correlation id); a revert and an apply send `X-On-Behalf-Of`, the person's P-02
+  assertion, since their jobs run for the person. A decision, an assignment and an alarm carry
+  the session's user id as `actor`.
+- `ConsoleType.observe.metrics` is true when the type's observe block has a metrics read that
+  names its action (P-09), as `/metrics` needs.
+- The managed roles the BFF's demo decides with allow `<service>:observe` to every role, as the
+  identity service's managed policies do, so a viewer reads metrics and starts a discovery.
+
+The demo profile (`console.drift.url: ""`) answers from an in-process stand-in under
+`/demo-drift`: findings on the demo's virtual machines and the orders database (two of them closed
+before the demo began), two virtual machines no account manages with their owner guesses and
+monthly costs, made-up metrics for every virtual machine (`console.types.demo-metrics: [vm]`, as
+the demo platform's `vm` has no metrics read) and alarms over them, and two recommendations, one
+idle (delete) and one oversized (resize). A revert's job "runs" for five seconds, a discovery run
+ends at its first read, and no platform job runs: the job ids are the stand-in's own. For the
+console-internal principal it answers `GET /demo-drift/v1/findings/stats` with or without
+`accountId` (without: every account).
 
 ## Session
 

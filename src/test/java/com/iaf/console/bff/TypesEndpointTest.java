@@ -36,6 +36,7 @@ class TypesEndpointTest extends DemoApp {
         assertTrue(vm.path("observe").path("supported").asBoolean());
         assertEquals("15m", vm.path("observe").path("interval").asText());
         assertTrue(vm.path("observe").path("discover").asBoolean());
+        assertTrue(vm.path("observe").path("metrics").asBoolean(), "the demo's drift stand-in reads the vm's metrics: " + vm.path("observe"));
         assertTrue(vm.path("schema").path("properties").has("cpu"));
         Set<String> verbs = new HashSet<>();
         vm.path("actions").forEach(a -> verbs.add(a.path("verb").asText()));
