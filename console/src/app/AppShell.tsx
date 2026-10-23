@@ -91,6 +91,8 @@ const BudgetsPage = lazy(() => import('../pages/cost/BudgetsPage'))
 const BudgetPage = lazy(() => import('../pages/cost/BudgetsPage').then((m) => ({ default: m.BudgetPage })))
 const ChargebackPage = lazy(() => import('../pages/cost/ChargebackPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
+const MobilePage = lazy(() => import('../pages/mobile/MobilePage'))
+const MobileRequestPage = lazy(() => import('../pages/mobile/MobileRequestPage'))
 
 /*
  * The frame around every page: a skip link, the header, a sidebar when the route is inside a
@@ -168,6 +170,8 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   budgets: BudgetsPage,
   budget: BudgetPage,
   chargeback: ChargebackPage,
+  mobile: MobilePage,
+  'mobile-request': MobileRequestPage,
   'not-found': NotFoundPage,
 }
 
@@ -200,6 +204,8 @@ export function AppShell({ route }: { route: Route }) {
   }, [error, offline, toast])
 
   const Page = PAGES[route.name]
+  // a page that stands alone (the phone view) draws its own frame
+  if (route.def?.bare) return <StandalonePage route={route} Page={Page} />
 
   return (
     <RefusalProvider>
@@ -226,6 +232,18 @@ export function AppShell({ route }: { route: Route }) {
         {copilot.isOpen && <CopilotPanel route={route} />}
         {drawer && nav && <SectionDrawer nav={nav} onClose={() => setDrawerFor(null)} />}
       </div>
+    </RefusalProvider>
+  )
+}
+
+function StandalonePage({ route, Page }: { route: Route; Page: ComponentType<PageProps> }) {
+  return (
+    <RefusalProvider>
+      <ErrorBoundary resetKey={route.path} label="This page">
+        <Suspense fallback={<PageLoading />}>
+          <Page route={route} />
+        </Suspense>
+      </ErrorBoundary>
     </RefusalProvider>
   )
 }

@@ -16,6 +16,7 @@ import { applyBlueprintCommand, settleStacks, type BlueprintsState } from './blu
 import { applyScorecardCommand, type ScorecardsState } from './scorecards'
 import { applySubscriptionCommand, type SubscriptionsState } from './subscriptions'
 import { applyDashboardCommand, type DashboardsState } from './dashboards'
+import { applyTransferCommand, type TransferState } from './transfer'
 
 /*
  * The BFF's resource and job endpoints (hub: contracts/openapi/console-bff.yaml, /console/v1/r
@@ -122,6 +123,8 @@ export interface MockConsoleState {
   notifications?: NotificationsState
   /** team dashboards (./dashboards), made on first use */
   dashboards?: DashboardsState
+  /** moves to another account (./transfer), made on first use */
+  transfers?: TransferState
   /** the batches still running, by job id (./jobs) */
   batches?: string[]
   /** stacks launched from blueprints (./blueprints), made on first use */
@@ -158,7 +161,7 @@ export interface RouteAnswer {
 }
 
 export interface RouteContext {
-  session: { userId: string; accountId: string; region: string }
+  session: { userId: string; accountId: string; region: string; authTime?: string }
   body: Record<string, unknown>
   headers: Record<string, string>
   now: number
@@ -733,6 +736,7 @@ const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => R
   stack: (data, cmd) => applyBlueprintCommand(data, cmd),
   scorecard: (data, cmd) => applyScorecardCommand(data, cmd),
   subscription: (data, cmd) => applySubscriptionCommand(data, cmd),
+  transfer: (data, cmd) => applyTransferCommand(data, cmd),
 }
 
 /**

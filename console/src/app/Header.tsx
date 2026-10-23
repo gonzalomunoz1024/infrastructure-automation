@@ -462,6 +462,7 @@ function UserButton() {
         { id: 'settings', label: 'Settings', icon: 'settings', onSelect: () => navigate(pathFor('settings')) },
         { id: 'cli-sign-ins', label: 'CLI sign-ins', icon: 'terminal', onSelect: () => navigate(pathFor('iam-cli')) },
         { id: 'notification-settings', label: 'Notification settings', icon: 'bell', onSelect: () => navigate(pathFor('notification-settings')) },
+        { id: 'mobile', label: 'Phone view: approvals and drift', icon: 'approval', onSelect: () => navigate(pathFor('mobile')) },
         { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => void switchIdentity() },
         {
           id: 'sign-out',

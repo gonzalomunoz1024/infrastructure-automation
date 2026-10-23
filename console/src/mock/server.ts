@@ -26,6 +26,8 @@ import { scorecardRoutes } from './scorecards'
 import { subscriptionRoutes } from './subscriptions'
 import { dashboardRoutes } from './dashboards'
 import { healthRoutes } from './health'
+import { transferRoutes } from './transfer'
+import { approvalRoutes } from './approvals'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -546,6 +548,13 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     /* team dashboards and service health (phase 9) */
     const boards = dashboardRoutes(data, routeCtx, path, params, method) ?? healthRoutes(data, routeCtx, path, params, method)
     if (boards) return boards
+    /* a move to another account, and every call on a moved resource's old wfrn (phase 7) */
+    const transferred = transferRoutes(data, routeCtx, path, params, method)
+    if (transferred) return transferred
+
+    /* the approvals waiting for the person, for the phone view (phase 9) */
+    const approvals = approvalRoutes(data, routeCtx, path, params, method)
+    if (approvals) return approvals
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)

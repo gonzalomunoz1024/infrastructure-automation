@@ -26,6 +26,9 @@ import { RevertEdit } from './resource/RevertEdit'
 import { TagsDrawer } from './resource/TagsDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
 import { DriftFact, TabContent, ownerOf, tabId } from './resource/tabs'
+import { DriftFact, TabContent, tabId } from './resource/tabs'
+import { MovedNotice, TransferDrawer, TransferMenuItem } from './resource/TransferDrawer'
+import { movedOf } from '../lib/transfer'
 
 /*
  * One resource (WP 3.3): its facts, what is happening to it, and the tabs its descriptor lists.
@@ -62,6 +65,8 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   // a query keeps its last answer on an error: once deleted, the live view (drift, tags, verbs) is gone
   const detail = deleted ? undefined : view.data
   const tombstone = deleted && isApiError(view.error) ? tombstoneOf(view.error.body) : undefined
+  // a 410 naming where it went: the resource moved to another account (WP 7.7)
+  const moved = movedOf(view.error)
   const lastJob = deleted ? undefined : detail?.lastJob
   const open = isOpenStatus(lastJob?.status)
 
@@ -97,7 +102,17 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   // `edit` is Edit configuration's own, checked before the verbs
   const editing = route.query.action === 'edit' && !deleted
   const tagging = route.query.action === 'tags' && !deleted
+  const transferring = route.query.action === 'transfer' && !deleted
   const current: ConsoleAction | undefined = route.query.action && !editing && !tagging && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
+
+  if (moved) {
+    return (
+      <>
+        <PageHeader eyebrow={type.title} title={detail?.name ?? id} subtitle={<WfrnText wfrn={wfrn} size="md" max={0} />} />
+        <MovedNotice type={type} name={detail?.name ?? id} moved={moved} />
+      </>
+    )
+  }
 
   if (!detail && !deleted) {
     if (view.loading) return <SkeletonRows n={4} />
@@ -183,6 +198,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
                         Create similar
                       </ActionMenuItem>
                     )}
+                    <TransferMenuItem type={type} wfrn={wfrn} unavailable={waitNote} onSelect={() => openAction('transfer')} />
                   </>
                 }
               >
@@ -243,6 +259,8 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
           }}
         />
       )}
+      {transferring && <TransferDrawer type={type} wfrn={wfrn} name={name} onClose={closeAction} />}
+      {editing && detail && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
       {editing && detail && !route.query.revert && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
       {editing && detail && route.query.revert && <RevertEdit key={`revert-${route.query.revert}`} to={route.query.revert} type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
     </>

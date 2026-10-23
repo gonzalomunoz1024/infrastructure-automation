@@ -77,6 +77,8 @@ export type RouteName =
   | 'budgets'
   | 'budget'
   | 'chargeback'
+  | 'mobile'
+  | 'mobile-request'
   | 'not-found'
 
 export interface RouteDef {
@@ -169,6 +171,9 @@ export const ROUTES: RouteDef[] = [
   { name: 'budgets', pattern: '/cost/budgets', title: 'Budgets' },
   { name: 'budget', pattern: '/cost/budgets/:id', title: 'Budget' },
   { name: 'chargeback', pattern: '/cost/chargeback', title: 'Chargeback' },
+  // the phone view (phase 9): approvals, drift and requests, outside the shell
+  { name: 'mobile', pattern: '/m', title: 'Approvals', bare: true },
+  { name: 'mobile-request', pattern: '/m/requests/:id', title: 'Request', bare: true },
 ]
 
 /** Cost and usage, budgets and chargeback. */

@@ -114,6 +114,14 @@ Phase 7 launches stacks, weighs a change's risk, scores compliance and sends eve
 - Event subscriptions sends the events you pick to a webhook (https only, shown as text), a Kafka
   topic or a Slack channel; each is created, tested with one sample event and deleted
 
+Phase 7 moves a resource to another account, and phase 9 adds a phone view:
+
+- Move to another account on a resource's page: the accounts you may create it in, why it moves,
+  what moves and what does not, its name typed to confirm and a fresh sign-in; the old link then
+  says where it went and links there
+- an installable phone view (`#/m`, from the user menu) of the approvals waiting for you, the
+  account's drift with Revert, and your requests with their status, drawn for 360 px first
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -977,15 +985,55 @@ type, so the feed must subscribe to every one).
     sets the tags at once. The resource page's Compliance tab comes after Drift in every type's
     default tabs.
 
+105. **A move asks each account's own policies, then a fresh sign-in.** Move to another account
+     (Actions on a resource's page, `?action=transfer`) offers only the accounts the person works
+     in, each locked with the reason where their role there may not create the type; it needs a
+     reason, says what moves and what does not, and asks for the resource's name before
+     `POST /console/v1/r/{type}/{wfrn}:transfer` with `confirm: true`. Both ends are decided by
+     the account's roles and policies (identity's authorize, as hub decision 30 has the BFF do),
+     not the platform's role for the account, since the move and the re-home run under the
+     console's own scopes. The targets come from `GET /console/v1/r/{type}/{wfrn}/transfer-targets`,
+     the console's own read until the hub contract has one.
+106. **The step-up keeps the form.** A move refused for a stale sign-in (the BFF's step-up 403)
+     shows Sign in again in the drawer; live it goes through the identity provider and back to the
+     same `?action=transfer` link (`stepUpReturn` in `lib/api.ts`), in mock mode the mock signs
+     the same person in again in place. The chosen account and the reason wait in sessionStorage
+     per wfrn, so the drawer opens filled in and the person confirms again. In mock mode a sign-in
+     older than 10 minutes is stale for a move.
+107. **A moved resource's old link is a pointer, never a dead end.** The old wfrn answers 410
+     `resource.transferred` with `transferredTo`; its page says "This resource moved to
+     <account>" with a link built from the new wfrn's own parts (a value that is not a wfrn with a
+     12-digit account is never followed), scoped to that account so the session switches to it.
+     After a move the console switches to the target account and opens the resource under its new
+     wfrn. In mock mode (`console/src/mock/transfer.ts`) the record keeps its id, takes the wfrn
+     the target mints, its tags follow it, a move back makes the first name live again, and the
+     journal replays every move; the refusals are the contract's (`resource.busy`,
+     `resource.notActive`, `account.shredded`, 400 for the same account, 403 for either end), and
+     `lib/transfer.ts` words each by its code.
+108. **The phone view stands outside the shell.** `#/m` (and `#/m/requests/:id`) draw their own
+     bar, a three-way tab bar (Approvals, Drift, Requests) and cards for 360 px first, every
+     control at least 48 px tall; the user menu links to it. It decides with the calls the rest of
+     the console uses: a request's approvals through `approvals:decide`, an access request through
+     its `:decide`, a finding's Revert as on the Drift page, each with the same permission rules
+     (the BFF's `canDecide`, the approvers list, the type's `update`). What waits on a request
+     comes from the contract's `GET /console/v1/approvals`, which the mock now answers
+     (`mock/approvals.ts`).
+109. **Installable, with nothing cached.** `console/public/manifest.webmanifest` starts at `/#/m`,
+     `display: standalone`, with 192 and 512 px icons and a maskable one drawn from the console's
+     mark. There is no service worker: every answer comes from the BFF when it is asked for, so
+     a phone never shows an approval or a finding that is no longer true.
+
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
                   tags, bulk, drift, monitoring, access, cli, notifications, policies, state,
-                  personal), their helpers and screenshots; cli covers the device sign-in, CLI sign-ins, the
-                  console shell and the developer portal; policies the policy editor, simulator,
-                  boundaries and guardrails
+                  personal, blueprints, dashboards, mobile, and phase 9's insights, copilot,
+                  cost and explainer), their helpers and screenshots; cli covers the device
+                  sign-in, CLI sign-ins, the console shell and the developer portal; policies the
+                  policy editor, simulator, boundaries and guardrails
+  public/         the web app manifest and its icons (the phone view is installable)
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   NotificationsBell and notifications (the feed, the live stream, marking read),
@@ -1018,7 +1066,8 @@ console/
                   keyboard), personal (recent visits, favourites and pinned types), quotas
                   (Service Quotas, the rules and their words), risk (the change risk score),
                   blueprints, scorecards and subscriptions (their clients and words), roleGate
-                  (the console's own actions)
+                  (the console's own actions), transfer (moving a resource to another account,
+                  its refusals in words), mobile (the phone view's approvals list and words)
   src/mock/       the mock server (the BFF), types (the BFF's type descriptors), live (the live
                   feed per account), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
@@ -1033,7 +1082,8 @@ console/
                   (the demo keys), quotas (the rules, the account's requests and the platform
                   team's decision), personal (recent visits and favourites), blueprints (the
                   catalog, stacks on a clock), scorecards (the rule packs, their evaluations and
-                  fixes), subscriptions (targets and test deliveries), and the browser
+                  fixes), subscriptions (targets and test deliveries), transfer (moves to another
+                  account), approvals (what waits for the person), and the browser
                   installer, with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
                   reviews, elevations and CLI sign-ins among them), src/pages/iam/policies/ the
@@ -1058,7 +1108,9 @@ console/
                   the Service Quotas page, its request and decision dialogs and the create's
                   quota note; src/pages/blueprints/ the catalog, a blueprint, the launch wizard,
                   stacks and a stack; risk/ the risk card; compliance/ the scorecard, heat map and
-                  failing resources; subscriptions/ the event subscriptions; resource/ComplianceTab
+                  failing resources; subscriptions/ the event subscriptions; resource/ComplianceTab;
+                  src/pages/mobile/ the phone view and its request page; the resource page's Move
+                  to another account drawer (TransferDrawer) with its actions
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched
