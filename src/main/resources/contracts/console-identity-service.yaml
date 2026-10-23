@@ -777,6 +777,19 @@ paths:
               schema: { $ref: '#/components/schemas/AccessKeyCreated' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/quota-rules:
+    get:
+      operationId: getQuotaRules
+      summary: The rules that approve a quota increase at once, and who decides the rest
+      description: 'The organization''s auto-approval rules, in the order they are read, for anyone signed in, so the console can say what is approved on the spot. A rule covers the keys its patterns name (`*` is any run of characters) and approves an ask of at most `maxFactor` times the current limit and never above `maxLimit`, once per `cooldown` for an account''s key (any rule''s approval of the key starts it). An ask no rule covers goes to `approver`.'
+      tags: [Quotas]
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRules' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/accounts/{accountId}/quotas:
     parameters:
       - $ref: '#/components/parameters/AccountIdPath'
@@ -848,7 +861,7 @@ paths:
     post:
       operationId: requestQuotaIncrease
       summary: Ask for a higher limit
-      description: 'Opens a request the platform team decides (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask); one open request per quota key, a second answers 409. An approval arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
+      description: 'An ask above the current limit (one at or below it is a 400, code `not-an-increase`). The first of the organization''s auto-approval rules (`GET /v1/quota-rules`) that covers it approves it at once: the limit is set as an internal `PUT` sets it and the request comes back `approved`, `decidedBy` `rule:<name>`. Any other is routed to the approver (`routedTo`, the platform team) and stays open until they decide it (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask). One open request per quota key; a second answers 409. Every outcome arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
       tags: [Quotas]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -864,7 +877,7 @@ paths:
                 reason: { type: string, minLength: 10, maxLength: 1000 }
       responses:
         '202':
-          description: 'The request was opened; `GET /v1/accounts/{accountId}/quota-requests/{requestId}` follows it'
+          description: 'The request, `approved` by a rule or `open` and routed to the approver; `GET /v1/accounts/{accountId}/quota-requests/{requestId}` follows it'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/QuotaRequest' }
@@ -1350,7 +1363,7 @@ components:
       required: [accountId, platformServiceAccountId, source]
       properties:
         accountId: { $ref: '#/components/schemas/AccountId' }
-        platformServiceAccountId: { type: string, description: The platform service account (P-03, preset console) }
+        platformServiceAccountId: { type: string, description: "The platform service account (P-03, preset console)" }
         source: { type: string, enum: [local, vault], description: Where the token is }
         token: { type: string, description: 'The bearer token; with source local only' }
         vaultPath: { type: string, description: 'The Vault secret; with source vault only: console/accounts/{accountId}/platform-service-account' }
@@ -1574,7 +1587,7 @@ components:
             required: [action, resource]
             properties:
               action: { type: string, description: '`<service>:<verb>`' }
-              resource: { type: string, description: A wfrn, or a wfrn pattern }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern" }
               context:
                 type: object
                 additionalProperties: true
@@ -1631,7 +1644,7 @@ components:
       required: [action, reason]
       properties:
         action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
-        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        resource: { type: string, description: "The wfrn or pattern, as the denial named it" }
         role: { type: string, description: The managed role asked for; the denial's suggestedRole by default }
         reason: { type: string, maxLength: 2000 }
     AccessDecision:
@@ -1688,8 +1701,28 @@ components:
         requestedBy: { type: string }
         requestedAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time }
-        decidedBy: { type: string }
+        decidedBy: { type: string, description: 'Who decided: a user, a service (`svc:<name>`), or the auto-approval rule (`rule:<name>`) that approved it at once' }
         comment: { type: string }
+        routedTo: { type: string, description: 'Who decides a request no rule approved: `platform-team`, through `:decide`' }
+    QuotaRules:
+      type: object
+      required: [items, approver]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [name, keys, maxFactor, maxLimit]
+            properties:
+              name: { type: string }
+              keys:
+                type: array
+                description: 'Quota key patterns: `resources.*`, `jobs-per-minute`, `access-keys`'
+                items: { type: string }
+              maxFactor: { type: number, minimum: 1, description: 'The highest ask it approves, as a multiple of the current limit' }
+              maxLimit: { type: integer, minimum: 1, description: The highest limit it approves at all }
+              cooldown: { type: string, description: 'An ISO 8601 duration (`PT720H`): after a rule approves an account''s key, no rule approves that key again until it passes; absent for none' }
+        approver: { type: string, description: 'Who decides an ask no rule approves: `platform-team`' }
     AuthorizeRequest:
       type: object
       required: [principal, checks]
@@ -1713,7 +1746,7 @@ components:
             required: [action, resource]
             properties:
               action: { type: string, description: '`<service>:<verb>`' }
-              resource: { type: string, description: A wfrn, or a wfrn pattern for list checks }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern for list checks" }
               context:
                 type: object
                 additionalProperties: true

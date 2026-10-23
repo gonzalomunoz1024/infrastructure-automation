@@ -23,13 +23,13 @@ drifts and `ContractCoverageTest` when an operation is not served):
 | Principals | `POST /v1/principals:resolve` (internal: the BFF at sign-in) |
 | Users, groups, roles, policies | `GET/POST .../users`, `GET/PATCH/DELETE .../users/{userId}`; the same for `groups`, `roles` and `policies` (`PUT` replaces a policy) |
 | Access keys | `GET/POST .../access-keys`, `GET/DELETE .../access-keys/{keyId}`, `POST .../access-keys/{keyId}:rotate` |
-| Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal) |
+| Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal), `GET /v1/quota-rules` |
 | Guardrails | `GET/POST /v1/guardrails`, `GET/PATCH/DELETE /v1/guardrails/{guardrailId}` (internal), `GET .../guardrails` (the ones that apply to the account) |
 | Authorization | `POST /v1/authorize`, `POST .../policy-simulations`, `GET /internal/opa/bundles/console-authz.tar.gz` |
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `0cace24` (hub PR #22, decision 28, stacked on the cost contract of #18); nothing is
+pin is hub `cc2de60` (hub PR #22, decision 28, stacked on the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first). The cost contract's `Account.costCentre` is not stored yet: it comes with the
 account lifecycle work on this branch.
@@ -116,9 +116,18 @@ account lifecycle work on this branch.
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the
   bucket too), `access-keys` counts usable keys (default 50), `resources.<type>` defaults to 100
   and is listed once per platform resource type, by the type's name (`resources.vm`,
-  `resources.database`; used counts arrive from the state service later). Users request increases (one open request
-  per key, answered as a `QuotaRequest` with `currentLimit` and `requestedLimit`); the requester,
-  an account admin (`quota:set`) or the internal principal withdraws one (`DELETE`, 204). The
+  `resources.database`; used counts arrive from the state service later). Users request increases
+  above the current limit (one open request per key, answered as a `QuotaRequest` with
+  `currentLimit` and `requestedLimit`; an ask at or below the limit is a 400, `not-an-increase`).
+  The first auto-approval rule (`console.identity.quotas.auto-approval`, served at
+  `GET /v1/quota-rules`) that covers an ask approves it as it is made, setting the limit as `PUT`
+  does, with `decidedBy` `rule:<name>`; a rule covers key patterns (`resources.*`), approves at
+  most `max-factor` times the current limit and never above `max-limit`, and once it has approved
+  an account's key no rule approves that key again for the `cooldown`. The defaults double
+  `resources.*` (up to 1,000) and `access-keys` (up to 100) once every 30 days and raise
+  `jobs-per-minute` by half (up to 600) once a week. Any other ask is routed to the approver
+  (`routedTo: platform-team`) and stays open. The requester, an account admin (`quota:set`) or
+  the internal principal withdraws an open one (`DELETE`, 204). The
   platform team decides with the internal `:decide` (`{decision, limit?, comment?}`): approving
   sets the limit granted (the ask by default, possibly less or more) exactly as `PUT` does,
   keeping an override's burst while it still covers the limit, and records `grantedLimit`;

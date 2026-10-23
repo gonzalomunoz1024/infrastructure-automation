@@ -1,6 +1,8 @@
 package com.iaf.console.identity.quotas.application;
 
 import java.time.Clock;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -10,14 +12,18 @@ import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.identity.iam.application.IamSupport;
+import com.iaf.console.identity.quotas.domain.AutoApprovalRule;
 import com.iaf.console.identity.quotas.domain.Quota;
 import com.iaf.console.identity.quotas.domain.QuotaKeys;
 import com.iaf.console.identity.quotas.domain.QuotaOverride;
 import com.iaf.console.identity.quotas.domain.QuotaRequest;
+import com.iaf.console.identity.quotas.domain.QuotaRules;
 import com.iaf.console.identity.quotas.ports.outbound.PlatformQuotaPort;
 import com.iaf.console.identity.quotas.ports.outbound.QuotaStore;
 import com.iaf.console.kit.errors.ConflictException;
+import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
+import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -25,11 +31,13 @@ import reactor.core.publisher.Mono;
 /**
  * The writes on quotas. Setting a limit and deciding an increase request are the internal
  * principal's (the platform team's); a {@code jobs-per-minute} limit is also written to the
- * platform's bucket (P-10). Any member with {@code quota:request-increase} opens a request, one
- * open request per key; the requester, an account admin ({@code quota:set}) or the internal
- * principal withdraws it. A limit set at or above an open request's ask approves it (it is moot);
- * a lower one leaves it open, since a rejection is a {@code :decide} that carries a comment. Every
- * change publishes a {@code QuotaChanged} with the quota as served and the request it was about.
+ * platform's bucket (P-10). Any member with {@code quota:request-increase} asks for more, one open
+ * request per key: an ask an auto-approval rule covers is approved at once, by the rule; any other
+ * is routed to the approver and stays open. The requester, an account admin ({@code quota:set}) or
+ * the internal principal withdraws an open request. A limit set at or above an open request's ask
+ * approves it (it is moot); a lower one leaves it open, since a rejection is a {@code :decide}
+ * that carries a comment. Every change publishes a {@code QuotaChanged} with the quota as served
+ * and the request it was about.
  */
 public final class QuotaCommands {
 
@@ -39,17 +47,19 @@ public final class QuotaCommands {
     private final QuotaStore quotas;
     private final PlatformQuotaPort platform;
     private final QuotaQueries queries;
+    private final QuotaRules rules;
     private final AccessGuard guard;
     private final IdentityEvents events;
     private final IamSupport support;
     private final Ids ids;
     private final Clock clock;
 
-    public QuotaCommands(QuotaStore quotas, PlatformQuotaPort platform, QuotaQueries queries, AccessGuard guard, IdentityEvents events, IamSupport support,
-            Ids ids, Clock clock) {
+    public QuotaCommands(QuotaStore quotas, PlatformQuotaPort platform, QuotaQueries queries, QuotaRules rules, AccessGuard guard, IdentityEvents events,
+            IamSupport support, Ids ids, Clock clock) {
         this.quotas = quotas;
         this.platform = platform;
         this.queries = queries;
+        this.rules = rules;
         this.guard = guard;
         this.events = events;
         this.support = support;
@@ -103,11 +113,8 @@ public final class QuotaCommands {
                         return record(request, request.rejected(caller.actor(), input.comment(), clock.instant()))
                                 .flatMap(rejected -> changed(scope, key, caller.actor(), "rejected", rejected).thenReturn(rejected));
                     }
-                    int granted = input.limit() == null ? request.requestedLimit() : input.limit();
-                    return quotas.findOverride(scope, key).map(Optional::of).defaultIfEmpty(Optional.empty())
-                            .flatMap(override -> apply(scope, key, granted, keptBurst(override.orElse(null), granted)))
-                            .then(record(request, request.approved(caller.actor(), granted, input.comment(), clock.instant())))
-                            .flatMap(approved -> changed(scope, key, caller.actor(), "approved", approved).thenReturn(approved));
+                    return approve(scope, request, caller.actor(), input.limit() == null ? request.requestedLimit() : input.limit(), input.comment(),
+                            caller.actor());
                 });
     }
 
@@ -125,11 +132,46 @@ public final class QuotaCommands {
                     return quotas.findOpenRequest(scope, key)
                             .flatMap(open -> Mono.<QuotaRequest>error(new ConflictException("an increase of " + key + " is already requested",
                                     Map.of("requestId", open.requestId()))))
-                            .switchIfEmpty(Mono.defer(() -> served(scope, key)
-                                    .flatMap(current -> quotas.insertRequest(QuotaRequest.open(ids.quotaRequest(), accountId, key, current.limit(),
-                                            input.limit(), input.reason(), caller.actor(), clock.instant())))))
-                            .flatMap(opened -> changed(scope, key, caller.actor(), "updated", opened).thenReturn(opened));
+                            .switchIfEmpty(Mono.defer(() -> served(scope, key).flatMap(current -> ask(caller, scope, current, input))));
                 });
+    }
+
+    /**
+     * An ask above the current limit: approved at once by the first rule that covers it, or
+     * routed to the approver and left open.
+     */
+    private Mono<QuotaRequest> ask(Caller caller, AccountScope scope, Quota current, RequestIncrease input) {
+        String key = current.key();
+        if (input.limit() <= current.limit()) {
+            return Mono.error(new InvalidInputException("the request is not valid", List.of(Problem.error("not-an-increase", "limit",
+                    "the limit is " + current.limit() + " already; ask for more"))));
+        }
+        return quotas.lastRuleApproval(scope, key).map(Optional::of).defaultIfEmpty(Optional.empty()).flatMap(last -> {
+            Instant now = clock.instant();
+            QuotaRequest opened = QuotaRequest.open(ids.quotaRequest(), scope.accountId(), key, current.limit(), input.limit(), input.reason(), caller.actor(),
+                    now);
+            Optional<AutoApprovalRule> rule = rules.approving(key, current.limit(), input.limit(), last.orElse(null), now);
+            if (rule.isEmpty()) {
+                return quotas.insertRequest(opened.routedTo(rules.approver()))
+                        .flatMap(routed -> changed(scope, key, caller.actor(), "updated", routed).thenReturn(routed));
+            }
+            String name = rule.get().name();
+            return quotas.insertRequest(opened)
+                    .flatMap(inserted -> approve(scope, inserted, QuotaRequest.RULE + name, input.limit(), "approved at once by the rule " + name,
+                            caller.actor()));
+        });
+    }
+
+    /**
+     * Approves an open request with the limit granted, set as {@link #set} sets it (keeping an
+     * override's burst when it is at least that limit), and publishes the approval.
+     */
+    private Mono<QuotaRequest> approve(AccountScope scope, QuotaRequest request, String by, int granted, String comment, String actor) {
+        String key = request.quotaKey();
+        return quotas.findOverride(scope, key).map(Optional::of).defaultIfEmpty(Optional.empty())
+                .flatMap(override -> apply(scope, key, granted, keptBurst(override.orElse(null), granted)))
+                .then(Mono.defer(() -> record(request, request.approved(by, granted, comment, clock.instant()))))
+                .flatMap(approved -> changed(scope, key, actor, "approved", approved).thenReturn(approved));
     }
 
     /** The requester, an account admin ({@code quota:set}) or the internal principal withdraws an open request; a decided one is a 409. */

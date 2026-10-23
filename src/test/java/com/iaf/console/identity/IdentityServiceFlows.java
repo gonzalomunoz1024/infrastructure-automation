@@ -358,14 +358,17 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(bucket.get("limit").asInt()).as("the platform's bucket moved too").isEqualTo(120);
         call(PUT, quotas + "/jobs-per-minute", internal(), Map.of("limit", -1), BAD_REQUEST);
 
-        JsonNode accepted = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 200, "reason", "the team needs more test machines"),
+        // 250 is more than the default rule doubles a limit to, so the platform team decides it
+        JsonNode accepted = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 250, "reason", "the team needs more test machines"),
                 ACCEPTED);
         String requestId = accepted.get("requestId").asText();
         assertThat(requestId).startsWith("qreq_");
         assertThat(accepted.get("status").asText()).isEqualTo("open");
         assertThat(accepted.get("quotaKey").asText()).isEqualTo("resources.vm");
         assertThat(accepted.get("currentLimit").asInt()).isEqualTo(100);
-        assertThat(accepted.get("requestedLimit").asInt()).isEqualTo(200);
+        assertThat(accepted.get("requestedLimit").asInt()).isEqualTo(250);
+        assertThat(accepted.get("routedTo").asText()).isEqualTo("platform-team");
+        assertThat(accepted.has("decidedBy")).isFalse();
         assertThat(accepted.get("accountId").asText()).isEqualTo(s.accountId());
         assertThat(accepted.get("requestedBy").asText()).isEqualTo(mia);
         assertThat(accepted.get("requestedAt").asText()).isNotBlank();
@@ -378,15 +381,16 @@ abstract class IdentityServiceFlows extends WithService {
         JsonNode request = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
         assertThat(request.get("status").asText()).isEqualTo("open");
         assertThat(request.get("requestedBy").asText()).isEqualTo(mia);
-        assertThat(request.get("requestedLimit").asInt()).isEqualTo(200);
+        assertThat(request.get("requestedLimit").asInt()).isEqualTo(250);
 
-        JsonNode raised = call(PUT, quotas + "/resources.vm", internal(), Map.of("limit", 200), OK);
-        assertThat(raised.get("limit").asInt()).isEqualTo(200);
+        JsonNode raised = call(PUT, quotas + "/resources.vm", internal(), Map.of("limit", 250), OK);
+        assertThat(raised.get("limit").asInt()).isEqualTo(250);
         assertThat(raised.get("source").asText()).isEqualTo("override");
         assertThat(raised.has("pendingRequestId")).isFalse();
         JsonNode moot = call(GET, s.base() + "/quota-requests/" + requestId, s.owner(), null, OK);
         assertThat(moot.get("status").asText()).as("a limit at or above the ask approves the request").isEqualTo("approved");
-        assertThat(moot.get("grantedLimit").asInt()).isEqualTo(200);
+        assertThat(moot.get("grantedLimit").asInt()).isEqualTo(250);
+        assertThat(moot.get("routedTo").asText()).as("the routing stays on the record").isEqualTo("platform-team");
         assertThat(moot.has("version")).as("the version is never served").isFalse();
 
         JsonNode approvedView = call(GET, s.base() + "/quota-requests/" + requestId, viewer, null, OK);
@@ -394,7 +398,7 @@ abstract class IdentityServiceFlows extends WithService {
         assertThat(approvedView.get("decidedAt").asText()).isNotBlank();
 
         // an admin withdraws someone else's open request; a decided one is a 409
-        JsonNode second = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 5, "reason", "need more databases now"), ACCEPTED);
+        JsonNode second = call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 300, "reason", "need more databases now"), ACCEPTED);
         String secondId = second.get("requestId").asText();
         send(DELETE, s.base() + "/quota-requests/" + secondId, s.owner(), null, Map.of()).expectStatus().isNoContent();
         assertThat(call(GET, s.base() + "/quota-requests/" + secondId, viewer, null, OK).get("status").asText()).isEqualTo("withdrawn");
@@ -403,7 +407,7 @@ abstract class IdentityServiceFlows extends WithService {
         // the requester withdraws their own; an operator may not withdraw another person's
         String dana = addUser(s, "dana", "members");
         String operator = bearer(dana, s.accountId(), List.of("members"));
-        JsonNode third = call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 7, "reason", "need more networks now"), ACCEPTED);
+        JsonNode third = call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 300, "reason", "need more networks now"), ACCEPTED);
         String thirdId = third.get("requestId").asText();
         JsonNode refused = call(DELETE, s.base() + "/quota-requests/" + thirdId, operator, null, FORBIDDEN);
         assertThat(refused.get("denied").get("action").asText()).isEqualTo("quota:set");
@@ -480,6 +484,75 @@ abstract class IdentityServiceFlows extends WithService {
         call(GET, quotas + "/nonsense", s.owner(), null, NOT_FOUND);
         call(GET, s.base() + "/quota-requests/qreq_nope", s.owner(), null, NOT_FOUND);
         assertThat(texts(call(GET, quotas, s.owner(), null, OK).get("items"), "key")).contains("resources.vm");
+    }
+
+    @Test
+    void anIncreaseARuleCoversIsApprovedAtOnce() {
+        Seeded s = newAccount();
+        String mia = addUser(s, "mia", "viewers");
+        String viewer = bearer(mia, s.accountId(), List.of("viewers"));
+        String quotas = s.base() + "/quotas";
+
+        // the rules are there for anyone signed in to read
+        JsonNode rules = call(GET, "/v1/quota-rules", viewer, null, OK);
+        assertThat(rules.get("approver").asText()).isEqualTo("platform-team");
+        assertThat(texts(rules.get("items"), "name")).containsExactly("resources-double", "access-keys-double", "jobs-half-again");
+        JsonNode doubling = rules.get("items").get(0);
+        assertThat(strings(doubling.get("keys"))).containsExactly("resources.*");
+        assertThat(doubling.get("maxFactor").asDouble()).isEqualTo(2.0);
+        assertThat(doubling.get("maxLimit").asInt()).isEqualTo(1000);
+        assertThat(doubling.get("cooldown").asText()).isEqualTo("PT720H");
+        web.get().uri("/v1/quota-rules").exchange().expectStatus().isUnauthorized();
+
+        // within the rule: approved by it as it is asked, the limit set
+        JsonNode approved = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 200, "reason", "the team needs more test machines"),
+                ACCEPTED);
+        assertThat(approved.get("status").asText()).isEqualTo("approved");
+        assertThat(approved.get("decidedBy").asText()).isEqualTo("rule:resources-double");
+        assertThat(approved.get("grantedLimit").asInt()).isEqualTo(200);
+        assertThat(approved.get("currentLimit").asInt()).isEqualTo(100);
+        assertThat(approved.get("comment").asText()).contains("resources-double");
+        assertThat(approved.get("decidedAt").asText()).isNotBlank();
+        assertThat(approved.has("routedTo")).isFalse();
+        JsonNode vm = call(GET, quotas + "/resources.vm", viewer, null, OK);
+        assertThat(vm.get("limit").asInt()).isEqualTo(200);
+        assertThat(vm.get("source").asText()).isEqualTo("override");
+        assertThat(vm.has("pendingRequestId")).isFalse();
+
+        // the cooldown: the same key goes to the platform team for a while, another key does not wait
+        JsonNode cooling = call(POST, quotas + "/resources.vm:request-increase", viewer, Map.of("limit", 300, "reason", "and a few more machines after all"),
+                ACCEPTED);
+        assertThat(cooling.get("status").asText()).isEqualTo("open");
+        assertThat(cooling.get("routedTo").asText()).isEqualTo("platform-team");
+        call(DELETE, s.base() + "/quota-requests/" + cooling.get("requestId").asText(), viewer, null, NO_CONTENT);
+        assertThat(call(POST, quotas + "/resources.db:request-increase", viewer, Map.of("limit", 150, "reason", "a few more test databases"), ACCEPTED)
+                .get("decidedBy").asText()).isEqualTo("rule:resources-double");
+        assertThat(call(POST, quotas + "/access-keys:request-increase", viewer, Map.of("limit", 100, "reason", "keys for the new build agents"), ACCEPTED)
+                .get("decidedBy").asText()).isEqualTo("rule:access-keys-double");
+        assertThat(call(GET, quotas + "/access-keys", viewer, null, OK).get("limit").asInt()).isEqualTo(100);
+
+        // beyond the factor, or above the rule's maximum, it is routed; an ask that is no increase is a 400
+        assertThat(call(POST, quotas + "/resources.net:request-increase", viewer, Map.of("limit", 201, "reason", "a lot more networks"), ACCEPTED)
+                .get("routedTo").asText()).isEqualTo("platform-team");
+        call(PUT, quotas + "/resources.image", internal(), Map.of("limit", 600), OK);
+        JsonNode capped = call(POST, quotas + "/resources.image:request-increase", viewer, Map.of("limit", 1100, "reason", "images for every branch build"),
+                ACCEPTED);
+        assertThat(capped.get("status").asText()).as("twice 600 but above 1,000").isEqualTo("open");
+        JsonNode same = call(POST, quotas + "/resources.volume:request-increase", viewer, Map.of("limit", 100, "reason", "the same as now, by mistake"),
+                BAD_REQUEST);
+        assertThat(same.get("problems").get(0).get("code").asText()).isEqualTo("not-an-increase");
+        assertThat(same.get("problems").get(0).get("field").asText()).isEqualTo("limit");
+        call(POST, quotas + "/resources.volume:request-increase", viewer, Map.of("limit", 50, "reason", "lower, which is no increase"), BAD_REQUEST);
+
+        // the approval is one QuotaChanged, by the person who asked, with the request the rule decided
+        List<EventEnvelope> vmEvents = outbox.after(0, 100_000).filter(e -> s.accountId().equals(e.partitionKey())).map(OutboxEntry::event)
+                .filter(e -> "QuotaChanged".equals(e.type()) && "resources.vm".equals(e.aggregateId())).collectList().block();
+        assertThat(vmEvents).isNotNull();
+        assertThat(vmEvents).extracting(e -> e.data().get("action").asText()).containsExactly("approved", "updated", "updated");
+        EventEnvelope byRule = vmEvents.get(0);
+        assertThat(byRule.actor()).isEqualTo(mia);
+        assertThat(byRule.data().get("snapshot").get("limit").asInt()).isEqualTo(200);
+        assertThat(byRule.data().get("snapshot").get("request").get("decidedBy").asText()).isEqualTo("rule:resources-double");
     }
 
     @Test

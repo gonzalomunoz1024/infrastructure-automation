@@ -325,6 +325,18 @@ class MongoStoresTest {
         assertThat(store.nextChangeVersion(SCOPE, "resources.vm").block()).isEqualTo(2);
         assertThat(store.nextChangeVersion(SCOPE, "resources.db").block()).as("one counter per key").isEqualTo(1);
         assertThat(store.nextChangeVersion(OTHER_SCOPE, "resources.vm").block()).as("and per account").isEqualTo(1);
+
+        assertThat(store.lastRuleApproval(SCOPE, "resources.vm").block()).as("a person's approval starts no cooldown").isNull();
+        QuotaRequest early = QuotaRequest.open("qreq_2", ACCOUNT, "resources.vm", 150, 300, "more test machines", "usr_mia", NOW);
+        store.insertRequest(early).block();
+        store.updateRequest(early.approved(QuotaRequest.RULE + "resources-double", 300, null, NOW.plusSeconds(10)), 1).block();
+        QuotaRequest late = QuotaRequest.open("qreq_3", ACCOUNT, "resources.vm", 300, 600, "more test machines", "usr_mia", NOW);
+        store.insertRequest(late.routedTo("platform-team")).block();
+        assertThat(store.findRequest(SCOPE, "qreq_3").block().routedTo()).isEqualTo("platform-team");
+        store.updateRequest(late.routedTo("platform-team").approved(QuotaRequest.RULE + "resources-double", 600, null, NOW.plusSeconds(20)), 1).block();
+        assertThat(store.lastRuleApproval(SCOPE, "resources.vm").block()).isEqualTo(NOW.plusSeconds(20));
+        assertThat(store.lastRuleApproval(SCOPE, "resources.db").block()).isNull();
+        assertThat(store.lastRuleApproval(OTHER_SCOPE, "resources.vm").block()).isNull();
     }
 
     @Test

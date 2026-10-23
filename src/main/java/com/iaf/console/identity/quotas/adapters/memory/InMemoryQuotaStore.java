@@ -1,5 +1,7 @@
 package com.iaf.console.identity.quotas.adapters.memory;
 
+import java.time.Instant;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -90,6 +92,15 @@ public final class InMemoryQuotaStore implements QuotaStore {
                     .toList();
             return Page.from(fetched, limit, r -> new Cursor(r.requestId(), r.requestId()));
         });
+    }
+
+    @Override
+    public Mono<Instant> lastRuleApproval(AccountScope scope, String key) {
+        return Mono.fromSupplier(() -> requests.values().stream()
+                .filter(r -> r.accountId().equals(scope.accountId()) && r.quotaKey().equals(key) && r.approvedByRule())
+                .map(QuotaRequest::decidedAt)
+                .max(Comparator.naturalOrder())
+                .orElse(null));
     }
 
     @Override

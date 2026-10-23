@@ -46,6 +46,27 @@ console:
       base-url: http://localhost:8200
       mount: secret
       path-prefix: console/accounts
+    quotas:
+      # who decides an increase no rule approves: the platform team, with the internal :decide (decision 22)
+      approver: platform-team
+      # the first rule that covers the key and the ask approves an increase at once; a rule's
+      # approval of an account's key starts the cooldown of every rule for that key
+      auto-approval:
+        - name: resources-double
+          keys: ["resources.*"]
+          max-factor: 2
+          max-limit: 1000
+          cooldown: 30d
+        - name: access-keys-double
+          keys: [access-keys]
+          max-factor: 2
+          max-limit: 100
+          cooldown: 30d
+        - name: jobs-half-again
+          keys: [jobs-per-minute]
+          max-factor: 1.5
+          max-limit: 600
+          cooldown: 7d
   outbox:
     relay:
       enabled: true

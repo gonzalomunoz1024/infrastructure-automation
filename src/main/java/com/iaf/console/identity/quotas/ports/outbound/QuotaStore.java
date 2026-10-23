@@ -1,5 +1,7 @@
 package com.iaf.console.identity.quotas.ports.outbound;
 
+import java.time.Instant;
+
 import com.iaf.console.identity.quotas.domain.QuotaOverride;
 import com.iaf.console.identity.quotas.domain.QuotaRequest;
 import com.iaf.console.kit.paging.Page;
@@ -26,6 +28,9 @@ public interface QuotaStore {
     Mono<QuotaRequest> findOpenRequest(AccountScope scope, String key);
 
     Mono<Page<QuotaRequest>> listRequests(AccountScope scope, QuotaRequest.Status status, int limit, String after);
+
+    /** When an auto-approval rule last approved an increase of the key in the account; empty when none has. */
+    Mono<Instant> lastRuleApproval(AccountScope scope, String key);
 
     /**
      * The next version of one quota's change events, from 1: a counter per account and key, so every
