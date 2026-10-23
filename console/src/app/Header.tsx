@@ -306,11 +306,6 @@ function HelpMenu() {
             </div>
           </dl>
           <div className="mt-3 flex flex-col gap-1 border-t border-stroke-light pt-2">
-            <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md py-1 text-accent transition-opacity hover:opacity-70">
-              <Icon name="terminal" size={14} />
-              Platform API reference
-              <Icon name="external" size={11} />
-            </a>
             <Link to={pathFor('iam')} onClick={close} className="flex items-center gap-2 rounded-md py-1 text-accent transition-opacity hover:opacity-70">
               <Icon name="shield" size={14} />
               Identity and access

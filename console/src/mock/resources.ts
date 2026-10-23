@@ -51,7 +51,7 @@ export function mintWfrn(r: Resource, rt: ResourceType | undefined, ctx: Resourc
 
 /** A platform job as the BFF summarises it: the same fields, its id spelled `jobId`. */
 export function toBffJob(j: JobSummary): BffJobSummary {
-  return { jobId: j.id, workflow: j.workflow, status: j.status, title: j.title, version: j.version, requester: j.requester, wfrn: j.wfrn, startedAt: j.startedAt, endedAt: j.endedAt, durationMs: j.durationMs, kind: j.kind, progress: j.progress, errorClass: j.errorClass, failedStep: j.failedStep }
+  return { jobId: j.id, workflow: j.workflow, status: j.status, title: j.title, version: j.version, requester: j.requester, wfrn: j.wfrn, startedAt: j.startedAt, endedAt: j.endedAt, durationMs: j.durationMs, kind: j.kind, progress: j.progress, errorClass: j.errorClass, failedStep: j.failedStep, channel: j.channel }
 }
 
 /** A field where what the provider reports differs from what was asked for. */

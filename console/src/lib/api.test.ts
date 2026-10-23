@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, CACHE_PREFIX, api, cachedGet, clearDescriptorCache, isApiError, page, qs, request, requestHeaders, resolveUrl, retryAfterSeconds, traceparent } from './api'
+import { ApiError, CACHE_PREFIX, cachedGet, clearDescriptorCache, isApiError, page, qs, request, requestHeaders, resolveUrl, retryAfterSeconds, traceparent } from './api'
+import { bff } from './bff'
 import { getSessionState, resetSessionState, setSessionState, type Session } from './session'
 
 /* A localStorage for node, and a fetch the tests script. */
@@ -73,11 +74,17 @@ describe('qs and resolveUrl', () => {
     expect(qs()).toBe('')
   })
 
-  it('prefixes the API base unless the path already names it', () => {
-    expect(resolveUrl('/me')).toBe('/api/v1/me')
-    expect(resolveUrl('/api/v1/me')).toBe('/api/v1/me')
+  it('sends the BFF’s paths as they are, and refuses every other before it leaves the browser', () => {
+    expect(resolveUrl('/console/v1/r/vm')).toBe('/console/v1/r/vm')
     expect(resolveUrl('/actuator/health')).toBe('/actuator/health')
-    expect(resolveUrl('https://x.test/y')).toBe('https://x.test/y')
+    for (const elsewhere of ['/me', '/api/v1/me', '/api/v1/vms', '/actuator/info', 'https://x.test/y', '//x.test/console/v1/r/vm']) expect(() => resolveUrl(elsewhere)).toThrow(/only the BFF/)
+  })
+
+  it('never calls the platform, whatever the caller asks', async () => {
+    signIn()
+    await expect(request('GET', '/api/v1/vms')).rejects.toThrow(/only the BFF/)
+    await expect(page('/resources')).rejects.toThrow(/only the BFF/)
+    expect(calls).toHaveLength(0)
   })
 })
 
@@ -91,14 +98,16 @@ describe('retryAfterSeconds', () => {
 })
 
 describe('requestHeaders', () => {
-  it('sends Accept, a traceparent and, once signed in, the session user for the platform', () => {
+  it('sends Accept and a traceparent, and never names the person itself: the session cookie does', () => {
     const anonymous = requestHeaders()
     expect(anonymous.Accept).toBe('application/json')
     expect(anonymous.traceparent).toMatch(/^00-/)
-    expect(anonymous['X-User']).toBeUndefined()
     expect(anonymous['X-Csrf-Token']).toBeUndefined()
     signIn()
-    expect(requestHeaders({ 'If-None-Match': 'x' })).toMatchObject({ 'X-User': 'gonzalo', 'If-None-Match': 'x' })
+    const signedIn = requestHeaders({ 'If-None-Match': 'x' })
+    expect(signedIn).toMatchObject({ 'If-None-Match': 'x' })
+    expect(Object.keys(signedIn).map((k) => k.toLowerCase())).not.toContain('x-user')
+    expect(Object.keys(requestHeaders(undefined, 'POST')).map((k) => k.toLowerCase())).not.toContain('x-user')
   })
 
   it('adds the CSRF token to writes only', () => {
@@ -128,10 +137,10 @@ describe('the BFF paths', () => {
     expect(getSessionState()).toEqual({ status: 'signed-out', session: null })
   })
 
-  it('does not sign out on a 401 from the platform, and reads a Denial from a 403', async () => {
+  it('does not sign out on a 401 from the health check, and reads a Denial from a 403', async () => {
     signIn()
     answer = () => json({ error: 'Unauthorized' }, 401)
-    await expect(request('GET', '/me')).rejects.toMatchObject({ status: 401 })
+    await expect(request('GET', '/actuator/health')).rejects.toMatchObject({ status: 401 })
     expect(getSessionState().status).toBe('signed-in')
     const denied = { layer: 'console-iam', action: 'compute:create', reason: 'No statement allows compute:create', requestable: true, suggestedRole: 'operator' }
     answer = () => json({ error: 'Not allowed', denied, correlationId: 'c-1' }, 403)
@@ -146,15 +155,15 @@ describe('request', () => {
   it('returns the JSON body and carries the headers', async () => {
     answer = () => json({ id: 'gonzalo' })
     signIn()
-    await expect(request<{ id: string }>('GET', '/me')).resolves.toEqual({ id: 'gonzalo' })
-    expect(calls[0].url).toBe('/api/v1/me')
-    expect(headerOf(calls[0], 'X-User')).toBe('gonzalo')
+    await expect(request<{ id: string }>('GET', '/console/v1/session')).resolves.toEqual({ id: 'gonzalo' })
+    expect(calls[0].url).toBe('/console/v1/session')
+    expect(headerOf(calls[0], 'X-User')).toBeUndefined()
     expect(headerOf(calls[0], 'traceparent')).toMatch(/^00-/)
   })
 
   it('turns an error body into an ApiError with the problems and the trace', async () => {
     answer = () => json({ error: 'Invalid input', problems: [{ level: 'error', code: 'required', field: 'name', message: 'name is required' }], correlationId: 'abc' }, 400)
-    const error = await request('POST', '/vms', { name: '' }).catch((e: unknown) => e)
+    const error = await request('POST', '/console/v1/r/vm', { name: '' }).catch((e: unknown) => e)
     expect(isApiError(error)).toBe(true)
     const e = error as ApiError
     expect(e).toMatchObject({ status: 400, error: 'Invalid input', correlationId: 'abc', notFound: false, unauthorized: false })
@@ -165,16 +174,16 @@ describe('request', () => {
 
   it('reads Retry-After and a 404 and a 401', async () => {
     answer = () => json({ error: 'Slow down' }, 429, { 'Retry-After': '30' })
-    await expect(request('GET', '/jobs')).rejects.toMatchObject({ status: 429, retryAfter: 30 })
+    await expect(request('GET', '/console/v1/jobs')).rejects.toMatchObject({ status: 429, retryAfter: 30 })
     answer = () => json({ error: 'Resource not found' }, 404)
-    await expect(request('GET', '/resources/x')).rejects.toMatchObject({ status: 404, notFound: true })
+    await expect(request('GET', '/console/v1/r/vm/x')).rejects.toMatchObject({ status: 404, notFound: true })
     answer = () => new Response('', { status: 401, statusText: 'Unauthorized' })
-    await expect(request('GET', '/me')).rejects.toMatchObject({ status: 401, unauthorized: true, error: 'Unauthorized', body: null })
+    await expect(request('GET', '/console/v1/session')).rejects.toMatchObject({ status: 401, unauthorized: true, error: 'Unauthorized', body: null })
   })
 
-  it('reports a platform that does not answer as status 0', async () => {
+  it('reports a backend that does not answer as status 0', async () => {
     answer = () => Promise.reject(new TypeError('Failed to fetch'))
-    const error = (await request('GET', '/me').catch((e: unknown) => e)) as ApiError
+    const error = (await request('GET', '/console/v1/session').catch((e: unknown) => e)) as ApiError
     expect(error).toMatchObject({ status: 0, unreachable: true, error: 'Platform unreachable' })
   })
 })
@@ -184,83 +193,107 @@ describe('cachedGet', () => {
 
   it('stores the body with its ETag, revalidates with If-None-Match and answers a 304 from the cache', async () => {
     answer = () => json(body, 200, { ETag: 'W/"v1"' })
-    await expect(cachedGet('/resource-types')).resolves.toEqual(body)
+    await expect(cachedGet('/console/v1/types')).resolves.toEqual(body)
     expect(headerOf(calls[0], 'If-None-Match')).toBeUndefined()
-    const stored = JSON.parse(storage.get(`${CACHE_PREFIX}/resource-types`) ?? 'null') as { etag: string; body: unknown }
+    const stored = JSON.parse(storage.get(`${CACHE_PREFIX}/console/v1/types`) ?? 'null') as { etag: string; body: unknown }
     expect(stored).toMatchObject({ etag: 'W/"v1"', body })
 
     answer = () => new Response(null, { status: 304, headers: { ETag: 'W/"v1"' } })
-    await expect(cachedGet('/resource-types')).resolves.toEqual(body)
+    await expect(cachedGet('/console/v1/types')).resolves.toEqual(body)
     expect(headerOf(calls[1], 'If-None-Match')).toBe('W/"v1"')
   })
 
-  it('answers from the cache when the platform fails or does not answer, and throws without one', async () => {
+  it('answers from the cache when the BFF fails or does not answer, and throws without one', async () => {
     answer = () => json(body, 200, { ETag: 'W/"v1"' })
-    await cachedGet('/resource-types')
+    await cachedGet('/console/v1/types')
     answer = () => json({ error: 'boom' }, 503)
-    await expect(cachedGet('/resource-types')).resolves.toEqual(body)
+    await expect(cachedGet('/console/v1/types')).resolves.toEqual(body)
     answer = () => Promise.reject(new TypeError('Failed to fetch'))
-    await expect(cachedGet('/resource-types')).resolves.toEqual(body)
+    await expect(cachedGet('/console/v1/types')).resolves.toEqual(body)
 
     clearDescriptorCache()
     expect(storage.size).toBe(0)
-    await expect(cachedGet('/resource-types')).rejects.toMatchObject({ status: 0 })
+    await expect(cachedGet('/console/v1/types')).rejects.toMatchObject({ status: 0 })
     answer = () => json({ error: 'nope' }, 404)
-    await expect(cachedGet('/resource-types')).rejects.toMatchObject({ status: 404 })
+    await expect(cachedGet('/console/v1/types')).rejects.toMatchObject({ status: 404 })
   })
 
-  it('replaces the cache when the platform answers a new body', async () => {
+  it('replaces the cache when the BFF answers a new body', async () => {
     answer = () => json(body, 200, { ETag: 'W/"v1"' })
-    await cachedGet('/catalog')
+    await cachedGet('/console/v1/regions')
     answer = () => json([], 200, { ETag: 'W/"v2"' })
-    await expect(cachedGet('/catalog')).resolves.toEqual([])
-    expect(JSON.parse(storage.get(`${CACHE_PREFIX}/catalog`) ?? 'null')).toMatchObject({ etag: 'W/"v2"', body: [] })
+    await expect(cachedGet('/console/v1/regions')).resolves.toEqual([])
+    expect(JSON.parse(storage.get(`${CACHE_PREFIX}/console/v1/regions`) ?? 'null')).toMatchObject({ etag: 'W/"v2"', body: [] })
   })
 })
 
 describe('page', () => {
   it('reads an array body and the next cursor from the Link header', async () => {
-    answer = () => json([{ id: 1 }, { id: 2 }], 200, { Link: '</api/v1/vms?limit=2&after=c2>; rel="next"' })
-    await expect(page('/vms', { limit: 2 })).resolves.toEqual({ items: [{ id: 1 }, { id: 2 }], next: 'c2' })
-    expect(calls[0].url).toBe('/api/v1/vms?limit=2')
+    answer = () => json([{ id: 1 }, { id: 2 }], 200, { Link: '</console/v1/r/vm?limit=2&after=c2>; rel="next"' })
+    await expect(page('/console/v1/r/vm', { limit: 2 })).resolves.toEqual({ items: [{ id: 1 }, { id: 2 }], next: 'c2' })
+    expect(calls[0].url).toBe('/console/v1/r/vm?limit=2')
   })
 
   it('reads an items envelope, with or without a cursor, and an empty body', async () => {
     answer = () => json({ items: [{ id: 1 }], next: '9' })
-    await expect(page('/events', { after: 3 })).resolves.toEqual({ items: [{ id: 1 }], next: '9' })
+    await expect(page('/console/v1/jobs', { after: 3 })).resolves.toEqual({ items: [{ id: 1 }], next: '9' })
     answer = () => json({ items: [] })
-    await expect(page('/events')).resolves.toEqual({ items: [], next: null })
+    await expect(page('/console/v1/jobs')).resolves.toEqual({ items: [], next: null })
     answer = () => new Response('', { status: 200 })
-    await expect(page('/events')).resolves.toEqual({ items: [], next: null })
+    await expect(page('/console/v1/jobs')).resolves.toEqual({ items: [], next: null })
   })
 
   it('throws the ApiError of a failed page', async () => {
     answer = () => json({ error: 'Collection not found' }, 404)
-    await expect(page('/nothing')).rejects.toMatchObject({ status: 404 })
+    await expect(page('/console/v1/nothing')).rejects.toMatchObject({ status: 404 })
   })
 })
 
-describe('api', () => {
-  it('names the endpoints', async () => {
-    answer = () => json({ id: 'x' })
-    await api.resourceOf('virtual machines', 'vm demo')
-    expect(calls[0].url).toBe('/api/v1/virtual%20machines/vm%20demo')
-    await api.lineage('a/b')
-    expect(calls[1].url).toBe('/api/v1/resources/a%2Fb/lineage')
-    expect(api.eventsStreamUrl()).toBe('/api/v1/events/stream')
-    expect(api.eventsStreamUrl('12')).toBe('/api/v1/events/stream?after=12')
+describe('cachedGet with a key of its own', () => {
+  it('keeps one person’s copy apart from another’s', async () => {
+    answer = () => json([{ type: 'vm' }], 200, { ETag: 'W/"a"' })
+    await cachedGet('/console/v1/types', {}, 'gonzalo/123456789012/global:/console/v1/types')
+    expect(storage.has(`${CACHE_PREFIX}gonzalo/123456789012/global:/console/v1/types`)).toBe(true)
+    expect(storage.has(`${CACHE_PREFIX}/console/v1/types`)).toBe(false)
+    await cachedGet('/console/v1/types', {}, 'mia/123456789012/global:/console/v1/types')
+    expect(headerOf(calls[1], 'If-None-Match')).toBeUndefined()
+  })
+})
+
+describe('the BFF client', () => {
+  it('names the BFF’s endpoints for what the platform used to answer', async () => {
+    answer = () => json({ items: [], next: null })
+    const wfrn = 'wfrn:wf:compute:global:123456789012:vm/vm-demo01'
+    await bff.resources.get('vm', wfrn)
+    expect(calls[0].url).toBe(`/console/v1/r/vm/${encodeURIComponent(wfrn)}`)
+    await bff.resources.lineage('vm', wfrn)
+    expect(calls[1].url).toBe(`/console/v1/r/vm/${encodeURIComponent(wfrn)}/lineage`)
+    await bff.resources.list('vm', { limit: 200 })
+    expect(calls[2].url).toBe('/console/v1/r/vm?limit=200')
+    await bff.jobs.list({ limit: 5 })
+    expect(calls[3].url).toBe('/console/v1/jobs?limit=5')
+    await bff.regions()
+    expect(calls[4].url).toBe('/console/v1/regions')
+    expect(bff.eventsUrl()).toBe('/console/v1/events')
+    expect(bff.eventsUrl({ wfrn })).toBe(`/console/v1/events?wfrn=${encodeURIComponent(wfrn)}`)
+    for (const c of calls) expect(headerOf(c, 'X-User')).toBeUndefined()
   })
 
-  it('reads the regions through the tolerant parser', async () => {
-    answer = () => json([{ metadata: { name: 'global', title: 'Global' }, spec: { partition: 'wf' } }], 200, { ETag: 'W/"r"' })
-    await expect(api.regions()).resolves.toEqual([{ name: 'global', title: 'Global', partition: 'wf', status: undefined, environments: undefined }])
+  it('reads the types from the BFF, as the contract’s items or a bare list, keyed by the session', async () => {
+    signIn()
+    answer = () => json({ items: [{ key: 'compute/vm', type: 'vm', service: 'compute', actions: [] }] }, 200, { ETag: 'W/"t"' })
+    await expect(bff.types()).resolves.toEqual([{ key: 'compute/vm', type: 'vm', service: 'compute', actions: [] }])
+    expect(calls[0].url).toBe('/console/v1/types')
+    expect(storage.has(`${CACHE_PREFIX}gonzalo/123456789012/global:/console/v1/types`)).toBe(true)
+    answer = () => json([{ key: 'data/database', type: 'database', service: 'data', actions: [] }])
+    await expect(bff.types()).resolves.toHaveLength(1)
   })
 
   it('reads a 503 health answer as the health', async () => {
     answer = () => json({ status: 'DOWN', components: { db: { status: 'DOWN' } } }, 503)
-    await expect(api.health()).resolves.toMatchObject({ status: 'DOWN' })
+    await expect(bff.health()).resolves.toMatchObject({ status: 'DOWN' })
     answer = () => json({ status: 'UP' })
-    await expect(api.health()).resolves.toEqual({ status: 'UP' })
+    await expect(bff.health()).resolves.toEqual({ status: 'UP' })
     expect(calls[1].url).toBe('/actuator/health')
   })
 })

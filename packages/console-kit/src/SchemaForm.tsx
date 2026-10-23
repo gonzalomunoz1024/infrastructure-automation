@@ -6,7 +6,7 @@ import { JsonEditor, parseJsonText } from './JsonEditor'
 import { ResourcePicker } from './ResourcePicker'
 import { fieldRoot, normalizeField, problemsFor } from './ProblemList'
 import { groupFields, unitOf, xConsoleOf } from './xconsole'
-import { ExternalLink, parseDuration } from './common'
+import { ExternalLink, parseDuration, safeExternalUrl } from './common'
 
 /*
  * A form generated from a JSON Schema: strings, numbers, booleans, enums, lists of strings and
@@ -325,15 +325,17 @@ export function SchemaForm({ schema, value, onChange, problems, idPrefix = 'f', 
     const numeric = type === 'integer' || type === 'number'
     const unit = numeric ? unitOf(x.format, x.currency) : undefined
     const wide = type === 'object' || x.widget === 'key-value' || x.widget === 'code' || x.format === 'code' || (type === 'array' && !prop.items?.enum && (!prop.items || !['string', 'number', 'integer'].includes(schemaType(prop.items))))
+    // a help page only when it is an https address: a provider's schema could name anything
+    const help = safeExternalUrl(x.help)
     const hint: ReactNode =
-      prop.description || x.help || immutable ? (
+      prop.description || help || immutable ? (
         <>
           {prop.description}
           {immutable && <span className={cx(prop.description && 'ml-1')}>{IMMUTABLE_NOTE}</span>}
-          {x.help && (
+          {help && (
             <>
               {' '}
-              <ExternalLink href={x.help} ariaLabel={`Learn more about ${label}`} className="inline-flex items-center gap-0.5">
+              <ExternalLink href={help} ariaLabel={`Learn more about ${label}`} className="inline-flex items-center gap-0.5">
                 Learn more
                 <Icon name="external" size={10} />
               </ExternalLink>

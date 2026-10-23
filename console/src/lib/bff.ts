@@ -1,13 +1,16 @@
-import { get, page, qs, request, type ListParams } from './api'
+import { HEALTH_PATH, cachedGet, clearDescriptorCache, get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
+import { clearRecent } from './recent'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, ApprovalsDecided, BatchAccepted, BatchInput, BatchPreview, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, BlastRadius, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, RetryFix, SearchHit, Suggestion } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, ApprovalsDecided, BatchAccepted, BatchInput, BatchPreview, BffConsoleType, BffJobDetail, BffLineage, BffJobSummary, BffRegion, BlastRadius, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, Health, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, RetryFix, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
  * accounts and regions a person may pick, the types with their decisions, the identity
- * service's resources served under /console/v1/iam, and access requests. Every write carries
+ * service's resources served under /console/v1/iam, access requests, resources, jobs and the
+ * live feed. The browser talks to nothing else: no platform path, no identity header of its
+ * own (the session cookie names the person). Every write carries
  * X-Csrf-Token (the API client adds it) and, where the identity service asks, If-Match and an
  * Idempotency-Key.
  */
@@ -53,8 +56,27 @@ export const bff = {
   /** the people the demo identity provider knows (mock mode's sign-in page) */
   people: () => page<DemoPerson>('/demo-idp/people'),
 
-  /* the types, each action with its decision for this person, account and region */
-  types: () => get<BffConsoleType[]>(b('/types')),
+  /*
+   * the types, each action with its decision for this person, account and region; the copy the
+   * ETag revalidates is kept per person, account and region, and forgotten at sign-out
+   */
+  types: async (): Promise<BffConsoleType[]> => {
+    const s = getSession()
+    const scope = s ? `${s.user.userId}/${s.account.accountId}/${s.region}` : 'nobody'
+    const body = await cachedGet<BffConsoleType[] | { items?: BffConsoleType[] }>(b('/types'), {}, `${scope}:${b('/types')}`)
+    return Array.isArray(body) ? body : (body?.items ?? [])
+  },
+  /** the BFF's health: UP, or the 503's body when it is down */
+  health: async (): Promise<Health> => {
+    try {
+      return await get<Health>(HEALTH_PATH)
+    } catch (e) {
+      if (isApiError(e) && e.status === 503 && e.body && typeof e.body.status === 'string') return e.body as unknown as Health
+      throw e
+    }
+  },
+  /** the account's live updates (server-sent events), scoped to the session's account */
+  eventsUrl: (params?: { wfrn?: string; types?: string }) => `${b('/events')}${qs(params)}`,
 
   /* identity and access, scoped to the session's account */
   iam: {
@@ -119,7 +141,7 @@ export const bff = {
     preview: (type: string, wfrn: string, verb: string, body: CommandInput) => request<ConsolePreview>('POST', b(`/r/${enc(type)}/${enc(wfrn)}:${verb}:preview`), body),
     activity: (type: string, wfrn: string, params?: ListParams) => page<ActivityEntry>(b(`/r/${enc(type)}/${enc(wfrn)}/activity`), params),
     drift: (type: string, wfrn: string) => get<{ items: Finding[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/drift`)),
-    lineage: (type: string, wfrn: string) => get<{ resource: ResourceRef; nodes: ResourceRef[]; edges: { from: string; to: string; via?: string }[] }>(b(`/r/${enc(type)}/${enc(wfrn)}/lineage`)),
+    lineage: (type: string, wfrn: string) => get<BffLineage>(b(`/r/${enc(type)}/${enc(wfrn)}/lineage`)),
     setTags: (type: string, wfrn: string, tags: Record<string, string>) => request<Record<string, string>>('PUT', b(`/r/${enc(type)}/${enc(wfrn)}/tags`), tags, keyed()),
     /** what depends on the resource, within `depth` hops (1 to 5), counted across accounts */
     blastRadius: (type: string, wfrn: string, depth?: number) => get<BlastRadius>(`${b(`/r/${enc(type)}/${enc(wfrn)}/blast-radius`)}${qs({ depth })}`),
@@ -204,6 +226,9 @@ export async function signOut(): Promise<void> {
     /* the cookie may already be gone: the browser's copy goes anyway */
   }
   clearQueryCache()
+  // what this browser kept about the person goes with them: the next person on the device starts clean
+  clearRecent()
+  clearDescriptorCache()
   setSessionState({ status: 'signed-out', session: null })
 }
 

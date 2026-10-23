@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildMockData } from '../../mock/data'
+import { describeTypes } from '../../mock/types'
 import { composeTypes, type ConsoleAction, type ConsoleType } from '../../lib/descriptors'
 import type { Finding } from '../../lib/types'
 import { startValue } from './ActionDrawer'
@@ -13,7 +14,7 @@ import { driftStatusOf } from './tabs'
  */
 
 const data = buildMockData()
-const vm = composeTypes(data.resourceTypes, data.catalog).find((t) => t.name === 'vm') as ConsoleType
+const vm = composeTypes(describeTypes(data)).find((t) => t.name === 'vm') as ConsoleType
 const action = (verb: string) => vm.actions.find((a) => a.verb === verb) as ConsoleAction
 
 describe('the action form’s first value', () => {

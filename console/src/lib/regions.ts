@@ -1,7 +1,7 @@
 import type { Region } from './types'
 
 /*
- * Regions (P-07): the platform lists them (GET /api/v1/regions, and the BFF's /console/v1/regions);
+ * Regions (P-07): the BFF lists the platform's (GET /console/v1/regions);
  * phase 1 platforms answer one, "global", and the header then shows it without a menu. The
  * chosen region lives in the session. The answer is read tolerantly: a list or {items}, each
  * either flat or a file with metadata and spec.

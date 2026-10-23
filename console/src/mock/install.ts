@@ -1,12 +1,14 @@
 import type { Directory } from './directory'
 import { replayConsole, type ConsoleCommand } from './commands'
 import type { MockData } from './data'
+import { liveEventsOf, toLiveEvent } from './live'
 import { createMockServer, memorySessionStore, nextMockEvent, type MockServer, type MockSession, type MockSessionStore } from './server'
 
 /*
- * Mock mode (VITE_CONSOLE_MOCK=1): fetch answers the platform (/api, /actuator), the BFF (/auth,
- * /console) and the demo identity provider (/demo-idp) from the mock server in this browser, and
- * EventSource plays the platform feed, so the shell and the e2e suite run with no backend at
+ * Mock mode (VITE_CONSOLE_MOCK=1): fetch answers the BFF (/auth, /console, its /actuator/health)
+ * and the demo identity provider (/demo-idp) from the mock server in this browser, and
+ * EventSource plays the BFF's live updates for the signed-in account (/console/v1/events), so the
+ * shell and the e2e suite run with no backend at
  * all. The session the BFF would keep behind its cookie lives in localStorage, so a reload keeps
  * you signed in, and so does the identity directory (people, groups, keys, access requests), so
  * what an admin changed is still there after a reload or a sign-in as someone else. Everything
@@ -104,7 +106,11 @@ export function storageSessionStore(): MockSessionStore {
   }
 }
 
-/** The feed as an EventSource: the backlog after `after`, then a live event every couple of seconds. */
+/**
+ * `GET /console/v1/events` as an EventSource: the signed-in account's backlog after `after`, then
+ * a live update every couple of seconds. Any other stream, or no session, fails as the BFF would
+ * (the browser sees an error and the stream closes).
+ */
 class MockEventSource extends EventTarget {
   static readonly CONNECTING = 0
   static readonly OPEN = 1
@@ -124,23 +130,36 @@ class MockEventSource extends EventTarget {
   constructor(url: string | URL, server: MockServer) {
     super()
     this.url = String(url)
-    const after = Number(new URL(this.url, 'http://mock.local').searchParams.get('after') ?? '') || 0
+    const at = new URL(this.url, 'http://mock.local')
+    const after = Number(at.searchParams.get('after') ?? '') || 0
     this.timer = setTimeout(() => {
       if (this.readyState === MockEventSource.CLOSED) return
+      const session = server.sessions.get()
+      if (at.pathname !== '/console/v1/events' || !session) {
+        this.readyState = MockEventSource.CLOSED
+        const error = new Event('error')
+        this.onerror?.(error)
+        this.dispatchEvent(error)
+        return
+      }
       this.readyState = MockEventSource.OPEN
       const open = new Event('open')
       this.onopen?.(open)
       this.dispatchEvent(open)
-      const backlog = after > 0 ? server.data.events.filter((e) => e.seq > after) : server.data.events.slice(-5)
-      for (const e of backlog) this.emit(e)
-      this.ticker = setInterval(() => this.emit(nextMockEvent(server.data)), LIVE_EVERY_MS)
+      const all = liveEventsOf(server.data.events, session.accountId, after)
+      for (const e of after > 0 ? all : all.slice(-5)) this.emit(e.id, e.event)
+      this.ticker = setInterval(() => {
+        const next = nextMockEvent(server.data)
+        const live = toLiveEvent(next, session.accountId)
+        if (live) this.emit(String(next.seq), live)
+      }, LIVE_EVERY_MS)
     }, 40)
   }
 
-  /** Named after its type, as the platform's stream names its events (`event: job.started`), so only a listener for that name hears it. */
-  private emit(e: { id: string; type: string }) {
+  /** Named after its type, as the BFF names its events (`event: job.updated`), so only a listener for that name hears it. */
+  private emit(id: string, e: { type: string }) {
     if (this.readyState !== MockEventSource.OPEN) return
-    this.dispatchEvent(new MessageEvent(e.type, { data: JSON.stringify(e), lastEventId: e.id }))
+    this.dispatchEvent(new MessageEvent(e.type, { data: JSON.stringify(e), lastEventId: id }))
   }
 
   close() {
@@ -156,7 +175,7 @@ declare global {
   }
 }
 
-const MOCKED = /^\/(api\/|actuator|console\/|auth\/|demo-idp\/)/
+const MOCKED = /^\/(actuator\/health$|console\/|auth\/|demo-idp\/)/
 
 async function bodyOf(init: RequestInit | undefined, input: RequestInfo | URL): Promise<unknown> {
   if (init?.body !== undefined && init.body !== null) return typeof init.body === 'string' ? init.body : undefined

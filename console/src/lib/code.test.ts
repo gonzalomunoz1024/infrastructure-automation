@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { buildMockData } from '../mock/data'
+import { describeTypes } from '../mock/types'
 import { composeTypes, type ConsoleAction, type ConsoleType } from './descriptors'
-import { CLI, cliVerb, codeSamplesFor, platformPath, subjectFor, workflowRunYaml } from './code'
+import { CLI, cliVerb, codeSamplesFor, subjectFor, workflowRunYaml } from './code'
 
-/* View as code (WP 3.5): the same request as a CLI line, two REST calls, a WorkflowRun manifest and JSON. */
+/* View as code (WP 3.5): the same request as a CLI line, the console's REST call, a WorkflowRun manifest and JSON. */
 
 const data = buildMockData()
-const types = composeTypes(data.resourceTypes, data.catalog)
+const types = composeTypes(describeTypes(data))
 const vm = types.find((t) => t.name === 'vm') as ConsoleType
 const action = (verb: string) => vm.actions.find((a) => a.verb === verb) as ConsoleAction
 const context = { accountId: '123456789012', region: 'global', origin: 'https://console.example.test' }
@@ -17,11 +18,6 @@ describe('the words of the CLI and the paths', () => {
     expect(CLI).toBe('iaf')
     expect(cliVerb('create', vm)).toBe('create-vm')
     expect(cliVerb('restart', vm)).toBe('restart-vm')
-  })
-
-  it('fills the subject into the platform’s path', () => {
-    expect(platformPath(action('restart'), 'vm-demo01')).toBe('/api/v1/vms/vm-demo01:restart')
-    expect(platformPath(action('delete'))).toBe('/api/v1/vms/<id>')
   })
 
   it('finds the input that names the resource a verb acts on', () => {
@@ -45,13 +41,14 @@ describe('a create', () => {
     for (const flag of ['--account 123456789012', '--region global', '--name web-09', '--image img-ubuntu', '--size small', "--reason 'new web tier'"]) expect(cli).toContain(flag)
   })
 
-  it('writes the call through the console and the platform’s own, each with a fresh key', () => {
+  it('writes the call through the console, with a fresh key, and never one straight to the platform', () => {
     const rest = samples[1].code
     expect(rest).toContain('curl -X POST https://console.example.test/console/v1/r/vm')
-    expect(rest).toContain('curl -X POST https://console.example.test/api/v1/vms')
-    expect(rest).toContain("-H 'X-On-Behalf-Of: account:123456789012'")
-    expect(rest.match(/Idempotency-Key: <one fresh key per submission>/g)).toHaveLength(2)
+    expect(rest.match(/Idempotency-Key: <one fresh key per submission>/g)).toHaveLength(1)
     expect(rest).toContain('"name": "web-09"')
+    expect(rest).not.toContain('/api/v1')
+    expect(rest).not.toContain('X-User')
+    expect(rest).not.toContain('X-On-Behalf-Of')
   })
 
   it('writes a WorkflowRun manifest with no subject, and the body as JSON', () => {
@@ -76,12 +73,12 @@ describe('a verb', () => {
     expect(cli).toContain(' \\\n  --account 123456789012')
   })
 
-  it('posts the verb to the console and puts the subject back on the platform’s call', () => {
+  it('posts the verb to the console, which names the resource by its wfrn in the path', () => {
     const rest = samples[1].code
-    expect(rest).toContain(`https://console.example.test/console/v1/r/vm/${encodeURIComponent(WFRN)}:delete`)
-    expect(rest).toContain('curl -X DELETE https://console.example.test/api/v1/vms/vm-demo01')
-    expect(rest).toContain('"vmId": "vm-demo01"')
+    expect(rest).toContain(`curl -X POST https://console.example.test/console/v1/r/vm/${encodeURIComponent(WFRN)}:delete`)
     expect(rest).toContain('"confirm": true')
+    expect(rest).not.toContain('/api/v1')
+    expect(rest).not.toContain('X-User')
   })
 
   it('carries the subject and the confirmation in the manifest', () => {
@@ -97,11 +94,11 @@ describe('an update and a record', () => {
     const req = { kind: 'update' as const, type: vm, wfrn: WFRN, body: { input: { size: 'large' } }, context }
     const rest = codeSamplesFor(req)[1].code
     expect(rest).toContain(`curl -X PATCH https://console.example.test/console/v1/r/vm/${encodeURIComponent(WFRN)}`)
-    expect(rest).toContain('no direct path of its own')
+    expect(rest).not.toContain('/api/v1')
     expect(workflowRunYaml(req)).toContain('  workflow: update-vm')
   })
 
-  it('shows a record as JSON, YAML, the CLI’s get and both reads', () => {
+  it('shows a record as JSON, YAML, the CLI’s get and the console’s read', () => {
     const record = { id: 'vm-demo01', name: 'web-01', attributes: { size: 'small', disks: [] } }
     const samples = codeSamplesFor({ kind: 'record', type: vm, wfrn: WFRN, record, context })
     expect(samples.map((s) => s.id)).toEqual(['json', 'yaml', 'cli', 'rest'])
@@ -110,7 +107,8 @@ describe('an update and a record', () => {
     expect(samples[1].code).toContain('  disks: []')
     expect(samples[2].code.startsWith(`iaf compute get-vm ${WFRN}`)).toBe(true)
     expect(samples[3].code).toContain(`curl -X GET https://console.example.test/console/v1/r/vm/${encodeURIComponent(WFRN)}`)
-    expect(samples[3].code).toContain('curl -X GET https://console.example.test/api/v1/vms/vm-demo01')
+    expect(samples[3].code).not.toContain('/api/v1')
+    expect(samples[3].code).not.toContain('X-User')
   })
 })
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildMockData } from '../mock/data'
+import { describeTypes } from '../mock/types'
 import { composeTypes, groupServices, type ConsoleService, type ConsoleType } from './descriptors'
 import { dependenciesOf, orderTypes, tourFor } from './tour'
 import { verbsOf } from './verbs'
@@ -7,7 +8,7 @@ import { verbsOf } from './verbs'
 /* Getting started (WP 3.7): a tour per service, generated from what its providers publish. */
 
 const data = buildMockData()
-const types = composeTypes(data.resourceTypes, data.catalog)
+const types = composeTypes(describeTypes(data))
 const services = groupServices(types)
 const service = (id: string) => services.find((s) => s.id === id) as ConsoleService
 const type = (name: string) => types.find((t) => t.name === name) as ConsoleType

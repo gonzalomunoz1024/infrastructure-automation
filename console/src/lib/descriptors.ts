@@ -1,24 +1,26 @@
 import { ICON_NAMES, type IconName } from '@iaf/ui'
-import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase, xConsoleOf, type CatalogEntry, type LifecycleClass, type Resource, type ResourceType, type Rollout, type Schema, type XConsole } from '@iaf/console-kit'
-import type { BffConsoleType } from './types'
+import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase, xConsoleOf, type LifecycleClass, type Resource, type ResourceType, type Rollout, type Schema, type XConsole } from '@iaf/console-kit'
+import type { BffConsoleAction, BffConsoleType } from './types'
 
 /*
- * One ConsoleType per resource type, composed in the browser from what the platform serves today
- * (GET /api/v1/resource-types and /catalog) with the defaults the plan fixes, and refined by the
- * `service`, `console` and `x-console` hints of P-06 when a type carries them. In phase 3 the BFF
- * serves this composition instead; the shapes stay.
+ * One ConsoleType per resource type, composed in the browser from the BFF's descriptor of it
+ * (GET /console/v1/types, the hub's ConsoleType: the schema with its x-console hints, the states,
+ * the list and detail hints, the lifecycle map, the observe block and the catalog's verbs with
+ * this person's decisions), with the defaults the plan fixes where the descriptor says nothing.
+ * The browser never reads the platform's own resource types or catalog.
  *
- *   service   metadata.service, else `service`, else the owner without its `team-` prefix
- *   title     console.title, else the plural capitalised
- *   icon      console.icon when Atlas has it, else by the type's name, else the resource glyph
- *   columns   console.list.columns, else name, status, wfrn, the x-console columns (else up to
- *             four required scalar fields), owner, created
- *   lifecycle console.lifecycle, else each state by its name (ready is active, building pending,
- *             retired deleted, failed failed); a state nobody can place stays null
- *   actions   the catalog entries whose noun is the type; create is the producedBy workflow
- *   sort      console.list.defaultSort, a leading `-` meaning newest or largest first, else name
- *   tabs      console.detail.tabs by their ids, else Configuration, Drift, Activity,
- *             Relationships, Tags, Permissions and JSON
+ *   service   the descriptor's
+ *   title     the descriptor's, else the plural capitalised
+ *   icon      the descriptor's when Atlas has it, else by the type's name, else the resource glyph
+ *   columns   list.columns, else name, status, wfrn, the x-console columns (else up to four
+ *             required scalar fields), owner, created
+ *   lifecycle the descriptor's map, else each state by its name (ready is active, building
+ *             pending, retired deleted, failed failed); a state nobody can place stays null
+ *   actions   the descriptor's verbs that name a workflow; create is the one whose effect is
+ *             create (a producer such as build-vm-image), else the create verb
+ *   sort      list.defaultSort, a leading `-` meaning newest or largest first, else name
+ *   tabs      detail.tabs by their ids, else Configuration, Drift, Activity, Relationships, Tags,
+ *             Permissions and JSON (and Monitoring after Drift when the type has a metrics read)
  */
 
 export type ColumnKind = 'name' | 'status' | 'wfrn' | 'owner' | 'created' | 'updated' | 'field'
@@ -38,14 +40,15 @@ export interface ConsoleAction {
   title: string
   verb: string
   method: string
-  path: string
-  batchPath?: string
-  previewPath?: string
+  /** the verb runs on many resources in one request (POST /console/v1/r/{type}:batch) */
+  bulk: boolean
+  /** the verb has a preview */
+  preview: boolean
   destructive: boolean
   input: Schema
   description?: string
   version?: string
-  /** the input naming the resource it runs on (P-08), when the catalog says */
+  /** the input naming the resource it runs on (P-08), when the descriptor says */
   subject?: string
   /** a verb with a batch route: the most rows one request takes, and the workflow's own rollout */
   batch?: { max: number; rollout: Rollout }
@@ -88,8 +91,6 @@ export interface ConsoleType {
   schema: Schema
   searchable: string[]
   sensitive: string[]
-  /** the type carried a `console` block or a `service` of its own */
-  hinted: boolean
 }
 
 export interface ConsoleService {
@@ -163,10 +164,10 @@ export function titleOf(rt: ResourceType): string {
   return capitalise(rt.plural.replace(/[-_]+/g, ' '))
 }
 
-export function iconOf(rt: ResourceType): IconName {
-  const hinted = rt.console?.icon
+/** The descriptor's icon when Atlas has it, else one by the type's name, else the resource glyph. */
+export function iconOf(name: string, hinted?: unknown): IconName {
   if (isIconName(hinted)) return hinted
-  return TYPE_ICONS[rt.name] ?? 'resource'
+  return TYPE_ICONS[name] ?? 'resource'
 }
 
 export function serviceIcon(id: string, types: ConsoleType[]): IconName {
@@ -174,10 +175,10 @@ export function serviceIcon(id: string, types: ConsoleType[]): IconName {
 }
 
 /** Each state folded onto a lifecycle class: the type's own map first, then the state's name. */
-export function lifecycleMapOf(rt: ResourceType): Record<string, LifecycleClass | null> {
+export function lifecycleMapOf(states: readonly string[], hinted?: Record<string, LifecycleClass>): Record<string, LifecycleClass | null> {
   const out: Record<string, LifecycleClass | null> = {}
-  for (const state of rt.states ?? []) out[state] = lifecycleOf(state, rt.console?.lifecycle)
-  for (const state of Object.keys(rt.console?.lifecycle ?? {})) if (!(state in out)) out[state] = lifecycleOf(state, rt.console?.lifecycle)
+  for (const state of states) out[state] = lifecycleOf(state, hinted)
+  for (const state of Object.keys(hinted ?? {})) if (!(state in out)) out[state] = lifecycleOf(state, hinted)
   return out
 }
 
@@ -198,33 +199,33 @@ const BUILTIN_COLUMNS: Record<string, ConsoleColumn> = {
 
 const BUILTIN_ALIASES: Record<string, string> = { createdAt: 'created', updatedAt: 'updated', id: 'name' }
 
-export function fieldColumn(rt: ResourceType, name: string): ConsoleColumn {
-  const prop = rt.schema?.properties?.[name]
+export function fieldColumn(schema: Schema | undefined, name: string): ConsoleColumn {
+  const prop = schema?.properties?.[name]
   return { key: name, label: prop?.title ?? titleCase(name), kind: 'field', field: name, x: xConsoleOf(prop), schema: prop }
 }
 
-/** The list columns: the type's own list, else the defaults. Sensitive fields never make a column. */
-export function columnsOf(rt: ResourceType): ConsoleColumn[] {
-  const props = rt.schema?.properties ?? {}
-  const sensitive = new Set(sensitiveFields(rt.schema))
-  const hinted = rt.console?.list?.columns
+/** The list columns: the descriptor's list, else the defaults. Sensitive fields never make a column. */
+export function columnsOf(schema: Schema | undefined, hinted?: unknown): ConsoleColumn[] {
+  const props = schema?.properties ?? {}
+  const sensitive = new Set(sensitiveFields(schema))
   if (Array.isArray(hinted) && hinted.length) {
     const out: ConsoleColumn[] = []
     for (const key of hinted) {
+      if (typeof key !== 'string') continue
       const builtin = BUILTIN_COLUMNS[BUILTIN_ALIASES[key] ?? key]
       if (builtin) out.push(builtin)
-      else if (props[key] && !sensitive.has(key)) out.push(fieldColumn(rt, key))
+      else if (props[key] && !sensitive.has(key)) out.push(fieldColumn(schema, key))
     }
     if (out.length) return out
   }
   // a field the built-in columns already show (name) never repeats as a column
   const eligible = (f: string) => !sensitive.has(f) && !(f in BUILTIN_COLUMNS)
-  let fields = columnFields(rt.schema).filter(eligible)
-  if (fields.length === 0) fields = (rt.schema?.required ?? []).filter((n) => isScalar(props[n]) && eligible(n)).slice(0, 4)
-  return [BUILTIN_COLUMNS.name, BUILTIN_COLUMNS.status, BUILTIN_COLUMNS.wfrn, ...fields.map((f) => fieldColumn(rt, f)), BUILTIN_COLUMNS.owner, BUILTIN_COLUMNS.created]
+  let fields = columnFields(schema).filter(eligible)
+  if (fields.length === 0) fields = (schema?.required ?? []).filter((n) => isScalar(props[n]) && eligible(n)).slice(0, 4)
+  return [BUILTIN_COLUMNS.name, BUILTIN_COLUMNS.status, BUILTIN_COLUMNS.wfrn, ...fields.map((f) => fieldColumn(schema, f)), BUILTIN_COLUMNS.owner, BUILTIN_COLUMNS.created]
 }
 
-/** The labels of the tabs a `console.detail.tabs` hint names by id. */
+/** The labels of the tabs a descriptor names by id. */
 export const TAB_LABELS: Record<string, string> = {
   configuration: 'Configuration',
   drift: 'Drift',
@@ -236,19 +237,20 @@ export const TAB_LABELS: Record<string, string> = {
   json: 'JSON',
 }
 
-/**
- * The type's observe block as the console reads it: whether drift, metrics and discovery cover the
- * type. What the BFF's descriptor says wins field by field (it reads the published type); the
- * platform's own block answers what the descriptor leaves out.
- */
-export function observeOf(rt: Pick<ResourceType, 'observe'>, described?: BffConsoleType['observe']): ConsoleObserve {
-  const o = rt.observe
+/** The descriptor's observe block as the console reads it: whether drift, metrics and discovery cover the type. */
+export function observeOf(described?: BffConsoleType['observe']): ConsoleObserve {
   return {
-    supported: described?.supported ?? !!o?.action,
-    interval: described?.interval ?? o?.interval,
-    metrics: described?.metrics ?? !!o?.metrics?.action,
-    discover: described?.discover ?? !!o?.discover?.action,
+    supported: !!described?.supported,
+    interval: described?.interval,
+    metrics: !!described?.metrics,
+    discover: !!described?.discover,
   }
+}
+
+/** A platform type's own observe block, for the mock BFF that describes it (the browser reads only the descriptor's). */
+export function platformObserveOf(rt: Pick<ResourceType, 'observe'>): ConsoleObserve {
+  const o = rt.observe
+  return { supported: !!o?.action, interval: o?.interval, metrics: !!o?.metrics?.action, discover: !!o?.discover?.action }
 }
 
 /** The default tabs, with Monitoring after Drift when the type has a metrics read (a type without one shows no tab). */
@@ -282,69 +284,72 @@ export function sortOf(hinted: unknown, columns: ConsoleColumn[]): { key: string
   return columns.some((c) => c.key === key) ? { key, dir: desc ? 'desc' : 'asc' } : { key: 'name', dir: 'asc' }
 }
 
-export function toAction(entry: CatalogEntry): ConsoleAction {
+const DEFAULT_METHODS: Record<string, string> = { create: 'POST', update: 'PATCH', delete: 'DELETE' }
+
+/** One verb of the descriptor as the Actions menu runs it. */
+export function toAction(a: BffConsoleAction & { workflow: string }): ConsoleAction {
   return {
-    workflow: entry.workflow,
-    title: entry.title,
-    verb: entry.verb,
-    method: entry.method,
-    path: entry.path,
-    batchPath: entry.batchPath,
-    previewPath: entry.previewPath,
-    destructive: entry.destructive ?? entry.verb === 'delete',
-    input: entry.input ?? { type: 'object' },
-    description: entry.description,
-    version: entry.version,
-    subject: entry.subject,
-    batch: entry.batch,
+    workflow: a.workflow,
+    title: a.title,
+    verb: a.verb,
+    method: a.method ?? DEFAULT_METHODS[a.verb] ?? 'POST',
+    bulk: !!a.bulk,
+    preview: !!a.preview,
+    destructive: a.destructive ?? a.verb === 'delete',
+    input: a.input ?? { type: 'object' },
+    description: a.description,
+    version: a.version,
+    subject: a.subjectInput ?? undefined,
+    batch: a.batch,
   }
 }
 
-/** The catalog entries whose noun is the type, create first, delete last. */
-export function actionsOf(rt: ResourceType, catalog: CatalogEntry[]): ConsoleAction[] {
+/** The descriptor's verbs that run a workflow, create first, delete last; the read verbs it decides alone (list, get) carry none. */
+export function actionsOf(d: Pick<BffConsoleType, 'actions'>): ConsoleAction[] {
   const rank = (a: ConsoleAction) => (a.verb === 'create' ? 0 : a.destructive ? 2 : 1)
-  return catalog
-    .filter((e) => e.noun === rt.name)
+  return (d.actions ?? [])
+    .filter((a): a is BffConsoleAction & { workflow: string } => typeof a.workflow === 'string' && !!a.workflow)
     .map(toAction)
     .sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title))
 }
 
-export function composeType(rt: ResourceType, catalog: CatalogEntry[], described?: BffConsoleType): ConsoleType {
-  const actions = actionsOf(rt, catalog)
-  const producer = rt.producedBy ? catalog.find((e) => e.workflow === rt.producedBy) : undefined
-  const create = producer ? toAction(producer) : (actions.find((a) => a.verb === 'create') ?? null)
-  const columns = columnsOf(rt)
-  const sort = sortOf(rt.console?.list?.defaultSort, columns)
-  const observe = observeOf(rt, described?.observe)
+export function composeType(d: BffConsoleType): ConsoleType {
+  const actions = actionsOf(d)
+  const producer = (d.actions ?? []).find((a) => a.effect === 'create' && !!a.workflow)
+  const create = (producer && actions.find((a) => a.workflow === producer.workflow)) ?? actions.find((a) => a.verb === 'create') ?? null
+  const plural = d.plural || `${d.type}s`
+  const schema = d.schema ?? { type: 'object' }
+  const columns = columnsOf(schema, d.list?.columns)
+  const sort = sortOf(d.list?.defaultSort, columns)
+  const observe = observeOf(d.observe)
   return {
-    name: rt.name,
-    plural: rt.plural,
-    service: serviceOf(rt),
-    title: titleOf(rt),
-    description: rt.description,
-    icon: iconOf(rt),
-    owner: rt.owner,
-    visibility: rt.visibility,
-    states: rt.states ?? [],
-    lifecycle: lifecycleMapOf(rt),
+    name: d.type,
+    plural,
+    service: d.service,
+    title: d.title?.trim() || capitalise(plural.replace(/[-_]+/g, ' ')),
+    description: d.description,
+    icon: iconOf(d.type, d.icon),
+    owner: d.owner ?? `team-${d.service}`,
+    visibility: d.visibility,
+    states: d.states ?? [],
+    lifecycle: lifecycleMapOf(d.states ?? [], d.lifecycle),
     columns,
     defaultSort: sort.key,
     defaultSortDir: sort.dir,
-    tabs: tabsOf(rt.console?.detail?.tabs, defaultTabsFor(observe)),
+    tabs: tabsOf(d.detail?.tabs, defaultTabsFor(observe)),
     observe,
     actions,
     create,
     update: actions.find((a) => a.verb === 'update') ?? null,
-    schema: rt.schema ?? { type: 'object' },
-    searchable: searchableFields(rt.schema),
-    sensitive: sensitiveFields(rt.schema),
-    hinted: !!rt.console || typeof rt.service === 'string',
+    schema,
+    searchable: searchableFields(schema),
+    sensitive: sensitiveFields(schema),
   }
 }
 
-/** Every type, read with the BFF's descriptor of it when there is one. */
-export function composeTypes(types: ResourceType[], catalog: CatalogEntry[], described: BffConsoleType[] = []): ConsoleType[] {
-  return types.map((rt) => composeType(rt, catalog, described.find((d) => d.type === rt.name))).sort((a, b) => a.service.localeCompare(b.service) || a.title.localeCompare(b.title))
+/** Every type the BFF describes, by service and title. */
+export function composeTypes(described: readonly BffConsoleType[] = []): ConsoleType[] {
+  return described.map(composeType).sort((a, b) => a.service.localeCompare(b.service) || a.title.localeCompare(b.title))
 }
 
 /** Types grouped by service, services by name. */

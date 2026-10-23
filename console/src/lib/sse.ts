@@ -1,9 +1,9 @@
 /*
  * Server-sent events with resume. EventSource reconnects by itself and sends Last-Event-ID; when
  * it gives up (CLOSED), this reopens it with a backoff that doubles up to 30 seconds and asks for
- * the events after the last one seen (`?after=<id>`, the platform feed's contract), so nothing is
- * missed across a reconnect. EventSource cannot carry headers, so the dev identity does not ride
- * on streams.
+ * the events after the last one seen (`?after=<id>`, as Last-Event-ID would), so nothing is
+ * missed across a reconnect. EventSource cannot carry headers: the session cookie names the
+ * person, as on every other call.
  */
 
 export type StreamState = 'connecting' | 'open' | 'retrying' | 'closed'

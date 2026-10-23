@@ -1,20 +1,21 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { ConsoleKitProvider, type ConsoleKitData, type ConsoleKitLinks } from '@iaf/console-kit'
-import { api, isApiError } from '../lib/api'
+import { isApiError } from '../lib/api'
 import { accountFromSummary, type Account } from '../lib/accounts'
 import { bff } from '../lib/bff'
 import { decide as decideIn, permissionsOf, type Decision, type PermissionMap } from '../lib/permissions'
 import { useQuery } from '../lib/queries'
-import { GLOBAL_REGION, regionOf } from '../lib/regions'
+import { GLOBAL_REGION, parseRegions, regionOf } from '../lib/regions'
 import { isAdmin, meOf, type Session } from '../lib/session'
 import { composeTypes, findType, groupServices, partsOfWfrn, wfrnOf, type ConsoleService, type ConsoleType, type WfrnContext } from '../lib/descriptors'
+import { lineageOf, pickerRowOf } from '../lib/kit'
 import type { Me, Region } from '../lib/types'
 import { pathFor, resourcePath } from './router'
 
 /*
- * What every page needs: the session (who, which account, which region), the composed types and
- * services, the regions, the decisions the BFF made about each type's actions, and the kit's
- * provider wired to the console's API and routes.
+ * What every page needs: the session (who, which account, which region), the types composed from
+ * the BFF's descriptors and their services, the regions, the decisions the BFF made about each
+ * type's actions, and the kit's provider wired to the BFF and the console's routes.
  */
 
 export interface ConsoleContext {
@@ -35,7 +36,7 @@ export interface ConsoleContext {
   loading: boolean
   /** the descriptors could not be loaded (and nothing was cached) */
   error: unknown
-  /** the platform did not answer */
+  /** the BFF did not answer */
   offline: boolean
   wfrnContext: WfrnContext
   refetch: () => void
@@ -45,18 +46,16 @@ const Ctx = createContext<ConsoleContext | null>(null)
 
 export function ConsoleProvider({ session, children }: { session: Session; children: ReactNode }) {
   const scope = `${session.user.userId}/${session.account.accountId}/${session.region}`
-  const types = useQuery(['resource-types', scope], () => api.resourceTypes())
-  const catalog = useQuery(['catalog', scope], () => api.catalog())
-  const regions = useQuery(['regions', scope], () => api.regions())
-  const decisions = useQuery(['console-types', scope], () => bff.types())
+  const types = useQuery(['console-types', scope], () => bff.types())
+  const regions = useQuery(['regions', scope], async () => parseRegions((await bff.regions()).items))
 
-  const composed = useMemo(() => composeTypes(types.data ?? [], catalog.data ?? [], decisions.data), [types.data, catalog.data, decisions.data])
+  const composed = useMemo(() => composeTypes(types.data), [types.data])
   const services = useMemo(() => groupServices(composed), [composed])
   const regionList = useMemo(() => regions.data ?? [GLOBAL_REGION], [regions.data])
   const region = regionOf(session.region, regionList)
   const account = useMemo(() => accountFromSummary(session.account), [session.account])
   const me = useMemo(() => meOf(session), [session])
-  const permissions = useMemo(() => permissionsOf(decisions.data), [decisions.data])
+  const permissions = useMemo(() => permissionsOf(types.data), [types.data])
   const wfrnContext = useMemo<WfrnContext>(() => ({ partition: region.partition, region: region.name, account: account.id }), [region.partition, region.name, account.id])
 
   const value = useMemo<ConsoleContext>(
@@ -71,32 +70,34 @@ export function ConsoleProvider({ session, children }: { session: Session; child
       admin: isAdmin(session),
       permissions,
       decide: (type, verb) => decideIn(permissions, type.service, type.name, verb),
-      loading: types.loading || catalog.loading,
-      error: types.error ?? catalog.error,
+      loading: types.loading,
+      error: types.error,
       offline: !types.data && isApiError(types.error) && types.error.unreachable,
       wfrnContext,
       refetch: () => {
         void types.refetch()
-        void catalog.refetch()
         void regions.refetch()
-        void decisions.refetch()
       },
     }),
-    [session, composed, services, regionList, region, account, me, permissions, types, catalog, regions, decisions, wfrnContext],
+    [session, composed, services, regionList, region, account, me, permissions, types, regions, wfrnContext],
   )
 
   const kitData = useMemo<Partial<ConsoleKitData>>(
     () => ({
       resourceTypes: async () => composed.map((t) => ({ name: t.name, plural: t.plural })),
       resourcesOf: async (type: string) => {
-        const t = composed.find((x) => x.name === type)
-        if (!t) return []
-        const page = await api.resourcesOf(t.plural, { limit: 200, accountId: account.id })
-        return page.items.map((r) => ({ id: r.id, type: r.type, name: r.name, status: r.status, wfrn: r.wfrn }))
+        if (!composed.some((x) => x.name === type)) return []
+        const page = await bff.resources.list(type, { limit: 200 })
+        return page.items.map(pickerRowOf)
       },
-      lineage: (id: string) => api.lineage(id),
+      // the kit names a resource by its wfrn here: the BFF reads the lineage within the account
+      lineage: async (wfrn: string) => {
+        const parts = partsOfWfrn(wfrn)
+        if (!parts) throw new Error(`${wfrn} is not a wfrn`)
+        return lineageOf(await bff.resources.lineage(parts.type, wfrn))
+      },
     }),
-    [composed, account.id],
+    [composed],
   )
   const kitLinks = useMemo<Partial<ConsoleKitLinks>>(
     () => ({

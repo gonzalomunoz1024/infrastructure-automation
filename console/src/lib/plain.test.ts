@@ -30,7 +30,8 @@ describe('explaining a failed call', () => {
   })
 
   it('names a step-up as one, whatever words its error uses', () => {
-    const x = explain(new ApiError(403, { error: 'step-up authentication required for compute:delete', detail: { stepUp: true, action: 'compute:delete', login: '/auth/login?stepUp=true' } }))
+    // as the BFF answered it: only the BFF may ask for a fresh sign-in
+    const x = explain(new ApiError(403, { error: 'step-up authentication required for compute:delete', detail: { stepUp: true, action: 'compute:delete', login: '/auth/login?stepUp=true' } }, undefined, undefined, undefined, true))
     expect(x.title).toBe('Sign in again for this')
     expect(x.next).toBe('Sign in again and come back.')
   })
