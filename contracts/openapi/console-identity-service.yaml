@@ -814,7 +814,7 @@ paths:
     put:
       operationId: setQuota
       summary: Set a quota's limit
-      description: Internal principal only; a `jobs-per-minute` change is also written to the platform (`PUT /api/v1/quotas/account:<accountId>`, P-10).
+      description: 'Internal principal only; a `jobs-per-minute` change is also written to the platform (`PUT /api/v1/quotas/account:<accountId>`, P-10). A limit at or above an open quota request''s ask approves that request (it is moot); a lower limit leaves it open, since rejecting is `:decide`.'
       tags: [Quotas]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -844,7 +844,7 @@ paths:
     post:
       operationId: requestQuotaIncrease
       summary: Ask for a higher limit
-      description: Opens a request the platform team decides; the decision arrives as a `QuotaChanged` event.
+      description: 'Opens a request the platform team decides (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask); one open request per quota key, a second answers 409. An approval arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
       tags: [Quotas]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -874,7 +874,7 @@ paths:
     get:
       operationId: listAccessRequests
       summary: An account's access requests
-      description: A person sees their own; an account admin (or the internal principal) sees every request of the account.
+      description: 'A person always sees their own. Seeing the account''s queue needs `access-request:get` and `access-request:list`, which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions`), so admins, auditors, the internal principal and any group given those actions see the queue, and viewers do not.'
       tags: [Access requests]
       parameters:
         - name: status
@@ -904,7 +904,7 @@ paths:
     post:
       operationId: createAccessRequest
       summary: Ask for an action a denial marked requestable
-      description: 'Opens a request to the account''s admins (an `AccessRequestChanged` event, subject `access-request`); the same open request (same requester, action, resource and role) answers 409 with the existing one.'
+      description: 'Opens a request to the account''s admins (an `AccessRequestChanged` event, subject `access-request`). `role` defaults to the denial''s `suggestedRole`; 400 when no managed role would allow the action, or when the requester is allowed it already. The same open request (same requester, action, resource and role) answers 409 with the existing one. A request still `pending` after 30 days expires (a sweep every 15 minutes), with an `AccessRequestChanged` of action `expired`.'
       tags: [Access requests]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -950,7 +950,7 @@ paths:
     post:
       operationId: decideAccessRequest
       summary: Approve or reject an access request
-      description: 'Account admins only. Approving adds the requester to the group that carries the role asked for (the denial''s suggested role by default), so their next session carries it; the request is then `approved` and an `AccessRequestChanged` event follows.'
+      description: 'Account admins only (`roles` holds `account-admin`). Approving adds the requester to the group that carries the role asked for (the denial''s suggested role by default), so their next session carries it; the request is then `approved`, an `AccessRequestChanged` event follows, and the joined group''s version moves with its own `GroupChanged`. A request already decided, expired or withdrawn answers 409.'
       tags: [Access requests]
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -988,10 +988,36 @@ paths:
     delete:
       operationId: withdrawQuotaRequest
       summary: Withdraw an open quota increase request
-      description: By its requester or an account admin; a decided request answers 409.
+      description: By its requester, an account admin (`quota:set`) or the internal principal; a decided request answers 409.
       tags: [Quotas]
       responses:
         '204': { description: Withdrawn }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/quota-requests/{requestId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      operationId: decideQuotaRequest
+      summary: Approve or reject a quota increase request
+      description: 'Internal principal only (the platform team). Approving sets the quota''s limit to `limit`, the ask by default and possibly less or more, exactly as `PUT /v1/accounts/{accountId}/quotas/{quotaKey}` would (the platform write included), and a `QuotaChanged` event follows; rejecting leaves the limit and records the comment. A request already decided or withdrawn answers 409.'
+      tags: [Quotas]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuotaDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -1346,6 +1372,7 @@ components:
         pendingRequestId: { type: string, description: An open increase request }
     AccessRequestStatus:
       type: string
+      description: '`expired` is a request still pending after 30 days'
       enum: [pending, approved, rejected, expired]
     AccessRequestInput:
       type: object
@@ -1387,6 +1414,13 @@ components:
           type: array
           description: The account admins who may decide it
           items: { type: string }
+    QuotaDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        limit: { type: integer, minimum: 1, description: 'On approve, the limit granted; the ask by default' }
+        comment: { type: string, maxLength: 2000 }
     QuotaRequest:
       type: object
       required: [requestId, accountId, quotaKey, requestedLimit, reason, status, requestedBy, requestedAt]
@@ -1398,6 +1432,7 @@ components:
         requestedLimit: { type: integer }
         reason: { type: string }
         status: { type: string, enum: [open, approved, rejected, withdrawn] }
+        grantedLimit: { type: integer, description: 'On approval, the limit granted, which may differ from the ask' }
         requestedBy: { type: string }
         requestedAt: { type: string, format: date-time }
         decidedAt: { type: string, format: date-time }
