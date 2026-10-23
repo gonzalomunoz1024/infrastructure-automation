@@ -11,9 +11,12 @@ import { Breadcrumbs } from './Breadcrumbs'
 import { Footer } from './Footer'
 import { PlatformFeed } from './PlatformFeed'
 import { Search } from './Search'
-import { isIamRoute, type PageProps, type Route, type RouteName } from './router'
+import { isCostRoute, isIamRoute, type PageProps, type Route, type RouteName } from './router'
 import { toolSectionOf } from './tools'
 import { HeldRolesBanner } from './elevation'
+import { costNav } from '../pages/cost/nav'
+import { CopilotPanel } from './copilot/CopilotPanel'
+import { useCopilot } from './copilot/context'
 
 import SignInPage from '../pages/SignInPage'
 
@@ -70,6 +73,11 @@ const NotificationSettingsPage = lazy(() => import('../pages/notify/Notification
 const ChatLinkPage = lazy(() => import('../pages/notify/ChatLinkPage'))
 const DigestsPage = lazy(() => import('../pages/notify/DigestsPage'))
 const DigestPage = lazy(() => import('../pages/notify/DigestsPage').then((m) => ({ default: m.DigestPage })))
+const InsightsPage = lazy(() => import('../pages/insights/InsightsPage'))
+const CostPage = lazy(() => import('../pages/cost/CostPage'))
+const BudgetsPage = lazy(() => import('../pages/cost/BudgetsPage'))
+const BudgetPage = lazy(() => import('../pages/cost/BudgetsPage').then((m) => ({ default: m.BudgetPage })))
+const ChargebackPage = lazy(() => import('../pages/cost/ChargebackPage'))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
 /*
@@ -131,6 +139,11 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'chat-link': ChatLinkPage,
   digests: DigestsPage,
   digest: DigestPage,
+  insights: InsightsPage,
+  cost: CostPage,
+  budgets: BudgetsPage,
+  budget: BudgetPage,
+  chargeback: ChargebackPage,
   'not-found': NotFoundPage,
 }
 
@@ -139,6 +152,7 @@ export function AppShell({ route }: { route: Route }) {
   const toast = useToast()
   const [palette, setPalette] = useState(false)
   const [feed, setFeed] = useState(false)
+  const copilot = useCopilot()
   // the drawer remembers the path it opened on, so a navigation closes it without an effect
   const [drawerFor, setDrawerFor] = useState<string | null>(null)
   const drawer = drawerFor === route.path
@@ -149,7 +163,7 @@ export function AppShell({ route }: { route: Route }) {
   const inIam = isIamRoute(route.name)
   const queue = useAccessRequestQueue({ enabled: inIam })
   const tools = toolSectionOf(route)
-  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, queue.toDecide.length) : tools ? toolsNav(tools, route) : null
+  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, queue.toDecide.length) : isCostRoute(route.name) ? costNav(route, account.name) : tools ? toolsNav(tools, route) : null
 
   // the shell works without a platform: say so once, keep drawing
   useEffect(() => {
@@ -167,7 +181,7 @@ export function AppShell({ route }: { route: Route }) {
     <RefusalProvider>
       <div className="flex h-dvh flex-col bg-surface">
         <SkipLink />
-        <Header onOpenSearch={openPalette} onOpenSidebar={nav ? () => setDrawerFor(route.path) : undefined} />
+        <Header onOpenSearch={openPalette} onOpenSidebar={nav ? () => setDrawerFor(route.path) : undefined} onOpenCopilot={copilot.toggle} copilotOpen={copilot.isOpen} />
         <div className="flex min-h-0 flex-1">
           {nav && <SectionSidebar nav={nav} />}
           <main id="main" tabIndex={-1} className="console-content min-w-0 flex-1 overflow-y-auto px-6 py-6 outline-none lg:px-8">
@@ -185,6 +199,7 @@ export function AppShell({ route }: { route: Route }) {
         <Footer onOpenFeed={() => setFeed((f) => !f)} feedOpen={feed} />
         {palette && <Search route={route} onClose={() => setPalette(false)} />}
         {feed && <PlatformFeed onClose={() => setFeed(false)} />}
+        {copilot.isOpen && <CopilotPanel route={route} />}
         {drawer && nav && <SectionDrawer nav={nav} onClose={() => setDrawerFor(null)} />}
       </div>
     </RefusalProvider>

@@ -60,6 +60,11 @@ export type RouteName =
   | 'chat-link'
   | 'digests'
   | 'digest'
+  | 'insights'
+  | 'cost'
+  | 'budgets'
+  | 'budget'
+  | 'chargeback'
   | 'not-found'
 
 export interface RouteDef {
@@ -132,7 +137,18 @@ export const ROUTES: RouteDef[] = [
   { name: 'chat-link', pattern: '/chat-link', title: 'Linked chats' },
   { name: 'digests', pattern: '/digests', title: 'Weekly digests' },
   { name: 'digest', pattern: '/digests/:weekStart', title: 'Weekly digest' },
+  // phase 9: the executive home, and cost and budgets
+  { name: 'insights', pattern: '/insights', title: 'Executive home' },
+  { name: 'cost', pattern: '/cost', title: 'Cost and usage' },
+  { name: 'budgets', pattern: '/cost/budgets', title: 'Budgets' },
+  { name: 'budget', pattern: '/cost/budgets/:id', title: 'Budget' },
+  { name: 'chargeback', pattern: '/cost/chargeback', title: 'Chargeback' },
 ]
+
+/** Cost and usage, budgets and chargeback. */
+export function isCostRoute(name: RouteName): boolean {
+  return name === 'cost' || name === 'budgets' || name === 'budget' || name === 'chargeback'
+}
 
 /** The identity and access section: the overview and every page under it. */
 export function isIamRoute(name: RouteName): boolean {

@@ -24,9 +24,12 @@ export interface HeaderProps {
   onOpenSearch: () => void
   /** shown on narrow screens when a sidebar exists */
   onOpenSidebar?: () => void
+  /** the copilot's side panel (phase 9) */
+  onOpenCopilot?: () => void
+  copilotOpen?: boolean
 }
 
-export function Header({ onOpenSearch, onOpenSidebar }: HeaderProps) {
+export function Header({ onOpenSearch, onOpenSidebar, onOpenCopilot, copilotOpen }: HeaderProps) {
   return (
     <header className="relative z-40 shrink-0 border-b border-stroke-light bg-surface/85 backdrop-blur-md">
       <div className="flex h-14 items-center gap-1.5 px-3 sm:gap-2 sm:px-4">
@@ -41,6 +44,7 @@ export function Header({ onOpenSearch, onOpenSidebar }: HeaderProps) {
           <SearchTrigger onClick={onOpenSearch} />
         </div>
         <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+          {onOpenCopilot && <CopilotButton onClick={onOpenCopilot} open={!!copilotOpen} />}
           <NotificationsBell />
           <HelpMenu />
           <AccountPicker />
@@ -245,6 +249,61 @@ function MenuItem({ children, onSelect, selected, disabled, hint, icon }: { chil
 
 export function MenuHeading({ children }: { children: ReactNode }) {
   return <div className="px-3 pb-1 pt-2 text-caption2 font-semibold uppercase tracking-wide text-tertiary">{children}</div>
+}
+
+/** Opens the copilot's side panel (phase 9): plain English to a list, a form or an explanation. */
+function CopilotButton({ onClick, open }: { onClick: () => void; open: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-controls="copilot-panel"
+      className={cx('flex h-9 items-center gap-1.5 rounded-full px-2 text-sm transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
+    >
+      <span className="sr-only">Ask the copilot</span>
+      <Icon name="sparkles" size={17} />
+      <span aria-hidden="true" className="hidden xl:inline">
+        Copilot
+      </span>
+    </button>
+  )
+}
+
+function NotificationsBell() {
+  const queue = useAccessRequestQueue()
+  const items = queue.toDecide
+  const count = items.length
+  return (
+    <HeaderMenu label={count ? `Notifications, ${count} to decide` : 'Notifications'} icon="bell" role="dialog" width="w-80" badge={count}>
+      {(close) =>
+        count === 0 ? (
+          <EmptyState compact icon="bell" title="Nothing to decide" message={queue.readable ? `Access requests waiting for you land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
+        ) : (
+          <div>
+            <MenuHeading>Access requests to decide</MenuHeading>
+            <ul aria-label="Access requests to decide">
+              {items.map((r) => (
+                <li key={r.requestId}>
+                  <Link to={pathFor('iam-request', { id: r.requestId })} onClick={close} className="block px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
+                    <span className="block text-primary">
+                      {r.requester.name ?? r.requester.userId} asks for <span className="font-medium">{roleLabel(r.role)}</span>
+                    </span>
+                    <span className="block truncate font-mono text-caption text-tertiary">
+                      {r.action} · {relativeTime(r.requestedAt)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <Link to={pathFor('iam-requests')} onClick={close} className="block border-t border-stroke-light px-3 py-2 text-caption font-medium text-accent transition-opacity hover:opacity-70">
+              All access requests
+            </Link>
+          </div>
+        )
+      }
+    </HeaderMenu>
+  )
 }
 
 function HelpMenu() {

@@ -99,6 +99,11 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-chat-link', group: 'Pages', label: 'Linked chats', icon: 'link', keywords: 'slack teams chatops link unlink', run: () => navigate(pathFor('chat-link')) },
       { id: 'page-digests', group: 'Pages', label: 'Weekly digests', icon: 'document', keywords: 'digest summary week report', run: () => navigate(pathFor('digests')) },
       ...TOOLS.map((t) => ({ id: `page-${t.route}`, group: 'Pages', label: t.label, icon: t.icon, keywords: t.keywords, run: () => navigate(toolPath(t)) })),
+      // phase 9
+      { id: 'page-insights', group: 'Pages', label: 'Executive home', icon: 'pulse', keywords: 'insights dashboard lead time hours saved adoption', run: () => navigate(pathFor('insights')) },
+      { id: 'page-cost', group: 'Pages', label: 'Cost and usage', icon: 'chart', keywords: 'cost explorer spend billing forecast', run: () => navigate(pathFor('cost')) },
+      { id: 'page-budgets', group: 'Pages', label: 'Budgets', icon: 'bell', keywords: 'cost budget alerts limit forecast', run: () => navigate(pathFor('budgets')) },
+      { id: 'page-chargeback', group: 'Pages', label: 'Chargeback', icon: 'document', keywords: 'cost centre finance export csv', run: () => navigate(pathFor('chargeback')) },
     )
 
     // settings: appearance, account, region, sign out

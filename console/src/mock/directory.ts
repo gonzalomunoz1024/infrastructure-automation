@@ -24,6 +24,8 @@ export interface DirectoryAccount {
   accountId: string
   name: string
   owningTeam: string
+  /** the finance cost centre the account is charged to (hub decision 25); absent, the cost service uses owningTeam */
+  costCentre?: string
   status: 'active' | 'suspended' | 'closed'
   /** when and why it was closed (WP 7.7) */
   closedAt?: string
@@ -43,8 +45,8 @@ export interface DirectoryPerson {
 }
 
 export const ACCOUNTS: DirectoryAccount[] = [
-  { accountId: '123456789012', name: 'Compute', owningTeam: 'team-compute', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-compute', platformScopes: ['compute:*', 'platform:*', 'storage:*', 'data:read', 'audit:*'], createdAt: '2026-09-01T09:00:00Z' },
-  { accountId: '210987654321', name: 'Data', owningTeam: 'team-data', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-data', platformScopes: ['data:*', 'compute:read', 'platform:read', 'storage:read', 'audit:*'], createdAt: '2026-09-03T09:00:00Z' },
+  { accountId: '123456789012', name: 'Compute', owningTeam: 'team-compute', costCentre: 'CC-4100', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-compute', platformScopes: ['compute:*', 'platform:*', 'storage:*', 'data:read', 'audit:*'], createdAt: '2026-09-01T09:00:00Z' },
+  { accountId: '210987654321', name: 'Data', owningTeam: 'team-data', costCentre: 'CC-4200', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-data', platformScopes: ['data:*', 'compute:read', 'platform:read', 'storage:read', 'audit:*'], createdAt: '2026-09-03T09:00:00Z' },
 ]
 
 /** The people of the demo identity provider. The console's user ids are their short names here; the BFF's and the identity service's are `user_<name>`, which the pages never parse. */
@@ -92,11 +94,11 @@ export function policiesFor(accountId: string): IamPolicy[] {
     // a person always sees their own access requests; reading the account's is for those who decide them, auditors and admins
     managed('managed-viewer', 'The viewer role’s policy: every read, no change', [allow('reads', ['*:get', '*:list', '*:observe', '*:history', 'search:query', 'cost:get', 'cost:list', 'access-request:create', 'quota:request-increase', 'elevation:create'], all, ['access-request:get', 'access-request:list', 'access-review:*', 'elevation:list', 'elevation:get'])]),
     managed('managed-operator', 'The operator role’s policy: everything but deletes and IAM', [
-      allow('changes', ['*:*'], all, ['*:delete', 'iam:*', 'quota:set', 'account:update', 'access-request:get', 'access-request:list', 'access-request:decide', 'access-review:*', 'elevation:list', 'elevation:get', 'elevation:decide', 'elevation:revoke']),
+      allow('changes', ['*:*'], all, ['*:delete', 'iam:*', 'quota:set', 'account:update', 'access-request:get', 'access-request:list', 'access-request:decide', 'access-review:*', 'elevation:list', 'elevation:get', 'elevation:decide', 'elevation:revoke', 'budgets:create', 'budgets:update', 'cost:export']),
       allow('iam-reads', ['iam:get', 'iam:list'], all),
     ]),
     managed('managed-account-admin', 'The account-admin role’s policy: everything', [allow('everything', ['*:*'], all)]),
-    managed('managed-auditor', 'The auditor role’s policy: every read and the audit trail, no change', [allow('reads', ['*:get', '*:list', '*:observe', '*:history', 'search:query', 'cost:get', 'cost:list'], all), allow('audit', ['audit:*'], all)]),
+    managed('managed-auditor', 'The auditor role’s policy: every read and the audit trail, no change', [allow('reads', ['*:get', '*:list', '*:observe', '*:history', 'search:query', 'cost:get', 'cost:list', 'cost:export'], all), allow('audit', ['audit:*'], all)]),
     { policyId: APPROVER_ROLE, name: APPROVER_ROLE, description: 'Reads and decides the account’s access requests', builtIn: false, version: 1, updatedAt: born, statements: [allow('approve', ['access-request:get', 'access-request:list', 'access-request:decide'], [iamResource(accountId, 'access-request')])] },
   ]
 }
@@ -632,8 +634,8 @@ export function decide(dir: Directory, accountId: string, subject: Subject, chec
   return suggested ? { allowed: false, reason, requestable: true, suggestedRole: suggested } : { allowed: false, reason, requestable: false }
 }
 
-/** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation', 'activity'])
+/** The services the console answers for itself (identity, resource groups, access over time, the trail, and phase 9's cost, budgets and insights): the platform's role for the account never decides them. */
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation', 'activity', 'cost', 'budgets', 'insights'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {

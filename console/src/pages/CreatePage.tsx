@@ -11,6 +11,7 @@ import { codeSamplesFor } from '../lib/code'
 import { purposeOf, singularOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
 import { explain } from '../lib/plain'
 import { QuotaRefusalNote } from './quotas/QuotaRefusalNote'
+import { prefillFor } from '../lib/prefill'
 import { useQuery } from '../lib/queries'
 import { cleanInput, useSubmissionKey } from '../lib/submission'
 import { ALLOWED } from '../lib/permissions'
@@ -43,7 +44,7 @@ export default function CreatePage({ route }: PageProps) {
   if (from) return <CloneWizard key={`${type.service}/${type.name}/from/${from}`} type={type} action={type.create} from={from} />
   const token = route.query.draft
   if (token) return <DraftWizard key={`${type.service}/${type.name}/draft/${token}`} type={type} action={type.create} token={token} />
-  return <Wizard key={`${type.service}/${type.name}`} type={type} action={type.create} />
+  return <Wizard key={`${type.service}/${type.name}`} type={type} action={type.create} prefill={route.query.prefill} />
 }
 
 /** The wizard filled from a resource of this account: the BFF's clone draft. */
@@ -97,7 +98,7 @@ function reviewValue(action: ConsoleAction, name: string, v: unknown): ReactNode
   return formatField(action.input, name, v)
 }
 
-function Wizard({ type, action, clone, lost }: { type: ConsoleType; action: ConsoleAction; clone?: CloneDraft | null; lost?: boolean }) {
+function Wizard({ type, action, clone, lost, prefill }: { type: ConsoleType; action: ConsoleAction; clone?: CloneDraft | null; lost?: boolean; prefill?: string }) {
   const { decide, account, region } = useConsole()
   const refusal = useRefusal()
   const toast = useToast()
@@ -112,7 +113,8 @@ function Wizard({ type, action, clone, lost }: { type: ConsoleType; action: Cons
   const required = useMemo(() => tagPolicy.data?.required ?? [], [tagPolicy.data])
   const steps = useMemo(() => stepsFor(schema, noun, { tags: true, requiredTags: required.length }), [schema, noun, required.length])
   const [current, setCurrent] = useState(0)
-  const [value, setValue] = useState<SchemaValue>(() => (clone ? { ...defaultsFor(schema), ...clone.input } : defaultsFor(schema)))
+  // a clone starts from the resource it copies; the copilot's links open the wizard filled (lib/prefill.ts); the person still checks every step
+  const [value, setValue] = useState<SchemaValue>(() => (clone ? { ...defaultsFor(schema), ...clone.input } : { ...defaultsFor(schema), ...prefillFor(schema, prefill) }))
   const [problems, setProblems] = useState<Problem[]>([])
   const [reason, setReason] = useState('')
   const [tagDraft, setTagDraft] = useState<TagsDraft>(() => (clone ? draftOf(clone.tags, clone.tagPolicy.required, clone.input) : emptyTagsDraft()))

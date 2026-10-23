@@ -3,6 +3,7 @@ import { When } from '@iaf/console-kit'
 import { Link, pathFor } from '../../app/router'
 import type { ConsoleType } from '../../lib/descriptors'
 import type { ConsoleResource } from '../../lib/types'
+import { useJobExplanation } from '../explain/FailureExplainer'
 
 /*
  * The line above a resource's facts while something is happening to it: a request in flight, one
@@ -47,6 +48,9 @@ function lookOf(type: ConsoleType, job: LastJob, name: string): Look | null {
 
 export function JobBanner({ type, job, name, className }: { type: ConsoleType; job: LastJob | undefined; name: string; className?: string }) {
   const look = job ? lookOf(type, job, name) : null
+  // a failed request says why in a line, and that the request page has a fix to try (phase 9)
+  const why = useJobExplanation(job?.jobId ?? '', job?.status).data
+  const detail = why ? `${why.cause.title}.${why.fix ? ' The request has a fix to try.' : ''}` : look?.detail
   return (
     <div role="status" aria-live="polite" className={className}>
       {job && look && (
@@ -55,11 +59,11 @@ export function JobBanner({ type, job, name, className }: { type: ConsoleType; j
           <div className="min-w-0 flex-1">
             <p className="font-medium text-primary">{look.title}</p>
             <p className="mt-0.5 text-caption text-secondary">
-              {look.detail} Started <When at={job.startedAt} />.
+              {detail} Started <When at={job.startedAt} />.
             </p>
           </div>
           <Link to={pathFor('request', { id: job.jobId })} className="shrink-0 self-center text-caption font-medium text-accent transition-opacity hover:opacity-70">
-            {job.status === 'failed' ? 'See what went wrong' : 'Follow the request'}
+            {why?.fix ? 'See the fix' : job.status === 'failed' ? 'See what went wrong' : 'Follow the request'}
             <span className="sr-only"> {job.jobId}</span>
           </Link>
         </div>
