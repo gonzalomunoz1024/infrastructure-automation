@@ -9,7 +9,12 @@ platform changes the console needs.
 - Plan: [Customer console plan](https://claude.ai/artifact/Sp3X9oC33s3XjN86vkYsXC) (the full
   design: personas, wfrn, the dynamic console, services, scale, security, roadmap, risks).
 - Platform changes: [platform-changes/README.md](platform-changes/README.md), a plan only.
-- Status: planning, 2026-10-23. All ten decisions are answered. No service branch has code yet.
+- Status: phase 0 in progress, 2026-10-23. All ten decisions are answered, and the phase 0
+  decisions below are taken. On this branch the platform's target contracts
+  (`contracts/platform/`), the console's own event catalog and the five service drafts
+  (`contracts/`), the wfrn specification, fixtures and JavaScript reference, the schemas, the type
+  overlays and the global region, the contract checks (`npm run check`) and the nightly platform
+  contract check have landed. `console-libs` and `console-web` are being set up in parallel.
   Revised the same day after an independent review against the platform at `c9529d5`: P-18 to
   P-21, and a phase 9 of features beyond the AWS console. The console is built against the
   platform as it will be after all twenty-one changes.
@@ -46,7 +51,7 @@ services run against `platform-fake`, an in-memory implementation of the target 
 | Branch | Future repository | What it holds | Build | Depends on |
 | --- | --- | --- | --- | --- |
 | `console-root` | `console-hub` | This README, decisions, `contracts/`, `type-overlays/`, `platform-changes/` | none (docs and schemas; CI validates the schemas) | none |
-| `console-libs` | `console-libs` | Gradle convention plugins (`build-logic`), the Java `wfrn` library, `service-kit` (account scope, errors, outbox, idempotent consumer, MongoDB and OpenTelemetry helpers), clients generated from `contracts/`; published to GitHub Packages as `com.iaf.console:*` | Gradle | `console-root` contracts |
+| `console-libs` | `console-libs` | Gradle convention plugins (`build-logic`), the Java `wfrn` library, `service-kit` (account scope, errors, outbox, idempotent consumer, MongoDB and OpenTelemetry helpers), the platform client typed against `contracts/platform/openapi-target.yaml`, `platform-fake` and `platform-fake-app`; published to GitHub Packages as `com.iaf.console:*` | Gradle | `console-root` contracts |
 | `console-bff` | `console-bff` | Sign-in, sessions, type descriptors, page APIs, commands, SSE | Gradle, Spring WebFlux | `console-libs` |
 | `console-identity-service` | `console-identity-service` | Accounts, users, groups, roles, policies, access keys, quotas, OPA bundles | Gradle, Spring WebFlux | `console-libs` |
 | `console-state-service` | `console-state-service` | The event-sourced resource inventory by wfrn, desired against observed | Gradle, Spring WebFlux | `console-libs` |
@@ -69,9 +74,10 @@ its own MongoDB database, its own Helm chart under `deploy/`, and its own
   the platform's API as it is today for reference (`contracts/platform/openapi-c9529d5.json`,
   read-only), and the wfrn fixtures (`contracts/wfrn/fixtures.json`) that the Java
   and TypeScript wfrn libraries both run.
-- `console-libs` generates its clients from a pinned commit of this branch, recorded in
-  `console-libs/contracts.lock`, and publishes them with a version. Services depend on a
-  published version, never on a branch.
+- `console-libs` builds its platform client and its fake against a pinned commit of this branch,
+  recorded in `console-libs/contracts.lock` (the commit and the sha256 of every contract file it
+  reads; `contracts/README.md` shows the file), and publishes them with a version. Every service
+  pins the same way. Services depend on a published version, never on a branch.
 - A breaking change to a contract is a new version of that API (`/v2`) or a new event type, and
   both versions are served for one release.
 - **Nightly platform contract check.** A nightly CI job on this branch fetches `/openapi.json`
@@ -103,6 +109,19 @@ with no hints still gets a full console from its schema and workflows; hints onl
 | 8 | Repositories | Each service its own repository in concept; for now one orphan branch per service here, with this branch as the hub |
 | 9 | Look and feel | AWS's layout and interactions, drawn in Atlas visuals with Apple-grade restraint: think Jony Ive, elegant, quiet, precise. The one Atlas exception is `@tanstack/react-virtual` for row virtualisation |
 | 10 | Drift remediation | Detect drift and show it with a one-click revert (plus accept and ignore field); never revert automatically |
+
+## Phase 0 decisions
+
+Taken 2026-10-23 while the foundations were built, on top of the ten decisions above.
+
+| # | Decision | Answer |
+| --- | --- | --- |
+| 11 | How `console-web` gets Atlas and the shared components | It vendors Atlas: `packages/ui` is copied verbatim from the platform at `c9529d5`, and `packages/console-kit` holds the console's forks of SchemaForm, ResourcePicker, LineageGraph, JsonEditor, PreviewCard, StepTimeline and ProblemList, with `x-console` support added. `packages/wfrn` is the TypeScript wfrn library. The web app switches to the published P-14 packages when they exist |
+| 12 | What `platform-fake` is | A library in `console-libs` plus a runnable `platform-fake-app`, an in-memory implementation of the target contracts seeded from the `c9529d5` sample content pinned in `contracts/platform/sample-content/` plus P-15's additions (the `global` region, the overlays' `console` and `observe` blocks, `update-vm`) |
+| 13 | How the platform client is written | Hand-written reactive code in `console-libs`, typed against `contracts/platform/openapi-target.yaml`, with an abstract contract test suite that runs against the fake in CI and against the real platform when `CONSOLE_TEST_PLATFORM_URL` is set. Code generation is revisited for the service-to-service clients in phase 1 |
+| 14 | How a service pins the contracts | By hub commit, in a `contracts.lock` at the service root holding the commit and the sha256 of every contract file it reads (`contracts/README.md`) |
+| 15 | How shared code is published | `console-libs` publishes `com.iaf.console:*` to GitHub Packages from merges to `console-libs`; services depend on a published version |
+| 16 | The wfrn pattern rules | As settled in `contracts/wfrn/SPEC.md`: `*` matches any run of characters and `?` exactly one, across `:` and `/`, as in IAM; a pattern is judged with a name's rules, except that a segment with a wildcard is checked only for its alphabet and length, a pattern may stop early at a segment that ends in `*`, and the id may be absent when the type segment ends in `*`. The fixtures in `contracts/wfrn/fixtures.json` are the test every wfrn library passes |
 
 ## Build order
 
