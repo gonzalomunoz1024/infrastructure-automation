@@ -94,6 +94,15 @@ console:
     url: http://localhost:18085     # the search indexer; empty means the in-process demo stand-in under /demo-search (demo profile)
     service-name: console-search-indexer
     timeout: 5s
+  cost:
+    url: http://localhost:18086     # the cost service; empty means the in-process demo stand-in under /demo-cost (demo profile)
+    service-name: console-cost-service
+    timeout: 10s
+    check-timeout: 2s               # the budget check and estimate a create waits for; past it the create goes on without them (fail open)
+  drift:
+    url: http://localhost:18084     # the drift service (scorecards); empty means the in-process demo stand-in under /demo-drift (demo profile)
+    service-name: console-drift-service
+    timeout: 10s
   platform:
     base-url: http://localhost:18090
     internal-token: ""              # the console-internal service account's token (feed and content reads)
@@ -116,6 +125,14 @@ console:
     heartbeat: 15s
     relay:
       enabled: true                 # follow the platform's feed into the live stream
+  insights:                         # the executive home (GET /console/v1/insights)
+    cache-ttl: 5m                   # one answer per set of accounts and period is kept this long
+    max-jobs-per-account: 10000     # the most requests of an account read for one period
+    concurrency: 8                  # platform, drift and identity calls at once
+    baseline:                       # today's tickets, from a one-off export of the ticket queue; none means no hours saved
+      source: ""                    # what the export was, such as "ticket export, September 2026"
+      lead-time:                    # a ticket's median lead time, such as 3d
+      by-workflow: {}               # the median per workflow where the export tells kinds of request apart, such as create-vm: 5d
   web:
     origins: ["http://localhost:3000"]
   tags:                             # the organization's guardrails: every create through the console names these tags

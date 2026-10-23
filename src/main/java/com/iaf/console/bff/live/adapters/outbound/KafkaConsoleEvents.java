@@ -26,7 +26,8 @@ import reactor.util.retry.Retry;
 
 /**
  * The console's own events from Kafka into the live stream: every envelope of
- * {@code state.resources} and {@code drift.findings} reaches its account's pages, and every
+ * {@code state.resources} and {@code drift.findings} reaches its account's pages, a threshold
+ * crossed on {@code cost.events} as {@code budget.alert}, and every
  * {@code identity.changes} event drops the account's cached decisions. Offsets are acknowledged
  * after the hub took the event; a message that is not an envelope is logged and skipped.
  */

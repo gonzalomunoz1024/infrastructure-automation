@@ -30,6 +30,8 @@ config:
   identityUrl: "http://console-identity-service"
   stateUrl: "http://console-state-service"
   searchUrl: "http://console-search-indexer"
+  costUrl: "http://console-cost-service"
+  driftUrl: "http://console-drift-service"
   platformBaseUrl: "http://platform"
   webOrigins: "https://console.example.com"
   kafkaBootstrapServers: "kafka:9092"

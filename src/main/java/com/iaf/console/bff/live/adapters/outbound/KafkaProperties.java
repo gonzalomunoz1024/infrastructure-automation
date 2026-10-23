@@ -10,5 +10,5 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 public record KafkaProperties(
         @DefaultValue("localhost:9092") String bootstrapServers,
         @DefaultValue("console-bff") String groupId,
-        @DefaultValue({"state.resources", "drift.findings", "identity.changes"}) List<String> topics) {
+        @DefaultValue({"state.resources", "drift.findings", "identity.changes", "cost.events"}) List<String> topics) {
 }

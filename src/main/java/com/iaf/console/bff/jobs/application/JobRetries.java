@@ -25,6 +25,12 @@ import reactor.core.publisher.Mono;
 public class JobRetries {
 
     public static final String VERB = "retry";
+    /**
+     * The label the console puts on the platform job of a retry it starts as a rerun, naming the
+     * failed job it retries: the executive home counts such a request as one a person stepped in
+     * on, and the failure explainer finds what fixed an earlier failure by it.
+     */
+    public static final String RETRY_OF_LABEL = "retry-of";
 
     private final Types types;
     private final PlatformProperties platform;

@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.cost.domain.BudgetRule;
 import com.iaf.console.bff.jobs.application.JobRetries;
 import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
@@ -36,6 +37,7 @@ import com.iaf.console.bff.resources.domain.DependentsExistException;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CloneDraft;
 import com.iaf.console.bff.resources.domain.CommandInput;
+import com.iaf.console.bff.resources.domain.ConsolePolicy;
 import com.iaf.console.bff.resources.domain.FindingView;
 import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.resources.domain.LineageView;
@@ -71,6 +73,7 @@ import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.platform.client.JobFilter;
 import com.iaf.console.platform.client.PlatformException;
+import com.iaf.console.platform.client.PlatformHeaders;
 import com.iaf.console.platform.client.PlatformPort;
 import com.iaf.console.platform.client.RequestOptions;
 import com.iaf.console.platform.model.BatchContext;
@@ -79,8 +82,6 @@ import com.iaf.console.platform.model.JobDetail;
 import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.platform.model.Lineage;
-import com.iaf.console.platform.model.PolicyDecision;
-import com.iaf.console.platform.model.PolicyRule;
 import com.iaf.console.platform.model.RerunRequest;
 import com.iaf.console.platform.model.Resource;
 import com.iaf.console.platform.model.RetryRequest;
@@ -124,10 +125,12 @@ public class Resources {
     private final Jobs jobs;
     private final JobRetries retries;
     private final TagPolicies tagPolicies;
+    private final CreateBudgets budgets;
     private final ObjectMapper json;
 
     public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, ObjectMapper json) {
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, CreateBudgets budgets,
+            ObjectMapper json) {
         this.types = types;
         this.access = access;
         this.sessions = sessions;
@@ -140,6 +143,7 @@ public class Resources {
         this.jobs = jobs;
         this.retries = retries;
         this.tagPolicies = tagPolicies;
+        this.budgets = budgets == null ? CreateBudgets.none() : budgets;
         this.json = json;
     }
 
@@ -268,8 +272,9 @@ public class Resources {
 
     /**
      * Checks the required tags (400 {@code tags.required} or {@code tags.invalid} with a problem on
-     * each {@code /tags/<key>}), mints the name, sets the tags on it, then starts the type's create
-     * workflow with the name in the job's context.
+     * each {@code /tags/<key>}) and the account's budgets (409 {@code budget.exceeded} while a
+     * budget of its scope blocks creates), mints the name, sets the tags on it, then starts the
+     * type's create workflow with the name in the job's context.
      */
     public Mono<CommandAccepted> create(Session session, String type, CommandInput body, String requestId, String idempotencyKey) {
         return types.byType(session, type).flatMap(t -> {
@@ -279,6 +284,7 @@ public class Resources {
                     .then(sessions.requireFreshFor(session, actionName))
                     .then(Mono.fromRunnable(() -> requireFields(action, body.input())))
                     .then(requireTags(session, body.tags(), "/tags"))
+                    .then(budgets.require(session, t, body.tags()))
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
                         Map<String, Object> input = inputFor(action, entry, body, null);
@@ -293,16 +299,24 @@ public class Resources {
         });
     }
 
-    /** The create workflow's preview, with the console's {@code tags.required} or {@code tags.invalid} deny while the tags fall short. */
+    /**
+     * The create workflow's preview, with the console's {@code tags.required} or {@code tags.invalid}
+     * deny while the tags fall short, and the account's budget rules (each with its
+     * {@code budgetId}); priced from the cost service's estimate when the plan priced nothing.
+     */
     public Mono<PreviewView> previewCreate(Session session, String type, CommandInput body, String requestId) {
         return types.byType(session, type).flatMap(t -> {
             ConsoleAction action = actionOf(t, "create");
             String actionName = AccessCheck.action(t.service(), action.verb());
             return access.require(session, actionName, AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type()))
                     .then(types.entry(session, action.workflow()))
-                    .flatMap(entry -> Mono.zip(preview(session, entry, Map.of(), inputFor(action, entry, body, null), options(session, requestId, null, null, body),
-                            Map.of()), tagPolicies.forAccount(session.accountId())))
-                    .map(both -> withTagRules(both.getT1(), both.getT2().check(body.tags(), "/tags")));
+                    .flatMap(entry -> {
+                        Map<String, Object> input = inputFor(action, entry, body, null);
+                        return Mono.zip(preview(session, entry, Map.of(), input, options(session, requestId, null, null, body), Map.of()),
+                                        tagPolicies.forAccount(session.accountId()))
+                                .map(both -> withTagRules(both.getT1(), both.getT2().check(body.tags(), "/tags")))
+                                .flatMap(view -> budgets.preview(session, t, input, body.tags(), view));
+                    });
         });
     }
 
@@ -641,7 +655,8 @@ public class Resources {
                                     List.of(Problem.error("batch.too-large", "/items", entry.workflow() + " takes at most " + max + " rows in one batch, not "
                                             + body.items().size()))));
                         }
-                        Mono<List<Row>> rows = create ? requireRowTags(session, body).then(mintRows(session, t, entry, action, body, requestId, idempotencyKey))
+                        Mono<List<Row>> rows = create ? requireRowTags(session, body).then(budgets.requireRows(session, t, rowTags(body)))
+                                .then(mintRows(session, t, entry, action, body, requestId, idempotencyKey))
                                 : existingRows(session, t, entry, action, body)
                                         .flatMap(found -> "delete".equals(body.verb()) ? refuseDependents(session, found) : Mono.just(found));
                         return rows.flatMap(prepared -> {
@@ -677,16 +692,23 @@ public class Resources {
             boolean delete = "delete".equals(body.verb());
             return access.require(session, actionName, typePattern(session, t)).then(Mono.defer(() -> {
                 if ("create".equals(body.verb())) {
-                    return tagPolicies.forAccount(session.accountId()).map(policy -> {
+                    return Mono.zip(tagPolicies.forAccount(session.accountId()), budgets.rowRules(session, t, rowTags(body))).map(both -> {
+                        TagPolicy policy = both.getT1();
+                        List<List<BudgetRule>> rowRules = both.getT2();
                         List<BatchPreview.Row> rows = new ArrayList<>();
                         for (int i = 0; i < body.items().size(); i++) {
                             Map<String, Object> input = new LinkedHashMap<>(body.defaults());
                             input.putAll(body.items().get(i).input());
                             List<Problem> problems = new ArrayList<>(missingFields(action, input, "/items/" + i + "/input"));
                             problems.addAll(policy.check(body.tagsOf(i), "/items/" + i + "/tags"));
+                            for (BudgetRule rule : rowRules.get(i)) {
+                                if (rule.denies()) {
+                                    problems.add(Problem.error(BudgetRule.EXCEEDED, "/items/" + i + "/tags", rule.message()));
+                                }
+                            }
                             rows.add(new BatchPreview.Row(i, null, nameOf(input), null, null, null, problems));
                         }
-                        return new BatchPreview(body.verb(), rows, null, decision(rows));
+                        return new BatchPreview(body.verb(), rows, null, CreateBudgets.withBudgetRules(decision(rows), rowRules));
                     });
                 }
                 return Flux.range(0, body.items().size()).flatMapSequential(i -> previewRow(session, t, body.items().get(i), i, delete), RADIUS_CONCURRENCY)
@@ -739,8 +761,17 @@ public class Resources {
                 e -> Mono.just(new PreviewRow(index, row.wfrn(), null, List.of(Problem.error("not-found", field, "no " + t.type() + " " + row.wfrn() + " here")))));
     }
 
+    /** Each row's tags, as a batch create sets them. */
+    private static List<Map<String, String>> rowTags(BatchInput body) {
+        List<Map<String, String>> out = new ArrayList<>();
+        for (int i = 0; i < body.items().size(); i++) {
+            out.add(body.tagsOf(i));
+        }
+        return out;
+    }
+
     /** The console's decision on a batch: a deny for each kind of blocking problem its rows carry. */
-    private static PolicyDecision decision(List<BatchPreview.Row> rows) {
+    private static ConsolePolicy decision(List<BatchPreview.Row> rows) {
         Map<String, Long> blocking = new LinkedHashMap<>();
         for (BatchPreview.Row row : rows) {
             if (row.problems() != null) {
@@ -749,10 +780,10 @@ public class Resources {
                 }
             }
         }
-        List<PolicyRule> rules = new ArrayList<>();
-        blocking.forEach((code, count) -> rules.add(new PolicyRule(code, PreviewView.DENY,
+        List<ConsolePolicy.Rule> rules = new ArrayList<>();
+        blocking.forEach((code, count) -> rules.add(ConsolePolicy.Rule.of(code, PreviewView.DENY,
                 (count == 1 ? "1 row" : count + " rows") + " cannot run: " + code)));
-        return new PolicyDecision(rules.isEmpty() ? "allow" : PreviewView.DENY, rules, "console");
+        return new ConsolePolicy(rules.isEmpty() ? ConsolePolicy.ALLOW : PreviewView.DENY, rules, "console");
     }
 
     /** The workflow's required fields a form leaves out, as problems on their fields. */
@@ -953,8 +984,21 @@ public class Resources {
             }
             String from = fix.fromStep() != null ? fix.fromStep() : JobRetries.rerunFrom(job)
                     .orElseThrow(() -> new ConflictException("the job ran no step to run again from", Map.of("jobId", job.id())));
-            return p.rerunJob(job.id(), new RerunRequest(from, input), chosen);
+            return p.rerunJob(job.id(), new RerunRequest(from, input), retryOf(chosen, job.id()));
         }).map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
+    }
+
+    /**
+     * A rerun carries {@link JobRetries#RETRY_OF_LABEL} naming the failed job, in place of the one
+     * the failed job carried when it was itself a retry, unless the job already has as many labels
+     * as the platform takes.
+     */
+    static RequestOptions retryOf(RequestOptions options, String failedJobId) {
+        if (!options.labels().containsKey(JobRetries.RETRY_OF_LABEL) && options.labels().size() >= PlatformHeaders.MAX_LABELS) {
+            log.warn("job {} has {} labels already, so its rerun is not labelled {}", failedJobId, options.labels().size(), JobRetries.RETRY_OF_LABEL);
+            return options;
+        }
+        return options.withLabel(JobRetries.RETRY_OF_LABEL, failedJobId);
     }
 
     /**
