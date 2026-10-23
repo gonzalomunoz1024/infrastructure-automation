@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # the nightly platform contract check, 04:00 UTC
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  contracts:
+    name: Contracts
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Check every contract
+        # the OpenAPI and AsyncAPI files, the schemas, the overlays, the used operations, the event
+        # catalog against the plan and the wfrn fixtures against the JavaScript reference
+        run: npm run check
+      - name: Compare the target with the pinned platform capture
+        # the capture at c9529d5 must show every change as pending or landed, nothing diverged
+        run: npm run check:platform -- --from contracts/platform/openapi-c9529d5.json
+
+  secrets:
+    name: Secret scan
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Install gitleaks
+        # a pinned release built from its module; the Go checksum database verifies the sources
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan the files
+        run: |
+          mkdir -p "$RUNNER_TEMP/tree"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
+          cp .gitleaks.toml "$RUNNER_TEMP/tree/"
+          "$(go env GOPATH)/bin/gitleaks" dir --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml "$RUNNER_TEMP/tree"
+      - name: Scan the new commits
+        # the commits of the pull request or the push; the whole history when there is no range
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          range=""
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          fi
+          if [ -n "$range" ]; then
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
+          else
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml .
+          fi
+
+  nightly-platform-contract-check:
+    name: Nightly platform contract check
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # set this repository variable to a running platform's base URL to skip the build and read
+      # its live document instead (PLATFORM_OPENAPI_TOKEN, a secret, is sent as the bearer token
+      # when it is set; without it the dev header X-User: gonzalo is sent)
+      PLATFORM_OPENAPI_URL: ${{ vars.PLATFORM_OPENAPI_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Check out the platform's main
+        if: env.PLATFORM_OPENAPI_URL == ''
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: platform
+      - uses: actions/setup-java@v4
+        if: env.PLATFORM_OPENAPI_URL == ''
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: platform/backend/pom.xml
+      - name: Build the platform
+        if: env.PLATFORM_OPENAPI_URL == ''
+        run: mvn -B -q -DskipTests package
+        working-directory: platform/backend
+      - name: Start the platform with the demo profile
+        if: env.PLATFORM_OPENAPI_URL == ''
+        run: |
+          jar="$(ls platform/backend/target/*.jar | grep -v original | head -1)"
+          nohup java -jar "$jar" --spring.profiles.active=demo > platform.log 2>&1 &
+          echo $! > platform.pid
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:8080/actuator/health > /dev/null; then echo "up after ${i}x2s"; exit 0; fi
+            sleep 2
+          done
+          echo "the platform did not come up"; tail -50 platform.log; exit 1
+      - name: Fetch the live documents
+        # the OpenAPI document and the three sample reads; a read that answers 404 today (regions)
+        # leaves no file, which the check reports as pending
+        env:
+          PLATFORM_OPENAPI_TOKEN: ${{ secrets.PLATFORM_OPENAPI_TOKEN }}
+        run: |
+          base="${PLATFORM_OPENAPI_URL:-http://localhost:8080}"
+          base="${base%/}"
+          if [ -n "$PLATFORM_OPENAPI_TOKEN" ]; then auth=(-H "Authorization: Bearer $PLATFORM_OPENAPI_TOKEN"); else auth=(-H "X-User: gonzalo"); fi
+          mkdir -p live
+          curl -sS --fail "${auth[@]}" "$base/api/v1/openapi.json" -o live/openapi.json
+          for read in resource-types catalog regions; do
+            code="$(curl -sS "${auth[@]}" -o "live/$read.json" -w '%{http_code}' "$base/api/v1/$read")"
+            echo "GET /api/v1/$read -> $code"
+            if [ "$code" != "200" ]; then rm -f "live/$read.json"; fi
+          done
+      - name: Compare with the target contract
+        # landed, pending or diverged per used operation, grouped by platform change; fails only on
+        # diverged
+        run: node scripts/platform-contract-check.mjs --from live/openapi.json --samples live --json live/report.json --verbose
+      - name: Keep the documents and the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-contract-check
+          path: |
+            live/
+            platform.log
+          if-no-files-found: ignore
+      - name: Stop the platform
+        if: always() && env.PLATFORM_OPENAPI_URL == ''
+        run: |
+          if [ -f platform.pid ]; then kill "$(cat platform.pid)" 2>/dev/null || true; fi

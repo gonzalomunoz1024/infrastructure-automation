@@ -5785,9 +5785,18 @@ components:
             done: { type: integer }
             total: { type: integer }
             failed: { type: integer }
-        row: { type: integer, description: The row of the batch the job runs }
-        errorClass: { type: string }
-        failedStep: { type: string }
+        row:
+          type: integer
+          description: The row of the batch the job runs; in the API today, in its OpenAPI document with P-13
+          x-platform-change: [ P-13 ]
+        errorClass:
+          type: string
+          description: In the API today, in its OpenAPI document with P-13
+          x-platform-change: [ P-13 ]
+        failedStep:
+          type: string
+          description: In the API today, in its OpenAPI document with P-13
+          x-platform-change: [ P-13 ]
         actor:
           type: string
           description: 'P-02: the service account that started the job for `requester`'
@@ -5903,7 +5912,10 @@ components:
               type: array
               items: { $ref: '#/components/schemas/Approval' }
             preview: { $ref: '#/components/schemas/Preview' }
-            change: { $ref: '#/components/schemas/ChangeTicket' }
+            change:
+              $ref: '#/components/schemas/ChangeTicket'
+              description: The change record the job runs under; in the API today, in its OpenAPI document with P-13
+              x-platform-change: [ P-13 ]
             children:
               type: array
               items: { $ref: '#/components/schemas/JobSummary' }
