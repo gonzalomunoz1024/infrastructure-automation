@@ -1735,7 +1735,7 @@ components:
       name: Idempotency-Key
       in: header
       required: false
-      description: The same key with the same body answers the first result for 24 hours; with another body it is 409
+      description: "The same key with the same body answers the first result for 24 hours; with another body it is 409. An answer that carries a secret (an access key's `secretPart`, sent with `Cache-Control: no-store`) is never stored: its retry is a 409 saying the request was carried out, and the secret stays shown once"
       schema: { type: string, maxLength: 255 }
     IfMatch:
       name: If-Match
