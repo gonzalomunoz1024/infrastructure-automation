@@ -1,19 +1,17 @@
 import { describe, expect, it } from 'vitest'
-// the hub's AsyncAPI, copied at the commit contracts.lock pins
-import asyncapi from '../../../contracts/platform/asyncapi-target.yaml?raw'
-import { PLATFORM_EVENT_TYPES, openPlatformStream } from './events'
+import { LIVE_EVENT_TYPES, openLiveStream } from './events'
 
-describe('the platform event types', () => {
-  it('are exactly the types the AsyncAPI contract names', () => {
-    const fromConsts = [...asyncapi.matchAll(/type: \{ const: ([a-z-]+\.[a-z-]+) \}/g)].map((m) => m[1])
-    const fromNames = [...asyncapi.matchAll(/^ {6}name: ([a-z-]+\.[a-z-]+)$/gm)].map((m) => m[1])
-    const contract = [...new Set([...fromConsts, ...fromNames])].sort()
-    expect(contract.length).toBeGreaterThan(0)
-    expect([...PLATFORM_EVENT_TYPES].sort()).toEqual(contract)
+describe('the live event types', () => {
+  it('name the job, registry, state, finding and personal events once each', () => {
+    expect(new Set(LIVE_EVENT_TYPES).size).toBe(LIVE_EVENT_TYPES.length)
+    for (const t of ['job.updated', 'resource.registered', 'types.changed', 'ProvisioningSucceeded', 'FindingOpened', 'notification']) expect(LIVE_EVENT_TYPES).toContain(t)
+    // the platform's own job events never reach the browser: the BFF folds them into job.updated
+    expect(LIVE_EVENT_TYPES).not.toContain('job.started')
   })
 
-  it('are what the platform stream listens to', () => {
+  it('are what the live stream listens to', () => {
     const listened: string[] = []
+    let opened = ''
     const source = {
       readyState: 0,
       onopen: null,
@@ -22,8 +20,15 @@ describe('the platform event types', () => {
       addEventListener: (name: string) => listened.push(name),
       close: () => {},
     } as unknown as EventSource
-    const stream = openPlatformStream('/api/v1/events/stream', () => {}, { factory: () => source, events: ['custom'] })
-    expect(listened).toEqual([...PLATFORM_EVENT_TYPES, 'custom'])
+    const stream = openLiveStream('/console/v1/events', () => {}, {
+      factory: (url) => {
+        opened = url
+        return source
+      },
+      events: ['custom'],
+    })
+    expect(opened).toBe('/console/v1/events')
+    expect(listened).toEqual([...LIVE_EVENT_TYPES, 'custom'])
     stream.close()
   })
 })

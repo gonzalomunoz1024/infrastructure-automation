@@ -11,6 +11,7 @@ import {
   formatValueText,
   groupFields,
   mutableFields,
+  safeExternalUrl,
   searchableFields,
   sensitiveFields,
   validateAgainst,
@@ -101,6 +102,25 @@ describe('x-console keywords', () => {
     expect(html).toContain('Learn more')
     expect(html).toContain('href="https://wiki.example.test/vm#name"')
     expect(html).toContain('target="_blank"')
+  })
+
+  it('links a help page only when it is an https address, and draws no link for anything else', () => {
+    const withHelp = (help: string): Schema => ({ type: 'object', properties: { name: { type: 'string', description: 'What to call it', 'x-console': { help } } } })
+    const shown = (help: string) => text(renderToString(<SchemaForm schema={withHelp(help)} value={{}} onChange={() => {}} idPrefix="h" />))
+    expect(shown('https://docs.example.test/name')).toContain('href="https://docs.example.test/name"')
+    for (const bad of ['javascript:alert(1)', 'JavaScript:alert(1)', 'data:text/html,hi', 'http://docs.example.test/name', '//evil.example/name', '/relative/help', 'https://user:pass@docs.example.test/', 'https:\\\\evil.example', 'vbscript:x', 'ftp://docs.example.test/']) {
+      const html = shown(bad)
+      expect(html).not.toContain('Learn more')
+      expect(html).not.toContain('<a ')
+      // the description still reads
+      expect(html).toContain('What to call it')
+    }
+  })
+
+  it('accepts only https addresses with a host and no credentials as outside links', () => {
+    expect(safeExternalUrl('https://wiki.example.test/vm#name')).toBe('https://wiki.example.test/vm#name')
+    expect(safeExternalUrl('HTTPS://Wiki.Example.Test/a')).toBe('https://wiki.example.test/a')
+    for (const bad of [undefined, null, 7, '', 'https://', 'https:///path', 'http://x.test', 'javascript:alert(1)', ' javascript:alert(1)', 'data:,x', '//x.test', '/x', 'https://a@x.test', 'https://x.test/a b', 'https://x.test\\@evil.example']) expect(safeExternalUrl(bad)).toBeNull()
   })
 
   it('lets an update change only the mutable fields', () => {

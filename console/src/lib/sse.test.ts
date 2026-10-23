@@ -53,10 +53,10 @@ describe('backoffDelay', () => {
 
 describe('withAfter', () => {
   it('sets, replaces and removes the after parameter', () => {
-    expect(withAfter('/api/v1/events/stream', '12')).toBe('/api/v1/events/stream?after=12')
-    expect(withAfter('/api/v1/events/stream?after=3&types=job', '12')).toBe('/api/v1/events/stream?after=12&types=job')
-    expect(withAfter('/api/v1/events/stream?after=3', null)).toBe('/api/v1/events/stream')
-    expect(withAfter('/api/v1/events/stream?after=3', '')).toBe('/api/v1/events/stream')
+    expect(withAfter('/console/v1/events', '12')).toBe('/console/v1/events?after=12')
+    expect(withAfter('/console/v1/events?after=3&types=job', '12')).toBe('/console/v1/events?after=12&types=job')
+    expect(withAfter('/console/v1/events?after=3', null)).toBe('/console/v1/events')
+    expect(withAfter('/console/v1/events?after=3', '')).toBe('/console/v1/events')
   })
 })
 
@@ -72,11 +72,11 @@ describe('openStream', () => {
   it('delivers parsed events, remembers the last id and resumes after it when the browser gives up', () => {
     const events: unknown[] = []
     const states: [StreamState, number][] = []
-    const stream = openStream('/api/v1/events/stream', (e) => events.push(e), { factory, onState: (s, d) => states.push([s, d.delayMs]) })
+    const stream = openStream('/console/v1/events', (e) => events.push(e), { factory, onState: (s, d) => states.push([s, d.delayMs]) })
 
     expect(FakeSource.instances).toHaveLength(1)
     const first = FakeSource.instances[0]
-    expect(first.url).toBe('/api/v1/events/stream')
+    expect(first.url).toBe('/console/v1/events')
     expect(stream.state()).toBe('connecting')
 
     first.open()
@@ -101,7 +101,7 @@ describe('openStream', () => {
     expect(FakeSource.instances).toHaveLength(1)
     vi.advanceTimersByTime(1)
     expect(FakeSource.instances).toHaveLength(2)
-    expect(FakeSource.instances[1].url).toBe('/api/v1/events/stream?after=8')
+    expect(FakeSource.instances[1].url).toBe('/console/v1/events?after=8')
 
     // a second failure in a row waits twice as long
     FakeSource.instances[1].fail(true)
@@ -124,8 +124,8 @@ describe('openStream', () => {
 
   it('starts after a given id, listens to named events and gives up after maxRetries', () => {
     const events: unknown[] = []
-    const stream = openStream('/api/v1/events/stream?types=job', (e) => events.push(e), { factory, after: '41', events: ['job'], maxRetries: 1, retryMs: 10 })
-    expect(FakeSource.instances[0].url).toBe('/api/v1/events/stream?types=job&after=41')
+    const stream = openStream('/console/v1/events?types=job', (e) => events.push(e), { factory, after: '41', events: ['job'], maxRetries: 1, retryMs: 10 })
+    expect(FakeSource.instances[0].url).toBe('/console/v1/events?types=job&after=41')
     FakeSource.instances[0].open()
     FakeSource.instances[0].message({ seq: 42 }, '42', 'job')
     expect(events).toEqual([{ seq: 42 }])

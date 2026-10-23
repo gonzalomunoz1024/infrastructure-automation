@@ -111,10 +111,32 @@ export function TextLink({ to, children, className, mono, onClick }: { to: strin
   )
 }
 
-/** An outside link (change tickets, provider URLs, help pages). */
+/**
+ * An outside link's address when it is safe to open: an absolute `https://` URL with a host and
+ * no user name or password in it. A provider's schema names its help pages (`x-console.help`),
+ * so anything else (another scheme such as `javascript:` or `data:`, plain `http:`, a relative or
+ * protocol-relative path) is no link at all.
+ */
+export function safeExternalUrl(href: unknown): string | null {
+  if (typeof href !== 'string') return null
+  const text = href.trim()
+  if (!/^https:\/\/[^/]/i.test(text) || /[\s\\]/.test(text)) return null
+  let url: URL
+  try {
+    url = new URL(text)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) return null
+  return url.href
+}
+
+/** An outside link (help pages, provider URLs), opened in a new tab; only an `https://` address makes a link, anything else renders nothing. */
 export function ExternalLink({ href, children, className, ariaLabel }: { href: string; children: ReactNode; className?: string; ariaLabel?: string }) {
+  const safe = safeExternalUrl(href)
+  if (!safe) return null
   return (
-    <a href={href} target="_blank" rel="noreferrer" aria-label={ariaLabel} className={cx('text-accent transition-opacity hover:opacity-70', className)}>
+    <a href={safe} target="_blank" rel="noreferrer" aria-label={ariaLabel} className={cx('text-accent transition-opacity hover:opacity-70', className)}>
       {children}
     </a>
   )

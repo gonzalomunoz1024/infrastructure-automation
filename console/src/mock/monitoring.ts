@@ -1,6 +1,6 @@
 import { lifecycleOf, type Problem } from '@iaf/console-kit'
 import { durationMs, isoDuration } from '../lib/chart'
-import { observeOf, partsOfWfrn, serviceOf, titleOf } from '../lib/descriptors'
+import { partsOfWfrn, platformObserveOf, serviceOf, titleOf } from '../lib/descriptors'
 import type { Alarm, AlarmComparison, AlarmState, MetricPoint, MetricSeries, Money, Recommendation, RecommendationKind, RecommendationStatus, RecommendationsSummary, ResourceMetrics, Utilisation } from '../lib/monitoring'
 import type { Resource, ResourceType } from '../lib/types'
 import { applyCommand, emptyConsoleState, idFrom, journaled, previewVerb, priceOf, resourceByWfrn, subjectFieldOf, typeOf, updateSchemaOf, verbEntryOf, wfrnOfResource, wfrnPatternOf, type ConsoleCommand, type RouteAnswer, type RouteContext } from './commands'
@@ -509,7 +509,7 @@ export function recommendationsOf(data: MockData, accountId: string, now: number
   const seen = new Set<string>()
   for (const r of data.resources) {
     const rt = typeOf(data, r.type)
-    if (!rt || !observeOf(rt).metrics || accountOfResource(r, accounts) !== accountId || (lifecycleOf(r.status, rt.console?.lifecycle) ?? 'active') === 'deleted') continue
+    if (!rt || !platformObserveOf(rt).metrics || accountOfResource(r, accounts) !== accountId || (lifecycleOf(r.status, rt.console?.lifecycle) ?? 'active') === 'deleted') continue
     const applied = decisions.filter((d) => d.kind === 'applied' && d.resourceId === r.id)
     if (applied.some((d) => d.at >= pass)) continue
     const u = utilisationOf(data, rt, r, from, pass)
@@ -699,7 +699,7 @@ export function monitoringRoutes(data: MockData, ctx: RouteContext, path: string
     }
     const d = can(`${service}:observe`, wfrn)
     if (!d.allowed) return refused(d)
-    if (!observeOf(rt).metrics) return { status: 404, body: { error: 'metrics.notSupported', detail: `${titleOf(rt)} have no metrics read: their provider publishes none` } }
+    if (!platformObserveOf(rt).metrics) return { status: 404, body: { error: 'metrics.notSupported', detail: `${titleOf(rt)} have no metrics read: their provider publishes none` } }
     const problems: Problem[] = []
     const toParam = params.get('to')
     const fromParam = params.get('from')
@@ -766,7 +766,7 @@ export function monitoringRoutes(data: MockData, ctx: RouteContext, path: string
       const d2 = can(`${serviceOfType(existing.type)}:update`, existing.wfrn)
       if (!d2.allowed) return refused(d2)
     }
-    if (!observeOf(rt).metrics) return { status: 404, body: { error: 'metrics.notSupported', detail: `${titleOf(rt)} have no metrics read, so there is nothing to watch` } }
+    if (!platformObserveOf(rt).metrics) return { status: 404, body: { error: 'metrics.notSupported', detail: `${titleOf(rt)} have no metrics read, so there is nothing to watch` } }
     const problems = alarmProblems(body, seriesNamesOf(rt).map((x) => x.name))
     if (problems.length) return invalid(problems)
     const input = { wfrn, metric: body.metric, comparison: body.comparison, threshold: body.threshold, windowMinutes: body.windowMinutes ?? 10, ...(typeof body.name === 'string' ? { name: body.name } : {}) }

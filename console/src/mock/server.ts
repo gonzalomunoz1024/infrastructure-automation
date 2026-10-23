@@ -1,6 +1,7 @@
 import { serviceOf } from '../lib/descriptors'
+import { describeType } from './types'
 import type { Session } from '../lib/session'
-import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
+import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, PlatformEvent } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
 import { liveRowOf, resourceRoutes, settleConsole, usedByTypeOf } from './commands'
 import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, preferencesOf, putPreferences, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
@@ -12,9 +13,8 @@ import { monitoringRoutes } from './monitoring'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
- * can call it and the browser can serve it through a fetch interceptor. It speaks two contracts:
- * the platform's read endpoints under /api/v1 (ETags on the descriptors, cursor paging with a
- * Link header, regions, the events log) and the BFF's under /auth and /console/v1 (the session
+ * can call it and the browser can serve it through a fetch interceptor. It speaks the BFF's
+ * contract only, the one API the browser calls: /auth and /console/v1 (the session
  * behind a cookie the mock keeps in its session store, the CSRF token on every write, the
  * accounts and regions, the types with their decisions, the identity service's resources under
  * /console/v1/iam, and access requests). A refusal answers 403 with the Denial block.
@@ -22,7 +22,7 @@ import { monitoringRoutes } from './monitoring'
 
 export interface MockRequest {
   method: string
-  /** path and query, e.g. '/api/v1/vms?limit=50' */
+  /** path and query, e.g. '/console/v1/r/vm?limit=50' */
   url: string
   /** header names in lower case */
   headers: Record<string, string>
@@ -91,19 +91,6 @@ export function csrfTokenOf(userId: string): string {
   return `mock-csrf-${userId}`
 }
 
-function paged<T>(items: T[], path: string, params: URLSearchParams): MockResponse {
-  const limit = Math.min(500, Math.max(1, Number(params.get('limit') ?? 50) || 50))
-  const start = parseCursor(params.get('after'))
-  const headers: Record<string, string> = { 'X-Total-Count': String(items.length) }
-  if (start + limit < items.length) {
-    const next = new URLSearchParams(params)
-    next.set('limit', String(limit))
-    next.set('after', cursorOf(start + limit))
-    headers.Link = `<${path}?${next.toString()}>; rel="next"`
-  }
-  return { status: 200, body: items.slice(start, start + limit), headers }
-}
-
 /** The BFF's page shape: { items, next }. */
 function pagedBody<T>(items: T[], params: URLSearchParams): MockResponse {
   const limit = Math.min(200, Math.max(1, Number(params.get('limit') ?? 50) || 50))
@@ -120,38 +107,6 @@ function cached(name: string, value: unknown, req: MockRequest): MockResponse {
   const etag = etagOf(name, value)
   if (req.headers['if-none-match'] === etag) return { status: 304, headers: { ETag: etag } }
   return { status: 200, body: value, headers: { ETag: etag, 'Cache-Control': 'no-cache' } }
-}
-
-function text(v: unknown): string {
-  return v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
-}
-
-function filterResources(resources: Resource[], params: URLSearchParams): Resource[] {
-  const status = params.get('status')
-  const owner = params.get('owner')
-  const type = params.get('type')
-  const account = params.get('accountId')
-  const q = params.get('q')?.toLowerCase()
-  return resources.filter((r) => {
-    if (status && r.status !== status) return false
-    if (owner && r.owner !== owner) return false
-    if (type && r.type !== type) return false
-    if (account && r.accountId && r.accountId !== account) return false
-    if (q && !`${r.name ?? ''} ${r.id} ${Object.values(r.attributes ?? {}).map(text).join(' ')}`.toLowerCase().includes(q)) return false
-    return true
-  })
-}
-
-function filterJobs(jobs: JobSummary[], params: URLSearchParams): JobSummary[] {
-  const q = params.get('q')?.toLowerCase()
-  return jobs.filter((j) => {
-    for (const key of ['status', 'workflow', 'requester', 'channel', 'kind'] as const) {
-      const want = params.get(key)
-      if (want && j[key] !== want) return false
-    }
-    if (q && !`${j.id} ${j.title} ${j.workflow} ${j.requester}`.toLowerCase().includes(q)) return false
-    return true
-  })
 }
 
 /** The steps a job ran, drawn by the jobs module (./jobs) for both the platform's and the BFF's job. */
@@ -185,7 +140,6 @@ function refused(decision: Decision): MockResponse {
 }
 
 export function createMockServer(data: MockData = buildMockData(), sessions: MockSessionStore = memorySessionStore(), now: () => number = Date.now): MockServer {
-  const plurals = new Map(data.resourceTypes.map((t) => [t.plural, t.name]))
   const dir = data.directory
 
   const currentSession = (): MockSession | null => {
@@ -224,15 +178,16 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     return { status: 200, body: { returnTo: params.get('returnTo') ?? '/' } }
   }
 
-  /** Every type with the decision for each of its verbs, for this person in this account and region. */
+  /** Every type as the BFF describes it, with the decision for each of its verbs, for this person in this account and region. */
   const consoleTypes = (s: MockSession): BffConsoleType[] => {
     const ctx = { accountId: s.accountId, userId: s.userId }
     return data.resourceTypes.map((rt) => {
-      const service = serviceOf(rt)
+      const described = describeType(rt, data.catalog)
+      const { service } = described
       const pattern = `wfrn:${data.partition}:${service}:${s.region}:${s.accountId}:${rt.name}/*`
-      const entries = data.catalog.filter((e) => e.noun === rt.name)
-      const fromCatalog: BffConsoleAction[] = entries.map((e) => ({ verb: e.verb, title: e.title, description: e.description, method: e.method, destructive: e.destructive ?? e.verb === 'delete', approval: typeof e.approval === 'object' ? !!e.approval.required : !!e.approval, bulk: !!e.batchPath, preview: !!e.previewPath, effect: e.verb === 'create' ? 'create' : e.verb === 'delete' ? 'delete' : 'change', workflow: e.workflow, version: e.version }))
+      const fromCatalog = described.actions
       const noun = (rt.console?.title ?? rt.plural).replace(/s$/, '').toLowerCase()
+      // the verbs every type has, decided without a workflow of their own: the console runs only the ones that name one
       const standard: BffConsoleAction[] = [
         { verb: 'list', title: `List ${rt.plural}`, method: 'GET', effect: 'read', destructive: false, approval: false, bulk: false, preview: false },
         { verb: 'get', title: `View a ${noun}`, method: 'GET', effect: 'read', destructive: false, approval: false, bulk: false, preview: false },
@@ -244,7 +199,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         const d = authorize(dir, ctx, `${service}:${a.verb}`, pattern)
         return { ...a, allowed: d.allowed, denied: d.denied }
       })
-      const type: BffConsoleType = { key: `${service}/${rt.name}`, type: rt.name, service, plural: rt.plural, title: rt.console?.title ?? rt.plural, actions, etag: '' }
+      const type: BffConsoleType = { ...described, actions }
       type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId })
       return type
     })
@@ -281,7 +236,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId), next: null } }
     if (path === '/console/v1/regions') return { status: 200, body: { items: [{ name: data.regionName, title: 'Global', status: 'available', environments: ['dev', 'test', 'prod'], types: data.resourceTypes.map((t) => t.name) }], next: null } }
 
-    if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, consoleTypes(s), req)
+    if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, { items: consoleTypes(s) }, req)
     let m = /^\/console\/v1\/types\/([^/]+)$/.exec(path)
     if (m) {
       const key = decodeURIComponent(m[1])
@@ -605,77 +560,8 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
     }
 
-    /* the platform */
-    if (method !== 'GET' && method !== 'HEAD') return { status: 405, body: { error: `${method} is not served by the mock on the platform's endpoints; changes go through the BFF from phase 3` } }
-
-    if (path === '/actuator/health') return { status: 200, body: { status: 'UP', components: { db: { status: 'UP' }, events: { status: 'UP' } } } }
-    if (path === '/actuator/info') return { status: 200, body: { build: { version: 'platform-fake', commit: 'c9529d5' } } }
-
-    if (path === '/api/v1/me') {
-      const user = req.headers['x-user']
-      if (!user) return { status: 401, body: { error: 'Not signed in' } }
-      const me = data.users[user]
-      return me ? { status: 200, body: me } : { status: 401, body: { error: `Unknown user ${user}` } }
-    }
-    if (path === '/api/v1/resource-types') return cached('resource-types', data.resourceTypes, req)
-    if (path === '/api/v1/catalog') return cached('catalog', data.catalog, req)
-    if (path === '/api/v1/regions') return cached('regions', data.regions, req)
-    let m = /^\/api\/v1\/regions\/([^/]+)$/.exec(path)
-    if (m) {
-      const name = decodeURIComponent(m[1])
-      const region = data.regions.find((r) => (r as { metadata?: { name?: string } }).metadata?.name === name)
-      return region ? { status: 200, body: region } : notFound('Region')
-    }
-
-    if (path === '/api/v1/events') {
-      const after = Number(params.get('after') ?? 0) || 0
-      const limit = Math.min(500, Math.max(1, Number(params.get('limit') ?? 100) || 100))
-      const types = params.get('types')?.split(',').filter(Boolean)
-      const items = data.events.filter((e) => e.seq > after && (!types?.length || types.includes(e.type))).slice(0, limit)
-      const more = items.length === limit && data.events.some((e) => e.seq > items[items.length - 1].seq)
-      return { status: 200, body: { items, next: more ? String(items[items.length - 1].seq) : null } }
-    }
-
-    if (path === '/api/v1/resources') return paged(filterResources(data.resources, params), path, params)
-    m = /^\/api\/v1\/resources\/([^/]+)\/lineage$/.exec(path)
-    if (m) {
-      const id = decodeURIComponent(m[1])
-      const resource = data.resources.find((r) => r.id === id)
-      if (!resource) return notFound('Resource')
-      const byId = new Map(data.resources.map((r) => [r.id, r]))
-      const builtFrom = (resource.builtFrom ?? []).map((i) => byId.get(i)).filter((r): r is Resource => !!r)
-      const dependents = data.resources.filter((r) => r.builtFrom?.includes(id))
-      const lineage: Lineage = { resource, builtFrom, dependents }
-      return { status: 200, body: lineage }
-    }
-    m = /^\/api\/v1\/resources\/([^/]+)$/.exec(path)
-    if (m) {
-      const id = decodeURIComponent(m[1])
-      const resource = data.resources.find((r) => r.id === id)
-      return resource ? { status: 200, body: resource } : notFound('Resource')
-    }
-
-    if (path === '/api/v1/jobs') return paged(filterJobs(data.jobs, params), path, params)
-    m = /^\/api\/v1\/jobs\/([^/]+)$/.exec(path)
-    if (m) {
-      const id = decodeURIComponent(m[1])
-      const job = data.jobs.find((j) => j.id === id)
-      if (!job) return notFound('Job')
-      const console = data.console?.jobs[id]
-      const detail: JobDetail = { ...job, steps: stepsOf(job, console), input: console?.input ?? { requestedBy: job.requester, channel: job.channel }, outputs: console?.output, error: job.status === 'failed' ? { class: job.errorClass, step: job.failedStep, message: `${job.failedStep ?? 'apply'} failed` } : undefined }
-      return { status: 200, body: detail }
-    }
-
-    m = /^\/api\/v1\/([a-z0-9-]+)(?:\/([^/]+))?$/.exec(path)
-    if (m) {
-      const typeName = plurals.get(m[1])
-      if (!typeName) return notFound(`Collection ${m[1]}`)
-      const ofType = data.resources.filter((r) => r.type === typeName)
-      if (!m[2]) return paged(filterResources(ofType, params), path, params)
-      const id = decodeURIComponent(m[2])
-      const resource = ofType.find((r) => r.id === id)
-      return resource ? { status: 200, body: resource } : notFound(`${typeName} ${id}`)
-    }
+    /* the BFF's health */
+    if (path === '/actuator/health' && method === 'GET') return { status: 200, body: { status: 'UP', components: { platform: { status: 'UP' }, identity: { status: 'UP' } } } }
 
     return notFound(`Path ${path}`)
   }

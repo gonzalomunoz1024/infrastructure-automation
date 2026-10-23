@@ -6,9 +6,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
 const lock = JSON.parse(readFileSync(new URL('../contracts.lock', import.meta.url), 'utf8')) as { commit: string }
-// where `npm run dev` sends /api and /actuator (CONSOLE_PLATFORM=http://localhost:18090 npm run dev)
-const platform = process.env.CONSOLE_PLATFORM ?? 'http://localhost:18090'
-// where it sends the session, the sign-in and the demo identity provider: the BFF (CONSOLE_BFF=http://localhost:18081)
+// the BFF, the only backend the browser talks to: `npm run dev` sends it the console API, the
+// sign-in, the demo identity provider and the health check (CONSOLE_BFF=http://localhost:18081).
+// Nothing reaches the platform from the browser: the BFF calls it on the person's behalf.
 const bff = process.env.CONSOLE_BFF ?? 'http://localhost:18081'
 
 // https://vite.dev/config/
@@ -21,8 +21,7 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      '/api': { target: platform, changeOrigin: true },
-      '/actuator': { target: platform, changeOrigin: true },
+      '/actuator/health': { target: bff, changeOrigin: true },
       '/auth': { target: bff, changeOrigin: true },
       '/console': { target: bff, changeOrigin: true },
       '/demo-idp': { target: bff, changeOrigin: true },

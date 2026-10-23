@@ -1,28 +1,28 @@
 import type { ReactNode } from 'react'
 import { Button, EmptyState, Icon, JsonView, SkeletonRows } from '@iaf/ui'
-import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, titleCase, xConsoleOf } from '@iaf/console-kit'
+import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, safeExternalUrl, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { ExplainedError } from '../../app/commands'
 import { LaterButton } from '../../app/Phase'
 import { ActionButton, useRefusal } from '../../app/Refusal'
 import { Link, navigate, pathFor, useRoute } from '../../app/router'
-import { api, isApiError } from '../../lib/api'
+import { isApiError } from '../../lib/api'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor } from '../../lib/code'
 import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
-import type { ActivityEntry, ConsoleResourceDetail, Resource, Schema } from '../../lib/types'
+import type { ActivityEntry, ConsoleResourceDetail, Schema } from '../../lib/types'
 import { DriftTab } from './DriftTab'
 import { EDIT_NOT_OFFERED, editWaitNote } from './EditDrawer'
 import { HeldButton } from './HeldButton'
 import { MonitoringTab } from './MonitoringTab'
 
 /*
- * The tabs of a resource page. Each reads what it needs: Configuration the record (with the
- * fields the drift service found different marked), Drift the findings, Activity the trail the
- * console keeps (or the platform's jobs when the console service does not answer), Tags and
- * Permissions the console's view, JSON the record and the same record as code.
+ * The tabs of a resource page, all read from the BFF. Each reads what it needs: Configuration the
+ * resource's attributes (with the fields the drift service found different marked), Drift the
+ * findings, Activity the trail the console keeps, Relationships the lineage, Tags and Permissions
+ * the console's view, JSON the record and the same record as code.
  */
 
 export function tabId(label: string): string {
@@ -32,8 +32,6 @@ export function tabId(label: string): string {
 export interface TabProps {
   type: ConsoleType
   wfrn: string
-  /** the record as the platform holds it, when it answered */
-  record: Resource | undefined
   /** the console's view of it, when the BFF answered */
   detail: ConsoleResourceDetail | undefined
   /** why the console's view is missing */
@@ -41,7 +39,7 @@ export interface TabProps {
 }
 
 export function TabContent({ label, ...props }: TabProps & { label: string }) {
-  const { type, record } = props
+  const { type } = props
   switch (tabId(label)) {
     case 'configuration':
       return <Configuration {...props} />
@@ -52,7 +50,7 @@ export function TabContent({ label, ...props }: TabProps & { label: string }) {
     case 'relationships':
       return (
         <Section title="Lineage" description="What this was built from, and what was built from it.">
-          <ResourceLineage id={record?.id ?? props.wfrn.slice(props.wfrn.lastIndexOf('/') + 1)} />
+          <ResourceLineage id={props.wfrn} />
         </Section>
       )
     case 'monitoring':
@@ -79,11 +77,12 @@ function ViewMissing({ viewError, what }: { viewError: unknown; what: string }) 
 function FieldLabel({ name, schema }: { name: string; schema: Schema | undefined }) {
   const x = xConsoleOf(schema)
   const label = schema?.title ?? titleCase(name)
+  const help = safeExternalUrl(x.help)
   return (
     <span className="flex items-center gap-1.5">
       {label}
-      {x.help && (
-        <ExternalLink href={x.help} ariaLabel={`Help for ${label}`} className="text-tertiary transition-colors hover:text-accent">
+      {help && (
+        <ExternalLink href={help} ariaLabel={`Help for ${label}`} className="text-tertiary transition-colors hover:text-accent">
           <Icon name="help" size={12} />
         </ExternalLink>
       )}
@@ -170,10 +169,10 @@ function EditButton({ type, detail }: { type: ConsoleType; detail: ConsoleResour
   )
 }
 
-function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
+function Configuration({ type, wfrn, detail, viewError }: TabProps) {
   const deleted = isApiError(viewError) && viewError.status === 410
   const props = type.schema.properties ?? {}
-  const attributes = record?.attributes ?? detail?.attributes ?? {}
+  const attributes = detail?.attributes ?? {}
   const { open } = useOpenFindings(type, wfrn, detail)
   const differs = new Map<string, { expected: unknown; observed: unknown }>()
   for (const f of open) for (const d of f.fields) differs.set(d.path.replace(/^attributes\./, ''), d)
@@ -283,9 +282,8 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
   )
 }
 
-function ActivityTab({ type, wfrn, record }: TabProps) {
+function ActivityTab({ type, wfrn }: TabProps) {
   const q = useQuery(['console-activity', type.name, wfrn], () => bff.resources.activity(type.name, wfrn, { limit: 50 }))
-  if (q.error && record) return <PlatformActivity resource={record} wfrn={wfrn} />
   if (q.error) return <ExplainedError error={q.error} what="Load the activity of this resource" onRetry={() => void q.refetch()} compact />
   if (q.loading) return <SkeletonRows n={3} />
   const items = q.data?.items ?? []
@@ -300,46 +298,6 @@ function ActivityTab({ type, wfrn, record }: TabProps) {
           ))}
         </ol>
       )}
-    </Section>
-  )
-}
-
-/** The trail read from the platform's jobs, for a console service that does not answer yet. */
-function PlatformActivity({ resource, wfrn }: { resource: Resource; wfrn: string }) {
-  const jobs = useQuery(['jobs', 'activity', resource.id], () => api.jobs({ limit: 200 }))
-  const related = (jobs.data?.items ?? []).filter((j) => (j.wfrn === wfrn || j.id === resource.createdBy.jobId) && j.id !== resource.createdBy.jobId)
-  return (
-    <Section title="Activity" description="The requests that created or changed this resource, read from the platform.">
-      <ol className="divide-y divide-stroke-light overflow-hidden rounded-lg border border-stroke-light" aria-label="Activity">
-        <li className="flex items-center gap-3 px-3 py-2.5 text-sm">
-          <Icon name="sparkles" size={15} className="shrink-0 text-tertiary" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-primary">
-              Registered by <span className="font-mono">{resource.createdBy.workflow}</span>
-            </span>
-            <Link to={pathFor('request', { id: resource.createdBy.jobId })} className="block truncate font-mono text-caption text-accent transition-opacity hover:opacity-70">
-              {resource.createdBy.jobId}
-            </Link>
-          </span>
-          <When at={resource.createdAt} className="shrink-0 text-caption text-tertiary" />
-        </li>
-        {related.map((j) => (
-          <li key={j.id}>
-            <Link to={pathFor('request', { id: j.id })} className="flex items-center gap-3 px-3 py-2.5 text-sm transition-colors hover:bg-surface-secondary">
-              <Icon name="job" size={15} className="shrink-0 text-tertiary" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-primary">{j.title}</span>
-                <span className="block truncate font-mono text-caption text-tertiary">
-                  {j.id} · {j.requester}
-                </span>
-              </span>
-              <StatusBadge status={j.status} size="sm" />
-              <When at={j.startedAt} className="hidden shrink-0 text-caption text-tertiary sm:inline" />
-            </Link>
-          </li>
-        ))}
-      </ol>
-      {!jobs.loading && related.length === 0 && <p className="mt-2 text-caption text-tertiary">No other request has touched this resource{jobs.error ? ' that the console could load' : ''}.</p>}
     </Section>
   )
 }
@@ -396,7 +354,15 @@ function TagsTab({ type, detail, viewError }: TabProps) {
 
 /* ---------------------------------------------------------------------------- Permissions */
 
-function PermissionsTab({ type, record, detail }: TabProps) {
+/** The team that owns a resource: its owner tag, else an owner attribute. */
+export function ownerOf(detail: Pick<ConsoleResourceDetail, 'tags' | 'attributes'> | undefined): string | undefined {
+  const tagged = detail?.tags?.owner
+  if (tagged) return tagged
+  const attr = detail?.attributes?.owner
+  return typeof attr === 'string' ? attr : undefined
+}
+
+function PermissionsTab({ type, detail }: TabProps) {
   const { decide, account } = useConsole()
   const refusal = useRefusal()
   const noun = singularOf(type.title).toLowerCase()
@@ -460,7 +426,7 @@ function PermissionsTab({ type, record, detail }: TabProps) {
         <Facts
           columns={3}
           items={[
-            { label: 'Owner team', value: record?.owner ?? (typeof detail?.attributes.owner === 'string' ? detail.attributes.owner : undefined) },
+            { label: 'Owner team', value: ownerOf(detail) },
             { label: 'Account', value: account.name },
             { label: 'Provider', value: type.owner },
           ]}
@@ -472,15 +438,15 @@ function PermissionsTab({ type, record, detail }: TabProps) {
 
 /* ---------------------------------------------------------------------------- JSON */
 
-function JsonTab({ type, wfrn, record, detail }: TabProps) {
+function JsonTab({ type, wfrn, detail }: TabProps) {
   const { account, region } = useConsole()
-  const value = record ?? detail
+  const value = detail
   return (
     <div className="space-y-8">
-      <Section title="Record" description={record ? 'The resource as the platform holds it.' : 'The resource as the console holds it.'}>
+      <Section title="Record" description="The resource as the console holds it.">
         <JsonView value={value} defaultExpanded={2} rawToggle maxHeight="max-h-[40rem]" />
       </Section>
-      <Section title="View as code" description="The same record from the console’s CLI, its API, or the platform’s own.">
+      <Section title="View as code" description="The same record from the console’s CLI or its API.">
         <CodeView samples={codeSamplesFor({ kind: 'record', type, wfrn, record: value, context: { accountId: account.id, region: region.name } })} ariaLabel="This record as code" />
       </Section>
     </div>

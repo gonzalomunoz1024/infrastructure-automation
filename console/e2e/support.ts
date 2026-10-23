@@ -54,10 +54,12 @@ export async function tabTo(page: Page, target: Locator, max = 40): Promise<void
 
 /** The page must not scroll sideways at the width it is checked at. */
 export async function expectNoHorizontalOverflow(page: Page): Promise<void> {
-  const widths = await page.evaluate(() => {
-    const main = document.getElementById('main')
-    return { document: document.documentElement.scrollWidth, viewport: window.innerWidth, content: main ? main.scrollWidth - main.clientWidth : 0 }
-  })
-  expect(widths.document, 'the page is no wider than the viewport').toBeLessThanOrEqual(widths.viewport)
-  expect(widths.content, 'the content does not scroll sideways').toBeLessThanOrEqual(0)
+  // a resize lays out again over a few frames (resize observers, a toast leaving): wait for it to settle
+  const widths = () =>
+    page.evaluate(() => {
+      const main = document.getElementById('main')
+      return { document: document.documentElement.scrollWidth - window.innerWidth, content: main ? main.scrollWidth - main.clientWidth : 0 }
+    })
+  await expect.poll(async () => (await widths()).document, { message: 'the page is no wider than the viewport', timeout: 5_000 }).toBeLessThanOrEqual(0)
+  await expect.poll(async () => (await widths()).content, { message: 'the content does not scroll sideways', timeout: 5_000 }).toBeLessThanOrEqual(0)
 }

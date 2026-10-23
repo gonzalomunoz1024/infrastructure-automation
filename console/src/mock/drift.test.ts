@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DiscoveryRun, FindingStats, FindingsSummary, UnmanagedObject } from '../lib/drift'
-import type { BffJobDetail, ConsoleResourceDetail, Denial, Finding, Page, Resource } from '../lib/types'
+import type { BffJobDetail, ConsoleResourceDetail, Denial, Finding, Page } from '../lib/types'
 import { RUN_MS } from './commands'
 import { buildMockData } from './data'
 import { DISCOVERY_MS, ownerGuessOf } from './drift'
@@ -346,7 +346,7 @@ describe('finding unmanaged resources', () => {
     const detail = body<ConsoleResourceDetail>(w.get(`/console/v1/r/vm/${enc(wfrn)}`))
     expect(detail).toMatchObject({ wfrn, type: 'vm', name: 'compute-scratch-01', state: 'active' })
     expect(detail.attributes).toMatchObject({ name: 'compute-scratch-01', cpu: 4, memoryGb: 16, environment: 'dev', owner: 'team-compute' })
-    expect(body<Resource>(w.get('/api/v1/vms/vm-5102')).providerId).toBe('vsphere:vm-5102')
+    expect(w.data.resources.find((r) => r.id === 'vm-5102')?.providerId).toBe('vsphere:vm-5102')
     const items = body<Page<UnmanagedObject>>(w.get('/console/v1/unmanaged?limit=200')).items
     expect(items.map((o) => o.providerId)).not.toContain('vsphere:vm-5102')
     expect(items).toHaveLength(7)

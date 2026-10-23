@@ -2,17 +2,19 @@ import { describe, expect, it } from 'vitest'
 import rawTypes from '../mock/samples/resource-types.json'
 import rawCatalog from '../mock/samples/catalog.json'
 import { buildMockData } from '../mock/data'
+import { describeType, describeTypes } from '../mock/types'
 import { DEFAULT_TABS, composeType, composeTypes, countByLifecycle, findType, groupServices, idOfWfrn, partsOfWfrn, purposeOf, serviceOf, singularOf, titleOf, wfrnOf, type ConsoleType } from './descriptors'
-import type { CatalogEntry, Resource, ResourceType } from './types'
+import type { BffConsoleType, CatalogEntry, Resource, ResourceType } from './types'
 
 /*
- * The composition against the platform's captured samples (platform-fake at c9529d5, no hints),
- * then against the mock's copy of them where the vm type carries P-06 hints.
+ * The composition from the BFF's descriptors (GET /console/v1/types), as the mock BFF describes
+ * the platform's captured samples (platform-fake at c9529d5, no hints), then the mock's copy of
+ * them where the vm type carries P-06 hints.
  */
 
 const types = rawTypes as unknown as ResourceType[]
 const catalog = rawCatalog as unknown as CatalogEntry[]
-const composed = composeTypes(types, catalog)
+const composed = composeTypes(describeTypes({ resourceTypes: types, catalog }))
 const byName = (name: string): ConsoleType => {
   const t = composed.find((x) => x.name === name)
   if (!t) throw new Error(`no type ${name}`)
@@ -65,9 +67,15 @@ describe('the defaults over the raw samples', () => {
     expect(byName('image').actions.map((a) => a.workflow)).toEqual(['build-vm-image'])
   })
 
-  it('keeps the default tabs and marks nothing as hinted', () => {
+  it('keeps the default tabs when the descriptor lists none', () => {
     expect(byName('vm').tabs).toEqual(['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'])
-    expect(composed.every((t) => !t.hinted)).toBe(true)
+    expect(composed.every((t) => t.tabs.join() === DEFAULT_TABS.join())).toBe(true)
+  })
+
+  it('runs only the verbs that name a workflow: the read verbs the BFF decides alone stay out', () => {
+    const described = describeType(types.find((t) => t.name === 'vm') as ResourceType, catalog)
+    const withReads: BffConsoleType = { ...described, actions: [{ verb: 'list', title: 'List vms', method: 'GET', allowed: true }, { verb: 'get', title: 'View a vm', method: 'GET', allowed: true }, ...described.actions] }
+    expect(composeType(withReads).actions.map((a) => a.verb)).toEqual(['create', 'patch', 'restart', 'delete'])
   })
 
   it('groups the types into services, sorted', () => {
@@ -88,12 +96,12 @@ describe('the defaults over the raw samples', () => {
 
 describe('the hints of the mock copy', () => {
   const data = buildMockData()
-  const hinted = composeTypes(data.resourceTypes, data.catalog)
+  const hinted = composeTypes(describeTypes(data))
   const vm = hinted.find((t) => t.name === 'vm')
   const database = hinted.find((t) => t.name === 'database')
 
   it('reads the console block of the vm type', () => {
-    expect(vm).toMatchObject({ title: 'Virtual machines', service: 'compute', icon: 'terminal', defaultSort: 'name', hinted: true })
+    expect(vm).toMatchObject({ title: 'Virtual machines', service: 'compute', icon: 'terminal', defaultSort: 'name' })
     expect(vm?.columns.map((c) => c.key)).toEqual(['name', 'status', 'wfrn', 'cpu', 'memoryGb', 'environment', 'owner', 'created'])
     expect(vm?.columns.find((c) => c.key === 'memoryGb')?.x.format).toBe('gibibytes')
     expect(vm?.lifecycle).toEqual({ building: 'pending', ready: 'active', deprecated: 'active', retired: 'deleted' })
@@ -101,7 +109,8 @@ describe('the hints of the mock copy', () => {
   })
 
   it('leaves the other types on the defaults, and never shows a sensitive field', () => {
-    expect(database).toMatchObject({ title: 'Databases', hinted: false, sensitive: ['secret'] })
+    expect(database).toMatchObject({ title: 'Databases', sensitive: ['secret'] })
+    expect(database?.columns.map((c) => c.key)).toEqual(['name', 'status', 'wfrn', 'engine', 'owner', 'created'])
     expect(database?.columns.some((c) => c.key === 'secret')).toBe(false)
   })
 
@@ -115,7 +124,7 @@ describe('the hints of the mock copy', () => {
 
 describe('hints the samples do not carry', () => {
   const vm = types.find((t) => t.name === 'vm') as ResourceType
-  const hinted = (console: unknown) => composeType({ ...vm, console: console as ResourceType['console'] }, catalog)
+  const hinted = (console: unknown) => composeType(describeType({ ...vm, console: console as ResourceType['console'] }, catalog))
 
   it('reads a descending default sort, an alias, and falls back to the name for a key no column has', () => {
     const desc = hinted({ list: { defaultSort: '-created' } })
@@ -124,7 +133,7 @@ describe('hints the samples do not carry', () => {
     expect([alias.defaultSort, alias.defaultSortDir]).toEqual(['created', 'asc'])
     const unknown = hinted({ list: { defaultSort: '-nope' } })
     expect([unknown.defaultSort, unknown.defaultSortDir]).toEqual(['name', 'asc'])
-    expect(composeType(vm, catalog).defaultSortDir).toBe('asc')
+    expect(composeType(describeType(vm, catalog)).defaultSortDir).toBe('asc')
   })
 
   it('labels the tabs a hint names by id, and keeps the defaults for an empty list', () => {
@@ -175,18 +184,29 @@ describe('words', () => {
 
 describe('what the BFF’s descriptor says of a type', () => {
   const vm = types.find((t) => t.name === 'vm') as ResourceType
-  const bare = { ...vm, observe: undefined }
+  const bare = describeType({ ...vm, observe: undefined }, catalog)
 
-  it('decides the Monitoring tab and discovery over the platform’s own observe block', () => {
-    expect(composeType(bare, catalog).tabs).not.toContain('Monitoring')
-    const described = composeType(bare, catalog, { key: 'compute/vm', type: 'vm', service: 'compute', actions: [], observe: { supported: true, interval: '1h', metrics: true, discover: true } })
+  it('decides the Monitoring tab and discovery', () => {
+    expect(composeType(bare).tabs).not.toContain('Monitoring')
+    expect(composeType(bare).observe).toEqual({ supported: false, interval: undefined, metrics: false, discover: false })
+    const described = composeType({ ...bare, observe: { supported: true, interval: '1h', metrics: true, discover: true } })
     expect(described.observe).toEqual({ supported: true, interval: '1h', metrics: true, discover: true })
     expect(described.tabs).toContain('Monitoring')
   })
 
-  it('leaves the platform’s block to answer what the descriptor does not say', () => {
+  it('reads what the descriptor leaves out as not offered', () => {
+    expect(composeType({ ...bare, observe: { supported: true, interval: '6h', metrics: true } }).observe).toEqual({ supported: true, interval: '6h', metrics: true, discover: false })
+    expect(composeTypes([{ ...bare, key: 'data/database', type: 'database', service: 'data', observe: { metrics: false } }])[0].observe.metrics).toBe(false)
+  })
+
+  it('takes the producer of a type as its create, by the effect the descriptor gives it', () => {
+    const image = composeType(describeType(types.find((t) => t.name === 'image') as ResourceType, catalog))
+    expect(image.create?.workflow).toBe('build-vm-image')
+    expect(image.create?.verb).toBe('build')
+  })
+
+  it('reads the platform’s own block only in the mock BFF that describes it', () => {
     const own = { ...vm, observe: { provider: 'vsphere', action: 'vm.get', interval: '6h', metrics: { action: 'vm.metrics' } } } as ResourceType
-    expect(composeType(own, catalog, { key: 'compute/vm', type: 'vm', service: 'compute', actions: [], observe: { discover: false } }).observe).toEqual({ supported: true, interval: '6h', metrics: true, discover: false })
-    expect(composeTypes([own], catalog, [{ key: 'data/database', type: 'database', service: 'data', actions: [], observe: { metrics: false } }])[0].observe.metrics).toBe(true)
+    expect(composeType(describeType(own, catalog)).observe).toEqual({ supported: true, interval: '6h', metrics: true, discover: false })
   })
 })
