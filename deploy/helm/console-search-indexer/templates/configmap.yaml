@@ -40,6 +40,8 @@ data:
         jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
+        services: {{ toJson .Values.console.auth.services }}
+        counting-services: {{ toJson .Values.console.auth.countingServices }}
         dev-headers: false
         token-url: {{ .Values.console.auth.tokenUrl | quote }}
         client-assertion-file: /var/run/secrets/console/token
@@ -62,6 +64,8 @@ data:
             {{- toYaml . | nindent 12 }}
           {{- end }}
     management:
+      server:
+        port: {{ .Values.service.managementPort }}
       endpoints:
         web:
           exposure:

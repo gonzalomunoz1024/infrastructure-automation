@@ -112,6 +112,9 @@ class ResourceEventsTest {
         assertThat(tombstone.driftFindingId()).isNull();
         assertThat(tombstone.name()).isEqualTo("web-03");
         assertThat(tombstone.accountId()).as("the old wfrn stays in its own account").isEqualTo(Fixtures.ACCOUNT);
+        assertThat(v2.fields()).isNotEmpty();
+        assertThat(tombstone.fields()).as("the fields leave with the resource").isEmpty();
+        assertThat(tombstone.tags()).as("and so do its tags").isEmpty();
         assertThat(ResourceEvents.apply(v1, Fixtures.resourceEvent("Transferred", VM, 9, "deleted", T0.plusSeconds(9), Fixtures.data()
                 .put("transferredTo", moved)), VM_HINTS)).as("like a delete, a transfer needs nothing in between").isInstanceOf(EventOutcome.Applied.class);
 

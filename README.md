@@ -11,8 +11,8 @@ This repository is one branch (`console-search-indexer`) of the console work unt
 move to repositories of their own. It is shaped like that future repository: the Gradle root is
 the branch root, it carries its own CI, and it holds no platform files. What every service shares
 (decisions, contracts, the wfrn fixtures) lives on the hub branch, `console-root`, which this
-repository pins by commit in `contracts.lock` (hub `b0a0d52`), and the shared code comes from
-`console-libs` as `com.iaf.console:*`.
+repository pins by commit in `contracts.lock` (hub `37a99d6`, turn 15 of the hub's merge order),
+and the shared code comes from `console-libs` as `com.iaf.console:*`.
 
 ## Run it
 
@@ -53,11 +53,15 @@ The hub's `contracts/openapi/console-search-indexer.yaml` 1.2.0, pinned under
 | `GET /internal/sources` | Where the events come from (Kafka or the poller) and how they flow |
 
 **Who calls.** The BFF's internal JWT (ES256 from its JWKS, issuer `console-bff`, audience
-`console-search-indexer` or `console`): a person's token (`acct`) reads its own account only, and
-another account's id answers 404, never 403. A console service's token (`svc`, no `acct`) names the
-account with `accountId`. The demo profile also takes the dev headers `X-Console-Account`,
-`X-Console-User`, `X-Console-Roles`, `X-Console-Region` and `X-Console-Service`. When the BFF's keys
-cannot be read, a token gets 503 with `Retry-After`, not 401.
+`console-search-indexer` and nothing else, hub decision 35): a person's token (`acct`) reads its own
+account only, and another account's id answers 404, never 403. A console service's token (`svc`, no
+`acct`) is let in only from the services `console.auth.services` lists (`console-bff`, which names
+the account with `accountId` anywhere) or `console.auth.counting-services` lists
+(`console-drift-service`, `console-cost-service`, which may only count across accounts with
+`/v1/counts`); any other, and a token with neither `acct` nor `svc`, is a 401. The demo profile also
+takes the dev headers `X-Console-Account`, `X-Console-User`, `X-Console-Roles`, `X-Console-Region`
+and `X-Console-Service`, under the same rules. When the BFF's keys cannot be read, a token gets 503
+with `Retry-After`, not 401.
 
 **Budget.** Each account may run 30 queries a second with bursts of 60 on each replica
 (`console.search.budget.*`), 90 a second on the chart's three; beyond it, 429 with `Retry-After`.
@@ -156,7 +160,9 @@ the BFF's signing key never leaves it.
 ## Operate it
 
 - **Health** at `/actuator/health` (liveness and readiness probes, OpenSearch included), metrics
-  at `/actuator/prometheus`: `console_search_documents`, `console_search_lag_seconds`,
+  at `/actuator/prometheus`, in the cluster on their own port (18185, `service.managementPort`),
+  which the chart's NetworkPolicy (on by default) opens to Prometheus while the API's port stays
+  for the console's own pods: `console_search_documents`, `console_search_lag_seconds`,
   `console_search_events_total{type,outcome}`, `console_search_queries_total{kind,outcome}`,
   `console_search_duration{what}`, `console_search_rebuilds_total{outcome}`,
   `console_search_refetches_total`.
@@ -185,7 +191,7 @@ console at once. The test lives in `src/gatling` and needs no other service:
   so the documents, routing and versions are the ones the service writes, with refreshes and
   replicas off while it loads. `-Pload.mode=trickle` then keeps changing it at `load.trickle`
   writes a second, so the searches meet refreshes.
-- **`SearchSimulation`** (`./gradlew gatlingRun`) is the people: each opens lists (the counts for
+- **`SearchSimulation`** (`./gradlew gatlingRun --simulation …SearchSimulation`) is the people: each opens lists (the counts for
   the header and chips; the rows come from the state service), types in the header's search (a
   suggestion per keystroke, then the search), uses the filter bar (a page newest first, sometimes
   the next), asks the copilot, looks a resource up by its CMDB tag or its wfrn, or opens the
@@ -203,7 +209,7 @@ console at once. The test lives in `src/gatling` and needs no other service:
 java -jar build/libs/console-search-indexer.jar --console.ingest.enabled=false --console.auth.dev-headers=true
 # 1,000 people for 15 minutes, while 10 writes a second change the estate
 ./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.mode=trickle -Pload.trickle=10 -Pload.trickleFor=PT20M &
-./gradlew gatlingRun -Pload.size=10000000 -Pload.accounts=2000 -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M \
+./gradlew gatlingRun --simulation com.iaf.console.search.load.SearchSimulation -Pload.size=10000000 -Pload.accounts=2000 -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M \
   -Pload.baseUrl=http://console-search-indexer:18085
 ```
 

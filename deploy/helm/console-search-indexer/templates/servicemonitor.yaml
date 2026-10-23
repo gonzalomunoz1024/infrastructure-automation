@@ -13,7 +13,7 @@ spec:
     matchLabels:
       {{- include "console-search-indexer.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: management
       path: /actuator/prometheus
       interval: {{ .Values.metrics.serviceMonitor.interval }}
 {{- end }}

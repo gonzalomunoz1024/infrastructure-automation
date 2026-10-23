@@ -19,6 +19,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.server.WebFilterChain;
 
 import com.iaf.console.search.auth.domain.ConsolePrincipal;
+import com.iaf.console.search.auth.domain.InternalCallers;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -64,11 +65,12 @@ class ConsoleAuthWebFilterTest {
         return MockServerWebExchange.from(request);
     }
 
-    private final JwtVerifier knownKeys = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-search-indexer", "console"), CLOCK);
+    private final JwtVerifier knownKeys = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-search-indexer"),
+            InternalCallers.DEFAULT, CLOCK);
 
     @Test
     void aGoodTokenPassesWithItsClaims() throws JOSEException {
-        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, false, "global");
+        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, false, InternalCallers.DEFAULT, "global");
         MockServerWebExchange exchange = exchange("Bearer " + token());
         AtomicReference<ConsolePrincipal> seen = new AtomicReference<>();
         WebFilterChain chain = ex -> {
@@ -82,7 +84,7 @@ class ConsoleAuthWebFilterTest {
 
     @Test
     void aBadTokenIsA401() {
-        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, true, "global");
+        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, true, InternalCallers.DEFAULT, "global");
         MockServerWebExchange exchange = exchange("Bearer not-a-jwt");
         filter.filter(exchange, ex -> Mono.empty()).block();
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
@@ -95,8 +97,8 @@ class ConsoleAuthWebFilterTest {
     @Test
     void keysThatCannotBeReadAreA503NotA401() throws JOSEException {
         JwtVerifier unreachable = new JwtVerifier(WebClient.create(), "http://127.0.0.1:9/.well-known/jwks.json", "console-bff",
-                List.of("console-search-indexer"), CLOCK);
-        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(unreachable, false, "global");
+                List.of("console-search-indexer"), InternalCallers.DEFAULT, CLOCK);
+        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(unreachable, false, InternalCallers.DEFAULT, "global");
         MockServerWebExchange exchange = exchange("Bearer " + token());
         filter.filter(exchange, ex -> Mono.empty()).block();
         assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
@@ -105,9 +107,24 @@ class ConsoleAuthWebFilterTest {
 
     @Test
     void anErrorOfTheHandlerIsNotTheTokens() throws JOSEException {
-        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, false, "global");
+        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, false, InternalCallers.DEFAULT, "global");
         MockServerWebExchange exchange = exchange("Bearer " + token());
         assertThatThrownBy(() -> filter.filter(exchange, ex -> Mono.error(new IllegalStateException("the handler broke"))).block())
                 .hasMessageContaining("the handler broke");
+    }
+
+    @Test
+    void theDevHeadersLetInOnlyTheListedServices() {
+        ConsoleAuthWebFilter filter = new ConsoleAuthWebFilter(knownKeys, true, InternalCallers.DEFAULT, "global");
+        AtomicReference<ConsolePrincipal> seen = new AtomicReference<>();
+        MockServerWebExchange bff = MockServerWebExchange.from(MockServerHttpRequest.get("/v1/counts").header("X-Console-Service", "console-bff"));
+        filter.filter(bff, ex -> {
+            seen.set(ex.getAttribute(ConsolePrincipal.ATTRIBUTE));
+            return Mono.empty();
+        }).block();
+        assertThat(seen.get().internal()).isTrue();
+        MockServerWebExchange other = MockServerWebExchange.from(MockServerHttpRequest.get("/v1/counts").header("X-Console-Service", "console-state-service"));
+        filter.filter(other, ex -> Mono.empty()).block();
+        assertThat(other.getResponse().getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 }

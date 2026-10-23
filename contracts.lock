@@ -1,12 +1,13 @@
 # contracts.lock
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
-# the commit is on console-root--search-copilot-contract (PR #20, stacked on PR #11 and PR #2) until it merges
+# the commit is turn 15 of console-root--stack (draft PR #30, every hub PR in its merge order,
+# through #46, decision 35) until those merge
 branch: console-root
-commit: b0a0d52baa57fedfbe49b909dab81f18a9296ba2
+commit: 37a99d6bf1504a26523c091b3c9785b6c43bfb64
 files:
-  contracts/openapi/console-search-indexer.yaml: sha256:0c837cb7f56b8404c94a87d668ce6f993dc91dc5a2782951721e6a06636d0006
-  contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
-  contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
-  contracts/openapi/console-bff.yaml: sha256:620cf40998532ed610a714733c101e96d75da73694faec07592044983e2047f7
-  contracts/openapi/console-identity-service.yaml: sha256:7865f72cebbc351f39a65ae8c914776a79bcdac0ed8190ecb9e2b017594ba75c
-  contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c
+  contracts/openapi/console-search-indexer.yaml: sha256:b5939b51cafff5045425749d21b11255120b363e6ec18ee52acff24e820d3bb1
+  contracts/asyncapi/console-events.yaml: sha256:f65b46113df46d87da457b88bbf17a9f64ef9a32eacf0b86d89441cc4140d251
+  contracts/openapi/console-state-service.yaml: sha256:b89fa5b768a51b683cc0b447d4324f8073502534350a789983a2d2983c9cb534
+  contracts/openapi/console-bff.yaml: sha256:31ae6e35b2f4e2fbb8087cf78a57e2bef13299398f352cac32931ef0f3a7ad64
+  contracts/openapi/console-identity-service.yaml: sha256:b721cdc37e9695a8cefbd409951cef6d9dd6502dbd2dec18aecb255ea323f499
+  contracts/platform/openapi-target.yaml: sha256:3b5754e62d308b4f2387f8f0de572060e426de5ae73095ac9cc37a03a3e6c696

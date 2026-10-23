@@ -21,6 +21,7 @@ import com.iaf.console.search.index.domain.EventOutcome;
 import com.iaf.console.search.index.domain.Fixtures;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.ResourceState;
+import com.iaf.console.search.index.domain.StateResource;
 import com.iaf.console.search.support.FakeStateService;
 import com.iaf.console.search.support.FixedTypes;
 
@@ -92,6 +93,16 @@ class IndexingServiceTest {
         assertThat(index.find(scope, VM).block().drift()).isTrue();
         state.forget(VM);
         indexing.refetch(scope, VM).block();
+        assertThat(index.find(scope, VM).blockOptional()).isEmpty();
+    }
+
+    @Test
+    void aReadInOneAccountWritesNothingOfAnother() {
+        state.put(Fixtures.stateResource(VM, "web-03", 1, "active", Map.of("name", "web-03"), Map.of(), T0));
+        AccountScope other = AccountScope.of(Fixtures.OTHER_ACCOUNT, "global", "test");
+        assertThat(indexing.refetch(other, VM).block()).isInstanceOf(EventOutcome.Ignored.class);
+        assertThat(indexing.documentOf(StateResource.of(Fixtures.stateResource(VM, "web-03", 1, "active", Map.of("name", "web-03"), Map.of(), T0)),
+                other).blockOptional()).isEmpty();
         assertThat(index.find(scope, VM).blockOptional()).isEmpty();
     }
 
