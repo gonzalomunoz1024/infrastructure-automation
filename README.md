@@ -10,6 +10,23 @@ contracts this build pins.
 
 ## What is here (phases 0, 1 and 3)
 
+Phase 5 decides on drift and finds what nobody manages:
+
+- a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
+  with what was asked for, the card says Reverting with its request and follows it, and the
+  finding closes when the request succeeded (a failed revert says so and is offered again); Accept
+  makes the provider's values the desired ones after asking once, and Ignore asks for how long
+  (until what was asked for changes, or 1, 7 or 30 days) and why; the findings closed in the last
+  30 days are listed below, with who decided, when and why
+- the account's Drift page counts the open findings by severity and type, says when the last scan
+  ran and what the last 30 days found and closed, and lists every finding across the watched
+  types, filtered by type, severity and status, each with its three decisions; selected rows are
+  reverted together, one call each, counted as they go
+- Unmanaged resources runs a discovery for each type whose provider has a discovery read, lists
+  what no account manages with what the provider reports, a guess at the owning account with its
+  reasons and what it costs a month, and imports an object (a new wfrn, then its page) or assigns
+  it to another team's account, where it shows too until either imports it
+
 Phase 3b makes the console change resources, with the request in view at every step:
 
 - a create wizard for every type a workflow creates, generated from the workflow's input schema:
@@ -75,8 +92,7 @@ Phase 0 built the shell and the read-only pages:
 - light and dark themes, visible focus, WCAG AA text, reduced motion honoured, phone widths
 
 What the console does not do yet is still shown, and says which phase brings it: editing, tags,
-cloning, bulk actions and retrying a failed request in phase 4, drift's revert, accept and ignore
-in phase 5.
+cloning, bulk actions and retrying a failed request in phase 4.
 
 ## Workspaces
 
@@ -428,12 +444,43 @@ type, so the feed must subscribe to every one).
     than the hourly drift scan has not been read; a deleted one stays readable for 30 days. The
     review's quota rule and the Quotas card count `resources.<type>` with one function
     (`usedByTypeOf`), so they always agree, and a deleted resource frees its place at once.
+42. **A revert is one click; accept and ignore ask once.** A revert only puts back what was asked
+    for, through the type's own update workflow and its approvals, so it needs no confirmation:
+    the card says Reverting, links the request and follows it, and the finding closes when the
+    request succeeded, never when it was merely sent. Accept changes the desired state, and Ignore
+    silences the drift service, so each asks once in a small dialog, with an optional reason that
+    the history keeps. Each decision is gated twice: the type's `update` permission (refused, it
+    shows its lock and the refusal) and the finding's `can` (not offered, it is greyed with the
+    reason in words beside it, such as a field the update workflow does not set).
+43. **Drift codes are read by their prefix.** The drift service's 409 codes open `error` with a
+    stable prefix (`finding.closed`, `finding.reverting`, `finding.notRevertable`,
+    `finding.unwatched`, `revert.needsPerson`), and `lib/plain.ts` matches the table's code when
+    it stands alone or opens the error, so a code with words after it is still explained. A
+    refused decision reads the findings again, since the refusal means they changed.
+44. **Reverting many is many single reverts.** Selected rows are reverted
+    one call each, with their own Idempotency-Keys, counted as they go; what could not start is
+    named with its reason and stays selected for another try. There is no batch revert in the
+    contract, and a revert's request is the update workflow's own, so each one is followed and
+    approved like any other change. Findings carry no name, so the page shows the resource's id
+    from its wfrn and links to its Drift tab.
+45. **The unmanaged list is what the runs found, never a scan of its own.** Find unmanaged starts
+    a discovery run per type (one per type and region at a time; a second follows the running
+    one) and shows it going; the list holds what the account's finished runs found and what
+    another account assigned to it. Import asks for the name to manage the object under, then
+    links to its page; Assign to team offers the guessed account first, or an account id typed.
+    Both need the type's `create` permission and the object's `can`, so an account whose platform
+    role may not create the type can still find and read what it holds. In mock mode
+    (`console/src/mock/drift.ts`) the findings are the scan's with the decisions laid over them,
+    a revert closes when its update job succeeded (the provider refuses the first revert of
+    `vm-gen-037`, so the failed path can be seen), each resource carries a short seeded history,
+    and a discovery run takes 4 seconds and finds twelve machines and four clusters across the two
+    accounts, with owner guesses of each confidence.
 
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources), their
+  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, drift), their
                   helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
@@ -445,14 +492,17 @@ console/
                   descriptors, accounts, regions, recent, store, resourceList (the list's
                   filters, sorts, columns and counts), listState (the list in the query),
                   preferences (saved views and columns), keyed, csv, code (view as code), plain
-                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll
+                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll, drift
+                  (the drift and unmanaged routes, and their words)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
-                  (resources) and the writes on a clock (commands), and the browser installer,
-                  with the samples
+                  (resources) and the writes on a clock (commands), drift (findings, decisions,
+                  discovery and unmanaged objects), and the browser installer, with the samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
                   src/pages/list/ the list's saved views menu and column chooser,
                   src/pages/create/ the wizard's steps, src/pages/resource/ the resource page's
-                  tabs, request banner and action drawer
+                  tabs (DriftTab and the decisions it shares with the Drift page in
+                  DriftDecisions), request banner and action drawer, src/pages/operations/ the
+                  Drift and Unmanaged resources pages
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched
