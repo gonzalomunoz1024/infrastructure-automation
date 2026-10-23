@@ -1,0 +1,17 @@
+estate: 1,000,000 resources in 2,000 accounts (the largest 100,000), 23,126 groups; seeded in 2.0 s
+tiers: hot 50,208, warm 750,007, cold 199,785; imported 0.001; loops temporal; budget 300/min, burst 50, account share 0.25; latency page PT0.5S, batch PT0.3S
+
+| Hour | Requests/s mean | peak min | Provider calls/s mean | peak min | Pages | Batches (resources) | Discover pages | 429 | Deferred: budget, 429 | Reads/resource hot, warm, cold | Early reads | Overdue reads | Past interval at end | Turns cut | State calls | Wall s | CPU s |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 4.79 | 5.82 | 4.8 | 5.8 | 10,030 | 0 (0) | 7,219 | 0 | -2,109, 0 | 5.00, 5.00, 5.00 | 86.0% | 0.11% | 0.00% | 0 | 0 | 368 | 355 |
+  past interval at end by tier: hot 1, warm 0, cold 0; longest gap between reads: hot PT30M24.972S, warm PT1H8M57.206S, cold PT20H35M24.55S
+| 2 | 4.91 | 5.67 | 4.9 | 5.7 | 9,825 | 0 (0) | 7,857 | 0 | -1,853, 0 | 4.98, 4.89, 4.89 | 94.9% | 0.00% | 0.00% | 0 | 38,753 | 294 | 284 |
+  past interval at end by tier: hot 0, warm 0, cold 0; longest gap between reads: hot PT30M24.972S, warm PT1H8M57.206S, cold PT20H35M24.55S
+
+| Hour | Lists walked | Walks started | Walks finished | Started per walked list, mean / max | Largest list (resources): started, finished |
+|---|---|---|---|---|---|
+| 1 | 0 of 23,126 | 0 | 0 | 0.00 / 0 | 25,920: 0, 0 |
+| 2 | 0 of 23,126 | 0 | 0 | 0.00 / 0 | 25,920: 0, 0 |
+list walks, every account (type|environment: started, finished): database|dev: 10, 10; database|prod: 10, 10; database|staging: 10, 10; network|dev: 10, 10; network|prod: 10, 10; network|staging: 10, 10; vm|dev: 10, 9; vm|prod: 10, 10; vm|staging: 10, 9; volume|dev: 10, 10; volume|prod: 10, 10; volume|staging: 10, 10;
+discover walks (type|environment: started, finished): network|dev: 8, 8; vm|staging: 7, 7; database|dev: 7, 7; volume|dev: 8, 8; vm|dev: 8, 7; volume|staging: 8, 7; network|staging: 8, 8; network|prod: 8, 8; volume|prod: 7, 7; vm|prod: 7, 7; database|staging: 7, 7; database|prod: 7, 7;
+run: 664.6 s wall, 641.3 s CPU; open findings at the end 0 (no provider drifts, so any is a wrong read)

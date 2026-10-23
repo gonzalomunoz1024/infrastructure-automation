@@ -48,8 +48,8 @@ import reactor.core.scheduler.Schedulers;
 /**
  * One scan of a shard: the resources due are grouped by type, region, environment and account
  * (what the platform's paged read takes, P-09), and each group is either walked or batched,
- * whichever costs the observe budget less ({@link Walk#worthWalking}). A walk reads the account's
- * whole list through {@code :observe-list} pages of 500 and reconciles every managed item on a page,
+ * whichever costs the observe budget less ({@link Walk#worthWalking}). A walk reads the type's
+ * whole list in the region and environment, every account's resources in it, through {@code :observe-list} pages of 500 and reconciles every managed item on a page,
  * due or not, so one walk serves the due resources of all 64 shards and three tiers; it is kept in
  * the walk store, held by one turn at a time (the other shards leave the list's due resources to
  * it) and goes on from its cursor when a turn lets it go (the budget, a 429, the turn's slice of
@@ -224,8 +224,19 @@ public final class ShardScanner {
                             due.size(), t.name());
                     return defer(due, UNOBSERVABLE_RETRY, "unregistered").thenReturn(Plan.done(ScanReport.deferred(due.size())));
                 }
-                return walkOf(Walk.discoverKey(t.name(), group.region())).map(w -> w.heldByAnother(holder, clock.instant()) ? Plan.done(ScanReport.empty())
-                        : Plan.walk(group, due, sliceEnd -> discoverWalk(group, t, due, w, holder, sliceEnd)));
+                return walkOf(Walk.discoverKey(t.name(), group.region())).flatMap(w -> {
+                    Instant now = clock.instant();
+                    if (w.heldByAnother(holder, now)) {
+                        return Mono.just(Plan.done(ScanReport.empty()));
+                    }
+                    // a discover walk pages every object of the type in the region for the few that have no
+                    // registry record yet (an import's backfill gives them one), so it runs on the cold tier only
+                    Instant rested = w.restsUntil(tiers.cold());
+                    if (!w.underway() && now.isBefore(rested)) {
+                        return defer(due, Duration.between(now, rested), "discover-rest").thenReturn(Plan.done(ScanReport.empty()));
+                    }
+                    return Mono.just(Plan.walk(group, due, sliceEnd -> discoverWalk(group, t, due, w, holder, sliceEnd)));
+                });
             }
             if (!t.pageable() || group.environment() == null) {
                 return Mono.just(Plan.batch(due, t));
@@ -284,7 +295,8 @@ public final class ShardScanner {
     private Mono<ScanReport> page(ScanGroup group, TypeInfo type, Map<String, Watch> dueByWfrn, Set<String> seen, Walk walk, Instant sliceEnd,
             ScanReport soFar) {
         Instant now = clock.instant();
-        Optional<Duration> wait = budget.acquire(type.provider(), group.region(), group.accountId(), now);
+        // a walk serves every account, so it draws from the provider's bucket and no account's share
+        Optional<Duration> wait = budget.acquire(type.provider(), group.region(), null, now);
         if (wait.isPresent()) {
             if (pausable(wait.get(), now, sliceEnd)) {
                 return holdOver(walk, now.plus(wait.get()))
@@ -295,7 +307,7 @@ public final class ShardScanner {
             metrics.deferred("budget", left);
             return letGo(walk).thenReturn(soFar.plus(ScanReport.deferred(left)));
         }
-        ObserveListRequest request = new ObserveListRequest(group.region(), group.environment(), group.accountId(), walk.cursor(), settings.pageSize());
+        ObserveListRequest request = new ObserveListRequest(group.region(), group.environment(), null, walk.cursor(), settings.pageSize());
         return platform.observeList(type.name(), request)
                 .flatMap(pageOfItems -> applyPage(type, dueByWfrn, seen, pageOfItems).flatMap(applied -> {
                     ScanReport report = soFar.plus(applied.report()).plus(ScanReport.page());
@@ -318,7 +330,7 @@ public final class ShardScanner {
                 .onErrorResume(PlatformException.class, e -> {
                     if (e.isTooManyRequests()) {
                         Duration retry = Duration.ofSeconds(e.retryAfterSeconds() == null ? 5 : e.retryAfterSeconds());
-                        budget.exhausted(type.provider(), group.region(), group.accountId(), clock.instant(), retry);
+                        budget.exhausted(type.provider(), group.region(), null, clock.instant(), retry);
                         int left = remaining(dueByWfrn, seen).size();
                         metrics.deferred("rate-limited", left);
                         return letGo(walk).thenReturn(soFar.plus(ScanReport.deferred(left)));

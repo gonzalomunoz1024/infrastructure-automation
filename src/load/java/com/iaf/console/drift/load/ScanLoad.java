@@ -370,6 +370,11 @@ public final class ScanLoad {
                 System.out.printf(Locale.ROOT, "| %d | %,d of %,d | %,d | %,d | %.2f / %d | %,d: %d, %d |%n", hour + 1, lists, started.length, s, f,
                         lists == 0 ? 0 : (double) s / lists, max, largest.size(), started[largest.index()], finished[largest.index()]);
             }
+            if (!calls.listWalks().isEmpty()) {
+                StringBuilder b = new StringBuilder("list walks, every account (type|environment: started, finished):");
+                new java.util.TreeMap<>(calls.listWalks()).forEach((k, v) -> b.append(' ').append(k).append(": ").append(v[0]).append(", ").append(v[1]).append(';'));
+                System.out.println(b);
+            }
             if (!calls.discoverWalks().isEmpty()) {
                 StringBuilder b = new StringBuilder("discover walks (type|environment: started, finished):");
                 calls.discoverWalks().forEach((k, v) -> b.append(' ').append(k).append(": ").append(v[0]).append(", ").append(v[1]).append(';'));

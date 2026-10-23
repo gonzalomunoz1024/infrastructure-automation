@@ -27,6 +27,7 @@ final class PlatformCalls {
     private final int[][] walksStarted;
     private final int[][] walksFinished;
     private final Map<String, int[]> discoverWalks = new HashMap<>();
+    private final Map<String, int[]> listWalks = new HashMap<>();
 
     PlatformCalls(Instant start, int hours, int groups) {
         this.start = start;
@@ -47,6 +48,18 @@ final class PlatformCalls {
             if (last) {
                 walksFinished[hour][g.index()]++;
             }
+        }
+    }
+
+    /** A page of a type's list in an environment, every account's resources in it. */
+    void listPage(String list, boolean first, boolean last, int items, Instant at) {
+        page(null, first, last, items, at);
+        int[] walks = listWalks.computeIfAbsent(list, k -> new int[2]);
+        if (first) {
+            walks[0]++;
+        }
+        if (last) {
+            walks[1]++;
         }
     }
 
@@ -95,6 +108,10 @@ final class PlatformCalls {
 
     int[] walksFinished(int hour) {
         return walksFinished[hour];
+    }
+
+    Map<String, int[]> listWalks() {
+        return listWalks;
     }
 
     Map<String, int[]> discoverWalks() {

@@ -6,8 +6,9 @@ import java.time.Instant;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
- * The walk of one list's pages, kept between scans: an account's resources of a type in a region and
- * environment as {@code :observe-list} pages them, or every account's imported resources of a type
+ * The walk of one list's pages, kept between scans: every account's resources of a type in a region and
+ * environment as {@code :observe-list} pages them without an account (the drift service reads as the
+ * console-internal account, so a page is full whichever accounts own its resources), or every account's imported resources of a type
  * in a region in its {@code :discover} pages. One shard turn at a time holds a walk (until
  * {@code heldUntil}, renewed with every page), so the 64 shards' turns that all find the list's
  * resources due walk it once; a walk cut short (the budget, a 429, a turn's limit) keeps its cursor
@@ -36,9 +37,9 @@ public record Walk(
         return new Walk(key, null, null, null, null, 0, 0, 0, null, null, 0, 0, 0, 0);
     }
 
-    /** The key of an account's list of a type in a region and environment. */
+    /** The key of a type's list in a region and environment, all accounts in one. */
     public static String listKey(ScanGroup group) {
-        return "list:" + group.type() + ":" + group.region() + ":" + group.environment() + ":" + group.accountId();
+        return "list:" + group.type() + ":" + group.region() + ":" + group.environment();
     }
 
     /** The key of a type's discover pages in a region: one walk reads every account's imported resources of the type. */
@@ -49,6 +50,11 @@ public record Walk(
     /** Whether another turn holds the walk now. */
     public boolean heldByAnother(String me, Instant now) {
         return holder != null && !holder.equals(me) && heldUntil != null && heldUntil.isAfter(now);
+    }
+
+    /** When a walk that should start at most once per {@code gap} may start again: now for a list never walked. */
+    public Instant restsUntil(Duration gap) {
+        return lastStartedAt == null ? Instant.MIN : lastStartedAt.plus(gap);
     }
 
     /** Whether a walk was started and not finished: the next one goes on from its cursor. */

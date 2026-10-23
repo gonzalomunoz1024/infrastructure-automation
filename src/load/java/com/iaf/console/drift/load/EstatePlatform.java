@@ -76,6 +76,9 @@ final class EstatePlatform {
         if (refused.isPresent()) {
             return refused.get();
         }
+        if (request.account() == null) {
+            return allAccountsList(type, request);
+        }
         Estate.Group g = estate.group(request.account(), type, request.environment());
         long from = request.cursor() == null ? 0 : Long.parseLong(request.cursor());
         int size = request.pageSize() == null ? 500 : request.pageSize();
@@ -93,6 +96,36 @@ final class EstatePlatform {
             next = to < g.size() ? Long.toString(to) : null;
         }
         calls.page(g, request.cursor() == null, next == null, items.size(), clock.instant());
+        return answer(new ObserveListPage(items, next, Estate.PROVIDER, type + ".list", clock.instant()), pageLatency);
+    }
+
+    /** The list without an account, as the console-internal account reads it: every account's registered resources, in full pages. */
+    private Mono<ObserveListPage> allAccountsList(String type, ObserveListRequest request) {
+        List<Estate.Group> groups = estate.discoverList(type, request.environment());
+        long[] offsets = discoverOffsets.computeIfAbsent(type + "|" + request.environment(), k -> {
+            long[] o = new long[groups.size() + 1];
+            for (int n = 0; n < groups.size(); n++) {
+                o[n + 1] = o[n] + groups.get(n).size();
+            }
+            return o;
+        });
+        long total = offsets[groups.size()];
+        long from = request.cursor() == null ? 0 : Long.parseLong(request.cursor());
+        int size = request.pageSize() == null ? 500 : request.pageSize();
+        long to = Math.min(total, from + size);
+        List<ObserveListPage.Item> items = new ArrayList<>();
+        int n = groupAt(offsets, from);
+        for (long at = from; at < to; at++) {
+            while (at >= offsets[n + 1]) {
+                n++;
+            }
+            long i = groups.get(n).start() + (at - offsets[n]);
+            if (!estate.resource(i).imported()) {
+                items.add(new ObserveListPage.Item(estate.providerId(i), estate.wfrn(i), "reg-" + Long.toString(i, 36), estate.kind(groups.get(n)).attributes(), true));
+            }
+        }
+        String next = to < total ? Long.toString(to) : null;
+        calls.listPage(type + "|" + request.environment(), request.cursor() == null, next == null, items.size(), clock.instant());
         return answer(new ObserveListPage(items, next, Estate.PROVIDER, type + ".list", clock.instant()), pageLatency);
     }
 
