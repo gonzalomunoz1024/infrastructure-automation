@@ -51,7 +51,7 @@ const body = <T>(res: { body?: unknown }) => res.body as T
 const deniedOf = (res: { body?: unknown }) => (res.body as { denied?: Denial }).denied
 
 function deleteDecision(w: ReturnType<typeof world>) {
-  const types = body<BffConsoleType[]>(w.get('/console/v1/types'))
+  const types = body<{ items: BffConsoleType[] }>(w.get('/console/v1/types')).items
   return types.find((t) => t.type === 'vm')!.actions.find((a) => a.verb === 'delete')!
 }
 
@@ -157,7 +157,7 @@ describe('elevations', () => {
     const approved = body<Elevation>(w.call('POST', `/console/v1/iam/elevations/${e.elevationId}:decide`, { decision: 'approve', comment: 'ok' }))
     expect(approved).toMatchObject({ status: 'active', decidedBy: 'gonzalo' })
     w.as('mia', COMPUTE)
-    const create = body<BffConsoleType[]>(w.get('/console/v1/types'))
+    const create = body<{ items: BffConsoleType[] }>(w.get('/console/v1/types')).items
       .find((t) => t.type === 'vm')!
       .actions.find((a) => a.verb === 'create')!
     expect(create).toMatchObject({ allowed: true, elevated: true })

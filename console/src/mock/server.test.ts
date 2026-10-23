@@ -171,7 +171,7 @@ function bff() {
     return res
   }
   const session = () => body<Session>(call('GET', '/console/v1/session'))
-  const vmType = () => body<BffConsoleType[]>(call('GET', '/console/v1/types')).find((t) => t.key === 'compute/vm')!
+  const vmType = () => body<{ items: BffConsoleType[] }>(call('GET', '/console/v1/types')).items.find((t) => t.key === 'compute/vm')!
   const verb = (name: string) => vmType().actions.find((a) => a.verb === name)!
   return { srv, sessions, call, signIn, session, vmType, verb }
 }
