@@ -3,12 +3,12 @@
 # the console-e2e/<image>:local images from them. Re-pin by changing a line and running ./e2e.sh.
 #
 # image                     branch                                        commit                                    reason
-platform-fake-app           console-libs--phase-0                         6861ed541f14cd78fa3fdaefef1009cdaea3d6bc  the libraries every service builds with and platform-fake-app; the branch's tip
-console-identity-service    console-identity-service--phase-7             04e560ff9ecf7416161edab03d8d2eb1c9a83c61  last commit before 73b371e, which refuses the harness's service token unless console-e2e is listed in console.identity.auth.internal-services (see README, "Pins held back")
-console-state-service       console-state-service--phase-9                0d6164a0da0cb4dbbde9c8bca92a16e1b0ab7c3f  the branch's tip
-console-bff                 console-bff--drift                            1096484eb4fd148d4568346b3b9952c491b4a0dd  the tip with the drift routes the revert needs; no BFF commit has the cost routes too (F-4)
-console-search-indexer      console-search-indexer--transfers             200dba42dff436a1970cc2f23fa6814df7bdd3e8  the branch's tip (--load on top of it only adds the load test)
-console-drift-service       console-drift-service--finder-and-monitoring  cb3106dcad0848770251e628314e6e329a0f2c14  last commit before 5a01b4c, which refuses the harness's check-now call unless console-e2e is listed in console.auth.service-callers (see README, "Pins held back")
-console-cost-service        console-cost-service--phase-7                 3664b57fd30b68001f33638fe68b50dae57d9f0d  the branch's tip, with F-10 fixed
-console-web                 console-web--phase-5                          3950f17c4239767a1194edc43096410e84248e82  the tip with F-9 fixed; the create wizard, the resource page, the drift tab and approvals
+platform-fake-app           console-libs--phase-0                         cd6f535f91ee6c902f980e591b94c0d0a2575025  the branch's tip, with F-1, F-2, F-7 and F-11 fixed: runs on a JRE, publishes the feed to Kafka, serves P-22 price lists
+console-identity-service    console-identity-service--phase-7             317bc401e5abf475547f07bf1f9a16e53a217ee1  the branch's tip; console-e2e is listed in internal-services (config/identity)
+console-state-service       console-state-service--phase-9                0d6164a0da0cb4dbbde9c8bca92a16e1b0ab7c3f  the branch's tip; the BFF now mints single-audience tokens (F-16 fixed by the BFF pin)
+console-bff                 console-bff--cost                             c4dc41a2386708db01ca10be24069d1575b2577d  cost, scorecards and drift routes with phase 4's security fixes and F-13 (F-4 fixed)
+console-search-indexer      console-search-indexer--transfers             200dba42dff436a1970cc2f23fa6814df7bdd3e8  the branch's tip
+console-drift-service       console-drift-service--finder-and-monitoring  1f6e4ce6e05f1909b8fde4a77ec53bc97c75f3b4  the branch's tip; console-e2e is listed in service-callers (config/drift)
+console-cost-service        console-cost-service--phase-7                 3664b57fd30b68001f33638fe68b50dae57d9f0d  the branch's tip, with F-10 fixed; reached by people only through the BFF's cost routes (F-4)
+console-web                 console-web--phase-5                          757f3d6624053998cb13faf1a425e0ed4452d63c  the tip, with F-9, F-12 and F-14 fixed (#56 merged); the create wizard, the resource page, the drift tab and approvals
 console-web-cost            console-web--phase-9-cost                     1bb59eceb6c7c5844ee92cfba9a8b3e301102cf4  the newest web with a cost panel on the resource page (step 5), served on :3001

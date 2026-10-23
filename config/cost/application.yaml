@@ -1,9 +1,8 @@
 # console-cost-service in the e2e stack: profiles mongo,kafka (production), no demo.
 console:
   pricing:
-    # platform-fake serves no price lists yet (P-22), so the service reads the hub's list prices
-    # bundled in its jar, as its README says to until P-22 ships
-    source: bundled
+    # the price lists and the types' bindings from platform-fake over P-22
+    source: platform
   state:
     url: http://state:18082
   identity:

@@ -20,7 +20,6 @@ const platform = { E2E_PLATFORM_INTERNAL_TOKEN: platformToken }
 
 const files = {
   'platform-fake': { E2E_BFF_TRUST_JWKS: s.E2E_BFF_TRUST_JWKS },
-  'platform-feed-bridge': { PLATFORM_TOKEN: platformToken },
   opa: { E2E_OPA_BUNDLE_TOKEN: s.E2E_OPA_BUNDLE_TOKEN },
   identity: { E2E_OPA_BUNDLE_TOKEN: s.E2E_OPA_BUNDLE_TOKEN },
   state: { ...platform, E2E_STATE_MASTER_KEY: s.E2E_STATE_MASTER_KEY, E2E_STATE_TRAIL_KEY: s.E2E_STATE_TRAIL_KEY },

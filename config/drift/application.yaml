@@ -17,6 +17,8 @@ console:
     token: ${E2E_PLATFORM_INTERNAL_TOKEN}
   auth:
     jwks-uri: http://bff:18081/.well-known/jwks.json
+    # the BFF, and the harness, which asks for a check now as an operator would
+    service-callers: [console-bff, console-e2e]
   temporal:
     target: temporal:7233
     namespace: default

@@ -21,7 +21,7 @@ export const FINDINGS = {
 export type FindingId = keyof typeof FINDINGS
 
 /** Findings no pinned commit fixes yet. */
-const OPEN: ReadonlySet<FindingId> = new Set<FindingId>(['F-4', 'F-12', 'F-13', 'F-14', 'F-15'])
+const OPEN: ReadonlySet<FindingId> = new Set<FindingId>(['F-15'])
 
 const assumedFixed = new Set((process.env.E2E_ASSUME_FIXED ?? '').split(',').map((s) => s.trim()).filter(Boolean))
 

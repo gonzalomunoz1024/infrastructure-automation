@@ -1,6 +1,6 @@
 # console-state-service in the e2e stack: profiles mongo,kafka (production), no demo. Under kafka
-# it reads the platform's events from platform.jobs and platform.resources, which the
-# platform-feed-bridge fills from platform-fake's feed (the fake has no Kafka relay of its own).
+# it reads the platform's events from platform.jobs and platform.resources, which platform-fake-app
+# publishes under its kafka profile.
 console:
   platform:
     base-url: http://platform-fake:18090

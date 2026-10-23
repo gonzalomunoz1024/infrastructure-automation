@@ -24,8 +24,10 @@ done
 
 rm -rf artifacts && mkdir -p artifacts
 
+ROOT=$(pwd)
 finish() {
   local status=$?
+  cd "$ROOT"
   if [ "$status" -ne 0 ]; then
     echo "failed ($status): the containers' logs are in artifacts/logs/"
     mkdir -p artifacts/logs

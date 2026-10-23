@@ -136,6 +136,14 @@ services:
   platform-fake:
     <<: *java
     image: console-e2e/platform-fake-app:local
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+    environment:
+      <<: *java-env
+      # the kafka profile publishes the P-01 feed to platform.jobs, platform.resources,
+      # platform.content and platform.audit, as the platform does
+      SPRING_PROFILES_ACTIVE: kafka
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     env_file: [.work/env/platform-fake.env]
     volumes:
       - ./config/platform-fake:/e2e/config:ro
@@ -146,22 +154,6 @@ services:
       interval: 3s
       timeout: 3s
       retries: 80
-
-  platform-feed-bridge:
-    image: console-e2e/platform-feed-bridge:local
-    depends_on:
-      kafka-init: { condition: service_completed_successfully }
-      platform-fake: { condition: service_healthy }
-    env_file: [.work/env/platform-feed-bridge.env]
-    environment:
-      PLATFORM_URL: http://platform-fake:18090
-      KAFKA_BROKERS: kafka:9092
-    mem_limit: 256m
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null"]
-      interval: 3s
-      timeout: 3s
-      retries: 60
 
   # ------------------------------------------------------------------ console services
   identity:

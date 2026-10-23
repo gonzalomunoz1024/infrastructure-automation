@@ -42,14 +42,12 @@ the BFF's twin takes the step, so the rest of the journey still runs. `E2E_ASSUM
 
 `services.lock` holds the branch, the commit and the reason of each image.
 
-### Pins held back
+### Harness callers
 
-Since the security reviews (hub decision 35) the identity service (73b371e) and the drift service
-(5a01b4c) take a token without an account only from the services listed in their configuration.
-The e2e harness calls both as its own registered client, `console-e2e` (seeding the account in the
-identity service, asking the drift service for a check now). Their tips need `console-e2e` listed in
-`console.identity.auth.internal-services` and `console.auth.service-callers` in
-`config/identity` and `config/drift`; until that is decided, both are pinned at the commit before.
+The e2e harness calls the identity service (seeding accounts) and the drift service (a check now)
+as its own registered client, `console-e2e`. Since hub decision 35 both take a token without an
+account only from the services they list, so `config/identity` and `config/drift` add
+`console-e2e` to `console.identity.auth.internal-services` and `console.auth.service-callers`.
 
 ## Findings
 

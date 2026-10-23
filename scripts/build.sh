@@ -3,7 +3,7 @@
 #
 #   1. console-libs into a private Maven repository (.work/m2), and platform-fake-app's boot jar
 #   2. each Java service's boot jar against it
-#   3. each console-web commit's production build (live mode), and the feed bridge's dependencies
+#   3. each console-web commit's production build (live mode)
 #   4. the images: the service's own Dockerfile, else images/<image>/Dockerfile
 #
 #   scripts/build.sh [image...]    only these images (after console-libs, which is always built)
@@ -43,7 +43,3 @@ while read -r name _ _ _; do
   image "$name" "$dir"
 done < services.lock
 
-if [ "$only" = "  " ] || [[ "$only" == *" platform-feed-bridge "* ]]; then
-  (cd images/platform-feed-bridge && npm ci --omit=dev --no-audit --no-fund --loglevel=error)
-  image platform-feed-bridge images/platform-feed-bridge
-fi

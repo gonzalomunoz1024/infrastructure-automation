@@ -1,11 +1,6 @@
-# platform-fake-app (console-libs) as an image; console-libs has no Dockerfile. Build context: the
-# checked-out console-libs commit, after `./gradlew :platform-fake-app:bootJar` (scripts/build.sh).
-#
-# The base is the Temurin 21 JDK, not the JRE the console services use: PlatformFake calls
-# RandomGenerator.getDefault() (L32X64MixRandom), which lives in the jdk.random module, and the
-# Temurin JRE images leave that module out, so the fake fails at boot on them (finding F-1 in
-# README.md).
-FROM eclipse-temurin:21-jdk-alpine
+# platform-fake-app (console-libs) as an image; console-libs has no Dockerfile (F-8). Build context:
+# the checked-out console-libs commit, after `./gradlew :platform-fake-app:bootJar` (scripts/build.sh).
+FROM eclipse-temurin:21-jre-alpine
 
 RUN addgroup -S console && adduser -S -G console console
 WORKDIR /app
