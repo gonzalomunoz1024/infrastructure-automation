@@ -35,6 +35,9 @@ public interface StateServicePort {
 
     Mono<StateResource> requestUpdate(String wfrn, String workflow, String workflowVersion, ObjectNode changes, String actor, String requestId);
 
+    /** Sets tags on a resource in a person's name ({@code :tag}); what a scorecard's tags fix does. */
+    Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String requestId, String idempotencyKey);
+
     /** Takes a discovered object under management ({@code POST /v1/resources:import}, source {@code discover}). */
     Mono<StateResource> importResource(ImportCommand command);
 

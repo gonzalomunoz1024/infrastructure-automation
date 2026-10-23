@@ -222,6 +222,16 @@ public final class EmbeddedStateService implements StateServicePort {
     }
 
     @Override
+    public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String requestId, String idempotencyKey) {
+        return existing(wfrn).map(r -> {
+            ObjectNode node = Json.objectNode(r);
+            ObjectNode tags = node.withObject("/tags");
+            set.forEach(tags::put);
+            return bump(node);
+        });
+    }
+
+    @Override
     public Mono<Void> noteJob(String wfrn, String jobId) {
         jobs.put(wfrn, jobId);
         return Mono.empty();

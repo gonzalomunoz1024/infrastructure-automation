@@ -1,0 +1,141 @@
+# The organization's required tags (WP 4.4) as a scorecard: every managed resource names its
+# owner, cost centre, data class and environment. The create wizard pre-fills them from the
+# account; this pack finds the resources that predate the guardrail or lost a tag since.
+apiVersion: iaf.console/v1
+kind: RulePack
+metadata:
+  name: required-tags
+  title: Required tags
+  description: Every resource carries the four tags the organization requires, with values from the agreed lists.
+  version: 1
+  owner: platform-governance
+spec:
+  rules:
+    - id: owner
+      title: Names its owner
+      description: The `owner` tag names the team that answers for the resource.
+      severity: warning
+      types: ["*"]
+      check: { path: resource.tags.owner, present: true }
+      message: No owner tag; tag the team that owns this resource.
+      remediation:
+        title: Set the owner tag
+        kind: tags
+        set: { owner: "{{ $input.owner }}" }
+        inputs:
+          - { name: owner, title: Owning team }
+      rego: |
+        package console.scorecards.required_tags.owner
+
+        import rego.v1
+
+        default applies := true
+
+        deny contains "No owner tag; tag the team that owns this resource." if {
+        	not tagged
+        }
+
+        # a helper rule, not a function: `not f(x)` is false when x is undefined
+        tagged if {
+        	owner := input.resource.tags.owner
+        	owner != null
+        	owner != ""
+        }
+      examples:
+        - { input: { resource: { type: vm, tags: { owner: team-compute } } }, expect: pass }
+        - { input: { resource: { type: database, tags: {} } }, expect: fail }
+        - { input: { resource: { type: vm, tags: { owner: "" } } }, expect: fail }
+
+    - id: cost-centre
+      title: Names its cost centre
+      description: The `cost-centre` tag is the finance code the resource is charged to (CC- and four digits).
+      severity: warning
+      types: ["*"]
+      check: { path: resource.tags.cost-centre, matches: "CC-[0-9]{4}" }
+      message: No valid cost-centre tag; tag the CC-nnnn code the resource is charged to.
+      remediation:
+        title: Set the cost-centre tag
+        kind: tags
+        set: { cost-centre: "{{ $input.costCentre }}" }
+        inputs:
+          - { name: costCentre, title: Cost centre (CC-nnnn) }
+      rego: |
+        package console.scorecards.required_tags.cost_centre
+
+        import rego.v1
+
+        default applies := true
+
+        deny contains "No valid cost-centre tag; tag the CC-nnnn code the resource is charged to." if {
+        	not valid
+        }
+
+        valid if regex.match(`^CC-[0-9]{4}$`, input.resource.tags["cost-centre"])
+      examples:
+        - { input: { resource: { type: vm, tags: { cost-centre: CC-4411 } } }, expect: pass }
+        - { input: { resource: { type: vm, tags: { cost-centre: "4411" } } }, expect: fail }
+        - { input: { resource: { type: vm, tags: {} } }, expect: fail }
+
+    - id: data-class
+      title: Declares its data class
+      description: The `data-class` tag is one of public, internal, confidential or restricted.
+      severity: warning
+      types: ["*"]
+      check: { path: resource.tags.data-class, in: [public, internal, confidential, restricted] }
+      message: No valid data-class tag; use public, internal, confidential or restricted.
+      remediation:
+        title: Set the data-class tag
+        kind: tags
+        set: { data-class: "{{ $input.dataClass }}" }
+        inputs:
+          - { name: dataClass, title: Data class, enum: [public, internal, confidential, restricted], default: internal }
+      rego: |
+        package console.scorecards.required_tags.data_class
+
+        import rego.v1
+
+        default applies := true
+
+        classes := {"public", "internal", "confidential", "restricted"}
+
+        deny contains "No valid data-class tag; use public, internal, confidential or restricted." if {
+        	not valid
+        }
+
+        valid if input.resource.tags["data-class"] in classes
+      examples:
+        - { input: { resource: { type: vm, tags: { data-class: internal } } }, expect: pass }
+        - { input: { resource: { type: vm, tags: { data-class: secret } } }, expect: fail }
+        - { input: { resource: { type: volume, tags: {} } }, expect: fail }
+
+    - id: environment
+      title: Declares its environment
+      description: The `environment` tag is one of dev, test, staging or prod.
+      severity: info
+      types: ["*"]
+      check: { path: resource.tags.environment, in: [dev, test, staging, prod] }
+      message: No valid environment tag; use dev, test, staging or prod.
+      remediation:
+        title: Set the environment tag
+        kind: tags
+        set: { environment: "{{ $input.environment }}" }
+        inputs:
+          - { name: environment, title: Environment, enum: [dev, test, staging, prod], default: "{{ $resource.environment }}" }
+      rego: |
+        package console.scorecards.required_tags.environment
+
+        import rego.v1
+
+        default applies := true
+
+        environments := {"dev", "test", "staging", "prod"}
+
+        deny contains "No valid environment tag; use dev, test, staging or prod." if {
+        	not valid
+        }
+
+        valid if input.resource.tags.environment in environments
+      examples:
+        - { input: { resource: { type: vm, tags: { environment: prod } } }, expect: pass }
+        - { input: { resource: { type: vm, tags: { environment: production } } }, expect: fail }
+        - { input: { resource: { type: image } }, expect: fail }

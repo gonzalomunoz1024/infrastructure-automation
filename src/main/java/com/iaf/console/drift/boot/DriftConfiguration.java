@@ -37,6 +37,7 @@ import com.iaf.console.drift.drift.application.FindingQueries;
 import com.iaf.console.drift.drift.application.IdempotentCommands;
 import com.iaf.console.drift.drift.application.InventorySync;
 import com.iaf.console.drift.drift.application.Reconciler;
+import com.iaf.console.drift.drift.application.ResourceListener;
 import com.iaf.console.drift.drift.application.RevertFollower;
 import com.iaf.console.drift.drift.application.ShardScanner;
 import com.iaf.console.drift.drift.application.StateEvents;
@@ -186,10 +187,10 @@ public class DriftConfiguration {
 
     @Bean
     public Reconciler reconciler(FindingStorePort findings, WatchStorePort watches, StateServicePort state, FindingEvents events, TierRules tiers,
-            DriftProperties properties, DriftMetrics metrics, Clock clock) {
+            DriftProperties properties, DriftMetrics metrics, Clock clock, ObjectProvider<ResourceListener> listener) {
         DriftProperties.ScanSettings s = properties.drift().scan();
         return new Reconciler(findings, watches, state, events, tiers, new Reconciler.Timing(s.observationRefresh(), s.inFlightRetry(), s.errorRetry()),
-                metrics, clock);
+                metrics, clock, listener.getIfAvailable(() -> ResourceListener.NONE));
     }
 
     @Bean
@@ -202,10 +203,11 @@ public class DriftConfiguration {
 
     @Bean
     public InventorySync inventorySync(StateServicePort state, WatchStorePort watches, FindingStorePort findings, ResourceTypesPort types,
-            PlatformPort platform, FindingEvents events, TierRules tiers, DriftProperties properties, DriftMetrics metrics, Clock clock) {
+            PlatformPort platform, FindingEvents events, TierRules tiers, DriftProperties properties, DriftMetrics metrics, Clock clock,
+            ObjectProvider<ResourceListener> listener) {
         DriftProperties.SyncSettings s = properties.drift().sync();
         return new InventorySync(state, watches, findings, types, platform, events, tiers, properties.drift().shards(), s.accounts(), s.accountsRefresh(),
-                metrics, clock);
+                metrics, clock, listener.getIfAvailable(() -> ResourceListener.NONE));
     }
 
     @Bean

@@ -1,0 +1,123 @@
+# The data team's baseline for MongoDB clusters: a supported server version, a production tier
+# in production, and the connection string kept in Vault.
+apiVersion: iaf.console/v1
+kind: RulePack
+metadata:
+  name: data-baseline
+  title: Data baseline
+  description: Databases run a supported MongoDB version, production databases are not on the M10 tier, and connection strings live in Vault.
+  version: 1
+  owner: team-data
+spec:
+  rules:
+    - id: supported-version
+      title: Runs a supported MongoDB version (7.0 or 8.0)
+      description: Judged once the version is known.
+      severity: critical
+      types: [database]
+      when: { path: resource.effective.version, present: true }
+      check: { path: resource.effective.version, in: ["7.0", "8.0"] }
+      message: "MongoDB {{ resource.effective.version }} is out of support; upgrade to 7.0 or 8.0."
+      remediation:
+        title: Upgrade MongoDB
+        kind: workflow
+        workflow: mongodb-upgrade
+        verb: upgrade
+        input: { targetVersion: "{{ $input.targetVersion }}" }
+        inputs:
+          - { name: targetVersion, title: Target version, enum: ["7.0", "8.0"], default: "8.0" }
+      rego: |
+        package console.scorecards.data_baseline.supported_version
+
+        import rego.v1
+
+        default applies := false
+
+        supported := {"7.0", "8.0"}
+
+        applies if {
+        	input.resource.type == "database"
+        	present(input.resource.effective.version)
+        }
+
+        deny contains sprintf("MongoDB %v is out of support; upgrade to 7.0 or 8.0.", [input.resource.effective.version]) if {
+        	applies
+        	not supported_version
+        }
+
+        supported_version if input.resource.effective.version in supported
+
+        present(v) if {
+        	v != null
+        	v != ""
+        }
+      examples:
+        - { input: { resource: { type: database, effective: { version: "8.0" } } }, expect: pass }
+        - { input: { resource: { type: database, effective: { version: "6.0" } } }, expect: fail }
+        - { input: { resource: { type: database, effective: {} } }, expect: not-applicable }
+
+    - id: prod-tier
+      title: Production databases are not on the M10 tier
+      description: M10 is a shared development tier with no backup guarantee.
+      severity: warning
+      types: [database]
+      when: { path: resource.production, equals: true }
+      check: { path: resource.effective.tier, notIn: [M10] }
+      message: A production database on the M10 development tier.
+      rego: |
+        package console.scorecards.data_baseline.prod_tier
+
+        import rego.v1
+
+        default applies := false
+
+        applies if {
+        	input.resource.type == "database"
+        	input.resource.production == true
+        }
+
+        deny contains "A production database on the M10 development tier." if {
+        	applies
+        	not on_production_tier
+        }
+
+        on_production_tier if {
+        	tier := input.resource.effective.tier
+        	tier != null
+        	tier != "M10"
+        }
+      examples:
+        - { input: { resource: { type: database, production: true, effective: { tier: M30 } } }, expect: pass }
+        - { input: { resource: { type: database, production: true, effective: { tier: M10 } } }, expect: fail }
+        - { input: { resource: { type: database, production: true, effective: {} } }, expect: fail }
+        - { input: { resource: { type: database, production: false, effective: { tier: M10 } } }, expect: not-applicable }
+
+    - id: secret-in-vault
+      title: Keeps its connection string in Vault
+      severity: critical
+      types: [database]
+      when: { path: resource.attributes.secret, present: true }
+      check: { path: resource.attributes.secret, matches: "vault:.+" }
+      message: The connection string is not a Vault reference.
+      rego: |
+        package console.scorecards.data_baseline.secret_in_vault
+
+        import rego.v1
+
+        default applies := false
+
+        applies if {
+        	input.resource.type == "database"
+        	input.resource.attributes.secret != null
+        	input.resource.attributes.secret != ""
+        }
+
+        deny contains "The connection string is not a Vault reference." if {
+        	applies
+        	not in_vault
+        }
+
+        in_vault if regex.match(`^vault:.+$`, input.resource.attributes.secret)
+      examples:
+        - { input: { resource: { type: database, attributes: { secret: "vault:data/orders-db" } } }, expect: pass }
+        - { input: { resource: { type: database, attributes: { secret: "mongodb://orders-db.internal:27017" } } }, expect: fail }

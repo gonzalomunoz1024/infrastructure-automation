@@ -78,10 +78,19 @@ public final class InventorySync {
     private final AtomicReference<Instant> accountsReadAt = new AtomicReference<>();
     private final AtomicReference<Long> snapshotWatermarkNs = new AtomicReference<>();
     private final AtomicReference<Map<String, String>> defaultEnvironments = new AtomicReference<>(Map.of());
+    private final ResourceListener listener;
 
     public InventorySync(StateServicePort state, WatchStorePort watches, FindingStorePort findings, ResourceTypesPort types, PlatformPort platform,
             FindingEvents events, TierRules tiers, int shards, List<String> configuredAccounts, Duration accountsRefresh, DriftMetrics metrics,
             Clock clock) {
+        this(state, watches, findings, types, platform, events, tiers, shards, configuredAccounts, accountsRefresh, metrics, clock, ResourceListener.NONE);
+    }
+
+    /** {@code listener} hears every resource added, changed or removed (the compliance scorecards). */
+    public InventorySync(StateServicePort state, WatchStorePort watches, FindingStorePort findings, ResourceTypesPort types, PlatformPort platform,
+            FindingEvents events, TierRules tiers, int shards, List<String> configuredAccounts, Duration accountsRefresh, DriftMetrics metrics,
+            Clock clock, ResourceListener listener) {
+        this.listener = listener;
         this.state = state;
         this.watches = watches;
         this.findings = findings;
@@ -122,7 +131,7 @@ public final class InventorySync {
     /** A {@code Deleted} event, or a tombstone: the resource leaves the list and its finding closes. */
     public Mono<Boolean> removed(String wfrn) {
         return watches.find(wfrn)
-                .flatMap(w -> closeOnDeletion(w).then(watches.delete(wfrn)).thenReturn(true))
+                .flatMap(w -> closeOnDeletion(w).then(watches.delete(wfrn)).then(tell(listener.removed(wfrn), wfrn)).thenReturn(true))
                 .defaultIfEmpty(false);
     }
 
@@ -138,7 +147,8 @@ public final class InventorySync {
                 if (existing.isEmpty()) {
                     return Mono.just(new Change(null, Kind.NONE));
                 }
-                return closeOnDeletion(existing.get()).then(watches.delete(resource.wfrn())).thenReturn(new Change(null, Kind.REMOVED));
+                return closeOnDeletion(existing.get()).then(watches.delete(resource.wfrn())).then(tell(listener.removed(resource.wfrn()), resource.wfrn()))
+                        .thenReturn(new Change(null, Kind.REMOVED));
             }
             return typeInfo(resource.type()).flatMap(type -> {
                 Watch next = watchOf(resource, existing.orElse(null), type.orElse(null));
@@ -147,8 +157,17 @@ public final class InventorySync {
                 if (kind == Kind.NONE) {
                     return Mono.just(new Change(existing.get(), kind));
                 }
-                return watches.save(next).map(w -> new Change(w, kind));
+                return watches.save(next).flatMap(w -> tell(Mono.defer(() -> listener.changed(w)), w.wfrn()).thenReturn(new Change(w, kind)));
             });
+        });
+    }
+
+    /** What the listener does with a change; its failure is logged, never the sync's. */
+    private Mono<Void> tell(Mono<Void> heard, String wfrn) {
+        return heard.onErrorResume(e -> {
+            metrics.error("listener");
+            log.warn("{}: the change's listener failed: {}", wfrn, e.toString());
+            return Mono.empty();
         });
     }
 

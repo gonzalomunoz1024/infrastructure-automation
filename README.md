@@ -5,6 +5,8 @@ the state service holds for every resource) with what the provider actually has 
 platform's observe operations), records each difference as a finding, and offers the three
 decisions a person takes on it: **revert** in one click, **accept** the provider's values, or
 **ignore** the fields. Nothing is ever put back on its own: a revert is always a person's call.
+It also scores every resource it reads against the compliance rule packs and keeps each account's
+scorecard, its trend and the one-click fixes (see [Compliance scorecards](#compliance-scorecards)).
 
 This repository is one branch (`console-drift-service`) of the console work until the services
 move to repositories of their own. It is shaped like that future repository: the Gradle root is
@@ -114,6 +116,10 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.temporal.target`, `namespace`, `task-queue`, `iterations` | `localhost:7233`, `default`, `console-drift`, `96` | The Temporal frontend and how many turns a loop takes before it continues as new |
 | `console.kafka.bootstrap-servers`, `group-id`, `topics` | `localhost:9092`, `console-drift-service`, `[state.resources]` | The state events consumer (`kafka` profile) |
 | `console.outbox.relay.*` | on, `1s` | The service kit's outbox relay |
+| `console.scorecards.engine` | `embedded` | The policy engine rules run on: `embedded` (the packs' declarative `when`/`check`) or `opa` |
+| `console.scorecards.opa-url`, `opa-timeout`, `push-policies` | `http://localhost:8181`, `5s`, `true` | The firm's OPA, and whether this service loads the packs' Rego into it at start (`PUT /v1/policies/console-scorecards/<pack>/<rule>`) |
+| `console.scorecards.packs-dir` | none | A directory of `*.yaml` rule packs besides the three built in |
+| `console.scorecards.snapshot-interval` | `10m` | How often accounts without today's snapshot are recounted and snapshotted |
 
 ## The API
 
@@ -137,6 +143,13 @@ Pages are 1 to 200 items, 50 by default, with the kit's opaque cursors (`after`,
 | `POST /v1/webhooks/{provider}` | 202; `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body); the resources it names are read now |
 | `GET /internal/watches`, `/internal/watches/{wfrn}`, `POST /internal/watches/{wfrn}:check` | For services and operators: the watch list, one watch, read one now |
 | `POST /internal/scan`, `/internal/sync`, `/internal/follow` | Operations: one scan pass over every shard now (`?tier=` for one tier), sync the watch list now, look at the running revert jobs now |
+| `GET /v1/scorecards/packs` | The rule packs every resource is scored against, with each rule's severity, types and one-click fix |
+| `GET /v1/scorecards/account` | The account's score (0 to 100, or null with nothing scored), passing and failing counts by severity, per pack and per rule, and the trend of `days` daily snapshots (30 by default, up to 400) |
+| `GET /v1/scorecards/heatmap?accountIds=` | Services only (a person gets 404): the scores of 1 to 500 accounts by pack, in the order asked; the BFF names the accounts the person may see |
+| `GET /v1/scorecards/packs/{pack}/rules/{ruleId}/failing` | The account's resources that fail a rule, longest failing first; filter `type` |
+| `GET /v1/scorecards/resources?wfrn=` | One resource's result for every rule that applies to it |
+| `POST /v1/scorecards/packs/{pack}/rules/{ruleId}:remediate` | The rule's one-click fix for one failing resource, on behalf of the person: 200 with the tags set, or 202 with the job started |
+| `POST /internal/scorecards:rescore`, `:snapshot` | Operations: score every watched resource again now (after a pack changed; `?accountId=` for one account), recount and snapshot every account now |
 
 The decisions take `{reason}` (and `until` on an ignore) and the headers `Idempotency-Key` (the same
 key and body replay the first answer with `Idempotent-Replay: true`; another body is a 409) and
@@ -145,6 +158,14 @@ closed finding is a 409 `finding.closed` naming its resolution; others are `find
 revert job is running), `finding.notRevertable` (no update workflow, or a drifted field it cannot
 set), `finding.unwatched` (the resource left the inventory) and `revert.needsPerson` (the call
 carries no person to act for).
+
+A fix (`:remediate`) takes `{wfrn, input, reason}`, the same headers and `X-On-Behalf-Of`. It never
+runs on its own. A `tags` fix sets the tags through the state service in the person's name; a
+`workflow` fix starts the type's verb (or the named workflow) on the platform on behalf of the
+person, labelled `scorecard-rule: <pack>.<rule>`. Its 409s are `evaluation.passing` (the resource
+passes the rule now), `remediation.none` (the rule has no fix), `remediation.unavailable` (the
+type has no such verb), `remediation.needsPerson` and `resource.inFlight`; a missing or wrong
+input is a 400 naming it.
 
 ## How drift is found
 
@@ -178,6 +199,44 @@ can put back) is `warning`, anything else `info`. A resource with a change in fl
 Events use the P-01 envelope with the aggregate `finding` and the key
 `<type>:<wfrn>:<findingId>:<version>`, published through the service kit's outbox.
 
+## Compliance scorecards
+
+Every managed resource is scored against the rule packs (WP 9.6, hub decision 26). A pack is a
+`kind: RulePack` file of the hub (`rule-packs/*.yaml`, copied into `src/main/resources/rule-packs`
+and pinned in `contracts.lock`); each rule carries its policy twice, as Rego for OPA and as the
+declarative `when`/`check` the embedded engine runs, and examples both must agree on (the hub's
+check runs them through OPA, this service's tests through both engines). The built-in packs are
+`required-tags` (owner, cost centre, data class, environment), `compute-baseline` (production VMs
+with at least 2 vCPUs and 4 GiB, powered on) and `data-baseline` (a supported engine version,
+the production tier, credentials in the vault).
+
+```
+ reconciler (every read) ─┐                                  ┌─▶ scorecard_evaluations (one per resource)
+                          ├─▶ evaluator ─▶ policy engine ────┤─▶ scorecard_failures   (one per failing rule)
+ inventory sync (changes)─┘   (skips an unchanged input)     ├─▶ scorecard_counters   ($inc by deltas)
+                                                             └─▶ outbox ─▶ drift.scorecards
+ snapshot loop (daily per account): recount from the evaluations ─▶ counters replaced, scorecard_snapshots
+```
+
+- **The input** is `{resource: {wfrn, accountId, region, type, service, name, state, environment,
+  production, attributes, observed, effective, tags}}`, where `effective` is the desired attributes
+  with the last provider read laid over them. Its digest, with the packs' digest, is kept on the
+  evaluation, so an unchanged read never asks the engine.
+- **One evaluation per resource and rule**, stored as one document per resource and written only
+  over the version before it; a lost race scores again on what is stored. A rule that does not
+  apply is not scored; one the engine gave no verdict for is an `error` and not counted.
+- **The score** weighs rules by severity (critical 10, warning 3, info 1): 100 × the weighted
+  passing evaluations over all weighted evaluations, rounded; null when nothing counts. Per-account
+  counters move by the deltas of each change, so a scorecard is a read of a few hundred counters at
+  any account size; the daily recount repairs any drift in them and records the day's snapshot.
+- **The engine** is a port: `embedded` until the firm's OPA is wired in, `opa` then. A failed call
+  leaves the stored evaluation and scores as they were.
+
+| Event (`drift.scorecards`, partitioned by account) | When |
+| --- | --- |
+| `EvaluationChanged` | A resource's results changed: the rules whose status moved, from and to; aggregate `evaluation`, key `EvaluationChanged:<wfrn>:<version>` |
+| `ScoreSnapshotted` | An account's daily snapshot: score, per-pack scores, failing count and the previous score; aggregate `scorecard`, key `ScoreSnapshotted:<accountId>:<day>` |
+
 ## Concurrency
 
 Scans, the inventory sync, webhooks and people's decisions all write to the same two records, so
@@ -201,19 +260,29 @@ MongoDB, one database (`console_drift`) per deployment; indexes are created at s
 | `drift_watches` | `_id` wfrn, `accountId`, `type`, `shard`, `tier`, `nextCheckAt`, `lastCheckedAt`, `providerId`, `registryId`, `rev`, `doc` | `{shard, tier, nextCheckAt}`, `{shard, nextCheckAt}`, `{accountId, type, _id}`, `{accountId, lastCheckedAt desc}`, `providerId`, `registryId` |
 | `drift_discovery_runs`, `drift_unmanaged` | a discovery run; an unmanaged provider object | `{accountId, type, region, status}`; `{accountId, type, region, _id}` |
 | `idempotency_keys` | `_id` `<accountId>:<key>`, `bodyHash`, `status`, `body`, `expiresAt` | TTL `expiresAt` |
+| `scorecard_evaluations` | `_id` wfrn, `accountId`, `type`, `version`, `failing`, `doc` (every rule's result) | `{accountId, _id}` |
+| `scorecard_failures` | `_id` `<wfrn>|<pack>/<rule>`, `accountId`, `wfrn`, `rule`, `type`, `since`, `doc` | `{accountId, rule, since, _id}`, `{accountId, rule, type, since, _id}`, `wfrn` |
+| `scorecard_counters` | `_id` `<accountId>|<pack>/<rule>`, `accountId`, `rule`, `passed`, `failed` | `accountId` |
+| `scorecard_snapshots` | `_id` `<accountId>|<day>`, `accountId`, `day`, `at`, `doc` | `{accountId, day}`, TTL 400 days on `at` |
 | `outbox`, `processed_events` | the service kit's | the service kit's |
 
 ## Layout
 
 ```
 com.iaf.console.drift
-├── drift                         the one slice: findings and the watch list
+├── drift                         findings and the watch list
 │   ├── domain                    Finding, Watch, DriftRules, TierRules, Observation, ObserveBudget, Shards; no Spring, no I/O
 │   ├── ports.outbound            FindingStorePort, WatchStorePort, StateServicePort, PlatformPort, ResourceTypesPort,
 │   │                             WorkflowStarterPort, OnBehalfOfPort, DiscoveryStorePort, IdempotencyKeyPort
 │   ├── application               ShardScanner, Reconciler, InventorySync, DriftService (decisions), RevertFollower,
 │   │                             DiscoveryService, WebhookService, FindingQueries, FindingEvents, StateEvents
 │   └── adapters.{web,mongo,memory,state,platform,kafka,temporal,loop}
+├── scorecards                    compliance scorecards (WP 9.6)
+│   ├── domain                    RulePack, Rule, Condition, ResourceEvaluation, Scores, Templates, Views; no Spring, no I/O
+│   ├── ports.outbound            PolicyEnginePort, EvaluationStorePort, ScoreStorePort
+│   ├── application               ScorecardEvaluator (the drift slice's ResourceListener), ScorecardQueries,
+│   │                             ScorecardSnapshots, RemediationService, ScorecardEvents
+│   └── adapters.{web,mongo,memory,engine,content,loop}
 ├── auth                          ConsolePrincipal, JwtVerifier (the BFF's JWKS), ConsoleAuthWebFilter
 └── boot                          DriftProperties, the profile wiring, the demo's world alignment
 ```
@@ -236,6 +305,10 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 9 | Imported resources are read through `:discover` | The fake and the platform's `:observe-list` answer managed objects only; an imported object has a provider id and no registry record |
 | 10 | Unknown webhook providers answer 401 | The contract allows 202, 400, 401; a provider without a secret cannot be verified, which is the 401's meaning |
 | 11 | Service tokens from the BFF for this service's own calls | Hub decision 23: the state and identity services verify only the BFF's JWKS, so this service asks `POST /internal/v1/token` (client credentials with a JWT client assertion) for a five-minute token per audience, `console-state-service` and `console-identity-service`. The assertion is the pod's projected service-account token, or a JWT signed with the service's own registered key; there is no static token. Tokens are kept until a minute before they end, and a target's 401 gets one fresh token and one retry |
+| 12 | Scorecards in the drift service, fed by its reads | Every provider read and every inventory change already passes through here; scoring them where they land costs no extra read and keeps a resource's score as fresh as its drift |
+| 13 | A policy-engine port with OPA and an embedded engine, the packs carrying both | The platform's policy check is a mock today; the embedded engine runs the same rules until the firm's OPA is wired in, and the examples keep the two in agreement |
+| 14 | One document per resource, a failures collection, counters by delta and a daily recount | A scorecard reads counters instead of 1M evaluations; a rule's failing list pages on an index; a missed delta lives one day at most |
+| 15 | A fix is never automatic and always in a person's name | As revert (decision 4): `remediation.needsPerson` without one; tags through the state service as the person, workflows through the platform's delegation |
 
 ### Contract additions (raised with the hub)
 
@@ -245,6 +318,11 @@ Hub PR #14 (`console-root--drift-contract`, the commit `contracts.lock` pins) wr
 label `drift-finding` that ties a revert job to its finding; the `/internal/*` operations; and on
 an import of a discovered object, `registryId` set to the provider id, since the state contract
 requires one and a discovered object has no registry record.
+
+Hub PR #19 (`console-root--scorecards-contract`, stacked on #14, the commit pinned now) adds the
+scorecards: the `RulePack` schema and the three packs, the `/v1/scorecards/*` and
+`/internal/scorecards:*` paths, the `drift.scorecards` channel with `EvaluationChanged` and
+`ScoreSnapshotted`, the job label `scorecard-rule`, and the BFF's `/console/v1/scorecards*` routes.
 
 ### The demo's world
 

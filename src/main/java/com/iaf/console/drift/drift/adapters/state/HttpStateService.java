@@ -154,6 +154,15 @@ public final class HttpStateService implements StateServicePort {
     }
 
     @Override
+    public Mono<StateResource> tag(String wfrn, java.util.Map<String, String> set, String actor, String requestId, String idempotencyKey) {
+        ObjectNode body = Json.object();
+        ObjectNode tags = body.putObject("set");
+        set.forEach(tags::put);
+        body.put("actor", actor);
+        return command(wfrn, ":tag", body, requestId, idempotencyKey);
+    }
+
+    @Override
     public Mono<StateResource> importResource(ImportCommand c) {
         ObjectNode body = Json.object();
         body.put("type", c.type());
