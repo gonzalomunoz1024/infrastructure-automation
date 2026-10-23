@@ -217,7 +217,17 @@ export function VirtualTable<T>({
   return (
     <div className={cx('overflow-hidden rounded-lg border border-stroke-light bg-surface', className)}>
       <div className="overflow-x-auto">
-        <div role="table" aria-label={label} aria-rowcount={sorted.length + 1} aria-busy={loading || undefined} style={{ minWidth }}>
+        <div
+          role="grid"
+          aria-label={label}
+          aria-rowcount={sorted.length + 1}
+          aria-busy={loading || undefined}
+          tabIndex={0}
+          aria-activedescendant={active >= 0 && active < sorted.length ? rowId(active) : undefined}
+          onKeyDown={onKeyDown}
+          className="outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+          style={{ minWidth }}
+        >
           <div role="rowgroup">
             <div role="row" aria-rowindex={1} className="grid h-10 items-center border-b border-stroke-light bg-surface-secondary/60" style={{ gridTemplateColumns: template }}>
               {selectable && (
@@ -253,22 +263,8 @@ export function VirtualTable<T>({
             </div>
           </div>
 
-          {showSkeleton ? (
-            <div role="rowgroup" className="p-3">
-              <SkeletonRows n={skeletonRows} rowClassName="h-9" />
-            </div>
-          ) : showEmpty ? (
-            <div role="rowgroup">{empty ?? <EmptyState compact icon={emptyIcon} title={emptyTitle} message={emptyMessage} />}</div>
-          ) : (
-            <div
-              ref={bodyRef}
-              role="rowgroup"
-              tabIndex={0}
-              aria-activedescendant={active >= 0 && active < sorted.length ? rowId(active) : undefined}
-              onKeyDown={onKeyDown}
-              className="relative overflow-y-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
-              style={{ maxHeight }}
-            >
+          {!showSkeleton && !showEmpty && (
+            <div ref={bodyRef} role="rowgroup" className="relative overflow-y-auto" style={{ maxHeight }}>
               <div style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}>
                 {items.map((item) => {
                   const row = sorted[item.index]
@@ -294,14 +290,14 @@ export function VirtualTable<T>({
                       style={{ height: item.size, transform: `translateY(${item.start}px)`, gridTemplateColumns: template }}
                     >
                       {selectable && (
-                        <div role="cell" className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                        <div role="gridcell" className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
                           <Checkbox checked={!!isSelected} onChange={(on) => setSelected(key, on)} label={<span className="sr-only">Select {key}</span>} />
                         </div>
                       )}
                       {columns.map((c) => {
                         const content = c.render ? c.render(row, item.index) : c.accessor ? c.accessor(row) : ((row as Record<string, unknown>)[c.key] as CellValue)
                         return (
-                          <div key={c.key} role="cell" className={cellClass(c)}>
+                          <div key={c.key} role="gridcell" className={cellClass(c)}>
                             {content === null || content === undefined || content === '' ? <span className="text-tertiary">not set</span> : typeof content === 'boolean' ? (content ? 'Yes' : 'No') : content}
                           </div>
                         )
@@ -319,6 +315,13 @@ export function VirtualTable<T>({
           )}
         </div>
       </div>
+      {/* the states without rows sit under the grid, so the grid only ever holds rows */}
+      {showSkeleton && (
+        <div className="p-3">
+          <SkeletonRows n={skeletonRows} rowClassName="h-9" />
+        </div>
+      )}
+      {showEmpty && (empty ?? <EmptyState compact icon={emptyIcon} title={emptyTitle} message={emptyMessage} />)}
       {footer && <div className="border-t border-stroke-light px-3 py-2">{footer}</div>}
     </div>
   )

@@ -17,7 +17,7 @@ const RECT = { width: 800, height: 400 }
 describe('VirtualTable', () => {
   it('renders only the rows on screen, as one ARIA table', () => {
     const html = text(renderToString(<VirtualTable columns={COLUMNS} rows={ROWS} rowKey={(r) => r.id} label="Virtual machines" rowHeight={40} initialRect={RECT} />))
-    expect(html).toContain('role="table"')
+    expect(html).toContain('role="grid"')
     expect(html).toContain('aria-label="Virtual machines"')
     expect(html).toContain('aria-rowcount="1001"')
     expect(html.match(/role="columnheader"/g)).toHaveLength(3)
