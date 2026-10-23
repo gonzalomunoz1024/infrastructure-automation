@@ -106,8 +106,9 @@ class OnBehalfOfAssertionsTest {
 
     private static String tamper(String jws) {
         String[] parts = jws.split("\\.");
-        char last = parts[2].charAt(parts[2].length() - 1);
-        char flipped = last == 'A' ? 'B' : 'A';
-        return parts[0] + "." + parts[1] + "." + parts[2].substring(0, parts[2].length() - 1) + flipped;
+        // the first character, never the last: that one may carry padding bits only
+        char first = parts[2].charAt(0);
+        char flipped = first == 'A' ? 'B' : 'A';
+        return parts[0] + "." + parts[1] + "." + flipped + parts[2].substring(1);
     }
 }
