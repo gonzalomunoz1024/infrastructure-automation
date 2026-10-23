@@ -27,20 +27,23 @@ import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.paging.Page;
+import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
 
 /**
  * The search indexer's contract, served in process for the demo under {@code /demo-search}:
  * {@code /v1/search}, {@code /v1/suggest} and {@code /v1/counts}. The caller is the BFF's
- * internal JWT, read as the real indexer reads it: a user searches the token's account, the
- * console itself names one with {@code accountId}.
+ * internal JWT, read as the real indexer reads it: a user searches the token's account (another
+ * account named is a 404), the console itself names one with {@code accountId}, or, for the
+ * counts, up to 200 with {@code accountId} repeated.
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
 public class DemoSearchRoutes {
 
     private static final String PREFIX = SearchConfiguration.DEMO_PATH;
+    private static final int MAX_ACCOUNTS = 200;
 
     private final DemoSearchIndex index;
     private final DemoTokens tokens;
@@ -63,7 +66,42 @@ public class DemoSearchRoutes {
                     Integer limit = integer(r, "limit");
                     return Map.of("items", index.suggest(account, param(r, "region"), param(r, "q"), param(r, "type"), limit == null ? 8 : limit));
                 }))
-                .andRoute(GET(PREFIX + "/v1/counts"), r -> answer(r, account -> index.counts(account, param(r, "q"), filters(r))));
+                .andRoute(GET(PREFIX + "/v1/counts"), r -> answerAccounts(r, accounts -> index.counts(accounts, param(r, "q"), filters(r), param(r, "groupBy"))));
+    }
+
+    /** A call over accounts: the token's own for a user (another one named is a 404), the 1 to 200 named for the console-internal principal. */
+    private Mono<ServerResponse> answerAccounts(ServerRequest request, Function<List<String>, Object> work) {
+        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        if (caller.isEmpty()) {
+            return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
+        }
+        DemoCaller c = caller.get();
+        List<String> named = request.queryParams().getOrDefault("accountId", List.of()).stream().map(String::strip).filter(v -> !v.isEmpty())
+                .distinct().toList();
+        List<String> accounts;
+        if (c.internal()) {
+            if (named.isEmpty() || named.size() > MAX_ACCOUNTS) {
+                return json(HttpStatus.BAD_REQUEST, Map.of("error", "the console-internal principal names 1 to " + MAX_ACCOUNTS + " accounts with accountId"));
+            }
+            if (named.stream().anyMatch(a -> !AccountScope.isAccountId(a))) {
+                return json(HttpStatus.BAD_REQUEST, Map.of("error", "an accountId is 12 digits"));
+            }
+            accounts = named;
+        } else {
+            Optional<String> other = named.stream().filter(a -> !a.equals(c.accountId())).findFirst();
+            if (other.isPresent()) {
+                return json(HttpStatus.NOT_FOUND, Map.of("error", "account " + other.get() + " not found"));
+            }
+            accounts = List.of(c.accountId());
+        }
+        try {
+            return json(HttpStatus.OK, work.apply(accounts));
+        } catch (InvalidInputException e) {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("error", e.getMessage());
+            body.put("problems", e.problems());
+            return json(HttpStatus.BAD_REQUEST, body);
+        }
     }
 
     private Mono<ServerResponse> answer(ServerRequest request, Function<String, Object> work) {
