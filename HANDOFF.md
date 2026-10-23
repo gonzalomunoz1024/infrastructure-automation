@@ -42,7 +42,7 @@ UTC; nothing below is CI-verified.)**
 | Web phase 7 streams | `console-web--p7-access` (cdbc2ab), `--p7-cli` (b3e39bd), and WIP branches `--p7-blueprints-wip` (340db1a), `--p7-dashboards-wip` (facb1c8), `--p7-mobile-wip` (70046d9), `--p7-notify-wip` (e0d95ce), `--p7-personal-wip` (2b3ac71), `--p7-policies-wip` (dc70827), `--p7-state-wip` (0e3b80f) | see left | Each W stream continues on its own branch and is merged into `console-web--phase-7` |
 | Web security | branch `console-web--phase-5-security-wip` (no PR) | 38eede3 | S-4 |
 | Web cost | PR #49 `console-web--phase-9-cost` → `--phase-9` | 1bb59ec | W-8 |
-| End to end | branches `console-e2e` (dc39076) and `console-e2e--journey` (39259f4); a draft PR is expected | - | E-1, E-2 (continue, do not restart) |
+| End to end | draft PR #55 `console-e2e--journey` (39259f4) → `console-e2e` (dc39076) | - | E-1, E-2 (continue, do not restart) |
 | State, search | state #45, #47, #48 and search #44 as in section 4 | - | merge train, P-1 |
 
 Mapping streams to WPs (by branch name, unverified): notify = W-1, personal = W-2, cli = W-3,
