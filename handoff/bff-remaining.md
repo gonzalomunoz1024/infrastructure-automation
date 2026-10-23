@@ -113,3 +113,19 @@ Add scenarios to the search indexer's Gatling harness, stacked on its PR #35. Re
 - **Sessions:** sign in through the demo IdP with `login_hint=<user>`, then use the cookie and the `X-Csrf-Token`. Use a pool of demo people, so the per-person caches are realistic.
 - **Pass rule:** fail the simulation on the plan's p95 targets, using Gatling assertions.
 - Transfer: state's :transfer (PR #33, 0d6164a) answers 403 to a person's token; call it with the BFF's own service token, ?accountId=<source account>, and the person as actor.
+
+## Status at the handoff (2026-10-23 19:52 UTC)
+
+| Branch | Head | State |
+| --- | --- | --- |
+| console-bff--phase-1 (#6) | 27a2ffe | Security fixes done, CI green |
+| console-bff--phase-4 (#26) | 6cdd3f5 | Security fixes merged, plus the F-13 ETag fix; CI green |
+| console-bff--phase-9 (#51) | 3dc6f40 | Executive home, explainer, copilot, interpret and counts; CI green. Needs phase-4 merged in (through cost) |
+| console-bff--org (#52) | 2dfa817 | Decision 34 done, 322 tests green |
+| console-sdk | 338a4e0 | TS and Java SDKs and CLI done, CI green |
+| console-bff--clients | 23ffed8 | Device-code sign-in mostly done; last commit is WIP (docs/test count) |
+| console-bff--notifications | a55ca11 | WIP: notifications, feed, recent, favourites done; the weekly digest slice is unfinished |
+| console-bff--history | 86a0023 | WIP: time travel just started; revert plan, map, activity, blast radius and transfer not built |
+| console-bff--blueprints | 2dfa817 | Not started (no commits beyond org) |
+
+ChatOps and the BFF load tests were taken over by the Resource pages thread (console-bff--chatops, console-bff--loadtest). The two tests that sometimes hang (IamProxyTest, LoginFlowTest) still need bounded timeouts.
