@@ -9,7 +9,8 @@ import com.iaf.console.kit.errors.Problem;
 /**
  * The list's sorts: the console sends a column with {@code -} for descending ({@code name},
  * {@code -created}, {@code updated}); the state service takes {@code name}, {@code createdAt} and
- * {@code updatedAt}, which the BFF accepts as well.
+ * {@code updatedAt}, which the BFF accepts as well. A list with free text goes through the search
+ * index, which takes the console's form and ranks by relevance ({@code score}) when none is given.
  */
 public final class ListSorts {
 
@@ -36,5 +37,14 @@ public final class ListSorts {
             throw new InvalidInputException("unknown sort", List.of(Problem.error("enum", "/sort", "one of: " + String.join(", ", OFFERED))));
         }
         return mapped;
+    }
+
+    /** The search index's sort for the console's: the console's own form, {@code null} for relevance; an unknown sort is a 400. */
+    public static String toIndex(String sort) {
+        String state = toState(sort);
+        if (state == null) {
+            return null;
+        }
+        return state.replace("createdAt", "created").replace("updatedAt", "updated");
     }
 }

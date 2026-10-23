@@ -21,13 +21,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-/**
- * Every operation of the pinned contract is served, except the ones named here as later work
- * packages: search goes through the indexer (WP 4.1).
- */
+/** Every operation of the pinned contract is served. */
 class RoutesMatchContractTest extends DemoApp {
 
-    private static final Set<String> LATER = Set.of("/console/v1/search", "/console/v1/suggest");
     private static final Set<String> METHODS = Set.of("get", "post", "put", "patch", "delete");
 
     @Autowired
@@ -43,7 +39,7 @@ class RoutesMatchContractTest extends DemoApp {
         List<String> missing = new ArrayList<>();
         int checked = 0;
         for (Map.Entry<String, JsonNode> path : paths.properties()) {
-            if (LATER.contains(path.getKey()) || path.getKey().startsWith("/actuator")) {
+            if (path.getKey().startsWith("/actuator")) {
                 continue;
             }
             for (Map.Entry<String, JsonNode> op : path.getValue().properties()) {

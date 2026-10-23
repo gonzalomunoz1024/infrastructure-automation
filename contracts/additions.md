@@ -15,7 +15,11 @@ service, with these details the contract does not spell out yet:
   activity, drift, lineage) `<service>:get` on its wfrn; a refusal is a 403 with a Denial.
 - The list's `sort` takes the console's form, `name`, `-name`, `created`, `-created`, `updated`
   and `-updated` (the state service's `createdAt` and `updatedAt` spellings pass too); the
-  default is `-updated`; anything else is a 400 naming the six.
+  default is `-updated`, or relevance with `q`; anything else is a 400 naming the six.
+- With `q` (at most 256 characters, the indexer's query syntax) the page comes from the search
+  indexer and each hit is read again from the state service, in the index's order; a hit the
+  state service no longer holds is left out, so such a page can hold fewer rows than `limit`
+  while `next` goes on. Without `q` the page is the state service's.
 - Every page writes `next`, `null` on the last page.
 
 - `ConsoleResource` also carries `observedAt`, `observedStatus`, `changes` (while `updating`),
@@ -33,6 +37,43 @@ service, with these details the contract does not spell out yet:
   (400 `confirm.required` otherwise) and a fresh sign-in (`console.auth.step-up`).
 - `POST /r/{type}:batch` answers 400 `bulk.unsupported` for a verb without a batch route and
   400 `required` for a row without `wfrn` on a verb other than create.
+
+## Search
+
+`GET /console/v1/search` and `GET /console/v1/suggest` are served as the contract says, through
+the search indexer (`console.search.url`, audience `console-search-indexer`), with these details:
+
+- `q` is required: at most 256 characters for a search, 1 to 128 for type-ahead (400 with a
+  problem on `/q` otherwise); the indexer's 400 for a query it cannot read passes on with its
+  problems, its 429 with `Retry-After`.
+- A search asks `<service>:list` on every type of the catalogue and leaves out the hits of the
+  types the person may not list; a page can therefore hold fewer hits than `limit` while `next`
+  goes on. With `type`, an unknown type is a 404 and one the person may not list a 403.
+- `SearchHit` also carries `service`, `region`, `drift`, `tags` and `updatedAt`, as the indexer
+  answers them; `highlights` wraps each match in `<em>` inside HTML-escaped text.
+- Type-ahead answers `{ items }`, at most `limit` (1 to 20, 8 by default): a resource or a wfrn
+  when its type is listable, a type when listable, a tag term (`tag:<name>=<value>`) when any
+  type is. `Suggestion` also carries `type` and `wfrn` where the indexer gives them.
+
+`GET /console/v1/r/{type}:counts` is new: how many resources a list's filters match.
+
+```yaml
+parameters: q (as the list's), state, tag.<name>, drift (true|false)
+200:
+  total: integer       # what the list would page through: every filter, tombstones only with state=deleted
+  byState:             # every state whatever the state filter, in this order; tombstones under deleted
+    pending: integer
+    active: integer
+    updating: integer
+    deleting: integer
+    deleted: integer
+    failed: integer
+  drift: integer       # of total, those with an open drift finding
+  cappedAt: integer | null   # set when counting stopped at a cap (show "1,000+"); null while exact
+```
+
+It asks `<service>:list` on the type's pattern (403 otherwise); an unknown type is a 404, an
+unknown `state` a 400.
 
 ## Session
 

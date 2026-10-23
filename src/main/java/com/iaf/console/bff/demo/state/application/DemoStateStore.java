@@ -180,6 +180,17 @@ public class DemoStateStore implements FeedListener {
         return descending ? c.reversed() : c;
     }
 
+    /** Every record of an account in a region (every region when {@code null}), tombstones too: what the demo search index reads. */
+    public synchronized List<StateResource> snapshot(String accountId, String region) {
+        List<StateResource> all = new ArrayList<>();
+        for (Row row : rows.values()) {
+            if (row.accountId.equals(accountId) && (region == null || row.region.equals(region))) {
+                all.add(row.resource());
+            }
+        }
+        return all;
+    }
+
     /** The resource, or its tombstone, or nothing. */
     public synchronized Optional<Object> get(String accountId, String wfrn) {
         Row row = rows.get(wfrn);

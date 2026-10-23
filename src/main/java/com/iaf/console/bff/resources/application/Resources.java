@@ -29,6 +29,7 @@ import com.iaf.console.bff.resources.domain.BatchInput;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
+import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.resources.domain.LineageView;
 import com.iaf.console.bff.resources.domain.ListSorts;
 import com.iaf.console.bff.resources.domain.PreviewView;
@@ -40,6 +41,9 @@ import com.iaf.console.bff.resources.domain.StateCommands;
 import com.iaf.console.bff.resources.domain.StateQuery;
 import com.iaf.console.bff.resources.domain.StateResource;
 import com.iaf.console.bff.resources.ports.outbound.StatePort;
+import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchQuery;
+import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.application.Sessions;
 import com.iaf.console.bff.session.domain.Session;
@@ -87,6 +91,8 @@ public class Resources {
     private static final Logger log = LoggerFactory.getLogger(Resources.class);
     private static final Pattern PATH_PARAM = Pattern.compile("\\{([A-Za-z0-9_-]+)}");
     private static final int RECENT_JOBS = 10;
+    private static final int MAX_QUERY = 256;
+    private static final int HYDRATE_CONCURRENCY = 16;
     private static final Map<String, String> PLATFORM_STATES = Map.ofEntries(
             Map.entry("building", StateResource.PENDING), Map.entry("pending", StateResource.PENDING), Map.entry("creating", StateResource.PENDING),
             Map.entry("ready", StateResource.ACTIVE), Map.entry("active", StateResource.ACTIVE), Map.entry("running", StateResource.ACTIVE),
@@ -101,10 +107,11 @@ public class Resources {
     private final PlatformClients clients;
     private final PlatformProperties platform;
     private final StatePort state;
+    private final SearchPort search;
     private final ObjectMapper json;
 
     public Resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, ObjectMapper json) {
+            StatePort state, SearchPort search, ObjectMapper json) {
         this.types = types;
         this.access = access;
         this.sessions = sessions;
@@ -112,6 +119,7 @@ public class Resources {
         this.clients = clients;
         this.platform = platform;
         this.state = state;
+        this.search = search;
         this.json = json;
     }
 
@@ -132,16 +140,49 @@ public class Resources {
 
     // ---- reads
 
-    /** One page of the account's resources of a type, as {@code <service>:list} on the type's pattern allows. */
+    /**
+     * One page of the account's resources of a type, as {@code <service>:list} on the type's
+     * pattern allows: from the state service, or with free text from the search index, each hit
+     * read again from the state service so the row shows what the resource is now (a hit the
+     * index still holds but the state service no longer does is left out).
+     */
     public Mono<Page<ResourceView>> list(Session session, String type, ListFilters filters) {
         return types.byType(session, type).flatMap(t -> {
-            String sort = ListSorts.toState(filters.sort());
-            return access.require(session, AccessCheck.action(t.service(), LIST_VERB), typePattern(session, t))
-                    .then(Mono.defer(() -> state.list(scope(session), caller(session),
-                            new StateQuery(t.type(), filters.state(), filters.q(), filters.tags(), null, filters.drift(), sort,
-                                    CursorPaging.pageSize(filters.limit()), filters.after()))))
-                    .map(page -> new Page<>(page.items().stream().map(ResourceView::summary).toList(), page.next()));
+            boolean searched = filters.q() != null && !filters.q().isBlank();
+            String sort = searched ? ListSorts.toIndex(filters.sort()) : ListSorts.toState(filters.sort());
+            if (searched && filters.q().strip().length() > MAX_QUERY) {
+                throw new InvalidInputException("q is at most " + MAX_QUERY + " characters",
+                        List.of(Problem.error("length", "/q", "q is at most " + MAX_QUERY + " characters")));
+            }
+            int size = CursorPaging.pageSize(filters.limit());
+            Mono<Page<ResourceView>> page = searched
+                    ? Mono.defer(() -> searched(session, t, new SearchQuery(filters.q().strip(), t.type(), filters.state(), filters.tags(), filters.drift(),
+                            sort, size, filters.after())))
+                    : Mono.defer(() -> state.list(scope(session), caller(session),
+                            new StateQuery(t.type(), filters.state(), null, filters.tags(), null, filters.drift(), sort, size, filters.after())))
+                            .map(p -> new Page<>(p.items().stream().map(ResourceView::summary).toList(), p.next()));
+            return access.require(session, AccessCheck.action(t.service(), LIST_VERB), typePattern(session, t)).then(page);
         });
+    }
+
+    /** A page the search index found, each hit read from the state service, in the index's order. */
+    private Mono<Page<ResourceView>> searched(Session session, ConsoleType t, SearchQuery query) {
+        boolean deleted = StateResource.DELETED.equals(query.state());
+        return search.search(scope(session), caller(session), query).flatMap(found -> Flux.fromIterable(found.items())
+                .flatMapSequential(hit -> current(session, t, hit, deleted), HYDRATE_CONCURRENCY)
+                .collectList()
+                .map(items -> new Page<>(items, found.next())));
+    }
+
+    /** What a hit is now: the live resource, or with {@code state=deleted} its tombstoned record; nothing when the state service has none. */
+    private Mono<ResourceView> current(Session session, ConsoleType t, SearchHit hit, boolean deleted) {
+        Mono<StateResource> read = deleted
+                ? state.list(scope(session), caller(session), new StateQuery(t.type(), StateResource.DELETED, null, Map.of(), hit.wfrn(), null, null, 1, null))
+                        .flatMap(p -> Mono.justOrEmpty(p.items().stream().findFirst()))
+                : state.get(scope(session), caller(session), hit.wfrn(), null).flatMap(answer -> Mono.justOrEmpty(answer.resource()));
+        return read.filter(r -> t.type().equals(r.type()))
+                .map(ResourceView::summary)
+                .onErrorResume(e -> e instanceof NotFoundException || e instanceof GoneException, e -> Mono.empty());
     }
 
     /** One resource, as {@code <service>:get} on its wfrn allows. */

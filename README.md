@@ -11,8 +11,9 @@ account's service account and a signed on-behalf-of assertion naming the person.
 
 Work packages of the customer-console plan served here: **1.3** (OIDC sign-in, sessions, CSRF,
 step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type descriptors),
-**3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates). Search
-(4.x) is a later package and is listed as such in `RoutesMatchContractTest`.
+**3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates), and the
+BFF's side of **6.1** (global search, type-ahead and the list's counts, through the search
+indexer).
 
 ## Running it
 
@@ -36,8 +37,9 @@ provider at `/demo-idp` with a user picker, and an in-process stand-in of the id
 | noah | no account: the sign-in answers 403 | |
 
 `GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs
-use. Ports: platform-fake 18090, bff 18081, identity 18082, state 18082 as PR #7 built it (the
-plan's table said 18083; `console.state.url` points wherever it runs), web 3000.
+use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, search indexer 18085,
+web 3000 (the project's port decision of 2026-10-23; the plan's table had state and identity the
+other way round).
 
 To run against the real services, leave the demo profile off and set the settings below; the
 `mongo` profile keeps sessions and preferences in MongoDB (needed for more than one replica) and
@@ -55,7 +57,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
-| `console.identity.url`, `console.state.url` | The identity and state services (`http://localhost:18082` is the state service's demo); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`) |
+| `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
@@ -101,7 +103,9 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` | The sign-in |
 | `GET, PUT /console/v1/session`, `GET /console/v1/accounts`, `GET /console/v1/regions` | The session, the memberships, the regions |
 | `GET /console/v1/types`, `GET /console/v1/types/{key}` | The descriptors, with `ETag` and `If-None-Match`, every action with `allowed` and `denied` |
-| `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch` | The account's resources of a type (`q`, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create, its preview, a batch |
+| `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch` | The account's resources of a type (`q` through the search index, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create, its preview, a batch |
+| `GET /console/v1/r/{type}:counts` | How many resources the list's filters match: `total`, `byState` for the state chips, `drift`, `cappedAt` |
+| `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and type-ahead, over the types the person may list |
 | `GET, PATCH /console/v1/r/{type}/{wfrn}`, `POST …:{verb}`, `POST …:{verb}:preview` | One resource with `can`, `ETag` and `If-None-Match`; an update (`If-Match`); a verb of the catalog; its preview |
 | `GET …/{wfrn}/activity`, `GET …/drift`, `GET …/lineage`, `PUT …/tags` | The resource's log, its open finding, what it was built from and what depends on it, its tags |
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
@@ -111,7 +115,7 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
-| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*` | Demo profile only |
+| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*` | Demo profile only |
 
 ## Descriptors (P-06)
 
@@ -173,6 +177,31 @@ BFF with `--console.state.url=http://localhost:18082 --console.platform.fake.ena
 both talk to the same platform; this composition has not been exercised here yet, as the two
 demos embed their own platform-fake today.
 
+## Search (WP 6.1, the BFF's side)
+
+The search indexer finds; the account's policies decide what the person sees. Every call carries
+an internal token for the person in the session's account and region, so the indexer never
+searches another account.
+
+- **Global search** (`GET /console/v1/search?q=`) and **type-ahead** (`GET /console/v1/suggest`)
+  ask for `<service>:list` on every type of the catalogue and leave out the hits and suggestions
+  of the types the person may not list, so a page can hold fewer hits than asked while its cursor
+  goes on. A tag term is suggested when the person may list any type. With `type`, a type the
+  person may not list is refused like its list.
+- **The list's free text** (`GET /console/v1/r/{type}?q=`) goes through the index with the type,
+  `state`, `tag.<name>`, `drift` and the console's sort (relevance when none is given), and each
+  hit is read again from the state service, sixteen at a time and in the index's order, so the
+  row is the state service's record; a hit the state service no longer holds is left out.
+- **Counts** (`GET /console/v1/r/{type}:counts`) take the list's filters and answer the total,
+  one count per state whatever the `state` filter (tombstones under `deleted`), the drifted
+  ones, and `cappedAt` (`null` while the counts are exact).
+
+In the demo profile the indexer is a stand-in under `/demo-search` that reads the demo state
+service's records directly: the indexer's query syntax (free words and quoted phrases, `tag:`,
+`type:`, `state:`, `region:`, `drift:` terms and wfrn patterns), relevance (a name equal to a word
+scores 10, a prefix 6, a contained word 4, the wfrn 2, a tag or attribute 1), HTML-escaped
+highlights, every sort the console offers, and exact counts.
+
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
@@ -183,7 +212,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 83 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 98 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).

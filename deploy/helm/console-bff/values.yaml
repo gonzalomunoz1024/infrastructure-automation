@@ -29,6 +29,7 @@ config:
   trustIssuer: "console-bff"
   identityUrl: "http://console-identity-service"
   stateUrl: "http://console-state-service"
+  searchUrl: "http://console-search-indexer"
   platformBaseUrl: "http://platform"
   webOrigins: "https://console.example.com"
   kafkaBootstrapServers: "kafka:9092"

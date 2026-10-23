@@ -1,6 +1,7 @@
 # The demo: everything in one JVM. The platform is platform-fake on port 18090, the identity
 # provider is the built-in /demo-idp with a user picker (login_hint skips it), and the identity
-# service is the built-in stand-in under /demo-identity. Sign in at http://localhost:18081/auth/login.
+# service, the state service and the search indexer are built-in stand-ins under /demo-identity,
+# /demo-state and /demo-search. Sign in at http://localhost:18081/auth/login.
 console:
   oidc:
     issuer: http://localhost:18081/demo-idp
@@ -11,6 +12,8 @@ console:
   identity:
     url: ""
   state:
+    url: ""
+  search:
     url: ""
   platform:
     fake:
