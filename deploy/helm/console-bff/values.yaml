@@ -36,6 +36,12 @@ config:
   webOrigins: "https://console.example.com"
   kafkaBootstrapServers: "kafka:9092"
   liveRelayEnabled: "true"
+  # The console copilot (hub decision 27): "devin" asks the firm's Devin with the secret's
+  # assistant-devin-api-key, "demo" answers with the demo's rules, and anything else switches it
+  # off (every turn fails assistant.unavailable). With devin the pods need egress to devinBaseUrl.
+  assistant:
+    provider: "devin"
+    devinBaseUrl: "https://api.devin.ai"
   extraEnv: []        # - { name: CONSOLE_ACCESS_CACHE_TTL, value: 30s }
   # Service tokens for the other console services, POST /internal/v1/token (hub decision 23). Each
   # client proves itself with its pod's projected service-account token (audience console-bff),
@@ -62,6 +68,7 @@ config:
 #   oidc-client-secret       the identity provider's client secret
 #   platform-internal-token  the console's internal platform service-account token
 #   mongo-uri                mongodb://.../console_bff
+#   assistant-devin-api-key  the Devin API key the copilot calls with; optional: without it the copilot is unavailable
 secret:
   name: console-bff
   keys:
@@ -70,6 +77,7 @@ secret:
     oidcClientSecret: oidc-client-secret
     platformInternalToken: platform-internal-token
     mongoUri: mongo-uri
+    assistantDevinApiKey: assistant-devin-api-key
 
 ingress:
   enabled: false
