@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Checks every contract in the hub (`npm run check`): the OpenAPI and AsyncAPI files, the JSON
-// schemas, the type overlays and the region, the list of used platform operations, the event
-// catalog against the plan, and the shared wfrn fixtures against the JavaScript reference.
+// Checks every contract in the hub (`npm run check`): that every YAML entry has a value, the
+// OpenAPI and AsyncAPI files, the JSON schemas, the type overlays and the region, the list of used
+// platform operations, the event catalog against the plan, and the shared wfrn fixtures against
+// the JavaScript reference.
 // Exits 1 on any failure; warnings are printed and do not fail the run.
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
@@ -68,6 +69,37 @@ const collectRefs = (node, out = new Set()) => {
 const PLATFORM_CHANGE = /^P-(0[1-9]|1[0-9]|2[01])$/;
 const CAMEL = /^[a-z][a-zA-Z0-9]*$/;
 const BUILT_IN_COLUMNS = new Set(['name', 'status', 'wfrn', 'owner', 'created', 'updated']);
+
+// ---------------------------------------------------------------------------------------------
+// 0. Every YAML file: no entry without a value. In a flow mapping a comma ends a plain scalar, so
+//    `{ type: string, description: The job, when there is one }` cuts the description at the comma
+//    and makes `when there is one` a key with no value, which the validators let pass as an
+//    unknown keyword. A description that holds a comma is quoted.
+// ---------------------------------------------------------------------------------------------
+const MAY_BE_NULL = new Set(['default', 'example', 'const']);
+function checkEntriesHaveValues() {
+  const files = [...filesUnder(join(root, 'contracts'), '.yaml'), ...filesUnder(join(root, 'type-overlays'), '.yaml')];
+  const problems = [];
+  for (const file of files) {
+    const lineCounter = new YAML.LineCounter();
+    const walk = (node) => {
+      if (YAML.isMap(node)) {
+        for (const pair of node.items) {
+          const key = YAML.isScalar(pair.key) ? String(pair.key.value) : String(pair.key);
+          const empty = pair.value == null || (YAML.isScalar(pair.value) && pair.value.value === null);
+          if (empty && !MAY_BE_NULL.has(key)) {
+            const line = pair.key?.range ? `:${lineCounter.linePos(pair.key.range[0]).line}` : '';
+            problems.push(`${rel(file)}${line}: '${key}' has no value (quote a description that holds a comma)`);
+          }
+          walk(pair.value);
+        }
+      } else if (YAML.isSeq(node)) node.items.forEach(walk);
+    };
+    for (const doc of YAML.parseAllDocuments(readFileSync(file, 'utf8'), { lineCounter })) walk(doc.contents);
+  }
+  if (problems.length) fail('every YAML entry has a value', problems.join('\n'));
+  else ok(`every YAML entry has a value (${files.length} files)`);
+}
 
 // ---------------------------------------------------------------------------------------------
 // 1. OpenAPI documents: the platform target and every service draft
@@ -341,6 +373,7 @@ function checkFixtures({ vFixtures, errorsText }) {
   else ok(`${rel(file)} passes contracts/wfrn/reference.mjs`);
 }
 
+checkEntriesHaveValues();
 const target = await checkOpenApi();
 const asyncapi = await checkAsyncApi();
 const fixtureValidator = checkSchemasAndOverlays();
