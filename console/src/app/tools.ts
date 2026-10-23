@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations' | 'organization' | 'developer'
+export type ToolSectionId = 'tags' | 'operations' | 'organization' | 'developer' | 'history'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -36,6 +36,7 @@ export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'operations', title: 'Operations', icon: 'pulse', subtitle: 'Drift, discovery, alarms and rightsizing' },
   { id: 'organization', title: 'Organization', icon: 'grid', subtitle: 'Across every account' },
   { id: 'developer', title: 'Developer tools', icon: 'terminal', subtitle: 'The shell, the API, the CLI and SDKs' },
+  { id: 'history', title: 'Activity and history', icon: 'history', subtitle: 'The trail, the past and the map' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -49,6 +50,9 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'shell', section: 'developer', label: 'Console shell', icon: 'terminal', hint: 'Run CLI commands in the browser, signed in as you', keywords: 'cli cloudshell terminal command line ls get run jobs', routes: ['shell'] },
   { route: 'portal', section: 'developer', label: 'Developer portal', icon: 'document', hint: 'The console API, the CLI and SDKs, sample calls and portal tiles', keywords: 'api openapi sdk cli idp backstage tiles integration', routes: ['portal'] },
   { route: 'rightsizing', section: 'operations', label: 'Rightsizing', icon: 'chart', hint: 'Idle and oversized resources, and what resizing saves', keywords: 'idle oversized savings cost optimisation resize', routes: ['rightsizing'] },
+  { route: 'activity', section: 'history', label: 'Activity trail', icon: 'audit', hint: 'Every change to the account’s resources, sealed and signed', keywords: 'audit trail cloudtrail events who changed evidence verify hash chain', routes: ['activity'] },
+  { route: 'as-of', section: 'history', label: 'Inventory as of a date', icon: 'calendar', hint: 'The account’s resources as they were on a day', keywords: 'time travel history past snapshot point in time', routes: ['as-of'] },
+  { route: 'map', section: 'history', label: 'Resource map', icon: 'git-branch', hint: 'What is built from what, across types and accounts', keywords: 'graph dependencies lineage topology map', routes: ['map'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

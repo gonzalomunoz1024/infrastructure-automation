@@ -13,6 +13,7 @@ import { accessRoutes, isOrganizationAdmin, settleAccess } from './access'
 import { cliRoutes } from './cli'
 import { notificationRoutes } from './notifications'
 import { policyRoutes } from './policies'
+import { stateRoutes } from './state'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -504,6 +505,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         return { status: 202, body: decideAccessRequest(dir, s.accountId, requestId, decision, s.userId, str(body.comment), at) }
       }
     }
+
+    /* the trail, time travel, lineage and the resource map (phase 7), before the lists they read as of a date */
+    const stated = stateRoutes(data, { session: s, body, headers: req.headers, now: now() }, path, params, method)
+    if (stated) return stated
 
     /* resources, as the state service lists them for the account; search and suggestions over the same rows */
     const rctx: ResourceContext = { partition: data.partition, region: s.region, accountId: s.accountId }

@@ -46,6 +46,9 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'activity'
+  | 'as-of'
+  | 'map'
   | 'settings'
   | 'device'
   | 'iam-cli'
@@ -110,6 +113,10 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // the trail, the account as it was and the resource map (phase 7)
+  { name: 'activity', pattern: '/history/activity', title: 'Activity trail' },
+  { name: 'as-of', pattern: '/history/as-of', title: 'Inventory as of a date' },
+  { name: 'map', pattern: '/history/map', title: 'Resource map' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
   // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
   { name: 'device', pattern: '/device', title: 'Sign in the CLI' },

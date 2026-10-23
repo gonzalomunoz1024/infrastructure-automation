@@ -623,7 +623,7 @@ export function decide(dir: Directory, accountId: string, subject: Subject, chec
 }
 
 /** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation'])
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups', 'access-review', 'elevation', 'activity'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {

@@ -56,6 +56,9 @@ const DriftPage = lazy(() => import('../pages/operations/DriftPage'))
 const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
+const ActivityTrailPage = lazy(() => import('../pages/state/ActivityTrailPage'))
+const AsOfPage = lazy(() => import('../pages/state/AsOfPage'))
+const ResourceMapPage = lazy(() => import('../pages/state/ResourceMapPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
 const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
@@ -113,6 +116,9 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   unmanaged: UnmanagedPage,
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
+  activity: ActivityTrailPage,
+  'as-of': AsOfPage,
+  map: ResourceMapPage,
   settings: SettingsPage,
   device: DevicePage,
   'iam-cli': CliSessionsPage,
