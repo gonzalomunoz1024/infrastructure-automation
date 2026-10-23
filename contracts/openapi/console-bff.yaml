@@ -2177,7 +2177,7 @@ components:
       description: The search indexer's reading of plain English (console-search-indexer.yaml 1.2.0)
       required: [filter, explanation, confidence, q, total]
       properties:
-        type: { type: string, description: The resource type the text names, when it names one }
+        type: { type: string, description: 'The resource type the text names, when it names one' }
         filter: { $ref: '#/components/schemas/SearchFilter' }
         sort: { type: string, enum: [name, -name, created, -created, updated, -updated] }
         explanation: { type: string, description: One sentence saying what was understood }
@@ -2330,7 +2330,7 @@ components:
           type: object
           required: [summary, confidence]
           properties:
-            summary: { type: string, description: The fix to try, in one or two sentences }
+            summary: { type: string, description: 'The fix to try, in one or two sentences' }
             input: { type: object, additionalProperties: true, description: "A merge over the job's input; the retry's body" }
             fromStep: { type: string }
             confidence: { type: string, enum: [high, medium, low] }
