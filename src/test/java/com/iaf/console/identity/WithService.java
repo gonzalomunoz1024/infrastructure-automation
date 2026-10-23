@@ -65,6 +65,11 @@ abstract class WithService {
         registry.add("console.identity.lifecycle.group-sync.enabled", () -> "false");
         // the elevation flows run the expiry sweep themselves, at the instants they choose
         registry.add("console.identity.elevations.sweep-every", () -> "3650d");
+        // the flows exercise a rule approving at once; the service ships none
+        registry.add("console.identity.elevations.auto-approval[0].name", () -> "operators-admin-two-hours");
+        registry.add("console.identity.elevations.auto-approval[0].roles[0]", () -> "account-admin");
+        registry.add("console.identity.elevations.auto-approval[0].requester-roles[0]", () -> "operator");
+        registry.add("console.identity.elevations.auto-approval[0].max-minutes", () -> "120");
     }
 
     private static ECKey generate() {

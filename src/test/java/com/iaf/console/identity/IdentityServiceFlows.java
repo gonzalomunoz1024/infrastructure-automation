@@ -289,6 +289,29 @@ abstract class IdentityServiceFlows extends WithService {
     }
 
     @Test
+    void aRetriedKeyMintNeverAnswersOrKeepsTheSecretAgain() {
+        Seeded s = newAccount();
+        String keys = s.base() + "/access-keys";
+        String key = "mint-" + UUID.randomUUID();
+        Map<String, Object> mint = Map.of("userId", s.ownerId(), "description", "ci runner");
+        JsonNode first = body(send(POST, keys, s.owner(), mint, Map.of("Idempotency-Key", key)).expectStatus().isCreated()
+                .expectHeader().valueEquals("Cache-Control", "no-store"));
+        String secret = first.get("secretPart").asText();
+        assertThat(secret).hasSize(43);
+        String replay = send(POST, keys, s.owner(), mint, Map.of("Idempotency-Key", key)).expectStatus().isEqualTo(CONFLICT)
+                .expectHeader().valueEquals("Idempotent-Replay", "true").expectBody(String.class).returnResult().getResponseBody();
+        assertThat(replay).contains("carried out already").doesNotContain(secret);
+        assertThat(texts(call(GET, keys + "?userId=" + s.ownerId(), s.owner(), null, OK).get("items"), "keyId"))
+                .as("the retry minted nothing").containsExactly(first.get("keyId").asText());
+
+        String rotateKey = "rotate-" + UUID.randomUUID();
+        String rotate = keys + "/" + first.get("keyId").asText() + ":rotate";
+        String rotated = body(send(POST, rotate, s.owner(), null, Map.of("Idempotency-Key", rotateKey)).expectStatus().is2xxSuccessful()).get("secretPart").asText();
+        assertThat(send(POST, rotate, s.owner(), null, Map.of("Idempotency-Key", rotateKey)).expectStatus().isEqualTo(CONFLICT)
+                .expectBody(String.class).returnResult().getResponseBody()).doesNotContain(rotated);
+    }
+
+    @Test
     void accessKeysAreMintedRotatedAndRevoked() {
         Seeded s = newAccount();
         String mia = addUser(s, "mia", "viewers");

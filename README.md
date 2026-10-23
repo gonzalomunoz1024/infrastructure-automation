@@ -31,7 +31,7 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `fce1187` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `63ac333` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first).
 
@@ -137,8 +137,8 @@ to the hub first).
 - **Just-in-time elevation.** A person asks to hold one of the account's roles for a while
   (`POST .../elevations` with `role`, `reason` and `durationMinutes`, 5 to 480, 60 by default;
   `admin` reads as `account-admin`). The first auto-approval rule that covers it
-  (`console.identity.elevations.auto-approval`, served at `GET /v1/elevation-rules`; by default an
-  operator may be account-admin for up to two hours) approves it at once (`decidedBy`
+  (`console.identity.elevations.auto-approval`, served at `GET /v1/elevation-rules`; none by default, as a rule that grants account-admin lets its requesters make it permanent; the demo lets an
+  operator be account-admin for up to two hours) approves it at once (`decidedBy`
   `rule:<name>`); otherwise it waits, `pending`, for someone who may `elevation:decide` (its
   `approvers` lists who may now, never the requester, who can never decide their own) and expires
   undecided after `pending-for` (24 hours). One open ask or elevation per person and role (409

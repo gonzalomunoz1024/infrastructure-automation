@@ -24,7 +24,7 @@ public record AuthProperties(
 
     public AuthProperties {
         issuer = issuer == null || issuer.isBlank() ? "console-bff" : issuer;
-        audiences = audiences == null || audiences.isEmpty() ? List.of("console-identity-service", "console") : List.copyOf(audiences);
+        audiences = audiences == null || audiences.isEmpty() ? List.of("console-identity-service") : List.copyOf(audiences);
         jwksUri = jwksUri == null || jwksUri.isBlank() ? null : jwksUri;
         jwks = jwks == null || jwks.isBlank() ? null : jwks;
         jwksRefresh = jwksRefresh == null ? Duration.ofMinutes(5) : jwksRefresh;

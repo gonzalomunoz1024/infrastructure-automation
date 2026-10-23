@@ -96,6 +96,8 @@ class InternalJwtsTest {
 
         refuses(otherIssuer.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another issuer");
         refuses(otherAudience.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "another audience");
+        InternalJwts.Signer shared = new InternalJwts.Signer(key, "console-bff", "console", CLOCK);
+        refuses(shared.service("console-bff", Duration.ofMinutes(5)), "another audience");
         refuses(unknownKey.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "does not trust");
         refuses(earlier.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofMinutes(5)), "expired");
         refuses(signer.user("usr_1", "123456789012", "global", List.of(), List.of(), Duration.ofHours(2)), "longer than allowed");

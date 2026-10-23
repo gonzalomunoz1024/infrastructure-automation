@@ -32,7 +32,8 @@ console:
       catalog-refresh: 5m
     auth:
       issuer: console-bff
-      audiences: [console-identity-service, console]
+      # its own name only (hub decision 23): a token the BFF minted for another service is refused here
+      audiences: [console-identity-service]
       # jwks or jwks-uri: the BFF's signing keys; the demo profile points at the BFF's JWKS endpoint
       jwks-refresh: 5m
       max-lifetime: 1h
@@ -81,12 +82,10 @@ console:
       # an ask nobody decided expires after this; the sweep also stores ended elevations expired
       pending-for: 24h
       sweep-every: 1m
-      # the first rule that covers the role, the person's roles and the duration approves an ask at once
-      auto-approval:
-        - name: operators-admin-two-hours
-          roles: [account-admin]
-          requester-roles: [operator]
-          max-minutes: 120
+      # the first rule that covers the role, the person's roles and the duration approves an ask at once.
+      # None by default, so every elevation waits for a person: a rule that grants account-admin lets
+      # its requesters make the role permanent (an admin can change any group), so add one knowingly.
+      auto-approval: []
   outbox:
     relay:
       enabled: true

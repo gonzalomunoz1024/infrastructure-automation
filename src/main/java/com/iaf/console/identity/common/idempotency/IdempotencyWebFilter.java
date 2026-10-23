@@ -45,6 +45,8 @@ public final class IdempotencyWebFilter implements WebFilter, Ordered {
     static final Duration TTL = Duration.ofHours(24);
     private static final int MAX_BODY = 1024 * 1024;
 
+    static final String CARRIED_OUT = "this request was carried out already; its answer held a secret, which is shown only once";
+
     private final IdempotencyPort store;
     private final Clock clock;
     private final ObjectMapper json;
@@ -109,6 +111,10 @@ public final class IdempotencyWebFilter implements WebFilter, Ordered {
                     if (status.is5xxServerError()) {
                         return store.release(scope);
                     }
+                    if (status.is2xxSuccessful() && shownOnce(response.getHeaders())) {
+                        // never keep a secret: a retry learns the request was carried out, not the secret
+                        return store.complete(scope, HttpStatus.CONFLICT.value(), MediaType.APPLICATION_JSON_VALUE, problemBody(exchange, CARRIED_OUT));
+                    }
                     MediaType type = response.getHeaders().getContentType();
                     return store.complete(scope, status.value(), type == null ? null : type.toString(), response.captured());
                 }))
@@ -133,13 +139,21 @@ public final class IdempotencyWebFilter implements WebFilter, Ordered {
         ServerHttpResponse response = exchange.getResponse();
         response.setStatusCode(status);
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        byte[] body;
+        return response.writeWith(Mono.just(response.bufferFactory().wrap(problemBody(exchange, message))));
+    }
+
+    private byte[] problemBody(ServerWebExchange exchange, String message) {
         try {
-            body = json.writeValueAsBytes(Errors.of(message).withCorrelationId(Correlation.of(exchange)));
+            return json.writeValueAsBytes(Errors.of(message).withCorrelationId(Correlation.of(exchange)));
         } catch (JsonProcessingException e) {
-            body = "{\"error\":\"idempotency\"}".getBytes(StandardCharsets.UTF_8);
+            return "{\"error\":\"idempotency\"}".getBytes(StandardCharsets.UTF_8);
         }
-        return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
+    }
+
+    /** Whether the answer says no store may keep it: it carries a secret that is shown once. */
+    static boolean shownOnce(HttpHeaders headers) {
+        String cacheControl = headers.getCacheControl();
+        return cacheControl != null && cacheControl.toLowerCase(java.util.Locale.ROOT).contains("no-store");
     }
 
     static String sha256(byte[] body) {

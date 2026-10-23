@@ -1,6 +1,7 @@
 package com.iaf.console.identity.accesskeys.adapters.web;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,7 +42,8 @@ public class AccessKeysController {
 
     @PostMapping("/v1/accounts/{accountId}/access-keys")
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<AccessKeyCreated> create(Caller caller, @PathVariable String accountId, @RequestBody CreateAccessKey body) {
+    public Mono<AccessKeyCreated> create(Caller caller, @PathVariable String accountId, @RequestBody CreateAccessKey body, ServerHttpResponse response) {
+        shownOnce(response);
         return commands.create(caller, accountId, body);
     }
 
@@ -58,7 +60,13 @@ public class AccessKeysController {
 
     @PostMapping("/v1/accounts/{accountId}/access-keys/{keyId}:rotate")
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<AccessKeyCreated> rotate(Caller caller, @PathVariable String accountId, @PathVariable String keyId) {
+    public Mono<AccessKeyCreated> rotate(Caller caller, @PathVariable String accountId, @PathVariable String keyId, ServerHttpResponse response) {
+        shownOnce(response);
         return commands.rotate(caller, accountId, keyId);
+    }
+
+    /** The answer carries the secret: no cache keeps it, and the idempotency store keeps only that it was given. */
+    private static void shownOnce(ServerHttpResponse response) {
+        response.getHeaders().setCacheControl("no-store");
     }
 }
