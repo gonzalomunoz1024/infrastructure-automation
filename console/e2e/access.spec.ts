@@ -194,7 +194,9 @@ test.describe('access over time in mock mode', () => {
     await ask.getByLabel('Comment').fill('Fine for tonight')
     await expectNoSeriousA11y(page, 'elevation to decide')
     await ask.locator('[data-decide="approve"]').click()
-    await expect(page.getByRole('button', { name: 'Notifications', exact: true })).toBeVisible()
+    // nothing waits for Gonzalo now (unread notifications may still show on the bell)
+    await expect(page.getByRole('button', { name: /^Notifications/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Notifications.*to decide/ })).toBeHidden()
     await signOut(page)
 
     // Mia may create now, by the role she holds for a while
