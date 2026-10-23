@@ -8,7 +8,7 @@ import { pathFor, type Route, type RouteName } from './router'
  * shows up in all three.
  */
 
-export type ToolSectionId = 'tags' | 'operations'
+export type ToolSectionId = 'tags' | 'operations' | 'history'
 
 export interface ToolSection {
   id: ToolSectionId
@@ -34,6 +34,7 @@ export interface ConsoleTool {
 export const TOOL_SECTIONS: ToolSection[] = [
   { id: 'tags', title: 'Resource groups and tags', icon: 'tag', subtitle: 'Across every resource type' },
   { id: 'operations', title: 'Operations', icon: 'pulse', subtitle: 'Drift, discovery, alarms and rightsizing' },
+  { id: 'history', title: 'Activity and history', icon: 'history', subtitle: 'The trail, the past and the map' },
 ]
 
 export const TOOLS: ConsoleTool[] = [
@@ -44,6 +45,9 @@ export const TOOLS: ConsoleTool[] = [
   { route: 'unmanaged', section: 'operations', label: 'Unmanaged resources', icon: 'eye', hint: 'What the providers have that no account manages', keywords: 'discovery shadow infrastructure import assign owner', routes: ['unmanaged'] },
   { route: 'alarms', section: 'operations', label: 'Alarms', icon: 'bell', hint: 'Metric alarms on the account’s resources', keywords: 'monitoring metrics cpu memory disk thresholds', routes: ['alarms'] },
   { route: 'rightsizing', section: 'operations', label: 'Rightsizing', icon: 'chart', hint: 'Idle and oversized resources, and what resizing saves', keywords: 'idle oversized savings cost optimisation resize', routes: ['rightsizing'] },
+  { route: 'activity', section: 'history', label: 'Activity trail', icon: 'audit', hint: 'Every change to the account’s resources, sealed and signed', keywords: 'audit trail cloudtrail events who changed evidence verify hash chain', routes: ['activity'] },
+  { route: 'as-of', section: 'history', label: 'Inventory as of a date', icon: 'calendar', hint: 'The account’s resources as they were on a day', keywords: 'time travel history past snapshot point in time', routes: ['as-of'] },
+  { route: 'map', section: 'history', label: 'Resource map', icon: 'git-branch', hint: 'What is built from what, across types and accounts', keywords: 'graph dependencies lineage topology map', routes: ['map'] },
 ]
 
 export function toolSectionOf(route: Route): ToolSection | undefined {

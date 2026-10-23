@@ -34,6 +34,9 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'activity'
+  | 'as-of'
+  | 'map'
   | 'settings'
   | 'not-found'
 
@@ -76,6 +79,10 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // the trail, the account as it was and the resource map (phase 7)
+  { name: 'activity', pattern: '/history/activity', title: 'Activity trail' },
+  { name: 'as-of', pattern: '/history/as-of', title: 'Inventory as of a date' },
+  { name: 'map', pattern: '/history/map', title: 'Resource map' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 

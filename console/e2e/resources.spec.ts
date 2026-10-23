@@ -118,7 +118,7 @@ test.describe('resources in mock mode', () => {
     await page.getByRole('tab', { name: /^Activity/ }).click()
     const trail = page.getByRole('list', { name: 'Activity' })
     await expect(trail).toContainText('Registered in the inventory')
-    await expect(trail).toContainText('by dana, through create-vm')
+    await expect(trail).toContainText('by Dana Reyes, through create-vm')
     await expect(trail.getByRole('link', { name: /^job_/ })).toBeVisible()
   })
 
