@@ -59,11 +59,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.mongodb.existingSecret }}
                   key: {{ .Values.mongodb.uriKey }}
-            - name: CONSOLE_STATE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.stateToken.existingSecret }}
-                  key: {{ .Values.stateToken.tokenKey }}
             - name: CONSOLE_PLATFORM_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -87,6 +82,9 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: bff-token
+              mountPath: /var/run/secrets/console-bff
+              readOnly: true
           startupProbe:
             httpGet:
               path: /actuator/health/liveness
@@ -111,6 +109,14 @@ spec:
             name: {{ include "console-drift-service.fullname" . }}
         - name: tmp
           emptyDir: {}
+        # the client assertion for the BFF's service tokens: kept fresh by the kubelet, never a secret
+        - name: bff-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.serviceTokens.audience }}
+                  expirationSeconds: {{ .Values.serviceTokens.expirationSeconds }}
+                  path: token
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}

@@ -12,6 +12,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -31,9 +32,10 @@ import reactor.core.publisher.Mono;
 
 /**
  * The state service over HTTP ({@code contracts/openapi/console-state-service.yaml}), called as the
- * {@code console-drift-service} principal: a bearer token the BFF signed, or, where the state
- * service accepts dev headers, {@code X-Console-Service}. A wfrn travels percent-encoded in the
- * path. An error answer becomes a {@link StateError} with the state's own error code and detail.
+ * {@code console-drift-service} principal: the given credentials put a service token the BFF
+ * issued on each request (hub decision 23), or the dev header where the state service accepts it.
+ * Every call ends after the timeout. A wfrn travels percent-encoded in the path. An error answer
+ * becomes a {@link StateError} with the state's own error code and detail.
  */
 public final class HttpStateService implements StateServicePort {
 
@@ -45,17 +47,14 @@ public final class HttpStateService implements StateServicePort {
     private final WebClient web;
     private final String baseUrl;
 
-    public HttpStateService(WebClient.Builder builder, String baseUrl, String token, boolean devHeaders, Duration timeout) {
+    public HttpStateService(WebClient.Builder builder, String baseUrl, ExchangeFilterFunction credentials, Duration timeout) {
         String base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.baseUrl = base;
-        WebClient.Builder b = builder.clone().baseUrl(base).defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-                .defaultHeader(HttpHeaders.USER_AGENT, SERVICE);
-        if (token != null && !token.isBlank()) {
-            b.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token.trim());
-        } else if (devHeaders) {
-            b.defaultHeader(SERVICE_HEADER, SERVICE);
-        }
-        this.web = b.build();
+        this.web = builder.clone().baseUrl(base).defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+                .defaultHeader(HttpHeaders.USER_AGENT, SERVICE)
+                .filter(credentials)
+                .filter((request, next) -> next.exchange(request).timeout(timeout))
+                .build();
     }
 
     @Override

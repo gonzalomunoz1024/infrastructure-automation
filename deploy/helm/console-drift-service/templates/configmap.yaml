@@ -60,6 +60,11 @@ data:
         dev-headers: false
       identity:
         base-url: {{ .Values.console.identity.baseUrl | quote }}
+      service-tokens:
+        mode: bff
+        token-url: {{ .Values.serviceTokens.tokenUrl | quote }}
+        client-id: console-drift-service
+        assertion-file: /var/run/secrets/console-bff/token
       platform:
         base-url: {{ .Values.console.platform.baseUrl | quote }}
         timeout: {{ .Values.console.platform.timeout }}

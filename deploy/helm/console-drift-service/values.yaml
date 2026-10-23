@@ -13,7 +13,8 @@ imagePullSecrets: []
 
 serviceAccount:
   create: true
-  name: ""
+  # the BFF registers the client console-drift-service with <namespace>:console-drift-service (hub decision 23)
+  name: console-drift-service
   annotations: {}
 
 podAnnotations: {}
@@ -134,10 +135,12 @@ platformToken:
   existingSecret: console-drift-service-platform
   tokenKey: CONSOLE_PLATFORM_TOKEN
 
-stateToken:
-  # the console JWT this service calls the state service with (svc console-drift-service)
-  existingSecret: console-drift-service-state
-  tokenKey: CONSOLE_STATE_TOKEN
+serviceTokens:
+  # how this service calls the state and identity services as itself (hub decision 23): a token
+  # from the BFF, authenticated by the pod's projected service-account token; no static token
+  tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
+  audience: console-bff
+  expirationSeconds: 600
 
 webhooks:
   # the HMAC secrets of the providers that push change notifications, one secret per provider

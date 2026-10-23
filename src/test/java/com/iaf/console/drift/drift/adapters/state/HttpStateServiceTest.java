@@ -5,8 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -20,12 +22,15 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.console.drift.auth.adapters.bff.ServiceTokens;
 import com.iaf.console.drift.drift.domain.Json;
 import com.iaf.console.drift.drift.domain.Resolution;
 import com.iaf.console.drift.drift.domain.StateResource;
 import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
 import com.iaf.console.kit.paging.Page;
 import com.sun.net.httpserver.HttpServer;
+
+import reactor.core.publisher.Mono;
 
 /** The state service client against a recorded HTTP server: the requests it sends and how it reads the answers. */
 class HttpStateServiceTest {
@@ -55,8 +60,19 @@ class HttpStateServiceTest {
             exchange.getResponseBody().write(answer);
             exchange.close();
         });
+        // the BFF's token endpoint (hub decision 23): the client calls as console-drift-service with the token it issues
+        server.createContext("/internal/v1/token", exchange -> {
+            byte[] token = "{\"access_token\":\"svc-token\",\"token_type\":\"Bearer\",\"expires_in\":300}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, token.length);
+            exchange.getResponseBody().write(token);
+            exchange.close();
+        });
         server.start();
-        client = new HttpStateService(WebClient.builder(), "http://127.0.0.1:" + server.getAddress().getPort(), "svc-token", false, Duration.ofSeconds(5));
+        String base = "http://127.0.0.1:" + server.getAddress().getPort();
+        ServiceTokens tokens = new ServiceTokens(WebClient.builder(), URI.create(base + "/internal/v1/token"), HttpStateService.SERVICE,
+                () -> Mono.just("projected-sa-token"), Duration.ofSeconds(60), Duration.ofSeconds(5), Clock.systemUTC());
+        client = new HttpStateService(WebClient.builder(), base, tokens.forAudience("console-state-service"), Duration.ofSeconds(5));
     }
 
     @AfterEach

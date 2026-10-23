@@ -8,7 +8,10 @@ Metrics:  /actuator/prometheus
 Secrets this release reads (create them before the pods start):
   {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}            the MongoDB URI of database {{ .Values.mongodb.database }}
   {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's console-internal service-account token
-  {{ .Values.stateToken.existingSecret }}/{{ .Values.stateToken.tokenKey }}       the console JWT for the state service (svc console-drift-service)
 {{- if .Values.webhooks.existingSecret }}
   {{ .Values.webhooks.existingSecret }}                                          the providers' webhook HMAC secrets
 {{- end }}
+
+Calls to the state and identity services carry service tokens from the BFF ({{ .Values.serviceTokens.tokenUrl }}),
+authenticated by the projected token of service account {{ .Release.Namespace }}:{{ include "console-drift-service.serviceAccountName" . }}
+(audience {{ .Values.serviceTokens.audience }}); the BFF must have that account registered for console-drift-service.

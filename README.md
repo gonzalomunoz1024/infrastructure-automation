@@ -72,15 +72,15 @@ on the `console-libs` branch. CI does the same (`.github/workflows/ci.yml`, `CON
 
 | Profile | What it changes |
 | --- | --- |
-| (none) | In-memory stores and outbox; the shard, sync and revert-follow loops inside this process; the real platform, state service and identity service over HTTP; JWTs from the BFF's JWKS |
-| `demo` | The fake platform inside this JVM (`console.demo.*`), the state stand-in (`console.state.mode: embedded`), dev headers on, fast tiers (10 s / 30 s / 60 s) and loops |
+| (none) | In-memory stores and outbox; the shard, sync and revert-follow loops inside this process; the real platform, state service and identity service over HTTP, called with service tokens from the BFF; JWTs from the BFF's JWKS |
+| `demo` | The fake platform inside this JVM (`console.demo.*`), the state stand-in (`console.state.mode: embedded`), dev headers on (also for this service's own calls), fast tiers (10 s / 30 s / 60 s) and loops |
 | `mongo` | MongoDB for findings, watches, discovery, idempotency keys and the outbox (`CONSOLE_MONGO_URI`, `CONSOLE_MONGO_DATABASE`) |
 | `kafka` | The outbox relays `drift.findings` to Kafka; the `state.resources` topic reaches the watch list at once (`console.kafka.*`) |
 | `temporal` | The loops run as Temporal workflows on the task queue `console-drift` (`console.temporal.*`), one per region, shard and tier, so a scan survives a restart and two replicas never run the same shard |
 
 Production runs `mongo,kafka,temporal`; the Helm chart under `deploy/helm/console-drift-service`
-wires that, with the secrets it needs (MongoDB URI, platform token, state token) and a rendered
-`application-cluster.yaml`.
+wires that, with the two secrets it needs (MongoDB URI, platform token), a projected service-account
+token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 
 ### Configuration
 
@@ -100,8 +100,13 @@ wires that, with the secrets it needs (MongoDB URI, platform token, state token)
 | `console.drift.sync.accounts` | `[]` | Accounts to watch in addition to the ones the identity service lists |
 | `console.drift.idempotency-ttl`, `types-ttl` | `24h`, `60s` | How long an `Idempotency-Key` replays; how long resource types are cached |
 | `console.drift.webhooks.<provider>.secret` | none | The HMAC secret of a provider's change notifications |
-| `console.state.mode`, `base-url`, `token`, `timeout` | `http`, `http://localhost:18082`, `CONSOLE_STATE_TOKEN`, `30s` | The state service |
-| `console.identity.base-url` | `http://localhost:18083` | The identity service: accounts and each account's platform credentials |
+| `console.state.mode`, `base-url`, `timeout` | `http`, `http://localhost:18082`, `30s` | The state service |
+| `console.identity.base-url`, `timeout` | `http://localhost:18083`, `10s` | The identity service: each account's platform credentials |
+| `console.service-tokens.mode` | `bff` | How this service names itself to the state and identity services: `bff` (hub decision 23) or `dev-headers` (demos) |
+| `console.service-tokens.token-url`, `client-id` | `http://localhost:18081/internal/v1/token`, `console-drift-service` | The BFF's token endpoint and this service's client id there |
+| `console.service-tokens.assertion-file` | `CONSOLE_SERVICE_ASSERTION_FILE` | The projected service-account token (audience `console-bff`) that authenticates the token request, in a cluster |
+| `console.service-tokens.signing-key-file`, `key-id` | `CONSOLE_SERVICE_KEY_FILE`, `CONSOLE_SERVICE_KEY_ID` | Elsewhere: a PKCS#8 EC key (P-256 or P-384) registered for the client with the BFF, which signs a one-minute assertion per request |
+| `console.service-tokens.refresh-before`, `timeout` | `60s`, `10s` | A token is asked again this long before it ends; how long the BFF may take |
 | `console.platform.base-url`, `token`, `timeout`, `account-tokens` | `http://localhost:18090`, `CONSOLE_PLATFORM_TOKEN`, `30s`, `{}` | The platform's API; per-account tokens for a dev box without the identity service |
 | `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-drift-service, console]` | Which tokens are accepted |
 | `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token (demo only) |
@@ -229,6 +234,7 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 8 | Authorization is the BFF's | As for the state service: the BFF checks roles before it calls; this service scopes every read and write to the token's account |
 | 9 | Imported resources are read through `:discover` | The fake and the platform's `:observe-list` answer managed objects only; an imported object has a provider id and no registry record |
 | 10 | Unknown webhook providers answer 401 | The contract allows 202, 400, 401; a provider without a secret cannot be verified, which is the 401's meaning |
+| 11 | Service tokens from the BFF for this service's own calls | Hub decision 23: the state and identity services verify only the BFF's JWKS, so this service asks `POST /internal/v1/token` (client credentials with a JWT client assertion) for a five-minute token per audience, `console-state-service` and `console-identity-service`. The assertion is the pod's projected service-account token, or a JWT signed with the service's own registered key; there is no static token. Tokens are kept until a minute before they end, and a target's 401 gets one fresh token and one retry |
 
 ### Contract additions (raised with the hub)
 

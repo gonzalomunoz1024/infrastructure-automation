@@ -2,6 +2,7 @@ package com.iaf.console.drift.boot;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -16,6 +17,7 @@ public record DriftProperties(
         IdentitySettings identity,
         PlatformSettings platform,
         AuthSettings auth,
+        ServiceTokenSettings serviceTokens,
         TemporalSettings temporal,
         KafkaSettings kafka,
         DemoSettings demo) {
@@ -24,10 +26,11 @@ public record DriftProperties(
         region = region == null || region.isBlank() ? "global" : region;
         wfrn = wfrn == null ? new WfrnSettings(null) : wfrn;
         drift = drift == null ? new DriftSettings(null, null, null, null, null, null, null, null, null, null) : drift;
-        state = state == null ? new StateSettings(null, null, null, null, null) : state;
+        state = state == null ? new StateSettings(null, null, null) : state;
         identity = identity == null ? new IdentitySettings(null, null) : identity;
         platform = platform == null ? new PlatformSettings(null, null, null, null, null) : platform;
         auth = auth == null ? new AuthSettings(null, null, null, null) : auth;
+        serviceTokens = serviceTokens == null ? new ServiceTokenSettings(null, null, null, null, null, null, null, null) : serviceTokens;
         temporal = temporal == null ? new TemporalSettings(null, null, null, null) : temporal;
         kafka = kafka == null ? new KafkaSettings(null, null, null, null) : kafka;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
@@ -125,11 +128,10 @@ public record DriftProperties(
     }
 
     /** The state service: over HTTP, or the demo's embedded stand-in. */
-    public record StateSettings(String mode, String baseUrl, String token, Boolean devHeaders, Duration timeout) {
+    public record StateSettings(String mode, String baseUrl, Duration timeout) {
         public StateSettings {
             mode = mode == null || mode.isBlank() ? "http" : mode;
-            baseUrl = baseUrl == null ? "http://localhost:18083" : baseUrl;
-            devHeaders = devHeaders != null && devHeaders;
+            baseUrl = baseUrl == null ? "http://localhost:18082" : baseUrl;
             timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
         }
 
@@ -141,7 +143,7 @@ public record DriftProperties(
     /** The identity service, which answers an account's platform credential (hub decision 18). */
     public record IdentitySettings(String baseUrl, Duration timeout) {
         public IdentitySettings {
-            baseUrl = baseUrl == null ? "http://localhost:18082" : baseUrl;
+            baseUrl = baseUrl == null ? "http://localhost:18083" : baseUrl;
             timeout = timeout == null ? Duration.ofSeconds(10) : timeout;
         }
     }
@@ -152,6 +154,34 @@ public record DriftProperties(
             baseUrl = baseUrl == null ? "http://localhost:18090" : baseUrl;
             timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
             accountTokens = accountTokens == null ? Map.of() : Map.copyOf(accountTokens);
+        }
+    }
+
+    /**
+     * How this service names itself to the state and identity services (hub decision 23): {@code bff}
+     * asks the BFF's token endpoint for a service token, authenticated by the projected
+     * service-account token in {@code assertionFile} (a cluster) or by a JWT signed with the PKCS#8
+     * EC key in {@code signingKeyFile} (anywhere else); {@code dev-headers} sends
+     * {@code X-Console-Service} instead, for the demos.
+     */
+    public record ServiceTokenSettings(String mode, String tokenUrl, String clientId, String assertionFile, String signingKeyFile, String keyId,
+            Duration refreshBefore, Duration timeout) {
+        public static final String BFF = "bff";
+        public static final String DEV_HEADERS = "dev-headers";
+
+        public ServiceTokenSettings {
+            mode = mode == null || mode.isBlank() ? BFF : mode.trim().toLowerCase(Locale.ROOT);
+            if (!BFF.equals(mode) && !DEV_HEADERS.equals(mode)) {
+                throw new IllegalArgumentException("console.service-tokens.mode is bff or dev-headers, not " + mode);
+            }
+            tokenUrl = tokenUrl == null || tokenUrl.isBlank() ? "http://localhost:18081/internal/v1/token" : tokenUrl;
+            clientId = clientId == null || clientId.isBlank() ? "console-drift-service" : clientId;
+            refreshBefore = refreshBefore == null ? Duration.ofSeconds(60) : refreshBefore;
+            timeout = timeout == null ? Duration.ofSeconds(10) : timeout;
+        }
+
+        public boolean devHeaders() {
+            return DEV_HEADERS.equals(mode);
         }
     }
 

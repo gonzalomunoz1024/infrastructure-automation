@@ -60,11 +60,23 @@ console:
   state:
     mode: http            # http (the state service) or embedded (the demo's stand-in)
     base-url: http://localhost:18082
-    token: ${CONSOLE_STATE_TOKEN:}
-    dev-headers: false
     timeout: 30s
   identity:
     base-url: http://localhost:18083
+    timeout: 10s
+  # how this service names itself to the state and identity services (hub decision 23): a service
+  # token from the BFF, authenticated by the pod's projected service-account token (assertion-file,
+  # in a cluster) or by a JWT signed with this service's own registered EC key (signing-key-file,
+  # a PKCS#8 PEM, anywhere else); never a static token. dev-headers is for the demos.
+  service-tokens:
+    mode: bff
+    token-url: http://localhost:18081/internal/v1/token
+    client-id: console-drift-service
+    assertion-file: ${CONSOLE_SERVICE_ASSERTION_FILE:}
+    signing-key-file: ${CONSOLE_SERVICE_KEY_FILE:}
+    key-id: ${CONSOLE_SERVICE_KEY_ID:}
+    refresh-before: 60s   # a token is fetched again this long before it ends
+    timeout: 10s
   platform:
     base-url: http://localhost:18090
     token: ${CONSOLE_PLATFORM_TOKEN:}

@@ -1,5 +1,10 @@
 package com.iaf.console.drift.boot;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,6 +24,8 @@ import com.iaf.console.drift.drift.adapters.platform.ChainedPlatformCredentials;
 import com.iaf.console.drift.drift.adapters.platform.DemoPlatformCredentials;
 import com.iaf.console.drift.drift.adapters.platform.FakeOnBehalfOf;
 import com.iaf.console.drift.drift.adapters.platform.IdentityPlatformCredentials;
+import com.iaf.console.drift.auth.adapters.bff.ServiceCredentials;
+import com.iaf.console.drift.auth.adapters.bff.ServiceTokens;
 import com.iaf.console.drift.drift.adapters.platform.PlatformResourceTypes;
 import com.iaf.console.drift.drift.adapters.state.EmbeddedStateService;
 import com.iaf.console.drift.drift.adapters.state.HttpStateService;
@@ -50,12 +57,16 @@ import com.iaf.console.kit.outbox.OutboxPort;
 import com.iaf.console.platform.client.PlatformPort;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import reactor.core.publisher.Mono;
 
 /** The drift detection's own beans: the rules, the outbound adapters it chooses by configuration, and the application services. */
 @Configuration(proxyBeanMethods = false)
 public class DriftConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(DriftConfiguration.class);
+    /** The audiences this service asks the BFF's service tokens for (registered for it there). */
+    static final String STATE_AUDIENCE = "console-state-service";
+    static final String IDENTITY_AUDIENCE = "console-identity-service";
 
     @Bean
     @ConditionalOnMissingBean
@@ -87,25 +98,60 @@ public class DriftConfiguration {
         return new PlatformResourceTypes(platform, properties.drift().typesTtl());
     }
 
+    /**
+     * How this service names itself to the state and identity services (hub decision 23): service
+     * tokens from the BFF, authenticated by the projected service-account token or by this
+     * service's own registered key, or the dev header in the demos. Never a static token.
+     */
     @Bean
-    public StateServicePort stateService(DriftProperties properties, PlatformPort platform, WebClient.Builder webClients, Clock clock) {
+    public ServiceCredentials serviceCredentials(DriftProperties properties, WebClient.Builder webClients, Clock clock) {
+        DriftProperties.ServiceTokenSettings t = properties.serviceTokens();
+        if (t.devHeaders()) {
+            log.info("service calls: the dev header {} (demo only)", ServiceCredentials.SERVICE_HEADER);
+            return ServiceCredentials.devHeader(t.clientId());
+        }
+        ServiceTokens.Assertion assertion;
+        if (t.assertionFile() != null && !t.assertionFile().isBlank()) {
+            log.info("service calls: tokens from {} for {}, with the projected service-account token in {}", t.tokenUrl(), t.clientId(),
+                    t.assertionFile());
+            assertion = ServiceTokens.projectedToken(Path.of(t.assertionFile()));
+        } else if (t.signingKeyFile() != null && !t.signingKeyFile().isBlank()) {
+            log.info("service calls: tokens from {} for {}, with assertions signed by the key in {}", t.tokenUrl(), t.clientId(), t.signingKeyFile());
+            try {
+                assertion = ServiceTokens.signedBy(ServiceTokens.readEcKey(Files.readString(Path.of(t.signingKeyFile()))), t.keyId(), t.clientId(), clock);
+            } catch (IOException e) {
+                throw new UncheckedIOException("console.service-tokens.signing-key-file cannot be read: " + t.signingKeyFile(), e);
+            }
+        } else {
+            log.warn("service calls: console.service-tokens has neither assertion-file nor signing-key-file; calls to the state and identity "
+                    + "services fail until one is set (or mode is dev-headers in a demo)");
+            assertion = Mono::empty;
+        }
+        return new ServiceTokens(webClients, URI.create(t.tokenUrl()), t.clientId(), assertion, t.refreshBefore(), t.timeout(), clock);
+    }
+
+    @Bean
+    public StateServicePort stateService(DriftProperties properties, PlatformPort platform, WebClient.Builder webClients, ServiceCredentials credentials,
+            Clock clock) {
         DriftProperties.StateSettings s = properties.state();
         if (s.embedded()) {
             log.info("state: the embedded stand-in, fed from the platform's registry (demo only)");
             return new EmbeddedStateService(platform, clock);
         }
         log.info("state: the state service at {}", s.baseUrl());
-        return new HttpStateService(webClients, s.baseUrl(), s.token(), s.devHeaders(), s.timeout());
+        return new HttpStateService(webClients, s.baseUrl(), credentials.forAudience(STATE_AUDIENCE), s.timeout());
     }
 
     @Bean
-    public PlatformCredentialsPort platformCredentials(DriftProperties properties, WebClient.Builder webClients, ObjectProvider<PlatformFake> fake) {
+    public PlatformCredentialsPort platformCredentials(DriftProperties properties, WebClient.Builder webClients, ServiceCredentials credentials,
+            ObjectProvider<PlatformFake> fake) {
         List<PlatformCredentialsPort> sources = new ArrayList<>();
         PlatformFake demo = fake.getIfAvailable();
         if (demo != null) {
             sources.add(new DemoPlatformCredentials(demo));
         }
-        sources.add(new IdentityPlatformCredentials(webClients, properties.identity().baseUrl(), properties.state().token(), properties.state().devHeaders()));
+        sources.add(new IdentityPlatformCredentials(webClients, properties.identity().baseUrl(), credentials.forAudience(IDENTITY_AUDIENCE),
+                properties.identity().timeout()));
         return new ChainedPlatformCredentials(properties.platform().accountTokens(), sources);
     }
 

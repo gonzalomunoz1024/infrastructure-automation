@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -34,15 +35,13 @@ public final class IdentityPlatformCredentials implements PlatformCredentialsPor
     private final String baseUrl;
     private final Map<String, Cached> cache = new ConcurrentHashMap<>();
 
-    public IdentityPlatformCredentials(WebClient.Builder builder, String baseUrl, String token, boolean devHeaders) {
+    /** {@code credentials} name this service to the identity service: a BFF service token (hub decision 23), or the demos' dev header. */
+    public IdentityPlatformCredentials(WebClient.Builder builder, String baseUrl, ExchangeFilterFunction credentials, Duration timeout) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        WebClient.Builder b = builder.clone().defaultHeader(HttpHeaders.USER_AGENT, "console-drift-service");
-        if (token != null && !token.isBlank()) {
-            b.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token.trim());
-        } else if (devHeaders) {
-            b.defaultHeader("X-Console-Service", "console-drift-service");
-        }
-        this.web = b.build();
+        this.web = builder.clone().defaultHeader(HttpHeaders.USER_AGENT, "console-drift-service")
+                .filter(credentials)
+                .filter((request, next) -> next.exchange(request).timeout(timeout))
+                .build();
     }
 
     @Override

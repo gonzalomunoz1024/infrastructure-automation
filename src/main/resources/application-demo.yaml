@@ -10,7 +10,9 @@ console:
     dev-headers: true
   state:
     mode: embedded
-    dev-headers: true
+  # the demos keep the dev headers (hub decision 23): X-Console-Service names this service
+  service-tokens:
+    mode: dev-headers
   drift:
     tiers:
       hot: 10s
