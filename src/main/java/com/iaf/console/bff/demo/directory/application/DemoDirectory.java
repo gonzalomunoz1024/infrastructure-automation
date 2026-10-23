@@ -113,7 +113,7 @@ public class DemoDirectory {
     /**
      * Whether a person may decide the account's access requests: an admin, or a member of an
      * approver group, whose custom {@code approver} role the identity service's demo grants
-     * {@code access-request:decide} (compute-approvers, data-approvers).
+     * {@code access-request:get}, {@code :list} and {@code :decide} (compute-approvers, data-approvers).
      */
     public boolean decidesAccessRequests(String subject, String accountId) {
         return membership(subject, accountId)
