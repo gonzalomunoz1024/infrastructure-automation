@@ -6,6 +6,7 @@ import org.springframework.context.annotation.Configuration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.cost.application.BudgetGuard;
 import com.iaf.console.bff.jobs.application.JobRetries;
 import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
@@ -26,8 +27,14 @@ public class ResourcesConfiguration {
 
     @Bean
     public Resources resources(Types types, Access access, Sessions sessions, Trust trust, PlatformClients clients, PlatformProperties platform,
-            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, ObjectMapper json) {
-        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, jobs, retries, tagPolicies, json);
+            StatePort state, SearchPort search, BlastRadii radii, Jobs jobs, JobRetries retries, TagPolicies tagPolicies, CreateBudgets budgets,
+            ObjectMapper json) {
+        return new Resources(types, access, sessions, trust, clients, platform, state, search, radii, jobs, retries, tagPolicies, budgets, json);
+    }
+
+    @Bean
+    public CreateBudgets createBudgets(BudgetGuard guard) {
+        return new CreateBudgets(guard);
     }
 
     @Bean

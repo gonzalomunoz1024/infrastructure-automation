@@ -13,8 +13,11 @@ import com.iaf.console.bff.session.domain.ActionPatterns;
  * auditors. Reading the account's access-request queue is left out of viewer and operator, as the
  * identity service's managed policies leave it out ({@code notActions}), and deciding a request is
  * an admin's. A viewer may still ask for access and for a higher quota, as the identity service's
- * viewer policy allows. The identity service decides for real; this table answers the demo
- * stand-in and names the role to suggest when a verb is refused.
+ * viewer policy allows. Cost and budgets (decision 25): every role reads them ({@code cost:list},
+ * {@code budgets:get}, {@code budgets:list}); exporting the chargeback ({@code cost:export}) is an
+ * admin's and an auditor's, and changing budgets an admin's alone. The identity service decides
+ * for real; this table answers the demo stand-in and names the role to suggest when a verb is
+ * refused.
  */
 public final class ManagedRoles {
 
@@ -44,6 +47,10 @@ public final class ManagedRoles {
     /** What a viewer may ask for although it changes nothing of the account's resources. */
     private static final List<String> SELF_SERVICE = List.of("access-request:create", "quota:request-increase");
     private static final List<String> AUDIT = List.of("audit:*", "jobs:list", "jobs:get", "approvals:list", "approvals:get");
+    /** Exporting the chargeback finance receives: admins and auditors. */
+    private static final List<String> COST_EXPORT = List.of("cost:export");
+    /** Creating, changing and deleting budgets: admins only. */
+    private static final List<String> BUDGET_WRITES = List.of("budgets:create", "budgets:update", "budgets:delete");
 
     private ManagedRoles() {
     }
@@ -58,9 +65,10 @@ public final class ManagedRoles {
             case ADMIN:
                 return true;
             case OPERATOR:
-                return !matchesAny(DESTRUCTIVE, action) && !matchesAny(IAM_WRITES, action) && !matchesAny(QUEUE, action);
+                return !matchesAny(DESTRUCTIVE, action) && !matchesAny(IAM_WRITES, action) && !matchesAny(QUEUE, action)
+                        && !matchesAny(COST_EXPORT, action) && !matchesAny(BUDGET_WRITES, action);
             case AUDITOR:
-                return matchesAny(READS, action) || matchesAny(AUDIT, action);
+                return matchesAny(READS, action) || matchesAny(AUDIT, action) || matchesAny(COST_EXPORT, action);
             case VIEWER:
                 return (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action)) && !matchesAny(QUEUE, action);
             default:
@@ -79,18 +87,18 @@ public final class ManagedRoles {
     }
 
     /**
-     * The weakest managed role that would allow an action: auditor for the access-request queue,
-     * viewer for any other read and for asking for access or quota, admin for a delete or an IAM
-     * write, operator otherwise.
+     * The weakest managed role that would allow an action: auditor for the access-request queue
+     * and the chargeback export, viewer for any other read and for asking for access or quota,
+     * admin for a delete, an IAM write or a budget change, operator otherwise.
      */
     public static String suggestedFor(String action) {
-        if (matchesAny(QUEUE, action)) {
+        if (matchesAny(QUEUE, action) || matchesAny(COST_EXPORT, action)) {
             return AUDITOR;
         }
         if (matchesAny(READS, action) || matchesAny(SELF_SERVICE, action)) {
             return VIEWER;
         }
-        if (matchesAny(DESTRUCTIVE, action) || matchesAny(IAM_WRITES, action)) {
+        if (matchesAny(DESTRUCTIVE, action) || matchesAny(IAM_WRITES, action) || matchesAny(BUDGET_WRITES, action)) {
             return ADMIN;
         }
         return OPERATOR;
@@ -106,6 +114,12 @@ public final class ManagedRoles {
         }
         if (matchesAny(IAM_WRITES, action)) {
             return "AllowIamWrites";
+        }
+        if (matchesAny(COST_EXPORT, action)) {
+            return "AllowCostExport";
+        }
+        if (matchesAny(BUDGET_WRITES, action)) {
+            return "AllowBudgetWrites";
         }
         return "AllowChanges";
     }

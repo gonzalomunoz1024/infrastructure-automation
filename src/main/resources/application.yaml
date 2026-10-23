@@ -94,6 +94,15 @@ console:
     url: http://localhost:18085     # the search indexer; empty means the in-process demo stand-in under /demo-search (demo profile)
     service-name: console-search-indexer
     timeout: 5s
+  cost:
+    url: http://localhost:18086     # the cost service; empty means the in-process demo stand-in under /demo-cost (demo profile)
+    service-name: console-cost-service
+    timeout: 10s
+    check-timeout: 2s               # the budget check and estimate a create waits for; past it the create goes on without them (fail open)
+  drift:
+    url: http://localhost:18084     # the drift service (scorecards); empty means the in-process demo stand-in under /demo-drift (demo profile)
+    service-name: console-drift-service
+    timeout: 10s
   platform:
     base-url: http://localhost:18090
     internal-token: ""              # the console-internal service account's token (feed and content reads)

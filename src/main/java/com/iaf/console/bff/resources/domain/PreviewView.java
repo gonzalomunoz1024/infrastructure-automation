@@ -9,8 +9,6 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 
 import com.iaf.console.platform.model.AffectedResource;
 import com.iaf.console.platform.model.Cost;
-import com.iaf.console.platform.model.PolicyDecision;
-import com.iaf.console.platform.model.PolicyRule;
 import com.iaf.console.platform.model.Preview;
 import com.iaf.console.platform.model.PreviewStep;
 
@@ -21,14 +19,14 @@ import com.iaf.console.platform.model.PreviewStep;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PreviewView(String workflow, String version, List<PreviewStep> steps, List<ResourceRef> affectedResources, Cost cost,
-        PolicyDecision policy, BlastRadius blastRadius) {
+        ConsolePolicy policy, BlastRadius blastRadius) {
 
     public static final String DENY = "deny";
 
     public PreviewView {
         steps = steps == null ? List.of() : List.copyOf(steps);
         affectedResources = affectedResources == null ? List.of() : List.copyOf(affectedResources);
-        policy = policy == null ? new PolicyDecision("allow", List.of(), null) : policy;
+        policy = policy == null ? new ConsolePolicy(ConsolePolicy.ALLOW, List.of(), null) : policy;
     }
 
     public static PreviewView of(Preview preview, Map<String, String> wfrnsByRegistryId) {
@@ -39,7 +37,7 @@ public record PreviewView(String workflow, String version, List<PreviewStep> ste
                 affected.add(new ResourceRef(wfrn, a.type(), a.name(), null, a.id()));
             }
         }
-        return new PreviewView(preview.workflow(), preview.version(), preview.steps(), affected, preview.cost(), preview.policy(), null);
+        return new PreviewView(preview.workflow(), preview.version(), preview.steps(), affected, preview.cost(), ConsolePolicy.of(preview.policy()), null);
     }
 
     /** The preview of a workflow that publishes none: no steps, nothing decided yet but what the console adds. */
@@ -49,10 +47,17 @@ public record PreviewView(String workflow, String version, List<PreviewStep> ste
 
     /** The same preview with a rule of the console's: a deny makes the decision a deny. */
     public PreviewView withRule(String id, String result, String message) {
-        List<PolicyRule> rules = new ArrayList<>(policy.rules() == null ? List.of() : policy.rules());
-        rules.add(new PolicyRule(id, result, message));
-        String decision = DENY.equals(result) ? DENY : policy.decision();
-        return new PreviewView(workflow, version, steps, affectedResources, cost, new PolicyDecision(decision, rules, policy.engine()), blastRadius);
+        return withRule(ConsolePolicy.Rule.of(id, result, message));
+    }
+
+    /** The same preview with a rule of the console's, a budget rule with its {@code budgetId}: a deny makes the decision a deny. */
+    public PreviewView withRule(ConsolePolicy.Rule rule) {
+        return new PreviewView(workflow, version, steps, affectedResources, cost, policy.with(rule), blastRadius);
+    }
+
+    /** The same preview with a cost: the cost service's estimate when the provider's plan priced nothing. */
+    public PreviewView withCost(Cost estimated) {
+        return new PreviewView(workflow, version, steps, affectedResources, estimated, policy, blastRadius);
     }
 
     /** With the blast radius; {@code refuseDependents} (a delete) adds the {@code dependents.exist} deny when anything depends on the resource. */
