@@ -51,7 +51,10 @@ jobs:
           cp .gitleaks.toml "$RUNNER_TEMP/tree/"
           "$(go env GOPATH)/bin/gitleaks" dir --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml "$RUNNER_TEMP/tree"
       - name: Scan the new commits
-        # the commits of the pull request or the push; the whole history when there is no range
+        # the commits of the pull request or the push; with no range (the first push of a branch)
+        # the commits this branch added since it left the platform's main, whose own history the
+        # platform's CI scans with its own reviewed exceptions; the whole history only when there is
+        # no main to compare with
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
@@ -61,6 +64,8 @@ jobs:
             range="$BASE..HEAD"
           elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             range="$BEFORE..HEAD"
+          elif git rev-parse --verify -q origin/main > /dev/null; then
+            range="origin/main..HEAD"
           fi
           if [ -n "$range" ]; then
             "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
