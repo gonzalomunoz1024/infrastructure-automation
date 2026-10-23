@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -265,6 +266,16 @@ class ApiClientsEndpointTest extends DemoApp {
         });
         Console.Reply reading = bearer(HttpMethod.GET, "/console/v1/resource-groups", cli.access(), null, Map.of());
         assertEquals(200, reading.status(), "only the guarded actions need the fresh sign-in");
+    }
+
+    @Test
+    void aConsolePathWrittenWithAnEncodedLetterStillNeedsTheCsrfToken() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        // %63 is "c": the handlers match the decoded path, so the CSRF check matches it too
+        Console.Reply forged = call(client.post().uri(URI.create(BASE + "/%63onsole/v1/device-grants/BCDF-GHJK:approve"))
+                .cookie(Console.SESSION_COOKIE, gonzalo.cookie()));
+        assertEquals(403, forged.status(), forged.body());
+        assertEquals("csrf token missing or invalid", forged.json().path("error").asText());
     }
 
     @Test

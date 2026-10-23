@@ -481,7 +481,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 308 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 309 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).

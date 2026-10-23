@@ -6,10 +6,13 @@ import java.util.Set;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.server.PathContainer;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
+import org.springframework.web.util.pattern.PathPattern;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.common.web.JsonResponses;
@@ -24,7 +27,9 @@ import reactor.core.publisher.Mono;
  * Every state-changing call under {@code /console/v1} and the logout must carry the session's
  * CSRF token in {@code X-Csrf-Token}; when the browser sends an {@code Origin}, it must be the
  * console's own origin or one of the web app's. A failure is 403 with no {@code denied} block,
- * since no policy decided it. A bearer call carries no cookie, so it needs no token.
+ * since no policy decided it. A bearer call carries no cookie, so it needs no token. Paths are
+ * matched decoded, as the handlers match them, so a path written with an encoded letter, such as
+ * {@code /%63onsole/v1/...}, is checked like the console path it reaches.
  */
 @Component
 public class CsrfWebFilter implements WebFilter, Ordered {
@@ -34,6 +39,8 @@ public class CsrfWebFilter implements WebFilter, Ordered {
     public static final int ORDER = SessionWebFilter.ORDER + 10;
 
     private static final Set<HttpMethod> UNSAFE = Set.of(HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH, HttpMethod.DELETE);
+    private static final PathPattern CONSOLE = PathPatternParser.defaultInstance.parse("/console/**");
+    private static final PathPattern LOGOUT = PathPatternParser.defaultInstance.parse("/auth/logout");
 
     private final Sessions sessions;
     private final WebProperties web;
@@ -52,9 +59,9 @@ public class CsrfWebFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        String path = exchange.getRequest().getPath().value();
+        PathContainer path = exchange.getRequest().getPath().pathWithinApplication();
         HttpMethod method = exchange.getRequest().getMethod();
-        boolean guarded = UNSAFE.contains(method) && (path.startsWith(SessionWebFilter.CONSOLE_PREFIX) || path.equals("/auth/logout"));
+        boolean guarded = UNSAFE.contains(method) && (CONSOLE.matches(path) || LOGOUT.matches(path));
         if (!guarded || CurrentSession.bearer(exchange)) {
             return chain.filter(exchange);
         }
