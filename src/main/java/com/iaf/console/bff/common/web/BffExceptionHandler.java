@@ -1,9 +1,12 @@
 package com.iaf.console.bff.common.web;
 
+import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeoutException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +27,7 @@ import com.iaf.console.bff.access.domain.DeniedException;
 import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.domain.NoConsoleAccountException;
+import com.iaf.console.bff.session.domain.ReturnTo;
 import com.iaf.console.bff.session.domain.StepUpRequiredException;
 import com.iaf.console.kit.correlation.Correlation;
 import com.iaf.console.kit.errors.Errors;
@@ -34,10 +38,10 @@ import reactor.core.publisher.Mono;
 
 /**
  * The BFF's own error mapping, ahead of the kit's: no session is 401; a refusal carries its
- * {@code denied} block; a step-up answers 403 with where to re-authenticate; the platform's
+ * {@code denied} block; a step-up answers 403 {@code step-up.required} with where to sign in again; the platform's
  * answers map as the contract says (400 with problems, 404, 409, 429 with Retry-After, 403 as a
  * platform denial, anything else 502 with the platform's correlation id); a console service that
- * answered an error is 502.
+ * answered an error, or could not be reached, is 502, one that did not answer in time 504.
  */
 @RestControllerAdvice
 @Order(Ordered.HIGHEST_PRECEDENCE + 5)
@@ -65,12 +69,52 @@ public class BffExceptionHandler {
         return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(new DeniedBody(ex.getMessage(), Correlation.of(exchange), ex.denial())));
     }
 
+    /** A step-up refusal's body: the code, the sentence, and where to sign in again. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record StepUpBody(String error, String message, String correlationId, Map<String, Object> detail) {
+    }
+
+    /**
+     * 403 {@code step-up.required}: {@code detail.login} is the sign-in path with
+     * {@code stepUp=true}, and with {@code returnTo} when the page's address (the {@code Referer},
+     * which never carries a hash route) reduces to a console path other than the root; a console
+     * with hash routes sets its own {@code returnTo}.
+     */
     @ExceptionHandler(StepUpRequiredException.class)
-    public Mono<ResponseEntity<Errors.Body>> stepUp(StepUpRequiredException ex, ServerWebExchange exchange) {
-        String returnTo = exchange.getRequest().getHeaders().getFirst("Referer");
+    public Mono<ResponseEntity<StepUpBody>> stepUp(StepUpRequiredException ex, ServerWebExchange exchange) {
+        String returnTo = returnPath(exchange.getRequest().getHeaders().getFirst(HttpHeaders.REFERER));
         String login = "/auth/login?stepUp=true" + (returnTo == null ? "" : "&returnTo=" + URLEncoder.encode(returnTo, StandardCharsets.UTF_8));
-        Map<String, Object> detail = Map.of("stepUp", true, "action", ex.action(), "login", login);
-        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(new Errors.Body(ex.getMessage(), null, Correlation.of(exchange), null, detail)));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("stepUp", true);
+        detail.put("action", ex.action());
+        detail.put("login", login);
+        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new StepUpBody(StepUpRequiredException.CODE, ex.getMessage(), Correlation.of(exchange), detail)));
+    }
+
+    /** The path, query and fragment of a page address, when it is a safe console path other than the root. */
+    static String returnPath(String referer) {
+        if (referer == null || referer.isBlank()) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(referer.strip());
+            String path = (uri.getRawPath() == null || uri.getRawPath().isEmpty() ? "/" : uri.getRawPath())
+                    + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery())
+                    + (uri.getRawFragment() == null ? "" : "#" + uri.getRawFragment());
+            return ReturnTo.isSafe(path) && !ReturnTo.DEFAULT.equals(path) ? path : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** A console service that did not answer in time: 504. */
+    @ExceptionHandler(TimeoutException.class)
+    public Mono<ResponseEntity<Errors.Body>> timedOut(TimeoutException ex, ServerWebExchange exchange) {
+        String correlationId = Correlation.of(exchange);
+        log.warn("upstream timed out [{}]: {}", correlationId, ex.getMessage());
+        return Mono.just(ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT)
+                .body(new Errors.Body("upstream service timed out", null, correlationId, null, null)));
     }
 
     /** A deleted resource: 410 with its tombstone as the detail, so the page can say until when the name stays reserved. */

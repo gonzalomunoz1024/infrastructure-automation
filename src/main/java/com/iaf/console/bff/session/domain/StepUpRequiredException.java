@@ -5,6 +5,9 @@ public final class StepUpRequiredException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
 
+    /** The refusal's {@code error} code. */
+    public static final String CODE = "step-up.required";
+
     private final String action;
 
     public StepUpRequiredException(String action) {

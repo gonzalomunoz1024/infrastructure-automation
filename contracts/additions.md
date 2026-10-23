@@ -16,6 +16,7 @@ service, with these details the contract does not spell out yet:
 - The list's `sort` takes the console's form, `name`, `-name`, `created`, `-created`, `updated`
   and `-updated` (the state service's `createdAt` and `updatedAt` spellings pass too); the
   default is `-updated`; anything else is a 400 naming the six.
+- Every page writes `next`, `null` on the last page.
 
 - `ConsoleResource` also carries `observedAt`, `observedStatus`, `changes` (while `updating`),
   `lastError`, `lastJobId`, `requestedBy` and `deletedAt`, as the state service's record has them.
@@ -58,7 +59,15 @@ Denial:
     suggestedRole: { type: string }
 ```
 
-A step-up refusal (fresh sign-in needed) is a 403 with `detail: { stepUp: true, action, login }`.
+A step-up refusal (fresh sign-in needed) is a 403 with `error: "step-up.required"`, the sentence
+in `message`, and `detail: { stepUp: true, action, login }`. `login` is a path:
+`/auth/login?stepUp=true`, with `&returnTo=` when the request's `Referer` reduces to a console
+path other than the root. A `Referer` never carries a hash route, so a console with hash routes
+appends its own `returnTo` (for example `/#/console/compute/vm/<wfrn>?action=delete`), which
+`/auth/login` honours alongside `stepUp=true`.
+
+A console service that does not answer within its timeout is a 504 (`upstream service timed
+out`); one that cannot be reached, or answers an error the BFF has no mapping for, is a 502.
 
 ## Descriptors
 
