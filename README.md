@@ -114,6 +114,7 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and type-ahead, over the types the person may list |
 | `GET, PATCH /console/v1/r/{type}/{wfrn}`, `POST …:{verb}`, `POST …:{verb}:preview` | One resource with `can`, `ETag` and `If-None-Match`; an update (`If-Match`); a verb of the catalog; its preview |
 | `GET …/{wfrn}/activity`, `GET …/drift`, `GET …/lineage`, `PUT …/tags` | The resource's log, its open finding, what it was built from and what depends on it, its tags |
+| `GET, POST /console/v1/resource-groups`, `GET, PATCH, DELETE …/{groupId}`, `GET …/{groupId}/resources` | Resource groups: tag queries per account and region (unique names, `ETag` and `If-Match`, `Idempotency-Key` on create) and the resources each one matches |
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |

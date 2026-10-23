@@ -75,6 +75,64 @@ parameters: q (as the list's), state, tag.<name>, drift (true|false)
 It asks `<service>:list` on the type's pattern (403 otherwise); an unknown type is a 404, an
 unknown `state` a 400.
 
+## Resource Groups
+
+New: saved tag queries over the account's resources, per account and region, as AWS Resource
+Groups keeps them, and the resources each one matches.
+
+```
+GET    /console/v1/resource-groups                               -> 200 { items: [ResourceGroup], next: null }, by name
+POST   /console/v1/resource-groups            { name, description?, query }  -> 201 ResourceGroup, Location, ETag
+GET    /console/v1/resource-groups/{groupId}                     -> 200 ResourceGroup, ETag; 304 on If-None-Match
+PATCH  /console/v1/resource-groups/{groupId}  { description?, query? }       -> 200 ResourceGroup, ETag
+DELETE /console/v1/resource-groups/{groupId}                     -> 204
+GET    /console/v1/resource-groups/{groupId}/resources?limit=&after=  -> 200 { items: [ConsoleResource], next }
+```
+
+```yaml
+ResourceGroup:
+  groupId: string        # group-<ulid>, lowercase
+  wfrn: string           # wfrn:<partition>:resource-groups:<region>:<account>:group/<groupId>
+  name: string           # 1 to 128 of [A-Za-z0-9._-]; unique per account and region; never changes
+  description: string    # at most 512 characters; "" when not sent
+  query:
+    types: [string]      # type names of the region's catalogue (vm, volume); [] is every type
+    tags: { <name>: <value> }   # 1 to 20; a name is [a-z0-9-]{1,32}, a value at most 256 characters
+  accountId: string
+  region: string
+  createdBy: string      # the user id
+  createdAt: date-time
+  updatedAt: date-time
+  version: integer       # 1 on create, one more on each change that changes something; the ETag
+```
+
+- Every call asks `resource-groups:<verb>`: `list` and `create` on
+  `wfrn:<partition>:resource-groups:<region>:<account>:group/*`, `get` (the group and its
+  resources), `update` and `delete` on the group's wfrn. A refusal is a 403 with a Denial, so with
+  the managed roles a viewer reads, an operator also creates and changes, and only an admin
+  deletes. A delete needs a fresh sign-in, as every `*:delete` does (`console.auth.step-up`).
+- A group of another account or region, or an id that is no group id, is a 404.
+- A body's problems are a 400 with `problems`, each at its pointer: `required` or `group.name` at
+  `/name`; `length` at `/description`; `type.unknown` at `/query/types/<i>`, naming the type;
+  `group.query.tags-required` at `/query/tags` when the query names no tag, `length` there over
+  20; `tag.name` or `tag.value` at `/query/tags/<name>` (the name escaped as a JSON pointer).
+- A name the account and region hold already is a 409 `group.name-taken` with `detail.name`, in
+  the shape of the other coded conflicts (`error`, `message`, `problems`, `detail`).
+- `POST` honours `Idempotency-Key` (at most 255 characters): the same person's repeat with the
+  same body within 24 hours answers 201 with the first group and `Idempotent-Replay: true`; a
+  repeat with another body is a 409 `idempotency.key-reused`.
+- `PATCH` replaces the description, and the whole query, when sent; the query is checked as on
+  create. A `name` other than the group's own is a 400 `group.name-immutable`. `If-Match`
+  (`"<version>"`; `W/` and `*` pass) against a group that moved on is a 409 with
+  `detail.version`; without it the change applies to the current version. A change that changes
+  nothing keeps the version.
+- `/resources` reads the state service as the person, as a resource list without `state` does:
+  the resources of the group's types that carry every tag of its query, in the state service's
+  order. One type goes to the state service as its filter; with several or none the page is read
+  without one and keeps the group's types. Rows of a type the person may not list
+  (`<service>:list` on the type's pattern) are left out, so a page can hold fewer rows than
+  `limit` (1 to 200, 50 by default) while `next`, the state service's cursor, goes on.
+
 ## Session
 
 `Session.account` carries `roles` (the managed roles the person holds in the account) and

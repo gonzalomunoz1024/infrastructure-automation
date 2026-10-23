@@ -252,6 +252,16 @@ public class Resources {
                 .map(l -> lineageView(s.resource(), l)).orElseGet(() -> LineageView.alone(s.resource()))));
     }
 
+    /**
+     * One page of the session's account and region's resources as the state service filters them
+     * (a null type is every type), as list rows, with no policy asked: the caller leaves out the
+     * rows the person may not see, as a resource group's page does per type.
+     */
+    public Mono<Page<ResourceView>> rows(Session session, StateQuery query) {
+        return Mono.defer(() -> state.list(scope(session), caller(session), query))
+                .map(page -> new Page<>(page.items().stream().map(ResourceView::summary).toList(), page.next()));
+    }
+
     // ---- commands
 
     /**
