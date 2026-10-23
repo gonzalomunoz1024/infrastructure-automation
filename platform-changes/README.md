@@ -29,6 +29,8 @@ covers what changes on the platform side so that plan can work, and why.
   P-06, P-09, P-10, P-12 and sections 2, 5, 6, 8 and 11. Two of its findings are risks on the
   platform today, whatever the console does: platform reads are not isolated by tenant (P-18),
   and registry ids can collide and silently merge (P-05).
+- Extended 2026-10-23 with P-23 (moving a registry record to another account), for the console's
+  account transfers (hub decision 30).
 
 Contents
 
@@ -57,6 +59,7 @@ Contents
    - [P-19 Publishing resource types](#p-19-publishing-resource-types)
    - [P-20 Job retention and a global job stream](#p-20-job-retention-and-a-global-job-stream)
    - [P-21 Idempotency for every verb](#p-21-idempotency-for-every-verb)
+   - [P-23 Moving a registry record to another account](#p-23-moving-a-registry-record-to-another-account)
 5. [Order of work and pull requests](#5-order-of-work-and-pull-requests)
 6. [Compatibility: what existing callers see](#6-compatibility-what-existing-callers-see)
 7. [Testing](#7-testing)
@@ -121,6 +124,7 @@ relies on the change.
 | P-19 | Publishing resource types through change requests, stored in MongoDB, with a `content.published` event | `resources`, `workflows` (change requests), `common/content` | Phase 3 | 120 |
 | P-20 | Job retention (TTL and archive for `runs_jobs` and `runs_events`) and a cross-replica job event stream with cursor resume | `runs`, `common/events`, `config` | Phase 2 | 105 |
 | P-21 | Idempotency for every verb: `DELETE` and `PATCH`, capacity sized to peak, context headers in the fingerprint | `gateway` | Phase 2 | 60 |
+| P-23 | Moving a registry record to another account: `POST /resources/{id}:rehome` with the new wfrn and account, old wfrns kept as aliases | `resources`, `audit` | Phase 7 | 60 |
 
 Total: about 2,065 agent minutes. Sections 5 and 6 cover how they split into pull requests and
 what each one risks for existing callers.
@@ -1302,6 +1306,52 @@ with the same key answers 422; eviction metric under a forced small cap.
 
 **Done when** a double-clicked console delete starts exactly one job.
 
+### P-23 Moving a registry record to another account
+
+**Why.** Teams reorganize, and a resource then belongs to another account of the same
+organization. The console moves it by re-import (hub decision 30): the state service makes the
+old wfrn a tombstone that names the new one for good, and opens the new wfrn in the other account
+with the same registry id. The platform's record still carries the old `wfrn` and `accountId`,
+which P-05 binds once, so the platform keeps counting the resource in the old account: its quotas
+(P-10), its caller-scoped reads (P-18), the context of the jobs that act on it (P-04) and its audit
+evidence (P-12). Until the record moves, the state service applies the platform's events about the
+old wfrn to the new one, so the console stays right, but the platform does not.
+
+**What changes.**
+
+1. `POST /api/v1/resources/{id}:rehome`, scope `resources:rehome` (the `console` preset of P-03
+   and admins), body `{ wfrn, accountId }`. The record takes the new wfrn and account; its region
+   stays (a move between regions is a new resource, not a move). The wfrn's account segment must
+   be `accountId` and its type the record's type, else 400.
+2. The old wfrn joins a new `previousWfrns` list on the record, and `GET /resources/by-wfrn`
+   (P-05) answers the record for an old wfrn too, with `Content-Location` naming the current one,
+   so a job or a caller holding the old name still finds it.
+3. It is idempotent: the same body again answers 200 and changes nothing (it also honours
+   `Idempotency-Key`, P-21). A record already moved to another wfrn answers 409
+   `resource.rehomed` with the current wfrn; a record a running job holds answers 409
+   `resource.busy`, because that job's context names the old account.
+4. The move emits `resource.registered` again, in the P-01 envelope, with the new `wfrn` and
+   `accountId` in `data` and the old wfrn in `data.previousWfrn`, so feed consumers read it as a
+   registration: no new event type. The state service finds the new wfrn already open and records
+   nothing new.
+5. Its audit record (P-12) names both accounts and the console user the BFF acts for (P-02).
+
+**Who calls it.** The BFF, right after the state service's `POST /v1/wfrn/{wfrn}:transfer` answers
+the new wfrn: for a person with `X-On-Behalf-Of` (P-02), for an org admin's whole-account move
+with the BFF's service account, once per moved resource (the state service's account-wide answer
+lists each move with its registry id).
+
+**Compatibility.** Nothing changes for a record nobody moves. Lineage is by registry id, so the
+resources built from a moved one keep their links.
+
+**Tests.** A rehome changes the wfrn and account and keeps the id and lineage; the old wfrn still
+reads the record with `Content-Location`; the same body twice is one change; another wfrn is 409;
+a record under a running job is 409; the event carries both wfrns; quotas count it in the new
+account.
+
+**Done when** a resource the console moved shows under its new account everywhere on the platform,
+and its old name still finds it.
+
 ## 5. Order of work and pull requests
 
 A suggested split for the platform team, when they take the changes on: twelve pull requests against
@@ -1322,6 +1372,7 @@ callers. The lanes show what can run in parallel. The console team opens none of
 | 10 | P-18, P-21 (caller-scoped reads, idempotency for every verb) | 4 | D | 150 | 1 |
 | 11 | P-19 (publishing resource types) | 1 | A | 120 | 3 |
 | 12 | P-20 (job retention, global job stream) | 2 | C | 105 | 2 |
+| 14 | P-23 (moving a registry record to another account) | 5 | B | 60 | 7 |
 
 P-17 rides with each PR. PR 10 should go first in lane D after PR 4, because it closes a data
 exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 720 minutes. With

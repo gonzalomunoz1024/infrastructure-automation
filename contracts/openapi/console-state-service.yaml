@@ -57,6 +57,11 @@ info:
     `revert-plan` says what it takes to bring a live resource back to an earlier version or instant:
     a JSON merge patch for `:request-update` and the tag changes for `:tag`. Nothing reverts by
     itself; the BFF shows the plan and starts the update when the person confirms.
+
+    **Moving between accounts.** A resource moves to another account of the organization by
+    re-import (`:transfer`): its wfrn becomes a tombstone kept for good as an alias of the new
+    wfrn, which opens in the other account with the same registry id. Accounts never move between
+    organizations, and a wfrn is never reused.
   contact:
     name: Customer console hub (console-root)
 servers:
@@ -382,6 +387,35 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:transfer:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: transferResource
+      summary: Move a resource to another account of the organization
+      description: 'Moves an idle, active resource by re-import: `Transferred` makes the wfrn a tombstone that names the new wfrn for good (`GET` answers 410 `resource.transferred` with `transferredTo`, and commands on it too), then the new wfrn opens in `toAccountId` with `Imported` (`source: transfer`, `transferredFrom`), carrying the registry id, the attributes (sealed again under the new account''s key), the tags and the lineage. Answers the resource it became. The BFF authorizes both ends first (`<service>:delete` on this wfrn and `<service>:create` on `wfrn:<p>:<service>:<region>:<toAccountId>:<type>/*` through the identity service''s `POST /v1/authorize`), and afterwards re-homes the platform''s registry record (P-23); until it does, platform events naming the old wfrn apply to the new one. The same call again answers the same resource; a move cut short between its two halves is finished by the same call or by the reaper within minutes. 409 `resource.busy` while a change is under way, `resource.notActive` for a failed resource, `account.shredded` when the account''s key is gone; 400 for the resource''s own account.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferRequest' }
+      responses:
+        '200':
+          description: The resource it became, in the other account, version 1
+          headers:
+            Idempotent-Replay: { $ref: '#/components/headers/IdempotentReplay' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
   /v1/wfrn/{wfrn}:record-observation:
     parameters:
       - $ref: '#/components/parameters/WfrnPath'
@@ -658,7 +692,7 @@ paths:
         - name: type
           in: query
           description: One event type
-          schema: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested] }
+          schema: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested, Transferred] }
         - name: actor
           in: query
           description: The console user or service that caused the events
@@ -847,7 +881,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Gone:
-      description: A tombstone; the resource was deleted and the name stays reserved for 90 days
+      description: 'A tombstone: the resource was deleted and the name stays reserved for 90 days, or it moved to another account and the name answers where it went for good'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Tombstone' }
@@ -954,7 +988,9 @@ components:
             errorClass: { type: string }
             failedStep: { type: string }
             message: { type: string }
-        source: { type: string, enum: [backfill, discover], description: 'How an imported resource came under management; absent for a resource created from the console' }
+        source: { type: string, enum: [backfill, discover, transfer], description: 'How an imported resource came under management (`transfer`: moved from another account); absent for a resource created from the console' }
+        transferredTo: { $ref: '#/components/schemas/Wfrn', description: 'On a moved resource''s tombstone: the wfrn it became' }
+        transferredFrom: { $ref: '#/components/schemas/Wfrn', description: 'On a resource moved here: the wfrn it was' }
         builtFrom:
           type: array
           description: 'The registry ids of what it was built from, as the job that registered it recorded them (P-02); `getLineage` resolves them'
@@ -966,13 +1002,14 @@ components:
         updatedAt: { type: string, format: date-time }
     Tombstone:
       type: object
-      required: [error, wfrn, deletedAt, tombstoneUntil]
+      required: [error, wfrn, deletedAt]
       properties:
-        error: { type: string }
+        error: { type: string, enum: [resource.deleted, resource.transferred] }
         wfrn: { $ref: '#/components/schemas/Wfrn' }
-        deletedAt: { type: string, format: date-time }
-        tombstoneUntil: { type: string, format: date-time }
+        deletedAt: { type: string, format: date-time, description: 'When it was deleted, or moved' }
+        tombstoneUntil: { type: string, format: date-time, description: 'Until when the name answers 410; absent for a moved resource, whose name answers for good' }
         lastVersion: { type: integer }
+        transferredTo: { $ref: '#/components/schemas/Wfrn', description: 'The wfrn it became in the other account (`resource.transferred`)' }
     ResourceEvent:
       type: object
       description: 'One entry of a resource''s log, the same shape as the `state.resources` message: the platform''s P-01 envelope with the console''s fields in `data` (contracts/asyncapi/console-events.yaml)'
@@ -983,7 +1020,7 @@ components:
         id: { type: string }
         key: { type: string, description: '`<type>:<wfrn>:<version>`' }
         seq: { type: integer, description: "The service's outbox sequence" }
-        type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested] }
+        type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested, Transferred] }
         at: { type: string, format: date-time }
         aggregate: { type: string, const: resource }
         aggregateId: { $ref: '#/components/schemas/Wfrn' }
@@ -1313,3 +1350,11 @@ components:
             properties:
               jobId: { type: string }
               evidence: { type: string, description: '`/api/v1/audit/{jobId}` on the platform' }
+    TransferRequest:
+      type: object
+      required: [toAccountId]
+      properties:
+        toAccountId: { $ref: '#/components/schemas/AccountId', description: 'Another account of the same organization' }
+        reason: { type: string, maxLength: 1000 }
+        expectedVersion: { type: integer, description: 'Refuse with 409 when the resource''s version is not this one' }
+        actor: { type: string, description: 'The console user, when the BFF sends the command for one' }
