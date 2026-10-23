@@ -99,7 +99,7 @@ class CostsTest {
     }
 
     @Test
-    void theChargebackNeedsCostExportAndTheCsvNamesTheSkippedAccounts() {
+    void theChargebackCsvNeedsCostExportAndNamesTheSkippedAccounts() {
         try (Stub cost = new Stub(seen -> new Answer(200, "text/csv", "month,costCentre\n2026-10,cc-1001\n", Duration.ZERO))) {
             Costs costs = costs(cost.url(), (account, action) -> COMPUTE.equals(account) && "cost:export".equals(action));
             Relayed csv = costs.chargeback(CostFixtures.session(), "organization", List.of(Map.entry("month", "2026-10")), true).block();
@@ -108,8 +108,10 @@ class CostsTest {
             assertEquals("/v1/chargeback.csv", cost.seen.get(0).path());
 
             Costs listOnly = costs(cost.url(), (account, action) -> "cost:list".equals(action));
+            assertEquals(200, listOnly.chargeback(CostFixtures.session(), "account", List.of(Map.entry("month", "2026-10")), false).block().status(),
+                    "the report is read like cost");
             DeniedException denied = assertThrows(DeniedException.class,
-                    () -> listOnly.chargeback(CostFixtures.session(), "account", List.of(Map.entry("month", "2026-10")), false).block());
+                    () -> listOnly.chargeback(CostFixtures.session(), "account", List.of(Map.entry("month", "2026-10")), true).block());
             assertEquals("cost:export", denied.denial().action());
         }
     }

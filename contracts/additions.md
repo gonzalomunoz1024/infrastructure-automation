@@ -1,6 +1,6 @@
 # Endpoints beyond the pinned contract
 
-`contracts.lock` pins the hub's contracts (console-root--cost-contract at 4a016b8: hub PR #18, on console-root--state-retry). The web
+`contracts.lock` pins the hub's contracts (console-root--cost-contract at e42d270: hub PR #18, on console-root--state-retry). The web
 app's phase-1 thread asked for the additions below (its note:
 `console-web-phase-1/bff-contract-additions.md`); the hub folded them into the contract at
 29cdcf9 and e8992fb, and this file now only records what this service answers beyond the pinned
@@ -291,19 +291,16 @@ the contract does not spell out yet:
   `wfrn:<partition>:budgets::<account>:budget/<id>`, its id's underscore written as a hyphen
   (`bud_01j…` is `budget/bud-01j…`, a wfrn id takes no underscore), and the list and create on
   `…:budget/*`. A resource's cost is decided on the resource's own wfrn.
-- `GET /console/v1/cost/chargeback` (JSON) asks `cost:export`, as the CSV does; the pinned text
-  says `cost:list`. With `scope=organization` both read the accounts where `cost:export` is
-  allowed; the JSON names the others in `skippedAccounts`, the CSV in an
-  `X-Console-Skipped-Accounts` header (comma separated). With no account allowed, the read is a
-  403, not an empty report.
-- `GET /console/v1/cost/price-lists` asks `cost:list` (403 with a Denial); the pinned operation
-  lists no 403.
+- `GET /console/v1/cost/chargeback` (JSON) asks `cost:list`, the CSV `cost:export`. With
+  `scope=organization` each reads the accounts where its action is allowed; the JSON names the
+  others in `skippedAccounts`, the CSV in the `X-Console-Skipped-Accounts` header (in the pinned
+  contract). With no account allowed, the read is a 403, not an empty report.
 - `PUT /console/v1/budgets/{budgetId}` without `If-Match` is a 400 (`required` at `If-Match`)
   before the cost service is asked; `DELETE` needs a fresh sign-in, as every `*:delete`.
 - A budget create naming another account in `scope.accountId` is a 400 (`scope.account`); left
   out, the session's account is filled in.
 - A create (`POST /r/{type}`, and a batch create) refused by a budget is a 409
-  `budget.exceeded` with `detail.budgets: [{ budgetId, name, message }]`; a batch preview's row
+  `budget.exceeded` (in the pinned contract) with `detail.budgets: [{ budgetId, name, message }]`; a batch preview's row
   carries the problem `budget.exceeded` at `/items/<i>/tags`, and its policy each budget's rule
   with `budgetId`. The `quota.resources` rule the pinned `Preview.policy.rules` description names
   is not added by the BFF yet (the state service enforces the quota on mint).

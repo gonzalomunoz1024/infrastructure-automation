@@ -88,9 +88,13 @@ public class Costs {
         return read(session, scope, COST_LIST, "/v1/cost", params);
     }
 
-    /** {@code GET /console/v1/cost/chargeback} and {@code .csv}: a month's chargeback, as {@code cost:export} allows. */
+    /**
+     * {@code GET /console/v1/cost/chargeback} and {@code .csv}: a month's chargeback. Reading the
+     * report is reading cost ({@code cost:list}); the CSV is what finance receives, so it needs
+     * {@code cost:export}.
+     */
     public Mono<Relayed> chargeback(Session session, String scope, List<Map.Entry<String, String>> params, boolean csv) {
-        return read(session, scope, COST_EXPORT, csv ? "/v1/chargeback.csv" : "/v1/chargeback", params);
+        return read(session, scope, csv ? COST_EXPORT : COST_LIST, csv ? "/v1/chargeback.csv" : "/v1/chargeback", params);
     }
 
     /** {@code GET /console/v1/cost/price-lists}: what prices the account's resources, as {@code cost:list} allows. */

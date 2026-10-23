@@ -97,14 +97,15 @@ class CostEndpointTest extends DemoApp {
     }
 
     @Test
-    void theChargebackIsAnExportOfAdminsAndAuditors() {
+    void theChargebackReportIsReadLikeCostAndItsCsvIsAnExportOfAdminsAndAuditors() {
         String month = LocalDate.now(ZoneOffset.UTC).toString().substring(0, 7);
         Console.Signed dana = console.signIn("dana");
-        Console.Reply refused = console.get("/console/v1/cost/chargeback?month=" + month, dana);
+        Console.Reply report = console.get("/console/v1/cost/chargeback?month=" + month, dana);
+        assertEquals(200, report.status(), report.body());
+        Console.Reply refused = console.get("/console/v1/cost/chargeback.csv?month=" + month, dana);
         assertEquals(403, refused.status(), refused.body());
         assertEquals("cost:export", refused.json().path("denied").path("action").asText(), refused.body());
         assertEquals("auditor", refused.json().path("denied").path("suggestedRole").asText(), refused.body());
-        assertEquals(403, console.get("/console/v1/cost/chargeback.csv?month=" + month, dana).status());
 
         Console.Signed gonzalo = console.signIn("gonzalo");
         Console.Reply json = console.get("/console/v1/cost/chargeback?scope=organization&month=" + month, gonzalo);
