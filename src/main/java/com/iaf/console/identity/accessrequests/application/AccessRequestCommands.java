@@ -9,6 +9,8 @@ import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.Names;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
+import com.iaf.console.identity.common.web.Denial;
+import com.iaf.console.identity.common.web.DeniedException;
 import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.identity.iam.application.Memberships;
@@ -33,7 +35,8 @@ import reactor.core.publisher.Mono;
 /**
  * The writes on access requests: a member opens one for a role (one pending per user and role);
  * an admin ({@code access-request:decide}) approves, which puts the requester in the group that
- * carries the role, or rejects.
+ * carries the role, or rejects. Nobody decides their own request, so a requester who may decide
+ * others' is left out of its approvers and refused on {@code :decide}.
  */
 public final class AccessRequestCommands {
 
@@ -98,7 +101,7 @@ public final class AccessRequestCommands {
                                             List.of(Problem.error("unknown", "role", "'" + roleName + "' is no role of this account")))))
                                     .then(requests.findPending(scope, caller.id(), roleName)
                                             .flatMap(pending -> Mono.<AccessRequest>error(new AccessRequestPending(pending.served(clock.instant())))))
-                                    .switchIfEmpty(Mono.defer(() -> approvers(scope)
+                                    .switchIfEmpty(Mono.defer(() -> approvers(scope, me.userId())
                                             .flatMap(approvers -> requests.insert(AccessRequest.open(ids.accessRequest(), accountId,
                                                     new AccessRequest.Requester(me.userId(), me.email(), me.name()), input.action(), resource, roleName,
                                                     input.reason(), approvers, clock.instant())))
@@ -107,13 +110,17 @@ public final class AccessRequestCommands {
                 });
     }
 
-    /** Whom the request goes to: the active members of the groups whose policies allow deciding, at most {@value #APPROVERS_SHOWN}. */
-    private Mono<List<String>> approvers(AccountScope scope) {
+    /**
+     * Whom the request goes to: the active members of the groups whose policies allow deciding,
+     * except the requester, at most {@value #APPROVERS_SHOWN}.
+     */
+    private Mono<List<String>> approvers(AccountScope scope, String requesterId) {
         return guard.groupsAllowed(scope.accountId(), "access-request:decide", support.anyResource(scope.accountId(), KIND))
                 .flatMap(names -> groups.findAll(scope).filter(g -> names.contains(g.name())).map(Group::groupId).collectList())
                 .flatMapMany(groupIds -> memberships.findAll(scope)
                         .filter(m -> m.status() == UserStatus.active && m.groupIds().stream().anyMatch(groupIds::contains)))
                 .map(Membership::userId)
+                .filter(userId -> !userId.equals(requesterId))
                 .distinct()
                 .take(APPROVERS_SHOWN)
                 .collectList();
@@ -130,6 +137,11 @@ public final class AccessRequestCommands {
                     return requests.find(scope, requestId)
                             .switchIfEmpty(Mono.error(NotFoundException.of("access request", requestId)))
                             .flatMap(request -> {
+                                if (caller.isUser() && caller.id().equals(request.requester().userId())) {
+                                    return Mono.error(new DeniedException(new Denial(Denial.CONSOLE_IAM, "access-request:decide",
+                                            support.resource(accountId, KIND, requestId), "nobody decides their own access request", null, null, null,
+                                            Boolean.FALSE, null)));
+                                }
                                 if (request.status(clock.instant()) != AccessRequest.Status.pending) {
                                     return Mono.error(new ConflictException("the request is " + request.status(clock.instant())));
                                 }

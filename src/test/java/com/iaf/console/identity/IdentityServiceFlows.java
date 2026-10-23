@@ -861,7 +861,8 @@ abstract class IdentityServiceFlows extends WithService {
         String miaToken = bearer("user_mia", DemoSeed.ACCOUNT_COMPUTE, List.of("viewers", "compute-approvers"));
         JsonNode request = call(POST, computeBase + "/access-requests", miaToken, Map.of("action", "compute:create", "role", "operator", "reason",
                 "I deploy the demo machines"), ACCEPTED);
-        assertThat(strings(request.get("approvers"))).containsExactlyInAnyOrder("user_gonzalo", "user_dana", "user_mia");
+        assertThat(strings(request.get("approvers"))).as("mia decides others' requests, not her own").containsExactlyInAnyOrder("user_gonzalo", "user_dana");
+        call(POST, computeBase + "/access-requests/" + request.get("requestId").asText() + ":decide", miaToken, Map.of("decision", "approve"), FORBIDDEN);
         String danaToken = bearer("user_dana", DemoSeed.ACCOUNT_COMPUTE, List.of("members", "compute-approvers"));
         JsonNode decided = call(POST, computeBase + "/access-requests/" + request.get("requestId").asText() + ":decide", danaToken, Map.of("decision", "approve"),
                 ACCEPTED);
@@ -871,6 +872,49 @@ abstract class IdentityServiceFlows extends WithService {
         call(POST, computeBase + "/access-requests/" + request.get("requestId").asText() + ":decide", mateoToken, Map.of("decision", "approve"), FORBIDDEN);
         JsonNode approverRole = call(GET, computeBase + "/roles", internal(), null, OK).get("items");
         assertThat(texts(approverRole, "name")).contains("approver");
+    }
+
+    @Test
+    void nobodyDecidesTheirOwnAccessRequest() {
+        Seeded s = newAccount();
+        String dana = addUser(s, "dana", "members");
+        String mia = addUser(s, "mia", "viewers");
+        String b = s.base();
+        // an admin lets a custom group decide access requests, and dana is in it
+        JsonNode policy = call(POST, b + "/policies", s.owner(), Map.of("name", "approver", "statements", List.of(Map.of("sid", "decide", "effect", "allow",
+                "actions", List.of("access-request:get", "access-request:list", "access-request:decide"), "resources",
+                List.of(iamSupport.anyResource(s.accountId(), "access-request"))))), CREATED);
+        call(POST, b + "/roles", s.owner(), Map.of("name", "approver", "policies", List.of(policy.get("policyId").asText())), CREATED);
+        call(POST, b + "/groups", s.owner(), Map.of("name", "approvers", "roles", List.of("approver"), "members", List.of(dana)), CREATED);
+        String danaToken = bearer(dana, s.accountId(), List.of("members", "approvers"));
+        String requests = b + "/access-requests";
+
+        // dana asks for the admin role: she decides others' requests, never her own, and is no approver of it
+        JsonNode own = call(POST, requests, danaToken, Map.of("action", "iam:create", "role", "account-admin", "reason", "I manage the team's users"),
+                ACCEPTED);
+        String ownId = own.get("requestId").asText();
+        assertThat(strings(own.get("approvers"))).containsExactly(s.ownerId());
+        JsonNode refused = call(POST, requests + "/" + ownId + ":decide", danaToken, Map.of("decision", "approve"), FORBIDDEN);
+        assertThat(refused.get("denied").get("layer").asText()).isEqualTo("console-iam");
+        assertThat(refused.get("denied").get("action").asText()).isEqualTo("access-request:decide");
+        assertThat(refused.get("denied").get("resource").asText()).endsWith(ownId);
+        assertThat(refused.get("denied").get("reason").asText()).contains("their own");
+        assertThat(refused.get("denied").get("requestable").asBoolean()).isFalse();
+        call(POST, requests + "/" + ownId + ":decide", danaToken, Map.of("decision", "reject"), FORBIDDEN);
+        assertThat(call(GET, requests + "/" + ownId, danaToken, null, OK).get("status").asText()).as("still pending").isEqualTo("pending");
+        assertThat(strings(call(GET, s.users() + "/" + dana, s.owner(), null, OK).get("groups"))).doesNotContain("owners");
+
+        // mia's request goes to dana as well, and dana decides it
+        JsonNode miaAsk = call(POST, requests, bearer(mia, s.accountId(), List.of("viewers")), Map.of("action", "compute:create", "resource", s.vm("*"),
+                "reason", "I deploy the test machines"), ACCEPTED);
+        assertThat(strings(miaAsk.get("approvers"))).containsExactlyInAnyOrder(s.ownerId(), dana);
+        JsonNode decided = call(POST, requests + "/" + miaAsk.get("requestId").asText() + ":decide", danaToken, Map.of("decision", "approve"), ACCEPTED);
+        assertThat(decided.get("decidedBy").asText()).isEqualTo(dana);
+
+        // and the owner decides dana's
+        JsonNode approved = call(POST, requests + "/" + ownId + ":decide", s.owner(), Map.of("decision", "approve"), ACCEPTED);
+        assertThat(approved.get("status").asText()).isEqualTo("approved");
+        assertThat(strings(call(GET, s.users() + "/" + dana, s.owner(), null, OK).get("groups"))).contains("owners");
     }
 
     @Test

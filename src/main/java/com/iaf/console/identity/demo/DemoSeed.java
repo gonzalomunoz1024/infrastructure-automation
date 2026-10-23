@@ -73,7 +73,7 @@ public final class DemoSeed {
             new Person("mateo", "Mateo Silva", ACCOUNT_COMPUTE, List.of(ManagedIam.MEMBERS)),
             new Person("mia", "Mia Chen", ACCOUNT_COMPUTE, List.of(ManagedIam.VIEWERS)),
             new Person("raj", "Raj Patel", ACCOUNT_DATA, List.of(ManagedIam.MEMBERS)),
-            new Person("ana", "Ana Lima", ACCOUNT_DATA, List.of(ManagedIam.MEMBERS, ManagedIam.VIEWERS)));
+            new Person("ana", "Ana Costa", ACCOUNT_DATA, List.of(ManagedIam.MEMBERS, ManagedIam.VIEWERS)));
 
     public static final List<Approvers> APPROVERS = List.of(
             new Approvers(ACCOUNT_COMPUTE, "compute-approvers", List.of("dana", "mia")),

@@ -69,7 +69,9 @@ contract lacks, so a new one goes to the hub first).
 - **Access requests.** A person asks for a role after a refusal (`{action, resource?, role?, reason}`;
   without `role` the managed role the denial suggests). The request goes to the members of the
   groups whose policies allow `access-request:decide` (the owners, plus any custom approver group);
-  approving joins the requester to the group that carries the role. Everyone sees their own
+  approving joins the requester to the group that carries the role. Nobody decides their own
+  request: the requester is left out of its approvers, and their `:decide` is a 403 whose denial
+  says so. Everyone sees their own
   requests; the account's are for whoever may `access-request:list` (admins, auditors, approver
   groups: the managed viewer and operator policies leave those reads out). The same open request answers
   409 with the existing one; a pending request expires after thirty days (a sweep every fifteen
