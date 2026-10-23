@@ -27,7 +27,6 @@ import com.iaf.console.identity.principals.domain.UserStatus;
 import com.iaf.console.identity.principals.ports.outbound.MembershipStore;
 import com.iaf.console.identity.principals.ports.outbound.UserStore;
 
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -59,36 +58,39 @@ public final class Compiler {
         this.versions = versions;
     }
 
+    /**
+     * The revision and the account versions are read before the data they label: a change landing
+     * meanwhile leaves the labels behind the data, so the next check sees the revision move and
+     * compiles again. Read after, they would mark data from before the change as current.
+     */
     public Mono<Compiled> compile() {
-        Mono<List<Guardrail>> allGuardrails = guardrails.findAll().collectList();
-        return Mono.zip(accounts.findAll().collectList(), users.findAll().collectMap(User::userId), memberships.findEverything().collectList(),
-                        groups.findEverything().collectList(), roles.findEverything().collectList(), policies.findEverything().collectList())
-                .zipWith(allGuardrails)
-                .flatMap(z -> versions.getRevision().flatMap(revision -> {
-                    var t = z.getT1();
-                    List<Guardrail> rails = z.getT2();
-                    Map<String, List<Membership>> membershipsByAccount = groupBy(t.getT3(), Membership::accountId);
-                    Map<String, List<Group>> groupsByAccount = groupBy(t.getT4(), Group::accountId);
-                    Map<String, List<Role>> rolesByAccount = groupBy(t.getT5(), Role::accountId);
-                    Map<String, List<Policy>> policiesByAccount = groupBy(t.getT6(), Policy::accountId);
-                    Map<String, Compiled.CompiledGuardrail> compiledRails = new TreeMap<>();
-                    for (Guardrail rail : rails) {
-                        compiledRails.put(rail.guardrailId(), new Compiled.CompiledGuardrail(rail.name(), statements(rail.statements())));
-                    }
-                    List<Account> all = t.getT1();
-                    return Flux.fromIterable(all)
-                            .concatMap(account -> versions.getVersion(account.accountId()).map(version -> Map.entry(account.accountId(),
-                                    compile(account, version, t.getT2(), membershipsByAccount.getOrDefault(account.accountId(), List.of()),
-                                            groupsByAccount.getOrDefault(account.accountId(), List.of()), rolesByAccount.getOrDefault(account.accountId(), List.of()),
-                                            policiesByAccount.getOrDefault(account.accountId(), List.of()),
-                                            rails.stream().filter(r -> r.appliesTo(account.accountId())).map(Guardrail::guardrailId).sorted().toList()))))
-                            .collectList()
-                            .map(entries -> {
-                                Map<String, CompiledAccount> compiled = new TreeMap<>();
-                                entries.forEach(e -> compiled.put(e.getKey(), e.getValue()));
-                                return new Compiled(compiled, compiledRails, revision);
-                            });
-                }));
+        return versions.getRevision().flatMap(revision -> accounts.findAll()
+                .concatMap(account -> versions.getVersion(account.accountId()).map(version -> Map.entry(account.accountId(), version)))
+                .collectMap(Map.Entry::getKey, Map.Entry::getValue)
+                .flatMap(versionOf -> Mono.zip(accounts.findAll().collectList(), users.findAll().collectMap(User::userId),
+                                memberships.findEverything().collectList(), groups.findEverything().collectList(), roles.findEverything().collectList(),
+                                policies.findEverything().collectList(), guardrails.findAll().collectList())
+                        .map(t -> {
+                            List<Guardrail> rails = t.getT7();
+                            Map<String, List<Membership>> membershipsByAccount = groupBy(t.getT3(), Membership::accountId);
+                            Map<String, List<Group>> groupsByAccount = groupBy(t.getT4(), Group::accountId);
+                            Map<String, List<Role>> rolesByAccount = groupBy(t.getT5(), Role::accountId);
+                            Map<String, List<Policy>> policiesByAccount = groupBy(t.getT6(), Policy::accountId);
+                            Map<String, Compiled.CompiledGuardrail> compiledRails = new TreeMap<>();
+                            for (Guardrail rail : rails) {
+                                compiledRails.put(rail.guardrailId(), new Compiled.CompiledGuardrail(rail.name(), statements(rail.statements())));
+                            }
+                            Map<String, CompiledAccount> compiled = new TreeMap<>();
+                            for (Account account : t.getT1()) {
+                                String id = account.accountId();
+                                // an account created after its version was read starts at 0, behind its data like the rest
+                                compiled.put(id, compile(account, versionOf.getOrDefault(id, 0L), t.getT2(), membershipsByAccount.getOrDefault(id, List.of()),
+                                        groupsByAccount.getOrDefault(id, List.of()), rolesByAccount.getOrDefault(id, List.of()),
+                                        policiesByAccount.getOrDefault(id, List.of()),
+                                        rails.stream().filter(r -> r.appliesTo(id)).map(Guardrail::guardrailId).sorted().toList()));
+                            }
+                            return new Compiled(compiled, compiledRails, revision);
+                        })));
     }
 
     public static CompiledAccount compile(Account account, long version, Map<String, User> allUsers, List<Membership> memberships, List<Group> groups,
