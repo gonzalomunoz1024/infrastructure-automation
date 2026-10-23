@@ -12,10 +12,9 @@ import org.springframework.web.server.ServerWebExchange;
 
 import com.iaf.console.bff.search.application.Search;
 import com.iaf.console.bff.search.domain.ResourceCounts;
-import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.session.application.CurrentSession;
-import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
@@ -38,7 +37,7 @@ public class SearchController {
     }
 
     @GetMapping(path = "/console/v1/search", produces = "application/json")
-    public Mono<Page<SearchHit>> search(@RequestParam(name = "q", required = false) String q,
+    public Mono<SearchPage> search(@RequestParam(name = "q", required = false) String q,
             @RequestParam(name = "type", required = false) String type,
             @RequestParam(name = "limit", required = false) Integer limit,
             @RequestParam(name = "after", required = false) String after,

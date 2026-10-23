@@ -32,6 +32,7 @@ import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
@@ -41,7 +42,6 @@ import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.errors.TooManyRequestsException;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -90,13 +90,14 @@ public class HttpSearchPort implements SearchPort {
     }
 
     @Override
-    public Mono<Page<SearchHit>> search(AccountScope scope, StateCaller caller, SearchQuery query) {
+    public Mono<SearchPage> search(AccountScope scope, StateCaller caller, SearchQuery query) {
         return get(scope, caller, b -> filters(b, "/v1/search", scope, query, true), node -> {
             List<SearchHit> items = new ArrayList<>();
             for (JsonNode item : node.path("items")) {
                 items.add(read(item, SearchHit.class));
             }
-            return new Page<>(items, node.hasNonNull("next") ? node.get("next").asText() : null);
+            return new SearchPage(items, node.hasNonNull("next") ? node.get("next").asText() : null,
+                    node.hasNonNull("didYouMean") ? node.get("didYouMean").asText() : null);
         });
     }
 

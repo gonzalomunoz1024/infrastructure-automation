@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -20,6 +21,7 @@ import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
@@ -30,7 +32,6 @@ import com.iaf.console.bff.types.domain.ConsoleType;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.paging.CursorPaging;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
 
@@ -42,7 +43,8 @@ import reactor.core.publisher.Mono;
  * and region only, and the account's policies decide what the person sees. A hit or a suggestion
  * of a type the person may not list ({@code <service>:list} on the type's pattern) is left out,
  * so a page can hold fewer hits than asked while its cursor still goes on; a search, or the
- * counts, of one named type the person may not list is refused as the list itself is.
+ * counts, of one named type the person may not list is refused as the list itself is. The
+ * indexer's {@code didYouMean} is passed on only when it cannot come from a hit left out.
  */
 public class Search {
 
@@ -71,15 +73,54 @@ public class Search {
     }
 
     /** One page of hits for free text, over every type the person may list, or over one type. */
-    public Mono<Page<SearchHit>> search(Session session, String q, String type, Integer limit, String after) {
+    public Mono<SearchPage> search(Session session, String q, String type, Integer limit, String after) {
         return Mono.defer(() -> {
             String text = text(q, MAX_QUERY, true);
             int size = CursorPaging.pageSize(limit);
-            return listable(session, type).flatMap(listable -> listable.isEmpty() ? Mono.just(new Page<SearchHit>(List.of(), null))
+            return listable(session, type).flatMap(listable -> listable.isEmpty() ? Mono.just(new SearchPage(List.of(), null, null))
                     : index.search(scope(session), caller(session), new SearchQuery(text, blankToNull(type), null, Map.of(), null, null, size, after))
-                            .map(page -> new Page<>(page.items().stream().filter(hit -> hit.type() != null && listable.contains(hit.type())).toList(),
-                                    page.next())));
+                            .map(page -> {
+                                List<SearchHit> shown = page.items().stream().filter(hit -> hit.type() != null && listable.contains(hit.type())).toList();
+                                return new SearchPage(shown, page.next(), didYouMean(text, page.didYouMean(), shown, shown.size() < page.items().size()));
+                            }));
         });
+    }
+
+    /**
+     * The indexer's {@code didYouMean} as the person may see it. It is read from the page's hits,
+     * so it passes as it is when every hit is shown; when some were left out, only when each word
+     * it changes is in the name or a tag of a hit that is shown, since it could otherwise spell a
+     * word of a resource the person may not list.
+     */
+    static String didYouMean(String q, String suggested, List<SearchHit> shown, boolean leftOut) {
+        if (suggested == null || suggested.isBlank()) {
+            return null;
+        }
+        if (!leftOut) {
+            return suggested;
+        }
+        String[] asked = q.strip().split("\\s+");
+        String[] offered = suggested.strip().split("\\s+");
+        if (asked.length != offered.length) {
+            return null;
+        }
+        for (int i = 0; i < offered.length; i++) {
+            String word = offered[i];
+            if (!word.equalsIgnoreCase(asked[i]) && shown.stream().noneMatch(hit -> spells(hit, word))) {
+                return null;
+            }
+        }
+        return suggested;
+    }
+
+    /** Whether the hit's name, or one of its tags' names or values, holds the word. */
+    private static boolean spells(SearchHit hit, String word) {
+        String lower = word.toLowerCase(Locale.ROOT);
+        if (hit.name() != null && hit.name().toLowerCase(Locale.ROOT).contains(lower)) {
+            return true;
+        }
+        return hit.tags().entrySet().stream().anyMatch(t -> t.getKey().toLowerCase(Locale.ROOT).contains(lower)
+                || t.getValue().toLowerCase(Locale.ROOT).contains(lower));
     }
 
     /**

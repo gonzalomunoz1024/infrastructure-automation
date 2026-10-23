@@ -24,7 +24,7 @@ import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
-import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
@@ -32,7 +32,6 @@ import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.Principal;
 import com.iaf.console.bff.session.domain.Session;
 import com.iaf.console.kit.errors.InvalidInputException;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -192,7 +191,7 @@ class CountsAcrossTest {
         }
 
         @Override
-        public Mono<Page<SearchHit>> search(AccountScope scope, StateCaller caller, SearchQuery query) {
+        public Mono<SearchPage> search(AccountScope scope, StateCaller caller, SearchQuery query) {
             throw new UnsupportedOperationException();
         }
 

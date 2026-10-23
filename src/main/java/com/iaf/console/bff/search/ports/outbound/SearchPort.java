@@ -8,10 +8,9 @@ import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
-import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -27,7 +26,8 @@ public interface SearchPort {
     /** The most accounts one counts call names. */
     int MAX_ACCOUNTS = 200;
 
-    Mono<Page<SearchHit>> search(AccountScope scope, StateCaller caller, SearchQuery query);
+    /** One page of hits, with the indexer's {@code didYouMean} when it sent one. */
+    Mono<SearchPage> search(AccountScope scope, StateCaller caller, SearchQuery query);
 
     Mono<List<Suggestion>> suggest(AccountScope scope, StateCaller caller, String q, String type, int limit);
 

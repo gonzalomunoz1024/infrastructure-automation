@@ -23,10 +23,9 @@ import com.iaf.console.bff.demo.identity.application.DemoCaller;
 import com.iaf.console.bff.demo.identity.application.DemoTokens;
 import com.iaf.console.bff.demo.search.application.DemoSearchIndex;
 import com.iaf.console.bff.search.application.SearchConfiguration;
-import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -57,10 +56,13 @@ public class DemoSearchRoutes {
     @Bean
     public RouterFunction<ServerResponse> demoSearchRouter() {
         return route(GET(PREFIX + "/v1/search"), r -> answer(r, account -> {
-            Page<SearchHit> page = index.search(account, param(r, "q"), filters(r), param(r, "sort"), integer(r, "limit"), param(r, "after"));
+            SearchPage page = index.search(account, param(r, "q"), filters(r), param(r, "sort"), integer(r, "limit"), param(r, "after"));
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("items", page.items());
             body.put("next", page.next());
+            if (page.didYouMean() != null) {
+                body.put("didYouMean", page.didYouMean());
+            }
             return body;
         }))
                 .andRoute(GET(PREFIX + "/v1/suggest"), r -> answer(r, account -> {

@@ -31,6 +31,8 @@ import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.application.SearchProperties;
 import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.IndexStatus;
+import com.iaf.console.bff.search.domain.SearchPage;
+import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.application.TrustProperties;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
@@ -118,6 +120,22 @@ class HttpSearchPortTest {
 
         answer = "{\"documents\":0,\"lagSeconds\":0,\"lastEventAt\":null}";
         assertNull(port.getIndexStatus(GONZALO, AS_GONZALO).block().lastEventAt(), "null before the first event");
+    }
+
+    @Test
+    void aSearchPageKeepsTheIndexersDidYouMean() {
+        answer = "{\"items\":[{\"wfrn\":\"wfrn:wf:data:global:123456789012:database/orders-postgres\",\"type\":\"database\",\"service\":\"data\","
+                + "\"region\":\"global\",\"name\":\"orders-postgres\",\"state\":\"active\",\"score\":0.5,\"updatedAt\":\"2026-10-23T11:00:00Z\"}],"
+                + "\"next\":null,\"didYouMean\":\"postgres\"}";
+        SearchPage page = port.search(GONZALO, AS_GONZALO, new SearchQuery("postgress", null, null, Map.of(), null, null, 20, null)).block();
+        assertEquals("postgres", page.didYouMean());
+        assertEquals("orders-postgres", page.items().get(0).name());
+        assertNull(page.next());
+
+        answer = "{\"items\":[],\"next\":\"abc\"}";
+        SearchPage plain = port.search(GONZALO, AS_GONZALO, new SearchQuery("web", null, null, Map.of(), null, null, 20, null)).block();
+        assertNull(plain.didYouMean());
+        assertEquals("abc", plain.next());
     }
 
     private static String decoded(String value) {
