@@ -57,6 +57,17 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, iam, { label: 'Groups', href: pathFor('iam-groups') }, { label: route.params.id, mono: true }]
     case 'iam-role':
       return [home, iam, { label: 'Roles', href: pathFor('iam-roles') }, { label: route.params.id, mono: true }]
+    case 'iam-policies':
+    case 'iam-simulator':
+    case 'iam-guardrails':
+      return [home, iam, { label: route.def?.title ?? 'Identity and access' }]
+    case 'iam-policy-new':
+    case 'iam-policy':
+    case 'iam-policy-edit':
+      return [home, iam, { label: 'Policies', href: pathFor('iam-policies') }, { label: route.def?.title ?? 'Policy' }]
+    case 'iam-guardrail-new':
+    case 'iam-guardrail':
+      return [home, iam, { label: 'Guardrails', href: pathFor('iam-guardrails') }, { label: route.def?.title ?? 'Guardrail' }]
     case 'iam-request':
       return [home, iam, { label: 'Access requests', href: pathFor('iam-requests') }, { label: route.params.id, mono: true }]
     case 'groups':

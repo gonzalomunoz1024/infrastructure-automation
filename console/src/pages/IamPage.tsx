@@ -3,7 +3,6 @@ import { Card, Icon, PageHeader, Stat, type IconName } from '@iaf/ui'
 import { DotTag, Facts } from '@iaf/console-kit'
 import { useAccessRequestQueue } from '../app/access'
 import { useConsole } from '../app/console'
-import { PHASES } from '../app/Phase'
 import { Link, pathFor, type PageProps, type RouteName } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { bff } from '../lib/bff'
@@ -92,7 +91,9 @@ export default function IamPage(_props: PageProps) {
               </li>
             ))}
           </ul>
-          <p className="mt-4 text-caption text-tertiary">Custom roles and policies arrive with {PHASES[7]}.</p>
+          <p className="mt-4 text-caption text-tertiary">
+            Write custom <Link to={pathFor('iam-policies')} className="text-accent hover:underline">policies</Link>, check them in the <Link to={pathFor('iam-simulator')} className="text-accent hover:underline">policy simulator</Link>, and read the organization’s <Link to={pathFor('iam-guardrails')} className="text-accent hover:underline">guardrails</Link>.
+          </p>
         </Card>
 
         <Card title="How a decision is made" subtitle="Two layers, in this order" className="lg:col-span-1">

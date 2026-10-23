@@ -1,20 +1,21 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Card, Icon, PageHeader, Skeleton, SkeletonText, Table, Tag, plural, type IconName, type TableColumn } from '@iaf/ui'
 import { CopyableId, DotTag, ErrorState, Facts, Section } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
-import { LaterButton, PHASES } from '../../app/Phase'
+import { ActionButton } from '../../app/Refusal'
 import { Link, href, pathFor, type PageProps } from '../../app/router'
 import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
 import { ROLE_SUMMARY, roleLabel, roleTone, type ManagedRole } from '../../lib/session'
 import type { IamPolicy, IamRole, IamStatement } from '../../lib/types'
-import { GroupLinks, RoleTags, sortRoles } from './common'
+import { GroupLinks, RoleTags, sortRoles, useAdminDecision } from './common'
+import { CreateRoleDialog, RoleAccess } from './policies/roles'
 
 /*
  * Roles: the four managed roles every account has, and any custom role the account holds (the
  * approvers' role), each a bundle of policies whose statements decide. A refusal names the
- * statement; this is where to read it in full. Writing custom roles and policies arrives with
- * phase 7.
+ * statement; this is where to read it in full. An admin creates a custom role here from the
+ * account's policies, attaches and detaches its policies and sets its permission boundary (phase 7).
  */
 
 const ROLE_ICON: Record<string, IconName> = { viewer: 'eye', operator: 'play', 'account-admin': 'shield', auditor: 'audit', approver: 'check' }
@@ -33,6 +34,8 @@ export default function IamRolesPage(_props: PageProps) {
   const groups = useQuery(['iam', 'groups', account.id], () => bff.iam.groups.list({ limit: 200 }))
   const list = useMemo(() => [...(roles.data?.items ?? [])].sort((a, b) => sortRoles([a.roleId, b.roleId])[0] === a.roleId ? -1 : 1), [roles.data])
   const mine = new Set(me.roles ?? [])
+  const can = useAdminDecision()
+  const [creating, setCreating] = useState(false)
 
   return (
     <>
@@ -40,9 +43,9 @@ export default function IamRolesPage(_props: PageProps) {
         title="Roles"
         subtitle={`What each role may do in ${account.name}, statement by statement. Groups grant roles; people never hold one directly.`}
         actions={
-          <LaterButton phase={7} variant="primary" icon="plus">
+          <ActionButton decision={can('iam:create', 'Create roles')} what="Create a role" verb="create" variant="primary" icon="plus" onClick={() => setCreating(true)}>
             Create role
-          </LaterButton>
+          </ActionButton>
         }
       />
       {roles.error ? (
@@ -90,7 +93,10 @@ export default function IamRolesPage(_props: PageProps) {
           })}
         </ul>
       )}
-      <p className="mt-6 text-caption text-tertiary">Writing custom roles and policies in the console, in the same statements, arrives with {PHASES[7]}.</p>
+      <p className="mt-6 text-caption text-tertiary">
+        A custom role carries the account’s policies, managed or <Link to={pathFor('iam-policies')} className="text-accent hover:underline">custom</Link>, and may be bounded by one. Try any of them in the <Link to={pathFor('iam-simulator')} className="text-accent hover:underline">policy simulator</Link>.
+      </p>
+      {creating && <CreateRoleDialog onClose={() => setCreating(false)} onCreated={() => setCreating(false)} />}
     </>
   )
 }
@@ -212,6 +218,8 @@ export function IamRolePage({ route }: PageProps) {
             ]}
           />
         </Section>
+
+        <RoleAccess role={r} />
 
         {policies.error ? (
           <ErrorState error={policies.error} title="Could not load the policies" onRetry={() => void policies.refetch()} />

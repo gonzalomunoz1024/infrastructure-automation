@@ -9,6 +9,7 @@ import { jobRoutes, stepsOf } from './jobs'
 import { tagRoutes } from './tags'
 import { driftRoutes } from './drift'
 import { monitoringRoutes } from './monitoring'
+import { policyRoutes } from './policies'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -289,6 +290,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       return t ? { status: 200, body: t, headers: { ETag: t.etag ?? '' } } : notFound(`Type ${key}`)
     }
 
+    /* custom policies, roles and their boundaries, guardrails and the simulator (phase 7) */
+    const policied = policyRoutes(data, { session: s, body, headers: req.headers, now: at }, path, params, method)
+    if (policied) return policied
+
     /* identity and access, as the identity service guards it: iam:<verb> on the IAM wfrn of the thing */
     const q = params.get('q')?.toLowerCase()
     if (path === '/console/v1/iam/users') {
@@ -362,31 +367,6 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         return { status: 204 }
       }
     }
-    if (path === '/console/v1/iam/roles' && method === 'GET') {
-      const d = can('iam:list', iam('role'))
-      return d.allowed ? pagedBody(dir.roles, params) : refused(d)
-    }
-    m = /^\/console\/v1\/iam\/roles\/([^/]+)$/.exec(path)
-    if (m && method === 'GET') {
-      const id = decodeURIComponent(m[1])
-      const d = can('iam:get', iam('role', id))
-      if (!d.allowed) return refused(d)
-      const r = dir.roles.find((x) => x.roleId === id || x.name === id)
-      return r ? { status: 200, body: r } : notFound(`Role ${id}`)
-    }
-    if (path === '/console/v1/iam/policies' && method === 'GET') {
-      const d = can('iam:list', iam('policy'))
-      return d.allowed ? pagedBody(dir.policies[s.accountId] ?? [], params) : refused(d)
-    }
-    m = /^\/console\/v1\/iam\/policies\/([^/]+)$/.exec(path)
-    if (m && method === 'GET') {
-      const id = decodeURIComponent(m[1])
-      const d = can('iam:get', iam('policy', id))
-      if (!d.allowed) return refused(d)
-      const p = (dir.policies[s.accountId] ?? []).find((x) => x.policyId === id || x.name === id)
-      return p ? { status: 200, body: p } : notFound(`Policy ${id}`)
-    }
-
     /* access keys: a person's own are theirs to manage; anyone else's take iam:<verb> on the key */
     if (path === '/console/v1/iam/access-keys') {
       if (method === 'GET') {

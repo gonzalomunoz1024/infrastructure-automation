@@ -85,6 +85,10 @@ export function denialTitle(d: Denial): string {
 /** Where the decision came from, in words that name the statement when there is one. */
 export function decidedBy(d: Denial): string {
   if (d.layer === 'platform') return d.scope ? `The platform's role for this account has no ${d.scope} scope.` : 'The platform refused the account.'
+  if (d.refusedBy === 'guardrail') return d.guardrailId ? `The organization's guardrail ${d.guardrailId} denies it${d.statement ? ` (statement ${d.statement})` : ''}. No role in the account can allow what a guardrail denies.` : "It is outside the organization's guardrails, and no role in the account can allow it."
+  // a refusal that no role of the account could lift (the organization's own writes): its reason says who may
+  if (d.refusedBy === 'policy' && d.requestable === false && !d.policyId && !d.role && d.reason) return `${d.reason}.`
+  if (d.refusedBy === 'boundary') return `It is outside the permission boundary ${d.policyId ?? ''} of the role ${d.role ?? ''}, so the role's allow does not count.`
   if (d.policyId && d.statement) return `Statement ${d.statement} of policy ${d.policyId} denies it${d.role ? ` for the role ${d.role}` : ''}.`
   if (d.policyId) return `Policy ${d.policyId} denies it${d.role ? ` for the role ${d.role}` : ''}.`
   return d.role ? `No statement of the role ${d.role} allows it, and what no statement allows is denied.` : 'No statement of your roles allows it, and what no statement allows is denied.'

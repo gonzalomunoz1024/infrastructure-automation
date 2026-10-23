@@ -26,6 +26,14 @@ export type RouteName =
   | 'iam-keys'
   | 'iam-requests'
   | 'iam-request'
+  | 'iam-policies'
+  | 'iam-policy-new'
+  | 'iam-policy'
+  | 'iam-policy-edit'
+  | 'iam-simulator'
+  | 'iam-guardrails'
+  | 'iam-guardrail-new'
+  | 'iam-guardrail'
   | 'groups'
   | 'group'
   | 'tag-editor'
@@ -66,6 +74,14 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-keys', pattern: '/iam/access-keys', title: 'Access keys' },
   { name: 'iam-requests', pattern: '/iam/access-requests', title: 'Access requests' },
   { name: 'iam-request', pattern: '/iam/access-requests/:id', title: 'Access request' },
+  { name: 'iam-policies', pattern: '/iam/policies', title: 'Policies' },
+  { name: 'iam-policy-new', pattern: '/iam/policies/new', title: 'New policy' },
+  { name: 'iam-policy', pattern: '/iam/policies/:id', title: 'Policy' },
+  { name: 'iam-policy-edit', pattern: '/iam/policies/:id/edit', title: 'Edit policy' },
+  { name: 'iam-simulator', pattern: '/iam/simulator', title: 'Policy simulator' },
+  { name: 'iam-guardrails', pattern: '/iam/guardrails', title: 'Guardrails' },
+  { name: 'iam-guardrail-new', pattern: '/iam/guardrails/new', title: 'New guardrail' },
+  { name: 'iam-guardrail', pattern: '/iam/guardrails/:id', title: 'Guardrail' },
   // resource groups and tags (phase 4): across every type of the account and region
   { name: 'groups', pattern: '/resource-groups', title: 'Resource groups' },
   { name: 'group', pattern: '/resource-groups/:id', title: 'Resource group' },

@@ -1,3 +1,4 @@
+import { globMatches, sentinel, type Guardrail } from '../lib/policies'
 import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, SavedFilter, SavedView } from '../lib/types'
 
 /*
@@ -155,7 +156,11 @@ export interface Directory {
   quotaRequests: Record<string, QuotaRequest[]>
   /** `<account>/<user>` → version, bumped by every change to the user's groups */
   userVersions: Record<string, number>
-  counters: { groups: number; keys: number; requests: number; quotaRequests: number }
+  counters: { groups: number; keys: number; requests: number; quotaRequests: number; policies?: number; roles?: number; guardrails?: number }
+  /** the organization's guardrails (phase 7), seeded on first use */
+  guardrails?: Guardrail[]
+  /** the authorization version: one more for every change to policies, roles, boundaries or guardrails (phase 7) */
+  authzVersion?: number
   /** by person: what `/console/v1/preferences` keeps (phase 3) */
   preferences?: Record<string, Preferences>
 }
@@ -239,9 +244,9 @@ function sortRoles(roles: Iterable<string>): string[] {
   return [...new Set(roles)].sort((a, b) => (ROLE_RANK[b] ?? 0) - (ROLE_RANK[a] ?? 0) || a.localeCompare(b))
 }
 
-/** The roles a person holds in an account: the union of the roles of their groups, the strongest managed role first. */
+/** The roles a person holds in an account, by name: the union of the roles of their groups, the strongest managed role first. */
 export function rolesOf(dir: Directory, accountId: string, userId: string): string[] {
-  return sortRoles(groupsOf(dir, accountId, userId).flatMap((g) => g.roles ?? []))
+  return sortRoles(groupsOf(dir, accountId, userId).flatMap((g) => (g.roles ?? []).map((r) => roleIn(dir, accountId, r)?.name ?? r)))
 }
 
 export function isMember(dir: Directory, accountId: string, userId: string): boolean {
@@ -314,25 +319,173 @@ export interface Decision {
   via?: { policyId: string; statement?: string; role?: string }
 }
 
-/** `*` matches any run of characters, none included; the rest is literal. */
+/** `*` matches any run of characters (`:` and `/` too), `?` one; the rest is literal (the identity service's Globs). */
 export function matchesGlob(pattern: string, value: string): boolean {
-  if (pattern === '*') return true
-  const re = new RegExp(`^${pattern.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`)
-  return re.test(value)
+  return globMatches(pattern, value)
 }
 
 /** 'compute:*' matches 'compute:create'; '*:delete' matches 'data:delete'; '*:*' matches everything. */
 export function matchesAction(pattern: string, action: string): boolean {
-  const [ps, pv] = pattern.split(':')
-  const [as, av] = action.split(':')
-  return matchesGlob(ps ?? '', as ?? '') && matchesGlob(pv ?? '', av ?? '')
+  return globMatches(pattern, action)
 }
 
-/** Whether a statement speaks about the action (its notActions carved out) and the resource. */
-export function statementMatches(s: IamStatement, action: string, resource: string): boolean {
-  if (!s.actions.some((a) => matchesAction(a, action))) return false
-  if (s.notActions?.some((a) => matchesAction(a, action))) return false
-  return s.resources.some((r) => matchesGlob(r, resource))
+/** Who a statement's conditions read: the person, their email and their groups (by name). */
+export interface Requester {
+  userId: string
+  email?: string
+  groups: readonly string[]
+}
+
+/** One check: an action on a wfrn or a pattern, with what the request knows about it (the resource's `tags`). */
+export interface Check {
+  action: string
+  resource: string
+  context?: Record<string, unknown>
+}
+
+function segment(wfrn: string, index: number): string | undefined {
+  const parts = wfrn.split(':')
+  return parts.length > index ? parts[index] : undefined
+}
+
+/** The value a condition key names, from the resource's wfrn, the person or the check's context. */
+function derived(check: Check, who: Requester | undefined, key: string): unknown {
+  const ctx = check.context ?? {}
+  switch (key) {
+    case 'region':
+      return segment(check.resource, 3)
+    case 'account':
+      return segment(check.resource, 4)
+    case 'service':
+      return segment(check.resource, 2)
+    case 'type':
+      return segment(check.resource, 5)?.split('/')[0]
+    case 'requester.user':
+      return who?.userId
+    case 'requester.email': {
+      const r = ctx.requester
+      return r && typeof r === 'object' ? (r as Record<string, unknown>).email : who?.email
+    }
+    default:
+      if (key.startsWith('tag.')) {
+        const tags = ctx.tags
+        return tags && typeof tags === 'object' ? (tags as Record<string, unknown>)[key.slice(4)] : undefined
+      }
+      if (key.startsWith('context.')) return ctx[key.slice(8)]
+      return undefined
+  }
+}
+
+/** JSON equality: a list wants any of its values, numbers compare by value, booleans by type and text. */
+function valueMatches(got: unknown, want: unknown): boolean {
+  if (Array.isArray(want)) return want.some((w) => valueMatches(got, w))
+  if (typeof got === 'number' && typeof want === 'number') return got === want
+  if (typeof got === 'boolean' || typeof want === 'boolean') return typeof got === typeof want && String(got) === String(want)
+  return got !== undefined && got !== null && got === want
+}
+
+function conditionsHold(s: IamStatement, check: Check, who: Requester | undefined): boolean {
+  for (const [key, want] of Object.entries(s.conditions ?? {})) {
+    if (key === 'requester.group') {
+      if (!(who?.groups ?? []).some((g) => valueMatches(g, want))) return false
+      continue
+    }
+    const got = derived(check, who, key)
+    if (got === undefined || got === null || !valueMatches(got, want)) return false
+  }
+  return true
+}
+
+/** Whether a statement speaks about the check: an action it names (its notActions carved out), a resource its patterns cover, and every condition held. */
+export function statementMatches(s: IamStatement, action: string, resource: string, context?: Record<string, unknown>, who?: Requester): boolean {
+  if (!s.actions.some((a) => globMatches(a, action))) return false
+  if (s.notActions?.some((a) => globMatches(a, action))) return false
+  const literal = sentinel(resource)
+  if (!s.resources.some((r) => globMatches(r, literal))) return false
+  return conditionsHold(s, { action, resource, context }, who)
+}
+
+/** A role as the mock keeps it: a custom role belongs to one account; the seeded ones to every account. */
+export type StoredRole = IamRole & { accountId?: string }
+
+/** The roles of an account: the managed ones and the approvers' role every account has, then its own custom roles. */
+export function rolesIn(dir: Directory, accountId: string): StoredRole[] {
+  return (dir.roles as StoredRole[]).filter((r) => !r.accountId || r.accountId === accountId)
+}
+
+export function roleIn(dir: Directory, accountId: string, idOrName: string): StoredRole | undefined {
+  return rolesIn(dir, accountId).find((r) => r.roleId === idOrName || r.name === idOrName)
+}
+
+export function policyIn(dir: Directory, accountId: string, idOrName: string): IamPolicy | undefined {
+  return (dir.policies[accountId] ?? []).find((p) => p.policyId === idOrName || p.name === idOrName)
+}
+
+/** The organization's guardrails, seeded on first use as the identity service's demo seeds them. */
+export function guardrailsOf(dir: Directory): Guardrail[] {
+  return (dir.guardrails ??= seedGuardrails())
+}
+
+/** The guardrails that apply to an account, in id order: the order the evaluator reads them in. */
+export function guardrailsFor(dir: Directory, accountId: string): Guardrail[] {
+  return guardrailsOf(dir)
+    .filter((g) => g.accounts.includes('*') || g.accounts.includes(accountId))
+    .sort((a, b) => a.guardrailId.localeCompare(b.guardrailId))
+}
+
+/**
+ * Two guardrails over every account: creates stay in the regions the firm runs (no `us-` or `ap-`
+ * region is approved), and nothing tagged `legal-hold=true` is deleted. Both deny only, so no
+ * account is held to an allow-list.
+ */
+export function seedGuardrails(): Guardrail[] {
+  const at = '2026-09-01T09:00:00Z'
+  return [
+    {
+      guardrailId: 'gr_01jb0a1b2c3d4e5f6g7h8j9k0m',
+      name: 'approved-regions',
+      description: 'Nothing is created outside the regions the firm runs in',
+      statements: [{ sid: 'no-creates-elsewhere', effect: 'deny', actions: ['*:create'], resources: [`wfrn:${DIRECTORY_PARTITION}:*:us-*:*:*`, `wfrn:${DIRECTORY_PARTITION}:*:ap-*:*:*`] }],
+      accounts: ['*'],
+      version: 1,
+      createdAt: at,
+      updatedAt: at,
+    },
+    {
+      guardrailId: 'gr_01jb0a1b2c3d4e5f6g7h8j9k0n',
+      name: 'respect-legal-holds',
+      description: 'Nothing under a legal hold is deleted, in any account',
+      statements: [{ sid: 'no-deletes-under-hold', effect: 'deny', actions: ['*:delete'], resources: [`wfrn:${DIRECTORY_PARTITION}:*`], conditions: { 'tag.legal-hold': 'true' } }],
+      accounts: ['*'],
+      version: 1,
+      createdAt: at,
+      updatedAt: at,
+    },
+  ]
+}
+
+/** The simulator's names for what it lays over the account: they hold a ':', which no real name may. */
+export const DRAFT_ROLE = 'simulated:draft'
+export const DRAFT_BOUNDARY = 'simulated:boundary'
+export const draftPolicyId = (i: number) => `simulated:policy-${i}`
+
+/** What a simulation lays over the account: unsaved policies the principal would also hold, and a draft boundary for a role. */
+export interface Overlay {
+  policies?: { name?: string; statements: IamStatement[] }[]
+  boundary?: { role: string; name?: string; statements: IamStatement[] }
+}
+
+/** The answer the identity service gives one check (its Decision). */
+export interface IdentityDecision {
+  allowed: boolean
+  reason: string
+  role?: string
+  policyId?: string
+  statement?: string
+  requestable?: boolean
+  suggestedRole?: string
+  scope?: 'policy' | 'boundary' | 'guardrail'
+  guardrailId?: string
 }
 
 interface Bound {
@@ -341,18 +494,48 @@ interface Bound {
   statement: IamStatement
 }
 
-/** The statements of the roles, as the identity service orders them: roles by name, policies in role order, statements in order. */
-function statementsOf(dir: Directory, accountId: string, roles: readonly string[]): Bound[] {
-  const policies = dir.policies[accountId] ?? []
+/** A role's name, from its id or name (groups hold ids; the evaluator speaks names). */
+function roleNameOf(dir: Directory, accountId: string, idOrName: string): string {
+  return roleIn(dir, accountId, idOrName)?.name ?? idOrName
+}
+
+/** The statements of one role, policies in role order, statements in order; the draft role holds the unsaved policies. */
+function statementsOfRole(dir: Directory, accountId: string, role: string, overlay: Overlay = {}): Bound[] {
+  if (role === DRAFT_ROLE) return (overlay.policies ?? []).flatMap((p, i) => p.statements.map((statement) => ({ role, policyId: draftPolicyId(i), statement })))
   const out: Bound[] = []
-  for (const role of [...new Set(roles)].sort()) {
-    const r = dir.roles.find((x) => x.roleId === role || x.name === role)
-    for (const id of r?.policies ?? []) {
-      const p = policies.find((x) => x.policyId === id || x.name === id)
-      for (const s of p?.statements ?? []) out.push({ role, policyId: p!.policyId, statement: s })
-    }
+  for (const id of roleIn(dir, accountId, role)?.policies ?? []) {
+    const p = policyIn(dir, accountId, id)
+    for (const s of p?.statements ?? []) out.push({ role, policyId: p!.policyId, statement: s })
   }
   return out
+}
+
+/** The statements of the roles, as the identity service orders them: roles by name, policies in role order, statements in order. */
+function statementsOf(dir: Directory, accountId: string, roles: readonly string[], overlay: Overlay = {}): Bound[] {
+  return [...new Set(roles.map((r) => (r === DRAFT_ROLE ? r : roleNameOf(dir, accountId, r))))].sort().flatMap((role) => statementsOfRole(dir, accountId, role, overlay))
+}
+
+/** A role's permission boundary (the draft one in a simulation): its policy id, name and statements; none when unbounded. */
+function boundaryOf(dir: Directory, accountId: string, role: string, overlay: Overlay = {}): { policyId: string; name: string; statements: IamStatement[] } | null {
+  if (overlay.boundary && overlay.boundary.role === role) return { policyId: DRAFT_BOUNDARY, name: overlay.boundary.name ?? 'draft-boundary', statements: overlay.boundary.statements }
+  const r = roleIn(dir, accountId, role)
+  if (!r?.boundary) return null
+  const p = policyIn(dir, accountId, r.boundary)
+  // a boundary whose policy is gone allows nothing
+  return { policyId: r.boundary, name: p?.name ?? r.boundary, statements: p?.statements ?? [] }
+}
+
+/** Whether the role's boundary, when it has one, allows the check: no deny of it matches and an allow does. */
+function boundaryPermits(dir: Directory, accountId: string, role: string, check: Check, who: Requester | undefined, overlay: Overlay = {}): boolean {
+  const boundary = boundaryOf(dir, accountId, role, overlay)
+  if (!boundary) return true
+  let allowed = false
+  for (const s of boundary.statements) {
+    if (!statementMatches(s, check.action, check.resource, check.context, who)) continue
+    if (s.effect === 'deny') return false
+    allowed = true
+  }
+  return allowed
 }
 
 /** The policies the roles carry in the account. */
@@ -361,19 +544,68 @@ export function policiesOfRoles(dir: Directory, accountId: string, roles: readon
   return (dir.policies[accountId] ?? []).filter((p) => ids.has(p.policyId))
 }
 
-/** The console-iam layer alone: the first matching deny, else the first matching allow, else nothing (a default deny). */
-export function evaluateRoles(dir: Directory, accountId: string, roles: readonly string[], action: string, resource: string): { effect: 'allow' | 'deny' | null; role?: string; policyId?: string; statement?: string } {
+/** The roles' statements alone (no guardrail): the first matching deny, else the first allow its role's boundary permits, else nothing. */
+export function evaluateRoles(dir: Directory, accountId: string, roles: readonly string[], action: string, resource: string, context?: Record<string, unknown>, who?: Requester): { effect: 'allow' | 'deny' | null; role?: string; policyId?: string; statement?: string } {
+  const check = { action, resource, context }
   const bound = statementsOf(dir, accountId, roles)
-  const deny = bound.find((b) => b.statement.effect === 'deny' && statementMatches(b.statement, action, resource))
+  const deny = bound.find((b) => b.statement.effect === 'deny' && statementMatches(b.statement, action, resource, context, who))
   if (deny) return { effect: 'deny', role: deny.role, policyId: deny.policyId, statement: deny.statement.sid }
-  const allowed = bound.find((b) => b.statement.effect === 'allow' && statementMatches(b.statement, action, resource))
+  const allowed = bound.find((b) => b.statement.effect === 'allow' && statementMatches(b.statement, action, resource, context, who) && boundaryPermits(dir, accountId, b.role, check, who))
   if (allowed) return { effect: 'allow', role: allowed.role, policyId: allowed.policyId, statement: allowed.statement.sid }
   return { effect: null }
 }
 
 /** The weakest managed role whose statements allow the action, for Request access. */
-export function suggestedRoleFor(dir: Directory, accountId: string, action: string, resource: string): string | undefined {
-  return MANAGED_ORDER.find((r) => evaluateRoles(dir, accountId, [r], action, resource).effect === 'allow')
+export function suggestedRoleFor(dir: Directory, accountId: string, action: string, resource: string, context?: Record<string, unknown>, who?: Requester): string | undefined {
+  return MANAGED_ORDER.find((r) => evaluateRoles(dir, accountId, [r], action, resource, context, who).effect === 'allow')
+}
+
+/** Who is asked about: a person by their groups (names), and roles held without a group (a simulated role). */
+export interface Subject extends Requester {
+  roles?: readonly string[]
+}
+
+/**
+ * The identity service's decision procedure (its Evaluator), which authorize and the simulator
+ * share: the account's state; the organization's guardrails over the account (their first
+ * matching deny, then, when any of them allows something, an action none of them allows); then
+ * the statements of the person's roles (roles by name, policies in role order, statements in
+ * order): the first matching deny wins, else the first matching allow its role's permission
+ * boundary permits, else the boundary that refused one, else a default deny naming the weakest
+ * managed role that would allow it.
+ */
+export function decide(dir: Directory, accountId: string, subject: Subject, check: Check, overlay: Overlay = {}): IdentityDecision {
+  const account = accountOf(dir, accountId)
+  if (!account) return { allowed: false, reason: 'account unknown' }
+  if (account.status !== 'active') return { allowed: false, reason: `account ${account.status}` }
+  const who: Requester = subject
+  const { action, resource, context } = check
+  const rails = guardrailsFor(dir, accountId).flatMap((g) => g.statements.map((statement) => ({ g, statement })))
+  const railDeny = rails.find((r) => r.statement.effect === 'deny' && statementMatches(r.statement, action, resource, context, who))
+  if (railDeny) return { allowed: false, reason: `denied by guardrail ${railDeny.g.name}, statement ${railDeny.statement.sid ?? '(unnamed)'}`, statement: railDeny.statement.sid, requestable: false, scope: 'guardrail', guardrailId: railDeny.g.guardrailId }
+  const allowList = rails.filter((r) => r.statement.effect === 'allow')
+  if (allowList.length && !allowList.some((r) => statementMatches(r.statement, action, resource, context, who))) return { allowed: false, reason: 'outside the organization’s guardrails', requestable: false, scope: 'guardrail' }
+  const groupRoles = (dir.groups[accountId] ?? []).filter((g) => subject.groups.includes(g.name)).flatMap((g) => g.roles ?? [])
+  const roles = [...groupRoles, ...(subject.roles ?? []), ...(overlay.policies?.length ? [DRAFT_ROLE] : [])]
+  const bound = statementsOf(dir, accountId, roles, overlay)
+  const deny = bound.find((b) => b.statement.effect === 'deny' && statementMatches(b.statement, action, resource, context, who))
+  if (deny) {
+    const name = deny.role === DRAFT_ROLE ? (overlay.policies?.[Number(deny.policyId.split('-').pop())]?.name ?? deny.policyId) : (policyIn(dir, accountId, deny.policyId)?.name ?? deny.policyId)
+    return { allowed: false, reason: `denied by policy ${name}, statement ${deny.statement.sid ?? '(unnamed)'}`, role: deny.role, policyId: deny.policyId, statement: deny.statement.sid, scope: 'policy' }
+  }
+  let bounded: Bound | undefined
+  for (const b of bound) {
+    if (b.statement.effect !== 'allow' || !statementMatches(b.statement, action, resource, context, who)) continue
+    if (boundaryPermits(dir, accountId, b.role, check, who, overlay)) return { allowed: true, reason: `allowed by role ${b.role}`, role: b.role, policyId: b.policyId, statement: b.statement.sid, scope: 'policy' }
+    bounded ??= b
+  }
+  if (bounded) {
+    const boundary = boundaryOf(dir, accountId, bounded.role, overlay)!
+    return { allowed: false, reason: `outside the permission boundary ${boundary.name} of role ${bounded.role}`, role: bounded.role, policyId: boundary.policyId, requestable: false, scope: 'boundary' }
+  }
+  const reason = `no policy allows ${action} on ${resource}`
+  const suggested = suggestedRoleFor(dir, accountId, action, resource, context, who)
+  return suggested ? { allowed: false, reason, requestable: true, suggestedRole: suggested } : { allowed: false, reason, requestable: false }
 }
 
 /** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
@@ -402,31 +634,32 @@ export interface AuthorizeContext {
 }
 
 /**
- * The decision for one action on one resource (a wfrn or a pattern): the account's statements
- * first (the first matching deny wins, then the first allow, else denied by default), then the
- * platform's role for the account. A refusal names the layer, the statement when one decided, the
- * strongest role the person holds, and the weakest managed role that would allow it.
+ * The decision for one action on one resource (a wfrn or a pattern, with what the request knows
+ * of it: its `tags`): console IAM first, by `decide`, then the platform's role for the account. A
+ * refusal names the layer, what in console IAM refused it (a policy's statement, a role's
+ * permission boundary or a guardrail), the strongest role the person holds, and the weakest
+ * managed role that would allow it; past a boundary or a guardrail no role helps, so those are
+ * never requestable.
  */
-export function authorize(dir: Directory, ctx: AuthorizeContext, action: string, resource: string): Decision {
+export function authorize(dir: Directory, ctx: AuthorizeContext, action: string, resource: string, context?: Record<string, unknown>): Decision {
   const account = accountOf(dir, ctx.accountId)
   if (!account) return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `account ${ctx.accountId} unknown`, requestable: false } }
   const roles = rolesOf(dir, ctx.accountId, ctx.userId)
   if (!roles.length) return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `not a member of ${account.name}`, requestable: false } }
-  const verdict = evaluateRoles(dir, ctx.accountId, roles, action, resource)
-  const suggested = suggestedRoleFor(dir, ctx.accountId, action, resource)
-  const requestable = !!suggested && !roles.includes(suggested)
-  if (verdict.effect === 'deny') {
-    const policy = (dir.policies[ctx.accountId] ?? []).find((p) => p.policyId === verdict.policyId)
-    return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `denied by policy ${policy?.name ?? verdict.policyId}, statement ${verdict.statement ?? '(unnamed)'}`, role: verdict.role, policyId: verdict.policyId, statement: verdict.statement, requestable, suggestedRole: suggested } }
-  }
-  if (verdict.effect === null) {
-    return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: `no policy allows ${action} on ${resource}`, role: roles[0], requestable, suggestedRole: suggested } }
+  const person = personOf(dir, ctx.userId)
+  const groups = groupsOf(dir, ctx.accountId, ctx.userId).map((g) => g.name)
+  const d = decide(dir, ctx.accountId, { userId: ctx.userId, email: person?.email, groups }, { action, resource, context })
+  if (!d.allowed) {
+    if (d.scope === 'guardrail' || d.scope === 'boundary') return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: d.reason, role: d.role ?? roles[0], policyId: d.policyId, statement: d.statement, requestable: false, refusedBy: d.scope, guardrailId: d.guardrailId } }
+    const suggested = d.suggestedRole ?? suggestedRoleFor(dir, ctx.accountId, action, resource, context, { userId: ctx.userId, email: person?.email, groups })
+    const requestable = !!suggested && !roles.includes(suggested)
+    return { allowed: false, denied: { layer: 'console-iam', action, resource, reason: d.reason, role: d.role ?? roles[0], policyId: d.policyId, statement: d.statement, requestable, suggestedRole: suggested, ...(d.scope ? { refusedBy: d.scope } : {}) } }
   }
   if (!platformAllows(account, action)) {
     const scope = platformScopeOf(action)
     return { allowed: false, denied: { layer: 'platform', action, resource, reason: `The platform's role for ${account.name} (${account.platformServiceAccountId}) has no ${scope} scope`, role: roles[0], scope, serviceAccount: account.platformServiceAccountId, requestable: true } }
   }
-  return { allowed: true, via: { policyId: verdict.policyId!, statement: verdict.statement, role: verdict.role } }
+  return { allowed: true, via: { policyId: d.policyId!, statement: d.statement, role: d.role } }
 }
 
 /* ----------------------------------------------------------------------------
@@ -459,8 +692,8 @@ function groupByIdOrName(dir: Directory, accountId: string, idOrName: string): I
   return (dir.groups[accountId] ?? []).find((g) => g.groupId === idOrName || g.name === idOrName)
 }
 
-function roleIdOf(dir: Directory, idOrName: string): string | undefined {
-  return dir.roles.find((r) => r.roleId === idOrName || r.name === idOrName)?.roleId
+function roleIdOf(dir: Directory, idOrName: string, accountId?: string): string | undefined {
+  return (accountId ? rolesIn(dir, accountId) : dir.roles).find((r) => r.roleId === idOrName || r.name === idOrName)?.roleId
 }
 
 /** The guardrail: a change that would leave the owners group without a member is a 409. */
@@ -540,8 +773,8 @@ export function createGroup(dir: Directory, accountId: string, input: IamGroupIn
   const name = input.name?.trim().toLowerCase() ?? ''
   if (!GROUP_NAME.test(name)) throw new DirectoryError(400, 'name is 2 to 64 lower-case letters, digits and dashes')
   if (groupByIdOrName(dir, accountId, name)) throw new DirectoryError(409, `a group named ${name} exists`)
-  const roles = (input.roles ?? []).map((r) => roleIdOf(dir, r) ?? r)
-  for (const r of roles) if (!dir.roles.some((x) => x.roleId === r)) throw new DirectoryError(400, `'${r}' is no role of this account`)
+  const roles = (input.roles ?? []).map((r) => roleIdOf(dir, r, accountId) ?? r)
+  for (const r of roles) if (!rolesIn(dir, accountId).some((x) => x.roleId === r)) throw new DirectoryError(400, `'${r}' is no role of this account`)
   for (const m of input.members ?? []) if (!isMember(dir, accountId, m)) throw new DirectoryError(400, `'${m}' is no user of this account`)
   const group: IamGroup = { groupId: `grp_${accountId.slice(-4)}_${String(++dir.counters.groups).padStart(2, '0')}`, name, description: input.description?.trim(), roles, members: [...(input.members ?? [])], idpGroups: input.idpGroups?.length ? [...input.idpGroups] : undefined, builtIn: false, version: 1 }
   dir.groups[accountId] = [...(dir.groups[accountId] ?? []), group]
@@ -558,9 +791,9 @@ export function updateGroup(dir: Directory, accountId: string, groupId: string, 
     if (!GROUP_NAME.test(input.name)) throw new DirectoryError(400, 'name is 2 to 64 lower-case letters, digits and dashes')
     if (groupByIdOrName(dir, accountId, input.name)) throw new DirectoryError(409, `a group named ${input.name} exists`)
   }
-  const roles = input.roles?.map((r) => roleIdOf(dir, r) ?? r)
+  const roles = input.roles?.map((r) => roleIdOf(dir, r, accountId) ?? r)
   if (roles) {
-    for (const r of roles) if (!dir.roles.some((x) => x.roleId === r)) throw new DirectoryError(400, `'${r}' is no role of this account`)
+    for (const r of roles) if (!rolesIn(dir, accountId).some((x) => x.roleId === r)) throw new DirectoryError(400, `'${r}' is no role of this account`)
     if (g.name === OWNERS_GROUP && !roles.includes(ADMIN_ROLE)) throw new DirectoryError(409, 'the owners group keeps the account-admin role')
   }
   if (input.members) {
