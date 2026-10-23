@@ -2,12 +2,12 @@ asyncapi: 3.0.0
 id: urn:iaf:console:events
 info:
   title: Customer console events
-  version: 1.0.0
+  version: 1.1.0
   description: |
     The events the console's own services exchange: the state service's resource stream
-    (`state.resources`), the drift service's findings (`drift.findings`) and compliance scores
-    (`drift.scorecards`), the identity service's changes (`identity.changes`), and the cost service's
-    budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
+    (`state.resources`) and stacks (`state.stacks`), the drift service's findings (`drift.findings`)
+    and compliance scores (`drift.scorecards`), the identity service's changes (`identity.changes`), and
+    the cost service's budgets and chargeback months (`cost.events`). Phase 0 draft (`x-status: draft`): the names and the rules below
     are agreed, the field lists will grow.
 
     **Envelope.** Every message is a `ConsoleEvent`: the platform's P-01 event envelope
@@ -61,6 +61,23 @@ info:
     drift flag and tags without changing its state. `data.state` on every event is the state after
     it, so a consumer never needs the table above.
 
+    **Stacks** (`state.stacks`, hub decision 33): a stack launched from a blueprint is decided by
+    the state service and executed by the BFF. Every stack event carries the stack's `state`,
+    `operation` and `version`, the `step` it is about when it is about one, and `ready`: the steps
+    that may start now, each with `action` (`create` or `delete`), `attempt`, the
+    `idempotencyKey` the BFF uses for the step's mint or delete, the `type` and `service`, and the
+    resolved `input` (plus the child's `wfrn` and the teardown's `reason` for a delete). The BFF
+    starts every ready step it reads, as the person in `actor` of the stack's `StackRequested`
+    (or `StackTeardownRequested`); a step announced twice has the same key, so a replay is
+    harmless. `StackRequested` opens a stack in `pending`; `StackStepStarted` says a step took its
+    child (the mint); `StackStepSucceeded` that the child is active; `StackStepFailed` that a step
+    failed and stopped the stack (`failed`, or still `deleting` in a teardown); `StackStepRetried`
+    that a failed child is being created again; `StackLaunched` ends a launch in `active` with the
+    outputs; `StackResumed` announces again what could not start; `StackTeardownRequested` makes
+    it `deleting`; `StackStepDeleting` says a child's delete started; `StackStepRemoved` that a
+    step left the stack (`outcome`: `deleted`, `retained` or `skipped`); `StackDeleted` ends it.
+    Keys are `<type>:<stack wfrn>:<version>`, partitioned by the stack's wfrn.
+
     **wfrns** travel in the envelope (`context.wfrn`, and `aggregateId` on `state.resources`),
     never in the Kafka key alone, and are the partition key verbatim.
   contact:
@@ -96,6 +113,33 @@ channels:
       kafka:
         topic: state.resources
         partitions: 24
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+        bindingVersion: 0.5.0
+    x-partition-key: wfrn
+    x-retention: 30d
+  stateStacks:
+    address: state.stacks
+    title: Stacks
+    description: 'Every change of a stack launched from a blueprint, with the steps the BFF starts now, published by the state service. Partitioned by the stack''s wfrn, kept 30 days.'
+    messages:
+      stackRequested: { $ref: '#/components/messages/stackRequested' }
+      stackStepStarted: { $ref: '#/components/messages/stackStepStarted' }
+      stackStepSucceeded: { $ref: '#/components/messages/stackStepSucceeded' }
+      stackStepFailed: { $ref: '#/components/messages/stackStepFailed' }
+      stackStepRetried: { $ref: '#/components/messages/stackStepRetried' }
+      stackLaunched: { $ref: '#/components/messages/stackLaunched' }
+      stackResumed: { $ref: '#/components/messages/stackResumed' }
+      stackTeardownRequested: { $ref: '#/components/messages/stackTeardownRequested' }
+      stackStepDeleting: { $ref: '#/components/messages/stackStepDeleting' }
+      stackStepRemoved: { $ref: '#/components/messages/stackStepRemoved' }
+      stackDeleted: { $ref: '#/components/messages/stackDeleted' }
+    bindings:
+      kafka:
+        topic: state.stacks
+        partitions: 12
         replicas: 3
         topicConfiguration:
           cleanup.policy: [delete]
@@ -194,6 +238,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/stateResources' }
     summary: The BFF (live updates), the indexer and the drift service follow resources
+  publishStacks:
+    action: send
+    channel: { $ref: '#/channels/stateStacks' }
+    summary: The state service publishes every stack change and the steps that may start
+  followStacks:
+    action: receive
+    channel: { $ref: '#/channels/stateStacks' }
+    summary: 'The BFF starts the ready steps (mint and create, or delete) and pushes stack pages live'
   publishFindings:
     action: send
     channel: { $ref: '#/channels/driftFindings' }
@@ -425,6 +477,137 @@ components:
             properties:
               type: { const: Imported }
               data: { $ref: '#/components/schemas/ImportedData' }
+    stackRequested:
+      name: StackRequested
+      title: A stack was launched
+      summary: 'The stack is pending; ready holds the steps that wait for nothing'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackRequested }
+              data: { $ref: '#/components/schemas/StackRequestedData' }
+    stackStepStarted:
+      name: StackStepStarted
+      title: A step took its child
+      summary: The BFF minted the child for the ready step
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepStarted }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepSucceeded:
+      name: StackStepSucceeded
+      title: A step is done
+      summary: 'Its child is active; ready holds the steps that waited only on it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepSucceeded }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepFailed:
+      name: StackStepFailed
+      title: A step failed
+      summary: The child failed, or the BFF could not start the step; the stack stops
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepFailed }
+              data: { $ref: '#/components/schemas/StackStepFailedData' }
+    stackStepRetried:
+      name: StackStepRetried
+      title: A failed child is created again
+      summary: 'The child was retried (decision 24); the stack is pending again when no other step has failed'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepRetried }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackLaunched:
+      name: StackLaunched
+      title: A stack is active
+      summary: Every step is done; the outputs are resolved
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackLaunched }
+              data: { $ref: '#/components/schemas/StackLaunchedData' }
+    stackResumed:
+      name: StackResumed
+      title: A stack is resumed
+      summary: ready holds every step announced again
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackResumed }
+              data: { $ref: '#/components/schemas/StackEventData' }
+    stackTeardownRequested:
+      name: StackTeardownRequested
+      title: A stack is being torn down
+      summary: 'The stack is deleting; ready holds the first deletes'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackTeardownRequested }
+              data: { $ref: '#/components/schemas/StackTeardownData' }
+    stackStepDeleting:
+      name: StackStepDeleting
+      title: A step's child is being deleted
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepDeleting }
+              data: { $ref: '#/components/schemas/StackStepData' }
+    stackStepRemoved:
+      name: StackStepRemoved
+      title: A step left the stack
+      summary: 'Deleted, retained or skipped; ready holds the deletes that waited only on it'
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackStepRemoved }
+              data: { $ref: '#/components/schemas/StackStepRemovedData' }
+    stackDeleted:
+      name: StackDeleted
+      title: A stack is deleted
+      summary: Every step left the stack
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/StackEvent'
+          - type: object
+            properties:
+              type: { const: StackDeleted }
+              data: { $ref: '#/components/schemas/StackEventData' }
     findingOpened:
       name: FindingOpened
       title: A drift finding was opened
@@ -1000,3 +1183,89 @@ components:
           type: array
           description: The registry ids of what the resource was built from, when the registry or the import names them
           items: { type: string }
+    StackEvent:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleEvent'
+        - type: object
+          required: [context, data]
+          properties:
+            aggregate: { const: stack }
+            aggregateId: { $ref: '#/components/schemas/Wfrn' }
+            context:
+              type: object
+              required: [accountId, region, wfrn]
+    StackEventData:
+      type: object
+      required: [version, state, operation]
+      properties:
+        version: { type: integer, minimum: 1, description: "The stack's version after this event" }
+        state: { type: string, enum: [pending, active, failed, deleting, deleted], description: "The stack's state after this event" }
+        operation: { type: string, enum: [launch, teardown] }
+        blueprint: { type: string }
+        name: { type: string, description: "The stack's name" }
+        ready:
+          type: array
+          description: The steps the BFF starts now
+          items: { $ref: '#/components/schemas/ReadyStep' }
+    ReadyStep:
+      type: object
+      required: [step, action, attempt, idempotencyKey, type, service]
+      properties:
+        step: { type: string, description: The resource id of the blueprint }
+        action: { type: string, enum: [create, delete] }
+        attempt: { type: integer, minimum: 1 }
+        idempotencyKey: { type: string, description: "The Idempotency-Key of the step's mint or delete; the same for the same attempt" }
+        type: { type: string }
+        service: { type: string }
+        input: { type: object, description: 'The create input, or the delete input beyond its subject, references resolved', additionalProperties: true }
+        wfrn: { $ref: '#/components/schemas/Wfrn', description: The child to delete }
+        reason: { type: string, description: "The teardown's reason" }
+    StackRequestedData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [blueprint, blueprintVersion, name]
+          properties:
+            blueprintVersion: { type: string }
+            parameters: { type: object, additionalProperties: true }
+    StackStepData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [step]
+          properties:
+            step: { type: string }
+            attempt: { type: integer, minimum: 1 }
+            wfrn: { $ref: '#/components/schemas/Wfrn', description: "The step's child" }
+    StackStepFailedData:
+      allOf:
+        - $ref: '#/components/schemas/StackStepData'
+        - type: object
+          required: [action, code]
+          properties:
+            action: { type: string, enum: [create, delete] }
+            code: { type: string }
+            message: { type: string }
+    StackLaunchedData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          properties:
+            outputs: { type: object, additionalProperties: { type: string } }
+    StackTeardownData:
+      allOf:
+        - $ref: '#/components/schemas/StackEventData'
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string }
+            retain:
+              type: array
+              items: { type: string }
+    StackStepRemovedData:
+      allOf:
+        - $ref: '#/components/schemas/StackStepData'
+        - type: object
+          required: [outcome]
+          properties:
+            outcome: { type: string, enum: [deleted, retained, skipped] }

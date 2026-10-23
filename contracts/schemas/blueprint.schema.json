@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://console.example.com/schemas/blueprint.schema.json",
+  "title": "Blueprint",
+  "description": "A stack the console launches and tears down as one request (blueprints/<name>.yaml, hub decision 33, WP 9.7): the parameters a person fills in, the resources it creates (each a resource type, the input of the type's create workflow and what teardown does with it) and the outputs it shows. Strings may hold references: ${params.<name>}, ${resources.<id>.wfrn|registryId|name}, ${resources.<id>.attributes.<field>}, ${stack.name|wfrn|accountId|region} and, in deleteInput only, ${teardown.reason}. A value that is one reference keeps the referenced value's type; anything else is text. The state service runs it; npm run check checks it against the pinned types and workflows.",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "iaf.console/v1"
+    },
+    "kind": {
+      "const": "Blueprint"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "title",
+        "description",
+        "owner"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,40}$",
+          "description": "The file's name without .yaml; stacks name the blueprint by it"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "description": "Semantic version; every stack records the version that launched it"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,63}$",
+          "description": "The team that keeps it"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$"
+          },
+          "uniqueItems": true,
+          "maxItems": 10
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": [
+        "resources"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "description": "What the person fills in at launch, by name",
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9]{0,31}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/parameter"
+          },
+          "maxProperties": 30
+        },
+        "resources": {
+          "type": "object",
+          "description": "What the stack creates, by an id local to the blueprint; each is one step",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/resource"
+          },
+          "minProperties": 1,
+          "maxProperties": 25
+        },
+        "outputs": {
+          "type": "object",
+          "description": "What the stack's page shows once it is active, by name",
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9]{0,31}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/output"
+          },
+          "maxProperties": 20
+        }
+      }
+    }
+  },
+  "$defs": {
+    "parameter": {
+      "type": "object",
+      "required": [
+        "type",
+        "title"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "default": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ],
+          "description": "Without one the parameter is required"
+        },
+        "enum": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "pattern": {
+          "type": "string",
+          "description": "For a string: a regular expression the whole value matches"
+        },
+        "minimum": {
+          "type": "integer"
+        },
+        "maximum": {
+          "type": "integer"
+        },
+        "x-resource": {
+          "type": "object",
+          "description": "The value is the registry id of an existing resource of this type, which the launch form offers to pick",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$"
+            }
+          }
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "description": "A resource type; the step runs the type's create workflow (its producedBy)"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "input": {
+          "type": "object",
+          "description": "The create workflow's input; values may hold references",
+          "additionalProperties": true
+        },
+        "tags": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z0-9-]{1,32}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "maxProperties": 50
+        },
+        "dependsOn": {
+          "type": "array",
+          "description": "Resources that must be active first, beyond the ones its references name",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,31}$"
+          },
+          "uniqueItems": true
+        },
+        "deletionPolicy": {
+          "enum": [
+            "delete",
+            "retain"
+          ],
+          "default": "delete",
+          "description": "What teardown does: delete runs the type's delete workflow (verb delete) once nothing in the stack depends on the resource; retain leaves the resource in the account and out of the stack"
+        },
+        "deleteInput": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "The delete workflow's input beyond its subject, which the console fills with the resource's registry id; values may hold ${params}, ${stack} and ${teardown.reason} references"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": [
+        "title",
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "value": {
+          "type": "string",
+          "description": "A text that may hold references, resolved when the stack is active"
+        }
+      }
+    }
+  }
+}

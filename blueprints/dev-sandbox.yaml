@@ -1,0 +1,53 @@
+# One developer's sandbox: a VM from an image the person picks, with a scratch volume. Small on
+# purpose, to show a parameter that names an existing resource (x-resource).
+apiVersion: iaf.console/v1
+kind: Blueprint
+metadata:
+  name: dev-sandbox
+  version: 1.0.0
+  title: Developer sandbox
+  description: A development VM from an image you pick, with a scratch volume; tear it down when you are done.
+  owner: team-compute
+  tags: [dev]
+spec:
+  parameters:
+    image:
+      type: string
+      title: Image
+      description: The registered image to build the VM from
+      x-resource:
+        type: image
+    size:
+      type: string
+      title: VM size
+      enum: [small, medium]
+      default: small
+    scratchGb:
+      type: integer
+      title: Scratch volume (GB)
+      minimum: 10
+      maximum: 500
+      default: 50
+  resources:
+    vm:
+      type: vm
+      title: Sandbox VM
+      input:
+        name: '${stack.name}-vm'
+        image: '${params.image}'
+        size: '${params.size}'
+        environment: dev
+      deleteInput:
+        reason: 'Sandbox ${stack.name} torn down: ${teardown.reason}'
+        keepSnapshotDays: 0
+    scratch:
+      type: volume
+      title: Scratch volume
+      input:
+        vmId: '${resources.vm.registryId}'
+        sizeGb: '${params.scratchGb}'
+      deletionPolicy: retain   # no delete workflow for volumes yet
+  outputs:
+    vm:
+      title: Sandbox VM
+      value: '${resources.vm.wfrn}'
