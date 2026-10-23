@@ -45,10 +45,11 @@ info:
 
     **The resource state machine** (`ResourceState`, the lifecycle classes of P-06): `ResourceRequested`
     opens a resource in `pending`; `UpdateRequested` makes it `updating`; `DeleteRequested` makes it
-    `deleting`. The three job events are the same types whatever the job: `ProvisioningStarted`
+    `deleting`; `RetryRequested` makes a `failed` resource `pending` again, for a rerun of its create.
+    The three job events are the same types whatever the job: `ProvisioningStarted`
     keeps the state it finds (`pending`, `updating` or `deleting`); `ProvisioningSucceeded` makes a
-    created or updated resource `active`; `ProvisioningFailed` makes a created resource `failed`
-    and returns an updated or deleted one to `active` (the resource is still there as it was),
+    created, retried or updated resource `active`; `ProvisioningFailed` makes a created or retried
+    resource `failed` and returns an updated or deleted one to `active` (the resource is still there as it was),
     with the failure in `data`. A succeeded delete job is recorded as `Deleted` alone, never as a
     `ProvisioningSucceeded` first: `Deleted` is the tombstone (`GET /v1/wfrn/{wfrn}` answers 410
     for 90 days, `contracts/wfrn/SPEC.md`), from a succeeded delete job or the platform retiring
@@ -86,6 +87,7 @@ channels:
       deleteRequested: { $ref: '#/components/messages/deleteRequested' }
       deleted: { $ref: '#/components/messages/deleted' }
       imported: { $ref: '#/components/messages/imported' }
+      retryRequested: { $ref: '#/components/messages/retryRequested' }
     bindings:
       kafka:
         topic: state.resources
@@ -344,6 +346,18 @@ components:
             properties:
               type: { const: DeleteRequested }
               data: { $ref: '#/components/schemas/DeleteRequestedData' }
+    retryRequested:
+      name: RetryRequested
+      title: A failed create is retried
+      summary: The resource is pending again; the rerun job's events end the retry as they end a create
+      traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ResourceEvent'
+          - type: object
+            properties:
+              type: { const: RetryRequested }
+              data: { $ref: '#/components/schemas/RetryRequestedData' }
     deleted:
       name: Deleted
       title: The resource is gone
@@ -821,6 +835,13 @@ components:
         - type: object
           properties:
             reason: { type: string }
+    RetryRequestedData:
+      type: object
+      required: [workflow]
+      properties:
+        retryOf: { type: string, description: The failed job the retry follows }
+        workflow: { type: string, description: 'The workflow the retry runs, the create workflow unless the request named another' }
+        jobId: { type: string, description: 'The rerun job, when it was started before the retry was recorded' }
     DeletedData:
       type: object
       required: [tombstoneUntil]
