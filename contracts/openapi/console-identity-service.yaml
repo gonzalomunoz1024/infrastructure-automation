@@ -196,7 +196,7 @@ paths:
               properties:
                 name: { type: string, maxLength: 64 }
                 owningTeam: { type: string, description: The platform team that owns the account's resources }
-                costCentre: { type: string, maxLength: 64, description: The finance cost centre the account is charged to }
+                costCentre: { type: string, maxLength: 64, description: 'The finance cost centre the account is charged to; trimmed, and a blank one is none' }
                 ownerEmail: { type: string, format: email }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
       responses:
@@ -226,6 +226,7 @@ paths:
     patch:
       operationId: updateAccount
       summary: Change an account's name, status, default region or cost centre
+      description: 'A user needs `account:update` on the account (the account-admin role has it), so a suspended or closed account changes only by the internal principal. Only the internal principal changes `status`, and never to `closed` (that is `POST /v1/accounts/{accountId}:close`, a 400 here); a closed account''s status no longer changes (409). `suspended` is reversible.'
       tags: [Accounts]
       parameters:
         - $ref: '#/components/parameters/IfMatch'
@@ -240,7 +241,7 @@ paths:
                 name: { type: string, maxLength: 64 }
                 status: { $ref: '#/components/schemas/AccountStatus' }
                 defaultRegion: { $ref: '#/components/schemas/RegionName' }
-                costCentre: { type: string, maxLength: 64 }
+                costCentre: { type: string, maxLength: 64, description: 'Absent keeps it; an empty string clears it' }
       responses:
         '200':
           description: The account
@@ -1418,6 +1419,63 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}:close:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    post:
+      operationId: closeAccount
+      summary: Close an account
+      description: |
+        Internal principal only (a user's JWT answers 404). Closing is terminal: the account is
+        stored with status `closed`, `closedAt` and `closeReason`, and from then on every call in it
+        is refused (`account closed`) and sign-in leaves it out. Every usable access key of the
+        account is revoked (`AccessKeyChanged revoked`), every pending access request expires
+        (`AccessRequestChanged expired`) and every open quota request is withdrawn (`QuotaChanged`),
+        then `AccountChanged closed` carries the closed account. Closing a closed account is a 409.
+        The account's platform service account is left as it is, and its resources stay where they
+        are.
+      tags: [Accounts]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloseAccount' }
+      responses:
+        '202':
+          description: The closed account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /internal/v1/group-sync:run:
+    post:
+      operationId: runGroupSync
+      summary: Run the identity provider group sync now
+      description: |
+        For the console's own services (a user's JWT answers 404). The sync also runs nightly
+        (02:00 UTC by default). For every active account, the groups that map identity provider
+        groups (`Group.idpGroups`) are compared with the directory's members, matched by email:
+        a person gains the mapped groups their provider groups give them (unless an admin or a
+        review excluded them) and loses the ones they held only through a provider group they
+        left; groups an admin gave stay. People without a membership in the account get none here.
+        The owners group of an account's last active owner is never removed: the removal is
+        skipped and reported. An account whose owning team the directory lacks is marked
+        `owningTeamMissing`. Every membership change publishes `UserChanged`, every mark
+        `AccountChanged`.
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the run did, account by account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GroupSyncReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     consoleJwt:
@@ -1569,6 +1627,9 @@ components:
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time, description: When the account was closed; with status closed only }
+        closeReason: { type: string, maxLength: 2000, description: Why it was closed; with status closed only }
+        owningTeamMissing: { type: boolean, readOnly: true, description: 'True while the nightly group sync finds no identity provider group named owningTeam; absent otherwise' }
     AccountMembership:
       type: object
       required: [accountId, name, groups, roles]
@@ -1601,6 +1662,16 @@ components:
         version: { type: integer }
         createdAt: { type: string, format: date-time }
         lastSignInAt: { type: string, format: date-time }
+        idpGroups:
+          type: array
+          readOnly: true
+          description: 'The groups among `groups` the person holds through their identity provider groups (`Group.idpGroups`): sign-in and the nightly group sync add and remove them as the provider''s groups change. Every other group is an admin''s, and no sync removes it.'
+          items: { type: string }
+        excludedGroups:
+          type: array
+          readOnly: true
+          description: 'Groups that map identity provider groups and that an admin or an access review took from the person: sign-in and the group sync leave them out until an admin adds them back'
+          items: { type: string }
     GroupInput:
       type: object
       properties:
@@ -2023,3 +2094,50 @@ components:
           properties:
             reviewId: { type: string, description: The open campaign }
         correlationId: { type: string }
+    CloseAccount:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 2000, description: 'Why the account closes; kept as the account''s closeReason' }
+    GroupSyncReport:
+      type: object
+      required: [startedAt, finishedAt, accounts]
+      properties:
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        accounts:
+          type: array
+          description: Every active account the run visited
+          items: { $ref: '#/components/schemas/GroupSyncAccount' }
+    GroupSyncAccount:
+      type: object
+      required: [accountId, owningTeam, added, removed, skipped, missingIdpGroups]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        owningTeam: { type: string }
+        owningTeamMissing: { type: boolean, description: 'Whether the directory lacks the owning team; absent when the run could not finish the account' }
+        added:
+          type: array
+          description: Groups the run gave people through their identity provider groups
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        removed:
+          type: array
+          description: Groups the run took from people whose identity provider groups no longer give them
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        skipped:
+          type: array
+          description: Removals the run left undone, with the reason (the account's last active owner keeps the owners group)
+          items: { $ref: '#/components/schemas/GroupSyncChange' }
+        missingIdpGroups:
+          type: array
+          description: Identity provider groups the account's groups map that the directory does not have
+          items: { type: string }
+        error: { type: string, description: 'Why the run could not finish the account, which it left as it was' }
+    GroupSyncChange:
+      type: object
+      required: [userId, email, group]
+      properties:
+        userId: { type: string }
+        email: { type: string, format: email }
+        group: { type: string, description: The group's name }
+        reason: { type: string, description: 'Why a removal was skipped' }

@@ -424,7 +424,7 @@ components:
                   jobId: { type: string, description: "The revert job, for a reverted finding" }
     accountChanged:
       name: AccountChanged
-      title: An account was created, changed or suspended
+      title: An account was created, changed, suspended or closed
       traits: [{ $ref: '#/components/messageTraits/consoleEvent' }]
       payload:
         allOf:
@@ -760,7 +760,7 @@ components:
               required: [version, action]
               properties:
                 version: { type: integer, minimum: 1, description: "The subject's version after this event" }
-                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired] }
+                action: { type: string, enum: [created, updated, deleted, suspended, rotated, revoked, approved, rejected, expired, closed] }
                 snapshot: { type: object, description: 'The subject as the identity service serves it after the change, without secrets; absent when deleted', additionalProperties: true }
     DriftField:
       type: object
