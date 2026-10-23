@@ -19,6 +19,7 @@ import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
 import { ActionDrawer } from './resource/ActionDrawer'
 import { EDIT_NOT_OFFERED, EditDrawer } from './resource/EditDrawer'
+import { RevertEdit } from './resource/RevertEdit'
 import { TagsDrawer } from './resource/TagsDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
 import { DriftFact, TabContent, ownerOf, tabId } from './resource/tabs'
@@ -85,7 +86,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const go = (query: Record<string, string | undefined>) => navigate(pathFor('resource', route.params, { ...route.query, ...query }, { accountId: route.accountId }), { replace: true })
   const setTab = (next: string) => go({ tab: next === tabs[0]?.id ? undefined : next })
   const openAction = (verb: string) => go({ action: verb })
-  const closeAction = () => go({ action: undefined })
+  const closeAction = () => go({ action: undefined, revert: undefined })
 
   const verbs = verbsOf(type)
   const operate = verbs.filter((a) => !a.destructive)
@@ -238,7 +239,8 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
           }}
         />
       )}
-      {editing && detail && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
+      {editing && detail && !route.query.revert && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
+      {editing && detail && route.query.revert && <RevertEdit key={`revert-${route.query.revert}`} to={route.query.revert} type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
     </>
   )
 }

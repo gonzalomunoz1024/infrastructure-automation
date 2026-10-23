@@ -80,9 +80,18 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-iam-users', group: 'Pages', label: 'Users', icon: 'users', keywords: 'iam people members', run: () => navigate(pathFor('iam-users')) },
       { id: 'page-iam-groups', group: 'Pages', label: 'Groups', icon: 'users', keywords: 'iam teams roles', run: () => navigate(pathFor('iam-groups')) },
       { id: 'page-iam-roles', group: 'Pages', label: 'Roles', icon: 'shield', keywords: 'iam managed policies statements', run: () => navigate(pathFor('iam-roles')) },
+      { id: 'page-iam-policies', group: 'Pages', label: 'Policies', icon: 'document', keywords: 'iam custom policy statements json', run: () => navigate(pathFor('iam-policies')) },
+      { id: 'page-iam-simulator', group: 'Pages', label: 'Policy simulator', icon: 'play', keywords: 'iam simulate allowed denied why', run: () => navigate(pathFor('iam-simulator')) },
+      { id: 'page-iam-guardrails', group: 'Pages', label: 'Guardrails', icon: 'lock', keywords: 'iam organization boundary deny', run: () => navigate(pathFor('iam-guardrails')) },
       { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
       { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
+      { id: 'page-iam-reviews', group: 'Pages', label: 'Access reviews', icon: 'audit', keywords: 'iam review campaign recertify keep remove', run: () => navigate(pathFor('iam-reviews')) },
+      { id: 'page-iam-elevations', group: 'Pages', label: 'Elevations', icon: 'clock', keywords: 'iam elevation just in time temporary role break glass', run: () => navigate(pathFor('iam-elevations')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'preferences appearance identity', run: () => navigate(pathFor('settings')) },
+      { id: 'page-notifications', group: 'Pages', label: 'Notifications', icon: 'bell', keywords: 'alerts inbox unread', run: () => navigate(pathFor('notifications')) },
+      { id: 'page-notification-settings', group: 'Pages', label: 'Notification settings', icon: 'bell', keywords: 'email slack teams channels alerts preferences', run: () => navigate(pathFor('notification-settings')) },
+      { id: 'page-chat-link', group: 'Pages', label: 'Linked chats', icon: 'link', keywords: 'slack teams chatops link unlink', run: () => navigate(pathFor('chat-link')) },
+      { id: 'page-digests', group: 'Pages', label: 'Weekly digests', icon: 'document', keywords: 'digest summary week report', run: () => navigate(pathFor('digests')) },
       ...TOOLS.map((t) => ({ id: `page-${t.route}`, group: 'Pages', label: t.label, icon: t.icon, keywords: t.keywords, run: () => navigate(toolPath(t)) })),
     )
 

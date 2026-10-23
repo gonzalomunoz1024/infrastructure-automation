@@ -28,6 +28,8 @@ export interface Session {
   csrfToken: string
   expiresAt: string
   authTime?: string
+  /** the person may open the organization's pages (decision 34) */
+  organizationAdmin?: boolean
 }
 
 export type SessionStatus = 'loading' | 'signed-in' | 'signed-out' | 'unreachable'

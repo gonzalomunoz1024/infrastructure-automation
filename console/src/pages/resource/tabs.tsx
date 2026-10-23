@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button, EmptyState, Icon, JsonView, SkeletonRows } from '@iaf/ui'
-import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, safeExternalUrl, titleCase, xConsoleOf } from '@iaf/console-kit'
+import { CodeView, DotTag, ExternalLink, Facts, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, safeExternalUrl, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { ExplainedError } from '../../app/commands'
 import { LaterButton } from '../../app/Phase'
@@ -17,12 +17,19 @@ import { DriftTab } from './DriftTab'
 import { EDIT_NOT_OFFERED, editWaitNote } from './EditDrawer'
 import { HeldButton } from './HeldButton'
 import { MonitoringTab } from './MonitoringTab'
+import { LineageView } from './LineageView'
+import { TimeTravel } from './TimeTravel'
+import { explainLine } from '../../lib/plain'
+import { EVENT_TYPE_WORDS, eventSummary, isStateEventType, stateApi } from '../../lib/state'
+import type { ChainCheck, ResourceEvent } from '../../lib/trail'
+import { actorName, usePeople } from '../state/common'
 
 /*
- * The tabs of a resource page, all read from the BFF. Each reads what it needs: Configuration the
- * resource's attributes (with the fields the drift service found different marked), Drift the
- * findings, Activity the trail the console keeps, Relationships the lineage, Tags and Permissions
- * the console's view, JSON the record and the same record as code.
+ * The tabs of a resource page. Each reads what it needs: Configuration the record (with the
+ * fields the drift service found different marked), Drift the findings, Activity the state service's
+ * events with time travel over them (./TimeTravel) and a check of their chain, Relationships the
+ * lineage (./LineageView), Tags and Permissions the console's view, JSON the record and the same
+ * record as code. Everything here reads the BFF.
  */
 
 export function tabId(label: string): string {
@@ -48,11 +55,7 @@ export function TabContent({ label, ...props }: TabProps & { label: string }) {
     case 'activity':
       return <ActivityTab {...props} />
     case 'relationships':
-      return (
-        <Section title="Lineage" description="What this was built from, and what was built from it.">
-          <ResourceLineage id={props.wfrn} />
-        </Section>
-      )
+      return <LineageView type={type} wfrn={props.wfrn} />
     case 'monitoring':
       return <MonitoringTab {...props} />
     case 'tags':
@@ -224,16 +227,16 @@ function Configuration({ type, wfrn, detail, viewError }: TabProps) {
 
 /* ---------------------------------------------------------------------------- Activity */
 
-const EVENT_WORDS: Record<string, { icon: 'sparkles' | 'tag' | 'pulse' | 'trash' | 'refresh'; text: string }> = {
-  'resource.registered': { icon: 'sparkles', text: 'Registered in the inventory' },
-  'resource.tagged': { icon: 'tag', text: 'Tags changed' },
-  'resource.updated': { icon: 'refresh', text: 'Recorded a change' },
-  'resource.deleted': { icon: 'trash', text: 'Deleted' },
-  'drift.opened': { icon: 'pulse', text: 'Drift found' },
-  'drift.closed': { icon: 'pulse', text: 'Drift settled' },
+/** The first success of a resource's own create reads as its registration; every other event by its type's words. */
+function eventWords(entry: ActivityEntry, first: boolean): { icon: 'sparkles' | 'tag' | 'pulse' | 'trash' | 'refresh' | 'history'; text: string } {
+  const t = entry.type ?? ''
+  if (t === 'ProvisioningSucceeded' && first) return { icon: 'sparkles', text: 'Registered in the inventory' }
+  const text = isStateEventType(t) ? EVENT_TYPE_WORDS[t] : t || 'Event'
+  const icon = t === 'Tagged' ? 'tag' : t.startsWith('Drift') || t === 'Observed' ? 'pulse' : t === 'Deleted' || t === 'DeleteRequested' ? 'trash' : t === 'ResourceRequested' ? 'sparkles' : 'refresh'
+  return { icon, text }
 }
 
-function ActivityRow({ entry }: { entry: ActivityEntry }) {
+function ActivityRow({ entry, first, people }: { entry: ActivityEntry; first: boolean; people: Map<string, string> }) {
   if (entry.kind === 'job' && entry.job) {
     const j = entry.job
     return (
@@ -244,7 +247,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
             <span className="block truncate text-primary">{j.title ?? j.workflow}</span>
             <span className="block truncate font-mono text-caption text-tertiary">
               {j.jobId}
-              {j.requester ? ` · ${j.requester}` : ''}
+              {j.requester ? ` · ${actorName(j.requester, people)}` : ''}
             </span>
           </span>
           <StatusBadge status={j.status} size="sm" />
@@ -253,19 +256,23 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       </li>
     )
   }
-  const words = EVENT_WORDS[entry.type ?? ''] ?? { icon: 'refresh' as const, text: entry.type ?? 'Event' }
-  // an event a request caused names it: "Registered in the inventory, by dana, through job_…"
-  const data = entry.data && typeof entry.data === 'object' ? (entry.data as { jobId?: unknown; workflow?: unknown }) : {}
+  const words = eventWords(entry, first)
+  // an event a request caused names it: "Registered in the inventory, by Dana Reyes, through create-vm job_…"
+  const data = entry.data && typeof entry.data === 'object' ? (entry.data as { jobId?: unknown; workflow?: unknown; version?: unknown }) : {}
   const jobId = typeof data.jobId === 'string' ? data.jobId : undefined
   const workflow = typeof data.workflow === 'string' ? data.workflow : undefined
+  const summary = entry.type && isStateEventType(entry.type) ? eventSummary({ type: entry.type, data: entry.data as ResourceEvent['data'] }) : undefined
   return (
     <li className="flex items-center gap-3 px-3 py-2.5 text-sm">
       <Icon name={words.icon} size={15} className="shrink-0 text-tertiary" />
       <span className="min-w-0 flex-1">
-        <span className="block text-primary">{words.text}</span>
+        <span className="block text-primary">
+          {words.text}
+          {summary && <span className="text-secondary">: {summary}</span>}
+        </span>
         {(entry.actor || jobId) && (
           <span className="block truncate text-caption text-tertiary">
-            {entry.actor && <>by {entry.actor}</>}
+            {entry.actor && <>by {actorName(entry.actor, people)}</>}
             {jobId && (
               <>
                 {entry.actor ? ', ' : ''}through{workflow ? <> {workflow}</> : null}{' '}
@@ -282,23 +289,66 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
   )
 }
 
-function ActivityTab({ type, wfrn }: TabProps) {
-  const q = useQuery(['console-activity', type.name, wfrn], () => bff.resources.activity(type.name, wfrn, { limit: 50 }))
-  if (q.error) return <ExplainedError error={q.error} what="Load the activity of this resource" onRetry={() => void q.refetch()} compact />
-  if (q.loading) return <SkeletonRows n={3} />
-  const items = q.data?.items ?? []
+/** Checks the resource's hash chain at the state service and says in words what it found. */
+function ChainCheckButton({ type, wfrn, noun }: { type: ConsoleType; wfrn: string; noun: string }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<ChainCheck | null>(null)
+  const [failure, setFailure] = useState<unknown>(null)
+  const check = async () => {
+    setBusy(true)
+    setFailure(null)
+    try {
+      setResult(await stateApi.verify(type.name, wfrn))
+    } catch (e) {
+      setFailure(e)
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <Section title="Activity" description="The requests that created or changed this resource, and what the platform recorded about it, newest first.">
-      {items.length === 0 ? (
-        <EmptyState compact icon="history" title="No activity yet" message="Requests that create or change this resource, and the events the platform records about it, appear here." />
-      ) : (
-        <ol className="divide-y divide-stroke-light overflow-hidden rounded-lg border border-stroke-light" aria-label="Activity">
-          {items.map((e, i) => (
-            <ActivityRow key={`${e.at}-${e.job?.jobId ?? e.type ?? ''}-${i}`} entry={e} />
+    <div className="flex flex-col items-end gap-1">
+      <Button size="sm" variant="secondary" icon="shield" loading={busy} onClick={() => void check()}>
+        Check its chain
+      </Button>
+      <span role="status" aria-live="polite" className="max-w-md text-right text-caption" data-chain={result ? (result.valid ? 'holds' : 'broken') : 'none'}>
+        {result &&
+          (result.valid ? (
+            <span className="text-primary">{`The chain holds: all ${result.entries} events of this ${noun} match their hashes and link in order.`}</span>
+          ) : (
+            <span className="text-critical">{`The chain breaks at version ${result.brokenAt}: ${result.reason}. The events before it hold.`}</span>
           ))}
-        </ol>
-      )}
-    </Section>
+        {failure !== null && <span className="text-critical">{explainLine(failure, 'Check the chain')}</span>}
+      </span>
+    </div>
+  )
+}
+
+function ActivityTab({ type, wfrn, detail }: TabProps) {
+  const q = useQuery(['console-activity', type.name, wfrn], () => bff.resources.activity(type.name, wfrn, { limit: 50 }))
+  const people = usePeople()
+  const noun = singularOf(type.title).toLowerCase()
+  const items = q.data?.items ?? []
+  // the oldest success is the create's: it reads as the registration
+  const firstSuccess = [...items].reverse().find((e) => e.type === 'ProvisioningSucceeded')
+  return (
+    <div className="space-y-8">
+      <TimeTravel type={type} wfrn={wfrn} detail={detail} />
+      <Section title="Activity" description="What the state service recorded about this resource and the requests that changed it, newest first. Each event is chained to the one before it." actions={<ChainCheckButton type={type} wfrn={wfrn} noun={noun} />}>
+        {q.error ? (
+          <ExplainedError error={q.error} what="Load the activity of this resource" onRetry={() => void q.refetch()} compact />
+        ) : q.loading ? (
+          <SkeletonRows n={3} />
+        ) : items.length === 0 ? (
+          <EmptyState compact icon="history" title="No activity yet" message="Requests that create or change this resource, and the events the platform records about it, appear here." />
+        ) : (
+          <ol className="divide-y divide-stroke-light overflow-hidden rounded-lg border border-stroke-light" aria-label="Activity">
+            {items.map((e, i) => (
+              <ActivityRow key={`${e.at}-${e.job?.jobId ?? e.type ?? ''}-${i}`} entry={e} first={e === firstSuccess} people={people} />
+            ))}
+          </ol>
+        )}
+      </Section>
+    </div>
   )
 }
 

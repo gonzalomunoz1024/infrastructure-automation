@@ -8,7 +8,84 @@ This branch is shaped like the repository it will become: an npm workspace at th
 CI, no platform files. The hub branch `console-root` holds the plan, the decisions and the
 contracts this build pins.
 
-## What is here (phases 0, 1, 3, 4 and 5)
+## What is here (phases 0, 1, 3, 4, 5 and 7)
+
+Phases 7 and 9 keep access right over time, and close the account's life:
+
+- access reviews: an admin starts a campaign over everyone's group memberships with a due date,
+  and the account's admins keep or remove each access with a reason, one at a time or a selection
+  at a time, by keyboard too (arrows move, K keeps, R removes); nobody reviews their own; the
+  progress shows on each campaign, and the rule of the due date is said wherever it shows:
+  anything not reviewed by then loses its access; the bell lists the open review to whoever may
+  work through it
+- elevations: a person asks to hold a role for 15 minutes to 8 hours with a reason, approved at
+  once by a rule or by an admin who is not them (the bell lists the asks to decide); a held role
+  shows in a banner with the time left, ends by itself or by hand, and marks the actions only it
+  allows as elevated; a refusal that a rule covers offers Ask for this role for an hour
+- the organization's accounts, for its admins: emergency (break-glass) access with its warning
+  and the line the account's trail records, and closing an account by typing its name, refused
+  while the account still holds resources, with what it holds
+
+Phase 7 brings the CLI's web side and the developer portal:
+
+- `#/device` approves a CLI or SDK sign-in: the code from the terminal (in the link, or typed),
+  what asks, from which machine and address, for what and until when, then Approve or Deny;
+  approving asks for a fresh sign-in first, as a delete does
+- CLI sign-ins (the user menu, and Identity and access beside Access keys): the CLIs and SDKs the
+  person signed in, newest first, each signed out after asking once
+- the console shell (Developer tools): a terminal in the page that runs the CLI's commands with
+  the page's own session (`help`, `whoami`, `types`, `ls`, `get`, `run`, `jobs`, `job --follow`),
+  with history on Up and Down, Tab completing a command, and every result in a log region
+- the developer portal: the console API by tag from its OpenAPI document, how to get the CLI and
+  SDKs, sample calls for a type built from its workflows' schemas, and sample portal tiles, any of
+  them kept as a shortcut
+
+Phase 7 tells people what happened:
+
+- the bell carries the person's notifications beside the access requests to decide: requests that
+  succeed, fail or pause, approvals waiting and decided, access requests, drift, quotas, budgets
+  and the weekly digest, new ones arriving on the live stream, each leading to its resource or
+  request and marked read on the way; the Notifications page filters them by unread and kind
+- notification settings: email, Slack and Teams on or off, the channels for each kind (the
+  defaults filled in), saved against the version read, and a test send per channel
+- linked chats: `#/chat-link?token=` links the Slack or Teams identity `/console link` names after
+  one confirmation; the linked ones are listed and unlinked there
+- weekly digests: each week of the account in words, its changes, drift, cost and access, with
+  the numbers they were written from and links to what they name
+
+Phase 7 writes the account's own policies (WP 7.8):
+
+- Policies under Identity and access: the managed and custom policies, where each is used, its
+  statements in words and its JSON; the editor writes one visually (service and its actions from
+  the console's types and workflows, wfrn patterns with a helper that builds them, conditions on
+  tags, the region, the person and their groups) or as JSON, both views over one document, each
+  problem shown at its field and its JSON line; a save is a new version against the one read
+- a policy is attached to a custom role, or a role is created with it and granted by groups; its
+  delete is refused while a role holds it or is bounded by it, naming each role
+- the policy simulator: a person, a role or a set of groups, unsaved policies and a draft
+  boundary laid over the account, actions on wfrns or patterns (a picked resource brings its tags);
+  each answer says allowed or denied, the statement that decided and where it sits (a guardrail,
+  the role's permission boundary, a policy), drawn as the refusal draws its layers; the editor
+  opens it in a drawer over the unsaved document
+- permission boundaries on custom roles, shown on each role and, for a person, over every role
+  they hold; the organization's guardrails over the account, listed for everyone who reads IAM and
+  written by an organization admin
+
+The state service's views show what happened, what was and what is built from what:
+
+- the Activity trail lists every change to the account's resources (what, who, through which
+  request), filtered by person, resource type, event type, outcome and period; Verify the chain
+  checks the period's evidence pack in the browser and says in words whether the chain holds or
+  where it breaks, and Download evidence pack saves it for the auditors (admins and auditors)
+- a resource's Activity tab replays it to any point of its history (a slider, a day, Yesterday,
+  A week ago), what was asked for and what the provider reported then beside what is asked for
+  now, with what changed since; Revert to this opens Edit configuration filled with then, to
+  review before anything runs; Inventory as of a date lists the account's resources at the end of
+  a day
+- the Relationships tab shows what made the resource (its workflow, its request, its image) and
+  what was built from it, each a link; the Resource map draws the account (and, if chosen, other
+  accounts the person can read) as columns of what is built from what, coloured by health, drift
+  or cost, zoomed and moved through with the keyboard, with a list view holding the same
 
 Phase 5 decides on drift and finds what nobody manages:
 
@@ -614,16 +691,202 @@ type, so the feed must subscribe to every one).
     up in a line (latest, average, highest) and turns into a table; its plot is a slider whose
     arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
     chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
+85. **The simulator answers from the code that decides.** `mock/directory.ts` has one `decide`:
+    the guardrails first (any deny, then the allow-list), then the roles' denies, then the first
+    allow that its role's boundary also allows, then a bounded or a default deny. `authorize` and
+    `POST /console/v1/iam/policy-simulations` both call it, the simulation with its unsaved
+    policies held by a stand-in role and its draft boundary in place of the role's own, so what
+    the simulator says is what the next request gets. Nothing is written, and the answer carries
+    the authorization version it was decided at.
+86. **A tag condition reads the resource the request is about.** A statement's `tag.<name>`
+    condition matches the resource's tags, which the request's context carries (`context.tags`);
+    the mock's single-resource checks pass them, and the simulator sends a picked resource's tags
+    with each check. A check on a type, such as the Actions menu's, has no resource and so no tags:
+    the menu offers what the type allows, and the request on the VM is refused by the statement
+    that names its tag, as the restart-only-prod journey shows.
+87. **One document, two views, one list of problems.** The editor keeps a single policy document;
+    the JSON view is its text, read on each keystroke by a reader that keeps the line of every
+    value by its field path (`statements[1].actions[0]`), so the identity service's 400 problems
+    and the console's own checks (the same rules, ported) show at the field in the visual view and
+    at the line in the JSON one. While the JSON does not read, the visual view shows the last
+    document that did and says so; a save waits until it reads. Saves send `If-Match` with the
+    version read; a 409 offers to load the latest or keep yours.
+88. **Boundaries belong to roles; guardrails to the organization.** The identity contract bounds
+    roles only, so a person's page shows the boundary over each role they hold and links the
+    simulator rather than offering a boundary of their own. The account's guardrails
+    (`GET /console/v1/iam/guardrails`) are read by anyone who may list IAM; the organization's
+    (`/console/v1/org/guardrails`) are written by an organization admin only, through the BFF as
+    its internal principal, and a refusal past a boundary or a guardrail cannot be requested.
+89. **A custom policy decides nothing until a role carries it, and stays while one does.** A new
+    policy is offered for a role at once (attach, or create a role with it granted by groups); its
+    delete is refused with a 409 naming the roles that carry or are bounded by it, which the page
+    lists with links. Managed roles keep their policies, and Admin takes no boundary, so an
+    account always has someone who can change everything.
+
+90. **A review decides who keeps a group, and the due date decides what nobody did.** A campaign
+    is the identity service's: everyone's memberships when it starts (who), one item per person
+    and group with the roles it carries (what), and a due date of 1 to 90 days. The contract has no
+    list of reviewers, so the reviewers are whoever may `access-review:decide` (the account's
+    admins, and anyone holding Admin for a while); the page and the start dialog say so, and that
+    nobody reviews their own. Every page that shows the due date says what it does: what is not
+    reviewed by then expires and the person loses the group, the last owner excepted.
+91. **Deciding many is many single decisions, by keyboard as well.** There is no batch decision,
+    so a selection is one `:decide` per item with one reason, counted as it goes, with what
+    failed named. Removing needs a reason, keeping does not. In the item list the arrows move
+    between people and K and R keep and remove the one in focus, each through the same dialog.
+92. **A held role is visible while it lasts.** The session lists the roles held for a while
+    (`account.elevations`, the identity service's `HeldElevation`); a banner above every page names
+    each with its time left, loud and red for break-glass, and reads the session again when the
+    earliest ends. The BFF marks an action that only a held role allows (`elevated` on the
+    action's decision); the button carries an "elevated" mark and the menu item says so.
+93. **The refusal offers an hour only when a rule grants it at once.** When a console IAM refusal
+    suggests a role the person lacks and an auto-approval rule (`GET .../elevation-rules`) covers
+    that role for the roles they hold through groups for 60 minutes, the refusal offers Ask for
+    this role for an hour beside Request access; once active the roles are read again, so closing
+    the dialog finds the action unlocked. Without such a rule it links to the elevations page,
+    where an admin decides. Boundary and guardrail refusals never offer it.
+94. **Closing an account and break-glass are the organization admins', and say what they do.**
+    The accounts page lists every account to organization admins (`session.organizationAdmin`;
+    404 for anyone else, which the page explains). Break-glass asks for a person, role, at most
+    4 hours, a ticket, a reason and an explicit approval, warns that it bypasses the account's
+    approvers, and shows the line the account's trail keeps. Closing lists what it ends, asks for
+    the account's name typed and a reason, and is refused while the account holds resources
+    (409 `account.hasResources` with the count of each type, the plan's rule for WP 7.7), since
+    closing leaves resources where they are. In mock mode (`mock/access.ts`) Gonzalo is the
+    organization admin and the rule is the identity service's `operators-admin-two-hours`.
+80. **A device sign-in is approved by a person who sees what asks, and never by a link.** `#/device`
+    reads the grant by its code (`?code=` from the CLI's `verification_uri_complete`, or typed and
+    normalised to `XXXX-XXXX`) and shows the client, the machine in words from its user agent, the
+    address, when it asked, the time left and the one scope in plain words, with a warning to
+    approve only a sign-in one started. Approve and Deny are buttons the person presses: the page
+    never approves from its address. Approving is the BFF's step-up 403 past ten minutes; live the
+    API client follows it to the BFF's own `/auth/` sign-in and back to the code (the page builds no
+    redirect), in mock mode the page signs in again in place; either way Approve is pressed again.
+    Denying needs no fresh sign-in. A signed-out link keeps its query through the sign-in, so the
+    code survives it.
+81. **CLI sign-ins sit beside access keys and belong to the person.** `GET /console/v1/api-sessions`
+    lists the open ones newest first (client, machine, address, account, signed in, last used,
+    ends); everyone signs their own out after one confirmation (`DELETE`), whatever their role, so
+    nothing is greyed by role. The mock seeds each person a laptop CLI and a CI job's SDK, opens a
+    session when a grant is approved, and journals approvals, denials and revocations (`cli.`).
+82. **The console shell runs the CLI's command core, through the BFF only.** No `console-sdk`
+    branch exists yet, so `lib/shell/core.ts` is the core, written to the interface the generated
+    one would have (`execute(line, { client, emit, describeError, sleep, signal, newKey })`, output
+    as text, table or JSON blocks, `toText` for a terminal); `lib/shell/console.ts` adapts it to the
+    BFF client with the page's session, so swapping in `@iaf/console-cli-core` is one import. It
+    makes no platform call. `ls <type> --filter k=v` sends `q`, `state` and `drift` as themselves
+    and anything else as `tag.<k>`; `run` checks the type's decision first and refuses with its
+    reason, asks `--confirm` for a destructive verb, sends one Idempotency-Key, and `--wait` or
+    `job <id> --follow` reads the job every 2 seconds until it ends or pauses (Ctrl+C stops
+    following, the job goes on). A leading `iaf` is dropped, so a sample line runs as it is.
+83. **The shell is a keyboard page that a screen reader can follow.** Enter runs, Up and Down walk
+    a history kept per person in this browser (100 lines), Tab completes a command only when one
+    name fits and otherwise moves on, Ctrl+L clears. Each result lands in a `log` region; tables
+    are real tables in their own focusable scrolling region, so a phone scrolls a wide table and
+    never the page; tones are a rule at the left, never colour on the words alone. A wfrn links to
+    its resource and a job id to its request, built from the console's own routes.
+84. **The developer portal reads the API's own description, and its tiles are samples.** The
+    operations come from `GET /console/v1/openapi.json` grouped by tag (the mock serves an outline;
+    the full contract is linked), and sample calls are built from the chosen type's workflow schemas
+    (examples, defaults, first choices, the required tags from the tag policy) for the shell, the
+    CLI, REST and the TypeScript and Java SDKs. The IDP tiles (team resources, drift, a sample cost,
+    and create workflows) are marked as samples until the firm's examples arrive; a tile is kept as
+    a shortcut in this browser for the person, a workflow tile is greyed with the refusal where the
+    person may not run it, and a tile's target becomes a link only when it is a console route or
+    https.
+70. **Notifications follow what already happened, once per event and person.** The bell keeps the
+    access requests to decide (phase 1) and adds the person's newest notifications with the unread
+    count (`GET /console/v1/notifications`), marks one read when it is followed and all with one
+    `POST /console/v1/notifications:read`, and opens the BFF's live stream (`GET
+    /console/v1/events`, listening for `notification`) once per person, refetching every reader on
+    an event and announcing it politely; an access request already listed to decide is not repeated.
+    The Notifications page filters by unread and kind in the address. A notification's `link` is
+    read into the console's own route (`/r/<type>/<wfrn>`, `/jobs/<id>`, `/access-requests/<id>`,
+    `/digests/<week>`, with only a `tab` kept from its query), scoped to its account when it is
+    another one: nothing from the data becomes an href as it came. In mock mode
+    (`console/src/mock/notifications.ts`) the notifier runs at the end of every settle of the
+    clock, so a console job that succeeds, fails or pauses notifies its requester at the moment it
+    did, an approval it opens notifies the approver group's members and its answer the requester,
+    and an access request notifies its approvers and its answer the requester; something older
+    than three days arrives read.
+71. **Notification settings save the differences from the defaults, against the version read.**
+    The page shows every kind with its channels, the defaults filled in (the console for every
+    kind; email and the linked chats too for failures, pauses, approvals, access requests, budget
+    alerts and the digest), and saves only the kinds that differ, so an untouched kind follows the
+    default as it moves. One PUT with `If-Match`; a 409 reads them again and says so. A channel
+    that is off or not linked greys its boxes and its test, with the reason in the box's name. The
+    page lives at `#/settings/notifications`, found from the user menu, the Settings page, the bell
+    and the palette.
+72. **A chat is linked by confirming its token once.** `#/chat-link?token=` reads what the token
+    names (the platform, the workspace, the chat user) without trusting it, asks once, and posts
+    it; the BFF decides. An expired, foreign or taken token is refused in words with what to do.
+    Linking turns that channel on; unlinking the last link of a platform turns it off. The linked
+    chats are listed on the same page and each unlinked after one question.
+73. **The weekly digest is read as words with its numbers beside them.** The Digests page lists the
+    session account's weeks, newest first; a week reads as four parts (changes, drift, cost,
+    access), each its text, its highlights as links and the facts it was written from, and says
+    whether the copilot or the template wrote it. Every managed role reads them (`digests:get`,
+    decided by the console's IAM alone; the platform's role never decides them).
+74. **Notifications, settings and chat links are the person's own.** Like preferences, no IAM
+    action guards them: a viewer such as Mia reads and marks their notifications, chooses their
+    channels and links their chats, so the pages refuse nothing on role. Only the digests, which are
+    the account's, are read through IAM, and a refusal there shows the denial.
+
+95. **The trail is verified in the browser, from the evidence pack alone.** Verify the chain reads
+    `GET /console/v1/activity/evidence` for the period and checks it with `lib/trail.ts`: every
+    event's sha-256 over its canonical JSON (sorted keys, no whitespace, `hash` left out), every
+    link to the event before it per resource, every seal's count, root and link to the seal
+    before, and every ES256 signature against the published keys through Web Crypto. The answer is
+    one sentence: the chain holds over the span, or it breaks at a named resource and version, and
+    why ("changed after it was recorded", "a version is missing", "it does not link"). The pack is
+    for the account's admins and auditors (`activity:evidence`); everyone who may list activity
+    reads the trail. A URL inside the pack (a job's evidence) is never made a link.
+96. **Time travel replays the resource's own events, and a revert is an edit.** The Activity tab
+    reads the resource's state events once and replays them (`lib/timeTravel.ts`) to any instant,
+    so moving the slider costs no request; the table sets what was asked for and what the provider
+    reported then beside what is asked for now. Revert to this asks the BFF's revert plan, then
+    opens the ordinary Edit configuration drawer filled with the plan's values and a note naming the
+    moment, so the change is reviewed, previewed and approved like any other edit; a plan that
+    cannot run says why (not yet built, deleted then, busy now, nothing to change). Inventory as of
+    a date lists each type with `?at=` at the end of the chosen UTC day.
+97. **Lineage is the state service's, through the BFF.** The Relationships tab reads
+    `/console/v1/r/{type}/{wfrn}/lineage` and lays it out in columns by hops: built from to the
+    left, built from it to the right. What made it (the workflow, its version and the request)
+    comes from the resource's first events. Resources in accounts the person cannot read are
+    counted and never named; parents the console does not manage are listed by reference. The
+    browser talks only to the BFF: no platform read remains on the resource page's tabs.
+98. **The map is laid out by depth and moved through by its links.** `lib/graph.ts` puts each
+    resource in the column of its longest chain of parents, stacks a column in blocks of 16, and
+    maps the arrow keys to the links (left to what it was built from, right to what was built from
+    it, up and down within a column); the page draws SVG by hand, zooms with buttons, + and - and
+    Ctrl with the wheel, pans by dragging, and says each focused resource aloud with what it was
+    built from. Cost is shown by the dot's size as well as the legend, so no colour stands alone.
+    The list view holds the same resources and links as a table. A big map starts at a size its
+    names can be read at; Fit shows all of it.
+99. **The mock's trail is a real chain with one break on purpose.** `mock/state.ts` derives every
+    resource's events from the dataset, the console's own jobs and its drift history, chains them
+    with sha-256 (`lib/sha256.ts`, synchronous so the mock stays a pure function), seals each UTC
+    day and signs the seals with two demo P-256 keys (`mock/es256.ts`, rotated on 1 October). One
+    event, the first change requested on cache-043 (`vm-gen-033`), is altered after hashing, so a
+    week verifies and the month breaks there. batch-01 (`vm-demo04`) carries the history the
+    journeys replay: sized up to 8 CPUs three days ago and back down to 2 this morning. Lineage
+    and the map come from the same rows, with each machine's monthly price from the cost mock.
 
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift, monitoring), their helpers and screenshots
+                  tags, bulk, drift, monitoring, access, cli, notifications, policies, state),
+                  their helpers and screenshots; cli covers the device sign-in, CLI sign-ins, the
+                  console shell and the developer portal; policies the policy editor, simulator,
+                  boundaries and guardrails
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
+                  NotificationsBell and notifications (the feed, the live stream, marking read),
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
+                  elevation (the refusal's offer of an hour, the held roles banner, the elevated
+                  mark), accessTimeBell (reviews and elevations in the bell),
                   access (the pending requests query), commands (running a change and explaining
                   its failure), CodeDisclosure, GettingStarted, the router, the console context
   src/lib/        api (fetch to the BFF only, traceparent, X-Csrf-Token, ETag cache, paging, the
@@ -636,15 +899,34 @@ console/
                   (the tag policy, Tag Editor, resource group and clone client, and their rules),
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
-                  (scales, ticks, time labels and the keyboard's steps)
+                  (scales, ticks, time labels and the keyboard's steps), accessReviews,
+                  elevations and organization (access over time and the accounts, and their
+                  words), cli (device grants and API sessions, and their words), shell/ (the
+                  CLI's command core, its parser, the terminal's text and the console adapter),
+                  portal (the API by tag, sample calls, tiles and shortcuts), notifications (the
+                  notifications, settings, chat links and digests client, kinds and channels in
+                  words, the defaults, and a notification's link read into a route), policies
+                  (the policy, role, guardrail and simulator client, the glob rule, the action
+                  catalog, validation and the JSON reader that keeps lines), state (the trail,
+                  time travel, lineage and map reads, and their words), trail (the chain's
+                  checks), sha256, timeTravel (replay and diff), graph (the map's layout and
+                  keyboard)
   src/mock/       the mock server (the BFF), types (the BFF's type descriptors), live (the live
                   feed per account), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),
-                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
-                  with the samples
-  src/pages/      one file per page; src/pages/iam/ the identity and access pages,
+                  monitoring (series, alarms and the rightsizing pass), access (review campaigns,
+                  elevations, break-glass and closing accounts), cli (device grants, API
+                  sessions and the console API's outline), notifications (the notifier,
+                  settings, chat links and digests), policies (custom policies, roles and their
+                  boundaries, guardrails and the simulator, over the directory's `decide`), state
+                  (the chained and sealed trail, time travel, lineage and the map) with es256
+                  (the demo keys), and the browser installer, with the samples
+  src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
+                  reviews, elevations and CLI sign-ins among them), src/pages/iam/policies/ the
+                  Policies, policy editor, Policy simulator and Guardrails pages and the role
+                  dialogs (create, attach, boundary), src/pages/organization/ the accounts page,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
                   src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
                   src/pages/resource/ the resource page's tabs (DriftTab and the decisions it
@@ -654,8 +936,12 @@ console/
                   and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
                   dialog, the tag rows and the Required tags page, src/pages/groups/ the
                   resource groups, src/pages/operations/ the Drift, Unmanaged resources, Alarms
-                  and Rightsizing pages and the alarm dialog; the resource page's Monitoring tab
-                  and its MetricChart sit with its other tabs
+                  and Rightsizing pages and the alarm dialog, src/pages/developer/ the device
+                  sign-in, the console shell and the developer portal, src/pages/notify/ the
+                  Notifications, Notification settings, Linked chats and Weekly digests pages,
+                  src/pages/state/ the Activity trail, Inventory as of a date and Resource map;
+                  the resource page's Monitoring tab and its MetricChart, TimeTravel, RevertEdit
+                  and LineageView sit with its other tabs
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Badge, EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, cx, modKeyLabel, relativeTime, useDismiss, useTheme, useToast, type IconName } from '@iaf/ui'
+import { Badge, EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, cx, modKeyLabel, useDismiss, useTheme, useToast, type IconName } from '@iaf/ui'
 import { BrandLockup } from './BrandMark'
 import { RoleTag } from './RoleTag'
 import { UserMenuButton } from './UserMenuButton'
-import { useAccessRequestQueue } from './access'
+import { NotificationsBell } from './NotificationsBell'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
 import { TOOL_SECTIONS, toolPath, toolsIn } from './tools'
@@ -12,12 +12,11 @@ import { isApiError } from '../lib/api'
 import { bff, signOut, switchAccount, switchIdentity, switchRegion } from '../lib/bff'
 import { useQuery } from '../lib/queries'
 import { primaryRole, roleLabel } from '../lib/session'
-import { PHASES } from './Phase'
 
 /*
  * The top bar, in the AWS console's arrangement drawn in Atlas: the brand and the Services menu
  * at the left, one search field in the centre, and at the right the notifications bell (the
- * access requests an admin has to decide), help, the account picker with the role you hold, the
+ * access requests to decide and the person's notifications, app/NotificationsBell.tsx), help, the account picker with the role you hold, the
  * region picker and the user menu. It stays put while the page scrolls.
  */
 
@@ -183,7 +182,7 @@ function SearchTrigger({ onClick }: { onClick: () => void }) {
 
 /* ---------------------------------------------------------------- menus */
 
-function HeaderMenu({ label, icon, text, hint, badge, children, width = 'w-72', role = 'menu' }: { label: string; icon: IconName; text?: ReactNode; hint?: ReactNode; badge?: number; children: (close: () => void) => ReactNode; width?: string; role?: 'menu' | 'dialog' }) {
+export function HeaderMenu({ label, icon, text, hint, badge, children, width = 'w-72', role = 'menu' }: { label: string; icon: IconName; text?: ReactNode; hint?: ReactNode; badge?: number; children: (close: () => void) => ReactNode; width?: string; role?: 'menu' | 'dialog' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const close = useCallback(() => setOpen(false), [])
@@ -244,44 +243,8 @@ function MenuItem({ children, onSelect, selected, disabled, hint, icon }: { chil
   )
 }
 
-function MenuHeading({ children }: { children: ReactNode }) {
+export function MenuHeading({ children }: { children: ReactNode }) {
   return <div className="px-3 pb-1 pt-2 text-caption2 font-semibold uppercase tracking-wide text-tertiary">{children}</div>
-}
-
-function NotificationsBell() {
-  const queue = useAccessRequestQueue()
-  const items = queue.toDecide
-  const count = items.length
-  return (
-    <HeaderMenu label={count ? `Notifications, ${count} to decide` : 'Notifications'} icon="bell" role="dialog" width="w-80" badge={count}>
-      {(close) =>
-        count === 0 ? (
-          <EmptyState compact icon="bell" title="Nothing to decide" message={queue.readable ? `Access requests waiting for you land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
-        ) : (
-          <div>
-            <MenuHeading>Access requests to decide</MenuHeading>
-            <ul aria-label="Access requests to decide">
-              {items.map((r) => (
-                <li key={r.requestId}>
-                  <Link to={pathFor('iam-request', { id: r.requestId })} onClick={close} className="block px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
-                    <span className="block text-primary">
-                      {r.requester.name ?? r.requester.userId} asks for <span className="font-medium">{roleLabel(r.role)}</span>
-                    </span>
-                    <span className="block truncate font-mono text-caption text-tertiary">
-                      {r.action} · {relativeTime(r.requestedAt)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-            <Link to={pathFor('iam-requests')} onClick={close} className="block border-t border-stroke-light px-3 py-2 text-caption font-medium text-accent transition-opacity hover:opacity-70">
-              All access requests
-            </Link>
-          </div>
-        )
-      }
-    </HeaderMenu>
-  )
 }
 
 function HelpMenu() {
@@ -438,6 +401,8 @@ function UserButton() {
       items={[
         { id: 'iam', label: 'Identity and access', icon: 'shield', onSelect: () => navigate(pathFor('iam')) },
         { id: 'settings', label: 'Settings', icon: 'settings', onSelect: () => navigate(pathFor('settings')) },
+        { id: 'cli-sign-ins', label: 'CLI sign-ins', icon: 'terminal', onSelect: () => navigate(pathFor('iam-cli')) },
+        { id: 'notification-settings', label: 'Notification settings', icon: 'bell', onSelect: () => navigate(pathFor('notification-settings')) },
         { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => void switchIdentity() },
         {
           id: 'sign-out',

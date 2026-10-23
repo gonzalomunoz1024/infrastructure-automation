@@ -118,8 +118,8 @@ test.describe('resources in mock mode', () => {
     await page.getByRole('tab', { name: /^Activity/ }).click()
     const trail = page.getByRole('list', { name: 'Activity' })
     await expect(trail).toContainText('Registered in the inventory')
-    await expect(trail).toContainText('by dana, through create-vm')
-    await expect(trail.getByRole('link', { name: /^job_/ })).toBeVisible()
+    await expect(trail).toContainText('by Dana Reyes, through create-vm')
+    await expect(trail.getByRole('link', { name: /^job_/ }).first()).toBeVisible()
   })
 
   test('Dana runs a verb from the Actions menu: the drawer previews it, the request runs, and the menu waits for it', async ({ page }) => {

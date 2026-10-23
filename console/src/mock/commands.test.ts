@@ -302,8 +302,9 @@ describe('verbs, updates and tags on one resource', () => {
     const list = body<Page<ConsoleResource>>(dana.get('/console/v1/r/vm?tag.owner=payments'))
     expect(list.items.map((r) => r.wfrn)).toEqual([VM])
     const activity = body<Page<ActivityEntry>>(dana.get(`/console/v1/r/vm/${enc(VM)}/activity`))
-    expect(activity.items[0]).toMatchObject({ kind: 'event', type: 'resource.tagged', actor: 'dana' })
-    expect(activity.items[activity.items.length - 1]).toMatchObject({ kind: 'event', type: 'resource.registered' })
+    // the state service's events (./state): the tags just set first, the request that made it last
+    expect(activity.items[0]).toMatchObject({ kind: 'event', type: 'Tagged', actor: 'dana', data: { set: { owner: 'payments', 'cost-centre': 'cc-4411' } } })
+    expect(activity.items[activity.items.length - 1]).toMatchObject({ kind: 'event', type: 'ResourceRequested', data: { version: 1 } })
     // a viewer may read but not tag
     const mia = bff('mia')
     expect(mia.call('PUT', `/console/v1/r/vm/${enc(VM)}/tags`, { a: 'b' }).status).toBe(403)

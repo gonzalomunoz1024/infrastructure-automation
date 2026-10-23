@@ -13,6 +13,7 @@ import { useCloseMenu } from './MenuButton'
 import { LaterButton, phaseNote } from './Phase'
 import { RoleTag } from './RoleTag'
 import { Link, pathFor } from './router'
+import { ElevateOffer, ElevatedMark } from './elevation'
 
 /*
  * The refusal view (WP 1.5). When a role denies an action the console says who decided: the
@@ -150,6 +151,7 @@ export function RefusalDialog({ request, onClose }: { request: RefusalRequest; o
             ]}
           />
 
+          <ElevateOffer denied={d} onClose={onClose} />
           {d.requestable ? (
             <RequestAccess denied={d} sent={sent} onSent={setSent} onClose={onClose} accountName={account.name} />
           ) : (
@@ -285,6 +287,7 @@ export function ActionButton({ decision, what, phase, variant = 'secondary', siz
   return (
     <Button variant={variant} size={size} icon={icon} className={className} onClick={onClick} loading={loading} disabled={disabled || loading} data-verb={verb}>
       {children}
+      {decision.elevated && <ElevatedMark />}
     </Button>
   )
 }
@@ -321,7 +324,7 @@ export function ActionMenuItem({ decision, what, phase, icon, danger, descriptio
   const later = !denied && !!phase
   const waiting = !denied && !later && !!unavailable
   const inert = later || waiting
-  const note = denied ? `Not allowed: ${denied.reason}` : later ? phaseNote(phase!) : waiting ? unavailable : description
+  const note = denied ? `Not allowed: ${denied.reason}` : later ? phaseNote(phase!) : waiting ? unavailable : decision.elevated ? 'Allowed by a role you hold for a while' : description
   return (
     <button
       type="button"

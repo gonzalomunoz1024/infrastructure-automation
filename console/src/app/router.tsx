@@ -26,6 +26,18 @@ export type RouteName =
   | 'iam-keys'
   | 'iam-requests'
   | 'iam-request'
+  | 'iam-reviews'
+  | 'iam-review'
+  | 'iam-elevations'
+  | 'org-accounts'
+  | 'iam-policies'
+  | 'iam-policy-new'
+  | 'iam-policy'
+  | 'iam-policy-edit'
+  | 'iam-simulator'
+  | 'iam-guardrails'
+  | 'iam-guardrail-new'
+  | 'iam-guardrail'
   | 'groups'
   | 'group'
   | 'tag-editor'
@@ -34,7 +46,19 @@ export type RouteName =
   | 'unmanaged'
   | 'alarms'
   | 'rightsizing'
+  | 'activity'
+  | 'as-of'
+  | 'map'
   | 'settings'
+  | 'device'
+  | 'iam-cli'
+  | 'shell'
+  | 'portal'
+  | 'notifications'
+  | 'notification-settings'
+  | 'chat-link'
+  | 'digests'
+  | 'digest'
   | 'not-found'
 
 export interface RouteDef {
@@ -66,6 +90,19 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-keys', pattern: '/iam/access-keys', title: 'Access keys' },
   { name: 'iam-requests', pattern: '/iam/access-requests', title: 'Access requests' },
   { name: 'iam-request', pattern: '/iam/access-requests/:id', title: 'Access request' },
+  // access over time (phases 7 and 9): review campaigns, roles held for a while, the organization's accounts
+  { name: 'iam-reviews', pattern: '/iam/access-reviews', title: 'Access reviews' },
+  { name: 'iam-review', pattern: '/iam/access-reviews/:id', title: 'Access review' },
+  { name: 'iam-elevations', pattern: '/iam/elevations', title: 'Elevations' },
+  { name: 'org-accounts', pattern: '/organization/accounts', title: 'Accounts' },
+  { name: 'iam-policies', pattern: '/iam/policies', title: 'Policies' },
+  { name: 'iam-policy-new', pattern: '/iam/policies/new', title: 'New policy' },
+  { name: 'iam-policy', pattern: '/iam/policies/:id', title: 'Policy' },
+  { name: 'iam-policy-edit', pattern: '/iam/policies/:id/edit', title: 'Edit policy' },
+  { name: 'iam-simulator', pattern: '/iam/simulator', title: 'Policy simulator' },
+  { name: 'iam-guardrails', pattern: '/iam/guardrails', title: 'Guardrails' },
+  { name: 'iam-guardrail-new', pattern: '/iam/guardrails/new', title: 'New guardrail' },
+  { name: 'iam-guardrail', pattern: '/iam/guardrails/:id', title: 'Guardrail' },
   // resource groups and tags (phase 4): across every type of the account and region
   { name: 'groups', pattern: '/resource-groups', title: 'Resource groups' },
   { name: 'group', pattern: '/resource-groups/:id', title: 'Resource group' },
@@ -76,7 +113,22 @@ export const ROUTES: RouteDef[] = [
   { name: 'unmanaged', pattern: '/operations/unmanaged', title: 'Unmanaged resources' },
   { name: 'alarms', pattern: '/operations/alarms', title: 'Alarms' },
   { name: 'rightsizing', pattern: '/operations/rightsizing', title: 'Rightsizing' },
+  // the trail, the account as it was and the resource map (phase 7)
+  { name: 'activity', pattern: '/history/activity', title: 'Activity trail' },
+  { name: 'as-of', pattern: '/history/as-of', title: 'Inventory as of a date' },
+  { name: 'map', pattern: '/history/map', title: 'Resource map' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
+  // the CLI's web side and the developer portal (phase 7): a device sign-in, CLI sign-ins, the shell
+  { name: 'device', pattern: '/device', title: 'Sign in the CLI' },
+  { name: 'iam-cli', pattern: '/iam/cli-sign-ins', title: 'CLI sign-ins' },
+  { name: 'shell', pattern: '/shell', title: 'Console shell' },
+  { name: 'portal', pattern: '/developer', title: 'Developer portal' },
+  // notifications, linked chats and the weekly digests (phase 7)
+  { name: 'notifications', pattern: '/notifications', title: 'Notifications' },
+  { name: 'notification-settings', pattern: '/settings/notifications', title: 'Notification settings' },
+  { name: 'chat-link', pattern: '/chat-link', title: 'Linked chats' },
+  { name: 'digests', pattern: '/digests', title: 'Weekly digests' },
+  { name: 'digest', pattern: '/digests/:weekStart', title: 'Weekly digest' },
 ]
 
 /** The identity and access section: the overview and every page under it. */

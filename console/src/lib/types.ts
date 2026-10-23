@@ -88,6 +88,16 @@ export interface AccountSummary {
   roles?: string[]
   /** the groups the person is in */
   groups?: string[]
+  /** the roles held there for a while (an elevation or break-glass access), each until its `until` (WP 9.12) */
+  elevations?: HeldElevation[]
+}
+
+/** A role held for a while, as sign-in lists it (identity `HeldElevation`). */
+export interface HeldElevation {
+  elevationId: string
+  role: string
+  kind: 'elevation' | 'break-glass'
+  until: string
 }
 
 export interface BffRegion {
@@ -120,6 +130,10 @@ export interface Denial {
   scope?: string
   /** the platform service account bound to the account (platform) */
   serviceAccount?: string
+  /** what in console IAM refused it: a policy, the role's permission boundary or a guardrail (phase 7) */
+  refusedBy?: 'policy' | 'boundary' | 'guardrail'
+  /** the guardrail that refused it (phase 7) */
+  guardrailId?: string
   /** Request access is offered */
   requestable: boolean
   /** the managed role that would allow it */
@@ -151,6 +165,8 @@ export interface BffConsoleAction {
   deprecated?: { since?: string; sunset?: string; message?: string }
   /** the console's addition to the contract: a bulk verb's most rows per request and the workflow's own rollout */
   batch?: { max: number; rollout: KitRollout }
+  /** allowed only by a role held for a while (an elevation), not by the person's groups (WP 9.12) */
+  elevated?: boolean
 }
 
 /** A type as the BFF composes it; the console reads the actions' decisions from it in phase 1. */
@@ -216,6 +232,8 @@ export interface IamRole {
   name: string
   description?: string
   policies?: string[]
+  /** the role's permission boundary: a policy id (phase 7) */
+  boundary?: string
   version: number
   builtIn?: boolean
 }
@@ -712,4 +730,36 @@ export interface ApprovalsDecided {
   decision: 'approve' | 'reject'
   decided: string[]
   left: { approvalId: string; jobId?: string; reason: string }[]
+}
+
+/* ----------------------------------------------------------------------------
+   Device sign-in and API sessions (WP 7.4): the CLI and the SDKs sign in through the browser
+   ------------------------------------------------------------------------- */
+
+/** The clients the device grant knows (hub console-bff.yaml `client_id`). */
+export type ApiClientId = 'console-cli' | 'console-sdk'
+
+/** `GET /console/v1/device-grants/{userCode}`: what asks to sign in as the person, and from where. */
+export interface DeviceGrant {
+  userCode: string
+  clientId: ApiClientId | string
+  status: 'pending' | 'approved' | 'denied' | 'expired'
+  requestedAt: string
+  expiresAt: string
+  /** where the CLI asked from, so the person can tell it is theirs */
+  requestedFrom?: { ip?: string; userAgent?: string }
+  decidedAt?: string
+}
+
+/** `GET /console/v1/api-sessions`: a CLI or SDK signed in with the device grant. */
+export interface ApiSession {
+  id: string
+  clientId: ApiClientId | string
+  createdAt: string
+  lastUsedAt?: string
+  expiresAt: string
+  accountId?: string
+  region?: string
+  userAgent?: string
+  ip?: string
 }

@@ -10,6 +10,11 @@ import { jobRoutes, stepsOf } from './jobs'
 import { tagRoutes } from './tags'
 import { driftRoutes } from './drift'
 import { monitoringRoutes } from './monitoring'
+import { accessRoutes, isOrganizationAdmin, settleAccess } from './access'
+import { cliRoutes } from './cli'
+import { notificationRoutes } from './notifications'
+import { policyRoutes } from './policies'
+import { stateRoutes } from './state'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -154,7 +159,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
   const sessionBody = (s: MockSession): Session => {
     const person = personOf(dir, s.userId)!
-    const account = accountSummaryFor(dir, s.accountId, s.userId)
+    const account = accountSummaryFor(dir, s.accountId, s.userId, now())
     return {
       user: { userId: person.id, email: person.email, name: person.name, groups: account.groups },
       account,
@@ -162,6 +167,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       csrfToken: csrfTokenOf(person.id),
       expiresAt: new Date(Date.parse(s.authTime) + SESSION_TTL_MS).toISOString(),
       authTime: s.authTime,
+      ...(isOrganizationAdmin(person.id) ? { organizationAdmin: true } : {}),
     }
   }
 
@@ -180,7 +186,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
   /** Every type as the BFF describes it, with the decision for each of its verbs, for this person in this account and region. */
   const consoleTypes = (s: MockSession): BffConsoleType[] => {
-    const ctx = { accountId: s.accountId, userId: s.userId }
+    const ctx = { accountId: s.accountId, userId: s.userId, now: now() }
     return data.resourceTypes.map((rt) => {
       const described = describeType(rt, data.catalog)
       const { service } = described
@@ -197,10 +203,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       ]
       const actions = [...standard.filter((a) => !fromCatalog.some((c) => c.verb === a.verb)), ...fromCatalog].map((a) => {
         const d = authorize(dir, ctx, `${service}:${a.verb}`, pattern)
-        return { ...a, allowed: d.allowed, denied: d.denied }
+        return { ...a, allowed: d.allowed, denied: d.denied, ...(d.elevated ? { elevated: true } : {}) }
       })
       const type: BffConsoleType = { ...described, actions }
-      type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId })
+      type.etag = etagOf(`type-${type.key}`, { actions, user: s.userId, account: s.accountId, roles: accountSummaryFor(dir, s.accountId, s.userId, now()).roles })
       return type
     })
   }
@@ -212,7 +218,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
   seedQuotaOverrides(dir, Object.fromEntries(dir.accounts.map((a) => [a.accountId, usedOf(a.accountId)])))
 
   const consoleRoutes = (req: MockRequest, s: MockSession, path: string, params: URLSearchParams, method: string): MockResponse => {
-    const ctx = { accountId: s.accountId, userId: s.userId }
+    const ctx = { accountId: s.accountId, userId: s.userId, now: now() }
     const can = (action: string, resource: string) => authorize(dir, ctx, action, resource)
     const iam = (kind: string, id?: string) => iamResource(s.accountId, kind, id)
     const body = bodyOf(req)
@@ -233,7 +239,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
       return { status: 405, body: { error: `${method} is not allowed on the session` } }
     }
-    if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId), next: null } }
+    if (path === '/console/v1/accounts') return { status: 200, body: { items: membershipsOf(dir, s.userId, now()), next: null } }
     if (path === '/console/v1/regions') return { status: 200, body: { items: [{ name: data.regionName, title: 'Global', status: 'available', environments: ['dev', 'test', 'prod'], types: data.resourceTypes.map((t) => t.name) }], next: null } }
 
     if (path === '/console/v1/types') return cached(`types-${s.userId}-${s.accountId}`, { items: consoleTypes(s) }, req)
@@ -243,6 +249,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       const t = consoleTypes(s).find((x) => x.key === key || x.type === key)
       return t ? { status: 200, body: t, headers: { ETag: t.etag ?? '' } } : notFound(`Type ${key}`)
     }
+
+    /* custom policies, roles and their boundaries, guardrails and the simulator (phase 7) */
+    const policied = policyRoutes(data, { session: s, body, headers: req.headers, now: at }, path, params, method)
+    if (policied) return policied
 
     /* identity and access, as the identity service guards it: iam:<verb> on the IAM wfrn of the thing */
     const q = params.get('q')?.toLowerCase()
@@ -317,31 +327,6 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
         return { status: 204 }
       }
     }
-    if (path === '/console/v1/iam/roles' && method === 'GET') {
-      const d = can('iam:list', iam('role'))
-      return d.allowed ? pagedBody(dir.roles, params) : refused(d)
-    }
-    m = /^\/console\/v1\/iam\/roles\/([^/]+)$/.exec(path)
-    if (m && method === 'GET') {
-      const id = decodeURIComponent(m[1])
-      const d = can('iam:get', iam('role', id))
-      if (!d.allowed) return refused(d)
-      const r = dir.roles.find((x) => x.roleId === id || x.name === id)
-      return r ? { status: 200, body: r } : notFound(`Role ${id}`)
-    }
-    if (path === '/console/v1/iam/policies' && method === 'GET') {
-      const d = can('iam:list', iam('policy'))
-      return d.allowed ? pagedBody(dir.policies[s.accountId] ?? [], params) : refused(d)
-    }
-    m = /^\/console\/v1\/iam\/policies\/([^/]+)$/.exec(path)
-    if (m && method === 'GET') {
-      const id = decodeURIComponent(m[1])
-      const d = can('iam:get', iam('policy', id))
-      if (!d.allowed) return refused(d)
-      const p = (dir.policies[s.accountId] ?? []).find((x) => x.policyId === id || x.name === id)
-      return p ? { status: 200, body: p } : notFound(`Policy ${id}`)
-    }
-
     /* access keys: a person's own are theirs to manage; anyone else's take iam:<verb> on the key */
     if (path === '/console/v1/iam/access-keys') {
       if (method === 'GET') {
@@ -476,6 +461,10 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       }
     }
 
+    /* the trail, time travel, lineage and the resource map (phase 7), before the lists they read as of a date */
+    const stated = stateRoutes(data, { session: s, body, headers: req.headers, now: now() }, path, params, method)
+    if (stated) return stated
+
     /* resources, as the state service lists them for the account; search and suggestions over the same rows */
     const rctx: ResourceContext = { partition: data.partition, region: s.region, accountId: s.accountId }
     const accountIds = dir.accounts.map((a) => a.accountId)
@@ -515,12 +504,23 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
 
     /* the tag policy, the Tag Editor and resource groups (phase 4) */
     const routeCtx = { session: s, body, headers: req.headers, now: now() }
+
+    /* access reviews, elevations, break-glass and the organization's accounts (phase 7 and 9) */
+    const timed = accessRoutes(data, routeCtx, path, params, method)
+    if (timed) return timed
     const tagged = tagRoutes(data, routeCtx, path, params, method)
     if (tagged) return tagged
 
     /* findings, discovery and unmanaged resources; metrics, alarms and rightsizing (phase 5) */
     const drifted = driftRoutes(data, routeCtx, path, params, method) ?? monitoringRoutes(data, routeCtx, path, params, method)
     if (drifted) return drifted
+
+    /* device sign-in, API sessions and the console API's description (phase 7) */
+    const signedIn = cliRoutes(data, routeCtx, path, params, method)
+    if (signedIn) return signedIn
+    /* notifications, their settings, chat links and weekly digests (phase 7) */
+    const notified = notificationRoutes(data, routeCtx, path, params, method)
+    if (notified) return notified
 
     /* jobs: their steering, approvals and bulk runs (phase 4) */
     const steered = jobRoutes(data, routeCtx, path, params, method)
@@ -539,6 +539,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
     const method = req.method.toUpperCase()
     // the jobs the console started move on the clock: approvals land, applies finish, resources settle
     settleConsole(data, now())
+    settleAccess(dir, now())
 
     /* the demo identity provider and the BFF */
     if (path === '/demo-idp/people' && method === 'GET') return { status: 200, body: { items: demoPeople(dir), next: null } }

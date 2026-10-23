@@ -13,6 +13,7 @@ import { PlatformFeed } from './PlatformFeed'
 import { Search } from './Search'
 import { isIamRoute, type PageProps, type Route, type RouteName } from './router'
 import { toolSectionOf } from './tools'
+import { HeldRolesBanner } from './elevation'
 
 import SignInPage from '../pages/SignInPage'
 
@@ -36,7 +37,17 @@ const IamRolesPage = lazy(() => import('../pages/iam/RolesPage'))
 const IamRolePage = lazy(() => import('../pages/iam/RolesPage').then((m) => ({ default: m.IamRolePage })))
 const IamAccessKeysPage = lazy(() => import('../pages/iam/AccessKeysPage'))
 const IamAccessRequestsPage = lazy(() => import('../pages/iam/AccessRequestsPage'))
+const IamPoliciesPage = lazy(() => import('../pages/iam/policies/PoliciesPage'))
+const IamPolicyPage = lazy(() => import('../pages/iam/policies/PoliciesPage').then((m) => ({ default: m.IamPolicyPage })))
+const IamPolicyEditPage = lazy(() => import('../pages/iam/policies/PoliciesPage').then((m) => ({ default: m.IamPolicyEditPage })))
+const IamSimulatorPage = lazy(() => import('../pages/iam/policies/SimulatorPage'))
+const IamGuardrailsPage = lazy(() => import('../pages/iam/policies/GuardrailsPage'))
+const IamGuardrailPage = lazy(() => import('../pages/iam/policies/GuardrailsPage').then((m) => ({ default: m.IamGuardrailPage })))
 const IamAccessRequestPage = lazy(() => import('../pages/iam/AccessRequestsPage').then((m) => ({ default: m.IamAccessRequestPage })))
+const IamAccessReviewsPage = lazy(() => import('../pages/iam/AccessReviewsPage'))
+const IamAccessReviewPage = lazy(() => import('../pages/iam/AccessReviewsPage').then((m) => ({ default: m.IamAccessReviewPage })))
+const IamElevationsPage = lazy(() => import('../pages/iam/ElevationsPage'))
+const OrganizationAccountsPage = lazy(() => import('../pages/organization/AccountsPage'))
 const ResourceGroupsPage = lazy(() => import('../pages/groups/ResourceGroupsPage'))
 const ResourceGroupPage = lazy(() => import('../pages/groups/ResourceGroupsPage').then((m) => ({ default: m.ResourceGroupPage })))
 const TagEditorPage = lazy(() => import('../pages/tags/TagEditorPage'))
@@ -45,7 +56,19 @@ const DriftPage = lazy(() => import('../pages/operations/DriftPage'))
 const UnmanagedPage = lazy(() => import('../pages/operations/UnmanagedPage'))
 const AlarmsPage = lazy(() => import('../pages/operations/AlarmsPage'))
 const RightsizingPage = lazy(() => import('../pages/operations/RightsizingPage'))
+const ActivityTrailPage = lazy(() => import('../pages/state/ActivityTrailPage'))
+const AsOfPage = lazy(() => import('../pages/state/AsOfPage'))
+const ResourceMapPage = lazy(() => import('../pages/state/ResourceMapPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
+const DevicePage = lazy(() => import('../pages/developer/DevicePage'))
+const CliSessionsPage = lazy(() => import('../pages/iam/CliSessionsPage'))
+const ShellPage = lazy(() => import('../pages/developer/ShellPage'))
+const PortalPage = lazy(() => import('../pages/developer/PortalPage'))
+const NotificationsPage = lazy(() => import('../pages/notify/NotificationsPage'))
+const NotificationSettingsPage = lazy(() => import('../pages/notify/NotificationSettingsPage'))
+const ChatLinkPage = lazy(() => import('../pages/notify/ChatLinkPage'))
+const DigestsPage = lazy(() => import('../pages/notify/DigestsPage'))
+const DigestPage = lazy(() => import('../pages/notify/DigestsPage').then((m) => ({ default: m.DigestPage })))
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
 
 /*
@@ -73,6 +96,18 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'iam-keys': IamAccessKeysPage,
   'iam-requests': IamAccessRequestsPage,
   'iam-request': IamAccessRequestPage,
+  'iam-reviews': IamAccessReviewsPage,
+  'iam-review': IamAccessReviewPage,
+  'iam-elevations': IamElevationsPage,
+  'org-accounts': OrganizationAccountsPage,
+  'iam-policies': IamPoliciesPage,
+  'iam-policy-new': IamPolicyEditPage,
+  'iam-policy': IamPolicyPage,
+  'iam-policy-edit': IamPolicyEditPage,
+  'iam-simulator': IamSimulatorPage,
+  'iam-guardrails': IamGuardrailsPage,
+  'iam-guardrail-new': IamGuardrailPage,
+  'iam-guardrail': IamGuardrailPage,
   groups: ResourceGroupsPage,
   group: ResourceGroupPage,
   'tag-editor': TagEditorPage,
@@ -81,7 +116,19 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   unmanaged: UnmanagedPage,
   alarms: AlarmsPage,
   rightsizing: RightsizingPage,
+  activity: ActivityTrailPage,
+  'as-of': AsOfPage,
+  map: ResourceMapPage,
   settings: SettingsPage,
+  device: DevicePage,
+  'iam-cli': CliSessionsPage,
+  shell: ShellPage,
+  portal: PortalPage,
+  notifications: NotificationsPage,
+  'notification-settings': NotificationSettingsPage,
+  'chat-link': ChatLinkPage,
+  digests: DigestsPage,
+  digest: DigestPage,
   'not-found': NotFoundPage,
 }
 
@@ -124,6 +171,7 @@ export function AppShell({ route }: { route: Route }) {
           <main id="main" tabIndex={-1} className="console-content min-w-0 flex-1 overflow-y-auto px-6 py-6 outline-none lg:px-8">
             <div key={route.path} className="mx-auto w-full max-w-7xl animate-fade-in">
               <Breadcrumbs route={route} />
+              <HeldRolesBanner />
               <ErrorBoundary resetKey={route.path} label="This page">
                 <Suspense fallback={<PageLoading />}>
                   <Page route={route} />

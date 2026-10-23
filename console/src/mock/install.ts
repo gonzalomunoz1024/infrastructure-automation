@@ -1,5 +1,6 @@
 import type { Directory } from './directory'
-import { replayConsole, type ConsoleCommand } from './commands'
+import { replayConsole, settleConsole, type ConsoleCommand } from './commands'
+import { lastNotificationSeq, notificationEventsAfter } from './notifications'
 import type { MockData } from './data'
 import { liveEventsOf, toLiveEvent } from './live'
 import { createMockServer, memorySessionStore, nextMockEvent, type MockServer, type MockSession, type MockSessionStore } from './server'
@@ -146,12 +147,27 @@ class MockEventSource extends EventTarget {
       const open = new Event('open')
       this.onopen?.(open)
       this.dispatchEvent(open)
-      const all = liveEventsOf(server.data.events, session.accountId, after)
-      for (const e of after > 0 ? all : all.slice(-5)) this.emit(e.id, e.event)
+      const asked = /^n(\d+)$/.exec(at.searchParams.get('after') ?? '')
+      const liveAfter = asked ? 0 : after
+      const all = liveEventsOf(server.data.events, session.accountId, liveAfter)
+      for (const e of liveAfter > 0 ? all : all.slice(-5)) this.emit(e.id, e.event)
+      // the same stream carries the person's notifications (`event: notification`), after `n<seq>` or the newest
+      let lastNotification = asked ? Number(asked[1]) : lastNotificationSeq(server.data, Date.now())
+      const followNotifications = () => {
+        const userId = server.sessions.get()?.userId
+        if (!userId || this.readyState !== MockEventSource.OPEN) return
+        const now = Date.now()
+        settleConsole(server.data, now)
+        const next = notificationEventsAfter(server.data, userId, lastNotification, now)
+        lastNotification = next.last
+        for (const e of next.events) this.dispatchEvent(new MessageEvent('notification', { data: JSON.stringify(e.event), lastEventId: e.id }))
+      }
+      followNotifications()
       this.ticker = setInterval(() => {
         const next = nextMockEvent(server.data)
         const live = toLiveEvent(next, session.accountId)
         if (live) this.emit(String(next.seq), live)
+        followNotifications()
       }, LIVE_EVERY_MS)
     }, 40)
   }

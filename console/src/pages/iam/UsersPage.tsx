@@ -8,6 +8,7 @@ import { bff } from '../../lib/bff'
 import { useQuery } from '../../lib/queries'
 import { ADMIN_ROLE } from '../../lib/session'
 import type { AccessKey, IamGroup, IamUser } from '../../lib/types'
+import { UserBoundaries } from './policies/roles'
 import { GroupLinks, GroupPicker, KeyStatusTag, RoleTags, UserStatusTag, groupIdsOf, personLabel, rolesFromGroups, useAdminDecision, useIamWrite } from './common'
 
 /*
@@ -259,6 +260,8 @@ export function IamUserPage({ route }: PageProps) {
             <GroupLinks groups={u.groups} all={all} />
           )}
         </Section>
+
+        <UserBoundaries user={u} />
 
         {(admin || self) && (
           <Section

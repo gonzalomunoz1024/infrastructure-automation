@@ -50,13 +50,30 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'iam-roles':
     case 'iam-keys':
     case 'iam-requests':
+    case 'iam-reviews':
+    case 'iam-elevations':
       return [home, iam, { label: route.def?.title ?? 'Identity and access' }]
+    case 'iam-review':
+      return [home, iam, { label: 'Access reviews', href: pathFor('iam-reviews') }, { label: 'Campaign' }]
+    case 'org-accounts':
+      return [home, { label: 'Organization' }, { label: 'Accounts' }]
     case 'iam-user':
       return [home, iam, { label: 'Users', href: pathFor('iam-users') }, { label: route.params.id, mono: true }]
     case 'iam-group':
       return [home, iam, { label: 'Groups', href: pathFor('iam-groups') }, { label: route.params.id, mono: true }]
     case 'iam-role':
       return [home, iam, { label: 'Roles', href: pathFor('iam-roles') }, { label: route.params.id, mono: true }]
+    case 'iam-policies':
+    case 'iam-simulator':
+    case 'iam-guardrails':
+      return [home, iam, { label: route.def?.title ?? 'Identity and access' }]
+    case 'iam-policy-new':
+    case 'iam-policy':
+    case 'iam-policy-edit':
+      return [home, iam, { label: 'Policies', href: pathFor('iam-policies') }, { label: route.def?.title ?? 'Policy' }]
+    case 'iam-guardrail-new':
+    case 'iam-guardrail':
+      return [home, iam, { label: 'Guardrails', href: pathFor('iam-guardrails') }, { label: route.def?.title ?? 'Guardrail' }]
     case 'iam-request':
       return [home, iam, { label: 'Access requests', href: pathFor('iam-requests') }, { label: route.params.id, mono: true }]
     case 'groups':
@@ -71,8 +88,26 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
     case 'alarms':
     case 'rightsizing':
       return [home, { label: 'Operations', href: pathFor('drift') }, { label: route.def?.title ?? 'Operations' }]
+    case 'activity':
+    case 'as-of':
+    case 'map':
+      return [home, { label: 'Activity and history', href: pathFor('activity') }, { label: route.def?.title ?? 'Activity and history' }]
     case 'settings':
       return [home, { label: 'Settings' }]
+    case 'iam-cli':
+      return [home, iam, { label: 'CLI sign-ins' }]
+    case 'device':
+    case 'shell':
+    case 'portal':
+      return [home, { label: route.def?.title ?? 'Developer tools' }]
+    case 'notifications':
+    case 'digests':
+      return [home, { label: route.def?.title ?? 'Notifications' }]
+    case 'notification-settings':
+    case 'chat-link':
+      return [home, { label: 'Settings', href: pathFor('settings') }, { label: route.def?.title ?? 'Notifications' }]
+    case 'digest':
+      return [home, { label: 'Weekly digests', href: pathFor('digests') }, { label: route.params.weekStart }]
     default:
       return [home, { label: 'Not found' }]
   }

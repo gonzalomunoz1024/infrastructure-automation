@@ -61,8 +61,14 @@ export function iamNav(route: Route, accountName: string, pendingRequests?: numb
       { id: 'users', label: 'Users', icon: 'users', href: pathFor('iam-users'), active: on('iam-users', 'iam-user') },
       { id: 'groups', label: 'Groups', icon: 'grid', href: pathFor('iam-groups'), active: on('iam-groups', 'iam-group') },
       { id: 'roles', label: 'Roles', icon: 'shield', href: pathFor('iam-roles'), active: on('iam-roles', 'iam-role') },
+      { id: 'policies', label: 'Policies', icon: 'document', href: pathFor('iam-policies'), active: on('iam-policies', 'iam-policy', 'iam-policy-new', 'iam-policy-edit') },
+      { id: 'simulator', label: 'Policy simulator', icon: 'play', href: pathFor('iam-simulator'), active: on('iam-simulator') },
+      { id: 'guardrails', label: 'Guardrails', icon: 'lock', href: pathFor('iam-guardrails'), active: on('iam-guardrails', 'iam-guardrail', 'iam-guardrail-new') },
       { id: 'keys', label: 'Access keys', icon: 'key', href: pathFor('iam-keys'), active: on('iam-keys') },
+      { id: 'cli', label: 'CLI sign-ins', icon: 'terminal', href: pathFor('iam-cli'), active: on('iam-cli') },
       { id: 'requests', label: 'Access requests', icon: 'approval', href: pathFor('iam-requests'), active: on('iam-requests', 'iam-request'), badge: pendingRequests || undefined },
+      { id: 'reviews', label: 'Access reviews', icon: 'audit', href: pathFor('iam-reviews'), active: on('iam-reviews', 'iam-review') },
+      { id: 'elevations', label: 'Elevations', icon: 'clock', href: pathFor('iam-elevations'), active: on('iam-elevations') },
     ],
   }
 }

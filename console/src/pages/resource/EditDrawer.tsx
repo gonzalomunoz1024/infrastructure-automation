@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Button, Drawer, EmptyState, Icon, OverlayBody, OverlayFooter, OverlayHeader, SkeletonRows, useDebounce, useOverlayClose } from '@iaf/ui'
 import { DotTag, PreviewCard, SchemaForm, displayWfrn, fieldNames, fieldRoot, formatValueText, schemaType, titleCase, validateAgainst, xConsoleOf, type Problem, type Schema, type SchemaValue } from '@iaf/console-kit'
 import { CodeDisclosure } from '../../app/CodeDisclosure'
@@ -128,6 +128,10 @@ export interface EditDrawerProps {
   detail: ConsoleResourceDetail
   onClose: () => void
   onAccepted: (accepted: CommandAccepted) => void
+  /** values to start the form from instead of the resource's own (a revert to an earlier time) */
+  initial?: SchemaValue
+  /** what the drawer opens for, shown above the form */
+  note?: ReactNode
 }
 
 function CancelButton() {
@@ -162,14 +166,14 @@ export function EditDrawer(props: EditDrawerProps) {
   )
 }
 
-function EditForm({ type, action, wfrn, name, detail, onClose, onAccepted }: EditDrawerProps & { action: ConsoleAction }) {
+function EditForm({ type, action, wfrn, name, detail, onClose, onAccepted, initial, note }: EditDrawerProps & { action: ConsoleAction }) {
   const { decide, account, region } = useConsole()
   const noun = singularOf(type.title).toLowerCase()
   const schema = useMemo(() => editSchemaOf(action, type), [action, type])
   // the version the edits are made against: the one the drawer opened on, until the person loads a newer one
   const [base, setBase] = useState(detail)
   const start = useMemo(() => editStart(schema, base.attributes), [schema, base.attributes])
-  const [value, setValue] = useState<SchemaValue>(() => editStart(schema, detail.attributes))
+  const [value, setValue] = useState<SchemaValue>(() => ({ ...editStart(schema, detail.attributes), ...initial }))
   const [problems, setProblems] = useState<Problem[]>([])
   const [movedOn, setMovedOn] = useState<number | undefined>(undefined)
   const [loadingLatest, setLoadingLatest] = useState(false)
@@ -241,6 +245,7 @@ function EditForm({ type, action, wfrn, name, detail, onClose, onAccepted }: Edi
           }}
           noValidate
         >
+          {note}
           <p className="mb-5 text-sm text-secondary">
             {action.description ?? `${action.title} changes what this ${noun} is asked to be.`} Only the fields you change are sent; <span className="font-mono">{action.workflow}</span> applies them and records the new values.
           </p>
