@@ -1028,7 +1028,68 @@ admin's and the chargeback export an admin's or an auditor's, as the cost servic
 
 ### The executive home (50 to 54)
 
-To be written with WP 9.5.
+50. **The numbers are counted from the rows the other pages show.** `mock/insights.ts` computes
+    `GET /console/v1/insights` from the dataset every route serves, so each number agrees with a
+    page: resources managed are the list's rows in the covered accounts in any state but deleted
+    (`liveRowOf`), at the period's start those created before it plus each tombstone created
+    before it and deleted after (its `updatedAt`), and by service the same rows by their service.
+    Requests are the platform's jobs started in the period, a batch once and never its children,
+    from every channel (the console's own, the catalog, REST, MCP, triggers), since each one
+    stood in for a ticket; a job's account is its own, its wfrn's, else its workflow owner's, the
+    rule the sample resources follow. Self-served is a request that ended `succeeded`, as the
+    mock has no step retried, skipped or aborted by hand; failed is `failed` or `rolled-back`;
+    one still running or waiting for approval counts in the total only. Adoption counts the same
+    requests week by week, and a week's active people are its distinct requesters.
+51. **Lead time and hours saved are measured against a ticket baseline per queue and kind.** Lead
+    time is how long a self-served request took from being asked to done, its approval included
+    (the job's `durationMs`, else `endedAt` less `startedAt`), as the nearest-rank median and
+    90th percentile. `TICKET_BASELINE` stands in for the BFF's `console.insights.baseline`, a
+    "ticket export, September 2026": the median ticket time by queue (the team that owns the
+    workflow) and kind (the request's verb: create, delete, anything else a change),
+    team-compute's creates 3 days, changes 1 day and deletes 2 days, team-platform's 2 days each,
+    and no queue for the data team. `baselineP50Ms` is the median of those medians over the
+    self-served requests the export covers, and `hoursSaved` adds up, over the same requests, the
+    baseline less the lead time (never below 0 for one), in hours to a tenth. Without a covered
+    request both are absent: the page shows the lead time alone with its 90th percentile, and
+    hours saved says it needs a baseline and why (Raj Patel, in Data only, sees this).
+52. **Drift fixed counts only findings that closed, so the mock's stays at 0.** Found is the
+    findings opened in the period on the covered resources and open is every finding open now,
+    both from `findingsOf`, the findings the resource pages show (opened by the first hourly scan
+    after a create, at most a day ago). Fixed would count the findings closed in the period by a
+    revert, an accept or the resource changing back, with the mean time to fix over those; the
+    mock serves no revert, accept or rescan, so nothing closes and the tile says so ("0 of 19",
+    "none fixed yet") rather than guess. Deleting a drifted resource takes its finding off the
+    open count but is not a fix, since nothing was brought back in line. Where more are fixed
+    than found (fixes of findings found before the period), the tile reads "3 fixed" with the
+    found count beside it, since "3 of 2" would not read.
+53. **Periods are whole UTC days, half open, and IAM decides account by account.** A period of 7,
+    30 or 90 days ends at the next midnight UTC, which it excludes, and starts that many days
+    before, so today is always in it and nothing after `asOf` counts; adoption's weeks start on
+    Monday (UTC), and the first and last count only their days inside the period. The BFF checks
+    `insights:get` on each account (viewers and up have it through `*:get`; `insights` is a
+    console service, so the platform's role never decides it): `scope=account` needs it in the
+    session's account and is refused with a 403 otherwise, and `scope=organization` covers each
+    membership that allows it, the page naming the ones left out, and is refused only when none
+    does. A `period` or `scope` outside the contract's values is a 400 naming the field, and any
+    method but GET a 405. Grouped counts (`/search:counts`) are not served: the breakdown by
+    service comes with the numbers, and the page asks for nothing it does not show.
+54. **The view lives in the link, and the last numbers stay until the next arrive.** The period
+    and the scope are the page's query (`#/insights?period=30d&scope=organization`), so a link
+    shares the view, and each Segmented is named for what it shows ("Period: 30 days", "Scope:
+    All my accounts"). Spend by team is the cost service's report by cost centre over the
+    numbers' own days, on the path the hub fixed
+    (`/console/v1/cost?scope=organization&groupBy=costCentre`, which needs `cost:list`), asked
+    with `scope=account` when the page is narrowed so that spend and numbers cover the same
+    accounts; each centre's accounts and owning teams come from the report's accounts, and under
+    it go the total, the month's forecast, the resources with no list price and the accounts
+    skipped, every amount an estimate from list prices. While a new view loads, the last numbers
+    stay, dimmed and `aria-busy`, and a live region says what is shown; the skeleton is for a
+    first load only, a failure offers a retry, a refusal its See why, and a refused or failed
+    spend changes only its card and tile. Every chart keeps its numbers as a table under a
+    disclosure (console-kit's `ChartFigure`), and active people get a chart of their own, since
+    they count people, not requests. The home's card asks the same question as
+    `#/insights?period=30d&scope=account`, so the page opens from the cache, and on a 403 the
+    card is not drawn at all.
 
 ### Cost and budgets (55 to 59)
 

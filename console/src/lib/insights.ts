@@ -15,6 +15,25 @@ export type InsightsPeriod = '7d' | '30d' | '90d'
 /** the session's account, or every account the person may read insights in */
 export type InsightsScope = 'account' | 'organization'
 
+/** The periods the executive home offers, shortest first. */
+export const INSIGHTS_PERIODS: readonly InsightsPeriod[] = ['7d', '30d', '90d']
+/** The contract's defaults: the last 30 days, every account the person may read insights in. */
+export const DEFAULT_PERIOD: InsightsPeriod = '30d'
+export const DEFAULT_SCOPE: InsightsScope = 'organization'
+
+/** How many days a period spans. */
+export function periodDays(period: InsightsPeriod): number {
+  return period === '7d' ? 7 : period === '30d' ? 30 : 90
+}
+
+export function isInsightsPeriod(v: unknown): v is InsightsPeriod {
+  return v === '7d' || v === '30d' || v === '90d'
+}
+
+export function isInsightsScope(v: unknown): v is InsightsScope {
+  return v === 'account' || v === 'organization'
+}
+
 export interface InsightsAccount {
   accountId: string
   name: string
@@ -93,6 +112,11 @@ export interface CountsQuery {
   type?: string
   state?: ResourceState
   drift?: boolean
+}
+
+/** The query key of one view of the numbers: the home's widget and the page share it, so one answers the other. */
+export function insightsKey(userId: string, accountId: string, period: InsightsPeriod, scope: InsightsScope): readonly string[] {
+  return ['insights', userId, accountId, period, scope]
 }
 
 export const insightsApi = {

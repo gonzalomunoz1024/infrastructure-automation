@@ -59,3 +59,4 @@ export {
 export { CursorPager, useCursorPaging, nextCursorFromLink, PAGE_SIZES, type CursorPagerProps, type CursorPaging } from './CursorPager'
 export { CodeView, toYaml, shellQuote, curlCommand, cliFlags, cliCommand, type CodeSample, type CodeViewProps, type CurlRequest } from './CodeView'
 export { ConfirmDialog, type ConfirmDialogProps } from './ConfirmDialog'
+export { ChartFigure, type ChartFigureProps } from './ChartFigure'
