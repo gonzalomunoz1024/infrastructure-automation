@@ -35,7 +35,7 @@ public final class AuditRoutes {
     public RouterFunction<ServerResponse> routes() {
         return route(GET("/api/v1/audit"), this::list)
                 .andRoute(POST("/api/v1/audit:export-pack"), this::pack)
-                .andRoute(GET("/api/v1/audit/{jobId}"), this::get)
+                .andRoute(GET("/api/v1/audit/{jobId:[^:]+}"), this::get)
                 .andRoute(GET("/api/v1/audit/{jobId}:verify"), this::verify)
                 .andRoute(GET("/api/v1/audit/{jobId}/export"), this::export);
     }

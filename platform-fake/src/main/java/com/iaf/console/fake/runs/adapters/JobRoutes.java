@@ -91,16 +91,21 @@ public final class JobRoutes {
             }
             String previewPath = CatalogEntries.previewPath(workflow);
             if (previewPath != null) {
-                routes = routes.andRoute(POST(previewPath), request -> preview(request, workflow));
+                routes = routes.andRoute(POST(pattern(previewPath)), request -> preview(request, workflow));
             }
             String batchPath = CatalogEntries.batchPath(workflow);
             if (batchPath != null) {
-                routes = routes.andRoute(POST(batchPath), request -> generatedBatch(request, workflow));
+                routes = routes.andRoute(POST(pattern(batchPath)), request -> generatedBatch(request, workflow));
             }
-            routes = routes.andRoute(method(HttpMethod.valueOf(workflow.method())).and(path(workflow.path())),
+            routes = routes.andRoute(method(HttpMethod.valueOf(workflow.method())).and(path(pattern(workflow.path()))),
                     request -> generatedStart(request, workflow));
         }
         return routes;
+    }
+
+    /** A route pattern whose variables stop at a colon, so {@code /vms/{vmId}:preview} never takes {@code /vms/x:restart:preview}. */
+    static String pattern(String path) {
+        return path.replaceAll("\\{([A-Za-z0-9_]+)\\}", "{$1:[^:]+}");
     }
 
     // jobs
@@ -190,10 +195,10 @@ public final class JobRoutes {
             }
             Job result = switch (action) {
                 case "cancel" -> jobs.cancel(job, caller);
-                case "retry" -> jobs.retry(job, body, caller);
+                case "retry" -> jobs.retry(job, body, caller, Callers.context(request));
                 case "skip" -> jobs.skip(job, body, caller);
                 case "abort" -> jobs.abort(job, caller);
-                case "rerun" -> jobs.rerun(job, body, caller);
+                case "rerun" -> jobs.rerun(job, body, caller, Callers.context(request));
                 case "retry-failed-rows" -> jobs.retryFailedRows(job);
                 default -> throw ApiException.notFound("command", action);
             };
@@ -239,7 +244,7 @@ public final class JobRoutes {
             Job job = jobs.decideApproval(approval, approve, caller, body.path("comment").asText(null));
             ObjectNode links = links(job);
             links.put("approval", "/api/v1/approvals/" + approval.id());
-            return CommandResult.accepted(commandAccepted(approval.id(), approval.status(), links));
+            return CommandResult.accepted(commandAccepted(approval.id(), approve ? "approved" : "rejected", links));
         });
     }
 

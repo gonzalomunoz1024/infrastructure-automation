@@ -343,6 +343,9 @@ public final class Observer {
         if (mapping.isObject()) {
             for (Map.Entry<String, JsonNode> field : mapping.properties()) {
                 JsonNode value = Expressions.render(field.getValue(), responseScope);
+                if (value == null || value.isNull() || value.isMissingNode()) {
+                    continue;
+                }
                 out.set(field.getKey(), sensitive.contains(field.getKey()) ? Json.mapper().getNodeFactory().textNode(MASK) : value);
             }
         }

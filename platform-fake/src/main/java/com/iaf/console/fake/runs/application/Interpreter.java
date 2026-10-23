@@ -5,9 +5,11 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -286,7 +288,7 @@ final class Interpreter {
     private String perform(Run run, String id, JsonNode body, StepRecord record) {
         String type = typeOf(body);
         JsonNode input = renderInput(run, id, body);
-        record.start(clock.now(), input);
+        record.input(input);
         if (!"switch".equals(type) && !"try".equals(type) && !"fork".equals(type) && !"for".equals(type)) {
             emitStep(run, stepData(run, record));
         }
@@ -565,7 +567,7 @@ final class Interpreter {
             }
             case "ansible" -> {
                 providerName = "ops-playbooks";
-                String path = with.path("playbook").path("path").asText(null);
+                String path = playbookPath(with.path("playbook"));
                 ProviderDef playbooks = content.provider(providerName)
                         .orElseThrow(() -> StepFailure.of(id, "provider.notFound", "no provider " + "ops-playbooks"));
                 action = path == null ? null : playbooks.actionForPlaybook(path);
@@ -589,6 +591,17 @@ final class Interpreter {
             throw StepFailure.of(id, "action.unknown", providerName + " has no action " + action);
         }
         return new Call(provider, action, input);
+    }
+
+    /** The path of a playbook block: {@code playbook.git.path}, else {@code playbook.path}, else the block itself when it is text. */
+    private static String playbookPath(JsonNode playbook) {
+        if (playbook.isTextual()) {
+            return playbook.asText();
+        }
+        if (playbook.path("git").path("path").isTextual()) {
+            return playbook.path("git").path("path").asText();
+        }
+        return playbook.path("path").asText(null);
     }
 
     private JsonNode call(Run run, String id, Call call, StepRecord record) {
@@ -1206,7 +1219,12 @@ final class Interpreter {
         ArrayNode steps = out.putArray("steps");
         run.previewSteps.forEach(steps::add);
         ArrayNode affected = out.putArray("affectedResources");
-        run.affected.forEach(affected::add);
+        Set<String> seen = new HashSet<>();
+        for (ObjectNode resource : run.affected) {
+            if (seen.add(resource.path("type").asText() + ":" + resource.path("id").asText())) {
+                affected.add(resource);
+            }
+        }
         if (!run.priceLines.isEmpty()) {
             ObjectNode cost = out.putObject("cost");
             cost.put("monthly", Math.round(run.monthly * 100.0) / 100.0);

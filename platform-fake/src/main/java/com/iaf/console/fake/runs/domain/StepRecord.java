@@ -93,6 +93,11 @@ public final class StepRecord {
         this.error = null;
     }
 
+    /** The rendered input of the running attempt. */
+    public void input(JsonNode renderedInput) {
+        this.input = renderedInput;
+    }
+
     public void waiting() {
         this.status = "waiting";
     }

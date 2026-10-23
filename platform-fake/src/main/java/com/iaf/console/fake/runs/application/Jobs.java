@@ -282,9 +282,9 @@ public final class Jobs {
     }
 
     /** A job that runs a finished one again from a step. */
-    Job rerunOf(Job source, WorkflowDef workflow, ObjectNode input, boolean resumed) {
+    Job rerunOf(Job source, WorkflowDef workflow, ObjectNode input, boolean resumed, JobContext context) {
         Job.Spec spec = new Job.Spec(ids.job(), workflow.name(), workflow.title(), workflow.version(), source.requester(), source.channel(),
-                source.actor(), source.onBehalfOf(), source.context(), source.traceId(), "single", source.parentId(), source.row(),
+                source.actor(), source.onBehalfOf(), context, source.traceId(), "single", source.parentId(), source.row(),
                 environmentOf(input), workflow.owner(), source.requesterTeams(), source.requesterRoles(), source.requesterAdmin(),
                 resumed ? null : source.id(), resumed ? source.id() : null, source.changeId());
         long ns = clock.nanos();
@@ -692,7 +692,7 @@ public final class Jobs {
     }
 
     /** Retries the paused step (with a new input when given), or runs a failed job again from its failed step. */
-    public Job retry(Job job, JsonNode body, Caller caller) {
+    public Job retry(Job job, JsonNode body, Caller caller, RequestContext request) {
         ObjectNode input = body.path("input").isObject() ? (ObjectNode) body.path("input") : null;
         if (job.status() == JobStatus.NEEDS_ATTENTION) {
             String step = body.path("step").asText(null);
@@ -707,7 +707,7 @@ public final class Jobs {
             if (from == null) {
                 throw ApiException.badRequest("the job has no failed step; name one");
             }
-            return rerun(job, from, input, true);
+            return rerun(job, from, input, true, request);
         }
         throw ApiException.conflict("job.notPaused: the job is " + job.status().id());
     }
@@ -733,7 +733,7 @@ public final class Jobs {
     }
 
     /** Runs a finished job again from a step, replaying the steps before it; judged like a start. */
-    public Job rerun(Job job, JsonNode body, Caller caller) {
+    public Job rerun(Job job, JsonNode body, Caller caller, RequestContext request) {
         if (!job.finished()) {
             throw ApiException.conflict("job.running: rerun a job once it ended");
         }
@@ -747,10 +747,20 @@ public final class Jobs {
         }
         quotas.chargeJobStart(caller);
         ObjectNode input = body.path("input").isObject() ? (ObjectNode) body.path("input") : null;
-        return rerun(job, from, input, false);
+        return rerun(job, from, input, false, request);
     }
 
-    private Job rerun(Job source, String fromStep, ObjectNode inputChanges, boolean resumed) {
+    /** The context of a rerun: the source job's account, region and wfrn with the new request's own console request id and labels. */
+    private static JobContext rerunContext(Job source, RequestContext request) {
+        JobContext context = source.context();
+        if (context == null) {
+            return null;
+        }
+        String wfrn = request.wfrn() != null ? request.wfrn() : context.wfrn();
+        return new JobContext(context.accountId(), context.region(), wfrn, request.consoleRequestId(), request.labels());
+    }
+
+    private Job rerun(Job source, String fromStep, ObjectNode inputChanges, boolean resumed, RequestContext request) {
         WorkflowDef workflow = workflowFor(source.workflow(), null);
         if (Interpreter.indexOf(workflow.steps(), fromStep) < 0) {
             throw ApiException.badRequest("step.unknown: " + fromStep + " is not a step of " + workflow.name());
@@ -759,7 +769,7 @@ public final class Jobs {
         if (inputChanges != null) {
             input.setAll(inputChanges);
         }
-        Job job = rerunOf(source, workflow, input, resumed);
+        Job job = rerunOf(source, workflow, input, resumed, rerunContext(source, request));
         runner.submit(() -> interpreter.execute(job, workflow, new Interpreter.Replay(source, fromStep), false, stepDelay));
         return job;
     }
