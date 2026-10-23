@@ -2,6 +2,7 @@ package com.iaf.console.bff;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -23,12 +24,13 @@ import com.iaf.console.bff.session.domain.Principal;
 import com.iaf.console.bff.session.domain.Session;
 
 /**
- * Counts across accounts for the console's own callers, over the demo stand-in: the indexer adds
- * up the accounts the console-internal principal names, one group per account, and an account's
- * numbers are the ones its people's lists show, times included: a tombstone was last updated when
- * it was deleted.
+ * What the console's own callers (the executive home, the copilot) ask the search application for,
+ * over the demo stand-in: counts across accounts, which the indexer adds up for the
+ * console-internal principal with one group per account, an account's numbers being the ones its
+ * people's lists show, times included (a tombstone was last updated when it was deleted); and the
+ * time of the index's newest event.
  */
-class CountsAcrossDemoTest extends DemoApp {
+class SearchCallersDemoTest extends DemoApp {
 
     private static final String VM = "/console/v1/r/vm";
 
@@ -103,6 +105,16 @@ class CountsAcrossDemoTest extends DemoApp {
         JsonNode across = search.countsAcross(session(), List.of(COMPUTE, DATA), Map.of("state", "deleted", "q", since), "account").block();
         assertEquals(1, across.path("total").asLong(), across.toString());
         assertEquals(COMPUTE, across.path("groups").path(0).path("key").asText(), across.toString());
+    }
+
+    @Test
+    void theIndexIsAsOfItsNewestEvent() {
+        Instant before = Instant.now();
+        ResourceFixtures.createVm(console, clients, console.signIn("gonzalo"), "as-of-" + (System.nanoTime() % 1_000_000));
+        Instant last = search.lastEventAt(session()).block();
+        assertNotNull(last, "the demo has had events");
+        assertFalse(last.isBefore(before), "a create is an event: " + last + " is before " + before);
+        assertFalse(last.isAfter(Instant.now()));
     }
 
     private static String approvalOf(Console.Signed as, String jobId) {

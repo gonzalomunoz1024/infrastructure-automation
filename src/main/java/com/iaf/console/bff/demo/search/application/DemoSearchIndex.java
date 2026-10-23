@@ -1,6 +1,7 @@
 package com.iaf.console.bff.demo.search.application;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -199,6 +200,21 @@ public class DemoSearchIndex {
             }
             body.put("groups", list);
         }
+        return body;
+    }
+
+    /**
+     * {@code /v1/index/status}: the account's documents, tombstones included (every account's
+     * when {@code null}, for the console-internal principal), and the store's newest event as the
+     * index's last applied one, since the demo index reads the store itself.
+     */
+    public Map<String, Object> status(String accountId) {
+        Instant last = store.lastEventAt();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("documents", accountId == null ? store.size() : store.snapshot(accountId, null).size());
+        body.put("lagSeconds", last == null ? 0.0 : Math.max(0, Duration.between(last, clock.instant()).toMillis()) / 1000.0);
+        body.put("lastEventAt", last == null ? null : last.toString());
+        body.put("rebuilding", false);
         return body;
     }
 

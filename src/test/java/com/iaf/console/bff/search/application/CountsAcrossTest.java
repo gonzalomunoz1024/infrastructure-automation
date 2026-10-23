@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.GroupedCounts;
+import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.bff.search.domain.SearchQuery;
@@ -163,6 +164,15 @@ class CountsAcrossTest {
         return answer;
     }
 
+    @Test
+    void theLastEventIsTheIndexersAndEmptyBeforeTheFirst() {
+        assertEquals(NOW, search.lastEventAt(gonzalo).block());
+        Session elsewhere = new Session("s_other", gonzalo.user(), List.of(new AccountMembership("210987654321", "Data", "active", "global",
+                List.of("owners"), List.of("account-admin"))), "210987654321", "global", NOW, NOW, NOW, NOW.plus(Duration.ofHours(12)), "https://idp.test",
+                "gonzalo");
+        assertNull(search.lastEventAt(elsewhere).block(), "no event yet: empty");
+    }
+
     private static Session session() {
         Principal principal = new Principal("user_gonzalo", "gonzalo@example.com", "Gonzalo Munoz", List.of());
         AccountMembership compute = new AccountMembership(COMPUTE, "Compute", "active", "global", List.of("owners"), List.of("account-admin"));
@@ -194,6 +204,11 @@ class CountsAcrossTest {
         @Override
         public Mono<ResourceCounts> counts(AccountScope scope, StateCaller caller, SearchQuery query) {
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Mono<IndexStatus> getIndexStatus(AccountScope scope, StateCaller caller) {
+            return Mono.just(new IndexStatus(3, 1.5, scope.accountId().equals(COMPUTE) ? NOW : null, false));
         }
     }
 }

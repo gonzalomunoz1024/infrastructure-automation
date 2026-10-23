@@ -1,5 +1,6 @@
 package com.iaf.console.bff.search.application;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -134,6 +135,15 @@ public class Search {
             }
             return across(session, accounts, query);
         });
+    }
+
+    /**
+     * When the search index last applied an event (the indexer's {@code lastEventAt}), asked as
+     * the person in the session's account: what the index's lists and counts are as of. Empty
+     * before the index's first event.
+     */
+    public Mono<Instant> lastEventAt(Session session) {
+        return Mono.defer(() -> index.getIndexStatus(scope(session), caller(session))).flatMap(status -> Mono.justOrEmpty(status.lastEventAt()));
     }
 
     /** The counts of the accounts, as the console-internal principal, in chunks the indexer takes, added up. */
