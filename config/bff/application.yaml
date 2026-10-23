@@ -4,8 +4,8 @@
 # by scripts/keys.mjs for every run and reach the container through its env file.
 console:
   web:
-    # the browser reaches the console through console-web's nginx on this origin
-    origins: ["http://localhost:3000"]
+    # the browser reaches the console through console-web's nginx on these origins
+    origins: ["http://localhost:3000", "http://localhost:3001"]   # console-web, and the cost web of step 5
   oidc:
     # the dev SSO: Dex, a real OpenID Connect provider (config/dex/config.yaml). The issuer must be
     # the same URL for the browser and for this container, so the browser maps the host `dex` to

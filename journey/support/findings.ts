@@ -11,17 +11,17 @@ const README = 'https://github.com/gonzalomunoz1024/infrastructure-automation/bl
 
 export const FINDINGS = {
   'F-4': { owner: 'console-bff', summary: 'no BFF commit serves both the cost routes (console-bff--cost) and the drift routes (console-bff--drift)' },
-  'F-5': { owner: 'console-web', summary: 'no resource cost panel or Cost Explorer in the console' },
   'F-9': { owner: 'console-web', summary: 'the console reads GET /console/v1/types as a bare list; the contract and the BFF answer { items }, so every page is blank after sign-in' },
   'F-13': { owner: 'console-bff', summary: 'a resource\u2019s ETag is the state version alone, so a conditional read answers 304 while its request moved on (running to waiting-approval)' },
   'F-14': { owner: 'console-web', summary: 'a deleted resource\u2019s page says it cannot load it instead of showing its tombstone: it reads the platform record by the wfrn\u2019s console id, which the platform does not know' },
+  'F-15': { owner: 'console-web', summary: 'console-web--phase-9-cost, the only web with the cost panel, lacks F-9\u2019s fix (3950f17 on console-web--phase-5), so its pages are blank in live mode' },
   'F-12': { owner: 'console-web', summary: 'the drift tab stops following a revert when its job succeeded, before the finding closes, and shows it open until a reload' },
 } as const
 
 export type FindingId = keyof typeof FINDINGS
 
 /** Findings no pinned commit fixes yet. */
-const OPEN: ReadonlySet<FindingId> = new Set<FindingId>(['F-4', 'F-5', 'F-9', 'F-12', 'F-13', 'F-14'])
+const OPEN: ReadonlySet<FindingId> = new Set<FindingId>(['F-4', 'F-12', 'F-13', 'F-14', 'F-15'])
 
 const assumedFixed = new Set((process.env.E2E_ASSUME_FIXED ?? '').split(',').map((s) => s.trim()).filter(Boolean))
 

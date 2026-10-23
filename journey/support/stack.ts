@@ -15,6 +15,9 @@ export const JOURNEY_WORK = join(WORK, 'journey')
 /** The console as the browser reaches it: console-web's nginx, which proxies /auth and /console to the BFF. */
 export const CONSOLE_URL = process.env.E2E_CONSOLE_URL ?? 'http://localhost:3000'
 
+/** The console-web commit with the cost panel (services.lock: console-web-cost), for step 5. */
+export const COST_WEB_URL = process.env.E2E_COST_WEB_URL ?? 'http://localhost:3001'
+
 export const URLS = {
   bff: 'http://127.0.0.1:18081',
   state: 'http://127.0.0.1:18082',

@@ -5,7 +5,7 @@ import { fixmeWhileOpen } from '../support/findings.js'
 import { publicImage, resizeOutOfBand } from '../support/platform.js'
 import { until } from '../support/poll.js'
 import { signIn } from '../support/sign-in.js'
-import { CONSOLE_URL, DANA, GONZALO, readSeed, storageStateOf } from '../support/stack.js'
+import { CONSOLE_URL, COST_WEB_URL, DANA, GONZALO, readSeed, storageStateOf } from '../support/stack.js'
 
 /*
  * The customer console's full-system journey, through every real service of docker-compose.yml:
@@ -32,7 +32,7 @@ test.describe.configure({ mode: 'serial' })
 const VM_NAME = `e2e-vm-${Date.now().toString(36).slice(-6)}`
 const DELETE_REASON = 'the e2e journey is done with it'
 
-const journey: { wfrn?: string; vmId?: string; findingId?: string; deleteJobId?: string } = {}
+const journey: { wfrn?: string; vmId?: string; monthly?: number; findingId?: string; deleteJobId?: string } = {}
 
 const vmPath = (wfrn: string, query = '') => `/#/console/compute/vm/${encodeURIComponent(wfrn)}${query}`
 
@@ -63,6 +63,21 @@ async function danaSignsIn(browser: Browser, next = '/'): Promise<{ page: Page; 
   return { page, close: () => context.close() }
 }
 
+/** Polls the BFF's cost route until the cost service charges the VM by list prices, and answers it. */
+async function priced(bff: Bff, wfrn: string) {
+  const cost = await until('the cost service to price it', async () => {
+    try {
+      const c = await bff.cost('vm', wfrn)
+      return c.charged && c.monthly > 0 ? c : null
+    } catch (e) {
+      if (e instanceof BffError && e.status === 404) return null
+      throw e
+    }
+  })
+  expect(cost.source).toBe('list-prices')
+  return cost
+}
+
 /** Polls the BFF until the VM is active, and answers it. */
 function activeVm(bff: Bff, wfrn: string): Promise<Resource> {
   return until(`${wfrn} to be active`, async () => {
@@ -90,7 +105,6 @@ test.describe('after sign-in', () => {
   test.use({ storageState: storageStateOf(GONZALO) })
 
   test('1 · the console greets him in the Compute account', async ({ page }) => {
-    fixmeWhileOpen('F-9')
     await page.goto('/#/')
     await expect(page.getByText(`Signed in as ${GONZALO.name}`)).toBeVisible()
     await expect(page.getByRole('button', { name: /^Account: Compute/ })).toBeVisible()
@@ -98,7 +112,6 @@ test.describe('after sign-in', () => {
   })
 
   test('2 · he creates a VM in the create wizard', async ({ page }) => {
-    fixmeWhileOpen('F-9')
     const seed = readSeed()
     const image = await publicImage()
     await page.goto('/#/console/compute/vm')
@@ -149,7 +162,6 @@ test.describe('after sign-in', () => {
   })
 
   test('3 · he waits on its page until it is active', async ({ page }) => {
-    fixmeWhileOpen('F-9')
     await page.goto(vmPath(wfrnOf()))
     await expect(page.getByRole('heading', { name: VM_NAME, level: 1 })).toBeVisible()
     // the banner follows the create's request until it ended
@@ -172,7 +184,6 @@ test.describe('after sign-in', () => {
   })
 
   test('4 · he finds it in the global search', async ({ page }) => {
-    fixmeWhileOpen('F-9')
     await page.goto('/#/')
     await page.getByRole('button', { name: 'Search services, resources and pages' }).click()
     const palette = page.getByRole('dialog', { name: 'Command palette' })
@@ -191,23 +202,22 @@ test.describe('after sign-in', () => {
     expect(hit.type).toBe('vm')
   })
 
-  test('5 · he sees what it costs', async ({ page, request }) => {
-    fixmeWhileOpen('F-4', 'F-5')
+  test('5 · the BFF’s cost route prices it from the cost service', async ({ request }) => {
+    fixmeWhileOpen('F-4')
     const bff = new Bff(request)
+    journey.monthly = (await priced(bff, wfrnOf())).monthly
+  })
+
+  test('5 · he sees what it costs on the VM’s page', async ({ page, request }) => {
+    // the cost panel lives on console-web--phase-9-cost, served on its own port (services.lock)
+    fixmeWhileOpen('F-4', 'F-15')
     const wfrn = wfrnOf()
-    const cost = await until('the cost service to price it', async () => {
-      try {
-        const c = await bff.cost('vm', wfrn)
-        return c.charged && c.monthly > 0 ? c : null
-      } catch (e) {
-        if (e instanceof BffError && e.status === 404) return null
-        throw e
-      }
-    })
-    expect(cost.source).toBe('list-prices')
-    // whatever the panel looks like, the page shows the monthly rate the BFF answered
-    await page.goto(vmPath(wfrn))
-    await expect(page.getByText(new RegExp(cost.monthly.toFixed(2).replace('.', '\\.'))).first()).toBeVisible()
+    const monthly = journey.monthly ?? (await priced(new Bff(request), wfrn)).monthly
+    await page.goto(`${COST_WEB_URL}${vmPath(wfrn)}`)
+    await expect(page.getByRole('heading', { name: VM_NAME, level: 1 })).toBeVisible()
+    const fact = factOf(page, 'Monthly cost')
+    await expect(fact.locator('[data-cost="priced"]')).toBeVisible()
+    await expect(fact).toContainText(monthly.toFixed(2))
   })
 
   test('6 · it is resized behind the console’s back, and the drift scan finds it', async ({ request }) => {
@@ -232,7 +242,7 @@ test.describe('after sign-in', () => {
 
   test('7 · he sees the drift on the VM\u2019s page and reverts it with one click', async ({ page }) => {
     // F-12: the tab stops following once the job succeeded, before the finding closes
-    fixmeWhileOpen('F-9', 'F-12')
+    fixmeWhileOpen('F-12')
     const wfrn = wfrnOf()
     await page.goto(vmPath(wfrn, '?tab=drift'))
     const card = page.locator('[data-finding]')
@@ -275,7 +285,7 @@ test.describe('after sign-in', () => {
   test('8 · he deletes it, Dana approves, and it disappears', async ({ page, browser }) => {
     // F-13: the page keeps showing the request as running while it waits for its approver;
     // F-14: once the VM is gone the page says it cannot load it instead of showing its tombstone
-    fixmeWhileOpen('F-9', 'F-13', 'F-14')
+    fixmeWhileOpen('F-13', 'F-14')
     const wfrn = wfrnOf()
     await page.goto(vmPath(wfrn))
     await expect(page.getByRole('heading', { name: VM_NAME, level: 1 })).toBeVisible()

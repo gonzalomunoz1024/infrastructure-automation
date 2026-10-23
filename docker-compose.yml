@@ -295,3 +295,19 @@ services:
       interval: 3s
       timeout: 3s
       retries: 40
+
+  # the newest console-web with a cost panel (services.lock), for step 5 only: the same nginx
+  # routes, on its own port; the session cookie is the same, since cookies do not keep ports apart
+  web-cost:
+    image: console-e2e/console-web-cost:local
+    depends_on:
+      bff: { condition: service_started }
+      platform-fake: { condition: service_started }
+    volumes:
+      - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: ["127.0.0.1:3001:3000"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
