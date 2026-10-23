@@ -38,13 +38,16 @@ the state service, the search indexer, the cost service and the drift service's 
 
 | Person | Compute account 123456789012 | Data account 210987654321 |
 | --- | --- | --- |
-| gonzalo | account-admin (`owners`) | account-admin (`owners`) |
+| gonzalo (organization admin) | account-admin (`owners`) | account-admin (`owners`) |
 | dana | operator (`members`), in `compute-approvers` | |
 | mateo | operator (`members`) | |
 | mia | viewer (`viewers`), in `compute-approvers` | |
 | raj | | operator (`members`), in `data-approvers` |
 | ana | | operator and viewer (`members`, `viewers`) |
 | noah | no account: the sign-in answers 403 | |
+
+A third account, Sandbox (345678901234), has nobody in it: the organization pages' break-glass
+access and closing an account are tried there.
 
 `GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs
 use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, drift 18084, search
@@ -66,6 +69,7 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.session.secret` | Base64, at least 32 bytes; seals the login ticket and signs CSRF tokens. Generated at boot when empty, which only suits one replica |
 | `console.session.ttl`, `idle-timeout`, `secure`, `same-site`, `cookie-name` | The session cookie: 12 h, 1 h idle, `Secure`, `Lax`, `console_session` |
 | `console.auth.step-up.max-age`, `actions` | Which actions need a fresh sign-in (`*:delete`, within 10 minutes) |
+| `console.organization.admin-groups` | The identity provider groups whose members are organization admins (decision 34), read from the sign-in's groups claim; empty by default (nobody), `console-org-admins` in the demo |
 | `console.trust.key`, `previous-key`, `issuer` | The private EC JWK that signs internal tokens and on-behalf-of assertions; published at `/.well-known/jwks.json`. Generated at boot when empty |
 | `console.trust.clients.<service>.audiences`, `service-account`, `jwks`, `jwks-uri` | The console services that may get service tokens, the services each may get them for, and how each proves who it is (see Service tokens) |
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
@@ -142,6 +146,11 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
 | `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
+| `GET /console/v1/iam/guardrails`, `POST …/policy-simulations`, `GET /console/v1/iam/{quota-rules,elevation-rules}` | The guardrails over the account (read only), the policy simulator (nothing written), and the organization's quota and elevation rules |
+| `GET, POST /console/v1/iam/access-reviews`, `GET …/{id}`, `GET …/{id}/items`, `POST …/{id}/items/{itemId}:decide`, `POST …/{id}:cancel` | Access reviews (WP 9.11), passed through |
+| `GET, POST /console/v1/iam/elevations`, `GET …/{id}`, `POST …/{id}:decide`, `POST …/{id}:revoke` | Elevations (WP 9.12), passed through |
+| `GET /console/v1/organization/accounts`, `POST …/{accountId}:close`, `POST …/{accountId}/break-glass` | Organization admins only (404 otherwise): every account, closing one, break-glass access with the admin as `approvedBy` |
+| `GET, POST /console/v1/organization/guardrails`, `GET, PATCH, DELETE …/{guardrailId}` | Organization admins only: the organization's guardrails |
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
 | `POST /internal/v1/token` | A service token for another console service (client credentials with a JWT client assertion); in-cluster only |
@@ -383,6 +392,30 @@ account's job; 409 `job.not-failed` with the status otherwise):
   the last 30 days (2000 at most), and the latest console retry (`retry-of`) of one of the ten
   most recent that succeeded: who ran it and when.
 
+## Organization admins (decision 34)
+
+A person is an organization admin when the identity provider's groups of their sign-in include one
+of `console.organization.admin-groups`; the BFF decides it at sign-in and again at every step-up
+(a person taken out of the group stops being one at their next fresh sign-in), never from a
+request, and the session view says it as `organizationAdmin`. It grants nothing inside an
+account. It opens `/console/v1/organization/…`, which the BFF serves by calling the identity
+service's internal-only operations with its own service token, naming the person in
+`X-On-Behalf-Of` (the same signed assertion the platform reads) and in a `console.audit` log line
+for every write (`organization action=… target=… admin=… status=…`). Anyone else gets a 404, as the
+identity service answers callers that are not the internal principal. Every organization write
+needs a fresh sign-in, whatever `console.auth.step-up.actions` says: the step-up 403 names
+`account:close`, `account:break-glass`, `guardrail:create`, `guardrail:update` or
+`guardrail:delete`. Break-glass access always names the admin calling as `approvedBy` (the
+identity service refuses a person approving their own). A guardrail write drops every cached
+decision; closing an account or opening break-glass access drops that account's.
+
+Refusals name the part of console IAM that refused them: `Denial.refusedBy` is `policy`,
+`boundary` or `guardrail` (the identity service's `scope`, renamed because the BFF's `scope` is a
+platform scope) with `guardrailId` for a guardrail. A boundary's or a guardrail's refusal is never
+requestable and suggests no role, so the web offers no Request access for it. An allow that only a
+role held for a while (an elevation or break-glass access) gave is `elevated: true` in the
+session's `decisions` and is not cached.
+
 ## Service tokens (hub decision 23)
 
 The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
@@ -427,7 +460,7 @@ needs. `/internal` is never routed by the ingress. The demos keep their dev head
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
-`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `iam`,
+`resources`, `tags`, `resourcegroups`, `jobs`, `live`, `search`, `cost`, `scorecards`, `iam` (with the organization pages),
 `preferences`, `platform`, `identity`, `demo`, and `common` for the error handling and the
 service pass-through (`common.relay`) shared by every slice. Each slice is `domain` (no Spring),
 `ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
@@ -436,7 +469,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 294 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 322 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).

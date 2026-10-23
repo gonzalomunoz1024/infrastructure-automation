@@ -483,6 +483,8 @@ Denial:
     policyId: { type: string }        # console-iam
     statement: { type: string }       # console-iam
     scope: { type: string }           # platform
+    refusedBy: { enum: [policy, boundary, guardrail] }   # console-iam (decision 34)
+    guardrailId: { type: string }     # console-iam, a guardrail's refusal
     requestable: { type: boolean }
     suggestedRole: { type: string }
 ```
@@ -520,6 +522,63 @@ platform`, with `burst`), `access-keys` (`used` counts the account's active keys
 `resources.<type>` for every resource type of the catalog (its `metadata.name`, as the state
 service enforces it). Viewers, operators and admins may ask for
 an increase (`quota:request-increase`); auditors only read.
+
+## Organization admins and phase 7/9 IAM (decision 34, hub PR #38)
+
+Hub PR #38 adds these to the BFF's contract; this service serves them with that contract's
+shapes, over the identity service's contract on hub PR #22 (`console-root--identity-contract`,
+fce1187), until the pin moves past both.
+
+```
+GET  /console/v1/iam/guardrails                                   -> { items: Guardrail[] }   read only; 405 otherwise
+POST /console/v1/iam/policy-simulations                           -> PolicySimulation         POST only
+GET  /console/v1/iam/quota-rules, /console/v1/iam/elevation-rules -> QuotaRules, ElevationRules (the organization's: /v1/<name>)
+GET, POST /console/v1/iam/access-reviews                          -> page of AccessReview, AccessReview (201; 409 detail.reviewId)
+GET  /console/v1/iam/access-reviews/{id}, …/{id}/items?decision=  -> AccessReview, page of AccessReviewItem
+POST /console/v1/iam/access-reviews/{id}/items/{itemId}:decide    { decision: keep|revoke, comment? } -> AccessReviewItem
+POST /console/v1/iam/access-reviews/{id}:cancel                   -> AccessReview
+GET, POST /console/v1/iam/elevations                              -> page of Elevation, Elevation (201; 409 with the open one)
+GET  /console/v1/iam/elevations/{id}                              -> Elevation
+POST /console/v1/iam/elevations/{id}:decide                       { decision: approve|reject, comment? } -> Elevation
+POST /console/v1/iam/elevations/{id}:revoke                       { comment? } -> Elevation
+
+GET  /console/v1/organization/accounts?status=&limit=&after=      -> page of Account (closed ones included)
+POST /console/v1/organization/accounts/{accountId}:close          { reason } -> 202 Account
+POST /console/v1/organization/accounts/{accountId}/break-glass    { userId, reason, role?, durationMinutes? (≤ 240), ticket? } -> 201 Elevation
+GET, POST /console/v1/organization/guardrails                     -> page of Guardrail, 201 Guardrail
+GET, PATCH, DELETE /console/v1/organization/guardrails/{guardrailId}  (If-Match on PATCH and DELETE) -> Guardrail, Guardrail, 204
+```
+
+- The account-scoped ones pass through to `/v1/accounts/{accountId}/…` for the session's account
+  as the other IAM collections do (status, `ETag` and body unchanged; `If-Match`,
+  `If-None-Match`, `Idempotency-Key` forwarded). A path of these collections that the identity
+  service does not serve is a 404 here, a method a path does not take a 405.
+- A 403 the BFF completes names `access-review:<verb>` (reading a review's items is `get`),
+  `elevation:<verb>`, or for the simulator `iam:get` (a person or a role) or `iam:list` (groups),
+  on `wfrn:wf:iam::<account>:access-review/<reviewId>`, `…:elevation/<id or *>`,
+  `…:user/<id>`, `…:role/<name>` or `…:group/*`.
+- The organization paths are an organization admin's only (`Session.organizationAdmin`, from the
+  sign-in's identity provider groups and `console.organization.admin-groups`); anyone else gets
+  404. The BFF calls the identity service with its service token and `X-On-Behalf-Of` (the
+  person's signed on-behalf-of assertion), and logs every write on `console.audit`. Every write
+  needs a fresh sign-in: the step-up 403 with `detail.action` `account:close`,
+  `account:break-glass`, `guardrail:create`, `guardrail:update` or `guardrail:delete`.
+  Break-glass's `approvedBy` is always the admin calling (whatever the body says), so asking for
+  one's own access is the identity service's 400. An account id other than twelve digits is a 404.
+- `Session.organizationAdmin: boolean` is always present (false for nobody configured).
+- Denial: `refusedBy` and `guardrailId` come from the identity service's decisions (its `scope`)
+  in every Denial the BFF builds (403 bodies, `ConsoleAction.denied`, `Session.decisions`), and a
+  `denied` block the identity service sent is rewritten the same way (`scope` of policy, boundary
+  or guardrail becomes `refusedBy`). A boundary's or a guardrail's refusal is `requestable: false`
+  without `suggestedRole`. Otherwise the identity service's `requestable` and `suggestedRole` are
+  kept when it sends them.
+- `Session.decisions.<key>.elevated: true` (beyond PR #38) marks an allow that only a role held
+  for a while gave (the decision's `elevated`); such a decision is not cached.
+- A session's roles are the ones `principals:resolve` answered at sign-in, elevations and
+  break-glass access included (an account the person is no member of appears with `groups: []`);
+  re-resolving them while the session lives, and capping them at the earliest elevation `until`,
+  arrive with the session refresh of console-bff--phase-1, not on this branch. The `identity.changes`
+  events of `guardrail`, `access-review` and `elevation` drop the account's cached decisions.
 
 ## Access requests
 
