@@ -122,7 +122,7 @@ test.describe('the failure explainer in mock mode', () => {
       const res = await fetch('/console/v1/r/vm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Csrf-Token': session.csrfToken, 'Idempotency-Key': `e2e-${Date.now()}` },
-        body: JSON.stringify({ input: { name: 'web-fail-9', image: 'image-demo01', size: 'small' } }),
+        body: JSON.stringify({ input: { name: 'web-fail-9', image: 'image-demo01', size: 'small' }, tags: { owner: 'team-compute', 'cost-centre': 'cc-1042', 'data-class': 'internal', environment: 'dev' } }),
       })
       return (await res.json()) as { wfrn: string; jobId: string }
     })

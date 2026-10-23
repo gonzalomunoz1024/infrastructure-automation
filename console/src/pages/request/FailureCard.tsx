@@ -28,16 +28,18 @@ export function FailureCard({ job, onRetry, busy, className }: FailureCardProps)
   const batch = !!job.batch || job.kind === 'batch'
   if ((paused || job.status === 'failed') && failure.errorClass !== 'rejected' && !batch) {
     return (
-      <FailureExplainer
-        jobId={job.jobId}
-        status={job.status}
-        since={job.attention?.since ?? job.endedAt}
-        onRetry={onRetry}
-        busy={busy}
-        defaultStep={defaultFromStep(job)}
-        fallback={{ errorClass: failure.errorClass, message: failure.message, step: failure.step }}
-        className={cx('mb-8', className)}
-      />
+      <div data-failure-card={failure.errorClass ?? 'failed'}>
+        <FailureExplainer
+          jobId={job.jobId}
+          status={job.status}
+          since={job.attention?.since ?? job.endedAt}
+          onRetry={onRetry}
+          busy={busy}
+          defaultStep={defaultFromStep(job)}
+          fallback={{ errorClass: failure.errorClass, message: failure.message, step: failure.step }}
+          className={cx('mb-8', className)}
+        />
+      </div>
     )
   }
   return (

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { JobExplanation } from '../lib/explain'
 import { decodePrefill } from '../lib/prefill'
-import type { CommandAccepted, JobSummary } from '../lib/types'
+import type { BffJobDetail, CommandAccepted, JobSummary } from '../lib/types'
 import { APPROVAL_MS, RUN_MS } from './commands'
 import { buildMockData } from './data'
 import { createMockServer, csrfTokenOf, memorySessionStore } from './server'
@@ -16,6 +16,8 @@ import { createMockServer, csrfTokenOf, memorySessionStore } from './server'
 const NOW = Date.parse('2026-10-23T10:00:00Z')
 const SEED_FAILED = 'job_83amhygy2c'
 const SEED_PAUSED = 'job_demo_attention'
+/** the tags the account's policy requires at create (phase 4) */
+const TAGS = { owner: 'team-compute', 'cost-centre': 'cc-1042', 'data-class': 'internal', environment: 'dev' }
 
 function bff(person: string, start = NOW) {
   let now = start
@@ -26,7 +28,7 @@ function bff(person: string, start = NOW) {
   const explain = (jobId: string) => call('GET', `/console/v1/jobs/${jobId}/explanation`)
   /** a VM create whose name makes the mock's provider fail it, run until it pauses on the failed apply (a read settles the clock's jobs) */
   const failingCreate = (name: string) => {
-    const accepted = call('POST', '/console/v1/r/vm', { input: { name, image: 'image-demo01', size: 'small', environment: 'dev' } }).body as CommandAccepted
+    const accepted = call('POST', '/console/v1/r/vm', { input: { name, image: 'image-demo01', size: 'small', environment: 'dev' }, tags: TAGS }).body as CommandAccepted
     settle()
     expect(call('GET', `/console/v1/jobs/${accepted.jobId}`).body).toMatchObject({ status: 'needs-attention', attention: { step: 'apply' } })
     return accepted
@@ -82,8 +84,11 @@ describe('explaining a failed request', () => {
     const dana = bff('dana')
     const first = dana.failingCreate('web-fail-3')
     let x = explanation(dana.explain(first.jobId))
+    expect(x).toMatchObject({ source: 'rules', cause: { class: 'provider', title: 'The provider failed while making the change' }, fix: { fromStep: 'apply', confidence: 'medium' } })
     // the step as the request page draws it: its name, its attempts and the provider's words
-    expect(x).toMatchObject({ source: 'rules', cause: { class: 'provider', title: 'The provider failed while making the change' }, fix: { fromStep: 'apply', confidence: 'medium' }, failedStep: { id: 'apply', name: 'Apply the change', attempt: 1, message: 'apply failed: provider' } })
+    const drawn = (dana.call('GET', `/console/v1/jobs/${first.jobId}`).body as BffJobDetail).steps?.find((st) => st.status === 'failed')
+    expect(drawn?.error?.message).toBeTruthy()
+    expect(x.failedStep).toEqual({ id: drawn?.id, name: drawn?.name, attempt: drawn?.attempt, message: drawn?.error?.message })
     expect(x.fix?.input).toBeUndefined()
     expect(x.similar?.count).toBe(0)
 

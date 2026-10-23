@@ -98,7 +98,7 @@ export function FailureExplainer({ jobId, status, since, onRetry, busy, defaultS
                 )}
                 {x?.failedStep?.message && (
                   <span>
-                    The step said <span className="font-mono text-secondary">{x.failedStep.message}</span>
+                    The step said <q className="text-secondary">{x.failedStep.message}</q>
                   </span>
                 )}
                 {x?.failedStep?.attempt !== undefined && x.failedStep.attempt > 1 && <span>After {x.failedStep.attempt} attempts</span>}
