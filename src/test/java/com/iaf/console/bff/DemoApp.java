@@ -35,6 +35,7 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
         "console.platform.fake.step-delay=20ms",
         "console.session.secure=false",
         "console.live.heartbeat=2s",
+        "console.insights.cache-ttl=0s",
         "logging.level.console.access=WARN"})
 @ActiveProfiles("demo")
 public abstract class DemoApp {

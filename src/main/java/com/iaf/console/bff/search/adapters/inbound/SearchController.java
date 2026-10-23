@@ -10,19 +10,24 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import com.iaf.console.bff.search.application.Search;
+import com.iaf.console.bff.search.domain.CountsRequest;
 import com.iaf.console.bff.search.domain.ResourceCounts;
-import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.session.application.CurrentSession;
-import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
 
 /**
- * Global search ({@code /console/v1/search}), type-ahead ({@code /console/v1/suggest}) and a
- * list's counts ({@code /console/v1/r/{type}:counts}: the total, one count per state for the
- * filter chips, and how many have drifted), all through the search indexer.
+ * Global search ({@code /console/v1/search}), plain English read as a list's filter
+ * ({@code /console/v1/search:interpret}), resources counted by one grouping in the account or
+ * across the person's accounts ({@code /console/v1/search:counts}), type-ahead
+ * ({@code /console/v1/suggest}) and a list's counts ({@code /console/v1/r/{type}:counts}: the
+ * total, one count per state for the filter chips, and how many have drifted), all through the
+ * search indexer.
  */
 @RestController
 public class SearchController {
@@ -38,12 +43,33 @@ public class SearchController {
     }
 
     @GetMapping(path = "/console/v1/search", produces = "application/json")
-    public Mono<Page<SearchHit>> search(@RequestParam(name = "q", required = false) String q,
+    public Mono<SearchPage> search(@RequestParam(name = "q", required = false) String q,
             @RequestParam(name = "type", required = false) String type,
             @RequestParam(name = "limit", required = false) Integer limit,
             @RequestParam(name = "after", required = false) String after,
             ServerWebExchange exchange) {
         return CurrentSession.required(exchange).flatMap(session -> search.search(session, q, type, limit, after));
+    }
+
+    /** The indexer's reading of plain English as the list's own filter, passed on as it is. */
+    @GetMapping(path = "/console/v1/search:interpret", produces = "application/json")
+    public Mono<JsonNode> interpret(@RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "type", required = false) String type,
+            ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> search.interpret(session, q, type));
+    }
+
+    /** Counts by one grouping, with the filters of a search ({@code tag.<name>} one per tag). */
+    @GetMapping(path = "/console/v1/search:counts", produces = "application/json")
+    public Mono<JsonNode> countsBy(@RequestParam(name = "groupBy", required = false) String groupBy,
+            @RequestParam(name = "scope", required = false) String scope,
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "type", required = false) String type,
+            @RequestParam(name = "state", required = false) String state,
+            @RequestParam(name = "drift", required = false) String drift,
+            ServerWebExchange exchange) {
+        CountsRequest request = new CountsRequest(groupBy, scope, q, type, state, drift, tags(exchange));
+        return CurrentSession.required(exchange).flatMap(session -> search.groupedCounts(session, request));
     }
 
     @GetMapping(path = "/console/v1/suggest", produces = "application/json")
@@ -59,12 +85,17 @@ public class SearchController {
             @RequestParam(name = "state", required = false) String state,
             @RequestParam(name = "drift", required = false) Boolean drift,
             ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> search.counts(session, type, q, state, tags(exchange), drift));
+    }
+
+    /** The {@code tag.<name>} parameters, the first value of each. */
+    private static Map<String, String> tags(ServerWebExchange exchange) {
         Map<String, String> tags = new LinkedHashMap<>();
         exchange.getRequest().getQueryParams().forEach((name, values) -> {
             if (name.startsWith("tag.") && name.length() > 4 && !values.isEmpty()) {
                 tags.put(name.substring(4), values.get(0));
             }
         });
-        return CurrentSession.required(exchange).flatMap(session -> search.counts(session, type, q, state, tags, drift));
+        return tags;
     }
 }

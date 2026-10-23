@@ -109,6 +109,8 @@ public class DemoStateStore implements FeedListener {
     private final Map<String, Answer> replays = new ConcurrentHashMap<>();
     private final Map<String, String> servicesByType = new ConcurrentHashMap<>();
     private final AtomicLong eventIds = new AtomicLong();
+    /** When the newest event was recorded; null before the first. */
+    private volatile Instant lastEventAt;
     /** The end of every recent job, so a change recorded after its job already ended is settled at once, as the state service does. */
     private final Map<String, FeedEvent> endedJobs = new LinkedHashMap<>() {
         private static final long serialVersionUID = 1L;
@@ -731,6 +733,8 @@ public class DemoStateStore implements FeedListener {
         row.changes = null;
         row.lastJobId = jobId != null ? jobId : row.lastJobId;
         bump(row);
+        // a tombstone's updatedAt is its deletion time, to the instant
+        row.updatedAt = now;
         ObjectNode data = json.createObjectNode();
         data.put("tombstoneUntil", row.tombstoneUntil.toString());
         event(row, "Deleted", PLATFORM, jobId, requestId, data);
@@ -769,8 +773,10 @@ public class DemoStateStore implements FeedListener {
         if (jobId != null) {
             data.put("jobId", jobId);
         }
+        Instant at = clock.instant();
+        lastEventAt = at;
         EventEnvelope envelope = EventEnvelope.of("evt_" + eventIds.incrementAndGet(), row.type + ":" + row.wfrn + ":" + row.version, type,
-                clock.instant(), "resource", row.wfrn, actor, data)
+                at, "resource", row.wfrn, actor, data)
                 .withContext(new EventEnvelope.Context(row.accountId, row.region, row.wfrn, requestId), null);
         row.log.add(envelope);
         ConsoleEvents.toLive(envelope).ifPresent(mapped -> hub.publish(mapped.accountId(), mapped.event()));
@@ -832,6 +838,11 @@ public class DemoStateStore implements FeedListener {
     private static String text(JsonNode node, String field) {
         JsonNode value = node == null ? null : node.get(field);
         return value == null || value.isNull() ? null : value.asText();
+    }
+
+    /** When the newest event of any resource was recorded, or {@code null} before the first: what the demo search index is as of. */
+    public Instant lastEventAt() {
+        return lastEventAt;
     }
 
     /** How many resources the stand-in holds, for the demo's diagnostics. */

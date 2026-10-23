@@ -17,7 +17,7 @@ Work packages of the customer-console plan served here: **1.3** (OIDC sign-in, s
 step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type descriptors),
 **3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates), the
 BFF's side of **6.1** (global search, type-ahead and the list's counts, through the search
-indexer), phase 4: **4.1** (the update convention), **4.2** (delete with dependents, bulk
+indexer, and since decision 27 plain English and grouped counts), phase 4: **4.1** (the update convention), **4.2** (delete with dependents, bulk
 in waves, retry, skip and abort), **4.3** (tags, the Tag Editor, resource groups), **4.4**
 (required tags at create), **4.5** (blast radius) and **4.6** (launch more like this); the BFF's
 side of cost and budgets (decision 25: Cost Explorer, price lists, chargeback, budgets, budget
@@ -78,6 +78,8 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.cost.url`, `service-name`, `timeout`, `check-timeout` | The cost service (`http://localhost:18086`; empty: `/demo-cost`), its token audience, and how long a create waits for the budget check and estimate (2 s; past it the create goes on without them) |
 | `console.drift.url`, `service-name`, `timeout` | The drift service (`http://localhost:18084` by default), the audience of the internal tokens it gets (`console-drift-service`) and how long a call may take (5s); an empty URL means the stand-in under `/demo-drift` |
+| `console.insights.baseline.source`, `lead-time`, `by-workflow.<workflow>` | The ticket baseline the executive home compares lead times with: where it comes from, the median ticket overall, and per workflow. With no lead time at all, hours saved is left out |
+| `console.insights.cache-ttl`, `max-jobs-per-account`, `concurrency` | How long an executive home answer is kept (5 minutes), the most requests one account counts in a period (10000), and how many accounts are read at once (8) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
@@ -142,7 +144,9 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/types`, `GET /console/v1/types/{key}` | The descriptors, with `ETag` and `If-None-Match`, every action with `allowed` and `denied` |
 | `GET, POST /console/v1/r/{type}`, `POST …:preview`, `POST …:batch`, `POST …:batch:preview` | The account's resources of a type (`q` through the search index, `state`, `tag.<name>`, `drift`, `sort`, cursor paging), a create with its required tags, its preview, a batch in waves, the batch's preview with each row's problems and what the rows reach |
 | `GET /console/v1/r/{type}:counts` | How many resources the list's filters match: `total`, `byState` for the state chips, `drift`, `cappedAt` |
-| `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and type-ahead, over the types the person may list |
+| `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and `didYouMean`, and type-ahead, over the types the person may list |
+| `GET /console/v1/search:interpret` | Plain English read as the list's own filter (the indexer's reading: `q`, `type`, `filter`, `sort`, `explanation`, `confidence`, `unparsed`, `total`) |
+| `GET /console/v1/search:counts` | Resources counted by one grouping (`groupBy`) with a search's filters, in the session's account or across the person's accounts (`scope=organization`), with `asOf` |
 | `GET, PATCH /console/v1/r/{type}/{wfrn}`, `POST …:{verb}`, `POST …:{verb}:preview` | One resource with `can`, `ETag` and `If-None-Match`; an update (`If-Match`); a verb of the catalog; its preview |
 | `GET …/{wfrn}/activity`, `GET …/lineage`, `PUT …/tags` | The resource's log, what it was built from and what depends on it, its tags |
 | `GET …/{wfrn}/blast-radius`, `GET …/{wfrn}/clone` | What depends on the resource, in every account (named in the session's); its create form filled from it, for this account or another |
@@ -156,13 +160,15 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel`, `…:retry`, `…:skip`, `…:abort` | The account's jobs, with `can`, a batch's waves and rows; retry (optionally with a fix: input and step), skip a paused step, abort with compensations |
 | `POST /console/v1/jobs/{jobId}/approvals:decide` | Every pending approval of a request and its rows the person may decide, in one call (once per wave) |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
+| `GET /console/v1/insights` | The executive home: resources managed, requests and how many were self-served, lead time against tickets, hours saved, drift found and fixed, adoption week by week |
+| `GET /console/v1/jobs/{jobId}/explanation` | Why a job failed and what to do next: the cause, the fix and the step to run again from, whether the person may retry, how often it happened and what fixed it last |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
 | `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
 | `POST /internal/v1/token` | A service token for another console service (client credentials with a JWT client assertion); in-cluster only |
-| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*`, `/demo-drift/*` | Demo profile only |
+| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*`, `/demo-cost/*`, `/demo-drift/*` | Demo profile only |
 
 ## Descriptors (P-06)
 
@@ -263,7 +269,8 @@ The shapes and refusals are in `contracts/additions.md`; what the BFF does:
 
 The search indexer finds; the account's policies decide what the person sees. Every call carries
 an internal token for the person in the session's account and region, so the indexer never
-searches another account.
+searches another account; only counts across accounts are asked as the console-internal
+principal, naming the accounts the person may list in.
 
 - **Global search** (`GET /console/v1/search?q=`) and **type-ahead** (`GET /console/v1/suggest`)
   ask for `<service>:list` on every type of the catalogue and leave out the hits and suggestions
@@ -277,12 +284,29 @@ searches another account.
 - **Counts** (`GET /console/v1/r/{type}:counts`) take the list's filters and answer the total,
   one count per state whatever the `state` filter (tombstones under `deleted`), the drifted
   ones, and `cappedAt` (`null` while the counts are exact).
+- **Did you mean** on a search page is the indexer's own, passed on when it cannot spell a word
+  of a hit that was left out.
+- **Plain English** (`GET /console/v1/search:interpret?q=`, decision 27) is the indexer's reading
+  of the text as the list's own filter, with a sentence saying what was understood and how sure it
+  is. With `type` the reading stays in that list, which the person must be allowed to list; a
+  reading of a type they may not list is refused like its list, and a reading of no type has its
+  `total` counted again over the types they may list.
+- **Grouped counts** (`GET /console/v1/search:counts?groupBy=`, decision 27) count by type,
+  service, state, region, account or one tag's value, with the filters of a search, in the
+  session's region: the session's account as the person, or with `scope=organization` every
+  account of the person's that is not closed and where they may list what is counted, added up
+  from the indexer's answers for the console-internal principal (at most 200 accounts a call).
+  At most 100 groups, the largest first, and `asOf`, the index's last event.
 
 In the demo profile the indexer is a stand-in under `/demo-search` that reads the demo state
 service's records directly: the indexer's query syntax (free words and quoted phrases, `tag:`,
-`type:`, `state:`, `region:`, `drift:` terms and wfrn patterns), relevance (a name equal to a word
-scores 10, a prefix 6, a contained word 4, the wfrn 2, a tag or attribute 1), HTML-escaped
-highlights, every sort the console offers, and exact counts.
+`type:`, `state:`, `region:`, `drift:` terms, `created:` and `updated:` terms with a day, a time
+or an age, and wfrn patterns), relevance (a name equal to a word scores 10, a prefix 6, a
+contained word 4, the wfrn 2, a tag or attribute 1, a word a typo away less, with `didYouMean`),
+HTML-escaped highlights, every sort the console offers, exact counts by any grouping and over
+several accounts for the console-internal principal, the index's status, and a reading of plain
+English (states, types and their plurals a typo away, times, drift, sorts, and the account's own
+tag names and values and regions).
 
 ## Cost and budgets (decision 25, the BFF's side)
 
@@ -353,6 +377,61 @@ metrics with alarms over them, and two recommendations (an idle VM to delete, an
 resize). It keeps the demo state service in step (a finding flags its resource; an import mints
 one) and verifies the BFF's assertions as the platform would. The details are in
 `contracts/additions.md` under Drift.
+## Executive home (WP 9.5, the BFF's side)
+
+`GET /console/v1/insights?period=7d|30d|90d&scope=account|organization` (30 days and the
+organization by default) covers the accounts where `insights:get` is allowed on
+`wfrn:<partition>:insights:*:<account>:*`: the session's account, or every account of the person
+that is not closed. Every managed role reads it; none allowed is a 403 with the session account's
+Denial. The numbers, for the window from the period's start (to the minute) until now:
+
+- **Managed**: the live resources now, by service, from the search indexer's counts across the
+  accounts; at the start, those less the ones created since plus the ones created before and
+  deleted since.
+- **Requests**: the top-level platform jobs of each account started in the window on behalf of a
+  person. Self-served means it ended `succeeded` with nobody stepping in: its evidence has no
+  `decision` by a person (a failed step retried, skipped, given a new input or aborted), and it is
+  not a console retry. Every rerun the console starts carries the label `retry-of` naming the
+  failed job; the rerun copies the job's other labels and leaves the label out only when the job
+  already has the 16 the platform takes. `failed` counts `failed` and `rolled-back`.
+- **Lead time**: the nearest-rank p50 and p90 of the self-served requests' durations, against the
+  configured ticket baseline (each request's workflow's own, else the overall one); hours saved
+  adds, over the self-served requests, the baseline less the lead time, never below 0 for one.
+- **Drift**: the drift service's findings stats per account (`GET /v1/findings/stats` with the
+  BFF's service token): found, fixed, open now and the mean time to fix, weighted by the findings
+  each account closed. An account the drift service does not answer for adds nothing and sets
+  `drift.partial`; such an answer is not cached.
+- **Adoption**: every Monday-to-Sunday week (UTC) of the window, oldest first: the people who
+  started a request, the requests and the self-served ones.
+- **Accounts**: name, owning team and cost centre from the identity service's account record, the
+  cost centre otherwise the default of the account's required `cost-centre` tag, so the web can
+  join the numbers to the cost service's spend by team.
+
+An answer is kept for `console.insights.cache-ttl` per scope, period and account set. Reading the
+jobs is bounded: at most `max-jobs-per-account` requests per account, with a warning when one
+account starts more. Rolling the numbers up from the platform's feed, so the home stays cheap at
+1M resources an account, is the next step once the load tests ask for it.
+
+## Failure explainer (WP 9.2, the BFF's side)
+
+`GET /console/v1/jobs/{jobId}/explanation` explains a `failed` or `rolled-back` job, or one
+paused on a failed step (`needs-attention`), to anyone who may read the job (404 for another
+account's job; 409 `job.not-failed` with the status otherwise):
+
+- **Cause**: the error class (the paused step's while it waits, else the job's), a title in plain
+  words and the provider's message; the failed step with its attempt.
+- **Fix**: from the rules for the provider classes (`unavailable`, `rate_limited`, `timeout`,
+  `not_found`, `conflict`) and the platform's (`approval.rejected`, `resource.notReady`,
+  `resource.idCollision`, `batch.rowsFailed`, `platform.internal`), with how sure it is; a class
+  no rule knows goes to the assistant's `FailureAdvisor` when one is wired in, else to a generic
+  explanation naming the step (`low`). `source` says which (`rules` or `assistant`). The step to
+  run again from is the paused step, or the one a retry would start from. A rule never suggests
+  an input.
+- **Retry**: whether this person may retry it now, the same decision as the job's Retry button,
+  with the Denial when not.
+- **Similar**: the jobs of the same workflow in the account that failed with the same class in
+  the last 30 days (2000 at most), and the latest console retry (`retry-of`) of one of the ten
+  most recent that succeeded: who ran it and when.
 
 ## Service tokens (hub decision 23)
 
@@ -415,7 +494,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 192 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 294 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).
