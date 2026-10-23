@@ -4,6 +4,11 @@ Written 2026-10-23 at about 19:00 UTC for an agent (Devin, with sub-agents) that
 customer console build. You have **no access** to the sessions, threads, chat or memory that
 built it. Everything you need is in this repository, mostly in this file and in `handoff/`.
 
+**New to the product? Read `handoff/context/README.md` first.** It is the context pack: the
+vision and personas, the platform on `main` explained, the full console plan, every decision and
+platform change with its reason, each service's design, both sets of journeys, a glossary and the
+design language. This file says what is left to do; the context pack says what is being built and why.
+
 Read in this order:
 
 1. This file, top to bottom (about 40 minutes).
@@ -65,7 +70,20 @@ All build sessions stopped at about 19:50 UTC, when the usage limit was reached.
 | Web security fixes for #41 | `console-web--phase-5-security` / `-security-wip` ea33f69 | Journey suite was running |
 | e2e full journey | draft #55 `console-e2e--journey` cbf72e5 | Pinned to every owner's fix, all steps enabled; first full CI run not confirmed green |
 | Cost: one audience per service token | #28 | Not checked by its owner |
-| Drift 10M scan runs | draft #53 cfddfee | Running at the stop |
+| Drift 10M scan runs | draft #53 `console-drift-service--scan-load` 8b2e41d | WIP: 4.9 calls/s measured at 1M resources; the 10M run was not started |
+
+**Latest heads reported at the stop (about 19:55 UTC; re-check with `git ls-remote`)**
+| Branch | Head | State |
+|---|---|---|
+| `console-web--phase-5` | bd26b5f | Phase 5 (#41) with its fixes |
+| `console-web--phase-7` | 154347f | Draft #54; merged streams listed above |
+| `console-web--p7-personal` | 2203d50 | Recent, favourites, quotas stream; not yet merged into phase-7 |
+| `console-web--*-wip` | see `handoff/BRANCH-HEADS.md` | Snapshots of unfinished streams: blueprints, change risk, scorecards, event subscriptions, transfer, mobile approvals, team dashboards, service health |
+| `console-drift-service--finder-and-monitoring` | 1f6e4ce | #32, CI green |
+| `console-bff--drift` | 1096484 | #42, CI green |
+| `console-drift-service--scorecards` | d16fd69 | #21, security fixes done, CI not checked |
+| `console-drift-service--scan-load` | 8b2e41d | Draft #53, WIP (see above) |
+| `console-bff--drift-merge-wip` | 15059d2 | The phase-4 merge into #42; **two compile errors** left to fix, then merge into `console-bff--drift` |
 
 ---
 
