@@ -1,0 +1,13 @@
+# The `cost` blocks of the hub's type overlays (type-overlays/<type>.yaml, hub 080bc12), by type,
+# served until the platform's resource types carry them (P-22). A type not named here is unpriced.
+types:
+  vm:
+    priceList: list-prices
+    provider: vsphere
+    action: vm.create
+    by: cpu
+  database:
+    priceList: list-prices
+    provider: mongodb
+    action: cluster.create
+    by: tier

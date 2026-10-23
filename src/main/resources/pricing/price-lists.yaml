@@ -1,0 +1,24 @@
+# A copy of the hub's pinned contracts/platform/sample-content/providers/team-platform/list-prices.yaml
+# (hub 080bc12), served until the platform serves its price lists (P-22). Several lists may follow as
+# YAML documents.
+apiVersion: iaf.platform/v1
+kind: PriceList
+metadata:
+  name: list-prices
+  title: List prices
+  owner: team-platform
+  description: What previews charge per month for what a run creates, when the provider's plan answers no price itself.
+spec:
+  currency: USD
+  prices:
+    - provider: vsphere
+      action: vm.create
+      by: cpu
+      monthly: { 2: 38.5, 4: 77, 8: 154 }
+    - provider: vsphere
+      action: vm.snapshot
+      monthly: 4.2
+    - provider: mongodb
+      action: cluster.create
+      by: tier
+      monthly: { M10: 57, M30: 210, M60: 520 }

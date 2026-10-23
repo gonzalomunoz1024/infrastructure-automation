@@ -1,0 +1,11 @@
+apiVersion: v2
+name: console-cost-service
+description: The customer console's cost ledger priced from the platform's price lists, the Cost Explorer's queries, budgets with alerts, and the monthly chargeback.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - console
+  - cost
+  - budgets
+  - chargeback

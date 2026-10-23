@@ -1,0 +1,146 @@
+# console-cost-service
+# Production runs the mongo and kafka profiles: Kafka carries state.resources and identity.changes in
+# and cost.events out, MongoDB keeps the ledger, the budgets and the published months. Every
+# background job (the day closer, the budget evaluator, the month closer) is safe on every replica:
+# each write is a compare-and-set or keyed, so a second replica's pass changes nothing. The demo
+# profile is for laptops.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/example/console-cost-service
+  tag: ""          # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  # the BFF knows this service by its service account, system:serviceaccount:<namespace>:console-cost-service
+  # (hub decision 23), so the name stays the service's whatever the release is called
+  name: console-cost-service
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 18086
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  # never more replicas than the topics have partitions: the extra consumers would idle
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpreadConstraints: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Spring profiles beyond the defaults; mongo is always on in a cluster, kafka when ingest.kafka.enabled
+extraProfiles: []
+
+console:
+  region: global
+  pricing:
+    # platform: the price lists and the types' bindings over P-22; bundled: the copy in the jar
+    source: platform
+    refresh: 5m
+  ledger:
+    # a day closes this long after it ends; a late change re-closes it
+    closeGrace: 30m
+    closeInterval: 5m
+    repairInterval: 1m
+    # how many days before an account's first sighting its ledger holds (resources created earlier start there)
+    backfillDays: 0
+  budgets:
+    evaluateInterval: 5m
+  chargeback:
+    interval: 30m
+    # log: the month is logged with its checksum; webhook: one POST of the CSV per account and month
+    export: log
+    webhookUrl: ""
+  state:
+    url: http://console-state-service.console.svc.cluster.local
+    timeout: 30s
+  identity:
+    # the accounts with their names and cost centres
+    url: http://console-identity-service.console.svc.cluster.local
+    cacheTtl: 5m
+  platform:
+    baseUrl: http://platform.platform.svc.cluster.local:8080
+    timeout: 30s
+  auth:
+    jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-cost-service, console]
+    # this service's own tokens for the state and identity services come from the BFF (hub decision
+    # 23), asked for with the pod's projected service-account token: no secret holds them
+    tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
+    serviceAccountToken:
+      audience: console-bff
+      expirationSeconds: 3600
+  outbox:
+    # cost.events go out through the kit's relay under a lease, so one replica publishes at a time
+    relayInterval: 500ms
+
+ingest:
+  enabled: true
+  kafka:
+    enabled: true
+    bootstrapServers: kafka.kafka.svc.cluster.local:9092
+    groupId: console-cost-service
+    topics: [state.resources, identity.changes]
+    # extra consumer and producer properties, for example security.protocol
+    properties: {}
+
+mongodb:
+  # the service's own database (rates, deltas, closed days, budgets, published months, the outbox); the URI comes from a secret
+  database: console_cost
+  existingSecret: console-cost-service-mongodb
+  uriKey: CONSOLE_MONGO_URI
+
+platformToken:
+  # the platform's internal service-account token, to read the price lists and the resource types (P-22)
+  existingSecret: console-cost-service-platform
+  tokenKey: CONSOLE_PLATFORM_TOKEN
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+networkPolicy:
+  enabled: false
+  # who may call the API: the BFF and the console's own services
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: console
+
+env: []

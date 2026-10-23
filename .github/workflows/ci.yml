@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        # the MongoDB adapter tests run against it; without CONSOLE_TEST_MONGO_URI they skip
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      kafka:
+        # for the Kafka consumer and the outbox's producer (KRaft, one node, PLAINTEXT on localhost:9092)
+        image: apache/kafka:3.9.1
+        ports:
+          - 9092:9092
+    env:
+      CONSOLE_TEST_MONGO_URI: mongodb://localhost:27017
+      CONSOLE_TEST_KAFKA_BOOTSTRAP: localhost:9092
+      # the console-libs branch this build takes com.iaf.console:* from until the published
+      # packages exist (hub decision 15); CONSOLE_LIBS_REF moves it to the service branch then
+      CONSOLE_LIBS_REF: ${{ vars.CONSOLE_LIBS_REF || 'console-libs--phase-0' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check out console-libs
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CONSOLE_LIBS_REF }}
+          path: .libs
+      - name: Publish console-libs' convention plugins to the local Maven repository
+        # build-logic is an included build: the root's publish leaves it out, and without it the
+        # plugin console.spring-service does not resolve
+        working-directory: .libs/build-logic
+        run: ../gradlew publishToMavenLocal --no-daemon
+      - name: Publish console-libs to the local Maven repository
+        # the service resolves mavenLocal first; GitHub Packages serves the same coordinates once
+        # merges to console-libs publish them
+        working-directory: .libs
+        run: ./gradlew publishToMavenLocal -x test --no-daemon
+      - name: Wait for Kafka
+        # the image has no health check of its own, so the job does not wait for it
+        run: |
+          for i in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/9092) 2>/dev/null; then echo "Kafka answers"; exit 0; fi
+            sleep 2
+          done
+          echo "Kafka did not start" >&2
+          exit 1
+      - name: Build and test the service
+        run: ./gradlew build --no-daemon
+      - name: Show the failed tests' output
+        # the report artifact is the whole record; this puts each failure and its test class's
+        # output (the access log, a thread dump after a hang) in the job's log, where it is read first
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for path in sorted(glob.glob('build/test-results/test/*.xml')):
+              suite = ET.parse(path).getroot()
+              failed = [c for c in suite.findall('testcase') if c.find('failure') is not None or c.find('error') is not None]
+              if not failed:
+                  continue
+              print('::group::' + suite.get('name'))
+              for case in failed:
+                  problem = case.find('failure') if case.find('failure') is not None else case.find('error')
+                  print('FAILED ' + case.get('name'))
+                  print(problem.text or problem.get('message') or '')
+              for stream in ('system-out', 'system-err'):
+                  print('--- ' + stream)
+                  print(suite.findtext(stream) or '')
+              print('::endgroup::')
+          PY
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: build/reports/tests/
+          if-no-files-found: ignore
+      - name: Keep the jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-cost-service.jar
+          path: build/libs/console-cost-service.jar
+          if-no-files-found: error
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+      - name: Install gitleaks
+        # a pinned release built from its module; the Go checksum database verifies the sources
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Scan the files
+        run: |
+          mkdir -p "$RUNNER_TEMP/tree"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/tree"
+          cp .gitleaks.toml "$RUNNER_TEMP/tree/"
+          "$(go env GOPATH)/bin/gitleaks" dir --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml "$RUNNER_TEMP/tree"
+      - name: Scan the new commits
+        # the commits of the pull request or the push; with no range (the first push of a branch)
+        # the commits this branch added since it left the platform's main, whose own history the
+        # platform's CI scans with its own reviewed exceptions; the whole history only when there
+        # is no main to compare with
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          range=""
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          elif git rev-parse --verify -q origin/main > /dev/null; then
+            range="origin/main..HEAD"
+          fi
+          if [ -n "$range" ]; then
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml --log-opts="$range" .
+          else
+            "$(go env GOPATH)/bin/gitleaks" git --redact --verbose --no-banner --exit-code 1 --config .gitleaks.toml .
+          fi
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/console-cost-service
+          helm template console-cost-service deploy/helm/console-cost-service > "$RUNNER_TEMP/rendered.yaml"
+          helm template console-cost-service deploy/helm/console-cost-service \
+            --set ingest.kafka.enabled=false --set autoscaling.enabled=true --set networkPolicy.enabled=true \
+            --set metrics.serviceMonitor.enabled=true --set console.chargeback.export=webhook \
+            --set console.chargeback.webhookUrl=https://finance.example.com/chargeback > /dev/null

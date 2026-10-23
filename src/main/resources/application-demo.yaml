@@ -1,0 +1,23 @@
+# The demo: dev headers stand in for the BFF's token, the state service runs its own demo profile on
+# 18082 with the fake platform on 18090 (scripts/demo.sh starts it), this service follows its lists
+# every two seconds and prices from the lists bundled in this jar. First sightings are spread over
+# the last 90 days and the closer runs every minute, so the Cost Explorer has a past to show.
+console:
+  pricing:
+    source: ${CONSOLE_PRICING_SOURCE:bundled}
+  ledger:
+    close-interval: 1m
+    close-grace: 0s
+    demo-spread-days: 90
+    backfill-days: 90
+  budgets:
+    evaluate-interval: 30s
+  chargeback:
+    interval: 1m
+  state:
+    dev-headers: true
+  ingest:
+    poll:
+      interval: 2s
+  auth:
+    dev-headers: true

@@ -1,0 +1,16 @@
+console-cost-service {{ .Chart.AppVersion }} is rolling out as {{ include "console-cost-service.fullname" . }}.
+
+Profiles: {{ include "console-cost-service.profiles" . }}
+API:      http://{{ include "console-cost-service.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/cost
+Pricing:  {{ .Values.console.pricing.source }} (re-read every {{ .Values.console.pricing.refresh }})
+Finance:  {{ .Values.console.chargeback.export }}
+Health:   /actuator/health/readiness
+Metrics:  /actuator/prometheus
+
+Secrets this release reads (create them before the pods start):
+  {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}  the MongoDB URI of database {{ .Values.mongodb.database }}
+  {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's internal service-account token
+
+The state and identity services are called with service tokens from the BFF ({{ .Values.console.auth.tokenUrl }}),
+asked for with this pod's service-account token; the BFF must register the client console-cost-service
+for system:serviceaccount:{{ .Release.Namespace }}:{{ include "console-cost-service.serviceAccountName" . }}.

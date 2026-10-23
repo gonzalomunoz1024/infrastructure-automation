@@ -1,0 +1,1488 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-identity-service
+  version: 1.0.0
+  summary: Console accounts, their users, groups, roles, policies, access keys and quotas, and the authorization decisions every other service asks for.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Account scope.** Every path under `/v1/accounts/{accountId}` is scoped by the caller's
+    account, the `acct` claim of its internal JWT: a call whose `{accountId}` is another account
+    answers 404, never 403. The console-internal principal (`svc` claim) may act on any account;
+    the BFF carries the user's account. Within an account, what a user may do is decided by the
+    account's roles and policies (`POST /v1/authorize`).
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console API).
+
+    **Errors.** `{ error, problems?, denied?, correlationId? }`: 400 bad input, 401 no valid JWT,
+    403 the account's roles and policies deny it, with `denied` (a `Denial`: `layer: console-iam`,
+    the action and resource checked, the reason, the role, policy and statement that decided,
+    whether access may be requested and which managed role would allow it; the same fields an
+    `authorize` decision carries), 404 unknown or out of scope, 409 a conflict (a name in use, a
+    version mismatch), 429 over a quota.
+
+    **Managed IAM.** Every account is born with four managed roles, `viewer`, `operator`,
+    `account-admin` and `auditor` (shown as Viewer, Operator, Admin and Auditor), their policies,
+    and four groups that hold them: `viewers`, `members` (operator; the account's owning identity
+    provider team joins it at sign-in), `owners` (account-admin) and `auditors`. Managed roles keep
+    their names and policies; `owners` keeps the account-admin role and at least one member. The
+    internal JWT the BFF signs carries the person's `groups` and `roles` (the membership this
+    service serves), so every service decides admin-only things on `roles` containing
+    `account-admin`, never on a group name.
+
+    **Names and ids.** The console's own IAM records are wfrns too, in the `iam` service with an
+    empty region (they live in no region) and kebab-case kinds: `user`, `group`, `role`, `policy`,
+    `access-key`, `quota`, `access-request`, as in
+    `wfrn:wf:iam::123456789012:access-request/areq_01jbx9r2m4k9d3c8f5r6t1w0yd`; policies name them
+    with patterns such as `wfrn:wf:iam::123456789012:access-request/*`. Ids are a prefix and a
+    ULID: `user_`, `grp_`, `role_`, `pol_`, `ck_` (access keys), `qreq_` (quota requests), `areq_`
+    (access requests). A group's `roles` are served as role ids (input takes ids or names) and its
+    `members` as user ids; a user's `groups` are group names.
+
+    **Versions.** Accounts, policies, roles, groups and users carry a `version` that grows by one
+    per change; the `identity.changes` events (`contracts/asyncapi/console-events.yaml`) carry the
+    same versions, so a cache can tell what it has applied. A write may send `If-Match: <version>`
+    and gets 409 when the record moved on.
+
+    **Secrets.** An access key's secret is answered once, by the call that creates or rotates it,
+    and never stored in clear or returned again. Events and reads carry the key id only.
+
+    **Resources in policies** are wfrn patterns (`contracts/wfrn/SPEC.md`), and `POST /v1/authorize`
+    takes wfrns or patterns as the resource of each check.
+
+    **Internal operations** (`/internal/...` and `GET /v1/accounts/{accountId}/platform-credentials`)
+    serve the console's own services and OPA, never a user: a user's JWT answers 404 there.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Principals
+  - name: Accounts
+  - name: Users
+  - name: Groups
+  - name: Roles
+  - name: Policies
+  - name: Access keys
+  - name: Quotas
+  - name: Access requests
+    description: A person asks for an action a denial marked requestable; an account admin decides
+  - name: Authorization
+  - name: Internal
+    description: For the console's own services (the `svc` claim) and OPA; a user's JWT answers 404
+  - name: Health
+security:
+  - consoleJwt: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /v1/principals:resolve:
+    post:
+      operationId: resolvePrincipal
+      summary: Resolve an identity provider's user to a console user and accounts
+      description: The BFF's call after the OIDC callback; creates the user on first sign-in when the issuer is trusted and the user's groups map to an account.
+      tags: [Principals]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [issuer, subject]
+              properties:
+                issuer: { type: string }
+                subject: { type: string }
+                email: { type: string }
+                name: { type: string }
+                groups:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: The user and the accounts they may use
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, accounts]
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  accounts:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccountMembership' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/authorize:
+    post:
+      operationId: authorize
+      summary: Decide a batch of checks
+      description: 'Up to 100 checks for one principal, answered in order; a deny or an absent allow is `allowed: false` with the reason. Services cache decisions until the next `identity.changes` event of the account.'
+      tags: [Authorization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizeRequest' }
+      responses:
+        '200':
+          description: One decision per check
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: List accounts
+      description: The internal principal lists every account; a user's call answers the accounts they belong to.
+      tags: [Accounts]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccountStatus' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Account' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: createAccount
+      summary: Create an account
+      description: Internal principal only. Mints the twelve-digit account id, creates the four managed roles and their groups (`owners` holds `account-admin`), and asks the platform for the account's console service account (P-03).
+      tags: [Accounts]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, owningTeam, ownerEmail]
+              properties:
+                name: { type: string, maxLength: 64 }
+                owningTeam: { type: string, description: The platform team that owns the account's resources }
+                costCentre: { type: string, maxLength: 64, description: The finance cost centre the account is charged to }
+                ownerEmail: { type: string, format: email }
+                defaultRegion: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '201':
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: getAccount
+      summary: Get an account
+      tags: [Accounts]
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateAccount
+      summary: Change an account's name, status, default region or cost centre
+      tags: [Accounts]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+                status: { $ref: '#/components/schemas/AccountStatus' }
+                defaultRegion: { $ref: '#/components/schemas/RegionName' }
+                costCentre: { type: string, maxLength: 64 }
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/users:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listUsers
+      summary: List an account's users
+      tags: [Users]
+      parameters:
+        - name: q
+          in: query
+          description: A name or email prefix
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: addUser
+      summary: Add a user to the account
+      tags: [Users]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                groups:
+                  type: array
+                  items: { type: string }
+      responses:
+        '201':
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getUser
+      summary: Get a user
+      tags: [Users]
+      responses:
+        '200':
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateUser
+      summary: Change a user's name, status or groups
+      tags: [Users]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                status: { type: string, enum: [active, suspended] }
+                groups:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: The user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: removeUser
+      summary: Remove a user from the account
+      tags: [Users]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Removed
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/groups:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listGroups
+      summary: List an account's groups
+      tags: [Groups]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Group' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createGroup
+      summary: Create a group
+      tags: [Groups]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '201':
+          description: The group
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: groupId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getGroup
+      summary: Get a group
+      tags: [Groups]
+      responses:
+        '200':
+          description: The group
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateGroup
+      summary: Change a group's name, roles or members
+      tags: [Groups]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '200':
+          description: The group
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteGroup
+      summary: Delete a group
+      description: The owners group cannot be deleted (409).
+      tags: [Groups]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listRoles
+      summary: List an account's roles
+      tags: [Roles]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Role' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createRole
+      summary: Create a role
+      tags: [Roles]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleInput' }
+      responses:
+        '201':
+          description: The role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: roleId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getRole
+      summary: Get a role
+      tags: [Roles]
+      responses:
+        '200':
+          description: The role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateRole
+      summary: Change a role's name or policies
+      tags: [Roles]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoleInput' }
+      responses:
+        '200':
+          description: The role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteRole
+      summary: Delete a role
+      description: A role a group still holds, and the `account-admin` role, cannot be deleted (409).
+      tags: [Roles]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/policies:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listPolicies
+      summary: List an account's policies
+      tags: [Policies]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Policy' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createPolicy
+      summary: Create a policy
+      tags: [Policies]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyInput' }
+      responses:
+        '201':
+          description: The policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/policies/{policyId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: policyId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getPolicy
+      summary: Get a policy
+      tags: [Policies]
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: replacePolicy
+      summary: Replace a policy's document
+      description: Every statement is checked (actions known, resources valid wfrn patterns) before anything is written.
+      tags: [Policies]
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PolicyInput' }
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Policy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deletePolicy
+      summary: Delete a policy
+      description: A policy a role still holds cannot be deleted (409).
+      tags: [Policies]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/access-keys:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listAccessKeys
+      summary: List an account's access keys
+      description: Key ids and their state only.
+      tags: [Access keys]
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessKey' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createAccessKey
+      summary: Create an access key
+      description: For API access to the console as a user; at most two active keys per user. The secret part is in this answer only.
+      tags: [Access keys]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId: { type: string }
+                description: { type: string, maxLength: 128 }
+                expiresAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: The key, with its secret part shown once
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessKeyCreated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/access-keys/{keyId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: keyId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getAccessKey
+      summary: Get an access key's id and state
+      tags: [Access keys]
+      responses:
+        '200':
+          description: The key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: revokeAccessKey
+      summary: Revoke an access key
+      tags: [Access keys]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Revoked
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-keys/{keyId}:rotate:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - name: keyId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: rotateAccessKey
+      summary: Rotate an access key
+      description: A new secret part; the old one keeps working for ten minutes.
+      tags: [Access keys]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: The key, with its new secret part shown once
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessKeyCreated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/quotas:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listQuotas
+      summary: An account's quotas and their use
+      description: The console's quotas (resources per type, jobs per minute, access keys) with the platform's job-start bucket (P-10) read through.
+      tags: [Quotas]
+      responses:
+        '200':
+          description: The quotas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Quota' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/quotas/{quotaKey}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/QuotaKey'
+    get:
+      operationId: getQuota
+      summary: Get a quota
+      tags: [Quotas]
+      responses:
+        '200':
+          description: The quota
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Quota' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: setQuota
+      summary: Set a quota's limit
+      description: 'Internal principal only; a `jobs-per-minute` change is also written to the platform (`PUT /api/v1/quotas/account:<accountId>`, P-10). A limit at or above an open quota request''s ask approves that request (it is moot); a lower limit leaves it open, since rejecting is `:decide`.'
+      tags: [Quotas]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [limit]
+              properties:
+                limit: { type: integer, minimum: 0 }
+                burst: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: The quota
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Quota' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/quotas/{quotaKey}:request-increase:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/QuotaKey'
+    post:
+      operationId: requestQuotaIncrease
+      summary: Ask for a higher limit
+      description: 'Opens a request the platform team decides (`POST /v1/accounts/{accountId}/quota-requests/{requestId}:decide`, or an internal `PUT` of the limit at or above the ask); one open request per quota key, a second answers 409. An approval arrives as a `QuotaChanged` event; the request itself is followed with `GET /v1/accounts/{accountId}/quota-requests/{requestId}`.'
+      tags: [Quotas]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [limit, reason]
+              properties:
+                limit: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 10, maxLength: 1000 }
+      responses:
+        '202':
+          description: 'The request was opened; `GET /v1/accounts/{accountId}/quota-requests/{requestId}` follows it'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/access-requests:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: listAccessRequests
+      summary: An account's access requests
+      description: 'A person always sees their own. Seeing the account''s queue needs `access-request:get` and `access-request:list`, which the managed `account-admin` and `auditor` policies grant and the managed `viewer` and `operator` policies leave out (`notActions`), so admins, auditors, the internal principal and any group given those actions see the queue, and viewers do not.'
+      tags: [Access requests]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccessRequestStatus' }
+        - name: requester
+          in: query
+          description: A user id; admins only
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessRequest' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createAccessRequest
+      summary: Ask for an action a denial marked requestable
+      description: 'Opens a request to the account''s admins (an `AccessRequestChanged` event, subject `access-request`). `role` defaults to the denial''s `suggestedRole`; 400 when no managed role would allow the action, or when the requester is allowed it already. The same open request (same requester, action, resource and role) answers 409 with the existing one. A request still `pending` after 30 days expires (a sweep every 15 minutes), with an `AccessRequestChanged` of action `expired`.'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequestInput' }
+      responses:
+        '202':
+          description: The request, pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The same request is already open
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+  /v1/accounts/{accountId}/access-requests/{requestId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      operationId: getAccessRequest
+      summary: One access request
+      tags: [Access requests]
+      responses:
+        '200':
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/accounts/{accountId}/access-requests/{requestId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      operationId: decideAccessRequest
+      summary: Approve or reject an access request
+      description: 'Account admins only (`roles` holds `account-admin`). Approving adds the requester to the group that carries the role asked for (the denial''s suggested role by default), so their next session carries it; the request is then `approved`, an `AccessRequestChanged` event follows, and the joined group''s version moves with its own `GroupChanged`. A request already decided, expired or withdrawn answers 409.'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/quota-requests/{requestId}:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/RequestId'
+    get:
+      operationId: getQuotaRequest
+      summary: One quota increase request
+      tags: [Quotas]
+      responses:
+        '200':
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: withdrawQuotaRequest
+      summary: Withdraw an open quota increase request
+      description: By its requester, an account admin (`quota:set`) or the internal principal; a decided request answers 409.
+      tags: [Quotas]
+      responses:
+        '204': { description: Withdrawn }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/quota-requests/{requestId}:decide:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+      - $ref: '#/components/parameters/RequestId'
+    post:
+      operationId: decideQuotaRequest
+      summary: Approve or reject a quota increase request
+      description: 'Internal principal only (the platform team). Approving sets the quota''s limit to `limit`, the ask by default and possibly less or more, exactly as `PUT /v1/accounts/{accountId}/quotas/{quotaKey}` would (the platform write included), and a `QuotaChanged` event follows; rejecting leaves the limit and records the comment. A request already decided or withdrawn answers 409.'
+      tags: [Quotas]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuotaDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/accounts/{accountId}/platform-credentials:
+    parameters:
+      - $ref: '#/components/parameters/AccountIdPath'
+    get:
+      operationId: getPlatformCredentials
+      summary: The platform service account bound to an account
+      description: |
+        For the console's own services (the `svc` claim; a user's JWT answers 404): the platform
+        service account (P-03, preset `console`) the state service and the BFF act through for this
+        account, and where its token is. `source: local` answers the token itself (the demo and dev
+        profiles, where the identity service minted the account on platform-fake); `source: vault`
+        answers the Vault path `console/accounts/{accountId}/platform-service-account`, which the
+        caller reads with its own Vault identity (production), and no token. The token never
+        appears in events, logs or the audit trail.
+      tags: [Internal]
+      responses:
+        '200':
+          description: The service account and where its token is
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlatformCredentials' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/opa/bundles/console-authz.tar.gz:
+    get:
+      operationId: getOpaBundle
+      summary: The OPA bundle of every account's policies
+      description: |
+        The authorization bundle the console's OPA instances poll (OPA's bundle service API): a
+        gzipped tar with the compiled policies and data of every account, rebuilt on each
+        `identity.changes` event. `ETag` is the bundle revision (the `.manifest` revision) and a
+        matching `If-None-Match` answers 304, so polling costs nothing between changes. Callers are
+        the console-internal principal, or OPA itself with the configured bundle token
+        (`Authorization: Bearer <token>`, `identity.opa.bundle-token`); a user's JWT answers 404.
+      tags: [Internal]
+      security:
+        - consoleJwt: []
+        - bundleToken: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: The bundle
+          headers:
+            ETag:
+              description: The bundle revision
+              schema: { type: string }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '304':
+          description: The caller's bundle is current
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
+    bundleToken:
+      type: http
+      scheme: bearer
+      description: The static token OPA presents for its bundle (`identity.opa.bundle-token`); accepted on the bundle path only
+  parameters:
+    AccountIdPath:
+      name: accountId
+      in: path
+      required: true
+      description: The account; another account than the caller's answers 404
+      schema: { $ref: '#/components/schemas/AccountId' }
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      description: 'An access request (`areq_…`) or a quota request (`qreq_…`)'
+      schema: { type: string }
+    QuotaKey:
+      name: quotaKey
+      in: path
+      required: true
+      description: '`resources.<type>`, `jobs-per-minute` or `access-keys`'
+      schema: { type: string, pattern: '^[a-z0-9.-]{1,64}$' }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: The same key with the same body answers the first result for 24 hours; with another body it is 409
+      schema: { type: string, maxLength: 255 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The version the caller holds; 409 when the record moved on
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid JWT
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: A name in use, a version mismatch, a record still in use, or an Idempotency-Key reused with another body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+    AccountStatus:
+      type: string
+      enum: [active, suspended, closed]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/Problem' }
+        denied: { $ref: '#/components/schemas/Denial' }
+        correlationId: { type: string }
+    Denial:
+      type: object
+      description: Why the account's roles and policies refuse an action; the BFF forwards it to the person as is
+      required: [layer, action, reason, requestable]
+      properties:
+        layer: { type: string, const: console-iam }
+        action: { type: string, description: '`<service>:<verb>`' }
+        resource: { type: string, description: The wfrn or pattern checked }
+        reason: { type: string }
+        role: { type: string, description: The role the decision came from }
+        policyId: { type: string }
+        statement: { type: string, description: 'The statement''s sid' }
+        requestable: { type: boolean, description: Whether the person may open an access request for it }
+        suggestedRole: { type: string, description: The managed role that would allow it }
+    PlatformCredentials:
+      type: object
+      required: [accountId, platformServiceAccountId, source]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        platformServiceAccountId: { type: string, description: The platform service account (P-03, preset console) }
+        source: { type: string, enum: [local, vault], description: Where the token is }
+        token: { type: string, description: 'The bearer token; with source local only' }
+        vaultPath: { type: string, description: 'The Vault secret; with source vault only: console/accounts/{accountId}/platform-service-account' }
+        issuedAt: { type: string, format: date-time }
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        field: { type: string }
+        message: { type: string }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    Account:
+      type: object
+      required: [accountId, name, status, owningTeam, version, createdAt]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        owningTeam: { type: string }
+        costCentre: { type: string, maxLength: 64, description: 'The finance cost centre the account is charged to (decision 2): chargeback rows and the executive home''s spend by team group by it; absent until an admin sets it, when the cost service falls back to owningTeam' }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        platformServiceAccountId: { type: string, description: 'The platform service account bound to this account (P-03); its token is never in this record: GET /v1/accounts/{accountId}/platform-credentials tells the console''s own services where it is' }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AccountMembership:
+      type: object
+      required: [accountId, name, groups, roles]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        groups:
+          type: array
+          description: The person's group names in the account
+          items: { type: string }
+        roles:
+          type: array
+          description: 'The managed role names the person holds there: viewer, operator, account-admin, auditor'
+          items: { type: string }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+    User:
+      type: object
+      required: [userId, email, status, version]
+      properties:
+        userId: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        issuer: { type: string, description: The identity provider }
+        subject: { type: string, description: 'The user''s id at the identity provider' }
+        groups:
+          type: array
+          description: Group names
+          items: { type: string }
+        version: { type: integer }
+        createdAt: { type: string, format: date-time }
+        lastSignInAt: { type: string, format: date-time }
+    GroupInput:
+      type: object
+      properties:
+        name: { type: string, pattern: '^[a-z0-9-]{2,64}$' }
+        description: { type: string }
+        roles:
+          type: array
+          description: Role ids when served; ids or names accepted as input
+          items: { type: string }
+        members:
+          type: array
+          description: User ids
+          items: { type: string }
+        idpGroups:
+          type: array
+          description: Identity provider groups whose members join this group at sign-in
+          items: { type: string }
+    Group:
+      allOf:
+        - $ref: '#/components/schemas/GroupInput'
+        - type: object
+          required: [groupId, name, version]
+          properties:
+            groupId: { type: string }
+            version: { type: integer }
+            builtIn: { type: boolean, description: 'owners is built in and cannot be deleted' }
+    RoleInput:
+      type: object
+      properties:
+        name: { type: string, pattern: '^[a-z0-9-]{2,64}$' }
+        description: { type: string }
+        policies:
+          type: array
+          items: { type: string }
+    Role:
+      allOf:
+        - $ref: '#/components/schemas/RoleInput'
+        - type: object
+          required: [roleId, name, version]
+          properties:
+            roleId: { type: string }
+            version: { type: integer }
+            builtIn: { type: boolean }
+    Statement:
+      type: object
+      required: [effect, actions, resources]
+      properties:
+        sid: { type: string }
+        effect: { type: string, enum: [allow, deny] }
+        actions:
+          type: array
+          description: '`<service>:<verb>` with `*` allowed, for example `compute:create`, `compute:*`, `*:read`'
+          items: { type: string }
+        notActions:
+          type: array
+          description: 'On an allow statement only: every action but these (`compute:*` minus `compute:delete`); refused with 400 on a deny statement'
+          items: { type: string }
+        resources:
+          type: array
+          description: wfrn patterns
+          items: { type: string }
+        conditions:
+          type: object
+          description: 'Keys such as `region`, `tag.<name>`, `requester.group`; every key must match'
+          additionalProperties: true
+    PolicyInput:
+      type: object
+      required: [name, statements]
+      properties:
+        name: { type: string, pattern: '^[a-z0-9-]{2,64}$' }
+        description: { type: string }
+        statements:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/Statement' }
+    Policy:
+      allOf:
+        - $ref: '#/components/schemas/PolicyInput'
+        - type: object
+          required: [policyId, version]
+          properties:
+            policyId: { type: string }
+            version: { type: integer }
+            builtIn: { type: boolean }
+            updatedAt: { type: string, format: date-time }
+    AccessKey:
+      type: object
+      required: [keyId, userId, status, createdAt]
+      properties:
+        keyId: { type: string, description: 'The public part, `ck_` and a ULID' }
+        userId: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [active, rotating, revoked, expired] }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+    AccessKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/AccessKey'
+        - type: object
+          required: [secretPart]
+          properties:
+            secretPart: { type: string, description: Shown once and never stored in clear; computed at run time }
+            graceUntil: { type: string, format: date-time, description: 'After a rotation: when the previous secret part stops working' }
+    Quota:
+      type: object
+      required: [key, limit, used]
+      properties:
+        key: { type: string }
+        limit: { type: integer }
+        burst: { type: integer }
+        used: { type: integer }
+        source: { type: string, enum: [default, override, platform] }
+        pendingRequestId: { type: string, description: An open increase request }
+    AccessRequestStatus:
+      type: string
+      description: '`expired` is a request still pending after 30 days'
+      enum: [pending, approved, rejected, expired]
+    AccessRequestInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
+        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        role: { type: string, description: The managed role asked for; the denial's suggestedRole by default }
+        reason: { type: string, maxLength: 2000 }
+    AccessDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    AccessRequest:
+      type: object
+      required: [requestId, accountId, requester, action, reason, status, requestedAt]
+      properties:
+        requestId: { type: string, description: '`areq_` and a ULID' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        requester:
+          type: object
+          required: [userId]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        status: { $ref: '#/components/schemas/AccessRequestStatus' }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        comment: { type: string }
+        approvers:
+          type: array
+          description: The account admins who may decide it
+          items: { type: string }
+    QuotaDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        limit: { type: integer, minimum: 1, description: 'On approve, the limit granted; the ask by default' }
+        comment: { type: string, maxLength: 2000 }
+    QuotaRequest:
+      type: object
+      required: [requestId, accountId, quotaKey, requestedLimit, reason, status, requestedBy, requestedAt]
+      properties:
+        requestId: { type: string, description: '`qreq_` and a ULID' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        quotaKey: { type: string }
+        currentLimit: { type: integer }
+        requestedLimit: { type: integer }
+        reason: { type: string }
+        status: { type: string, enum: [open, approved, rejected, withdrawn] }
+        grantedLimit: { type: integer, description: 'On approval, the limit granted, which may differ from the ask' }
+        requestedBy: { type: string }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        comment: { type: string }
+    AuthorizeRequest:
+      type: object
+      required: [principal, checks]
+      properties:
+        principal:
+          type: object
+          required: [accountId]
+          properties:
+            userId: { type: string }
+            accountId: { $ref: '#/components/schemas/AccountId' }
+            groups:
+              type: array
+              items: { type: string }
+            service: { type: string, description: A console service acting on its own }
+        checks:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [action, resource]
+            properties:
+              action: { type: string, description: '`<service>:<verb>`' }
+              resource: { type: string, description: A wfrn, or a wfrn pattern for list checks }
+              context:
+                type: object
+                additionalProperties: true
+    AuthorizeResponse:
+      type: object
+      required: [decisions, version]
+      properties:
+        decisions:
+          type: array
+          items:
+            type: object
+            required: [allowed]
+            properties:
+              allowed: { type: boolean }
+              reason: { type: string }
+              role: { type: string, description: The role the deciding statement came from }
+              policyId: { type: string, description: The policy whose statement decided }
+              statement: { type: string, description: 'The statement''s sid' }
+              requestable: { type: boolean, description: 'When denied: whether the person may open an access request' }
+              suggestedRole: { type: string, description: 'When denied: the managed role that would allow it' }
+        version: { type: integer, description: 'The account''s authorization version the decisions were made with' }
