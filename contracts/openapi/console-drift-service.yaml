@@ -1182,7 +1182,7 @@ components:
         opened: { type: integer }
         updated: { type: integer }
         closed: { type: integer }
-        deferred: { type: integer, description: Left for a later turn (a change in flight, the observe budget, the scan's cap) }
+        deferred: { type: integer, description: "Left for a later turn (a change in flight, the observe budget, the scan's cap)" }
         errors: { type: integer }
         pages: { type: integer, description: Provider pages read }
     SyncReport:
