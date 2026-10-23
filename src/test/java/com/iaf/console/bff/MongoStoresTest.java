@@ -3,16 +3,24 @@ package com.iaf.console.bff;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpMethod;
 import org.springframework.test.context.ActiveProfiles;
 
-/** The sessions, preferences and resource groups in MongoDB; runs where CONSOLE_TEST_MONGO_URI names a database. */
+import com.iaf.console.kit.mongo.Mongo;
+import com.mongodb.client.model.Filters;
+
+import reactor.core.publisher.Mono;
+
+/** The sessions, preferences, resource groups and the copilot's conversations and turns in MongoDB; runs where CONSOLE_TEST_MONGO_URI names a database. */
 @EnabledIfEnvironmentVariable(named = "CONSOLE_TEST_MONGO_URI", matches = ".+")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT, properties = {
         "server.port=18182",
@@ -26,6 +34,9 @@ import org.springframework.test.context.ActiveProfiles;
 class MongoStoresTest {
 
     private static final Console console = new Console("http://localhost:18182");
+
+    @Autowired
+    Mongo mongo;
 
     @Test
     void theSessionAndThePreferencesSurviveInTheDatabase() {
@@ -70,5 +81,30 @@ class MongoStoresTest {
         assertTrue(console.get(groups, gonzalo).json().path("items").toString().contains(name));
         assertEquals(204, console.send(HttpMethod.DELETE, path, gonzalo, null, Map.of()).status());
         assertEquals(404, console.get(path, gonzalo).status());
+    }
+
+    @Test
+    void theCopilotsConversationsAndTurnsAreKeptInTheDatabase() {
+        String turns = "/console/v1/assistant/turns";
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        Console.Reply accepted = console.post(turns, gonzalo, Map.of("intent", "ask", "message", "Show the failed VMs that drifted"));
+        assertEquals(202, accepted.status(), accepted.body());
+        String path = "/console/v1/assistant/conversations/" + accepted.json().path("conversationId").asText();
+        Awaitility.await().atMost(Duration.ofSeconds(20)).pollInterval(Duration.ofMillis(100))
+                .until(() -> !"thinking".equals(console.get(path, gonzalo).json().path("status").asText()));
+        Console.Reply read = console.get(path, gonzalo);
+        assertEquals("ready", read.json().path("status").asText(), read.body());
+        assertEquals("filter", read.json().path("turns").get(1).path("proposals").get(0).path("kind").asText(), read.body());
+        assertEquals(404, console.get(path, console.signIn("dana")).status(), "another person's");
+
+        Mono.from(mongo.collection("assistant_turns").deleteOne(Filters.eq("_id", "user_mateo"))).block();
+        Console.Signed mateo = console.signIn("mateo");
+        for (int i = 0; i < 10; i++) {
+            Console.Reply taken = console.post(turns, mateo, Map.of("intent", "ask", "message", "what can you do, take " + i));
+            assertEquals(202, taken.status(), taken.body());
+        }
+        Console.Reply limited = console.post(turns, mateo, Map.of("intent", "ask", "message", "one more"));
+        assertEquals(429, limited.status(), "the eleventh turn in a minute meets the person's document: " + limited.body());
+        assertTrue(Integer.parseInt(limited.headers().getFirst("Retry-After")) >= 1);
     }
 }

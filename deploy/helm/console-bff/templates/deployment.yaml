@@ -80,6 +80,10 @@ spec:
               value: {{ .Values.config.kafkaBootstrapServers | quote }}
             - name: CONSOLE_LIVE_RELAY_ENABLED
               value: {{ .Values.config.liveRelayEnabled | quote }}
+            - name: CONSOLE_ASSISTANT_PROVIDER
+              value: {{ .Values.config.assistant.provider | quote }}
+            - name: CONSOLE_ASSISTANT_DEVIN_BASE_URL
+              value: {{ .Values.config.assistant.devinBaseUrl | quote }}
             - name: CONSOLE_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
@@ -105,6 +109,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secret.name }}
                   key: {{ .Values.secret.keys.mongoUri }}
+            - name: CONSOLE_ASSISTANT_DEVIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: {{ .Values.secret.keys.assistantDevinApiKey }}
+                  optional: true
             - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
               value: "true"
             - name: SPRING_APPLICATION_JSON

@@ -1,6 +1,11 @@
 console-bff {{ .Chart.AppVersion }} is installed as {{ include "console-bff.fullname" . }}.
 
 It reads its secrets from the Secret "{{ .Values.secret.name }}" (session secret, trust key, OIDC
-client secret, platform internal token, MongoDB URI). The identity provider must allow the
-redirect URI {{ .Values.config.oidc.redirectUri }}. Health: /actuator/health; keys for the other
-console services: /.well-known/jwks.json.
+client secret, platform internal token, MongoDB URI, and the copilot's Devin API key when there is
+one). The identity provider must allow the redirect URI {{ .Values.config.oidc.redirectUri }}.
+Health: /actuator/health; keys for the other console services: /.well-known/jwks.json.
+{{- if eq .Values.config.assistant.provider "devin" }}
+The copilot asks Devin at {{ .Values.config.assistant.devinBaseUrl }} with the Secret's
+"{{ .Values.secret.keys.assistantDevinApiKey }}"; without that key every copilot turn fails
+assistant.unavailable.
+{{- end }}

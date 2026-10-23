@@ -2,7 +2,7 @@
 # provider is the built-in /demo-idp with a user picker (login_hint skips it), and the identity
 # service, the state service, the search indexer, the cost service and the drift service are
 # built-in stand-ins under /demo-identity, /demo-state, /demo-search, /demo-cost and /demo-drift.
-# Sign in at http://localhost:18081/auth/login.
+# The copilot answers with the demo's rules. Sign in at http://localhost:18081/auth/login.
 console:
   oidc:
     issuer: http://localhost:18081/demo-idp
@@ -36,6 +36,8 @@ console:
         cost-centre: cc-1001
       "210987654321":
         cost-centre: cc-2001
+  assistant:
+    provider: demo                  # the copilot answers with rules in this process: no key, no outside call
   insights:
     baseline:                       # a made-up ticket export, so the demo's executive home shows hours saved
       source: "Demo ticket export, September 2026"

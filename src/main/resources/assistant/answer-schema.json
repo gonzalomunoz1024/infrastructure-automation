@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Console copilot answer",
+  "description": "One turn's answer. The console reviews it against the person's own permissions before the person sees it.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "text": {
+      "type": "string",
+      "maxLength": 4000,
+      "description": "The answer in plain sentences, short paragraphs separated by a blank line. No Markdown, no HTML."
+    },
+    "proposals": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "What the console opens for the person to review. Nothing runs until the person confirms it there.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label"],
+        "properties": {
+          "kind": {
+            "enum": ["filter", "create", "action", "open"],
+            "description": "filter: a list with a filter; create: a create form, filled; action: a verb's form on one resource, filled; open: a console page."
+          },
+          "label": {"type": "string", "maxLength": 200, "description": "What the person reads on the button, in a few words."},
+          "service": {"type": "string", "description": "The service of the type, as request.types has it."},
+          "type": {"type": "string", "description": "The type, as request.types has it."},
+          "filter": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "q": {"type": "string", "maxLength": 256, "description": "Words to search for that the other fields cannot say."},
+              "state": {"enum": ["pending", "active", "updating", "deleting", "deleted", "failed"]},
+              "drift": {"type": "boolean", "description": "true: only resources that drifted; false: only those that did not."},
+              "region": {"type": "string"},
+              "tags": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Tag name to value; an empty value means the resource has the tag."
+              }
+            }
+          },
+          "sort": {"enum": ["name", "-name", "created", "-created", "updated", "-updated"]},
+          "input": {"type": "object", "description": "Fields of the form, filled only with what the person said."},
+          "missing": {"type": "array", "items": {"type": "string"}, "description": "Required fields of the form still empty."},
+          "wfrn": {"type": "string", "description": "For an action: the wfrn of the resource, from request.resources or request.subject."},
+          "verb": {"type": "string", "description": "For an action: a verb of the type's verbs in request.types."},
+          "path": {"type": "string", "pattern": "^/console/", "description": "For open: the console page."}
+        }
+      }
+    },
+    "explanation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For an explain turn: the resource of request.subject, in plain words.",
+      "properties": {
+        "summary": {"type": "string", "maxLength": 1000, "description": "Two or three sentences."},
+        "sections": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "text"],
+            "properties": {
+              "title": {"type": "string", "maxLength": 120},
+              "text": {"type": "string", "maxLength": 2000}
+            }
+          }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "For a failure turn: why the job of request.failure failed and what to change before retrying it.",
+      "required": ["title", "fix", "confidence"],
+      "properties": {
+        "title": {"type": "string", "maxLength": 120, "description": "What went wrong, in a few words."},
+        "fix": {"type": "string", "maxLength": 1000, "description": "What to change before retrying, in plain sentences."},
+        "input": {"type": "object", "description": "Only fields of request.failure.inputForm whose values the retry should change."},
+        "confidence": {"enum": ["high", "medium", "low"]}
+      }
+    },
+    "refused": {"type": "boolean", "description": "true when you cannot or should not answer."},
+    "reason": {"type": "string", "maxLength": 300, "description": "Why you did not answer, in one sentence."}
+  }
+}
