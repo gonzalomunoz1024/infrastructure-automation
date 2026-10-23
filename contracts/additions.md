@@ -224,6 +224,79 @@ parameters: q (as the list's), state, tag.<name>, drift (true|false)
 It asks `<service>:list` on the type's pattern (403 otherwise); an unknown type is a 404, an
 unknown `state` a 400.
 
+## Search: plain English and grouped counts (phase 9)
+
+Hub PR #16 (decision 27; see Phase 9 below) adds two search operations over the search indexer
+1.2.0. They are not in the pinned contract; this service serves them with that branch's shapes
+and with these details its text does not spell out:
+
+`GET /console/v1/search:interpret?q=&type=` passes the indexer's `GET /v1/search:interpret` for
+the session's account through, asked as the person, and the reading comes back as the indexer
+answered it (`SearchInterpretation`; the indexer's `sort` can also be `score`, which PR #16's
+enum leaves out).
+
+- `q` is required and at most 500 characters (400 with a problem on `/q`); the indexer reads 256
+  at most, and its 400 passes back with its problems, its 429 with `Retry-After`.
+- With `type`, the person must be allowed to list the type (`<service>:list` on the type's
+  pattern) before the indexer is asked: one they may not list is a 403 with a Denial, as its list
+  gives it, and an unknown type a 404. PR #16's operation lists neither.
+- A reading that names a type the person may not list is refused the same way.
+- A reading of no type counts every type. When the person may list some types but not all, its
+  `total` is counted again over the ones they may (the indexer's `/v1/counts` with the reading's
+  filter and `groupBy=type`); when they may list none, `total` is 0.
+
+`GET /console/v1/search:counts` counts resources by one grouping, with the filters of a search:
+
+```yaml
+parameters:
+  groupBy: type | service | state | region | account | tag:<name>   # required; 400 at /groupBy otherwise
+  scope: account | organization   # account when left out; 400 at /scope otherwise
+  q: string                       # at most 500 characters, in the indexer's syntax
+  type: string                    # one type; an unknown one is a 404
+  state: string                   # one of the six states; 400 at /state otherwise
+  drift: true | false             # 400 at /drift otherwise
+  tag.<name>: string              # one per tag, an empty value any value; a name is [a-z0-9-]{1,32} (400 at /tag.<name>)
+200:
+  total: integer
+  byState: { pending, active, updating, deleting, deleted, failed }   # every state, in this order
+  drift: integer
+  cappedAt: integer               # only when a count stopped at a cap
+  groups:                         # at most 100, the largest total first, then by key
+    - key: string                 # the type, service, state, region, account id or tag value
+      total: integer
+      byState: { ... }            # as above
+      drift: integer
+      service: string             # groupBy=type only
+  asOf: date-time                 # the indexer's lastEventAt (/v1/index/status); absent when it cannot say
+```
+
+- Everything is counted in the session's region, so `groupBy=region` has one group.
+- `scope=account` counts the session's account, asked as the person. With a type, the person
+  must be allowed `<service>:list` on it; without one, on every type of the account's catalogue.
+  A refusal is a 403 with a Denial, as the list gives it; PR #16's operation lists no 403.
+- `scope=organization` counts every account of the person's that is not closed and in which they
+  may list what is counted, each decided as for `account` with the session switched to that
+  account; an account whose catalogue does not hold the type counts nothing. The counts are asked
+  as the console-internal principal with `accountId` repeated, at most 200 accounts a call, and
+  added up here, so the person's own token never names another account. Only when no account
+  counts is the read refused: with the session's account's refusal (403), or a 404 for a type no
+  account holds.
+- `asOf` is asked as the person in the session's account; when that call fails, the counts are
+  answered without it.
+- The indexer's 400 (such as a tag name in `groupBy` it does not take, `tag:Cost.Centre`) passes
+  back with its problems, and its 429 with `Retry-After`; counts over several accounts spend each
+  account's query budget.
+
+`GET /console/v1/search` also passes on the indexer's `didYouMean`, the query with a word found
+only a typo away written as the hits spell it. It is read from the page's hits, so when hits of
+types the person may not list were left out it passes only if each word it changes is in the
+name or a tag of a hit that is shown; otherwise it is absent.
+
+The console's own callers (the executive home, the copilot) use the search application instead:
+`Search.countsAcross(session, accountIds, filters, groupBy)` counts accounts the caller has
+already decided on, as the console-internal principal and without asking a policy, and
+`Search.lastEventAt(session)` is the time of the index's last event.
+
 ## Resource Groups
 
 New: saved tag queries over the account's resources, per account and region, as AWS Resource

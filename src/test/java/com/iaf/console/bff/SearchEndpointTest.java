@@ -180,6 +180,25 @@ class SearchEndpointTest extends DemoApp {
         assertEquals(400, console.getAt("/console/v1/search?q={q}", gonzalo, Map.of(), "created:yesterday").status());
     }
 
+    @Test
+    void aWordATypoAwayIsFoundAndThePageSaysWhatItMeant() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        String suffix = String.valueOf(System.nanoTime() % 1_000_000);
+        String name = "lighthouse-" + suffix;
+        String wfrn = ResourceFixtures.createVm(console, clients, gonzalo, name);
+
+        Console.Reply typed = console.getAt("/console/v1/search?q={q}", gonzalo, Map.of(), "lighthuose-" + suffix);
+        assertEquals(200, typed.status(), typed.body());
+        assertTrue(stream(typed.json().path("items")).anyMatch(h -> wfrn.equals(h.path("wfrn").asText())), "found a typo away: " + typed.body());
+        assertEquals(name, typed.json().path("didYouMean").asText(), typed.body());
+        assertTrue(typed.json().has("next"), typed.body());
+
+        Console.Reply exact = console.getAt("/console/v1/search?q={q}", gonzalo, Map.of(), name);
+        assertFalse(exact.json().has("didYouMean"), "nothing to correct: " + exact.body());
+        assertTrue(listed(gonzalo, "lighthuose-" + suffix).contains(wfrn), "the list's free text forgives the typo too");
+        assertFalse(listed(gonzalo, "kighthouse-" + suffix).contains(wfrn), "never the first letter");
+    }
+
     /** The wfrns of the VM list's rows for the query. */
     private static List<String> listed(Console.Signed as, String q) {
         Console.Reply list = console.getAt(VM + "?q={q}&limit=50", as, Map.of(), q);

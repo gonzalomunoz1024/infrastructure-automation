@@ -32,6 +32,7 @@ import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
@@ -41,7 +42,6 @@ import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.errors.TooManyRequestsException;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
@@ -90,13 +90,14 @@ public class HttpSearchPort implements SearchPort {
     }
 
     @Override
-    public Mono<Page<SearchHit>> search(AccountScope scope, StateCaller caller, SearchQuery query) {
+    public Mono<SearchPage> search(AccountScope scope, StateCaller caller, SearchQuery query) {
         return get(scope, caller, b -> filters(b, "/v1/search", scope, query, true), node -> {
             List<SearchHit> items = new ArrayList<>();
             for (JsonNode item : node.path("items")) {
                 items.add(read(item, SearchHit.class));
             }
-            return new Page<>(items, node.hasNonNull("next") ? node.get("next").asText() : null);
+            return new SearchPage(items, node.hasNonNull("next") ? node.get("next").asText() : null,
+                    node.hasNonNull("didYouMean") ? node.get("didYouMean").asText() : null);
         });
     }
 
@@ -121,6 +122,22 @@ public class HttpSearchPort implements SearchPort {
     @Override
     public Mono<ResourceCounts> counts(AccountScope scope, StateCaller caller, SearchQuery query) {
         return get(scope, caller, b -> filters(b, "/v1/counts", scope, query, false), node -> read(node, ResourceCounts.class));
+    }
+
+    @Override
+    public Mono<JsonNode> countGroups(AccountScope scope, StateCaller caller, CountsQuery query) {
+        return get(scope, caller, b -> counts(b, List.of(), query), node -> node);
+    }
+
+    @Override
+    public Mono<JsonNode> interpret(AccountScope scope, StateCaller caller, String q, String type) {
+        return get(scope, caller, b -> {
+            Map<String, Object> vars = new HashMap<>();
+            b.path("/v1/search:interpret");
+            param(b, vars, "q", q);
+            param(b, vars, "type", type);
+            return b.build(vars);
+        }, node -> node);
     }
 
     @Override

@@ -6,31 +6,44 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
+import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.CountsRequest;
 import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.application.CurrentSession;
+import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.Session;
 import com.iaf.console.bff.types.application.Types;
 import com.iaf.console.bff.types.domain.ConsoleType;
 import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.paging.CursorPaging;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.wfrn.Wfrn;
 
@@ -42,11 +55,20 @@ import reactor.core.publisher.Mono;
  * and region only, and the account's policies decide what the person sees. A hit or a suggestion
  * of a type the person may not list ({@code <service>:list} on the type's pattern) is left out,
  * so a page can hold fewer hits than asked while its cursor still goes on; a search, or the
- * counts, of one named type the person may not list is refused as the list itself is.
+ * counts, of one named type the person may not list is refused as the list itself is. The
+ * indexer's {@code didYouMean} is passed on only when it cannot come from a hit left out.
  */
 public class Search {
 
+    private static final Logger log = LoggerFactory.getLogger(Search.class);
+
     static final String LIST_VERB = "list";
+    static final String ACCOUNT = "account";
+    static final String ORGANIZATION = "organization";
+    /** A membership of an account that is closed, which an organization's counts leave out. */
+    static final String CLOSED = "closed";
+    /** How many accounts' policies are asked at once for an organization's counts. */
+    static final int ACCOUNTS_AT_ONCE = 4;
     public static final int MAX_QUERY = 256;
     public static final int MAX_SUGGEST_QUERY = 128;
     public static final int MAX_SUGGESTIONS = 20;
@@ -71,15 +93,54 @@ public class Search {
     }
 
     /** One page of hits for free text, over every type the person may list, or over one type. */
-    public Mono<Page<SearchHit>> search(Session session, String q, String type, Integer limit, String after) {
+    public Mono<SearchPage> search(Session session, String q, String type, Integer limit, String after) {
         return Mono.defer(() -> {
             String text = text(q, MAX_QUERY, true);
             int size = CursorPaging.pageSize(limit);
-            return listable(session, type).flatMap(listable -> listable.isEmpty() ? Mono.just(new Page<SearchHit>(List.of(), null))
+            return listable(session, type).flatMap(listable -> listable.isEmpty() ? Mono.just(new SearchPage(List.of(), null, null))
                     : index.search(scope(session), caller(session), new SearchQuery(text, blankToNull(type), null, Map.of(), null, null, size, after))
-                            .map(page -> new Page<>(page.items().stream().filter(hit -> hit.type() != null && listable.contains(hit.type())).toList(),
-                                    page.next())));
+                            .map(page -> {
+                                List<SearchHit> shown = page.items().stream().filter(hit -> hit.type() != null && listable.contains(hit.type())).toList();
+                                return new SearchPage(shown, page.next(), didYouMean(text, page.didYouMean(), shown, shown.size() < page.items().size()));
+                            }));
         });
+    }
+
+    /**
+     * The indexer's {@code didYouMean} as the person may see it. It is read from the page's hits,
+     * so it passes as it is when every hit is shown; when some were left out, only when each word
+     * it changes is in the name or a tag of a hit that is shown, since it could otherwise spell a
+     * word of a resource the person may not list.
+     */
+    static String didYouMean(String q, String suggested, List<SearchHit> shown, boolean leftOut) {
+        if (suggested == null || suggested.isBlank()) {
+            return null;
+        }
+        if (!leftOut) {
+            return suggested;
+        }
+        String[] asked = q.strip().split("\\s+");
+        String[] offered = suggested.strip().split("\\s+");
+        if (asked.length != offered.length) {
+            return null;
+        }
+        for (int i = 0; i < offered.length; i++) {
+            String word = offered[i];
+            if (!word.equalsIgnoreCase(asked[i]) && shown.stream().noneMatch(hit -> spells(hit, word))) {
+                return null;
+            }
+        }
+        return suggested;
+    }
+
+    /** Whether the hit's name, or one of its tags' names or values, holds the word. */
+    private static boolean spells(SearchHit hit, String word) {
+        String lower = word.toLowerCase(Locale.ROOT);
+        if (hit.name() != null && hit.name().toLowerCase(Locale.ROOT).contains(lower)) {
+            return true;
+        }
+        return hit.tags().entrySet().stream().anyMatch(t -> t.getKey().toLowerCase(Locale.ROOT).contains(lower)
+                || t.getValue().toLowerCase(Locale.ROOT).contains(lower));
     }
 
     /**
@@ -113,6 +174,163 @@ public class Search {
                     .then(Mono.defer(() -> index.counts(scope(session), caller(session),
                             new SearchQuery(text, t.type(), blankToNull(state), tags, drift, null, null, null)))));
         });
+    }
+
+    /**
+     * Plain English read as the list's own filter: the indexer's {@code /v1/search:interpret} for
+     * the session's account, asked as the person, its answer passed on as it is. With
+     * {@code type} the reading stays in that list, which the person must be allowed to list
+     * ({@code <service>:list} on the type's pattern, refused as the list itself is, an unknown
+     * type a 404), and a reading that names a type the person may not list is refused the same
+     * way. A reading of no type counts every type, so when the person may not list them all its
+     * {@code total} is counted again over the ones they may. {@code q} is required and at most
+     * {@value #MAX_TEXT} characters; the indexer's own refusals (a longer text than it reads, a
+     * spent query budget) are passed back.
+     */
+    public Mono<JsonNode> interpret(Session session, String q, String type) {
+        return Mono.defer(() -> {
+            String text = text(q, MAX_TEXT, true);
+            String list = blankToNull(type);
+            Mono<Set<String>> allowed = list == null ? Mono.just(Set.of()) : listable(session, list);
+            return allowed.then(Mono.defer(() -> index.interpret(scope(session), caller(session), text, list)))
+                    .flatMap(reading -> seen(session, list, reading));
+        });
+    }
+
+    /** A reading as the person may see it: refused when it names a type they may not list, its total over the types they may when it names none. */
+    private Mono<JsonNode> seen(Session session, String list, JsonNode reading) {
+        String named = reading.path("type").isTextual() ? reading.path("type").asText() : null;
+        if (named != null && !named.isBlank()) {
+            return named.equals(list) ? Mono.just(reading) : listable(session, named).thenReturn(reading);
+        }
+        return catalogue(session).flatMap(catalogue -> {
+            if (catalogue.every()) {
+                return Mono.just(reading);
+            }
+            if (catalogue.allowed().isEmpty()) {
+                return Mono.just(withTotal(reading, 0));
+            }
+            JsonNode filter = reading.path("filter");
+            Map<String, String> tags = new LinkedHashMap<>();
+            filter.path("tags").properties().forEach(tag -> tags.put(tag.getKey(), tag.getValue().asText("")));
+            CountsQuery byType = new CountsQuery(textOf(filter, "q"), null, textOf(filter, "region"), textOf(filter, "state"), tags,
+                    filter.path("drift").isBoolean() ? filter.path("drift").asBoolean() : null, "type");
+            return index.countGroups(scope(session), caller(session), byType).map(counts -> {
+                long total = 0;
+                for (JsonNode group : counts.path("groups")) {
+                    if (catalogue.allowed().contains(group.path("key").asText())) {
+                        total += group.path("total").asLong();
+                    }
+                }
+                return withTotal(reading, total);
+            });
+        });
+    }
+
+    private static JsonNode withTotal(JsonNode reading, long total) {
+        if (!(reading instanceof ObjectNode object)) {
+            return reading;
+        }
+        ObjectNode copy = object.deepCopy();
+        copy.put("total", total);
+        return copy;
+    }
+
+    private static String textOf(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isTextual() && !value.asText().isBlank() ? value.asText() : null;
+    }
+
+    /**
+     * Resources counted by one grouping ({@code GET /console/v1/search:counts}) with the filters
+     * of a search, in the session's region. With {@code scope=account}, the default, the session's
+     * account is counted, asked as the person. With {@code scope=organization} every account of
+     * the person's that is not closed and in which they may list what is counted is, asked as the
+     * console-internal principal with {@code accountId} repeated, so no person's token ever names
+     * another account. An account counts with a type when {@code <service>:list} on the type is
+     * allowed there, and without one when every type of its catalogue is, each decided with the
+     * session switched to that account. One the person may not list in is refused as its list is:
+     * the session's account for {@code account}, and for {@code organization} only when no account
+     * counts; a type no account's catalogue holds is a 404. The answer is {@link GroupedCounts}
+     * with {@code asOf}, the index's last event, when it is known.
+     */
+    public Mono<JsonNode> groupedCounts(Session session, CountsRequest request) {
+        return Mono.defer(() -> {
+            String groupBy = groupBy(request.groupBy());
+            boolean organization = organization(request.scope());
+            Map<String, String> tags = new LinkedHashMap<>();
+            request.tags().forEach((name, value) -> tags.put(tagName(name), value == null ? "" : value));
+            CountsQuery query = new CountsQuery(text(request.q(), MAX_TEXT, false), blankToNull(request.type()), session.region(), state(request.state()),
+                    tags, request.drift() == null ? null : drift(request.drift()), groupBy);
+            return (organization ? inEveryAccount(session, query) : inTheAccount(session, query)).flatMap(counts -> asOf(session, counts));
+        });
+    }
+
+    /** The session's account's counts, as the person, when they may list what is counted there. */
+    private Mono<JsonNode> inTheAccount(Session session, CountsQuery query) {
+        return counted(session, query.type()).flatMap(decision -> decision.allowed()
+                ? index.countGroups(scope(session), caller(session), query).map(answer -> (JsonNode) GroupedCounts.of(answer, true))
+                : Mono.error(new DeniedException(decision.denial())));
+    }
+
+    /**
+     * The counts of every account of the person's that is not closed and may be counted, added up,
+     * as the console-internal principal. When none may, the session's account's refusal (else the
+     * first) is the answer; a type no account's catalogue holds is a 404.
+     */
+    private Mono<JsonNode> inEveryAccount(Session session, CountsQuery query) {
+        List<AccountMembership> members = session.accounts().stream().filter(m -> !CLOSED.equals(m.status())).toList();
+        return Flux.fromIterable(members).flatMapSequential(m -> {
+            Session there = m.accountId().equals(session.accountId()) ? session : session.switchedTo(m.accountId(), session.region());
+            // a type an account's catalogue does not hold counts nothing there
+            return counted(there, query.type()).onErrorResume(NotFoundException.class, e -> Mono.empty()).map(d -> Map.entry(m.accountId(), d));
+        }, ACCOUNTS_AT_ONCE).collectList().flatMap(decisions -> {
+            List<String> accounts = decisions.stream().filter(d -> d.getValue().allowed()).map(Map.Entry::getKey).toList();
+            if (!accounts.isEmpty()) {
+                return across(session, accounts, query);
+            }
+            Optional<Denial> refused = refusal(decisions, session.accountId()).or(() -> refusal(decisions, null));
+            if (refused.isPresent()) {
+                return Mono.error(new DeniedException(refused.get()));
+            }
+            return query.type() == null ? Mono.just(GroupedCounts.empty(query.grouped())) : Mono.error(NotFoundException.of("type", query.type()));
+        });
+    }
+
+    /** The first refusal among the accounts' decisions, of the one account named, or of any when {@code accountId} is {@code null}. */
+    private static Optional<Denial> refusal(List<Map.Entry<String, Decision>> decisions, String accountId) {
+        return decisions.stream().filter(d -> accountId == null || d.getKey().equals(accountId)).map(d -> d.getValue().denial())
+                .filter(Objects::nonNull).findFirst();
+    }
+
+    /** Whether the session's account may be counted: the type listable there, or with no type every type of its catalogue. */
+    private Mono<Decision> counted(Session session, String type) {
+        if (type != null) {
+            return types.byType(session, type).flatMap(t -> access.decide(session,
+                    List.of(new AccessCheck(AccessCheck.action(t.service(), LIST_VERB), pattern(session, t))))).map(decisions -> decisions.get(0));
+        }
+        return catalogue(session).map(c -> c.every() ? Decision.allow() : Decision.deny(c.refused()));
+    }
+
+    /** The counts with {@code asOf}, the index's last event, when the index says; the counts alone when it cannot. */
+    private Mono<JsonNode> asOf(Session session, JsonNode counts) {
+        return lastEventAt(session).map(Optional::of).defaultIfEmpty(Optional.empty()).onErrorResume(e -> {
+            log.warn("the search index's last event is unknown for {}: {}", session.accountId(), e.toString());
+            return Mono.just(Optional.empty());
+        }).map(last -> {
+            if (last.isPresent() && counts instanceof ObjectNode object) {
+                object.put("asOf", last.get().toString());
+            }
+            return counts;
+        });
+    }
+
+    private static boolean organization(String scope) {
+        String value = scope == null || scope.isBlank() ? ACCOUNT : scope.strip();
+        if (!value.equals(ACCOUNT) && !value.equals(ORGANIZATION)) {
+            throw invalid("enum", "/scope", "scope is account or organization");
+        }
+        return value.equals(ORGANIZATION);
     }
 
     /**
@@ -211,7 +429,7 @@ public class Search {
     }
 
     private static String state(String value) {
-        String state = blankToNull(value);
+        String state = blankToNull(value == null ? null : value.strip());
         if (state != null && !ResourceCounts.STATES.contains(state)) {
             throw invalid("enum", "/state", "state is one of: " + String.join(", ", ResourceCounts.STATES));
         }
@@ -219,7 +437,7 @@ public class Search {
     }
 
     private static Boolean drift(String value) {
-        String drift = value.strip();
+        String drift = value == null ? "" : value.strip();
         if (drift.isEmpty()) {
             return null;
         }
@@ -244,19 +462,36 @@ public class Search {
             return types.byType(session, type).flatMap(t -> access.require(session, AccessCheck.action(t.service(), LIST_VERB), pattern(session, t))
                     .thenReturn(Set.of(t.type())));
         }
+        return catalogue(session).map(Listable::allowed);
+    }
+
+    /** The catalogue's types in the session's account and region, the ones the person may list there, and the first refusal. */
+    record Listable(Set<String> all, Set<String> allowed, Denial refused) {
+
+        boolean every() {
+            return allowed.containsAll(all);
+        }
+    }
+
+    private Mono<Listable> catalogue(Session session) {
         return types.list(session).flatMap(all -> {
             List<AccessCheck> checks = new ArrayList<>();
             for (ConsoleType t : all) {
                 checks.add(new AccessCheck(AccessCheck.action(t.service(), LIST_VERB), pattern(session, t)));
             }
             return access.decide(session, checks).map(decisions -> {
+                Set<String> every = new HashSet<>();
                 Set<String> allowed = new HashSet<>();
+                Denial refused = null;
                 for (int i = 0; i < all.size(); i++) {
+                    every.add(all.get(i).type());
                     if (decisions.get(i).allowed()) {
                         allowed.add(all.get(i).type());
+                    } else if (refused == null) {
+                        refused = decisions.get(i).denial();
                     }
                 }
-                return Set.copyOf(allowed);
+                return new Listable(Set.copyOf(every), Set.copyOf(allowed), refused);
             });
         });
     }

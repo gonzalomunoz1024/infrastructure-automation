@@ -19,23 +19,15 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.GroupedCounts;
 import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
-import com.iaf.console.bff.search.domain.SearchHit;
-import com.iaf.console.bff.search.domain.SearchQuery;
-import com.iaf.console.bff.search.domain.Suggestion;
-import com.iaf.console.bff.search.ports.outbound.SearchPort;
 import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.Principal;
 import com.iaf.console.bff.session.domain.Session;
 import com.iaf.console.kit.errors.InvalidInputException;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
-
-import reactor.core.publisher.Mono;
 
 /**
  * Counts across accounts for the console's own callers (the executive home): the accounts go to
@@ -50,8 +42,22 @@ class CountsAcrossTest {
     private final List<List<String>> calls = new ArrayList<>();
     private final List<AccountScope> scopes = new ArrayList<>();
     private final List<CountsQuery> queries = new ArrayList<>();
-    private final Search search = new Search(null, null, null, new CountingIndex());
+    private final FakeSearchIndex index = index();
+    private final Search search = new Search(null, null, null, index);
     private final Session gonzalo = session();
+
+    /** The indexer, answering counts over the accounts named and the index's status. */
+    private FakeSearchIndex index() {
+        FakeSearchIndex fake = new FakeSearchIndex();
+        fake.across = (accountIds, query) -> {
+            calls.add(accountIds);
+            scopes.add(fake.calls.get(fake.calls.size() - 1).scope());
+            queries.add(query);
+            return answer(accountIds.size(), query.grouped() ? 1 : 0);
+        };
+        fake.status = scope -> new IndexStatus(3, 1.5, scope.accountId().equals(COMPUTE) ? NOW : null, false);
+        return fake;
+    }
 
     @Test
     void theAccountsGoTwoHundredAtATimeAndTheAnswersAddUp() {
@@ -178,37 +184,5 @@ class CountsAcrossTest {
         AccountMembership compute = new AccountMembership(COMPUTE, "Compute", "active", "global", List.of("owners"), List.of("account-admin"));
         return new Session("s_gonzalo", principal, List.of(compute), COMPUTE, "global", NOW, NOW, NOW, NOW.plus(Duration.ofHours(12)), "https://idp.test",
                 "gonzalo");
-    }
-
-    /** The indexer, answering counts over the accounts named and nothing else. */
-    private final class CountingIndex implements SearchPort {
-
-        @Override
-        public Mono<JsonNode> countAcross(AccountScope scope, List<String> accountIds, CountsQuery query) {
-            calls.add(accountIds);
-            scopes.add(scope);
-            queries.add(query);
-            return Mono.just(answer(accountIds.size(), query.grouped() ? 1 : 0));
-        }
-
-        @Override
-        public Mono<Page<SearchHit>> search(AccountScope scope, StateCaller caller, SearchQuery query) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Mono<List<Suggestion>> suggest(AccountScope scope, StateCaller caller, String q, String type, int limit) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Mono<ResourceCounts> counts(AccountScope scope, StateCaller caller, SearchQuery query) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public Mono<IndexStatus> getIndexStatus(AccountScope scope, StateCaller caller) {
-            return Mono.just(new IndexStatus(3, 1.5, scope.accountId().equals(COMPUTE) ? NOW : null, false));
-        }
     }
 }

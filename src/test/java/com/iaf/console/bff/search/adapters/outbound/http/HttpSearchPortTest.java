@@ -31,10 +31,13 @@ import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.application.SearchProperties;
 import com.iaf.console.bff.search.domain.CountsQuery;
 import com.iaf.console.bff.search.domain.IndexStatus;
+import com.iaf.console.bff.search.domain.SearchPage;
+import com.iaf.console.bff.search.domain.SearchQuery;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.application.TrustProperties;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
 import com.iaf.console.kit.errors.InvalidInputException;
+import com.iaf.console.kit.errors.TooManyRequestsException;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.platform.assertion.OnBehalfOfAssertions;
 import com.nimbusds.jose.jwk.ECKey;
@@ -53,11 +56,16 @@ class HttpSearchPortTest {
 
     private final List<ClientRequest> requests = new ArrayList<>();
     private HttpStatus status = HttpStatus.OK;
+    private String retryAfter;
     private String answer = "{\"total\":3,\"byState\":{\"active\":3},\"drift\":0,\"cappedAt\":null,\"groups\":[]}";
 
     private final HttpSearchPort port = new HttpSearchPort(WebClient.builder().exchangeFunction(request -> {
         requests.add(request);
-        return Mono.just(ClientResponse.create(status).header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).body(answer).build());
+        ClientResponse.Builder response = ClientResponse.create(status).header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+        if (retryAfter != null) {
+            response.header(HttpHeaders.RETRY_AFTER, retryAfter);
+        }
+        return Mono.just(response.body(answer).build());
     }), () -> "http://indexer.test", trust(), new SearchProperties("http://indexer.test", "console-search-indexer", Duration.ofSeconds(5)),
             new ObjectMapper().findAndRegisterModules());
 
@@ -118,6 +126,59 @@ class HttpSearchPortTest {
 
         answer = "{\"documents\":0,\"lagSeconds\":0,\"lastEventAt\":null}";
         assertNull(port.getIndexStatus(GONZALO, AS_GONZALO).block().lastEventAt(), "null before the first event");
+    }
+
+    @Test
+    void aSearchPageKeepsTheIndexersDidYouMean() {
+        answer = "{\"items\":[{\"wfrn\":\"wfrn:wf:data:global:123456789012:database/orders-postgres\",\"type\":\"database\",\"service\":\"data\","
+                + "\"region\":\"global\",\"name\":\"orders-postgres\",\"state\":\"active\",\"score\":0.5,\"updatedAt\":\"2026-10-23T11:00:00Z\"}],"
+                + "\"next\":null,\"didYouMean\":\"postgres\"}";
+        SearchPage page = port.search(GONZALO, AS_GONZALO, new SearchQuery("postgress", null, null, Map.of(), null, null, 20, null)).block();
+        assertEquals("postgres", page.didYouMean());
+        assertEquals("orders-postgres", page.items().get(0).name());
+        assertNull(page.next());
+
+        answer = "{\"items\":[],\"next\":\"abc\"}";
+        SearchPage plain = port.search(GONZALO, AS_GONZALO, new SearchQuery("web", null, null, Map.of(), null, null, 20, null)).block();
+        assertNull(plain.didYouMean());
+        assertEquals("abc", plain.next());
+    }
+
+    @Test
+    void aReadingIsAskedAsThePersonWithTheTextEncodedStrictly() throws Exception {
+        answer = "{\"q\":\"type:vm tag:env=prod\",\"type\":\"vm\",\"filter\":{\"tags\":{\"env\":\"prod\"}},\"explanation\":\"x\","
+                + "\"confidence\":\"high\",\"total\":2}";
+        JsonNode reading = port.interpret(GONZALO, AS_GONZALO, "vms tagged env=prod & \"blue green\" 50%", "vm").block();
+        assertEquals("prod", reading.path("filter").path("tags").path("env").asText(), "the answer as it is");
+        ClientRequest request = requests.get(0);
+        assertEquals("/v1/search:interpret", request.url().getPath());
+        Map<String, List<String>> params = UriComponentsBuilder.fromUri(request.url()).build(true).getQueryParams();
+        assertEquals("vms tagged env=prod & \"blue green\" 50%", decoded(params.get("q").get(0)), request.url().toString());
+        assertEquals(List.of("vm"), params.get("type"));
+        JWTClaimsSet claims = SignedJWT.parse(request.headers().getFirst(HttpHeaders.AUTHORIZATION).substring("Bearer ".length())).getJWTClaimsSet();
+        assertEquals(COMPUTE, claims.getStringClaim("acct"), "the person's own account, never another");
+
+        port.interpret(GONZALO, AS_GONZALO, "failed", null).block();
+        assertNull(UriComponentsBuilder.fromUri(requests.get(1).url()).build(true).getQueryParams().get("type"), "no list type, no parameter");
+    }
+
+    @Test
+    void groupedCountsAreAskedAsThePersonAndASpentBudgetKeepsItsRetryAfter() throws Exception {
+        port.countGroups(GONZALO, AS_GONZALO, new CountsQuery(null, null, "global", null, Map.of("env", ""), null, "tag:env")).block();
+        URI url = requests.get(0).url();
+        Map<String, List<String>> params = UriComponentsBuilder.fromUri(url).build(true).getQueryParams();
+        assertEquals("/v1/counts", url.getPath());
+        assertNull(params.get("accountId"), "a person's call names no account: " + url);
+        assertEquals(List.of("global"), params.get("region"));
+        assertEquals(List.of(""), params.get("tag.env"), "an empty value is any value: " + url);
+        assertEquals("tag:env", decoded(params.get("groupBy").get(0)));
+
+        status = HttpStatus.TOO_MANY_REQUESTS;
+        retryAfter = "7";
+        answer = "{\"error\":\"over the account's query budget\"}";
+        TooManyRequestsException spent = assertThrows(TooManyRequestsException.class,
+                () -> port.interpret(GONZALO, AS_GONZALO, "vms", null).block());
+        assertEquals(7, spent.retryAfterSeconds());
     }
 
     private static String decoded(String value) {

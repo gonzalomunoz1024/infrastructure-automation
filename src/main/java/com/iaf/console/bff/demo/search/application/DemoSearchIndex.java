@@ -12,32 +12,38 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import com.iaf.console.bff.demo.search.domain.DemoInterpreter;
 import com.iaf.console.bff.demo.search.domain.DemoQuery;
+import com.iaf.console.bff.demo.search.domain.Typos;
 import com.iaf.console.bff.demo.state.application.DemoStateStore;
 import com.iaf.console.bff.resources.domain.StateResource;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
+import com.iaf.console.bff.search.domain.SearchPage;
 import com.iaf.console.bff.search.domain.Suggestion;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
-import com.iaf.console.kit.paging.Page;
 import com.iaf.console.wfrn.Wfrn;
 
 /**
  * The search indexer's answers over the demo state stand-in's inventory, read straight from the
  * store (so the demo has none of the real index's few seconds of lag): every word of the query
- * must match the name, the wfrn, a tag or a text attribute; a hit scores 10 for a name equal to a
- * word, 6 for a name starting with it, 4 for a name containing it, 2 for the wfrn and 1 for a tag
- * or an attribute, summed over the words; the name's matches come back wrapped in {@code <em>},
- * HTML-escaped around them. Without a state filter only live resources match; the counts give
- * every state whatever the state filter, tombstones under {@code deleted}, and are exact, over one
- * account or, for the console-internal principal, several added up, and per type, service, state,
- * region, account or tag value when grouped. The ages of {@code created:} and {@code updated:}
- * terms count back from the clock's present; a tag filter with an empty value keeps any value.
+ * must match the name, the wfrn, a tag or a text attribute, or else a word of the name or a tag a
+ * typo away; a hit scores 10 for a name equal to a word, 6 for a name starting with it, 4 for a
+ * name containing it, 2 for the wfrn, 1 for a tag or an attribute and 0.5 a typo away, summed over
+ * the words; the name's matches come back wrapped in {@code <em>}, HTML-escaped around them. When
+ * the first page of a relevance search found a word only a typo away, {@code didYouMean} is the
+ * query with the word as the page's best such hit spells it. Without a state filter only live
+ * resources match; the counts give every state whatever the state filter, tombstones under
+ * {@code deleted}, and are exact, over one account or, for the console-internal principal,
+ * several added up, and per type, service, state, region, account or tag value when grouped. The
+ * ages of {@code created:} and {@code updated:} terms count back from the clock's present; a tag
+ * filter with an empty value keeps any value.
  */
 public class DemoSearchIndex {
 
@@ -47,6 +53,9 @@ public class DemoSearchIndex {
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
     private static final int MAX_GROUPS = 100;
+    /** The longest text {@code /v1/search:interpret} reads, and the shape of the list type it may be given. */
+    private static final int MAX_INTERPRET = 256;
+    private static final Pattern TYPE = Pattern.compile("^[a-z0-9-]{1,64}$");
 
     private final DemoStateStore store;
     private final Clock clock;
@@ -63,10 +72,11 @@ public class DemoSearchIndex {
         }
     }
 
-    private record Scored(StateResource resource, double score) {
+    /** A resource that matched, how well, and the words it matched only a typo away, each with its own spelling. */
+    private record Scored(StateResource resource, double score, Map<String, String> fixes) {
     }
 
-    public Page<SearchHit> search(String accountId, String q, Filters filters, String sort, Integer limit, String after) {
+    public SearchPage search(String accountId, String q, Filters filters, String sort, Integer limit, String after) {
         if (q == null || q.isBlank()) {
             throw invalid("required", "/q", "q is required");
         }
@@ -86,17 +96,38 @@ public class DemoSearchIndex {
             if (!(state == null ? r.live() : state.equals(r.state())) || !matches(r, query, filters)) {
                 continue;
             }
-            double score = score(r, query.words());
-            if (score > 0) {
-                found.add(new Scored(r, score));
+            Scored scored = score(r, query.words());
+            if (scored != null) {
+                found.add(scored);
             }
         }
         found.sort(comparator(order));
+        List<Scored> shown = found.subList(Math.min(from, found.size()), Math.min(from + size, found.size()));
         List<SearchHit> page = new ArrayList<>();
-        for (Scored s : found.subList(Math.min(from, found.size()), Math.min(from + size, found.size()))) {
+        for (Scored s : shown) {
             page.add(hit(s, query.words()));
         }
-        return new Page<>(page, from + size < found.size() ? String.valueOf(from + size) : null);
+        String didYouMean = order.equals("score") && from == 0 ? didYouMean(q, query.words(), shown) : null;
+        return new SearchPage(page, from + size < found.size() ? String.valueOf(from + size) : null, didYouMean);
+    }
+
+    /** The query with each word the page's hits matched only a typo away as the best of them spells it; null when there is none. */
+    private static String didYouMean(String q, List<String> words, List<Scored> shown) {
+        String fixed = q.strip();
+        boolean any = false;
+        for (String word : words) {
+            boolean asTyped = shown.stream().anyMatch(s -> !s.fixes().containsKey(word));
+            String spelled = shown.stream().map(s -> s.fixes().get(word)).filter(w -> w != null).findFirst().orElse(null);
+            if (!asTyped && spelled != null) {
+                Pattern typed = Pattern.compile("(?<=^|\\s)" + Pattern.quote(word) + "(?=\\s|$)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+                Matcher m = typed.matcher(fixed);
+                if (m.find()) {
+                    fixed = m.replaceAll(Matcher.quoteReplacement(spelled));
+                    any = true;
+                }
+            }
+        }
+        return any ? fixed : null;
     }
 
     public List<Suggestion> suggest(String accountId, String region, String q, String type, int limit) {
@@ -172,7 +203,7 @@ public class DemoSearchIndex {
         Map<String, Tally> groups = new LinkedHashMap<>();
         for (String accountId : accountIds) {
             for (StateResource r : store.snapshot(accountId, region(filters, query))) {
-                if (!matches(r, query, filters) || score(r, query.words()) <= 0) {
+                if (!matches(r, query, filters) || score(r, query.words()) == null) {
                     continue;
                 }
                 boolean listed = state == null ? r.live() : state.equals(r.state());
@@ -216,6 +247,25 @@ public class DemoSearchIndex {
         body.put("lastEventAt", last == null ? null : last.toString());
         body.put("rebuilding", false);
         return body;
+    }
+
+    /**
+     * {@code /v1/search:interpret}: what a person typed read as a list's filter with the account's
+     * vocabulary, on the list of {@code type} when given; its total is that list's count, exactly
+     * what {@code /v1/counts} answers for the same filter.
+     */
+    public DemoInterpreter.Reading interpret(String accountId, String q, String type, DemoInterpreter.Vocabulary vocabulary) {
+        if (q == null || q.isBlank()) {
+            throw invalid("required", "/q", "q is required");
+        }
+        if (q.length() > MAX_INTERPRET) {
+            throw invalid("length", "/q", "q is at most " + MAX_INTERPRET + " characters");
+        }
+        if (type != null && !TYPE.matcher(type).matches()) {
+            throw invalid("pattern", "/type", "type is 1 to 64 lowercase letters, digits or '-'");
+        }
+        return DemoInterpreter.read(q, type, vocabulary, clock.instant(), (listed, filter) -> ((Number) counts(List.of(accountId), filter.q(),
+                new Filters(filter.region(), listed, filter.state(), filter.tags(), filter.drift()), null).get("total")).longValue());
     }
 
     /** The key a resource is counted under: its type, service, state, region, account or the value of a tag; null when it has no such tag. */
@@ -311,14 +361,15 @@ public class DemoSearchIndex {
         return true;
     }
 
-    /** The relevance of a resource for the words, 0 when one of them matches nothing. */
-    private static double score(StateResource r, List<String> words) {
+    /** The relevance of a resource for the words, and the words it matched only a typo away; null when one of them matches nothing. */
+    private static Scored score(StateResource r, List<String> words) {
         if (words.isEmpty()) {
-            return 1;
+            return new Scored(r, 1, Map.of());
         }
         String name = lower(r.name());
         String wfrn = lower(r.wfrn());
         double total = 0;
+        Map<String, String> fixes = new LinkedHashMap<>();
         for (String word : words) {
             double best;
             if (name.equals(word)) {
@@ -332,11 +383,59 @@ public class DemoSearchIndex {
             } else if (inTags(r, word) || inAttributes(r.attributes(), word)) {
                 best = 1;
             } else {
-                return 0;
+                String spelled = spelled(r, word);
+                if (spelled == null) {
+                    return null;
+                }
+                fixes.put(word, spelled);
+                best = 0.5;
             }
             total += best;
         }
-        return total;
+        return new Scored(r, total, Map.copyOf(fixes));
+    }
+
+    /**
+     * The word as the resource spells it a typo away, in its name or a tag (whole, or one of its
+     * words); the closest, the name first; null when none is close enough or the word is a phrase.
+     */
+    private static String spelled(StateResource r, String word) {
+        int allowed = Typos.allowed(word);
+        if (allowed == 0 || word.chars().anyMatch(Character::isWhitespace)) {
+            return null;
+        }
+        List<String> candidates = new ArrayList<>();
+        pieces(r.name(), candidates);
+        r.tags().forEach((k, v) -> {
+            pieces(k, candidates);
+            pieces(v, candidates);
+        });
+        String best = null;
+        int closest = allowed + 1;
+        for (String candidate : candidates) {
+            String lower = lower(candidate);
+            if (Typos.within(word, lower, allowed)) {
+                int d = Typos.distance(word, lower);
+                if (d < closest) {
+                    best = candidate;
+                    closest = d;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** A text and each of its words, as written. */
+    private static void pieces(String text, List<String> out) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        out.add(text);
+        for (String piece : text.split("[^\\p{L}\\p{N}]+")) {
+            if (!piece.isEmpty() && !piece.equals(text)) {
+                out.add(piece);
+            }
+        }
     }
 
     private static boolean inTags(StateResource r, String word) {
@@ -378,7 +477,9 @@ public class DemoSearchIndex {
     private static SearchHit hit(Scored s, List<String> words) {
         StateResource r = s.resource();
         Map<String, String> highlights = new LinkedHashMap<>();
-        String name = highlight(r.name(), words);
+        List<String> marked = new ArrayList<>(words);
+        s.fixes().values().forEach(spelled -> marked.add(lower(spelled)));
+        String name = highlight(r.name(), marked);
         if (name != null) {
             highlights.put("name", name);
         }
