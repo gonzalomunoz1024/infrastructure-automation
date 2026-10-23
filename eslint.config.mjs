@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint'
 
 // the platform's eslint setup (eslint.config.mjs at c9529d5), with this workspace's folders
 export default defineConfig([
-  globalIgnores(['**/dist', '**/node_modules', '.claude', 'console/playwright-report', 'console/test-results']),
+  globalIgnores(['**/dist', '**/dist-mock', '**/node_modules', '.claude', 'console/playwright-report', 'console/test-results']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, tseslint.configs.recommended],

@@ -1,12 +1,13 @@
 import { Button, Card, CardRow, Segmented, Select, useTheme, useToast, type ThemeMode } from '@iaf/ui'
+import { When } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
+import { RoleTag } from '../app/RoleTag'
 import { navigate, pathFor, type PageProps } from '../app/router'
-import { DEMO_ACCOUNTS, formatAccountId, setAccount } from '../lib/accounts'
-import { clearDescriptorCache } from '../lib/api'
-import { DEV_IDENTITIES, identityOf, setCurrentUser, useCurrentUser } from '../lib/identity'
-import { clearQueryCache } from '../lib/queries'
+import { formatAccountId } from '../lib/accounts'
+import { clearDescriptorCache, isApiError } from '../lib/api'
+import { bff, signOut, switchAccount, switchIdentity, switchRegion } from '../lib/bff'
+import { clearQueryCache, useQuery } from '../lib/queries'
 import { clearRecent } from '../lib/recent'
-import { setRegionName } from '../lib/regions'
 
 /*
  * Settings: appearance, who the console acts as, the account and region it is scoped to, and
@@ -22,9 +23,8 @@ const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
 export default function SettingsPage(_props: PageProps) {
   const { mode, setMode } = useTheme()
   const toast = useToast()
-  const { me, account, region, regions, refetch } = useConsole()
-  const user = useCurrentUser()
-  const identity = identityOf(user)
+  const { session, me, account, region, regions, refetch } = useConsole()
+  const accounts = useQuery(['accounts', session.user.userId], () => bff.accounts())
 
   const clearCaches = () => {
     clearDescriptorCache()
@@ -33,12 +33,13 @@ export default function SettingsPage(_props: PageProps) {
     refetch()
     toast.success('Cleared', 'The cached descriptors, the recent pages and everything loaded in this session were dropped and fetched again.')
   }
+  const failed = (what: string) => (e: unknown) => toast.error(what, isApiError(e) ? e.error : String(e))
 
   return (
     <>
       <div className="mb-6">
         <h1 className="text-title1 font-semibold tracking-tight text-primary">Settings</h1>
-        <p className="mt-1 text-sm text-secondary">What the console remembers in this browser.</p>
+        <p className="mt-1 text-sm text-secondary">Who you are to the console, the scope every page is read in, and what the console remembers in this browser.</p>
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card title="Appearance">
@@ -47,48 +48,37 @@ export default function SettingsPage(_props: PageProps) {
           </CardRow>
         </Card>
 
-        <Card title="Identity" subtitle="Who the console acts as">
-          <CardRow label={me?.name ?? 'Not signed in'} description={me ? `${me.id}${me.roles?.length ? ` · ${me.roles.join(', ')}` : ''}${me.teams?.length ? ` · ${me.teams.join(', ')}` : ''}` : 'The platform has not answered the identity call.'}>
-            <Button size="sm" variant="ghost" onClick={() => navigate(pathFor('signin', {}, { switch: 1 }))}>
-              Switch
+        <Card title="Identity" subtitle="From the firm's identity provider, through the console's session">
+          <CardRow
+            label={me.name}
+            description={
+              <span className="flex flex-wrap items-center gap-1.5">
+                <span>{me.email}</span>
+                <span className="font-mono">{me.id}</span>
+                {(me.roles ?? []).map((r) => (
+                  <RoleTag key={r} role={r} />
+                ))}
+              </span>
+            }
+          >
+            <Button size="sm" variant="ghost" onClick={() => void switchIdentity()}>
+              Switch identity
             </Button>
           </CardRow>
-          {import.meta.env.DEV && (
-            <CardRow label="Development identity" description="Sent as the X-User header; the sign-in page lists the same people.">
-              <Select
-                size="sm"
-                // Atlas's Select names its trigger with aria-label alone, so the value goes in the name too (WCAG 2.5.3)
-                ariaLabel={identity ? `Development identity: ${identity.name}` : 'Development identity'}
-                value={user ?? ''}
-                options={DEV_IDENTITIES.map((d) => ({ value: d.id, label: d.name, hint: d.roles.join(', ') }))}
-                onChange={(id) => {
-                  clearQueryCache()
-                  setCurrentUser(id)
-                }}
-              />
-            </CardRow>
-          )}
-          <CardRow label="Sign out" description="Forgets the identity in this browser.">
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => {
-                clearQueryCache()
-                setCurrentUser(null)
-                navigate(pathFor('signin'))
-              }}
-            >
+          <CardRow label="Session" description={<span>Signed in <When at={session.authTime} />, expires <When at={session.expiresAt} />.</span>} />
+          <CardRow label="Sign out" description="Ends the session here and at the console's backend.">
+            <Button size="sm" variant="danger" onClick={() => void signOut().then(() => navigate(pathFor('signin')))}>
               Sign out
             </Button>
           </CardRow>
         </Card>
 
         <Card title="Scope" subtitle="The account and region every page is read in">
-          <CardRow label="Account" description="Demo accounts until the platform serves them (phase 2).">
-            <Select size="sm" ariaLabel={`Account: ${account.name}`} value={account.id} options={DEMO_ACCOUNTS.map((a) => ({ value: a.id, label: a.name, hint: formatAccountId(a.id) }))} onChange={setAccount} mono />
+          <CardRow label="Account" description="The accounts you belong to; your role in each comes from its groups.">
+            <Select size="sm" ariaLabel={`Account: ${account.name}`} value={account.id} options={(accounts.data?.items ?? [session.account]).map((a) => ({ value: a.accountId, label: a.name, hint: `${formatAccountId(a.accountId)}${a.roles?.length ? ` · ${a.roles.join(', ')}` : ''}` }))} onChange={(id) => switchAccount(id).catch(failed('Could not switch account'))} mono />
           </CardRow>
-          <CardRow label="Region" description={regions.length <= 1 ? 'The platform serves one region.' : 'From GET /api/v1/regions.'}>
-            {regions.length <= 1 ? <span className="text-sm text-secondary">{region.title}</span> : <Select size="sm" ariaLabel={`Region: ${region.title}`} value={region.name} options={regions.map((r) => ({ value: r.name, label: r.title, hint: r.name }))} onChange={setRegionName} />}
+          <CardRow label="Region" description={regions.length <= 1 ? 'The platform serves one region.' : 'From the regions the platform lists.'}>
+            {regions.length <= 1 ? <span className="text-sm text-secondary">{region.title}</span> : <Select size="sm" ariaLabel={`Region: ${region.title}`} value={region.name} options={regions.map((r) => ({ value: r.name, label: r.title, hint: r.name }))} onChange={(name) => switchRegion(name).catch(failed('Could not switch region'))} />}
           </CardRow>
         </Card>
 

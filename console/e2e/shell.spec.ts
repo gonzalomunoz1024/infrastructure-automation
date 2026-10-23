@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
-import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
+import { expectNoHorizontalOverflow, expectNoSeriousA11y } from './support'
 
 /*
  * The shell's journey in mock mode (VITE_CONSOLE_MOCK=1, no platform): sign in as a development
@@ -10,22 +10,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 const shots = fileURLToPath(new URL('./screenshots/', import.meta.url))
 const shot = (name: string) => `${shots}${name}.png`
-
-async function expectNoSeriousA11y(page: Page, where: string) {
-  const results = await new AxeBuilder({ page }).analyze()
-  const bad = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')
-  const lines = bad.map((v) => `${v.id} (${v.impact}): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')}`)
-  expect(lines, `serious or critical axe violations on the ${where}`).toEqual([])
-}
-
-async function expectNoHorizontalOverflow(page: Page) {
-  const widths = await page.evaluate(() => {
-    const main = document.getElementById('main')
-    return { document: document.documentElement.scrollWidth, viewport: window.innerWidth, content: main ? main.scrollWidth - main.clientWidth : 0 }
-  })
-  expect(widths.document, 'the page is no wider than the viewport').toBeLessThanOrEqual(widths.viewport)
-  expect(widths.content, 'the content does not scroll sideways').toBeLessThanOrEqual(0)
-}
 
 async function signInAsGonzalo(page: Page) {
   await page.goto('/')

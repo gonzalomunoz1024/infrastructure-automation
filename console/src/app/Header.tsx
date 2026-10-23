@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, cx, modKeyLabel, useDismiss, useTheme, type IconName } from '@iaf/ui'
+import { Badge, EmptyState, Icon, IconButton, Kbd, PopoverPanel, SkeletonText, cx, modKeyLabel, relativeTime, useDismiss, useTheme, useToast, type IconName } from '@iaf/ui'
 import { BrandLockup } from './BrandMark'
+import { RoleTag } from './RoleTag'
 import { UserMenuButton } from './UserMenuButton'
+import { useAccessRequestQueue } from './access'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
-import { DEMO_ACCOUNTS, formatAccountId, setAccount } from '../lib/accounts'
-import { setCurrentUser } from '../lib/identity'
-import { clearQueryCache } from '../lib/queries'
-import { setRegionName } from '../lib/regions'
-import { phaseNote } from './Phase'
+import { formatAccountId } from '../lib/accounts'
+import { isApiError } from '../lib/api'
+import { bff, signOut, switchAccount, switchIdentity, switchRegion } from '../lib/bff'
+import { useQuery } from '../lib/queries'
+import { primaryRole, roleLabel } from '../lib/session'
+import { PHASES } from './Phase'
 
 /*
  * The top bar, in the AWS console's arrangement drawn in Atlas: the brand and the Services menu
- * at the left, one search field in the centre, and at the right the notifications bell, help,
- * the account picker, the region picker and the user menu. It stays put while the page scrolls.
+ * at the left, one search field in the centre, and at the right the notifications bell (the
+ * access requests an admin has to decide), help, the account picker with the role you hold, the
+ * region picker and the user menu. It stays put while the page scrolls.
  */
 
 export interface HeaderProps {
   onOpenSearch: () => void
-  /** shown on narrow screens when a service sidebar exists */
+  /** shown on narrow screens when a sidebar exists */
   onOpenSidebar?: () => void
 }
 
@@ -156,7 +160,7 @@ function SearchTrigger({ onClick }: { onClick: () => void }) {
 
 /* ---------------------------------------------------------------- menus */
 
-function HeaderMenu({ label, icon, text, hint, children, width = 'w-72', role = 'menu' }: { label: string; icon: IconName; text?: ReactNode; hint?: ReactNode; children: (close: () => void) => ReactNode; width?: string; role?: 'menu' | 'dialog' }) {
+function HeaderMenu({ label, icon, text, hint, badge, children, width = 'w-72', role = 'menu' }: { label: string; icon: IconName; text?: ReactNode; hint?: ReactNode; badge?: number; children: (close: () => void) => ReactNode; width?: string; role?: 'menu' | 'dialog' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const close = useCallback(() => setOpen(false), [])
@@ -168,13 +172,18 @@ function HeaderMenu({ label, icon, text, hint, children, width = 'w-72', role = 
         onClick={() => setOpen((o) => !o)}
         aria-haspopup={role === 'menu' ? 'menu' : 'dialog'}
         aria-expanded={open}
-        className={cx('flex h-9 items-center gap-1.5 rounded-full px-2 text-sm transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
+        className={cx('relative flex h-9 items-center gap-1.5 rounded-full px-2 text-sm transition-colors hover:bg-surface-secondary', open ? 'bg-surface-secondary text-primary' : 'text-secondary hover:text-primary')}
       >
         {/* the full label is the accessible name at every width; the visible text and hint repeat parts of it */}
         <span className="sr-only">{label}</span>
         <Icon name={icon} size={17} />
+        {!!badge && (
+          <span aria-hidden="true" className="absolute -right-0.5 -top-0.5">
+            <Badge count={badge} tone="accent" />
+          </span>
+        )}
         {text && (
-          <span aria-hidden="true" className="hidden max-w-40 truncate md:inline">
+          <span aria-hidden="true" className="hidden max-w-56 truncate md:inline">
             {text}
           </span>
         )}
@@ -217,9 +226,37 @@ function MenuHeading({ children }: { children: ReactNode }) {
 }
 
 function NotificationsBell() {
+  const queue = useAccessRequestQueue()
+  const items = queue.toDecide
+  const count = items.length
   return (
-    <HeaderMenu label="Notifications" icon="bell" role="dialog" width="w-80">
-      {() => <EmptyState compact icon="bell" title="No notifications yet" message="Approvals, failures and finished requests will land here in phase 2." />}
+    <HeaderMenu label={count ? `Notifications, ${count} to decide` : 'Notifications'} icon="bell" role="dialog" width="w-80" badge={count}>
+      {(close) =>
+        count === 0 ? (
+          <EmptyState compact icon="bell" title="Nothing to decide" message={queue.readable ? `Access requests waiting for you land here. Alerts, failures and finished requests arrive with ${PHASES[2]}.` : `Alerts, failures and finished requests arrive with ${PHASES[2]}.`} />
+        ) : (
+          <div>
+            <MenuHeading>Access requests to decide</MenuHeading>
+            <ul aria-label="Access requests to decide">
+              {items.map((r) => (
+                <li key={r.requestId}>
+                  <Link to={pathFor('iam-request', { id: r.requestId })} onClick={close} className="block px-3 py-2 text-sm transition-colors hover:bg-surface-secondary">
+                    <span className="block text-primary">
+                      {r.requester.name ?? r.requester.userId} asks for <span className="font-medium">{roleLabel(r.role)}</span>
+                    </span>
+                    <span className="block truncate font-mono text-caption text-tertiary">
+                      {r.action} · {relativeTime(r.requestedAt)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            <Link to={pathFor('iam-requests')} onClick={close} className="block border-t border-stroke-light px-3 py-2 text-caption font-medium text-accent transition-opacity hover:opacity-70">
+              All access requests
+            </Link>
+          </div>
+        )
+      }
     </HeaderMenu>
   )
 }
@@ -251,6 +288,10 @@ function HelpMenu() {
               Platform API reference
               <Icon name="external" size={11} />
             </a>
+            <Link to={pathFor('iam')} onClick={close} className="flex items-center gap-2 rounded-md py-1 text-accent transition-opacity hover:opacity-70">
+              <Icon name="shield" size={14} />
+              Identity and access
+            </Link>
             <Link to={pathFor('settings')} onClick={close} className="flex items-center gap-2 rounded-md py-1 text-accent transition-opacity hover:opacity-70">
               <Icon name="settings" size={14} />
               Settings
@@ -263,32 +304,64 @@ function HelpMenu() {
 }
 
 function AccountPicker() {
-  const { account } = useConsole()
+  const { account, session } = useConsole()
+  const toast = useToast()
+  const accounts = useQuery(['accounts', session.user.userId], () => bff.accounts())
+  const role = primaryRole(account.roles)
+  const list = accounts.data?.items ?? [session.account]
+  const pick = (accountId: string) => {
+    switchAccount(accountId).catch((e: unknown) => toast.error('Could not switch account', isApiError(e) ? e.error : String(e)))
+  }
   return (
-    <HeaderMenu label={`Account: ${account.name} ${formatAccountId(account.id)}`} icon="users" text={account.name} hint={formatAccountId(account.id)} width="w-80">
+    <HeaderMenu
+      label={`Account: ${account.name} ${formatAccountId(account.id)}${role ? `, your role ${roleLabel(role)}` : ''}`}
+      icon="users"
+      text={
+        <span className="flex items-center gap-1.5">
+          <span className="truncate">{account.name}</span>
+          {role && <RoleTag role={role} />}
+        </span>
+      }
+      hint={formatAccountId(account.id)}
+      width="w-80"
+    >
       {(close) => (
         <>
-          <MenuHeading>Accounts</MenuHeading>
-          {DEMO_ACCOUNTS.map((a) => (
+          <MenuHeading>Your accounts</MenuHeading>
+          {list.map((a) => (
             <MenuItem
-              key={a.id}
-              selected={a.id === account.id}
+              key={a.accountId}
+              selected={a.accountId === account.id}
               onSelect={() => {
-                setAccount(a.id)
                 close()
+                if (a.accountId !== account.id) pick(a.accountId)
               }}
             >
               <span className="block truncate">{a.name}</span>
               <span className="block font-mono text-caption text-tertiary">
-                {formatAccountId(a.id)} · {a.team}
+                {formatAccountId(a.accountId)}
+                {a.owningTeam ? ` · ${a.owningTeam}` : ''}
               </span>
+              {!!a.roles?.length && (
+                <span className="mt-1 flex flex-wrap gap-1">
+                  {a.roles.map((r) => (
+                    <RoleTag key={r} role={r} />
+                  ))}
+                </span>
+              )}
             </MenuItem>
           ))}
           <div className="my-1 border-t border-stroke-light" />
-          <MenuItem disabled hint="phase 2" icon="shield">
-            Switch role
+          <MenuItem
+            icon="shield"
+            onSelect={() => {
+              close()
+              navigate(pathFor('iam'))
+            }}
+          >
+            Identity and access
           </MenuItem>
-          <p className="px-3 pb-2 pt-1 text-caption2 text-tertiary">Demo accounts until the platform serves them ({phaseNote(2).toLowerCase()}).</p>
+          <p className="px-3 pb-2 pt-1 text-caption2 text-tertiary">Your role in an account comes from the groups you are in there.</p>
         </>
       )}
     </HeaderMenu>
@@ -297,6 +370,7 @@ function AccountPicker() {
 
 function RegionPicker() {
   const { regions, region } = useConsole()
+  const toast = useToast()
   if (regions.length <= 1) {
     return (
       <span className="hidden h-9 items-center gap-1.5 px-2 text-sm text-secondary sm:flex" title="The platform serves one region">
@@ -317,8 +391,8 @@ function RegionPicker() {
               key={r.name}
               selected={r.name === region.name}
               onSelect={() => {
-                setRegionName(r.name)
                 close()
+                switchRegion(r.name).catch((e: unknown) => toast.error('Could not switch region', isApiError(e) ? e.error : String(e)))
               }}
             >
               <span className="block">{r.title}</span>
@@ -339,23 +413,20 @@ function UserButton() {
   const { mode, setMode } = useTheme()
   return (
     <UserMenuButton
-      user={me ? { id: me.id, name: me.name, email: me.email, roles: me.roles, teams: me.teams, admin: me.admin } : null}
-      status={offline ? 'offline' : me ? 'online' : 'loading'}
+      user={{ id: me.id, name: me.name, email: me.email, roles: me.roles, teams: me.teams, admin: me.admin }}
+      status={offline ? 'offline' : 'online'}
       themeMode={mode}
       onThemeChange={setMode}
       items={[
+        { id: 'iam', label: 'Identity and access', icon: 'shield', onSelect: () => navigate(pathFor('iam')) },
         { id: 'settings', label: 'Settings', icon: 'settings', onSelect: () => navigate(pathFor('settings')) },
-        { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => navigate(pathFor('signin', {}, { switch: 1 })) },
+        { id: 'switch-identity', label: 'Switch identity', icon: 'users', onSelect: () => void switchIdentity() },
         {
           id: 'sign-out',
           label: 'Sign out',
           icon: 'arrow-right',
           tone: 'critical',
-          onSelect: () => {
-            clearQueryCache()
-            setCurrentUser(null)
-            navigate(pathFor('signin'))
-          },
+          onSelect: () => void signOut().then(() => navigate(pathFor('signin'))),
         },
       ]}
     />

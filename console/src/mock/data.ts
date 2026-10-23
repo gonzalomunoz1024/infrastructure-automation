@@ -2,16 +2,16 @@ import resourceTypesSample from './samples/resource-types.json'
 import catalogSample from './samples/catalog.json'
 import resourcesSample from './samples/resources.json'
 import jobsSample from './samples/jobs.json'
-import { DEV_IDENTITIES } from '../lib/identity'
-import { DEMO_ACCOUNTS } from '../lib/accounts'
 import type { CatalogEntry, JobSummary, Me, PlatformEvent, Resource, ResourceType } from '../lib/types'
+import { ACCOUNTS, ADMIN_ROLE, DIRECTORY_PARTITION, DIRECTORY_REGION, buildDirectory, membershipsOf, type Directory } from './directory'
 
 /*
  * The mock's dataset: the platform's captured samples (console/src/mock/samples, from the
  * platform-fake at c9529d5) plus what the planned platform changes add, so the shell shows both
  * paths. The vm type carries P-06 hints (service, console block, x-console keywords) and its
  * resources carry P-05 wfrns and accounts; every other type is served as captured, so the
- * defaults the descriptors compose are what you see for them.
+ * defaults the descriptors compose are what you see for them. The identity directory (accounts,
+ * people, groups, roles, policies, keys, access requests) is the BFF's side of the dataset.
  */
 
 export interface MockData {
@@ -20,14 +20,18 @@ export interface MockData {
   resources: Resource[]
   jobs: JobSummary[]
   regions: unknown[]
+  /** the platform's own identities (GET /api/v1/me by X-User), derived from the directory */
   users: Record<string, Me>
   events: PlatformEvent[]
+  directory: Directory
+  partition: string
+  regionName: string
 }
 
-export const MOCK_PARTITION = 'wf'
-export const MOCK_REGION = 'global'
-const COMPUTE_ACCOUNT = DEMO_ACCOUNTS[0].id
-const DATA_ACCOUNT = DEMO_ACCOUNTS[1].id
+export const MOCK_PARTITION = DIRECTORY_PARTITION
+export const MOCK_REGION = DIRECTORY_REGION
+const COMPUTE_ACCOUNT = ACCOUNTS[0].accountId
+const DATA_ACCOUNT = ACCOUNTS[1].accountId
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T
@@ -98,9 +102,13 @@ function withContext(resources: Resource[]): Resource[] {
   })
 }
 
-function usersOf(): Record<string, Me> {
+/** The platform's view of each person: the roles and groups of their first account, as the platform-fake answers /me. */
+function usersOf(dir: Directory): Record<string, Me> {
   const out: Record<string, Me> = {}
-  for (const d of DEV_IDENTITIES) out[d.id] = { id: d.id, name: d.name, email: d.email, roles: d.roles, teams: d.teams, admin: d.admin }
+  for (const p of dir.people) {
+    const first = membershipsOf(dir, p.id)[0]
+    out[p.id] = { id: p.id, name: p.name, email: p.email, roles: first?.roles ?? [], teams: first?.groups ?? [], admin: first?.roles?.includes(ADMIN_ROLE) || undefined }
+  }
   return out
 }
 
@@ -132,6 +140,7 @@ function backlog(resources: Resource[], jobs: JobSummary[]): PlatformEvent[] {
 }
 
 export function buildMockData(): MockData {
+  const directory = buildDirectory()
   const resourceTypes = withHints(resourcesTypesOf())
   const catalog = catalogSample as unknown as CatalogEntry[]
   const resources = withContext([...(resourcesSample as unknown as Resource[]), ...generatedVms()])
@@ -142,8 +151,11 @@ export function buildMockData(): MockData {
     resources,
     jobs,
     regions: [{ metadata: { name: MOCK_REGION, title: 'Global' }, spec: { partition: MOCK_PARTITION, status: 'available', environments: ['dev', 'test', 'prod'] } }],
-    users: usersOf(),
+    users: usersOf(directory),
     events: backlog(resources, jobs),
+    directory,
+    partition: MOCK_PARTITION,
+    regionName: MOCK_REGION,
   }
 }
 

@@ -8,6 +8,8 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 const lock = JSON.parse(readFileSync(new URL('../contracts.lock', import.meta.url), 'utf8')) as { commit: string }
 // where `npm run dev` sends /api and /actuator (CONSOLE_PLATFORM=http://localhost:18090 npm run dev)
 const platform = process.env.CONSOLE_PLATFORM ?? 'http://localhost:18090'
+// where it sends the session, the sign-in and the demo identity provider: the BFF (CONSOLE_BFF=http://localhost:18081)
+const bff = process.env.CONSOLE_BFF ?? 'http://localhost:18081'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -21,6 +23,9 @@ export default defineConfig({
     proxy: {
       '/api': { target: platform, changeOrigin: true },
       '/actuator': { target: platform, changeOrigin: true },
+      '/auth': { target: bff, changeOrigin: true },
+      '/console': { target: bff, changeOrigin: true },
+      '/demo-idp': { target: bff, changeOrigin: true },
     },
   },
   preview: { port: 3000 },

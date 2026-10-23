@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, CACHE_PREFIX, api, cachedGet, clearDescriptorCache, isApiError, page, qs, request, requestHeaders, resolveUrl, retryAfterSeconds, traceparent } from './api'
-import { setCurrentUser } from './identity'
+import { getSessionState, resetSessionState, setSessionState, type Session } from './session'
 
 /* A localStorage for node, and a fetch the tests script. */
 
@@ -42,10 +42,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  setCurrentUser(null)
+  resetSessionState()
 })
 
 const headerOf = (call: Call, name: string) => (call.init?.headers as Record<string, string>)[name]
+
+const SESSION: Session = {
+  user: { userId: 'gonzalo', email: 'gonzalo@example.com', name: 'Gonzalo Munoz' },
+  account: { accountId: '123456789012', name: 'compute-dev', roles: ['admin'] },
+  region: 'global',
+  csrfToken: 'csrf-1',
+  expiresAt: '2026-10-24T00:00:00Z',
+}
+const signIn = (session: Session = SESSION) => setSessionState({ status: 'signed-in', session })
 
 describe('traceparent', () => {
   it('is a W3C trace context header, fresh every time', () => {
@@ -82,20 +91,61 @@ describe('retryAfterSeconds', () => {
 })
 
 describe('requestHeaders', () => {
-  it('sends Accept, a traceparent and the dev user when one is chosen', () => {
+  it('sends Accept, a traceparent and, once signed in, the session user for the platform', () => {
     const anonymous = requestHeaders()
     expect(anonymous.Accept).toBe('application/json')
     expect(anonymous.traceparent).toMatch(/^00-/)
     expect(anonymous['X-User']).toBeUndefined()
-    setCurrentUser('gonzalo')
+    expect(anonymous['X-Csrf-Token']).toBeUndefined()
+    signIn()
     expect(requestHeaders({ 'If-None-Match': 'x' })).toMatchObject({ 'X-User': 'gonzalo', 'If-None-Match': 'x' })
+  })
+
+  it('adds the CSRF token to writes only', () => {
+    signIn()
+    expect(requestHeaders(undefined, 'GET')['X-Csrf-Token']).toBeUndefined()
+    expect(requestHeaders(undefined, 'HEAD')['X-Csrf-Token']).toBeUndefined()
+    expect(requestHeaders(undefined, 'POST')['X-Csrf-Token']).toBe('csrf-1')
+    expect(requestHeaders(undefined, 'PUT')['X-Csrf-Token']).toBe('csrf-1')
+    expect(requestHeaders(undefined, 'DELETE')['X-Csrf-Token']).toBe('csrf-1')
+  })
+})
+
+describe('the BFF paths', () => {
+  it('are sent as they are, with the cookie, and a 401 there signs the browser out', async () => {
+    signIn()
+    expect(resolveUrl('/console/v1/session')).toBe('/console/v1/session')
+    expect(resolveUrl('/auth/logout')).toBe('/auth/logout')
+    expect(resolveUrl('/demo-idp/people')).toBe('/demo-idp/people')
+    answer = () => json({ ok: true })
+    await request('POST', '/console/v1/access-requests', { reason: 'x' })
+    expect(calls[0].init?.credentials).toBe('same-origin')
+    expect(headerOf(calls[0], 'X-Csrf-Token')).toBe('csrf-1')
+    expect(getSessionState().status).toBe('signed-in')
+
+    answer = () => json({ error: 'Not signed in' }, 401)
+    await expect(request('GET', '/console/v1/session')).rejects.toMatchObject({ status: 401, unauthorized: true })
+    expect(getSessionState()).toEqual({ status: 'signed-out', session: null })
+  })
+
+  it('does not sign out on a 401 from the platform, and reads a Denial from a 403', async () => {
+    signIn()
+    answer = () => json({ error: 'Unauthorized' }, 401)
+    await expect(request('GET', '/me')).rejects.toMatchObject({ status: 401 })
+    expect(getSessionState().status).toBe('signed-in')
+    const denied = { layer: 'console-iam', action: 'compute:create', reason: 'No statement allows compute:create', requestable: true, suggestedRole: 'operator' }
+    answer = () => json({ error: 'Not allowed', denied, correlationId: 'c-1' }, 403)
+    const error = (await request('POST', '/console/v1/iam/groups', {}).catch((e: unknown) => e)) as ApiError
+    expect(error.forbidden).toBe(true)
+    expect(error.denied).toMatchObject(denied)
+    expect(error.stepUp).toBeNull()
   })
 })
 
 describe('request', () => {
   it('returns the JSON body and carries the headers', async () => {
     answer = () => json({ id: 'gonzalo' })
-    setCurrentUser('gonzalo')
+    signIn()
     await expect(request<{ id: string }>('GET', '/me')).resolves.toEqual({ id: 'gonzalo' })
     expect(calls[0].url).toBe('/api/v1/me')
     expect(headerOf(calls[0], 'X-User')).toBe('gonzalo')

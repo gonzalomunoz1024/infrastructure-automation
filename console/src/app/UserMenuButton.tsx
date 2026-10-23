@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { Icon, PopoverPanel, Segmented, Skeleton, StatusDot, Tag, cx, useDismiss, type ThemeMode, type UserMenuItem, type UserMenuUser } from '@iaf/ui'
+import { ADMIN_ROLE, roleLabel } from '../lib/session'
 
 /*
  * The header's account button: an avatar with the signed-in person's initials, and a panel with
@@ -64,18 +65,16 @@ export function UserMenuButton({ user, status = 'online', items = [], themeMode,
             {offline && <p className="text-caption text-tertiary">The platform did not answer the identity call.</p>}
             {user && (user.roles?.length || user.teams?.length || user.admin) && (
               <div className="mt-2 flex flex-wrap gap-1">
-                {user.admin && (
+                {user.admin && !user.roles?.includes(ADMIN_ROLE) && (
                   <Tag tone="accent" size="sm">
-                    admin
+                    Admin
                   </Tag>
                 )}
-                {user.roles
-                  ?.filter((r) => !(user.admin && r === 'admin'))
-                  .map((r) => (
-                    <Tag key={r} size="sm">
-                      {r}
-                    </Tag>
-                  ))}
+                {user.roles?.map((r) => (
+                  <Tag key={r} size="sm" tone={r === ADMIN_ROLE ? 'accent' : undefined}>
+                    {roleLabel(r)}
+                  </Tag>
+                ))}
                 {user.teams?.map((t) => (
                   <Tag key={t} size="sm" outline>
                     {t}

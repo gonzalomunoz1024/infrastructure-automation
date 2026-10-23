@@ -4,8 +4,11 @@ import { useQuery } from '../lib/queries'
 
 /*
  * The status bar at the bottom: the build, the contracts pin, whether the platform answers, the
- * theme toggle, and (in development) the platform feed.
+ * theme toggle, and the platform feed where developers work: the dev server and mock mode (the
+ * journeys run the built mock app).
  */
+
+const developerTools = import.meta.env.DEV || import.meta.env.VITE_CONSOLE_MOCK === '1'
 
 export function Footer({ onOpenFeed, feedOpen }: { onOpenFeed?: () => void; feedOpen?: boolean }) {
   const { mode, cycle } = useTheme()
@@ -27,7 +30,7 @@ export function Footer({ onOpenFeed, feedOpen }: { onOpenFeed?: () => void; feed
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {import.meta.env.DEV && onOpenFeed && (
+        {developerTools && onOpenFeed && (
           <button
             type="button"
             onClick={onOpenFeed}

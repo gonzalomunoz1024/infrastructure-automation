@@ -39,6 +39,7 @@ export { VirtualTable, sortRows, type VirtualColumn, type VirtualSort, type Virt
 export { WfrnText, displayWfrn, type WfrnTextProps } from './WfrnText'
 export { LifecycleBadge, lifecycleOf, isLifecycleClass, type LifecycleBadgeProps } from './LifecycleBadge'
 export { StatusBadge, statusTone, type StatusBadgeProps, type StatusTone } from './StatusBadge'
+export { DotTag, type DotTagProps } from './DotTag'
 export {
   PropertyFilterBar,
   parseToken,

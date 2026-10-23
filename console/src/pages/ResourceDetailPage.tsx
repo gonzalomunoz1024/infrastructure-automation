@@ -2,7 +2,8 @@ import { useEffect, useMemo } from 'react'
 import { EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tabs, Tag, cx } from '@iaf/ui'
 import { CopyableId, ErrorState, ExternalLink, Facts, LifecycleBadge, ResourceLineage, Section, StatusBadge, When, WfrnText, formatField, formatValue, groupFields, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole, useRouteType } from '../app/console'
-import { LaterButton, PHASES } from '../app/Phase'
+import { PHASES } from '../app/Phase'
+import { ActionButton } from '../app/Refusal'
 import { Link, navigate, pathFor, resourcePath, type PageProps, type Route } from '../app/router'
 import { formatAccountId } from '../lib/accounts'
 import { api } from '../lib/api'
@@ -30,7 +31,7 @@ function tabId(label: string): string {
 }
 
 function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
-  const { wfrnContext } = useConsole()
+  const { wfrnContext, decide } = useConsole()
   const wfrnParam = route.params.wfrn
   const id = idOfWfrn(wfrnParam) ?? wfrnParam
   const q = useQuery(['resource', type.plural, id], () => api.resourceOf(type.plural, id))
@@ -73,9 +74,9 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
               <Icon name="refresh" size={16} className={cx(q.fetching && 'animate-spin')} />
             </IconButton>
             {actions.map((a) => (
-              <LaterButton key={a.workflow} phase={3} variant={a.destructive ? 'danger' : 'secondary'} icon={a.destructive ? 'trash' : undefined}>
+              <ActionButton key={a.workflow} decision={decide(type, a.verb)} what={a.title} phase={3} variant={a.destructive ? 'danger' : 'secondary'} icon={a.destructive ? 'trash' : undefined}>
                 {a.title}
-              </LaterButton>
+              </ActionButton>
             ))}
           </>
         }
