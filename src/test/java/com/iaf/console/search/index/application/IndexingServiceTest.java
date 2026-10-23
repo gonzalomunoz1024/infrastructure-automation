@@ -108,6 +108,28 @@ class IndexingServiceTest {
     }
 
     @Test
+    void aMovedResourceShowsInItsNewAccountAndItsOldNameStaysATombstone() {
+        String moved = "wfrn:wf:compute:global:" + Fixtures.OTHER_ACCOUNT + ":vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yz";
+        handler.handle(Fixtures.requested(VM, "web-03", Map.of())).block();
+        handler.handle(Fixtures.succeeded(VM, 2, Map.of("name", "web-03", "environment", "dev"), T0.plusSeconds(2))).block();
+        assertThat(handler.handle(Fixtures.resourceEvent("Transferred", VM, 3, "deleted", T0.plusSeconds(3), Fixtures.data()
+                .put("transferredTo", moved).put("toAccountId", Fixtures.OTHER_ACCOUNT).put("registryId", "reg-1"))).block()).isTrue();
+        var imported = Fixtures.data().put("source", "transfer").put("transferredFrom", VM).put("registryId", "reg-1");
+        imported.putObject("attributes").put("name", "web-03").put("environment", "dev");
+        assertThat(handler.handle(Fixtures.resourceEvent("Imported", moved, 1, "active", T0.plusSeconds(4), imported)).block()).isTrue();
+
+        IndexedResource old = index.find(scope, VM).block();
+        assertThat(old.state()).isEqualTo(ResourceState.DELETED);
+        assertThat(old.tombstoneUntil()).isNull();
+        assertThat(index.find(scope, moved).blockOptional()).as("the new wfrn is another account's").isEmpty();
+        AccountScope theirs = AccountScope.of(Fixtures.OTHER_ACCOUNT, "global", "test");
+        IndexedResource now = index.find(theirs, moved).block();
+        assertThat(now.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(now.name()).isEqualTo("web-03");
+        assertThat(state.finds()).as("a move needs no re-read").isZero();
+    }
+
+    @Test
     void anEventOfAnotherKindIsIgnored() {
         var e = com.iaf.console.kit.events.EventEnvelope.of("e", "UserChanged:1:2:3", "UserChanged", T0, "user", "u-1", "x", Fixtures.data().put("version", 1));
         assertThat(indexing.apply(e).block()).isInstanceOf(EventOutcome.Ignored.class);

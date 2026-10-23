@@ -94,7 +94,10 @@ copilot's cue to ask its model. `total` is counted the way the console applies t
 - **The events fold in order.** An event at the version held plus one applies; an older one is
   ignored; a gap reads the resource again from the state service. `Deleted` always applies, and the
   document becomes a tombstone for 90 days: hidden from lists and suggestions, found by
-  `state:deleted` or its exact wfrn. A finding opened, updated or closed marks the document's drift;
+  `state:deleted` or its exact wfrn. A resource moved to another account (`Transferred`, hub
+  decision 30) always applies too: its old wfrn becomes a tombstone with no end, as the state
+  service keeps a moved resource's name for good, and the new wfrn arrives as an ordinary
+  `Imported` in the other account. A finding opened, updated or closed marks the document's drift;
   a finding on a resource not indexed yet reads the resource from the state service. Every event is
   applied once (the service kit's `IdempotentConsumer`, keyed on the envelope's `key`).
 - **Never indexed.** A field the type marks sensitive, a field named like a secret, a value masked

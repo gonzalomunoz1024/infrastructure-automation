@@ -42,6 +42,18 @@ class DocumentsTest {
     }
 
     @Test
+    void aMovedResourcesTombstoneHasNoEnd() {
+        IndexedResource previous = Fixtures.document(Fixtures.VM, "web-03", 3, Map.of("env", "dev"), T0);
+        var tombstone = Json.object().put("error", "resource.transferred").put("wfrn", Fixtures.VM).put("deletedAt", T0.plusSeconds(60).toString())
+                .put("lastVersion", 4).put("transferredTo", "wfrn:wf:compute:global:" + Fixtures.OTHER_ACCOUNT + ":vm/vm-01jbx7q2m4k9d3c8f5r6t1w0yz");
+        IndexedResource doc = Documents.fromState(StateResource.tombstone(tombstone), Fixtures.VM_HINTS, previous);
+        assertThat(doc.state()).isEqualTo(ResourceState.DELETED);
+        assertThat(doc.name()).isEqualTo("web-03");
+        assertThat(doc.deletedAt()).isEqualTo(T0.plusSeconds(60));
+        assertThat(doc.tombstoneUntil()).isNull();
+    }
+
+    @Test
     void whatIsNotAResourceIsNull() {
         assertThat(Documents.fromState(StateResource.of(Json.object().put("wfrn", "not-a-name")), null, null)).isNull();
         assertThat(Documents.fromState(StateResource.of(Json.object().put("wfrn", Fixtures.VM).put("state", "purple")), null, null)).isNull();
