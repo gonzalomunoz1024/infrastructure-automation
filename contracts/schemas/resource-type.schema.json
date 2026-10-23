@@ -32,7 +32,8 @@
       "enum": ["team", "public", "hidden"]
     },
     "console": { "$ref": "#/$defs/console" },
-    "observe": { "$ref": "#/$defs/observe" }
+    "observe": { "$ref": "#/$defs/observe" },
+    "cost": { "$ref": "#/$defs/cost" }
   },
   "$defs": {
     "metadata": {
@@ -257,6 +258,22 @@
       "description": "A provider action id, such as vm.get",
       "type": "string",
       "pattern": "^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)+$"
+    },
+    "cost": {
+      "description": "P-22: which price of the platform's price lists prices a resource of this type, read by the console's cost service (hub decision 25). Optional: a type without it is unpriced.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priceList", "provider", "action"],
+      "properties": {
+        "priceList": { "description": "A kind: PriceList by name", "type": "string", "pattern": "^[a-z0-9-]{1,64}$" },
+        "provider": { "description": "The provider of the priced action, as the price list names it", "type": "string" },
+        "action": { "$ref": "#/$defs/actionId" },
+        "by": {
+          "description": "The resource attribute whose value is looked up when the price is per value (the price's own `by`); read from the last observation when there is one, else from the desired attributes",
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
+        }
+      }
     }
   }
 }
