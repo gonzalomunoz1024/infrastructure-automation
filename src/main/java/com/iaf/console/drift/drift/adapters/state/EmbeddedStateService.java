@@ -35,8 +35,9 @@ import reactor.core.publisher.Mono;
  * resources of the platform's registry snapshot, held in memory with the state's own semantics
  * for what this service calls (the list with {@code updatedAfter}, observations, drift, the
  * update request that makes a resource {@code updating} until the job the revert started ends,
- * the import). It has no platform feed, so it learns the revert's job from {@link #noteJob} and
- * follows it when the resource is read. Nothing of it runs in production.
+ * the import, and the delete request that makes it {@code deleting} until the job ends). It has
+ * no platform feed, so it learns the job from {@link #noteJob} and follows it when the resource is
+ * read. Nothing of it runs in production.
  */
 public final class EmbeddedStateService implements StateServicePort {
 
@@ -126,10 +127,13 @@ public final class EmbeddedStateService implements StateServicePort {
         return seed().then(Mono.justOrEmpty(resources.get(wfrn))).flatMap(this::settled);
     }
 
-    /** A resource whose revert job ended goes back to active with the requested changes applied. */
+    /**
+     * A resource whose update job ended goes back to active with the requested changes applied; one
+     * whose delete job succeeded is deleted, and one whose delete job failed is active again.
+     */
     private Mono<StateResource> settled(StateResource r) {
         String jobId = jobs.get(r.wfrn());
-        if (jobId == null || !"updating".equals(r.state())) {
+        if (jobId == null || !"updating".equals(r.state()) && !"deleting".equals(r.state())) {
             return Mono.just(r);
         }
         return platform.getJob(jobId)
@@ -139,6 +143,15 @@ public final class EmbeddedStateService implements StateServicePort {
                     }
                     jobs.remove(r.wfrn());
                     ObjectNode node = Json.objectNode(r);
+                    if ("deleting".equals(r.state())) {
+                        boolean gone = job.status() == JobStatus.SUCCEEDED;
+                        node.put("state", gone ? "deleted" : "active");
+                        if (gone) {
+                            node.put("deletedAt", clock.instant().toString());
+                        }
+                        node.put("lastJobId", jobId);
+                        return bump(node);
+                    }
                     if (job.status() == JobStatus.SUCCEEDED && r.changes() != null) {
                         ObjectNode attributes = node.withObject("/attributes");
                         attributes.setAll(r.changes());
@@ -217,6 +230,25 @@ public final class EmbeddedStateService implements StateServicePort {
             node.set("changes", changes);
             node.put("workflow", workflow);
             node.put("requestedBy", actor);
+            return Mono.just(bump(node));
+        });
+    }
+
+    @Override
+    public Mono<StateResource> requestDelete(String wfrn, String workflow, String reason, String actor, String requestId) {
+        return existing(wfrn).flatMap(r -> {
+            if (!"active".equals(r.state())) {
+                ObjectNode detail = Json.object();
+                detail.put("state", r.state());
+                return Mono.error(new StateError(409, "resource.busy", detail));
+            }
+            ObjectNode node = Json.objectNode(r);
+            node.put("state", "deleting");
+            node.put("workflow", workflow);
+            node.put("requestedBy", actor);
+            if (reason != null) {
+                node.put("reason", reason);
+            }
             return Mono.just(bump(node));
         });
     }
