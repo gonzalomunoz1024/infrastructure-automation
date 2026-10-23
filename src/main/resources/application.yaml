@@ -1,0 +1,89 @@
+# console-search-indexer. Profiles: `mongo` keeps the rebuild runs and checkpoints in MongoDB (else in
+# memory), `kafka` reads state.resources and drift.findings from Kafka (else the state service's lists
+# are polled), `demo` accepts dev headers and talks to the demo state service and its fake platform.
+# The engine is console.search.engine: opensearch (the default) or memory.
+server:
+  port: 18085
+
+spring:
+  application:
+    name: console-search-indexer
+  autoconfigure:
+    # the kit's MongoDB handle is wired under the mongo profile; without it Boot's client stays off
+    exclude:
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+      - org.springframework.boot.autoconfigure.mongo.MongoReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoReactiveRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.mongo.MongoRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+console:
+  region: global
+  search:
+    engine: ${CONSOLE_SEARCH_ENGINE:opensearch}
+    opensearch:
+      url: ${CONSOLE_OPENSEARCH_URL:http://localhost:9200}
+      index: console-resources
+      refresh: "false"
+      username: ${CONSOLE_OPENSEARCH_USERNAME:}
+      password: ${CONSOLE_OPENSEARCH_PASSWORD:}
+      timeout: 10s
+    budget:
+      per-second: 20
+      burst: 40
+  state:
+    url: ${CONSOLE_STATE_URL:http://localhost:18082}
+    token: ${CONSOLE_STATE_TOKEN:}
+    signing-key: ${CONSOLE_SIGNING_KEY:}
+    dev-headers: false
+    timeout: 30s
+  platform:
+    base-url: ${CONSOLE_PLATFORM_URL:http://localhost:18090}
+    token: ${CONSOLE_PLATFORM_TOKEN:}
+    dev-user: ${CONSOLE_PLATFORM_DEV_USER:}
+    types-ttl: 60s
+  identity:
+    url: ${CONSOLE_IDENTITY_URL:}
+  rebuild:
+    accounts: ["123456789012", "210987654321"]
+    batch-size: 200
+    # with Kafka, an empty index (a new cluster, a lost index) is filled from the state service at startup
+    on-empty: true
+  ingest:
+    enabled: true
+    kafka:
+      bootstrap-servers: ${CONSOLE_KAFKA_BOOTSTRAP:localhost:9092}
+      group-id: console-search-indexer
+      topics: [state.resources, drift.findings]
+    poll:
+      interval: 5s
+  auth:
+    jwks-uri: http://localhost:18081/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-search-indexer, console]
+    dev-headers: false
+  index:
+    housekeeping-interval: 1h
+  outbox:
+    # this service publishes nothing; the kit's relay stays off
+    relay:
+      enabled: false
+    kafka:
+      bootstrap-servers: ${CONSOLE_KAFKA_BOOTSTRAP:localhost:9092}
+      client-id: console-search-indexer
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.iaf.console: info

@@ -1,0 +1,15 @@
+console-search-indexer {{ .Chart.AppVersion }} is rolling out as {{ include "console-search-indexer.fullname" . }}.
+
+Profiles: {{ include "console-search-indexer.profiles" . }}
+API:      http://{{ include "console-search-indexer.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/search
+Index:    {{ .Values.console.search.opensearch.url }} alias {{ .Values.console.search.opensearch.index }}
+Health:   /actuator/health/readiness
+Metrics:  /actuator/prometheus
+
+Secrets this release reads (create them before the pods start):
+  {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}  the MongoDB URI of database {{ .Values.mongodb.database }}
+  {{- if .Values.opensearchCredentials.existingSecret }}
+  {{ .Values.opensearchCredentials.existingSecret }}/{{ .Values.opensearchCredentials.usernameKey }} and {{ .Values.opensearchCredentials.passwordKey }}  OpenSearch's basic-auth user
+  {{- end }}
+  {{ .Values.serviceAuth.existingSecret }}/{{ .Values.serviceAuth.tokenKey }} or {{ .Values.serviceAuth.signingKeyKey }}  how this service calls the state and identity services
+  {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's internal service-account token

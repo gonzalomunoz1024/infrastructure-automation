@@ -1,0 +1,10 @@
+# contracts.lock
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root
+commit: 9edd017b0892e1fcf6e9a56177fb48f33acab7b5
+files:
+  contracts/openapi/console-search-indexer.yaml: sha256:816eed4f9e651b6e17d854095f245c3945ace3ff49fbdd6c5fc3472120b36d67
+  contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
+  contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
+  contracts/openapi/console-identity-service.yaml: sha256:7865f72cebbc351f39a65ae8c914776a79bcdac0ed8190ecb9e2b017594ba75c
+  contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c

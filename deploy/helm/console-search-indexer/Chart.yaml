@@ -1,0 +1,10 @@
+apiVersion: v2
+name: console-search-indexer
+description: The customer console's search index, fed from Kafka into OpenSearch, and the search API the BFF calls.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - console
+  - search
+  - opensearch

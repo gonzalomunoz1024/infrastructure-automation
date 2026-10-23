@@ -1,0 +1,20 @@
+# The demo: dev headers stand in for the BFF's token, the state service runs its own demo profile on
+# 18082 with the fake platform on 18090 (scripts/demo.sh starts it), this service follows its lists
+# every two seconds, and the index is kept in memory unless CONSOLE_SEARCH_ENGINE=opensearch names
+# OpenSearch (at CONSOLE_OPENSEARCH_URL). Writes wait for a refresh, so a search sees them at once.
+console:
+  search:
+    engine: ${CONSOLE_SEARCH_ENGINE:memory}
+    opensearch:
+      refresh: wait_for
+  state:
+    dev-headers: true
+  platform:
+    dev-user: ${CONSOLE_PLATFORM_DEV_USER:console-search-indexer}
+  ingest:
+    poll:
+      interval: 2s
+  auth:
+    dev-headers: true
+  index:
+    housekeeping-interval: 1m

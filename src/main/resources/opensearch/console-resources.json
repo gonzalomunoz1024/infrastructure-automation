@@ -1,0 +1,62 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 3,
+      "number_of_replicas": 1,
+      "refresh_interval": "1s",
+      "max_result_window": 10000
+    },
+    "analysis": {
+      "normalizer": {
+        "lowercase": { "type": "custom", "filter": ["lowercase"] }
+      },
+      "filter": {
+        "edge_2_20": { "type": "edge_ngram", "min_gram": 2, "max_gram": 20 }
+      },
+      "analyzer": {
+        "words": { "type": "custom", "tokenizer": "standard", "filter": ["lowercase"] },
+        "word_prefixes": { "type": "custom", "tokenizer": "standard", "filter": ["lowercase", "edge_2_20"] }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "wfrn": { "type": "keyword", "fields": { "pattern": { "type": "wildcard" } } },
+      "id": {
+        "type": "keyword",
+        "normalizer": "lowercase",
+        "fields": { "prefix": { "type": "text", "analyzer": "word_prefixes", "search_analyzer": "words" } }
+      },
+      "accountId": { "type": "keyword" },
+      "region": { "type": "keyword" },
+      "type": { "type": "keyword" },
+      "service": { "type": "keyword" },
+      "name": {
+        "type": "text",
+        "analyzer": "words",
+        "fields": {
+          "exact": { "type": "keyword", "normalizer": "lowercase", "ignore_above": 512 },
+          "prefix": { "type": "text", "analyzer": "word_prefixes", "search_analyzer": "words" }
+        }
+      },
+      "sortName": { "type": "keyword" },
+      "state": { "type": "keyword" },
+      "version": { "type": "long" },
+      "tags": { "type": "object", "enabled": false },
+      "tagsFlat": { "type": "keyword", "fields": { "text": { "type": "text", "analyzer": "words" } } },
+      "fields": { "type": "object", "enabled": false },
+      "text": { "type": "text", "analyzer": "words" },
+      "drift": { "type": "boolean" },
+      "driftSeverity": { "type": "keyword" },
+      "driftFindingId": { "type": "keyword" },
+      "lastJobId": { "type": "keyword" },
+      "workflow": { "type": "keyword" },
+      "createdAt": { "type": "date" },
+      "updatedAt": { "type": "date" },
+      "deletedAt": { "type": "date" },
+      "tombstoneUntil": { "type": "date" },
+      "indexedAt": { "type": "date" }
+    }
+  }
+}
