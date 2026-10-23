@@ -28,6 +28,7 @@ import com.iaf.console.platform.client.PagedList;
 import com.iaf.console.platform.client.PlatformPort;
 import com.iaf.console.platform.model.FeedEvent;
 import com.iaf.console.platform.model.JobContext;
+import com.iaf.console.platform.model.JobDetail;
 import com.iaf.console.platform.model.JobStatus;
 import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.platform.model.ResourceOrigin;
@@ -80,7 +81,8 @@ class IngestionTest {
             new SensitiveData(new InMemoryAccountKeys(), SensitiveData.randomMasterKey(), clock), new ResourceEventPublisher(outbox), metrics, clock,
             "wf", Duration.ofDays(90));
     private final PlatformResources registry = new PlatformResources(platform);
-    private final JobOutcomes outcomes = new JobOutcomes(inventory, registry);
+    private final JobOutcomes outcomes = new JobOutcomes(inventory, registry, platform);
+    private final ChangeRequests changes = new ChangeRequests(inventory, outcomes);
     private final PlatformEventHandler handler = new PlatformEventHandler(inventory, outcomes, registry,
             new IdempotentConsumer(new InMemoryProcessedEvents(), clock), metrics, REGION);
     private final PendingReaper reaper = new PendingReaper(projection, platform, inventory, outcomes, registry, metrics, clock, Duration.ofMinutes(5),
@@ -124,6 +126,22 @@ class IngestionTest {
             data.put("errorClass", errorClass).put("failedStep", "createVm").put("message", "the provider said no");
         }
         return data;
+    }
+
+    private static JobDetail job(String id, String workflow, JobStatus status, String wfrn, String errorClass) {
+        return new JobDetail(id, workflow, null, "1.0.0", status, "dana", "rest", T0, status.terminal() ? T0.plusSeconds(5) : null, null, null, "single",
+                null, null, errorClass, errorClass == null ? null : "resize", "svc:bff", null, new JobContext(ACCOUNT, REGION, wfrn, null, Map.of()),
+                null, null, null, null, null, null, null, null, null, null, null);
+    }
+
+    private Resource imported(String name) {
+        String wfrn = "wfrn:wf:compute:global:" + ACCOUNT + ":vm/vm-" + name;
+        return inventory.importResource(SCOPE, new Commands.Import("vm", REGION, wfrn, "id-" + name, "vsphere-" + name, name,
+                Fixtures.attributes(name, 2, 4), "backfill", by("import"))).block();
+    }
+
+    private List<String> trail(String wfrn) {
+        return events.findEvents(SCOPE, wfrn, 0, 100).map(e -> e.type().wire()).collectList().block();
     }
 
     private Resource mint(String name) {
@@ -247,6 +265,107 @@ class IngestionTest {
         assertThat(current(failedMeanwhile.wfrn()).lastError().errorClass()).isEqualTo("provider.down");
         assertThat(current(fresh.wfrn()).state()).as("overdue, but nothing is known yet; it failed as orphan").isEqualTo(ResourceState.FAILED);
         assertThat(current(later.wfrn()).state()).as("not overdue").isEqualTo(ResourceState.PENDING);
+    }
+
+    @Test
+    void aJobOnAResourceThatWaitsForNoneIsNoEvent() {
+        Resource active = imported("idle");
+        handler.handle(feed(40, "job.started", "job", "job_u", active.wfrn(), Json.object().put("jobId", "job_u").put("workflow", "update-vm")))
+                .block();
+        assertThat(current(active.wfrn()).version()).as("the request that names the job, or its end, will say").isEqualTo(active.version());
+        assertThat(current(active.wfrn()).state()).isEqualTo(ResourceState.ACTIVE);
+    }
+
+    @Test
+    void aChangeRecordedAfterItsJobEndedIsSettledAtOnce() {
+        // the BFF starts the job first and records the change after; here the job is already over
+        Resource resized = imported("resized");
+        when(platform.getJob("job_u")).thenReturn(Mono.just(job("job_u", "update-vm", JobStatus.SUCCEEDED, resized.wfrn(), null)));
+        when(platform.getResourceByWfrn(resized.wfrn())).thenReturn(Mono.just(record("id-resized", resized.wfrn(), "job_c", "ready", "resized")));
+        Resource updated = changes.requestUpdate(SCOPE, resized.wfrn(), new Commands.RequestUpdate("job_u", "update-vm", null,
+                Json.object().put("cpu", 4), by("dana"))).block();
+        assertThat(updated.state()).isEqualTo(ResourceState.ACTIVE);
+        assertThat(updated.lastJobId()).isEqualTo("job_u");
+        assertThat(updated.attributes().get("environment").asText()).as("the registry's record after the job").isEqualTo("dev");
+        assertThat(trail(resized.wfrn())).containsExactly("Imported", "UpdateRequested", "ProvisioningSucceeded");
+
+        Resource kept = imported("kept");
+        when(platform.getJob("job_d")).thenReturn(Mono.just(job("job_d", "delete-vm", JobStatus.FAILED, kept.wfrn(), "provider.down")));
+        Resource notDeleted = changes.requestDelete(SCOPE, kept.wfrn(), new Commands.RequestDelete("job_d", "delete-vm", null, "clean up", by("dana")))
+                .block();
+        assertThat(notDeleted.state()).as("a failed delete leaves the resource as it was").isEqualTo(ResourceState.ACTIVE);
+        assertThat(notDeleted.lastError().errorClass()).isEqualTo("provider.down");
+        assertThat(trail(kept.wfrn())).containsExactly("Imported", "DeleteRequested", "ProvisioningFailed");
+
+        Resource running = imported("running");
+        when(platform.getJob("job_r")).thenReturn(Mono.just(job("job_r", "update-vm", JobStatus.RUNNING, running.wfrn(), null)));
+        assertThat(changes.requestUpdate(SCOPE, running.wfrn(), new Commands.RequestUpdate("job_r", "update-vm", null, Json.object().put("cpu", 8),
+                by("dana"))).block().state()).as("a running job is waited for").isEqualTo(ResourceState.UPDATING);
+
+        Resource elsewhere = imported("elsewhere");
+        when(platform.getJob("job_x")).thenReturn(Mono.just(job("job_x", "update-vm", JobStatus.SUCCEEDED, running.wfrn(), null)));
+        assertThat(changes.requestUpdate(SCOPE, elsewhere.wfrn(), new Commands.RequestUpdate("job_x", "update-vm", null, Json.object().put("cpu", 8),
+                by("dana"))).block().state()).as("another resource's job is not this one's outcome").isEqualTo(ResourceState.UPDATING);
+    }
+
+    @Test
+    void theReaperSettlesAnUpdateOrADeleteByItsOwnJob() {
+        Resource deletedMeanwhile = imported("gone-by-job");
+        inventory.requestDelete(SCOPE, deletedMeanwhile.wfrn(), new Commands.RequestDelete("job_del", "delete-vm", null, "clean up", by("dana"))).block();
+        when(platform.getJob("job_del")).thenReturn(Mono.just(job("job_del", "delete-vm", JobStatus.SUCCEEDED, deletedMeanwhile.wfrn(), null)));
+
+        Resource stillRunning = imported("running");
+        inventory.requestUpdate(SCOPE, stillRunning.wfrn(), new Commands.RequestUpdate(null, "update-vm", null, Json.object().put("cpu", 4), by("dana")))
+                .block();
+
+        Resource neverStarted = imported("never");
+        inventory.requestDelete(SCOPE, neverStarted.wfrn(), new Commands.RequestDelete(null, "delete-vm", null, "clean up", by("dana"))).block();
+        when(platform.getResourceByWfrn(neverStarted.wfrn())).thenReturn(Mono.just(record("id-never", neverStarted.wfrn(), "job_c", "ready", "never")));
+
+        Resource vanished = imported("vanished");
+        inventory.requestDelete(SCOPE, vanished.wfrn(), new Commands.RequestDelete(null, "delete-vm", null, "clean up", by("dana"))).block();
+
+        // an earlier change's job must never be taken for this one's: a delete nothing started stays a resource
+        Resource earlier = imported("earlier");
+        inventory.registered(SCOPE, earlier.wfrn(), new Commands.Registration("job_old", "update-vm", null, "id-earlier", "vsphere-earlier", "earlier",
+                Fixtures.attributes("earlier", 4, 8), by("platform"))).block();
+        assertThat(current(earlier.wfrn()).lastJobId()).isEqualTo("job_old");
+        Resource deleting = inventory.requestDelete(SCOPE, earlier.wfrn(), new Commands.RequestDelete(null, "delete-vm", null, "clean up", by("dana")))
+                .block();
+        assertThat(deleting.lastJobId()).as("a new change has no job until one is known").isNull();
+        assertThat(deleting.workflow()).isEqualTo("delete-vm");
+        when(platform.getJob("job_old")).thenReturn(Mono.just(job("job_old", "update-vm", JobStatus.SUCCEEDED, earlier.wfrn(), null)));
+        when(platform.getResourceByWfrn(earlier.wfrn())).thenReturn(Mono.just(record("id-earlier", earlier.wfrn(), "job_c", "ready", "earlier")));
+
+        when(platform.listJobs(any())).thenAnswer(invocation -> {
+            Object filter = invocation.getArgument(0);
+            String named = String.valueOf(filter);
+            if (named.contains(stillRunning.wfrn())) {
+                return Mono.just(new PagedList<>(List.of(new JobSummary("job_run", "update-vm", "Update VM", "1.0.0", JobStatus.RUNNING, "dana", "rest",
+                        T0, null, null, null, "single", null, null, null, null, "svc:bff", null,
+                        new JobContext(ACCOUNT, REGION, stillRunning.wfrn(), null, Map.of()))), null));
+            }
+            if (named.contains(earlier.wfrn())) {
+                return Mono.just(new PagedList<>(List.of(new JobSummary("job_old", "update-vm", "Update VM", "1.0.0", JobStatus.SUCCEEDED, "dana", "rest",
+                        T0, T0.plusSeconds(5), 5000L, null, "single", null, null, null, null, "svc:bff", null,
+                        new JobContext(ACCOUNT, REGION, earlier.wfrn(), null, Map.of()))), null));
+            }
+            return Mono.just(new PagedList<>(List.of(), null));
+        });
+
+        assertThat(reaper.tick().block().checked()).as("nothing has been busy for too long yet").isZero();
+        clock.advance(Duration.ofHours(3));
+        PendingReaper.Report report = reaper.tick().block();
+        assertThat(report.checked()).isEqualTo(5);
+        assertThat(report.waiting()).isEqualTo(1);
+        assertThat(report.settled()).isEqualTo(4);
+        assertThat(current(deletedMeanwhile.wfrn()).state()).as("its own job succeeded").isEqualTo(ResourceState.DELETED);
+        assertThat(current(stillRunning.wfrn()).state()).as("a job still runs on it").isEqualTo(ResourceState.UPDATING);
+        assertThat(current(neverStarted.wfrn()).state()).as("nothing carried the delete out and the record is there").isEqualTo(ResourceState.ACTIVE);
+        assertThat(current(neverStarted.wfrn()).lastError().errorClass()).isEqualTo("console.noJob");
+        assertThat(current(vanished.wfrn()).state()).as("the record is gone").isEqualTo(ResourceState.DELETED);
+        assertThat(current(earlier.wfrn()).state()).as("the earlier update's success is not this delete's").isEqualTo(ResourceState.ACTIVE);
+        assertThat(current(earlier.wfrn()).lastError().errorClass()).isEqualTo("console.noJob");
     }
 
     @Test

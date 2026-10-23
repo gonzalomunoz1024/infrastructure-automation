@@ -37,6 +37,19 @@ public final class ResourceFold {
         return replay(kept);
     }
 
+    /**
+     * A change request opens a new change: {@code lastJobId} becomes the job the request names (none
+     * until the job is known, so a job of an earlier change is never taken for this one's), and
+     * {@code workflow} the workflow that carries it out.
+     */
+    private static void change(Resource.Builder b, ResourceEvent event, ObjectNode data) {
+        b.lastJobId = event.jobId();
+        String workflow = Json.text(data, "workflow");
+        if (workflow != null) {
+            b.workflow = workflow;
+        }
+    }
+
     public static Resource apply(Resource current, ResourceEvent event) {
         if (current != null && event.version() != current.version() + 1) {
             throw new IllegalStateException("event " + event.key() + " does not follow version " + current.version());
@@ -107,8 +120,12 @@ public final class ResourceFold {
                 b.lastError = new LastError(event.jobId(), Json.text(data, "status"), Json.text(data, "errorClass"),
                         Json.text(data, "failedStep"), Json.text(data, "message"));
             }
-            case UPDATE_REQUESTED -> b.changes = Json.copy(Json.objectField(data, "changes"));
+            case UPDATE_REQUESTED -> {
+                b.changes = Json.copy(Json.objectField(data, "changes"));
+                change(b, event, data);
+            }
             case DELETE_REQUESTED -> {
+                change(b, event, data);
                 // the state says it all
             }
             case DELETED -> {

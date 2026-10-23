@@ -31,9 +31,31 @@ class ResourceJourneyTest extends DemoServiceTest {
     private static final OnBehalfOfAssertions.User DANA = new OnBehalfOfAssertions.User("dana", "Dana Reyes", "dana@example.com",
             List.of("team-compute", "developer"));
 
+    private PlatformClient console() {
+        return PlatformClient.builder().baseUrl(fake.baseUrl()).bearerToken(fake.demo().compute().token()).build();
+    }
+
+    /** Waits until the platform says a job has ended. */
+    private void awaitJobEnd(String jobId) {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (System.nanoTime() < deadline) {
+            var job = console().getJob(jobId).block(WAIT);
+            if (job != null && job.status() != null && job.status().terminal()) {
+                return;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        }
+        throw new AssertionError("job " + jobId + " did not end within " + WAIT);
+    }
+
     /** What the BFF does after a mint: starts the platform job for the account's user, naming the wfrn. */
     private JobAccepted startJob(PlatformOperation operation, Map<String, String> pathParams, Map<String, Object> input, String wfrn) {
-        PlatformClient console = PlatformClient.builder().baseUrl(fake.baseUrl()).bearerToken(fake.demo().compute().token()).build();
+        PlatformClient console = console();
         OnBehalfOfAssertions.Signer signer = new OnBehalfOfAssertions.Signer(fake.verifier().demoKey(), fake.verifier().issuer(),
                 fake.verifier().audience());
         RequestOptions options = RequestOptions.none().withOnBehalfOf(signer.sign(DANA, ACCOUNT, "global")).withResourceWfrn(wfrn)
@@ -90,6 +112,20 @@ class ResourceJourneyTest extends DemoServiceTest {
         assertThat(observed.get("observedStatus").asText()).isEqualTo("found");
         assertThat(observed.get("observed").get("powerState").asText()).isEqualTo("poweredOn");
 
+        // an update in the BFF's order: the platform job first, the request after it, naming the job; here the job is over first
+        String registryId = active.get("registryId").asText();
+        JobAccepted resize = startJob(PlatformOperation.UPDATE_VM, Map.of("vmId", registryId), Map.of("vmId", registryId, "cpu", 4, "memoryGb", 16),
+                wfrn);
+        awaitJobEnd(resize.jobId());
+        ObjectNode update = json.createObjectNode().put("workflow", "update-vm").put("jobId", resize.jobId());
+        update.putObject("changes").put("cpu", 4).put("memoryGb", 16);
+        JsonNode updated = body(dana.post().uri(resource(wfrn, ":request-update")).header("Idempotency-Key", "resize-" + name).bodyValue(update)
+                .exchange().expectStatus().isOk());
+        assertThat(updated.get("state").asText()).as("the job it names had already ended").isEqualTo("active");
+        assertThat(updated.get("lastJobId").asText()).isEqualTo(resize.jobId());
+        assertThat(updated.get("attributes").get("cpu").asInt()).isEqualTo(4);
+        assertThat(updated.get("attributes").get("memoryGb").asInt()).isEqualTo(16);
+
         ObjectNode delete = json.createObjectNode().put("workflow", "delete-vm").put("reason", "end of the journey");
         JsonNode deleting = body(dana.post().uri(resource(wfrn, ":request-delete")).bodyValue(delete).exchange().expectStatus().isOk());
         assertThat(deleting.get("state").asText()).isEqualTo("deleting");
@@ -111,8 +147,10 @@ class ResourceJourneyTest extends DemoServiceTest {
         JsonNode trail = body(dana.get().uri(resource(wfrn, "/events?after=" + activeVersion)).exchange().expectStatus().isOk());
         List<String> later = new ArrayList<>();
         trail.get("items").forEach(e -> later.add(e.get("type").asText()));
-        // the delete job's start is recorded like any job's: the contract has one JobData event for both
-        assertThat(later).containsExactly("Tagged", "Observed", "DeleteRequested", "ProvisioningStarted", "Deleted");
+        // the update's job ended before its request (the feed may have recorded its registration first); the delete was
+        // requested before its job, whose start is recorded like any job's
+        assertThat(later).startsWith("Tagged", "Observed").containsSubsequence("UpdateRequested", "ProvisioningSucceeded", "DeleteRequested",
+                "ProvisioningStarted", "Deleted").endsWith("Deleted");
         assertThat(body(dana.get().uri("/v1/resources?type=vm&name=" + name).exchange().expectStatus().isOk()).get("items")).isEmpty();
         assertThat(body(dana.get().uri("/v1/resources?type=vm&name=" + name + "&state=deleted").exchange().expectStatus().isOk()).get("items")).hasSize(1);
         dana.post().uri(resource(wfrn, ":tag")).bodyValue(tag).exchange().expectStatus().isEqualTo(410);

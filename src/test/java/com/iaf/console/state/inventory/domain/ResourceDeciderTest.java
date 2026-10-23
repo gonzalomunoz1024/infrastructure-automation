@@ -166,6 +166,24 @@ class ResourceDeciderTest {
     }
 
     @Test
+    void aJobOnAResourceThatWaitsForNoneIsNoEvent() {
+        Resource a = active();
+        assertThat(ResourceDecider.jobStarted(a, new Commands.JobStarted("job_2", "update-vm", null, by("platform")), t(10))).isEmpty();
+        Resource updating = ResourceFold.apply(a, ResourceDecider.requestUpdate(a, new Commands.RequestUpdate(null, "update-vm", null,
+                Json.object().put("cpu", 4), by("dana")), t(11)));
+        assertThat(updating.lastJobId()).as("a new change has no job until one is known").isNull();
+        assertThat(updating.workflow()).isEqualTo("update-vm");
+        ResourceEvent started = ResourceDecider.jobStarted(updating, new Commands.JobStarted("job_2", "update-vm", null, by("platform")), t(12))
+                .orElseThrow();
+        assertThat(ResourceFold.apply(updating, started).lastJobId()).isEqualTo("job_2");
+        Resource named = ResourceFold.apply(a, ResourceDecider.requestUpdate(a, new Commands.RequestUpdate("job_3", "update-vm", null,
+                Json.object().put("cpu", 4), by("dana")), t(11)));
+        assertThat(named.lastJobId()).isEqualTo("job_3");
+        assertThat(ResourceDecider.jobStarted(named, new Commands.JobStarted("job_3", "update-vm", null, by("platform")), t(12)))
+                .as("the job the request named is already recorded").isEmpty();
+    }
+
+    @Test
     void aRegistrationDuringADeleteIsNoEvent() {
         Resource a = active();
         Resource deleting = ResourceFold.apply(a, ResourceDecider.requestDelete(a, new Commands.RequestDelete("job_9", "delete-vm", null, "done with it",

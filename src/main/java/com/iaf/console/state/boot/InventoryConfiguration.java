@@ -29,6 +29,7 @@ import com.iaf.console.state.inventory.adapters.mongo.MongoIdempotencyKeys;
 import com.iaf.console.state.inventory.adapters.mongo.MongoResourceEventStore;
 import com.iaf.console.state.inventory.adapters.mongo.MongoResourceProjection;
 import com.iaf.console.state.inventory.adapters.platform.PlatformResourceTypes;
+import com.iaf.console.state.inventory.application.ChangeRequests;
 import com.iaf.console.state.inventory.application.IdempotentCommands;
 import com.iaf.console.state.inventory.application.InventoryMetrics;
 import com.iaf.console.state.inventory.application.InventoryQueries;
@@ -194,8 +195,13 @@ public class InventoryConfiguration {
     }
 
     @Bean
-    public JobOutcomes jobOutcomes(InventoryService inventory, PlatformResources registry) {
-        return new JobOutcomes(inventory, registry);
+    public JobOutcomes jobOutcomes(InventoryService inventory, PlatformResources registry, PlatformPort platform) {
+        return new JobOutcomes(inventory, registry, platform);
+    }
+
+    @Bean
+    public ChangeRequests changeRequests(InventoryService inventory, JobOutcomes outcomes) {
+        return new ChangeRequests(inventory, outcomes);
     }
 
     @Bean

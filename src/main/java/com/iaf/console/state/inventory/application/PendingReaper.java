@@ -26,8 +26,13 @@ import reactor.core.publisher.Mono;
  * is checked against the platform. The registry may already hold it (a missed event): then it is
  * registered. Else its jobs are looked up by wfrn: a finished job is applied as its outcome, a
  * running one is left to finish, and no job at all within the pending timeout is a failure
- * ({@code console.noJob}), so the console never shows a request that nothing is working on. The
- * same check settles updating and deleting resources whose job has given no outcome for too long.
+ * ({@code console.noJob}), so the console never shows a request that nothing is working on.
+ * Updating and deleting resources that have given no outcome for too long are settled by their own
+ * job first (the registry still holds an updating or deleting resource, so it cannot tell): the
+ * job's outcome when it ended, a wait while it runs; when the platform knows no job for the change
+ * and none runs on the wfrn, the registry decides: an update ends with the registry's attributes, a
+ * delete whose record is gone is the resource's end, and one whose record is still there returns
+ * to active ({@code console.noJob}).
  */
 public final class PendingReaper {
 
@@ -100,6 +105,9 @@ public final class PendingReaper {
     Mono<String> settle(Resource r, Instant now) {
         AccountScope scope = AccountScope.of(r.accountId(), r.region(), REAPER);
         Commands.Meta meta = Commands.Meta.of(REAPER);
+        if (r.state() == ResourceState.UPDATING || r.state() == ResourceState.DELETING) {
+            return settleChange(scope, r, now, meta);
+        }
         return registry.fetch(r.wfrn(), r.registryId())
                 .flatMap(record -> inventory.typeOf(r.type()).flatMap(type -> {
                     ResourceState lifecycle = type.lifecycleOf(record.status());
@@ -138,6 +146,51 @@ public final class PendingReaper {
             }
             return Mono.just("waiting");
         });
+    }
+
+    private Mono<String> settleChange(AccountScope scope, Resource r, Instant now, Commands.Meta meta) {
+        Mono<String> byOwnJob = outcomes.jobOf(r, r.lastJobId()).flatMap(job -> {
+            if (finished(job.status())) {
+                return outcomes.apply(scope, r, JobOutcomes.finished(job, meta)).map(after -> after.version() > r.version() ? "applied" : "waiting");
+            }
+            if (job.startedAt() != null && job.startedAt().plus(jobTimeout).isBefore(now)) {
+                log.warn("job {} on {} has been {} for more than {}", job.id(), r.wfrn(), job.status() == null ? "running" : job.status().id(),
+                        jobTimeout);
+            }
+            return Mono.just("waiting");
+        });
+        return byOwnJob.switchIfEmpty(Mono.defer(() -> anyRunning(r).flatMap(running -> running ? Mono.just("waiting")
+                : changeByRegistry(scope, r, meta))));
+    }
+
+    private Mono<Boolean> anyRunning(Resource r) {
+        return platform.listJobs(JobFilter.ofAccount(r.accountId()).withWfrn(r.wfrn()).withLimit(20))
+                .map(page -> page.items().stream().anyMatch(j -> !finished(j.status())))
+                .defaultIfEmpty(false);
+    }
+
+    private Mono<String> changeByRegistry(AccountScope scope, Resource r, Commands.Meta meta) {
+        String what = r.state() == ResourceState.DELETING ? "delete" : "update";
+        Mono<String> noJob = Mono.defer(() -> inventory.jobFailed(scope, r.wfrn(), new Commands.JobFailed(null, r.workflow(), null, "failed",
+                "console.noJob", null, "no platform job carried out this " + what + " within " + jobTimeout, meta)).thenReturn("noJob"));
+        Mono<String> gone = Mono.defer(() -> inventory.deleted(scope, r.wfrn(), new Commands.Deletion(null, r.registryId(), meta)).thenReturn("deleted"));
+        return registry.fetch(r.wfrn(), r.registryId())
+                .flatMap(record -> inventory.typeOf(r.type()).flatMap(type -> {
+                    ResourceState lifecycle = type.lifecycleOf(record.status());
+                    if (lifecycle == ResourceState.DELETED) {
+                        return gone; // the platform retired it, whatever the change was
+                    }
+                    if (lifecycle != ResourceState.ACTIVE) {
+                        return Mono.just("waiting");
+                    }
+                    if (r.state() == ResourceState.DELETING) {
+                        return noJob;
+                    }
+                    return inventory.registered(scope, r.wfrn(), new Commands.Registration(null, null, null, record.id(), record.providerId(),
+                            record.name(), PlatformResources.attributes(record), meta))
+                            .map(after -> after.version() > r.version() ? "registered" : "waiting");
+                }))
+                .switchIfEmpty(Mono.defer(() -> r.state() == ResourceState.DELETING ? gone : noJob));
     }
 
     static boolean finished(JobStatus status) {

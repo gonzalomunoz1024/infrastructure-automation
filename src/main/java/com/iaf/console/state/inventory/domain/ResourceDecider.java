@@ -187,9 +187,17 @@ public final class ResourceDecider {
     // the platform's facts
 
     /** Empty when the job is already the one on record. */
+    /**
+     * Empty for a job already recorded, and for a job on a resource that waits for none (active,
+     * failed, deleted): the BFF may start a job before it records the change, and the request that
+     * names the job, or the job's end, says what it means.
+     */
     public static Optional<ResourceEvent> jobStarted(Resource current, Commands.JobStarted command, Instant now) {
         requireExists(current);
         if (command.jobId() != null && command.jobId().equals(current.lastJobId())) {
+            return Optional.empty();
+        }
+        if (!current.state().busy()) {
             return Optional.empty();
         }
         ObjectNode data = job(command.jobId(), command.workflow(), command.workflowVersion());

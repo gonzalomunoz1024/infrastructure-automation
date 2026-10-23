@@ -106,8 +106,8 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `POST /v1/resources:import` | 201, an `active` resource the platform already had (`source` `backfill` or `discover`) |
 | `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for an internal principal (`svc` without `acct`) and a person whose `roles` claim holds `account-admin`, ignored for anyone else; 410 with a `Tombstone` body after deletion |
 | `GET /v1/wfrn/{wfrn}/events` | Its log in order, each entry the `state.resources` envelope (`id`, `key`, `type`, `at`, `context`, `data` with `version` and `state`), the same event under the same `id` as on the topic; `after` is a version, `limit` a page, `reveal` as on the resource |
-| `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes` |
-| `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting` |
+| `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes`; `jobId` names the platform job when it was started first, and a job that has already ended settles the request at once |
+| `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting`; `jobId` as for an update |
 | `POST /v1/wfrn/{wfrn}:tag` | `set` and `removed` tags; names `[a-z0-9-]{1,32}`, values up to 256, 50 tags |
 | `POST /v1/wfrn/{wfrn}:record-observation` | What a provider showed (`found`, `not_found`, `error`); `not_found` on a type whose `observe.notFound` is `deleted` tombstones it |
 | `POST /v1/wfrn/{wfrn}:record-drift`, `:resolve-drift` | One open finding at a time; `accepted` writes the observed values into the attributes |
@@ -161,6 +161,16 @@ the resource is deleting: only its delete job's end can finish a delete, hub dec
 does not know becomes `Imported` (source `backfill`); `resource.retired` becomes `Deleted`;
 `job.finished` is applied through the job's outcome (a succeeded delete tombstones, a succeeded
 create without a registration fails as `console.noRegistration`, a failed job fails the request).
+A `job.started` on a resource that waits for no job (active, failed, deleted) is no event.
+
+A change and its job may come in either order. The BFF can record `:request-update` or
+`:request-delete` first and start the job after (the job's start names the resource), or start the
+job first and record the change after, naming the job in `jobId`. In the second order the job's
+events may come first and find nothing waiting, and the job may even be over: the request then
+asks the platform for that job and applies its outcome at once (`ChangeRequests`), so the resource
+never waits on a job that has ended. A job whose context names another wfrn is never applied. A
+new change forgets the previous change's job (`lastJobId` is the request's `jobId`, or none until
+the job is known).
 Lifecycle classes come from the type's `console.lifecycle` map (`building` → pending, `ready` →
 active, `retired` → deleted) with sensible fallbacks for types without one.
 
@@ -170,10 +180,15 @@ follower checkpoints `platform-feed` after each event, so a replay after a crash
 `identity.changes` topic is read too: an account `deleted` (or a snapshot showing it `closed`)
 destroys the account's data key.
 
-The reaper (`console.reaper.*`) runs every minute over resources `pending` for more than five
-minutes or `updating`/`deleting` for more than two hours: the registry first (active → succeeded,
-retired → deleted), then the account's jobs for the wfrn (none → `console.noJob`, a terminal job →
-its outcome, a running job → wait and warn past the job timeout).
+The reaper (`console.reaper.*`) runs every minute. A resource `pending` for more than five minutes
+is checked against the registry first (active → succeeded, retired → deleted), then the account's
+jobs for the wfrn (none → `console.noJob`, a terminal job → its outcome, a running job → wait and
+warn past the job timeout). A resource `updating` or `deleting` for more than two hours is settled
+by its own job first, since the registry still holds it and cannot tell: the change's job ended →
+its outcome; running → wait. When the platform knows no job for the change and none runs on the
+wfrn, the registry decides: an update ends with the registry's attributes, a delete whose record is
+gone is the end, and a delete whose record is still there returns to `active` (`console.noJob`).
+An earlier change's job is never taken for a later change's.
 
 The collision guard refuses an import or a registration that binds a registry id already bound
 to another wfrn (409 `registry.collision`, counter `console_state_collisions_total`).
@@ -222,7 +237,8 @@ com.iaf.console.state
 │   │                             ResourceTypesPort, AccountKeysPort, FeedCheckpointPort
 │   ├── application               InventoryService (commands, platform facts), InventoryQueries,
 │   │                             IdempotentCommands, SensitiveData, ResourceEventPublisher,
-│   │                             PlatformEventHandler, JobOutcomes, RegistryImporter, PendingReaper
+│   │                             ChangeRequests, PlatformEventHandler, JobOutcomes, RegistryImporter,
+│   │                             PendingReaper
 │   └── adapters.{web,mongo,memory,platform,kafka}
 ├── auth                          ConsolePrincipal, JwtVerifier (the BFF's JWKS), ConsoleAuthWebFilter
 └── boot                          StateProperties and the profile wiring
@@ -246,6 +262,7 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 9 | One set of job events whatever the job (hub decision 20) | `ProvisioningStarted` keeps the state it finds; `ProvisioningSucceeded` ends a create or update in `active`; a delete job's success is recorded as `Deleted` alone, the tombstone, never as a `ProvisioningSucceeded` first; `ProvisioningFailed` leaves a create `failed` and returns an update or delete to `active`; a registration during a delete is no event |
 | 10 | A forbidden backfill does not fail an import | The console-internal service account holds `resources:backfill` (console-libs `f44213a`); a deployment whose token lacks it still takes what already carries a wfrn under management |
 | 11 | `reveal=sensitive` is honored for internal principals and account admins only | The token's `roles` claim decides (hub decision 21), never a group name; a token without roles has none; anyone else is answered masked, not refused |
+| 12 | A change and its job in either order | The BFF starts an update's or a delete's job before it records the change, so a refused start never leaves a resource `updating`; the service settles a request whose named job already ended, and the reaper settles a change by its own job, so neither order can strand a resource |
 
 ## CI and release
 

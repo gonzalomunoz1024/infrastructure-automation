@@ -28,6 +28,7 @@ import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.state.auth.domain.ConsolePrincipal;
 import com.iaf.console.state.boot.StateProperties;
+import com.iaf.console.state.inventory.application.ChangeRequests;
 import com.iaf.console.state.inventory.application.IdempotentCommands;
 import com.iaf.console.state.inventory.application.InventoryQueries;
 import com.iaf.console.state.inventory.application.InventoryService;
@@ -55,12 +56,15 @@ public final class ResourceController {
     public static final String CONSOLE_REQUEST_ID = "X-Console-Request-Id";
 
     private final InventoryService inventory;
+    private final ChangeRequests changes;
     private final InventoryQueries queries;
     private final IdempotentCommands idempotent;
     private final String defaultRegion;
 
-    public ResourceController(InventoryService inventory, InventoryQueries queries, IdempotentCommands idempotent, StateProperties properties) {
+    public ResourceController(InventoryService inventory, ChangeRequests changes, InventoryQueries queries, IdempotentCommands idempotent,
+            StateProperties properties) {
         this.inventory = inventory;
+        this.changes = changes;
         this.queries = queries;
         this.idempotent = idempotent;
         this.defaultRegion = properties.region();
@@ -184,14 +188,14 @@ public final class ResourceController {
     public Mono<ResponseEntity<ObjectNode>> requestUpdate(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.UpdateRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
-        return on(exchange, wfrn, key, body, (scope, actor) -> inventory.requestUpdate(scope, wfrn, body.command(actor, requestId)));
+        return on(exchange, wfrn, key, body, (scope, actor) -> changes.requestUpdate(scope, wfrn, body.command(actor, requestId)));
     }
 
     @PostMapping("/v1/wfrn/{wfrn}:request-delete")
     public Mono<ResponseEntity<ObjectNode>> requestDelete(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.DeleteRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
-        return on(exchange, wfrn, key, body, (scope, actor) -> inventory.requestDelete(scope, wfrn, body.command(actor, requestId)));
+        return on(exchange, wfrn, key, body, (scope, actor) -> changes.requestDelete(scope, wfrn, body.command(actor, requestId)));
     }
 
     @PostMapping("/v1/wfrn/{wfrn}:tag")

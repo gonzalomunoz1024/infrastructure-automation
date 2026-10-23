@@ -5,6 +5,9 @@ import org.slf4j.LoggerFactory;
 
 import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.scope.AccountScope;
+import com.iaf.console.platform.client.PlatformException;
+import com.iaf.console.platform.client.PlatformPort;
+import com.iaf.console.platform.model.JobDetail;
 import com.iaf.console.state.inventory.domain.Commands;
 import com.iaf.console.state.inventory.domain.Resource;
 import com.iaf.console.state.inventory.domain.ResourceState;
@@ -15,7 +18,9 @@ import reactor.core.publisher.Mono;
  * What a finished platform job means for the resource it was for. A success on a deleting resource
  * is its end; on anything else it is the registry's record (fetched now) becoming the resource's
  * attributes, or, when the job registered nothing, a failure to provision (pending) or a quiet end
- * of the update (updating). A failure, a cancel or a rollback is {@code ProvisioningFailed}.
+ * of the update (updating). A failure, a cancel or a rollback is {@code ProvisioningFailed}. A job a
+ * resource names can also be looked up and settled at once ({@link #settle}), for a change whose
+ * job ended before the change was recorded.
  */
 public final class JobOutcomes {
 
@@ -32,10 +37,53 @@ public final class JobOutcomes {
 
     private final InventoryService inventory;
     private final PlatformResources registry;
+    private final PlatformPort platform;
 
-    public JobOutcomes(InventoryService inventory, PlatformResources registry) {
+    public JobOutcomes(InventoryService inventory, PlatformResources registry, PlatformPort platform) {
         this.inventory = inventory;
         this.registry = registry;
+        this.platform = platform;
+    }
+
+    /**
+     * The platform's record of a job a resource names, when the platform knows it and the job is about
+     * that resource (its context names the wfrn); empty otherwise, so another resource's job is never
+     * applied here.
+     */
+    public Mono<JobDetail> jobOf(Resource resource, String jobId) {
+        if (jobId == null) {
+            return Mono.empty();
+        }
+        return platform.getJob(jobId)
+                .onErrorResume(e -> e instanceof PlatformException p && p.isNotFound(), e -> Mono.empty())
+                .filter(job -> {
+                    String about = job.context() == null ? null : job.context().wfrn();
+                    if (!resource.wfrn().equals(about)) {
+                        log.warn("job {} is about {}, not {}: its outcome is not applied to it", jobId, about, resource.wfrn());
+                        return false;
+                    }
+                    return true;
+                });
+    }
+
+    /** Applies the outcome of the job a resource names when that job already ended; the resource as it is otherwise. */
+    public Mono<Resource> settle(AccountScope scope, Resource current, String jobId) {
+        return jobOf(current, jobId)
+                .filter(job -> job.status() != null && job.status().terminal())
+                .flatMap(job -> apply(scope, current, finished(job)))
+                .defaultIfEmpty(current);
+    }
+
+    /** A finished job as the platform's job record describes it, recorded under who the job ran for. */
+    static FinishedJob finished(JobDetail job) {
+        String actor = job.onBehalfOf() != null && job.onBehalfOf().id() != null ? job.onBehalfOf().id()
+                : job.actor() != null ? job.actor() : PlatformEventHandler.PLATFORM;
+        return finished(job, Commands.Meta.of(actor));
+    }
+
+    static FinishedJob finished(JobDetail job, Commands.Meta meta) {
+        return new FinishedJob(job.id(), job.workflow(), job.version(), job.status() == null ? null : job.status().id(), job.errorClass(),
+                job.failedStep(), null, meta);
     }
 
     /** Applies the outcome to the resource; the resource unchanged when the job says nothing about it. */
