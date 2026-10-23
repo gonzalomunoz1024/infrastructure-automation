@@ -247,6 +247,23 @@ Phase 0 built the shell and the read-only pages:
 What the console does not do yet is still shown, and says which phase brings it: custom roles and
 policies in phase 7.
 
+## Unfinished (merged in as work in progress)
+
+Every console-web branch is merged into this one. These streams came in unfinished; none is
+built or tested on the merged branch:
+
+- **Blueprints and compliance** (was `console-web--p7-blueprints-wip`): the blueprint catalog
+  and launch wizard; stacks with teardown and resume; the change risk card on previews and
+  request pages; compliance scorecards (account, organization heat map, failing resources with
+  Remediate, a resource Compliance tab); event subscriptions (webhook, Kafka, Slack, test send).
+  It has a mock, unit tests and an e2e spec.
+- **Team dashboards and service health** (was `console-web--p7-dashboards-wip`): dashboards
+  (list, board, widget dialogs), the Service health page and the footer's platform-health link.
+  No README section or decisions yet.
+- **Move to another account and the phone view** (was `console-web--p7-mobile-wip`): the
+  TransferDrawer and the "moved" notice on an old link; an installable phone view `#/m` for
+  approvals, drift with Revert and your requests.
+
 ## Workspaces
 
 | Package                | Path                   | What it is                                                                                                                                      |
