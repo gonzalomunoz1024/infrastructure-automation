@@ -360,6 +360,78 @@ GET  /console/v1/jobs/{jobId}/explanation                     -> JobExplanation
   (`detail.status`) for a job that is neither `failed`, `rolled-back` nor `needs-attention`.
   `status` is `needs-attention` for a paused job, `failed` otherwise.
 
+## API clients (decision 31, from hub PR console-root--bff-clients)
+
+Not in the pinned contract: the hub branch console-root--bff-clients (at 0134156) adds these
+operations, and this service serves them with that branch's shapes until the pin moves past it.
+The automation keys (`grant_type=client_credentials`) are not served yet.
+
+```
+POST   /auth/device    form: client_id                                  -> 200 DeviceAuthorization; 400 invalid_client; 429 slow_down
+POST   /auth/token     form: grant_type, client_id, device_code | refresh_token -> 200 ApiToken; 400 or 401 OAuthError
+POST   /auth/revoke    form: token, token_type_hint?                    -> 200, no body, whatever the token
+GET    /console/v1/device-grants/{userCode}                             -> 200 DeviceGrant; 404
+POST   /console/v1/device-grants/{userCode}:approve                     -> 200 DeviceGrant; 403 step-up.required | browser.only; 404; 409; 410
+POST   /console/v1/device-grants/{userCode}:deny                        -> 200 DeviceGrant; 403 browser.only; 404; 409; 410
+GET    /console/v1/api-sessions?limit=&after=                           -> 200 { items: [ApiSession], next }
+DELETE /console/v1/api-sessions/{apiSessionId}                          -> 204; 404
+```
+
+```yaml
+DeviceAuthorization: { device_code, user_code: XXXX-XXXX, verification_uri, verification_uri_complete, expires_in: 600, interval: 5 }
+DeviceGrant:         { userCode: XXXX-XXXX, clientId, status: pending|approved|denied|expired, requestedAt, expiresAt,
+                       requestedFrom: { ip, userAgent? }, decidedAt? }
+ApiToken:            { access_token, token_type: Bearer, expires_in, refresh_token, refresh_expires_in, scope: console }
+ApiSession:          { id: aps_<ulid>, clientId, createdAt, lastUsedAt, expiresAt, accountId, region, userAgent?, ip }
+OAuthError:          { error, error_description }
+```
+
+- Every answer of `/auth/device`, `/auth/token` and `/auth/revoke` is `Cache-Control: no-store`
+  and `Pragma: no-cache`. A refusal is 400, but `invalid_client` at the token endpoint (401) and
+  too many sign-ins from one address (429 `slow_down`, past ten a minute). A form field sent twice
+  is `invalid_request`. `error_description` is a sentence that never repeats a code or a token;
+  a polling `slow_down` names the grant's new interval ("wait 10 seconds between polls").
+- `user_code` is matched without its hyphen and in any case; anything but four letters of the
+  alphabet, an optional hyphen and four more is a 404, as is a code ten minutes past its expiry.
+  `requestedFrom.ip` is `unknown` when none is known, and `userAgent` at most 256 characters.
+- `expires_in` of an `ApiToken` is 900, or the seconds left in the API session when fewer;
+  `refresh_expires_in` is the seconds until the session's absolute end (12 h from the approval).
+- A device code presented after its redemption is `invalid_grant` and revokes the API session it
+  opened, as RFC 6749 §4.1.2 has it for a code used twice. A refresh token of another client is a
+  401 `invalid_client`. Two refreshes with one refresh token at the same moment answer one and
+  refuse the other (`invalid_grant`) without ending the session; that token presented again then
+  does. A refresh of a person who belongs to no account any more is `invalid_grant` and revokes
+  the session; one who left the session's account moves it to their first.
+- `ApiSession.accountId` and `region` are the ones the grant was approved in; `lastUsedAt` is the
+  last refresh. The list is the person's open sessions (not revoked, not past either end), newest
+  first, `next` `null` on the last page. Revoking one of the person's that ended already is a 204;
+  another person's, or an id that is not `aps_` and a lowercase ULID, a 404.
+- An approval's step-up names the action `device-grants:approve`, whatever
+  `console.auth.step-up.actions` lists. `409 device-grant.decided` is
+  `{ error, message, problems, correlationId, detail: { status } }`; `410 device-grant.expired`
+  the same with `detail: { expiresAt }`.
+- **Bearer calls**: `Authorization: Bearer <access token>` on `/console/v1/**`, with
+  `X-Console-Account` and `X-Console-Region`. Their refusals, none of which carries `denied`
+  since no policy decided them:
+  - 401 `{ error: "invalid_token", message, correlationId }` with
+    `WWW-Authenticate: Bearer error="invalid_token"`;
+  - 403 `{ error: "account.not-member", message, correlationId, detail: { accountId } }`;
+  - 403 `{ error: "browser.only", message, correlationId }` on `/auth/login`,
+    `PUT /console/v1/session` and the two decisions (chat-link decisions are not served yet);
+  - 400 `{ error: "auth.ambiguous", message, correlationId }` with both a bearer token and the
+    session cookie; an unknown region is the session switch's 400 (`{ error: "unknown region <name>" }`).
+- A bearer call's step-up refusal is `{ error: "step-up.required", message, correlationId,
+  detail: { stepUp: true, action, hint: "run `console login` again" } }`: `hint` instead of
+  `login`, since a CLI cannot sign in again in place.
+- `GET /console/v1/session` with a bearer token answers the bearer call's session: `expiresAt` the
+  API session's absolute end, `authTime` the approving sign-in. Its `csrfToken` is of no use to a
+  bearer caller.
+- A revoked API session's access tokens are refused at once by the instance that revoked it and
+  within `console.clients.session-check` (one minute) by the others, sooner than the branch's
+  "within 15 minutes".
+- `verification_uri` defaults to decision 31's `http://localhost:5173/#/device`; the project's
+  web port is 3000, so a deployment sets `console.clients.verification-uri`.
+
 ## Session
 
 `Session.account` carries `roles` (the managed roles the person holds in the account) and
