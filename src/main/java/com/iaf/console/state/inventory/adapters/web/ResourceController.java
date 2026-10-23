@@ -233,11 +233,16 @@ public final class ResourceController {
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.tag(scope, wfrn, body.command(actor, requestId)));
     }
 
-    /** Moves the resource to another account of the organization; answers the resource it became there. */
+    /**
+     * Moves the resource to another account of the organization; answers the resource it became there.
+     * Only the BFF sends it, with its own token, once it has authorized the person on both accounts,
+     * and names that person as the actor: a person's token reaches one account and cannot vouch for the other.
+     */
     @PostMapping("/v1/wfrn/{wfrn}:transfer")
     public Mono<ResponseEntity<ObjectNode>> transfer(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.TransferRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        internalOnly(exchange, "transfer");
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.transfer(scope, wfrn, body.command(actor, requestId)));
     }
 
@@ -268,8 +273,8 @@ public final class ResourceController {
     // helpers
 
     /**
-     * The commands only the console's own services send: an import (the backfill and discovery), and
-     * the drift service's observations and findings. A person's token, even one the BFF forwards,
+     * The commands only the console's own services send: an import (the backfill and discovery), a
+     * transfer (the BFF, after authorizing both accounts), and the drift service's observations and findings. A person's token, even one the BFF forwards,
      * is refused, so no one records a deletion or settles a finding past the delete workflow's or the
      * update's authorization.
      */

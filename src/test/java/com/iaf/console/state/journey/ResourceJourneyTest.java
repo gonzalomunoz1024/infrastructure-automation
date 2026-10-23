@@ -355,10 +355,13 @@ class ResourceJourneyTest extends DemoServiceTest {
         startJob(PlatformOperation.CREATE_VM, Map.of(), Map.of("name", name, "image", image, "size", "small", "environment", "dev"), wfrn);
         JsonNode active = await(() -> getResource(dana, wfrn), r -> "active".equals(r.get("state").asText()), "the VM to become active");
 
-        ObjectNode move = json.createObjectNode().put("toAccountId", OTHER_ACCOUNT).put("reason", "the team moved");
-        dana.post().uri(resource(wfrn, ":transfer")).bodyValue(json.createObjectNode().put("toAccountId", ACCOUNT)).exchange()
+        ObjectNode move = json.createObjectNode().put("toAccountId", OTHER_ACCOUNT).put("reason", "the team moved").put("actor", "dana");
+        java.net.URI transfer = uri("/v1/wfrn/" + encode(wfrn) + ":transfer?accountId=" + ACCOUNT);
+        WebTestClient bff = asService("console-bff");
+        dana.post().uri(resource(wfrn, ":transfer")).bodyValue(move).exchange().expectStatus().isForbidden();
+        bff.post().uri(transfer).bodyValue(json.createObjectNode().put("toAccountId", ACCOUNT)).exchange()
                 .expectStatus().isBadRequest();
-        JsonNode moved = body(dana.post().uri(resource(wfrn, ":transfer")).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
+        JsonNode moved = body(bff.post().uri(transfer).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
                 .expectStatus().isOk());
         String there = moved.get("wfrn").asText();
         assertThat(there).contains(":" + OTHER_ACCOUNT + ":vm/").isNotEqualTo(wfrn);
@@ -366,7 +369,7 @@ class ResourceJourneyTest extends DemoServiceTest {
         assertThat(moved.get("source").asText()).isEqualTo("transfer");
         assertThat(moved.get("registryId").asText()).isEqualTo(active.get("registryId").asText());
         assertThat(moved.get("version").asInt()).isEqualTo(1);
-        dana.post().uri(resource(wfrn, ":transfer")).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
+        bff.post().uri(transfer).header("Idempotency-Key", "move-" + name).bodyValue(move).exchange()
                 .expectStatus().isOk().expectHeader().valueEquals("Idempotent-Replay", "true");
 
         JsonNode gone = body(dana.get().uri(resource(wfrn)).exchange().expectStatus().isEqualTo(410));
@@ -382,6 +385,7 @@ class ResourceJourneyTest extends DemoServiceTest {
         assertThat(trail.get("items")).anySatisfy(e -> {
             assertThat(e.get("aggregateId").asText()).isEqualTo(wfrn);
             assertThat(e.get("data").get("transferredTo").asText()).isEqualTo(there);
+            assertThat(e.get("actor").asText()).isEqualTo("dana");
         });
         dana.post().uri(resource(wfrn, ":tag")).bodyValue(json.createObjectNode().putObject("set").put("a", "b")).exchange()
                 .expectStatus().isEqualTo(410);
