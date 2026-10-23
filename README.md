@@ -97,7 +97,7 @@ the BFF's and the identity service's are `user_<name>`, which the pages never pa
 | mia, Mia Chen        | viewer, approver (viewers, compute-approvers)   |                            |
 | raj, Raj Patel       |                                                 | operator, approver (members, data-approvers) |
 | ana, Ana Costa       |                                                 | operator, viewer (members, viewers) |
-| noah, Noah Berg      | no account: the identity provider knows him, the console refuses the sign-in | |
+| noah, Noah Berg      | no account: known to the identity provider, refused by the console at sign-in | |
 
 Every account is born with the identity service's four managed groups and roles: `owners`
 (account-admin, which can be neither deleted nor left without a member, and keeps its role),
@@ -113,10 +113,10 @@ service's alone, and the platform layer never decides them.
 
 The gate-1 story, in mock mode: sign in as Mia (viewer), open Virtual machines, press the locked
 Create: the refusal names console IAM and that no statement of `viewer` allows `compute:create`,
-and offers Request access, which goes to the approvers other than her: Dana and Gonzalo. Send it;
-sign in as Gonzalo: the bell shows one request to decide; approve it. Sign in as Mia again: she
-holds `operator` (she joined `members`) and Create is no longer locked. Sign in as Dana and open
-a machine: Delete is refused because no statement allows it (the operator's `changes` allow
+and offers Request access, which goes to the approvers other than Mia: Dana and Gonzalo. Send
+it; sign in as Gonzalo: the bell shows one request to decide; approve it. Sign in as Mia again:
+Mia now holds `operator` (through `members`) and Create is no longer locked. Sign in as Dana and
+open a machine: Delete is refused because no statement allows it (the operator's `changes` allow
 leaves `*:delete` out), and the role's page shows that carve-out. Sign in as Raj in Data: Create
 is refused by the platform, scope `compute:write` missing on `svc-data`.
 

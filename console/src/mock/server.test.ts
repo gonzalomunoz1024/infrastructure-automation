@@ -370,7 +370,7 @@ describe('the BFF: access requests', () => {
     // an approver never decides their own
     expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', requestable: false } } })
 
-    // mateo reads only his own, and may not ask for someone else's
+    // mateo reads only the requests mateo made, and may not ask for someone else's
     b.signIn('mateo')
     expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items).toEqual([])
     expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => [r.requestId, r.status])).toEqual([['areq_002', 'expired']])
@@ -378,7 +378,7 @@ describe('the BFF: access requests', () => {
     expect(b.call('GET', `/console/v1/access-requests/${request.requestId}`)).toMatchObject({ status: 403, body: { denied: { action: 'access-request:get' } } })
     expect(b.call('POST', `/console/v1/access-requests/${request.requestId}:decide`, { decision: 'approve' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:decide', role: 'operator', suggestedRole: 'account-admin' } } })
 
-    // dana is an approver: she reads the queue and decides
+    // dana is an approver, so reads the queue and decides
     b.signIn('dana')
     expect(b.call('GET', '/console/v1/access-requests?status=maybe')).toMatchObject({ status: 400, body: { error: 'status is pending, approved, rejected or expired' } })
     const pending = body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests?status=pending')).items
