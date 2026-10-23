@@ -11,6 +11,7 @@ import com.iaf.console.bff.jobs.domain.ApprovalView;
 import com.iaf.console.bff.jobs.domain.BulkDecision;
 import com.iaf.console.bff.jobs.domain.JobNotPausedException;
 import com.iaf.console.bff.jobs.domain.JobView;
+import com.iaf.console.bff.platform.application.PausedJobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
@@ -220,8 +221,8 @@ public class Jobs {
             return retries.target(session, job).flatMap(t -> access.require(session, t.actionName(), t.resource())
                     .then(sessions.requireFreshFor(session, t.actionName()))
                     .then(clients.forAccount(CurrentSession.scope(session)))
-                    .flatMap(p -> p.skipJobStep(jobId, new SkipRequest(step != null && !step.isBlank() ? step : waiting),
-                            OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
+                    .flatMap(p -> Mono.defer(() -> p.skipJobStep(jobId, new SkipRequest(step != null && !step.isBlank() ? step : waiting),
+                            OnBehalfOf.options(trust, session, requestId, idempotencyKey))).retryWhen(PausedJobs.NOT_YET_WAITING))
                     .thenReturn(new CommandAccepted(t.wfrn(), jobId, requestId, null)));
         });
     }
@@ -238,7 +239,8 @@ public class Jobs {
             return access.require(session, AccessCheck.action(SERVICE, "cancel"), resource)
                     .then(sessions.requireFreshFor(session, AccessCheck.action(SERVICE, "cancel")))
                     .then(clients.forAccount(CurrentSession.scope(session)))
-                    .flatMap(p -> p.abortJob(jobId, OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
+                    .flatMap(p -> Mono.defer(() -> p.abortJob(jobId, OnBehalfOf.options(trust, session, requestId, idempotencyKey)))
+                            .retryWhen(PausedJobs.NOT_YET_WAITING))
                     .thenReturn(new CommandAccepted(job.context() == null ? null : job.context().wfrn(), jobId, requestId, null));
         });
     }

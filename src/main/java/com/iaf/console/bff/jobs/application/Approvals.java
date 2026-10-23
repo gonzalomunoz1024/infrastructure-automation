@@ -8,6 +8,7 @@ import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.jobs.domain.ApprovalView;
 import com.iaf.console.bff.jobs.domain.BulkDecision;
+import com.iaf.console.bff.platform.application.PausedJobs;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.session.application.CurrentSession;
@@ -74,7 +75,8 @@ public class Approvals {
                         .flatMap(approval -> {
                             DecisionRequest request = new DecisionRequest(comment);
                             var options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
-                            return "approve".equals(decision) ? p.approve(approvalId, request, options) : p.reject(approvalId, request, options);
+                            return Mono.defer(() -> "approve".equals(decision) ? p.approve(approvalId, request, options) : p.reject(approvalId, request, options))
+                                    .retryWhen(PausedJobs.NOT_YET_WAITING);
                         }))
                 .then();
     }
@@ -108,7 +110,8 @@ public class Approvals {
                             }
                             DecisionRequest request = new DecisionRequest(comment);
                             var options = OnBehalfOf.options(trust, session, requestId, idempotencyKey == null ? null : idempotencyKey + ":" + view.approvalId());
-                            Mono<?> decided = "approve".equals(decision) ? p.approve(view.approvalId(), request, options) : p.reject(view.approvalId(), request, options);
+                            Mono<?> decided = Mono.defer(() -> "approve".equals(decision) ? p.approve(view.approvalId(), request, options)
+                                    : p.reject(view.approvalId(), request, options)).retryWhen(PausedJobs.NOT_YET_WAITING);
                             return decided.thenReturn(new Outcome(view, null))
                                     .onErrorResume(PlatformException.class, e -> Mono.just(new Outcome(view, refusal(e))));
                         }, DECIDE_CONCURRENCY)

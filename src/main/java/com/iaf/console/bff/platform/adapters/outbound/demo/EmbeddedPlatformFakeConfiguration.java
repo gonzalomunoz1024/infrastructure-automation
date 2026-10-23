@@ -14,6 +14,7 @@ import com.iaf.console.bff.platform.domain.DemoPlatformSeed;
 import com.iaf.console.bff.platform.domain.PlatformCredential;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.fake.PlatformFake;
+import com.iaf.console.fake.common.ApiException;
 import com.iaf.console.fake.demo.DemoSeed;
 
 /**
@@ -28,21 +29,41 @@ public class EmbeddedPlatformFakeConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddedPlatformFakeConfiguration.class);
 
+    /**
+     * How many times the demo world is built before giving up. platform-fake's seed approves its
+     * own demo jobs, and an approval can be listed a moment before its job takes the decision
+     * ({@code job.notPaused}); building the world again does not meet the same moment.
+     */
+    private static final int SEED_ATTEMPTS = 3;
+
     @Bean(destroyMethod = "close")
     public PlatformFake platformFake(PlatformProperties properties, Trust trust) {
-        PlatformFake fake = PlatformFake.builder()
-                .stepDelay(properties.fake().stepDelay())
-                .seed(properties.fake().seed())
-                .defaultUser(null)
-                .issuer(trust.issuer())
-                .audience("platform")
-                .trustedKeys(trust.jwks())
-                .generateDemoKey(false)
-                .demo(true)
-                .build();
+        PlatformFake fake = seeded(properties, trust);
         int port = fake.start(properties.fake().port());
         log.info("embedded platform-fake listening on http://localhost:{} (demo accounts {} and {})", port, DemoSeed.ACCOUNT_COMPUTE, DemoSeed.ACCOUNT_DATA);
         return fake;
+    }
+
+    private static PlatformFake seeded(PlatformProperties properties, Trust trust) {
+        for (int attempt = 1;; attempt++) {
+            try {
+                return PlatformFake.builder()
+                        .stepDelay(properties.fake().stepDelay())
+                        .seed(properties.fake().seed())
+                        .defaultUser(null)
+                        .issuer(trust.issuer())
+                        .audience("platform")
+                        .trustedKeys(trust.jwks())
+                        .generateDemoKey(false)
+                        .demo(true)
+                        .build();
+            } catch (ApiException e) {
+                if (attempt >= SEED_ATTEMPTS || e.getMessage() == null || !e.getMessage().startsWith("job.notPaused")) {
+                    throw e;
+                }
+                log.warn("seeding the demo platform met a job a moment before it took its approval ({}); seeding again", e.getMessage());
+            }
+        }
     }
 
     @Bean

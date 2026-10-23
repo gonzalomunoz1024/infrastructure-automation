@@ -67,7 +67,7 @@ public class Sessions {
                 new SessionView.User(session.user().userId(), session.user().email(), session.user().name(), session.user().groups()),
                 new SessionView.Account(account.accountId(), account.name(), account.status(), account.defaultRegion(), account.roles(), account.groups()),
                 session.region(), csrf.tokenFor(session.id()), session.expiresAt(), session.authTime(),
-                new SessionView.StepUp(stepUp.actions(), session.authTime().plus(stepUp.maxAge())));
+                new SessionView.StepUp(stepUp.actions(), session.authTime().plus(stepUp.maxAge())), null);
     }
 
     public String csrfToken(Session session) {
