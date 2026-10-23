@@ -158,6 +158,19 @@ public final class AccessReviewCampaigns {
                 .flatMap(stored -> published(scope, stored, actor, "updated", null));
     }
 
+    /**
+     * The account closed: its open campaign is cancelled, past its due date too, so the sweep takes
+     * no group off anyone in a closed account. With none open there is nothing to do, so a closure
+     * that runs again changes nothing.
+     */
+    public Mono<Void> accountClosed(AccountScope scope, String actor, Instant now) {
+        return Mono.defer(() -> reviews.findOpen(scope)
+                        .flatMap(open -> reviews.update(open.cancelled(now), open.version()).switchIfEmpty(Mono.error(MovedOn::new))))
+                .retryWhen(movedOn("the access review moved on; close the account again"))
+                .flatMap(stored -> published(scope, stored, actor, "updated", null))
+                .then();
+    }
+
     /** The 409 of a second open campaign: it names the open one. */
     static ConflictException openAlready(AccessReview open) {
         return new ConflictException("an access review of the account is open: " + open.reviewId(), Map.of("reviewId", open.reviewId()));

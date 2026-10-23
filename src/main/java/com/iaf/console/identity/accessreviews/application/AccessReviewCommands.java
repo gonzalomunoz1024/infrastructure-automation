@@ -7,6 +7,7 @@ import com.iaf.console.identity.accessreviews.domain.AccessReview;
 import com.iaf.console.identity.accessreviews.domain.AccessReviewItem;
 import com.iaf.console.identity.accessreviews.ports.outbound.AccessReviewItemStore;
 import com.iaf.console.identity.accessreviews.ports.outbound.AccessReviewStore;
+import com.iaf.console.identity.accounts.ports.outbound.AccountClosurePort;
 import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.common.Names;
 import com.iaf.console.identity.common.auth.AccessGuard;
@@ -16,6 +17,7 @@ import com.iaf.console.identity.common.web.DeniedException;
 import com.iaf.console.identity.iam.application.IamSupport;
 import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.errors.NotFoundException;
+import com.iaf.console.kit.scope.AccountScope;
 
 import reactor.core.publisher.Mono;
 
@@ -24,9 +26,9 @@ import reactor.core.publisher.Mono;
  * campaign (one open per account), {@code access-review:decide} keeps or revokes an item, once,
  * and {@code access-review:cancel} stops a campaign; past the due date neither is taken, so what is
  * pending expires. Nobody decides an item about themselves: the person reviewed is refused on
- * {@code :decide} with a denial that says so.
+ * {@code :decide} with a denial that says so. Closing the account cancels its open campaign.
  */
-public final class AccessReviewCommands {
+public final class AccessReviewCommands implements AccountClosurePort {
 
     public static final int DEFAULT_DUE_IN_DAYS = 14;
     public static final int MAX_DUE_IN_DAYS = 90;
@@ -118,5 +120,10 @@ public final class AccessReviewCommands {
                 .flatMap(scope -> guard.require(caller, accountId, "access-review:cancel", support.resource(accountId, AccessReviewCampaigns.KIND, reviewId))
                         .thenReturn(scope))
                 .flatMap(scope -> campaigns.cancel(scope, reviewId, caller.actor(), clock.instant()));
+    }
+
+    @Override
+    public Mono<Void> accountClosed(AccountScope scope, String actor) {
+        return campaigns.accountClosed(scope, actor, clock.instant());
     }
 }

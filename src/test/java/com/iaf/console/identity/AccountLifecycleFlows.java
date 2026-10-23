@@ -334,7 +334,8 @@ abstract class AccountLifecycleFlows extends WithService {
         String vms = "wfrn:wf:compute:global:" + a.accountId() + ":vm/*";
         String requestId = call(POST, a.base() + "/access-requests", viewer, Map.of("action", "compute:create", "resource", vms, "reason",
                 "I deploy the test machines"), ACCEPTED).get("requestId").asText();
-        String quotaRequestId = call(POST, a.base() + "/quotas/resources.vm:request-increase", viewer, Map.of("limit", 200, "reason",
+        // more than the resources-double rule approves at once, so it stays open for the platform team
+        String quotaRequestId = call(POST, a.base() + "/quotas/resources.vm:request-increase", viewer, Map.of("limit", 250, "reason",
                 "the team needs more test machines"), ACCEPTED).get("requestId").asText();
         long version = call(GET, a.base(), internal(), null, OK).get("version").asLong();
         int before = events(a.accountId()).size();

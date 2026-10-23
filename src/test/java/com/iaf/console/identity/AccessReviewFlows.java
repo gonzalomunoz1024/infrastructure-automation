@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.PATCH;
 import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.http.HttpStatus.ACCEPTED;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.CONFLICT;
 import static org.springframework.http.HttpStatus.CREATED;
@@ -166,7 +167,7 @@ abstract class AccessReviewFlows extends WithService {
         Account a = accountStore.findById(s.accountId()).block();
         assertThat(a).isNotNull();
         Account older = new Account(a.accountId(), a.name(), a.status(), a.owningTeam(), a.defaultRegion(), a.platformServiceAccountId(), a.version() + 1,
-                a.createdAt().minus(age), a.updatedAt());
+                a.createdAt().minus(age), a.updatedAt(), a.costCentre(), a.closedAt(), a.closeReason(), a.owningTeamMissing());
         assertThat(accountStore.update(older, a.version()).block()).isNotNull();
     }
 
@@ -620,5 +621,26 @@ abstract class AccessReviewFlows extends WithService {
 
         call(PATCH, b.base(), internal(), Map.of("status", "suspended"), OK);
         assertThat(call(POST, b.reviews(), internal(), Map.of(), CONFLICT).get("error").asText()).contains("suspended");
+    }
+
+    @Test
+    void closingTheAccountCancelsItsOpenCampaignSoTheDueDateTakesNothing() {
+        Seeded s = newAccount();
+        String dana = addUser(s, "dana", List.of("members"));
+        String id = call(POST, s.reviews(), s.owner(), Map.of("dueInDays", 1), CREATED).get("reviewId").asText();
+
+        call(POST, s.base() + ":close", internal(), Map.of("reason", "the team moved to another account"), ACCEPTED);
+        JsonNode review = call(GET, s.review(id), internal(), null, OK);
+        assertThat(review.get("status").asText()).isEqualTo("cancelled");
+        assertCounts(review, 2, 0, 0, 0, 2);
+        List<EventEnvelope> events = events(s, "AccessReviewChanged", id);
+        assertThat(actions(events)).containsExactly("created", "updated");
+        assertThat(events.getLast().data().get("snapshot").get("status").asText()).isEqualTo("cancelled");
+
+        sweep.sweep(clock.instant().plus(Duration.ofDays(2))).block();
+        assertThat(texts(items(s, id), "decision")).containsOnly("pending");
+        assertThat(groupsOf(s, dana)).containsExactly("members");
+        call(POST, s.base() + ":close", internal(), Map.of("reason", "again"), CONFLICT);
+        assertThat(actions(events(s, "AccessReviewChanged", id))).as("a second closure finds nothing open").containsExactly("created", "updated");
     }
 }
