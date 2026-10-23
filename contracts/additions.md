@@ -29,8 +29,8 @@ service, with these details the contract does not spell out yet:
   when `<service>:update` is allowed.
 - `ResourceRef` carries `id`, the platform's registry id, beside the wfrn, so a lineage node the
   platform has no wfrn for is still addressable.
-- `GET /r/{type}/{wfrn}` answers the state service's `ETag` and honours `If-None-Match` (304);
-  `PATCH` honours `If-Match` against the resource's `version` (409 when it moved on).
+- `GET /r/{type}/{wfrn}` answers the ETag `"<version>.<digest>"` (the state version, then a digest of the whole page) and honours `If-None-Match` (304), so a 304 never hides a last job, jobs, lineage or verbs that moved on;
+  `PATCH` honours `If-Match` (the page ETag or the bare version) against the resource's `version` (409 when it moved on).
 - `410` carries the tombstone as `detail` (`wfrn`, `deletedAt`, `tombstoneUntil`, `lastVersion`);
   `/activity` stays readable for a deleted resource.
 - A destructive verb (`delete` and anything the catalog marks destructive) needs `confirm: true`
