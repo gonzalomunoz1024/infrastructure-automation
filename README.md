@@ -19,8 +19,8 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 | Area | Operations |
 |---|---|
-| Accounts | `GET/POST /v1/accounts`, `GET/PATCH /v1/accounts/{accountId}`, `GET .../platform-credentials` (internal) |
-| Principals | `POST /v1/principals:resolve` (internal: the BFF at sign-in) |
+| Accounts | `GET/POST /v1/accounts`, `GET/PATCH /v1/accounts/{accountId}`, `POST /v1/accounts/{accountId}:close` (internal), `GET .../platform-credentials` (internal) |
+| Principals | `POST /v1/principals:resolve` (internal: the BFF at sign-in), `POST /internal/v1/group-sync:run` (internal) |
 | Users, groups, roles, policies | `GET/POST .../users`, `GET/PATCH/DELETE .../users/{userId}`; the same for `groups`, `roles` and `policies` (`PUT` replaces a policy) |
 | Access keys | `GET/POST .../access-keys`, `GET/DELETE .../access-keys/{keyId}`, `POST .../access-keys/{keyId}:rotate` |
 | Quotas | `GET .../quotas`, `GET/PUT .../quotas/{quotaKey}`, `POST .../quotas/{quotaKey}:request-increase`, `GET/DELETE .../quota-requests/{requestId}`, `POST .../quota-requests/{requestId}:decide` (internal), `GET /v1/quota-rules` |
@@ -30,10 +30,9 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `671c8d7` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `6fe3333` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
-to the hub first). The cost contract's `Account.costCentre` is not stored yet: it comes with the
-account lifecycle work on this branch.
+to the hub first).
 
 ## How it decides
 
@@ -137,6 +136,28 @@ account lifecycle work on this branch.
   from `ownerEmail`, and asks the platform for the account's console service account (P-03). Its
   token is kept by the secrets adapter (`vault` profile: Vault; otherwise memory) and is never in
   MongoDB, an event or a log; `GET .../platform-credentials` hands it to internal callers.
+- Account lifecycle. A membership knows which of its groups the person holds through their identity
+  provider (`Group.idpGroups`; `members` maps the owning team): `User.idpGroups` lists them, and
+  sign-in (`principals:resolve` with `groups`) and the group sync add the mapped groups and take
+  back the ones whose provider group the person left, in every account they are in. An admin's or
+  an access review's change wins over the provider: a mapped group taken away is listed in
+  `excludedGroups` and stays out until an admin gives it back, and a group an admin gives is never
+  removed by a sync. No sync takes `owners` from the account's last active owner; it skips and
+  reports it. The group sync runs nightly (`console.identity.lifecycle.group-sync`, 02:00 UTC by
+  default) and on `POST /internal/v1/group-sync:run` (internal), which answers the report per
+  account (added, removed, skipped, missing provider groups). It reads each provider group once per
+  run from the directory (in memory, seeded with the demo's teams; SCIM 2.0 with the `scim` profile,
+  `CONSOLE_SCIM_URL` and `CONSOLE_SCIM_TOKEN`, the token never logged), matches people by email,
+  gives no one a membership, and marks an account `owningTeamMissing` while its owning team is not
+  in the directory. `POST /v1/accounts/{accountId}:close` (internal, `{reason}`, 202) closes an
+  account for good: every call in it is refused from then on (`account closed`) and sign-in leaves
+  it out; its usable access keys are revoked, its pending access requests expire and its open quota
+  requests are withdrawn, each with its event, then `AccountChanged closed`. A `PATCH` never sets
+  `closed` and no longer changes a closed account's status (`suspended` stays reversible), closing
+  twice is a 409, no key is minted in an account that is not active, and the platform service
+  account stays as it is (the platform cannot disable one). An account may carry a `costCentre`
+  (at most 64 characters, `""` clears it): the cost service groups chargeback by it, and by
+  `owningTeam` when there is none.
 - Access keys: `ck_` id plus a 43-character secret shown once; at most two usable keys per user;
   rotation keeps the previous secret for ten minutes; a removed user's keys are revoked.
 - Quotas: `jobs-per-minute` reads through the platform's rate bucket (an override moves the

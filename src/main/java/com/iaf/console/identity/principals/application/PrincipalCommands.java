@@ -7,7 +7,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.iaf.console.identity.accounts.domain.Account;
 import com.iaf.console.identity.accounts.domain.AccountStatus;
 import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.common.Ids;
@@ -37,6 +42,7 @@ import reactor.core.publisher.Mono;
 /** The writes on users and memberships, and the BFF's resolve at sign-in. */
 public final class PrincipalCommands {
 
+    private static final Logger log = LoggerFactory.getLogger(PrincipalCommands.class);
     private static final String KIND = "user";
 
     private final UserStore users;
@@ -69,9 +75,12 @@ public final class PrincipalCommands {
     /**
      * The BFF's call after the OIDC callback (internal principal only). Finds the person by the
      * provider's issuer and subject, else by email (linking the identity on first sign-in), else
-     * creates them when their identity provider groups map to an account. Every mapped account
-     * gets a membership, or the mapped groups added to the one it has. 404 when the person ends
-     * with no account.
+     * creates them when their identity provider groups map to an account. When the request carries
+     * the person's {@code groups}, they are the identity provider's word on every active account:
+     * a mapped account without a membership gets one, and every membership the person has is synced
+     * ({@link Memberships#sync}), so groups held through a provider group they left go, even in an
+     * account nothing maps them to any more. Without {@code groups} nothing is synced. 404 when the
+     * person ends with no account.
      */
     public Mono<Resolution> resolve(Caller caller, ResolveRequest request) {
         if (!caller.isInternal()) {
@@ -113,26 +122,45 @@ public final class PrincipalCommands {
                 user = users.insert(User.create(ids.user(), email, request.name(), request.issuer(), request.subject(), clock.instant()).signedIn(
                         request.issuer(), request.subject(), request.name(), clock.instant()));
             }
-            return user.flatMap(u -> Flux.fromIterable(byAccount.entrySet())
-                    .concatMap(e -> joinMapped(u, e.getKey(), e.getValue(), caller.actor()))
-                    .then(queries.resolution(u)));
+            return user.flatMap(u -> (request.groups() == null ? Mono.<Void>empty() : syncAll(u, byAccount, caller.actor())).then(queries.resolution(u)));
         });
     }
 
-    private Mono<Membership> joinMapped(User user, String accountId, List<Group> mappedGroups, String actor) {
+    /** Syncs the person's memberships in every account their groups map to or they are in. */
+    private Mono<Void> syncAll(User user, Map<String, List<Group>> byAccount, String actor) {
+        return memberships.findByUser(user.userId()).collectMap(Membership::accountId).flatMap(held -> {
+            Set<String> accountIds = new LinkedHashSet<>(byAccount.keySet());
+            accountIds.addAll(held.keySet());
+            return Flux.fromIterable(accountIds)
+                    .concatMap(accountId -> syncIn(user, accountId, held.get(accountId), byAccount.getOrDefault(accountId, List.of()), actor))
+                    .then();
+        });
+    }
+
+    /** One account, when it is active: a membership for a newly mapped person, else the sync of the one they have. */
+    private Mono<Void> syncIn(User user, String accountId, Membership current, List<Group> mappedGroups, String actor) {
         AccountScope scope = AccountScope.of(accountId, "global", actor);
-        List<String> wanted = mappedGroups.stream().map(Group::groupId).toList();
-        return accounts.findById(accountId)
-                .filter(a -> a.status() == AccountStatus.active)
-                .flatMap(account -> memberships.find(scope, user.userId())
-                        .flatMap(current -> {
-                            Set<String> ids = new LinkedHashSet<>(current.groupIds());
-                            ids.addAll(wanted);
-                            return membership.setGroups(scope, current, List.copyOf(ids), actor);
-                        })
-                        .switchIfEmpty(Mono.defer(() -> memberships.insert(Membership.create(accountId, user, wanted, clock.instant()))
-                                .flatMap(m -> events.changed(IdentityEvents.Subject.USER, m.userId(), accountId, actor, m.version(), "created",
-                                        Memberships.snapshotOf(m)).thenReturn(m)))));
+        List<String> mappedNow = mappedGroups.stream().map(Group::groupId).toList();
+        return accounts.findById(accountId).filter(Account::isActive).flatMap(account -> {
+            if (current != null) {
+                return sync(scope, current, mappedNow, actor);
+            }
+            if (mappedNow.isEmpty()) {
+                return Mono.empty();
+            }
+            return memberships.insert(Membership.mapped(accountId, user, mappedNow, clock.instant()))
+                    .flatMap(m -> events.changed(IdentityEvents.Subject.USER, m.userId(), accountId, actor, m.version(), "created", Memberships.snapshotOf(m)))
+                    // a sign-in of the same person at the same time made it first: sync that one
+                    .onErrorResume(ConflictException.class, e -> memberships.find(scope, user.userId()).flatMap(m -> sync(scope, m, mappedNow, actor)));
+        });
+    }
+
+    private Mono<Void> sync(AccountScope scope, Membership current, List<String> mappedNow, String actor) {
+        return membership.sync(scope, current, mappedNow, actor)
+                .doOnNext(synced -> synced.kept().forEach(groupId -> log.warn(
+                        "kept group {} of {} in account {}: they are its last active owner, though their identity provider groups no longer map to it",
+                        groupId, current.userId(), scope.accountId())))
+                .then();
     }
 
     public Mono<AccountUser> addUser(Caller caller, String accountId, AddUser input) {
@@ -156,7 +184,7 @@ public final class PrincipalCommands {
                                                 .switchIfEmpty(Mono.defer(() -> memberships.insert(Membership.create(accountId, user, groupIds, clock.instant()))))
                                                 .flatMap(m -> events.changed(IdentityEvents.Subject.USER, m.userId(), accountId, caller.actor(), m.version(),
                                                         "created", Memberships.snapshotOf(m)).thenReturn(m))
-                                                .map(m -> AccountUser.of(user, m, IamSupport.names(m.groupIds(), namesOf(all)))));
+                                                .map(m -> AccountUser.of(user, m, namesOf(all))));
                             });
                 });
     }
@@ -170,7 +198,8 @@ public final class PrincipalCommands {
                             Versions.check(ifMatch, current.version(), "the user");
                             return groups.findAll(scope).collectList().flatMap(all -> {
                                 List<String> groupIds = IamSupport.resolve(input.groups(), all, Group::groupId, Group::name, "groups", "group");
-                                Membership changed = current.changed(input.name(), input.status(), groupIds, clock.instant());
+                                Set<String> mapped = all.stream().filter(g -> !g.idpGroups().isEmpty()).map(Group::groupId).collect(Collectors.toSet());
+                                Membership changed = current.changed(input.name(), input.status(), groupIds, mapped, clock.instant());
                                 String action = input.status() == UserStatus.suspended && current.status() != UserStatus.suspended ? "suspended" : "updated";
                                 Mono<Void> rename = input.name() == null ? Mono.empty()
                                         : users.findById(userId).flatMap(u -> users.save(u.renamed(input.name(), clock.instant())))
@@ -181,7 +210,7 @@ public final class PrincipalCommands {
                                         .switchIfEmpty(Mono.error(new ConflictException("the user moved on; read it again")))
                                         .flatMap(stored -> events.changed(IdentityEvents.Subject.USER, userId, accountId, caller.actor(), stored.version(), action,
                                                 Memberships.snapshotOf(stored)).thenReturn(stored))
-                                        .flatMap(stored -> users.findById(userId).map(u -> AccountUser.of(u, stored, IamSupport.names(stored.groupIds(), namesOf(all)))));
+                                        .flatMap(stored -> users.findById(userId).map(u -> AccountUser.of(u, stored, namesOf(all))));
                             });
                         }));
     }

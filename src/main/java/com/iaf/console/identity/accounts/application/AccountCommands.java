@@ -26,12 +26,16 @@ import reactor.core.publisher.Mono;
 /**
  * The writes on accounts. Creating one mints the twelve-digit id, asks the platform for the
  * account's console service account (P-03), puts its token in the secrets store, stores the
- * account, provisions its built-in IAM and first owner, and appends {@code AccountChanged}.
+ * account, provisions its built-in IAM and first owner, and appends {@code AccountChanged}. A
+ * change takes no {@code closed} status: an account closes through {@link AccountClosure}, and a
+ * closed account's status no longer changes.
  */
 public final class AccountCommands {
 
     private static final Logger log = LoggerFactory.getLogger(AccountCommands.class);
     private static final int ID_ATTEMPTS = 5;
+    private static final int MAX_COST_CENTRE = 64;
+    private static final String COST_CENTRE_RULE = "costCentre is at most 64 characters";
 
     private final AccountStore accounts;
     private final PlatformIdentityPort platform;
@@ -68,7 +72,8 @@ public final class AccountCommands {
                 .require(command.name() != null && !command.name().isBlank() && command.name().length() <= 64, "name", "name is required, at most 64 characters")
                 .require(command.owningTeam() != null && Names.isName(command.owningTeam()), "owningTeam", "owningTeam is the platform team's name")
                 .require(Names.isEmail(command.ownerEmail()), "ownerEmail", "ownerEmail must be an email address")
-                .require(command.defaultRegion() == null || Names.isName(command.defaultRegion()), "defaultRegion", "defaultRegion is a region name");
+                .require(command.defaultRegion() == null || Names.isName(command.defaultRegion()), "defaultRegion", "defaultRegion is a region name")
+                .require(costCentreFits(command.costCentre()), "costCentre", COST_CENTRE_RULE);
         check.done("the account");
         String region = command.defaultRegion() == null ? defaultRegion : command.defaultRegion();
         return accounts.existsByName(command.name().trim())
@@ -93,7 +98,7 @@ public final class AccountCommands {
         return platform.createConsoleServiceAccount(accountId, name, command.owningTeam())
                 .flatMap(created -> secrets.put(new PlatformSecret(accountId, created.id(), created.token(), clock.instant()))
                         .then(Mono.defer(() -> {
-                            Account account = Account.create(accountId, name, command.owningTeam(), region, created.id(), clock.instant());
+                            Account account = Account.create(accountId, name, command.owningTeam(), region, created.id(), command.costCentre(), clock.instant());
                             return accounts.insert(account);
                         }))
                         .onErrorResume(e -> platform.delete(created.id()).onErrorResume(x -> {
@@ -114,22 +119,33 @@ public final class AccountCommands {
                 .require(command.name() == null || (!command.name().isBlank() && command.name().length() <= 64), "name", "name is at most 64 characters")
                 .require(command.defaultRegion() == null || Names.isName(command.defaultRegion()), "defaultRegion", "defaultRegion is a region name")
                 .require(caller.isInternal() || command.status() == null, "status", "only the console's own services change an account's status")
+                .require(command.status() != AccountStatus.closed, "status", "an account closes through POST /v1/accounts/{accountId}:close")
+                .require(costCentreFits(command.costCentre()), "costCentre", COST_CENTRE_RULE)
                 .done("the account");
         AccountScope scope = caller.scope(accountId);
         return accounts.find(scope)
                 .switchIfEmpty(Mono.error(NotFoundException.of("account", accountId)))
                 .flatMap(current -> {
                     Versions.check(ifMatch, current.version(), "the account");
+                    if (current.isClosed() && command.status() != null) {
+                        return Mono.error(new ConflictException("the account is closed; its status no longer changes"));
+                    }
                     String newName = command.name() == null ? null : command.name().trim();
                     Mono<Void> nameFree = newName == null || newName.equals(current.name()) ? Mono.empty()
                             : accounts.existsByName(newName).flatMap(exists -> exists
                                     ? Mono.error(new ConflictException("an account named '" + newName + "' exists")) : Mono.empty());
-                    Account changed = current.changed(newName, command.status(), command.defaultRegion(), clock.instant());
+                    String costCentre = command.costCentre() == null ? null : command.costCentre().trim();
+                    Account changed = current.changed(newName, command.status(), command.defaultRegion(), costCentre, clock.instant());
                     String action = command.status() == AccountStatus.suspended && current.status() != AccountStatus.suspended ? "suspended" : "updated";
                     return nameFree.then(accounts.update(changed, current.version()))
                             .switchIfEmpty(Mono.error(new ConflictException("the account moved on; read it again")))
                             .flatMap(stored -> events.changed(IdentityEvents.Subject.ACCOUNT, stored.accountId(), stored.accountId(), caller.actor(),
                                     stored.version(), action, stored).thenReturn(stored));
                 });
+    }
+
+    /** A cost centre is at most 64 characters once trimmed; a blank one is none. */
+    private static boolean costCentreFits(String costCentre) {
+        return costCentre == null || costCentre.trim().length() <= MAX_COST_CENTRE;
     }
 }

@@ -61,7 +61,7 @@ public final class PrincipalQueries implements MembershipLookupPort {
                 .flatMap(scope -> memberships.find(scope, userId)
                         .switchIfEmpty(Mono.error(NotFoundException.of(KIND, userId)))
                         .flatMap(m -> Mono.zip(users.findById(userId), groupNames(scope))
-                                .map(t -> AccountUser.of(t.getT1(), m, IamSupport.names(m.groupIds(), t.getT2())))));
+                                .map(t -> AccountUser.of(t.getT1(), m, t.getT2()))));
     }
 
     public Mono<Page<AccountUser>> list(Caller caller, String accountId, String query, int limit, String after) {
@@ -72,7 +72,7 @@ public final class PrincipalQueries implements MembershipLookupPort {
                     return Mono.zip(users.findByIds(ids).collectMap(User::userId), groupNames(scope)).map(t -> {
                         List<AccountUser> items = page.items().stream()
                                 .filter(m -> t.getT1().containsKey(m.userId()))
-                                .map(m -> AccountUser.of(t.getT1().get(m.userId()), m, IamSupport.names(m.groupIds(), t.getT2())))
+                                .map(m -> AccountUser.of(t.getT1().get(m.userId()), m, t.getT2()))
                                 .toList();
                         return new Page<>(items, page.next());
                     });

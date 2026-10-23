@@ -13,6 +13,7 @@ import com.iaf.console.identity.accesskeys.adapters.mongo.MongoAccessKeyStore;
 import com.iaf.console.identity.accesskeys.application.AccessKeyCommands;
 import com.iaf.console.identity.accesskeys.application.AccessKeyQueries;
 import com.iaf.console.identity.accesskeys.ports.outbound.AccessKeyStore;
+import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.events.IdentityEvents;
@@ -38,10 +39,10 @@ public class AccessKeysConfiguration {
     }
 
     @Bean
-    public AccessKeyCommands accessKeyCommands(AccessKeyStore keys, MembershipStore memberships, AccessGuard guard, ObjectProvider<IdentityEvents> events,
-            IamSupport support, Ids ids, Clock clock) {
+    public AccessKeyCommands accessKeyCommands(AccessKeyStore keys, MembershipStore memberships, AccountStore accounts, AccessGuard guard,
+            ObjectProvider<IdentityEvents> events, IamSupport support, Ids ids, Clock clock) {
         // the commands listen to the events they also append, so the appender is looked up when first needed
-        return new AccessKeyCommands(keys, memberships, guard, events::getObject, support, ids, clock);
+        return new AccessKeyCommands(keys, memberships, accounts, guard, events::getObject, support, ids, clock);
     }
 
     @Bean

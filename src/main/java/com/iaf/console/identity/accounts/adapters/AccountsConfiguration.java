@@ -2,6 +2,7 @@ package com.iaf.console.identity.accounts.adapters;
 
 import java.time.Clock;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -13,8 +14,10 @@ import com.iaf.console.identity.accounts.adapters.mongo.MongoAccountStore;
 import com.iaf.console.identity.accounts.adapters.platform.PlatformIdentityAdapter;
 import com.iaf.console.identity.accounts.adapters.secrets.InMemorySecrets;
 import com.iaf.console.identity.accounts.adapters.secrets.VaultSecrets;
+import com.iaf.console.identity.accounts.application.AccountClosure;
 import com.iaf.console.identity.accounts.application.AccountCommands;
 import com.iaf.console.identity.accounts.application.AccountQueries;
+import com.iaf.console.identity.accounts.ports.outbound.AccountClosurePort;
 import com.iaf.console.identity.accounts.ports.outbound.AccountProvisioningPort;
 import com.iaf.console.identity.accounts.ports.outbound.AccountStore;
 import com.iaf.console.identity.accounts.ports.outbound.MembershipLookupPort;
@@ -26,7 +29,7 @@ import com.iaf.console.identity.events.IdentityEvents;
 import com.iaf.console.kit.mongo.Mongo;
 import com.iaf.console.platform.client.PlatformPort;
 
-/** The accounts slice's beans: stores by profile, the platform and secrets adapters, the commands and queries. */
+/** The accounts slice's beans: stores by profile, the platform and secrets adapters, the commands, the closure and the queries. */
 @Configuration(proxyBeanMethods = false)
 public class AccountsConfiguration {
 
@@ -66,6 +69,12 @@ public class AccountsConfiguration {
     public AccountCommands accountCommands(AccountStore accounts, PlatformIdentityPort platform, SecretsPort secrets, AccountProvisioningPort provisioning,
             IdentityEvents events, Ids ids, Clock clock, IdentityProperties properties) {
         return new AccountCommands(accounts, platform, secrets, provisioning, events, ids, clock, properties.region());
+    }
+
+    /** The closure, with every slice's closure step (looked up per closure, so no slice's beans wait on this one). */
+    @Bean
+    public AccountClosure accountClosure(AccountStore accounts, ObjectProvider<AccountClosurePort> steps, IdentityEvents events, Clock clock) {
+        return new AccountClosure(accounts, () -> steps.orderedStream().toList(), events, clock);
     }
 
     @Bean

@@ -3,6 +3,7 @@ package com.iaf.console.identity.demo;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ import com.iaf.console.identity.iam.domain.ManagedIam;
 import com.iaf.console.identity.iam.domain.Statement;
 import com.iaf.console.identity.principals.application.AddUser;
 import com.iaf.console.identity.principals.application.PrincipalCommands;
+import com.iaf.console.identity.principals.domain.DirectoryGroup;
 import com.iaf.console.identity.principals.domain.User;
 import com.iaf.console.identity.principals.ports.outbound.UserStore;
 import com.iaf.console.kit.errors.ConflictException;
@@ -39,7 +41,9 @@ import reactor.core.publisher.Mono;
  * {@code compute-approvers} (dana, mia) and {@code data-approvers} (raj), so access requests show
  * approvers beyond the owners. People get the ids {@code user_<name>} and are linked to the demo
  * identity provider by their short name, so the BFF's resolve finds them at first sign-in; noah
- * exists in the identity provider but has no account.
+ * exists in the identity provider but has no account. The demo directory ({@link #directory()})
+ * has each account's owning team hold the people the seed puts in {@code members} there, so the
+ * group sync finds the teams the accounts map.
  */
 public final class DemoSeed {
 
@@ -129,7 +133,7 @@ public final class DemoSeed {
     private Mono<Void> account(Caller seeder, String accountId) {
         return accountStore.findById(accountId)
                 .switchIfEmpty(Mono.defer(() -> accounts.create(seeder,
-                        new CreateAccount(ACCOUNT_NAMES.get(accountId), ACCOUNT_TEAMS.get(accountId), "gonzalo@example.com", "global"), accountId)))
+                        new CreateAccount(ACCOUNT_NAMES.get(accountId), ACCOUNT_TEAMS.get(accountId), "gonzalo@example.com", "global", null), accountId)))
                 .then();
     }
 
@@ -151,6 +155,18 @@ public final class DemoSeed {
                 .flatMap(members -> groups.create(seeder, a.accountId(), new GroupInput(a.group(), "Approves access requests", List.of(APPROVER), members, List.of()))
                         .onErrorResume(ConflictException.class, e -> Mono.empty()))
                 .then();
+    }
+
+    /** The demo directory: each account's owning team, with the people in its {@code members} group (email, and the short name as subject). */
+    public static Map<String, List<DirectoryGroup.Member>> directory() {
+        Map<String, List<DirectoryGroup.Member>> teams = new TreeMap<>();
+        for (String accountId : ACCOUNT_TEAMS.keySet().stream().sorted().toList()) {
+            teams.put(ACCOUNT_TEAMS.get(accountId), PEOPLE.stream()
+                    .filter(p -> p.accountId().equals(accountId) && p.groups().contains(ManagedIam.MEMBERS))
+                    .map(p -> new DirectoryGroup.Member(p.email(), p.name()))
+                    .toList());
+        }
+        return teams;
     }
 
     private static String fullName(String name) {

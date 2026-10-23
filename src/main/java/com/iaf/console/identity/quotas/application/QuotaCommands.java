@@ -6,8 +6,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import com.iaf.console.identity.accounts.ports.outbound.AccountClosurePort;
 import com.iaf.console.identity.common.Ids;
 import com.iaf.console.identity.common.Names;
+import com.iaf.console.identity.common.Paging;
 import com.iaf.console.identity.common.auth.AccessGuard;
 import com.iaf.console.identity.common.auth.Caller;
 import com.iaf.console.identity.events.IdentityEvents;
@@ -26,6 +28,7 @@ import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.scope.AccountScope;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
@@ -38,8 +41,9 @@ import reactor.core.publisher.Mono;
  * approves it (it is moot); a lower one leaves it open, since a rejection is a {@code :decide}
  * that carries a comment. Every change publishes a {@code QuotaChanged} with the quota as served
  * and the request it was about.
+ * A closed account's open requests are withdrawn when it closes.
  */
-public final class QuotaCommands {
+public final class QuotaCommands implements AccountClosurePort {
 
     private static final String KIND = "quota";
     private static final int MAX_COMMENT = 2000;
@@ -189,6 +193,21 @@ public final class QuotaCommands {
                                             .flatMap(withdrawn -> changed(scope, withdrawn.quotaKey(), caller.actor(), "updated", withdrawn))
                                             .then()));
                         }));
+    }
+
+    /** Every open request of a closed account is withdrawn, each with its {@code QuotaChanged}; one decided meanwhile stays decided. */
+    @Override
+    public Mono<Void> accountClosed(AccountScope scope, String actor) {
+        return openRequests(scope, null).collectList()
+                .flatMapMany(Flux::fromIterable)
+                .concatMap(request -> quotas.updateRequest(request.withdrawn(actor, clock.instant()), request.version())
+                        .flatMap(withdrawn -> changed(scope, withdrawn.quotaKey(), actor, "updated", withdrawn)))
+                .then();
+    }
+
+    private Flux<QuotaRequest> openRequests(AccountScope scope, String after) {
+        return quotas.listRequests(scope, QuotaRequest.Status.open, Paging.MAX, after)
+                .flatMapMany(page -> Flux.fromIterable(page.items()).concatWith(page.next() == null ? Flux.empty() : openRequests(scope, page.next())));
     }
 
     /** Sets a key's limit: the platform's bucket first for {@code jobs-per-minute} (P-10), then the account's override. */

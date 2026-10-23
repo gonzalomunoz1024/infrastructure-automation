@@ -67,6 +67,12 @@ console:
           max-factor: 1.5
           max-limit: 600
           cooldown: 7d
+    lifecycle:
+      # the identity provider group sync (also POST /internal/v1/group-sync:run): a Spring cron expression in its zone
+      group-sync:
+        enabled: true
+        cron: "0 0 2 * * *"
+        zone: UTC
   outbox:
     relay:
       enabled: true

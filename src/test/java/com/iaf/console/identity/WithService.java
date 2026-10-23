@@ -61,6 +61,8 @@ abstract class WithService {
         registry.add("console.identity.platform.base-url", FAKE::baseUrl);
         registry.add("console.identity.auth.jwks", () -> new JWKSet(KEY.toPublicJWK()).toString());
         registry.add("console.identity.auth.bundle-token", () -> BUNDLE_TOKEN);
+        // the nightly group sync would touch every test's accounts at 02:00 UTC; the lifecycle flows run it on purpose
+        registry.add("console.identity.lifecycle.group-sync.enabled", () -> "false");
     }
 
     private static ECKey generate() {
