@@ -591,6 +591,12 @@ export interface BffJobDetail extends BffJobSummary {
   batch?: BatchProgress
 }
 
+/** A retry's fix (`POST /console/v1/jobs/{jobId}:retry`): input merged over the job's own, and the step to run again from. */
+export interface RetryFix {
+  input?: Record<string, unknown>
+  fromStep?: string
+}
+
 /** The body of `POST /console/v1/r/{type}:batch` and its preview. */
 export interface BatchInput {
   verb: string

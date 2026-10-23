@@ -1,5 +1,5 @@
 import { ICON_NAMES, type IconName } from '@iaf/ui'
-import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase, xConsoleOf, type CatalogEntry, type LifecycleClass, type Resource, type ResourceType, type Schema, type XConsole } from '@iaf/console-kit'
+import { columnFields, lifecycleOf, searchableFields, sensitiveFields, titleCase, xConsoleOf, type CatalogEntry, type LifecycleClass, type Resource, type ResourceType, type Rollout, type Schema, type XConsole } from '@iaf/console-kit'
 
 /*
  * One ConsoleType per resource type, composed in the browser from what the platform serves today
@@ -44,6 +44,10 @@ export interface ConsoleAction {
   input: Schema
   description?: string
   version?: string
+  /** the input naming the resource it runs on (P-08), when the catalog says */
+  subject?: string
+  /** a verb with a batch route: the most rows one request takes, and the workflow's own rollout */
+  batch?: { max: number; rollout: Rollout }
 }
 
 export const DEFAULT_TABS = ['Configuration', 'Drift', 'Activity', 'Relationships', 'Tags', 'Permissions', 'JSON'] as const
@@ -78,6 +82,8 @@ export interface ConsoleType {
   observe: ConsoleObserve
   actions: ConsoleAction[]
   create: ConsoleAction | null
+  /** the type's `update` workflow (P-08): what Edit configuration runs, through PATCH */
+  update: ConsoleAction | null
   schema: Schema
   searchable: string[]
   sensitive: string[]
@@ -279,6 +285,8 @@ export function toAction(entry: CatalogEntry): ConsoleAction {
     input: entry.input ?? { type: 'object' },
     description: entry.description,
     version: entry.version,
+    subject: entry.subject,
+    batch: entry.batch,
   }
 }
 
@@ -316,6 +324,7 @@ export function composeType(rt: ResourceType, catalog: CatalogEntry[]): ConsoleT
     observe,
     actions,
     create,
+    update: actions.find((a) => a.verb === 'update') ?? null,
     schema: rt.schema ?? { type: 'object' },
     searchable: searchableFields(rt.schema),
     sensitive: sensitiveFields(rt.schema),

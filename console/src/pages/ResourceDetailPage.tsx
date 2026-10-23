@@ -10,6 +10,7 @@ import { formatAccountId } from '../lib/accounts'
 import { api, isApiError } from '../lib/api'
 import { bff } from '../lib/bff'
 import { idOfWfrn, singularOf, wfrnOf, type ConsoleAction, type ConsoleType } from '../lib/descriptors'
+import { ALLOWED } from '../lib/permissions'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { invalidate, useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
@@ -17,6 +18,8 @@ import { verbsOf } from '../lib/verbs'
 import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
 import { ActionDrawer } from './resource/ActionDrawer'
+import { EDIT_NOT_OFFERED, EditDrawer } from './resource/EditDrawer'
+import { TagsDrawer } from './resource/TagsDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
 import { DriftFact, TabContent, tabId } from './resource/tabs'
 
@@ -26,6 +29,8 @@ import { DriftFact, TabContent, tabId } from './resource/tabs'
  * drift, tags, what this person may do) from the BFF; either alone is enough to draw the page.
  * Actions holds the type's workflows, each opening a drawer with its form, a preview and the
  * same request as code; a destructive verb sits beside it and asks for the name before it runs.
+ * Edit configuration opens the type's update workflow (`?action=edit`), and Create similar opens
+ * the create wizard from this resource.
  * While a request runs on the resource the page follows it and reads the record again when it
  * ends.
  */
@@ -88,8 +93,12 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const verbs = verbsOf(type)
   const operate = verbs.filter((a) => !a.destructive)
   const destructive = verbs.filter((a) => a.destructive)
-  const editable = mutableFields(type.schema).length > 0
-  const current: ConsoleAction | undefined = route.query.action && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
+  // a type whose fields are mutable but whose provider publishes no update workflow still says why nothing edits it
+  const editable = !!type.update || mutableFields(type.schema).length > 0
+  // `edit` is Edit configuration's own, checked before the verbs
+  const editing = route.query.action === 'edit' && !deleted
+  const tagging = route.query.action === 'tags' && !deleted
+  const current: ConsoleAction | undefined = route.query.action && !editing && !tagging && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
 
   if (!resource && !detail) {
     if (record.loading || view.loading) return <SkeletonRows n={4} />
@@ -155,16 +164,21 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
                       </ActionMenuItem>
                     ))}
                     {operate.length > 0 && <MenuSeparator />}
-                    {editable && (
-                      <ActionMenuItem decision={decide(type, 'update')} what={`Edit this ${noun}`} verb="update" icon="edit" phase={4}>
-                        Edit configuration
-                      </ActionMenuItem>
-                    )}
-                    <ActionMenuItem decision={decide(type, 'update')} what="Manage tags" verb="tag" icon="tag" phase={4}>
+                    {editable &&
+                      (type.update ? (
+                        <ActionMenuItem decision={decide(type, 'update')} what={`Edit this ${noun}`} verb="update" icon="edit" unavailable={waitNote} onSelect={() => openAction('edit')}>
+                          Edit configuration
+                        </ActionMenuItem>
+                      ) : (
+                        <ActionMenuItem decision={ALLOWED} what={`Edit this ${noun}`} verb="update" icon="edit" unavailable={EDIT_NOT_OFFERED}>
+                          Edit configuration
+                        </ActionMenuItem>
+                      ))}
+                    <ActionMenuItem decision={decide(type, 'update')} what="Manage tags" verb="tag" icon="tag" onSelect={() => openAction('tags')}>
                       Manage tags
                     </ActionMenuItem>
                     {type.create && (
-                      <ActionMenuItem decision={decide(type, 'create')} what={`Create a ${noun} like this one`} verb="clone" icon="copy" phase={4}>
+                      <ActionMenuItem decision={decide(type, 'create')} what={`Create a ${noun} like this one`} verb="clone" icon="copy" onSelect={() => navigate(pathFor('create', { service: type.service, type: type.name }, { from: wfrn }))}>
                         Create similar
                       </ActionMenuItem>
                     )}
@@ -231,6 +245,20 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
       </div>
 
       {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} onClose={closeAction} onAccepted={onAccepted} />}
+      {tagging && detail && (
+        <TagsDrawer
+          type={type}
+          wfrn={wfrn}
+          name={name}
+          tags={detail.tags}
+          onClose={closeAction}
+          onSaved={() => {
+            closeAction()
+            void view.refetch()
+          }}
+        />
+      )}
+      {editing && detail && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
     </>
   )
 }

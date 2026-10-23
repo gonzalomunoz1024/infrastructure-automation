@@ -1,9 +1,10 @@
 import { lifecycleOf, validateAgainst, type LifecycleClass, type Problem, type Schema } from '@iaf/console-kit'
 import { idOfWfrn, serviceOf, titleOf } from '../lib/descriptors'
-import type { ActivityEntry, BffJobDetail, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Denial, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
+import type { ActivityEntry, BlastRadius, CatalogEntry, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, Dependent, Finding, JobSummary, PlatformEvent, PreviewStep, Resource, ResourceRef, ResourceState, ResourceType } from '../lib/types'
 import type { MockData } from './data'
-import { ADMIN_ROLE, accountOf, authorize, quotaOf, rolesOf, type Decision } from './directory'
+import { APPROVER_ROLE, accountOf, authorize, quotaOf, type Decision } from './directory'
 import { accountOfResource, consoleResourceOf, driftOf, mintWfrn, stateOf, toBffJob, type ResourceContext } from './resources'
+import { applyJobCommand, settleBatches, type MockBatch } from './jobs'
 import { applyTagCommand, createTagProblems, createTagRules, tagChangeProblems, type TagsState } from './tags'
 import { applyDriftCommand, closedFindingsOf, openFindingsOf, type DriftState } from './drift'
 import { applyMonitoringCommand, type MonitoringState } from './monitoring'
@@ -35,22 +36,38 @@ export interface ConsoleCommand {
   wfrn?: string
   verb?: string
   body: unknown
-  /** the ids minted when the command first ran, so a replay mints the same */
-  ids: { jobId?: string; requestId?: string; resourceId?: string; wfrn?: string }
+  /** the ids minted when the command first ran, so a replay mints the same; a steering command names its job as `jobId` and a rerun's new job as `rerunJobId` */
+  ids: { jobId?: string; requestId?: string; resourceId?: string; wfrn?: string; wfrns?: string[]; rerunJobId?: string }
 }
 
 export interface InFlight {
   jobId: string
   resourceId?: string
   effect: 'create' | 'update' | 'delete' | 'change'
-  stage: 'approval' | 'running'
+  /** a failed step pauses the job (`attention`) until someone retries, skips or aborts it */
+  stage: 'approval' | 'running' | 'attention'
   approvalAt?: number
   dueAt: number
   /** attributes an update writes when it lands */
   patch?: Record<string, unknown>
+  /** the apply fails while this holds; a retry judges it again on the fixed input (failsOn) */
   fail?: boolean
   /** the state the resource takes when the job succeeds */
   settledState?: string
+  /** which attempt of the apply runs */
+  attempt?: number
+  /** the steps someone chose to go on past */
+  skipped?: string[]
+}
+
+export interface ConsoleApproval {
+  approvalId: string
+  group: string
+  status: string
+  requestedAt?: string
+  decidedBy?: string
+  decidedAt?: string
+  comment?: string
 }
 
 export interface ConsoleJobExtra {
@@ -63,7 +80,19 @@ export interface ConsoleJobExtra {
   output?: Record<string, unknown>
   reason?: string
   labels?: Record<string, string>
-  approvals: { approvalId: string; group: string; status: string; decidedBy?: string; decidedAt?: string }[]
+  approvals: ConsoleApproval[]
+  /** the step a paused job waits on, what may be done with it, and since when (hub decision 24) */
+  attention?: { step: string; options: ('retry' | 'skip' | 'abort')[]; since: string }
+  /** the batch this job is a row of */
+  parentId?: string
+  /** the job this one runs again */
+  retryOf?: string
+  /** how many times the apply ran */
+  attempts?: number
+  /** the steps someone chose to go on past */
+  skipped?: string[]
+  /** a bulk run's rows and waves (./jobs) */
+  batch?: MockBatch
 }
 
 export interface MockConsoleState {
@@ -79,6 +108,8 @@ export interface MockConsoleState {
   drift?: DriftState
   /** alarms and rightsizing decisions (./monitoring), made on first use */
   monitoring?: MonitoringState
+  /** the batches still running, by job id (./jobs) */
+  batches?: string[]
 }
 
 export function emptyConsoleState(): MockConsoleState {
@@ -88,7 +119,17 @@ export function emptyConsoleState(): MockConsoleState {
 /** How long the mock's jobs take: the approval, then the apply. */
 export const APPROVAL_MS = 6_000
 export const RUN_MS = 8_000
-const MOCK_APPROVER = 'approver:compute-approvers'
+
+/** The account's approver group, which the mock's approvals wait on: the group holding the approver role. */
+export function approverGroupOf(data: MockData, accountId: string): string {
+  return (data.directory.groups[accountId] ?? []).find((g) => g.roles?.includes(APPROVER_ROLE))?.name ?? 'approvers'
+}
+
+/** Whether a run waits for an approver: a destructive verb, a workflow that always asks, or a production resource. */
+export function needsApprovalOf(entry: CatalogEntry | undefined, verb: string, attributes: Record<string, unknown> | undefined): boolean {
+  const destructive = entry?.destructive ?? verb === 'delete'
+  return destructive || !!(entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) || attributes?.environment === 'prod'
+}
 
 export interface RouteAnswer {
   status: number
@@ -121,32 +162,32 @@ export function idFrom(seed: string, len = 10): string {
   return out.slice(0, len)
 }
 
-function iso(ms: number): string {
+export function iso(ms: number): string {
   return new Date(ms).toISOString()
 }
 
-function stateFor(rt: ResourceType, cls: LifecycleClass): string | undefined {
+export function stateFor(rt: ResourceType, cls: LifecycleClass): string | undefined {
   for (const s of rt.states ?? []) if (lifecycleOf(s, rt.console?.lifecycle) === cls) return s
   return undefined
 }
 
-function classOf(rt: ResourceType, status: string): LifecycleClass {
+export function classOf(rt: ResourceType, status: string): LifecycleClass {
   return lifecycleOf(status, rt.console?.lifecycle) ?? 'active'
 }
 
-function nounOf(rt: ResourceType): string {
+export function nounOf(rt: ResourceType): string {
   return (rt.console?.title ?? rt.plural).replace(/s$/, '')
 }
 
-function providerOf(service: string): string {
+export function providerOf(service: string): string {
   return service === 'compute' ? 'vsphere' : service === 'data' ? 'mongodb' : service === 'storage' ? 'netapp' : service === 'network' ? 'ipam' : 'provider'
 }
 
-function problems400(problems: Problem[]): RouteAnswer {
+export function problems400(problems: Problem[]): RouteAnswer {
   return { status: 400, body: { error: 'validation.failed', detail: `${problems.length === 1 ? 'One field needs' : `${problems.length} fields need`} attention`, problems } }
 }
 
-function refused(decision: Decision, correlationId: string): RouteAnswer {
+export function refused(decision: Decision, correlationId: string): RouteAnswer {
   return { status: 403, body: { error: decision.denied?.reason ?? 'Forbidden', denied: decision.denied, correlationId } }
 }
 
@@ -155,14 +196,14 @@ function parseCursor(after: string | null): number {
   return m ? Number(m[1]) : 0
 }
 
-function pageOf<T>(items: T[], params: URLSearchParams): RouteAnswer {
+export function pageOf<T>(items: T[], params: URLSearchParams): RouteAnswer {
   const limit = Math.min(200, Math.max(1, Number(params.get('limit') ?? 50) || 50))
   const start = parseCursor(params.get('after'))
   const slice = items.slice(start, start + limit)
   return { status: 200, body: { items: slice, next: start + limit < items.length ? `c${start + limit}` : null }, headers: { 'X-Total-Count': String(items.length) } }
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
+export function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
 }
 
@@ -179,7 +220,7 @@ export function wfrnPatternOf(data: MockData, s: RouteContext['session'], rt: Re
 }
 
 /** The accounts of the directory, in order: a sample with none of its own belongs to one by its owner. */
-function accountIdsOf(data: MockData): string[] {
+export function accountIdsOf(data: MockData): string[] {
   return data.directory.accounts.map((a) => a.accountId)
 }
 
@@ -222,10 +263,26 @@ export function inputSchemaOf(entry: CatalogEntry, subject: string | undefined):
   return { ...schema, properties: rest, required: (schema.required ?? []).filter((n) => n !== subject) }
 }
 
-/** The fields an update may change: the x-console `mutable` ones. */
-export function updateSchemaOf(rt: ResourceType): Schema {
-  const props = Object.entries(rt.schema?.properties ?? {}).filter(([, p]) => p?.['x-console']?.mutable === true)
-  return { type: 'object', properties: Object.fromEntries(props) }
+/** What an update workflow's input may carry besides its subject (P-08): the mutable fields it changes, and operational inputs such as its reason. */
+export function updateInputsOf(entry: CatalogEntry, rt: ResourceType): { mutable: string[]; operational: string[] } {
+  const subject = subjectFieldOf(entry, rt)
+  const props = Object.entries(entry.input?.properties ?? {}).filter(([name]) => name !== subject)
+  const flagged = (flag: 'mutable' | 'operational') => props.filter(([, p]) => p?.['x-console']?.[flag] === true).map(([name]) => name)
+  return { mutable: flagged('mutable'), operational: flagged('operational') }
+}
+
+/** The 400 for update inputs that are neither mutable nor operational: each was fixed when the resource was created. */
+function immutableProblems(input: Record<string, unknown>, allowed: { mutable: string[]; operational: string[] }, noun: string): Problem[] {
+  return Object.keys(input)
+    .filter((k) => !allowed.mutable.includes(k) && !allowed.operational.includes(k))
+    .map((k) => ({ level: 'error' as const, code: 'immutable', field: `/input/${k}`, message: `${k} was set when the ${noun} was created and cannot be changed` }))
+}
+
+/** The version an If-Match names (`3`, `"3"`, `W/"3"`); `*` and an unreadable value match any. */
+function ifMatchVersion(header: string | undefined): number | undefined {
+  const raw = header?.trim().replace(/^W\//, '').replace(/^"(.*)"$/, '$1')
+  if (!raw || raw === '*' || !/^\d+$/.test(raw)) return undefined
+  return Number(raw)
 }
 
 const SIZES: Record<string, { cpu: number; memoryGb: number }> = { small: { cpu: 2, memoryGb: 8 }, medium: { cpu: 4, memoryGb: 16 }, large: { cpu: 8, memoryGb: 32 }, xlarge: { cpu: 16, memoryGb: 64 } }
@@ -248,7 +305,7 @@ export function attributesOf(rt: ResourceType, input: Record<string, unknown>, o
 }
 
 /** The registered resources an input refers to through its x-resource fields. */
-function referencedResources(data: MockData, schema: Schema | undefined, input: Record<string, unknown>): Resource[] {
+export function referencedResources(data: MockData, schema: Schema | undefined, input: Record<string, unknown>): Resource[] {
   const out: Resource[] = []
   for (const [name, prop] of Object.entries(schema?.properties ?? {})) {
     const type = prop?.['x-resource']?.type
@@ -299,13 +356,27 @@ export function priceOf(rt: ResourceType, attributes: Record<string, unknown>): 
    Views: resources, jobs, findings, lineage
    ------------------------------------------------------------------------- */
 
-function stateOfResource(data: MockData, rt: ResourceType, r: Resource): ResourceState {
+export function stateOfResource(data: MockData, rt: ResourceType, r: Resource): ResourceState {
   const st = data.console
   const flight = st?.inFlight.find((f) => f.resourceId === r.id)
   if (flight) return flight.effect === 'create' ? 'pending' : flight.effect === 'delete' ? 'deleting' : 'updating'
   const last = lastJobOf(data, r)
-  if (last && last.status === 'failed' && st?.jobs[last.id]?.verb === 'create') return 'failed'
+  const verb = last ? st?.jobs[last.id]?.verb : undefined
+  // a batch's row runs on the resource as its own job
+  if (last && OPEN.has(last.status) && st?.jobs[last.id]?.parentId) return verb === 'create' ? 'pending' : verb === 'delete' ? 'deleting' : 'updating'
+  if (last && ENDED_BADLY.has(last.status) && verb === 'create') return 'failed'
   return stateOf(r, rt)
+}
+
+/** The ends of a job that did not do what it was asked: what a retry runs again. */
+export const ENDED_BADLY = new Set(['failed', 'cancelled', 'rolled-back'])
+
+/** A request running on the resource: one in flight, or a batch's row. */
+export function busyOn(data: MockData, r: Resource): boolean {
+  const st = data.console
+  if (st?.inFlight.some((f) => f.resourceId === r.id)) return true
+  const last = lastJobOf(data, r)
+  return !!last && OPEN.has(last.status)
 }
 
 function lastJobOf(data: MockData, r: Resource): JobSummary | undefined {
@@ -314,9 +385,71 @@ function lastJobOf(data: MockData, r: Resource): JobSummary | undefined {
   return data.jobs.find((j) => st.jobs[j.id] && st.jobs[j.id].resourceId === r.id)
 }
 
-function refOf(data: MockData, s: RouteContext['session'], r: Resource): ResourceRef {
+export function refOf(data: MockData, s: RouteContext['session'], r: Resource): ResourceRef {
   const rt = typeOf(data, r.type)
   return { wfrn: rt ? wfrnOfResource(data, s, rt, r) : (r.wfrn ?? r.id), type: r.type, name: r.name ?? r.id, state: rt ? stateOfResource(data, rt, r) : undefined }
+}
+
+/** A resource that is not deleted (a tombstone depends on nothing and nothing depends on it). */
+function isLive(data: MockData, r: Resource): boolean {
+  const rt = typeOf(data, r.type)
+  return !rt || classOf(rt, r.status) !== 'deleted'
+}
+
+/** The live resources built from this one, one hop away. */
+export function liveDependentsOf(data: MockData, r: Resource): Resource[] {
+  return data.resources.filter((x) => x.builtFrom?.includes(r.id) && isLive(data, x))
+}
+
+/** The most dependents the walk names before it stops (the BFF's limit). */
+export const BLAST_RADIUS_LIMIT = 500
+
+/**
+ * What depends on the roots within `depth` hops (BFF BlastRadius): every account counted, only
+ * the session's account named, nearest first; a dependent the roots share is counted once, and
+ * an edge is shown only between resources the session may see.
+ */
+export function blastRadiusOf(data: MockData, s: RouteContext['session'], roots: Resource[], depth = 3): BlastRadius {
+  const accounts = accountIdsOf(data)
+  const accountOf = (x: Resource) => accountOfResource(x, accounts)
+  const rootIds = new Set(roots.map((r) => r.id))
+  const depthOf = new Map<string, number>()
+  const found: Resource[] = []
+  const links: { from: Resource; to: Resource }[] = []
+  let truncated = false
+  let frontier = roots
+  for (let d = 1; d <= depth && frontier.length > 0 && !truncated; d++) {
+    const next: Resource[] = []
+    for (const parent of frontier) {
+      for (const x of liveDependentsOf(data, parent)) {
+        links.push({ from: parent, to: x })
+        if (rootIds.has(x.id) || depthOf.has(x.id)) continue
+        if (found.length >= BLAST_RADIUS_LIMIT) {
+          truncated = true
+          break
+        }
+        depthOf.set(x.id, d)
+        found.push(x)
+        next.push(x)
+      }
+    }
+    frontier = next
+  }
+  const counts = new Map<string, number>()
+  for (const x of found) counts.set(accountOf(x), (counts.get(accountOf(x)) ?? 0) + 1)
+  const visible = (x: Resource) => accountOf(x) === s.accountId
+  const named = found.filter(visible).sort((a, b) => (depthOf.get(a.id) ?? 0) - (depthOf.get(b.id) ?? 0) || (a.name ?? a.id).localeCompare(b.name ?? b.id))
+  const wfrnOf = (x: Resource) => refOf(data, s, x).wfrn
+  return {
+    resource: roots.length === 1 ? refOf(data, s, roots[0]) : undefined,
+    total: found.length,
+    direct: found.filter((x) => depthOf.get(x.id) === 1).length,
+    byAccount: [...counts].map(([accountId, count]) => ({ accountId, count, current: accountId === s.accountId })).sort((a, b) => Number(b.current) - Number(a.current) || b.count - a.count),
+    dependents: named.map((x): Dependent => ({ ...refOf(data, s, x), id: x.id, depth: depthOf.get(x.id) })),
+    edges: links.filter((l) => visible(l.from) && visible(l.to)).map((l) => ({ from: wfrnOf(l.from), to: wfrnOf(l.to), via: l.to.createdBy?.workflow })),
+    depth,
+    truncated,
+  }
 }
 
 /** How often the drift service compares every resource (the plan's hourly scan). */
@@ -478,20 +611,29 @@ export function previewCreate(data: MockData, s: RouteContext['session'], rt: Re
   }
 }
 
+/**
+ * A verb's preview. A delete or a destructive verb carries its blast radius (what depends on the
+ * resource, every type and account counted), whose named dependents join the affected resources;
+ * a delete with live dependents is denied by `dependents.exist`. An update previews the type's
+ * update workflow with only the fields it changes.
+ */
 export function previewVerb(data: MockData, s: RouteContext['session'], rt: ResourceType, r: Resource, verb: string, entry: CatalogEntry | undefined, input: Record<string, unknown>, _now: number): ConsolePreview {
   const service = serviceOf(rt)
   const provider = providerOf(service)
   const noun = nounOf(rt).toLowerCase()
   const name = r.name ?? r.id
-  const destructive = entry?.destructive ?? verb === 'delete'
-  const dependents = data.resources.filter((x) => x.builtFrom?.includes(r.id) && classOf(rt, x.status) !== 'deleted')
+  const destructive = verb !== 'update' && (entry?.destructive ?? verb === 'delete')
+  const radius = destructive ? blastRadiusOf(data, s, [r]) : undefined
   const steps: PreviewStep[] = [{ id: 'check', name: `Check ${noun} ${name} exists`, effect: 'read', detail: `${provider} ${rt.name}.get` }]
   const needsApproval = destructive || !!(entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) || r.attributes?.environment === 'prod'
   if (needsApproval) steps.push({ id: 'approve', name: 'Wait for an approval', effect: 'none', detail: 'compute-approvers, within 4h' })
   if (verb === 'update') {
-    const changes = Object.entries(input).map(([k, v]) => `${k} ${String(r.attributes?.[k])} → ${String(v)}`)
-    steps.push({ id: 'apply', name: `Resize ${noun} ${name}`, effect: 'change', detail: changes.join(' · ') || 'nothing changes' })
-    steps.push({ id: 'register', name: 'Update the registry', effect: 'change' })
+    const changing = entry ? updateInputsOf(entry, rt).mutable : Object.keys(input)
+    const changes = Object.entries(input)
+      .filter(([k]) => changing.includes(k))
+      .map(([k, v]) => `${k} ${String(r.attributes?.[k])} → ${String(v)}`)
+    steps.push({ id: 'apply', name: `Update ${noun} ${name} in ${provider}`, effect: 'change', detail: changes.join(' · ') || 'nothing changes' })
+    steps.push({ id: 'register', name: 'Record the new attributes', effect: 'change', detail: 'the registry keeps them as the desired state' })
   } else if (verb === 'delete') {
     steps.push({ id: 'apply', name: `Delete ${noun} ${name} in ${provider}`, effect: 'delete', detail: input.keepSnapshotDays !== undefined ? `a snapshot is kept for ${String(input.keepSnapshotDays)} days` : undefined })
     steps.push({ id: 'register', name: `Retire the ${noun} in the registry`, effect: 'delete' })
@@ -501,7 +643,8 @@ export function previewVerb(data: MockData, s: RouteContext['session'], rt: Reso
   }
   const rules: Rule[] = [{ id: 'rbac.role', result: 'pass', message: `Your role allows ${service}:${verb} on this ${noun}` }]
   if (needsApproval) rules.push({ id: destructive ? 'destructive.approval' : 'approval.required', result: 'needs-approval', message: destructive ? `${verb} is destructive: compute-approvers must approve it` : 'This change waits for compute-approvers' })
-  if (verb === 'delete' && dependents.length) rules.push({ id: 'dependents.exist', result: 'deny', message: `${dependents.length} ${dependents.length === 1 ? 'resource is' : 'resources are'} built from this ${noun}; delete them first` })
+  // what is built from it, of every type and in every account, holds a delete back
+  if (verb === 'delete' && radius && radius.direct > 0) rules.push({ id: 'dependents.exist', result: 'deny', message: `${radius.direct} ${radius.direct === 1 ? 'resource is' : 'resources are'} built from this ${noun}; delete them first` })
   const current = priceOf(rt, r.attributes ?? {})
   let cost: ConsolePreview['cost']
   if (verb === 'delete' && current) cost = { monthly: -current.monthly, currency: 'USD', detail: `saved: ${current.detail}` }
@@ -509,15 +652,16 @@ export function previewVerb(data: MockData, s: RouteContext['session'], rt: Reso
     const next = priceOf(rt, { ...r.attributes, ...input })
     if (next) cost = { monthly: next.monthly, currency: 'USD', detail: current && current.monthly !== next.monthly ? `${next.detail}; was ${current.monthly.toFixed(2)} USD` : next.detail }
   }
-  const affected: ResourceRef[] = [refOf(data, s, r), ...(verb === 'delete' ? dependents.map((x) => refOf(data, s, x)) : [])]
-  return { workflow: entry?.workflow ?? `${verb}-${rt.name}`, version: entry?.version ?? '1.0.0', steps, affectedResources: affected, cost, policy: { decision: decide(rules), rules, engine: 'mock' } }
+  const named: ResourceRef[] = (radius?.dependents ?? []).map(({ depth: _depth, ...ref }) => ref)
+  const affected: ResourceRef[] = [refOf(data, s, r), ...named]
+  return { workflow: entry?.workflow ?? `${verb}-${rt.name}`, version: entry?.version ?? '1.0.0', steps, affectedResources: affected, cost, policy: { decision: decide(rules), rules, engine: 'mock' }, blastRadius: radius }
 }
 
 /* ----------------------------------------------------------------------------
    Commands: run once, journaled, replayed
    ------------------------------------------------------------------------- */
 
-function pushEvent(data: MockData, type: string, at: number, actor: string, job: JobSummary | undefined, r: Resource | undefined) {
+export function pushEvent(data: MockData, type: string, at: number, actor: string, job: JobSummary | undefined, r: Resource | undefined) {
   const seq = (data.events[data.events.length - 1]?.seq ?? 0) + 1
   const event: PlatformEvent = {
     specVersion: '1.0',
@@ -536,21 +680,24 @@ function pushEvent(data: MockData, type: string, at: number, actor: string, job:
   data.events.push(event)
 }
 
-function approvalFor(extra: ConsoleJobExtra, at: number): CommandAccepted['approval'] {
-  const approval = { approvalId: `apr_${idFrom(extra.consoleRequestId, 8)}`, group: 'compute-approvers', status: 'pending', timeout: '4h' }
-  extra.approvals.push({ approvalId: approval.approvalId, group: approval.group, status: 'pending' })
-  void at
+/** Opens the approval a job waits on, for the account's approver group, named after the request (or the job, for a batch's row). */
+export function approvalFor(data: MockData, accountId: string, extra: ConsoleJobExtra, at: number, seed = extra.consoleRequestId): CommandAccepted['approval'] {
+  const approval = { approvalId: `apr_${idFrom(seed, 8)}`, group: approverGroupOf(data, accountId), status: 'pending', timeout: '4h' }
+  extra.approvals.push({ approvalId: approval.approvalId, group: approval.group, status: 'pending', requestedAt: iso(at) })
   return approval
 }
 
 /** The modules that own a namespaced command kind, by its prefix: they apply it when it runs and when the journal replays it. */
 const MODULE_COMMANDS: Record<string, (data: MockData, cmd: ConsoleCommand) => RouteAnswer> = {
-  group: applyTagCommand,
-  tags: applyTagCommand,
-  drift: applyDriftCommand,
-  unmanaged: applyDriftCommand,
-  alarm: applyMonitoringCommand,
-  recommendation: applyMonitoringCommand,
+  // called through, since the modules import this one and may not have loaded when it does
+  group: (data, cmd) => applyTagCommand(data, cmd),
+  tags: (data, cmd) => applyTagCommand(data, cmd),
+  drift: (data, cmd) => applyDriftCommand(data, cmd),
+  unmanaged: (data, cmd) => applyDriftCommand(data, cmd),
+  alarm: (data, cmd) => applyMonitoringCommand(data, cmd),
+  recommendation: (data, cmd) => applyMonitoringCommand(data, cmd),
+  job: (data, cmd) => applyJobCommand(data, cmd),
+  batch: (data, cmd) => applyJobCommand(data, cmd),
 }
 
 /**
@@ -577,14 +724,21 @@ export function journaled(data: MockData, ctx: Pick<RouteContext, 'body' | 'head
   return answer
 }
 
-/** Runs a journaled command against the dataset. Authorization and validation happened before it was journaled. */
+/**
+ * Runs a journaled command against the dataset. Authorization and validation happened before it
+ * was journaled. The world first moves to the command's time, so a replay sees every job where
+ * it was when the command first ran.
+ */
 export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
   const st = (data.console ??= emptyConsoleState())
+  settleConsole(data, cmd.at)
   const dot = cmd.kind.indexOf('.')
   if (dot > 0) {
     const owner = MODULE_COMMANDS[cmd.kind.slice(0, dot)]
     return owner ? owner(data, cmd) : { status: 404, body: { error: `No command ${cmd.kind}` } }
   }
+  // a cancel journaled before the job module owned it replays as the module's own
+  if (cmd.kind === 'cancel') return applyJobCommand(data, { ...cmd, kind: 'job.cancel' })
   const rt = typeOf(data, cmd.type)
   if (!rt) return { status: 404, body: { error: `No type ${cmd.type}` } }
   const service = serviceOf(rt)
@@ -627,13 +781,13 @@ export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
     data.jobs.unshift(job)
     const extra: ConsoleJobExtra = { type: rt.name, verb: 'create', wfrn, resourceId, consoleRequestId: requestId, input, reason: body.reason, labels: body.labels, approvals: [] }
     st.jobs[jobId] = extra
-    const needsApproval = input.environment === 'prod'
+    const needsApproval = needsApprovalOf(entry, 'create', input)
     let approval: CommandAccepted['approval']
     if (needsApproval) {
       job.status = 'waiting-approval'
-      approval = approvalFor(extra, at)
+      approval = approvalFor(data, cmd.accountId, extra, at)
     }
-    st.inFlight.push({ jobId, resourceId, effect: 'create', stage: needsApproval ? 'approval' : 'running', approvalAt: needsApproval ? at + APPROVAL_MS : undefined, dueAt: at + (needsApproval ? APPROVAL_MS : 0) + RUN_MS, fail: /fail/i.test(name), settledState: stateFor(rt, 'active') ?? 'ready' })
+    st.inFlight.push({ jobId, resourceId, effect: 'create', stage: needsApproval ? 'approval' : 'running', approvalAt: needsApproval ? at + APPROVAL_MS : undefined, dueAt: at + (needsApproval ? APPROVAL_MS : 0) + RUN_MS, fail: failsOn('create', input, name, true), settledState: stateFor(rt, 'active') ?? 'ready' })
     pushEvent(data, 'job.started', at, cmd.userId, job, r)
     const accepted: CommandAccepted = { wfrn, jobId, requestId, approval }
     return { status: 202, body: accepted }
@@ -650,37 +804,16 @@ export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
     return { status: 200, body: tags }
   }
 
-  if (cmd.kind === 'cancel') {
-    const job = data.jobs.find((j) => j.id === cmd.ids.jobId)
-    if (!job) return { status: 404, body: { error: `No request ${cmd.ids.jobId}` } }
-    job.status = 'cancelled'
-    job.endedAt = iso(at)
-    job.durationMs = Math.max(0, at - Date.parse(job.startedAt))
-    const flight = st.inFlight.find((f) => f.jobId === job.id)
-    st.inFlight = st.inFlight.filter((f) => f.jobId !== job.id)
-    if (flight?.effect === 'create' && flight.resourceId) {
-      const failed = stateFor(rt, 'failed')
-      const target = data.resources.find((x) => x.id === flight.resourceId)
-      if (target) {
-        if (failed) target.status = failed
-        else data.resources = data.resources.filter((x) => x.id !== flight.resourceId)
-      }
-    }
-    pushEvent(data, 'job.finished', at, cmd.userId, job, r)
-    return { status: 202, body: { jobId: job.id, status: job.status } }
-  }
-
   cmd.ids = { ...cmd.ids, jobId, requestId }
   const verb = cmd.kind === 'update' ? 'update' : (cmd.verb ?? 'change')
   const entry = cmd.kind === 'verb' ? verbEntryOf(data, rt, verb) : undefined
-  const destructive = entry?.destructive ?? verb === 'delete'
-  const needsApproval = destructive || !!(entry?.approval && (typeof entry.approval === 'boolean' ? entry.approval : entry.approval.required)) || r.attributes?.environment === 'prod'
+  const needsApproval = needsApprovalOf(entry, verb, r.attributes)
   const title = cmd.kind === 'update' ? `Update ${noun.toLowerCase()} ${r.name ?? r.id}` : `${entry?.title ?? `${verb.charAt(0).toUpperCase()}${verb.slice(1)} ${noun.toLowerCase()}`} ${r.name ?? r.id}`
   const job = newJob(entry?.workflow ?? `${verb}-${rt.name}`, entry?.version ?? '1.0.0', title, wfrn, needsApproval ? 'waiting-approval' : 'running')
   data.jobs.unshift(job)
   const extra: ConsoleJobExtra = { type: rt.name, verb, wfrn, resourceId: r.id, consoleRequestId: requestId, input, reason: body.reason, labels: body.labels, approvals: [] }
   st.jobs[jobId] = extra
-  const approval = needsApproval ? approvalFor(extra, at) : undefined
+  const approval = needsApproval ? approvalFor(data, cmd.accountId, extra, at) : undefined
   const effect: InFlight['effect'] = cmd.kind === 'update' ? 'update' : verb === 'delete' ? 'delete' : 'change'
   st.inFlight.push({
     jobId,
@@ -690,7 +823,7 @@ export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
     approvalAt: needsApproval ? at + APPROVAL_MS : undefined,
     dueAt: at + (needsApproval ? APPROVAL_MS : 0) + RUN_MS,
     patch: cmd.kind === 'update' ? input : undefined,
-    fail: typeof input.reason === 'string' && /fail/i.test(input.reason),
+    fail: failsOn(effect, input, r.name, true),
     settledState: effect === 'delete' ? (stateFor(rt, 'deleted') ?? 'retired') : undefined,
   })
   r.updatedAt = iso(at)
@@ -699,10 +832,25 @@ export function applyCommand(data: MockData, cmd: ConsoleCommand): RouteAnswer {
   return { status: 202, body: accepted }
 }
 
-/** Moves every job whose time has come: approvals land, applies finish, resources settle. */
+/**
+ * Whether the mock's apply fails, so the demo can show a failure and its fix: a create whose name
+ * asks for it fails on its first run only (a retry goes through), any other verb while its
+ * `reason` input asks for it (a retry goes through once the fix changes the reason).
+ */
+export function failsOn(effect: InFlight['effect'], input: Record<string, unknown>, name: string | undefined, firstRun: boolean): boolean {
+  if (effect === 'create') return firstRun && !!name && /fail/i.test(name)
+  return typeof input.reason === 'string' && /fail/i.test(input.reason)
+}
+
+/** A failed step's choices (hub decision 24): a create cannot go on past its own apply, anything else may. */
+export function attentionOptionsOf(effect: InFlight['effect']): ('retry' | 'skip' | 'abort')[] {
+  return effect === 'create' ? ['retry', 'abort'] : ['retry', 'skip', 'abort']
+}
+
+/** Moves every job whose time has come: approvals land, applies finish or pause on a failure, resources settle, batches roll out. */
 export function settleConsole(data: MockData, now: number) {
   const st = data.console
-  if (!st || st.inFlight.length === 0) return
+  if (!st) return
   for (const f of [...st.inFlight]) {
     const job = data.jobs.find((j) => j.id === f.jobId)
     const extra = st.jobs[f.jobId]
@@ -710,6 +858,8 @@ export function settleConsole(data: MockData, now: number) {
       st.inFlight = st.inFlight.filter((x) => x !== f)
       continue
     }
+    // a paused step waits for a person, whatever the clock says
+    if (f.stage === 'attention') continue
     const rt = typeOf(data, extra.type)
     const r = f.resourceId ? data.resources.find((x) => x.id === f.resourceId) : undefined
     if (f.stage === 'approval') {
@@ -717,20 +867,26 @@ export function settleConsole(data: MockData, now: number) {
       f.stage = 'running'
       job.status = 'running'
       const pending = extra.approvals.find((a) => a.status === 'pending')
-      if (pending) Object.assign(pending, { status: 'approved', decidedBy: MOCK_APPROVER, decidedAt: iso(f.approvalAt) })
+      if (pending) Object.assign(pending, { status: 'approved', decidedBy: `approver:${pending.group}`, decidedAt: iso(f.approvalAt) })
     }
     if (now < f.dueAt) continue
     const endedAt = f.dueAt
-    if (f.fail) {
-      job.status = 'failed'
+    const skippedApply = !!f.skipped?.includes('apply')
+    if (f.fail && !skippedApply) {
+      // the step failed: the job pauses on it until someone retries, skips or aborts it
+      f.stage = 'attention'
+      job.status = 'needs-attention'
       job.failedStep = 'apply'
       job.errorClass = 'provider'
-      if (r && rt && f.effect === 'create') {
-        const failed = stateFor(rt, 'failed')
-        if (failed) r.status = failed
-      }
-    } else {
-      job.status = 'succeeded'
+      extra.attention = { step: 'apply', options: attentionOptionsOf(f.effect), since: iso(endedAt) }
+      pushEvent(data, 'job.attention', endedAt, job.requester, job, r)
+      continue
+    }
+    job.status = 'succeeded'
+    job.failedStep = undefined
+    job.errorClass = undefined
+    if (skippedApply) extra.output = { skipped: f.skipped }
+    else {
       if (r && rt) {
         if (f.effect === 'create') {
           r.status = f.settledState ?? r.status
@@ -746,14 +902,15 @@ export function settleConsole(data: MockData, now: number) {
           extra.output = { [`${rt.name}Name`]: r.name ?? r.id, ok: true }
         }
         r.updatedAt = iso(endedAt)
-      }
+      } else extra.output = { ok: true }
     }
     job.endedAt = iso(endedAt)
     job.durationMs = Math.max(0, endedAt - Date.parse(job.startedAt))
     pushEvent(data, 'job.finished', endedAt, job.requester, job, r)
-    if (!f.fail && f.effect === 'create' && r) pushEvent(data, 'resource.registered', endedAt, job.requester, job, r)
+    if (!skippedApply && f.effect === 'create' && r) pushEvent(data, 'resource.registered', endedAt, job.requester, job, r)
     st.inFlight = st.inFlight.filter((x) => x !== f)
   }
+  settleBatches(data, now)
 }
 
 /** Replays a saved journal onto a fresh dataset, then settles everything whose time has passed. */
@@ -771,7 +928,7 @@ export function replayConsole(data: MockData, journal: ConsoleCommand[], now: nu
    ------------------------------------------------------------------------- */
 
 const VERB = /^[a-z][a-z0-9-]{0,31}$/
-const OPEN = new Set(['queued', 'running', 'waiting-approval', 'needs-attention'])
+export const OPEN = new Set(['queued', 'running', 'waiting-approval', 'needs-attention'])
 
 function tagProblems(body: unknown): Problem[] {
   if (!isRecord(body)) return [{ level: 'error', code: 'type', field: '/tags', message: 'Tags are an object of strings' }]
@@ -793,10 +950,6 @@ function policyDenied(preview: ConsolePreview): RouteAnswer | null {
   return { status: 409, body: { error: 'policy.denied', detail: rules.map((r) => r.message).join('; ') || 'Policy refuses this run', problems: rules.map((r) => ({ level: 'error' as const, code: r.id, message: r.message })), policy: preview.policy } }
 }
 
-function cancelDenial(): Denial {
-  return { layer: 'console-iam', action: 'platform:cancel', reason: 'Only the requester or an admin of the account can cancel a request', requestable: false }
-}
-
 export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, params: URLSearchParams, method: string): RouteAnswer | null {
   const st = (data.console ??= emptyConsoleState())
   const s = ctx.session
@@ -807,55 +960,13 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
   /** journals a command and answers it, remembering the answer under its Idempotency-Key */
   const run = (cmd: ConsoleCommand): RouteAnswer => journaled(data, ctx, cmd)
 
-  /* jobs */
-  if (path === '/console/v1/jobs' && method === 'GET') {
-    let jobs = data.jobs.filter((j) => !j.accountId || j.accountId === s.accountId)
-    for (const key of ['status', 'workflow', 'requester'] as const) {
-      const want = params.get(key)
-      if (want) jobs = jobs.filter((j) => j[key] === want)
-    }
-    const wfrn = params.get('wfrn')
-    if (wfrn) jobs = jobs.filter((j) => j.wfrn === wfrn || st.jobs[j.id]?.wfrn === wfrn)
-    return pageOf(jobs.map(toBffJob), params)
-  }
-  let m = /^\/console\/v1\/jobs\/([^/:]+)(?::(cancel))?$/.exec(path)
-  if (m) {
-    const jobId = decodeURIComponent(m[1])
-    const job = data.jobs.find((j) => j.id === jobId)
-    if (!job) return { status: 404, body: { error: `No request ${jobId}` } }
-    if (job.accountId && job.accountId !== s.accountId) return { status: 404, body: { error: `No request ${jobId} in this account` } }
-    const extra = st.jobs[jobId]
-    if (method === 'GET' && !m[2]) {
-      const open = OPEN.has(job.status)
-      // the requester and the account's admins may cancel; everyone else sees no Cancel
-      const mayCancel = job.requester === s.userId || rolesOf(data.directory, s.accountId, s.userId).includes(ADMIN_ROLE)
-      const detail: BffJobDetail = {
-        ...toBffJob(job),
-        input: extra?.input ?? { requestedBy: job.requester, channel: job.channel },
-        output: extra?.output,
-        approvals: extra?.approvals,
-        can: { cancel: open && mayCancel, retry: job.status === 'needs-attention', skip: job.status === 'needs-attention', abort: job.status === 'needs-attention', rerun: !open },
-      }
-      return { status: 200, body: detail }
-    }
-    if (method === 'POST' && m[2] === 'cancel') {
-      if (!OPEN.has(job.status)) return { status: 409, body: { error: 'job.not-open', detail: `Request ${jobId} is ${job.status}; only a queued, running or waiting request can be cancelled` } }
-      const admin = rolesOf(data.directory, s.accountId, s.userId).includes(ADMIN_ROLE)
-      if (job.requester !== s.userId && !admin) return { status: 403, body: { error: 'Only the requester or an admin can cancel this request', denied: cancelDenial(), correlationId: correlation() } }
-      const type = extra?.type ?? data.resourceTypes.find((t) => job.wfrn?.includes(`:${t.name}/`))?.name ?? data.resourceTypes[0].name
-      return run({ at: now, kind: 'cancel', userId: s.userId, accountId: s.accountId, region: s.region, type, wfrn: job.wfrn ?? extra?.wfrn, body: null, ids: { jobId } })
-    }
-    return null
-  }
-
   /* creates and their previews; the list, counts and search are the rows module's (./resources, via the server) */
-  m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})(?::(preview|batch))?$/.exec(path)
+  let m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})(?::(preview))?$/.exec(path)
   if (m) {
     const rt = typeOf(data, m[1])
     if (!rt) return { status: 404, body: { error: `No resource type ${m[1]}` } }
     const service = serviceOf(rt)
     const pattern = wfrnPatternOf(data, s, rt)
-    if (m[2] === 'batch') return { status: 501, body: { error: 'batch.not-implemented', detail: 'Bulk runs arrive with the bulk work package; run the verb on one resource at a time for now' } }
     if (method !== 'POST') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
     const d = can(`${service}:create`, pattern)
     if (!d.allowed) return refused(d, correlation())
@@ -875,7 +986,7 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
     return run({ at: now, kind: 'create', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, body: ctx.body, ids: {} })
   }
 
-  m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})\/([^/:]+)(?::([a-z][a-z0-9-]{0,31}))?(?::(preview))?(?:\/(activity|drift|lineage|tags))?$/.exec(path)
+  m = /^\/console\/v1\/r\/([a-z0-9-]{1,64})\/([^/:]+)(?::([a-z][a-z0-9-]{0,31}))?(?::(preview))?(?:\/(activity|drift|lineage|tags|blast-radius))?$/.exec(path)
   if (m) {
     const rt = typeOf(data, m[1])
     if (!rt) return { status: 404, body: { error: `No resource type ${m[1]}` } }
@@ -898,17 +1009,30 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
         return { status: 200, body: toConsoleResourceDetail(data, s, rt, r, now, can) }
       }
       if (method === 'PATCH') {
+        // the type's update verb (P-08): its workflow's mutable fields and operational inputs, nothing else
         const d = can(`${service}:update`, wfrn)
         if (!d.allowed) return refused(d, correlation())
-        const schema = updateSchemaOf(rt)
+        const entry = verbEntryOf(data, rt, 'update')
+        if (!entry) return { status: 404, body: { error: 'verb.unknown', detail: `No workflow updates ${rt.plural}: editing is not offered by this provider` } }
         const input = ctx.body.input
         if (!isRecord(input)) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'The body needs an `input` object with the fields to change' }])
-        const immutable = Object.keys(input).filter((k) => !(k in (schema.properties ?? {})))
-        if (immutable.length) return problems400(immutable.map((k) => ({ level: 'error' as const, code: 'immutable', field: `/input/${k}`, message: `${k} was set when the ${noun} was created and cannot be changed` })))
-        if (Object.keys(input).length === 0) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'Name at least one field to change' }])
-        const problems = validateAgainst(schema, input).filter((p) => p.level === 'error')
+        const allowed = updateInputsOf(entry, rt)
+        const immutable = immutableProblems(input, allowed, noun)
+        if (immutable.length) return problems400(immutable)
+        if (!Object.keys(input).some((k) => allowed.mutable.includes(k))) return problems400([{ level: 'error', code: 'required', field: '/input', message: 'Name at least one field to change' }])
+        const problems = validateAgainst(inputSchemaOf(entry, subjectFieldOf(entry, rt)), input).filter((p) => p.level === 'error')
         if (problems.length) return problems400(problems)
-        return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: ctx.body, ids: {} })
+        if (typeof ctx.body.reason === 'string' && ctx.body.reason.length > 1000) return problems400([{ level: 'error', code: 'maxLength', field: '/reason', message: 'The reason is longer than 1000 characters' }])
+        if (busyOn(data, r)) return { status: 409, body: { error: 'resource.busy', detail: `A request is already changing this ${noun}; wait for it to finish` } }
+        const current = toConsoleResource(data, s, rt, r, now)
+        // as the BFF's ConflictException renders: the error in words, the detail the client acts on
+        if (current.state !== 'active' && current.state !== 'failed') return { status: 409, body: { error: `the resource is ${current.state}; it changes only while active or failed`, detail: { state: current.state } } }
+        const held = ifMatchVersion(ctx.headers['if-match'])
+        if (held !== undefined && held !== current.version) return { status: 409, body: { error: `the resource moved on to version ${current.version}`, detail: { version: current.version } } }
+        // the job writes the mutable fields as the new desired state; an operational reason travels with the request
+        const changes = Object.fromEntries(Object.entries(input).filter(([k]) => allowed.mutable.includes(k)))
+        const reason = typeof ctx.body.reason === 'string' ? ctx.body.reason : typeof input.reason === 'string' ? input.reason : undefined
+        return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: { ...ctx.body, input: changes, ...(reason ? { reason } : {}) }, ids: {} })
       }
       return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
     }
@@ -929,6 +1053,12 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
       const d = can(`${service}:get`, wfrn)
       if (!d.allowed) return refused(d, correlation())
       if (sub === 'drift') return { status: 200, body: { items: [...findingsOf(data, s, rt, r, now), ...closedFindingsOf(data, s, rt, r, now)] } }
+      if (sub === 'blast-radius') {
+        const raw = params.get('depth')
+        const depth = raw === null || raw === '' ? 3 : Number(raw)
+        if (!Number.isInteger(depth) || depth < 1 || depth > 5) return problems400([{ level: 'error', code: 'depth.range', field: '/depth', message: 'The depth is a whole number from 1 to 5' }])
+        return { status: 200, body: blastRadiusOf(data, s, [r], depth) }
+      }
       if (sub === 'lineage') {
         const byId = new Map(data.resources.map((x) => [x.id, x]))
         const builtFrom = (r.builtFrom ?? []).map((id) => byId.get(id)).filter((x): x is Resource => !!x)
@@ -955,29 +1085,38 @@ export function resourceRoutes(data: MockData, ctx: RouteContext, path: string, 
     /* a verb on this resource */
     if (!verb || !VERB.test(verb) || verb === 'create') return { status: 404, body: { error: 'verb.unknown', detail: `No verb ${verb ?? ''} on ${rt.plural}` } }
     if (method !== 'POST') return { status: 405, body: { error: `${method} is not allowed on ${path}` } }
-    const entry = verb === 'update' ? undefined : verbEntryOf(data, rt, verb)
-    if (!entry && verb !== 'update' && verb !== 'delete') return { status: 404, body: { error: 'verb.unknown', detail: `No workflow runs ${verb} on ${rt.plural}` } }
+    const entry = verbEntryOf(data, rt, verb)
+    if (verb === 'update' && !entry) return { status: 404, body: { error: 'verb.unknown', detail: `No workflow updates ${rt.plural}: editing is not offered by this provider` } }
+    // an update runs through PATCH on the resource; only its preview is a verb route (P-08)
+    if (verb === 'update' && !preview) return { status: 404, body: { error: 'verb.unknown', detail: `An update runs as PATCH /console/v1/r/${rt.name}/{wfrn}; preview it with :update:preview` } }
+    if (!entry && verb !== 'delete') return { status: 404, body: { error: 'verb.unknown', detail: `No workflow runs ${verb} on ${rt.plural}` } }
     const d = can(`${service}:${verb}`, wfrn)
     if (!d.allowed) return refused(d, correlation())
     if (classOf(rt, r.status) === 'deleted') return { status: 409, body: { error: 'resource.deleted', detail: `This ${noun} is already deleted` } }
     const subject = entry ? subjectFieldOf(entry, rt) : undefined
-    const schema = verb === 'update' ? updateSchemaOf(rt) : entry ? inputSchemaOf(entry, subject) : { type: 'object', properties: { reason: { type: 'string', title: 'Reason' } } }
+    const schema = entry ? inputSchemaOf(entry, subject) : { type: 'object', properties: { reason: { type: 'string', title: 'Reason' } } }
     const rawInput = ctx.body.input
     const input = isRecord(rawInput) ? { ...rawInput } : {}
     if (subject) delete input[subject]
+    if (verb === 'update' && entry) {
+      const immutable = immutableProblems(input, updateInputsOf(entry, rt), noun)
+      if (immutable.length) return problems400(immutable)
+    }
     const problems = validateAgainst(schema, input).filter((p) => p.level === 'error')
     if (problems.length) return problems400(problems)
     const judged = previewVerb(data, s, rt, r, verb, entry, input, now)
     if (preview) return { status: 200, body: judged }
-    // a delete with live dependents is refused by name, the way the BFF answers it (409 with them)
+    // a delete with live dependents is refused by name, the way the BFF answers it: 409 with what the walk found
     const blocked = judged.policy.rules?.find((x) => x.id === 'dependents.exist' && x.result === 'deny')
-    if (blocked) return { status: 409, body: { error: 'dependents.exist', detail: { dependents: judged.affectedResources.filter((x) => x.wfrn !== wfrn) }, problems: [{ level: 'error' as const, code: 'dependents.exist', message: blocked.message }] } }
+    if (blocked) {
+      const radius = judged.blastRadius ?? blastRadiusOf(data, s, [r])
+      return { status: 409, body: { error: 'dependents.exist', message: blocked.message, problems: [{ level: 'error' as const, code: 'dependents.exist', message: blocked.message }], correlationId: correlation(), detail: { dependents: radius.dependents, total: radius.total, byAccount: radius.byAccount } } }
+    }
     const denied = policyDenied(judged)
     if (denied) return denied
     const destructive = entry?.destructive ?? verb === 'delete'
     if (destructive && ctx.body.confirm !== true) return problems400([{ level: 'error', code: 'confirm.required', field: '/confirm', message: `${entry?.title ?? verb} is destructive: send confirm: true to run it` }])
-    if (st.inFlight.some((f) => f.resourceId === r.id)) return { status: 409, body: { error: 'resource.busy', detail: `A request is already changing this ${noun}; wait for it to finish` } }
-    if (verb === 'update') return run({ at: now, kind: 'update', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, body: { ...ctx.body, input }, ids: {} })
+    if (busyOn(data, r)) return { status: 409, body: { error: 'resource.busy', detail: `A request is already changing this ${noun}; wait for it to finish` } }
     return run({ at: now, kind: 'verb', userId: s.userId, accountId: s.accountId, region: s.region, type: rt.name, wfrn, verb, body: { ...ctx.body, input: subject ? { ...input, [subject]: r.id } : input }, ids: {} })
   }
 

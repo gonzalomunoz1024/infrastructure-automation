@@ -3,9 +3,9 @@ import { Button, EmptyState, Icon, JsonView, SkeletonRows } from '@iaf/ui'
 import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, StatusBadge, When, formatField, formatValue, formatValueText, groupFields, mutableFields, titleCase, xConsoleOf } from '@iaf/console-kit'
 import { useConsole } from '../../app/console'
 import { ExplainedError } from '../../app/commands'
-import { LaterButton, PHASES } from '../../app/Phase'
-import { useRefusal } from '../../app/Refusal'
-import { Link, pathFor } from '../../app/router'
+import { LaterButton } from '../../app/Phase'
+import { ActionButton, useRefusal } from '../../app/Refusal'
+import { Link, navigate, pathFor, useRoute } from '../../app/router'
 import { api, isApiError } from '../../lib/api'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor } from '../../lib/code'
@@ -13,6 +13,8 @@ import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
 import type { ActivityEntry, ConsoleResourceDetail, Finding, Resource, Schema } from '../../lib/types'
+import { EDIT_NOT_OFFERED, editWaitNote } from './EditDrawer'
+import { HeldButton } from './HeldButton'
 import { MonitoringTab } from './MonitoringTab'
 
 /*
@@ -127,6 +129,46 @@ function useOpenFindings(type: ConsoleType, wfrn: string, detail: ConsoleResourc
   return { open, loading: ask && list.loading, error: ask ? list.error : undefined, refetch: list.refetch }
 }
 
+/**
+ * The Configuration tab's Edit: the Actions menu's Edit configuration as a link (`?action=edit`),
+ * under the same decision; it waits while a request is in flight, and a type whose provider
+ * publishes no update workflow says so instead.
+ */
+function EditButton({ type, detail }: { type: ConsoleType; detail: ConsoleResourceDetail | undefined }) {
+  const { decide } = useConsole()
+  const route = useRoute()
+  const noun = singularOf(type.title).toLowerCase()
+  if (!type.update) {
+    return (
+      <HeldButton reason={EDIT_NOT_OFFERED} variant="secondary" size="sm" icon="edit" verb="update">
+        Edit
+      </HeldButton>
+    )
+  }
+  const decision = decide(type, 'update')
+  if (!decision.allowed) {
+    return (
+      <ActionButton decision={decision} what={`Edit this ${noun}`} verb="update" size="sm" icon="edit">
+        Edit
+      </ActionButton>
+    )
+  }
+  const wait = editWaitNote(detail, noun)
+  if (wait) {
+    return (
+      <HeldButton reason={wait} variant="secondary" size="sm" icon="edit" verb="update">
+        Edit
+      </HeldButton>
+    )
+  }
+  return (
+    <Link to={pathFor('resource', route.params, { ...route.query, action: 'edit' }, { accountId: route.accountId })} replace data-verb="update" className="inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-surface-secondary px-3 py-1.5 text-caption font-medium text-primary transition-all duration-150 hover:bg-stroke-light active:scale-[0.97]">
+      <Icon name="edit" size={13} />
+      Edit
+    </Link>
+  )
+}
+
 function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
   const deleted = isApiError(viewError) && viewError.status === 410
   const props = type.schema.properties ?? {}
@@ -140,7 +182,7 @@ function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
   const groups = [...(ungrouped.length ? [{ group: 'Attributes', names: ungrouped }] : []), ...grouped.filter((g) => g.group !== null)]
   const known = new Set(Object.keys(props))
   const extra = Object.keys(attributes).filter((k) => !known.has(k))
-  const editable = !deleted && mutableFields(type.schema).length > 0
+  const editable = !deleted && (!!type.update || mutableFields(type.schema).length > 0)
   if (groups.length === 0 && extra.length === 0) return <EmptyState compact icon="document" title="No attributes" message="This type has no schema fields and the resource carries no attributes." />
   const value = (name: string, shown: ReactNode) => {
     const d = differs.get(name)
@@ -161,11 +203,7 @@ function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
           key={g.group ?? 'default'}
           title={g.group ?? 'Attributes'}
           actions={
-            i === 0 && editable ? (
-              <LaterButton phase={4} size="sm" icon="edit">
-                Edit
-              </LaterButton>
-            ) : undefined
+            i === 0 && editable ? <EditButton type={type} detail={detail} /> : undefined
           }
         >
           <Facts columns={3} items={g.names.map((name) => ({ label: <FieldLabel name={name} schema={props[name]} />, value: value(name, formatField(type.schema, name, attributes[name])) }))} />
@@ -413,21 +451,25 @@ function PlatformActivity({ resource, wfrn }: { resource: Resource; wfrn: string
 
 /* ---------------------------------------------------------------------------- Tags */
 
-function TagsTab({ detail, viewError }: TabProps) {
+function TagsTab({ type, detail, viewError }: TabProps) {
+  const { decide } = useConsole()
+  const route = useRoute()
   if (!detail) return <ViewMissing viewError={viewError} what="Load the tags of this resource" />
   const tags = Object.entries(detail.tags ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  // the page opens the Tags drawer on `?action=tags`, as its Actions menu does
+  const manage = () => navigate(pathFor('resource', route.params, { ...route.query, action: 'tags' }, { accountId: route.accountId }), { replace: true })
   return (
     <Section
       title="Tags"
       description="Key and value pairs that travel with the resource and its events, for finding, grouping and paying for things together."
       actions={
-        <LaterButton phase={4} size="sm" icon="tag">
+        <ActionButton decision={decide(type, 'update')} what="Manage tags" verb="tag" size="sm" icon="tag" onClick={manage}>
           Manage tags
-        </LaterButton>
+        </ActionButton>
       }
     >
       {tags.length === 0 ? (
-        <EmptyState compact icon="tag" title="No tags yet" message={`Adding and editing tags arrives with ${PHASES[4]}.`} />
+        <EmptyState compact icon="tag" title="No tags yet" message="Add tags with Manage tags: a name and a value each, for finding, grouping and paying for things together." />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-stroke-light">
           <table className="w-full text-left text-sm">
