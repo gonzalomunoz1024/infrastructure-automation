@@ -150,7 +150,7 @@ public class ExecutiveHome {
         Mono<List<Insights.Account>> accounts = Flux.fromIterable(members).flatMapSequential(m -> account(session, m), properties.concurrency())
                 .collectList();
         Mono<Insights.Managed> managed = managed(session, ids, from);
-        Mono<List<RequestRecord>> requests = Flux.fromIterable(members).flatMap(m -> requestsOf(session, m, from, to), Math.min(4, properties.concurrency()))
+        Mono<List<RequestRecord>> requests = Flux.fromIterable(members).flatMap(m -> requestsOf(scopeOf(session, m), from, to), Math.min(4, properties.concurrency()))
                 .collectList().map(lists -> lists.stream().flatMap(List::stream).toList());
         Mono<DriftNumbers> driftNumbers = Flux.fromIterable(members)
                 .flatMap(m -> drift.findStats(scopeOf(session, m), from, to).defaultIfEmpty(DriftNumbers.NONE).onErrorResume(e -> {
@@ -218,23 +218,32 @@ public class ExecutiveHome {
 
     // ---- requests
 
+    /**
+     * One account's console requests started in {@code [from, to]}, read as the account, with no
+     * person's decision: what the weekly digest counts (decision 32.4).
+     */
+    public Mono<List<RequestRecord>> requestsIn(AccountScope scope, Instant from, Instant to) {
+        return requestsOf(scope, from, to);
+    }
+
     /** The account's console requests started in the window, oldest change first, at most {@code max-jobs-per-account}. */
-    private Mono<List<RequestRecord>> requestsOf(Session session, AccountMembership m, Instant from, Instant to) {
+    private Mono<List<RequestRecord>> requestsOf(AccountScope scope, Instant from, Instant to) {
+        String accountId = scope.accountId();
         long fromNanos = from.getEpochSecond() * 1_000_000_000L + from.getNano();
-        JobFilter first = JobFilter.ofAccount(m.accountId()).withUpdatedAfter(fromNanos).withLimit(JOB_PAGE);
+        JobFilter first = JobFilter.ofAccount(accountId).withUpdatedAfter(fromNanos).withLimit(JOB_PAGE);
         int max = properties.maxJobsPerAccount();
-        return clients.forAccount(scopeOf(session, m)).flatMap(p -> p.listJobs(first)
+        return clients.forAccount(scope).flatMap(p -> p.listJobs(first)
                 .expand(page -> page.hasNext() ? p.listJobs(first.withAfter(page.next())) : Mono.empty())
                 .concatMapIterable(PagedList::items)
-                .filter(job -> isRequest(job, m.accountId(), from, to))
+                .filter(job -> isRequest(job, accountId, from, to))
                 .take(max + 1L)
                 .collectList()
                 .flatMap(jobs -> {
                     if (jobs.size() > max) {
-                        log.warn("account {} started more than {} requests since {}: the executive home counts the first {}", m.accountId(), max, from, max);
+                        log.warn("account {} started more than {} requests since {}: the executive home counts the first {}", accountId, max, from, max);
                         jobs = jobs.subList(0, max);
                     }
-                    return Flux.fromIterable(jobs).flatMapSequential(job -> record(p, m.accountId(), job), properties.concurrency()).collectList();
+                    return Flux.fromIterable(jobs).flatMapSequential(job -> record(p, accountId, job), properties.concurrency()).collectList();
                 }));
     }
 

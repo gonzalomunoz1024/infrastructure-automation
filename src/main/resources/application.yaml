@@ -135,6 +135,28 @@ console:
       by-workflow: {}               # the median per workflow where the export tells kinds of request apart, such as create-vm: 5d
   web:
     origins: ["http://localhost:3000"]
+    base-url: http://localhost:3000 # where the web app is: emails and chat messages link to <base-url>/#<console path>
+  notifications:                    # decision 32: the feed, the live stream's notification events, email
+    retention: 90d                  # how long a notification stays in a person's feed
+    max-event-age: 24h              # an event older than this when the BFF sees it notifies no one (a replay after a long outage)
+    people-ttl: 1m                  # how long an account's users and groups (who gets what) are kept between identity changes
+    outbox:                         # emails and chat messages go out through an outbox, retried after 1m, 5m, 30m and 2h, then failed
+      poll: 5s                      # how often a replica looks for deliveries that are due
+      batch: 50                     # the most deliveries one look takes
+      lease: 2m                     # how long a replica holds a delivery while it sends it
+      timeout: 30s                  # how long one send may take
+    email:                          # SMTP; no host means no email channel (the demo profile collects mail under /demo-mail instead)
+      host: ""
+      port: 587
+      from: console@localhost
+      username: ""
+      password: ""                  # injected by the vault, never committed
+      starttls: true
+  digests:                          # decision 32.4: each account's digest of the week before
+    cron: "0 0 6 * * MON"           # when, in UTC
+    scheduled: true                 # whether this replica writes on that schedule; replicas agree per account and week
+    check-every: 10m                # how often a replica looks whether a week is due (a run missed while all were down is caught up)
+    lease: 10m                      # how long a replica holds an account's week while it writes it
   tags:                             # the organization's guardrails: every create through the console names these tags
     account-ttl: 5m                 # how long an account's owning team is kept
     required:

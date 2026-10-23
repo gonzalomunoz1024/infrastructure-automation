@@ -75,6 +75,28 @@ class LiveHubTest {
         assertEquals("5", recent.get(0).event().key(), "a cursor inside the ring needs no resync");
     }
 
+    @Test
+    void aPersonsEventsReachEachOfTheirStreamsWhateverTheAccountAndNoOneElses() {
+        LiveHub hub = new LiveHub(100, () -> NOW);
+        hub.publish("a", event("job.updated", "1"));
+        hub.publishToPerson("user_dana", event(LiveEvent.NOTIFICATION, "n1"));
+        hub.publishToPerson("user_mia", event(LiveEvent.NOTIFICATION, "m1"));
+        List<Sequenced> danaInA = hub.subscribe("a", "user_dana", 0L).take(2).collectList().block(Duration.ofSeconds(2));
+        assertEquals(List.of("1", "n1"), danaInA.stream().map(s -> s.event().key()).toList());
+        assertTrue(danaInA.get(1).personal());
+        StepVerifier.create(hub.subscribe("b", "user_dana", 0L).take(2))
+                .assertNext(s -> assertEquals("n1", s.event().key()))
+                .then(() -> {
+                    hub.publishToPerson("user_mia", event(LiveEvent.NOTIFICATION, "m2"));
+                    hub.publish("a", event("job.updated", "2"));
+                    hub.publishToPerson("user_dana", event(LiveEvent.NOTIFICATION, "n2"));
+                })
+                .assertNext(s -> assertEquals("n2", s.event().key()))
+                .verifyComplete();
+        List<Sequenced> after = hub.subscribe("a", "user_dana", 2L).take(2).collectList().block(Duration.ofSeconds(2));
+        assertEquals(List.of("2", "n2"), after.stream().map(s -> s.event().key()).toList(), "the replay after a cursor holds both rings, in order");
+    }
+
     private static LiveEvent event(String type, String key) {
         return new LiveEvent(type, null, NOW, null, key, null);
     }
