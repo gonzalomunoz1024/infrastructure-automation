@@ -215,6 +215,18 @@ abstract class SearchJourneyTest {
         return n;
     }
 
+    static List<String> keys(JsonNode counts) {
+        List<String> out = new ArrayList<>();
+        counts.path("groups").forEach(g -> out.add(g.path("key").asText(null)));
+        return out;
+    }
+
+    static List<String> texts(JsonNode array) {
+        List<String> out = new ArrayList<>();
+        array.forEach(n -> out.add(n.asText()));
+        return out;
+    }
+
     JsonNode seeded(Consumer<HttpHeaders> who) {
         return await("/v1/search?q=&sort=name", who, p -> names(p).containsAll(List.of("orders", "web-01", "web-02")));
     }
@@ -304,6 +316,115 @@ abstract class SearchJourneyTest {
         assertThat(get("/v1/counts?tag.env=prod&drift=false", dana(), 200).path("total").asLong()).isEqualTo(2);
         get("/v1/counts?state=purple", dana(), 400);
         get("/v1/counts?accountId=" + OTHER_ACCOUNT, dana(), 404);
+    }
+
+    @Test
+    void countsByGroupAndAcrossAccounts() {
+        seeded(dana());
+        await("/v1/search?q=web&accountId=" + OTHER_ACCOUNT, bff(), p -> names(p).contains("web-theirs"));
+        JsonNode byType = get("/v1/counts?groupBy=type", dana(), 200);
+        assertThat(byType.path("total").asLong()).isEqualTo(3);
+        assertThat(keys(byType)).containsExactly("vm", "database");
+        JsonNode vms = byType.path("groups").get(0);
+        assertThat(vms.path("total").asLong()).isEqualTo(2);
+        assertThat(vms.path("byState").path("active").asLong()).isEqualTo(1);
+        assertThat(vms.path("byState").path("failed").asLong()).isEqualTo(1);
+        assertThat(vms.path("byState").path("pending").asLong()).as("every state is there").isZero();
+        assertThat(vms.path("service").asText()).isEqualTo("compute");
+        assertThat(byType.path("groups").get(1).path("service").asText()).isEqualTo("data");
+        JsonNode byEnv = get("/v1/counts?groupBy=tag:env", dana(), 200);
+        assertThat(keys(byEnv)).startsWith("prod", "dev");
+        assertThat(byEnv.path("groups").get(0).path("total").asLong()).isEqualTo(2);
+        assertThat(keys(get("/v1/counts?groupBy=account", dana(), 200))).as("a person's own account").containsExactly(ACCOUNT);
+        JsonNode org = get("/v1/counts?type=vm&groupBy=account&accountId={a}&accountId={b}", bff(), 200, ACCOUNT, OTHER_ACCOUNT);
+        assertThat(org.path("total").asLong()).as("two accounts added up").isEqualTo(3);
+        assertThat(keys(org)).containsExactly(ACCOUNT, OTHER_ACCOUNT);
+        assertThat(org.path("groups").get(1).path("total").asLong()).isEqualTo(1);
+        JsonNode summed = get("/v1/counts?type=vm&accountId={a}&accountId={b}", bff(), 200, ACCOUNT, OTHER_ACCOUNT);
+        assertThat(summed.path("total").asLong()).isEqualTo(3);
+        assertThat(summed.has("groups")).as("no grouping, no groups").isFalse();
+        StringBuilder most = new StringBuilder("/v1/counts?type=vm&accountId=" + ACCOUNT);
+        for (int i = 1; i < 200; i++) {
+            most.append("&accountId=").append(String.format("%012d", i));
+        }
+        assertThat(get(most.toString(), bff(), 200).path("total").asLong()).as("200 accounts fit in one request line").isEqualTo(2);
+        JsonNode tooMany = get(most + "&accountId=999999999999", bff(), 400);
+        assertThat(tooMany.path("problems").toString()).contains("/accountId");
+        get("/v1/counts?accountId={a}&accountId={b}", dana(), 404, ACCOUNT, OTHER_ACCOUNT);
+        get("/v1/counts", bff(), 400);
+        JsonNode bad = get("/v1/counts?groupBy=colour", dana(), 400);
+        assertThat(bad.path("problems").toString()).contains("/groupBy");
+    }
+
+    @Test
+    void createdAndUpdatedNarrowTheList() {
+        seeded(dana());
+        // every seeded resource was created at T0, and updated a second apart from T0 + 1s
+        assertThat(names(get("/v1/search?q={q}&sort=name", dana(), 200, "web created:2026-10-23"))).containsExactly("web-01", "web-02");
+        assertThat(names(get("/v1/search?q={q}", dana(), 200, "web created:<2026-10-23"))).isEmpty();
+        assertThat(names(get("/v1/search?q={q}", dana(), 200, "type:vm updated:>=2026-10-23T02:10:42Z"))).containsExactly("web-02");
+        assertThat(get("/v1/counts?type=vm&q={q}", dana(), 200, "updated:<2026-10-23T02:10:42Z").path("total").asLong()).isEqualTo(1);
+        JsonNode bad = get("/v1/search?q={q}", dana(), 400, "created:soon");
+        assertThat(bad.path("problems").toString()).contains("created:soon");
+    }
+
+    @Test
+    void aTypoStillFindsTheResourceAndSaysWhatItMeant() {
+        seeded(dana());
+        JsonNode page = get("/v1/search?q=ordres", dana(), 200);
+        assertThat(names(page)).containsExactly("orders");
+        assertThat(page.path("didYouMean").asText()).isEqualTo("orders");
+        assertThat(get("/v1/search?q={q}", dana(), 200, "Ordres type:database").path("didYouMean").asText()).as("the rest of the query is kept")
+                .isEqualTo("orders type:database");
+        assertThat(get("/v1/search?q=orders", dana(), 200).has("didYouMean")).as("found as typed").isFalse();
+        assertThat(get("/v1/search?q=ordres&sort=name", dana(), 200).has("didYouMean")).as("only on a page by relevance").isFalse();
+    }
+
+    @Test
+    void plainEnglishIsReadAsTheListsFilter() {
+        seeded(dana());
+        JsonNode read = get("/v1/search:interpret?q={q}", dana(), 200, "failed virtual machines tagged env dev, newest first");
+        assertThat(read.path("type").asText()).isEqualTo("vm");
+        assertThat(read.path("filter").path("state").asText()).isEqualTo("failed");
+        assertThat(read.path("filter").path("tags").path("env").asText()).isEqualTo("dev");
+        assertThat(read.path("filter").has("q")).as("nothing left for the search box").isFalse();
+        assertThat(read.path("sort").asText()).isEqualTo("-created");
+        assertThat(read.path("q").asText()).isEqualTo("type:vm state:failed tag:env=dev");
+        assertThat(read.path("explanation").asText()).isEqualTo("Virtual machines that failed, tagged env=dev, newest first.");
+        assertThat(read.path("confidence").asText()).isEqualTo("high");
+        assertThat(read.has("unparsed")).isFalse();
+        assertThat(read.path("total").asLong()).isEqualTo(1);
+        assertThat(names(get("/v1/search?q={q}", dana(), 200, read.path("q").asText()))).as("the list shows what was counted").containsExactly("web-02");
+
+        JsonNode guessed = get("/v1/search:interpret?q={q}", dana(), 200, "web vms");
+        assertThat(guessed.path("filter").path("q").asText()).as("a word it could only guess at is free text").isEqualTo("web");
+        assertThat(guessed.path("confidence").asText()).isEqualTo("medium");
+        assertThat(guessed.path("total").asLong()).isEqualTo(2);
+        JsonNode typo = get("/v1/search:interpret?q={q}", dana(), 200, "databases named ordres");
+        assertThat(typo.path("filter").path("q").asText()).isEqualTo("ordres");
+        assertThat(typo.path("total").asLong()).as("free text forgives a typo").isEqualTo(1);
+        JsonNode dropped = get("/v1/search:interpret?q={q}", dana(), 200, "zebra databases");
+        assertThat(dropped.path("type").asText()).isEqualTo("database");
+        assertThat(texts(dropped.path("unparsed"))).as("a guess that finds nothing is left out").containsExactly("zebra");
+        assertThat(dropped.path("filter").has("q")).isFalse();
+        assertThat(dropped.path("total").asLong()).isEqualTo(1);
+        assertThat(dropped.path("confidence").asText()).isEqualTo("low");
+
+        JsonNode onTheList = get("/v1/search:interpret?q={q}&type=vm", dana(), 200, "databases that failed");
+        assertThat(onTheList.path("type").asText()).as("the list the person is on").isEqualTo("vm");
+        assertThat(texts(onTheList.path("unparsed"))).containsExactly("databases");
+        assertThat(onTheList.path("total").asLong()).isEqualTo(1);
+
+        await("/v1/search?q=web&accountId=" + OTHER_ACCOUNT, bff(), p -> names(p).contains("web-theirs"));
+        assertThat(get("/v1/search:interpret?q={q}&accountId=" + OTHER_ACCOUNT, bff(), 200, "web vms").path("total").asLong())
+                .as("the named account's resources").isEqualTo(1);
+        get("/v1/search:interpret?q=vms&accountId=" + OTHER_ACCOUNT, dana(), 404);
+        get("/v1/search:interpret?q=vms", bff(), 400);
+        get("/v1/search:interpret?q=", dana(), 400);
+        get("/v1/search:interpret", dana(), 400);
+        get("/v1/search:interpret?q={q}", dana(), 400, "x".repeat(257));
+        JsonNode badType = get("/v1/search:interpret?q=vms&type={t}", dana(), 400, "Bad Type");
+        assertThat(badType.path("problems").toString()).contains("/type");
     }
 
     @Test

@@ -5,17 +5,23 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
+import com.iaf.console.search.index.domain.AccountVocabulary;
+import com.iaf.console.search.index.domain.CountGroup;
+import com.iaf.console.search.index.domain.Fuzzy;
+import com.iaf.console.search.index.domain.GroupBy;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.ResourceCounts;
 import com.iaf.console.search.index.domain.ResourceState;
@@ -32,8 +38,9 @@ import reactor.core.publisher.Mono;
 
 /**
  * The index without OpenSearch, for the demo and the tests: the same documents, versions, filters,
- * sorts, cursors, highlights and suggestions, scored by a small ladder (an exact name first, then
- * a name that starts with the term, a word of it, a part of it, then ids, tags and fields).
+ * sorts, cursors, highlights, suggestions and grouped counts, scored by a small ladder (an exact
+ * name first, then a name that starts with the term, a word of it, a part of it, then ids, tags and
+ * fields, and last a name or a tag a typo away).
  */
 public final class InMemorySearchIndex implements SearchIndexPort {
 
@@ -146,6 +153,9 @@ public final class InMemorySearchIndex implements SearchIndexPort {
             if (query.drift() != null && query.drift() != d.drift()) {
                 return false;
             }
+            if (!query.created().contains(d.createdAt()) || !query.updated().contains(d.updatedAt())) {
+                return false;
+            }
             for (Map.Entry<String, String> tag : query.tags().entrySet()) {
                 String held = d.tags().get(tag.getKey());
                 if (held == null || (!tag.getValue().isEmpty() && !tag.getValue().equals(held))) {
@@ -168,27 +178,76 @@ public final class InMemorySearchIndex implements SearchIndexPort {
     }
 
     @Override
-    public Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query) {
+    public Mono<ResourceCounts> counts(AccountScope scope, SearchQuery query, GroupBy groupBy) {
         return Mono.fromSupplier(() -> {
             Predicate<IndexedResource> filter = filterOf(scope, query, false);
             List<String> terms = query.terms().stream().map(t -> t.toLowerCase(Locale.ROOT)).toList();
-            Map<String, Long> byState = new HashMap<>();
-            long total = 0;
-            long drift = 0;
+            Tally all = new Tally();
+            Map<String, Tally> groups = new HashMap<>();
             for (Entry e : entries.values()) {
                 IndexedResource d = e.document();
                 if (!filter.test(d) || (!terms.isEmpty() && score(d, terms, new LinkedHashMap<>()) <= 0)) {
                     continue;
                 }
-                byState.merge(d.state().wire(), 1L, Long::sum);
-                if (listed(d, query)) {
-                    total++;
-                    if (d.drift()) {
-                        drift++;
-                    }
+                boolean listed = listed(d, query);
+                all.add(d, listed);
+                String key = groupBy.field() == null ? null : groupBy.keyOf(d);
+                if (key != null) {
+                    groups.computeIfAbsent(key, k -> new Tally()).add(d, listed);
                 }
             }
+            ResourceCounts counts = all.counts();
+            if (groupBy.field() == null) {
+                return counts;
+            }
+            List<CountGroup> out = new ArrayList<>();
+            groups.forEach((key, tally) -> {
+                ResourceCounts c = tally.counts();
+                out.add(new CountGroup(key, c.total(), c.byState(), c.drift(), groupBy.kind() == GroupBy.Kind.TYPE ? tally.service : null));
+            });
+            return counts.withGroups(out.stream().sorted(CountGroup.LARGEST_FIRST).limit(GroupBy.ENGINE_GROUPS).toList());
+        });
+    }
+
+    /** The counts of a list or of one of its groups, as they add up. */
+    private static final class Tally {
+        final Map<String, Long> byState = new HashMap<>();
+        long total;
+        long drift;
+        String service;
+
+        void add(IndexedResource d, boolean listed) {
+            byState.merge(d.state().wire(), 1L, Long::sum);
+            service = service == null ? d.service() : service;
+            if (listed) {
+                total++;
+                if (d.drift()) {
+                    drift++;
+                }
+            }
+        }
+
+        ResourceCounts counts() {
             return ResourceCounts.exact(total, byState, drift);
+        }
+    }
+
+    @Override
+    public Mono<AccountVocabulary> vocabulary(AccountScope scope) {
+        return Mono.fromSupplier(() -> {
+            Map<String, Long> types = new HashMap<>();
+            Map<String, Long> regions = new HashMap<>();
+            Map<String, Long> tags = new HashMap<>();
+            for (Entry e : entries.values()) {
+                IndexedResource d = e.document();
+                if (!d.accountId().equals(scope.accountId()) || d.deleted()) {
+                    continue;
+                }
+                types.merge(d.type(), 1L, Long::sum);
+                regions.merge(d.region(), 1L, Long::sum);
+                d.tagsFlat().forEach(flat -> tags.merge(flat, 1L, Long::sum));
+            }
+            return AccountVocabulary.of(types, regions, tags);
         });
     }
 
@@ -249,6 +308,9 @@ public final class InMemorySearchIndex implements SearchIndexPort {
                 }
             }
             if (best == 0) {
+                best = fuzzy(name, d, term, highlights);
+            }
+            if (best == 0) {
                 return 0;
             }
             total += best;
@@ -258,6 +320,37 @@ public final class InMemorySearchIndex implements SearchIndexPort {
             highlights.remove("text");
         }
         return total;
+    }
+
+    /**
+     * A term a typo away, as the engine's fuzzy clauses match it: every word of the term close to a
+     * word of the name (then highlighted there), else close to a word of a tag.
+     */
+    private static double fuzzy(String name, IndexedResource d, String term, Map<String, String> highlights) {
+        List<String> typed = Fuzzy.words(term);
+        if (typed.isEmpty()) {
+            return 0;
+        }
+        List<String> nameWords = Fuzzy.words(name);
+        Set<String> matched = new HashSet<>();
+        for (String t : typed) {
+            String match = nameWords.stream().filter(n -> n.equals(t) || Fuzzy.close(t, n)).findFirst().orElse(null);
+            if (match == null) {
+                matched.clear();
+                break;
+            }
+            matched.add(match);
+        }
+        if (!matched.isEmpty()) {
+            highlights.put("name", highlightWords(name, matched));
+            return 0.5;
+        }
+        List<String> tagWords = new ArrayList<>();
+        d.tags().forEach((k, v) -> {
+            tagWords.addAll(Fuzzy.words(k));
+            tagWords.addAll(Fuzzy.words(v));
+        });
+        return typed.stream().allMatch(t -> tagWords.stream().anyMatch(n -> n.equals(t) || Fuzzy.close(t, n))) ? 0.3 : 0;
     }
 
     private static boolean wordStarts(String text, String term) {
@@ -279,6 +372,20 @@ public final class InMemorySearchIndex implements SearchIndexPort {
             return escape(text);
         }
         return escape(text.substring(0, at)) + "<em>" + escape(text.substring(at, at + term.length())) + "</em>" + escape(text.substring(at + term.length()));
+    }
+
+    /** The text with each of the words wrapped in {@code <em>}, as OpenSearch marks every word a fuzzy clause matched. */
+    static String highlightWords(String text, Set<String> words) {
+        StringBuilder sb = new StringBuilder(text.length() + 16);
+        int at = 0;
+        for (int[] span : Fuzzy.spans(text)) {
+            String word = text.substring(span[0], span[1]);
+            if (words.contains(word.toLowerCase(Locale.ROOT))) {
+                sb.append(escape(text.substring(at, span[0]))).append("<em>").append(escape(word)).append("</em>");
+                at = span[1];
+            }
+        }
+        return sb.append(escape(text.substring(at))).toString();
     }
 
     /** Lucene's SimpleHTMLEncoder. */

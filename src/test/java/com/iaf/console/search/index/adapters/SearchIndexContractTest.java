@@ -19,7 +19,10 @@ import org.junit.jupiter.api.Test;
 import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.search.TestClock;
+import com.iaf.console.search.index.domain.AccountVocabulary;
+import com.iaf.console.search.index.domain.CountGroup;
 import com.iaf.console.search.index.domain.Fixtures;
+import com.iaf.console.search.index.domain.GroupBy;
 import com.iaf.console.search.index.domain.IndexedResource;
 import com.iaf.console.search.index.domain.QueryParser;
 import com.iaf.console.search.index.domain.ResourceCounts;
@@ -32,8 +35,9 @@ import com.iaf.console.search.index.domain.Suggestion;
 import com.iaf.console.search.index.ports.outbound.SearchIndexPort;
 
 /**
- * What every engine must do the same: versions, scope, filters, scoring order, cursors, tombstones,
- * suggestions, sweeps. The in-memory twin and OpenSearch both run it.
+ * What every engine must do the same: versions, scope, filters, times, scoring order, typos,
+ * cursors, tombstones, suggestions, counts and their groups, the account's vocabulary, sweeps. The
+ * in-memory twin and OpenSearch both run it.
  */
 public abstract class SearchIndexContractTest {
 
@@ -275,6 +279,134 @@ public abstract class SearchIndexContractTest {
         assertThat(index.find(SCOPE, vm("dead")).blockOptional()).isEmpty();
         assertThat(index.find(SCOPE, vm("resting")).blockOptional()).isPresent();
         assertThat(index.listAccountIds().collectList().block()).containsExactlyInAnyOrder(ACCOUNT, OTHER_ACCOUNT);
+    }
+
+    @Test
+    void timesKeepTheirSpan() {
+        SearchIndexPort index = index();
+        Instant now = clock.instant();
+        index.indexAll(List.of(
+                doc(vm("1"), "fresh", 1, Map.of(), Map.of(), now.minus(Duration.ofMinutes(5))).toBuilder().createdAt(now.minus(Duration.ofMinutes(30)))
+                        .build(),
+                doc(vm("2"), "week", 1, Map.of(), Map.of(), now.minus(Duration.ofDays(2))).toBuilder().createdAt(now.minus(Duration.ofDays(3))).build(),
+                doc(vm("3"), "month", 1, Map.of(), Map.of(), now.minus(Duration.ofDays(20))).toBuilder().createdAt(now.minus(Duration.ofDays(40)))
+                        .build(),
+                doc(vm("4"), "undated", 1, Map.of(), Map.of(), null).toBuilder().createdAt(null).build())).block();
+        assertThat(timed(index, "created:1h")).containsExactly("fresh");
+        assertThat(timed(index, "created:7d")).containsExactly("fresh", "week");
+        assertThat(timed(index, "created:<7d")).as("a resource without the time is in no bounded range").containsExactly("month");
+        assertThat(timed(index, "created:2026-10-20")).as("the whole UTC day").containsExactly("week");
+        assertThat(timed(index, "created:>=2026-10-20")).containsExactly("fresh", "week");
+        assertThat(timed(index, "created:2026-09-01..2026-10-20")).containsExactly("month", "week");
+        assertThat(timed(index, "updated:24h")).containsExactly("fresh");
+        assertThat(timed(index, "updated:<=2026-10-21")).containsExactly("month", "week");
+        assertThat(timed(index, "created:7d updated:24h")).containsExactly("fresh");
+        assertThat(timed(index, "created:>2026-10-19 created:<2026-10-21")).as("two terms of a field intersect").containsExactly("week");
+        assertThat(timed(index, "")).hasSize(4);
+        ResourceCounts counts = index.counts(SCOPE, QueryParser.parse("created:7d", null, now)).block();
+        assertThat(counts.total()).isEqualTo(2);
+        assertThat(counts.byState().get("active")).isEqualTo(2);
+    }
+
+    private List<String> timed(SearchIndexPort index, String q) {
+        return index.search(SCOPE, QueryParser.parse(q, new QueryParser.Filters(null, null, null, Map.of(), "name", 50, null), clock.instant())).block()
+                .items().stream().map(SearchHit::name).toList();
+    }
+
+    @Test
+    void aTypoStillFindsTheName() {
+        SearchIndexPort index = index();
+        index.indexAll(List.of(
+                doc(vm("1"), "postgres-main", 1, Map.of(), Map.of(), T0),
+                doc(vm("2"), "postgres-replica", 1, Map.of(), Map.of(), T0),
+                doc(vm("3"), "redis-cache", 1, Map.of(), Map.of(), T0),
+                doc(vm("4"), "mongo", 1, Map.of(), Map.of(), T0),
+                doc(vm("5"), "mango", 1, Map.of(), Map.of(), T0),
+                doc(vm("6"), "api", 1, Map.of("team", "payments"), Map.of(), T0),
+                doc("wfrn:wf:compute:global:" + OTHER_ACCOUNT + ":vm/vm-7", "postgres-theirs", 1, Map.of(), Map.of(), T0))).block();
+        assertThat(names(index, "postgress")).containsExactly("postgres-main", "postgres-replica");
+        assertThat(names(index, "redsi")).as("two neighbours swapped").containsExactly("redis-cache");
+        assertThat(names(index, "pstgres")).as("two edits for a seven-letter word").containsExactly("postgres-main", "postgres-replica");
+        assertThat(names(index, "paymnts")).as("a tag a typo away").containsExactly("api");
+        assertThat(names(index, "postgress replca")).as("every word forgiven").containsExactly("postgres-replica");
+        assertThat(names(index, "rds")).as("too short to forgive").isEmpty();
+        assertThat(names(index, "xostgres")).as("the first letter must be right").isEmpty();
+        SearchPage mongo = index.search(SCOPE, query("mongo", null, null, null)).block();
+        assertThat(mongo.items()).extracting(SearchHit::name).containsExactly("mongo", "mango");
+        assertThat(mongo.items().get(0).score()).as("the word as typed ranks first").isGreaterThan(mongo.items().get(1).score());
+        SearchHit fixed = index.search(SCOPE, query("postgress", null, null, null)).block().items().get(0);
+        assertThat(fixed.highlights().get("name")).as("the word that matched is marked").contains("<em>postgres</em>");
+        assertThat(index.counts(SCOPE, query("postgress", null, null, null)).block().total()).isEqualTo(2);
+    }
+
+    @Test
+    void groupsCountLikeTheList() {
+        SearchIndexPort index = index();
+        index.indexAll(List.of(
+                doc(vm("1"), "web-01", 1, Map.of("env", "prod"), Map.of(), T0),
+                doc(vm("2"), "web-02", 1, Map.of("env", "prod"), Map.of(), T0).toBuilder().state(ResourceState.FAILED).build(),
+                doc(vm("3"), "web-03", 1, Map.of("env", "dev"), Map.of(), T0).toBuilder().drift(true).driftSeverity("warning").build(),
+                doc(vm("9"), "web-09", 2, Map.of("env", "prod"), Map.of(), T0).toBuilder().state(ResourceState.DELETED).deletedAt(T0)
+                        .tombstoneUntil(T0.plusSeconds(60)).build(),
+                doc("wfrn:wf:data:global:" + ACCOUNT + ":database/db-1", "orders", 1, Map.of("env", "prod"), Map.of(), T0),
+                doc("wfrn:wf:data:eu-1:" + ACCOUNT + ":database/db-2", "billing", 1, Map.of(), Map.of(), T0).toBuilder().region("eu-1").build(),
+                doc("wfrn:wf:compute:global:" + OTHER_ACCOUNT + ":vm/vm-7", "web", 1, Map.of("env", "prod"), Map.of(), T0))).block();
+
+        ResourceCounts byType = index.counts(SCOPE, query("", null, null, null), GroupBy.of("type")).block();
+        assertThat(byType.total()).isEqualTo(5);
+        assertThat(byType.groups()).extracting(CountGroup::key).containsExactly("vm", "database");
+        CountGroup vms = byType.groups().get(0);
+        assertThat(vms.total()).as("the tombstone is left out of the total").isEqualTo(3);
+        assertThat(vms.byState()).containsEntry("active", 2L).containsEntry("failed", 1L).containsEntry("deleted", 1L).containsEntry("pending", 0L);
+        assertThat(vms.drift()).isEqualTo(1);
+        assertThat(vms.service()).as("a group of a type carries its service").isEqualTo("compute");
+        assertThat(byType.groups().get(1).service()).isEqualTo("data");
+        assertThat(byType.groups().get(1).total()).isEqualTo(2);
+
+        ResourceCounts byEnv = index.counts(SCOPE, query("", null, null, null), GroupBy.of("tag:env")).block();
+        assertThat(byEnv.groups()).extracting(CountGroup::key).as("billing has no env tag, so no group").containsExactly("prod", "dev");
+        assertThat(byEnv.groups().get(0).total()).isEqualTo(3);
+        assertThat(byEnv.groups().get(0).byState().get("deleted")).isEqualTo(1);
+        assertThat(byEnv.groups().get(0).service()).isNull();
+        assertThat(byEnv.groups().get(1).drift()).isEqualTo(1);
+
+        ResourceCounts failedByType = index.counts(SCOPE, query("state:failed", null, null, null), GroupBy.of("type")).block();
+        assertThat(failedByType.total()).isEqualTo(1);
+        assertThat(failedByType.groups()).extracting(CountGroup::key, CountGroup::total).as("a group keeps its chips while a state is picked")
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("vm", 1L), org.assertj.core.groups.Tuple.tuple("database", 0L));
+        assertThat(failedByType.groups().get(1).byState().get("active")).isEqualTo(2);
+
+        assertThat(index.counts(SCOPE, query("", null, null, null), GroupBy.of("region")).block().groups()).extracting(CountGroup::key, CountGroup::total)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("global", 4L), org.assertj.core.groups.Tuple.tuple("eu-1", 1L));
+        assertThat(index.counts(SCOPE, query("", null, null, null), GroupBy.of("service")).block().groups()).extracting(CountGroup::key)
+                .containsExactly("compute", "data");
+        ResourceCounts byState = index.counts(SCOPE, query("", null, null, null), GroupBy.of("state")).block();
+        assertThat(byState.groups()).extracting(CountGroup::key, CountGroup::total).containsExactly(org.assertj.core.groups.Tuple.tuple("active", 4L),
+                org.assertj.core.groups.Tuple.tuple("failed", 1L), org.assertj.core.groups.Tuple.tuple("deleted", 0L));
+        assertThat(index.counts(SCOPE, query("web", null, null, null), GroupBy.of("type")).block().groups()).extracting(CountGroup::key)
+                .as("the free text applies to the groups").containsExactly("vm");
+        assertThat(index.counts(SCOPE, query("", null, null, null), GroupBy.of("account")).block().groups()).as("the application groups by account")
+                .isNull();
+        assertThat(index.counts(SCOPE, query("", null, null, null)).block().groups()).isNull();
+        assertThat(index.counts(OTHER, query("", null, null, null), GroupBy.of("type")).block().groups()).extracting(CountGroup::key, CountGroup::total)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("vm", 1L));
+    }
+
+    @Test
+    void theVocabularyIsTheAccountsOwnLiveWords() {
+        SearchIndexPort index = index();
+        index.indexAll(List.of(
+                doc(vm("1"), "web-01", 1, Map.of("env", "prod", "team", "web"), Map.of(), T0),
+                doc(vm("2"), "web-02", 1, Map.of("env", "prod"), Map.of(), T0),
+                doc("wfrn:wf:data:eu-1:" + ACCOUNT + ":database/db-2", "billing", 1, Map.of("env", "dev"), Map.of(), T0).toBuilder().region("eu-1").build(),
+                doc(vm("9"), "gone", 2, Map.of("gone", "yes"), Map.of(), T0).toBuilder().state(ResourceState.DELETED).build(),
+                doc("wfrn:wf:compute:global:" + OTHER_ACCOUNT + ":vm/vm-7", "theirs", 1, Map.of("secret-project", "x"), Map.of(), T0))).block();
+        AccountVocabulary words = index.vocabulary(SCOPE).block();
+        assertThat(words.types()).containsExactlyInAnyOrderEntriesOf(Map.of("vm", 2L, "database", 1L));
+        assertThat(words.regions()).containsExactlyInAnyOrderEntriesOf(Map.of("global", 2L, "eu-1", 1L));
+        assertThat(words.tags()).containsOnlyKeys("env", "team");
+        assertThat(words.tags().get("env")).containsExactlyInAnyOrderEntriesOf(Map.of("prod", 2L, "dev", 1L));
+        assertThat(index.vocabulary(OTHER).block().tags()).containsOnlyKeys("secret-project");
     }
 
     private static List<String> names(SearchIndexPort index, String q) {

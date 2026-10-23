@@ -1,5 +1,6 @@
 package com.iaf.console.search.index.domain;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -14,9 +15,10 @@ import com.iaf.console.wfrn.WfrnPattern;
 
 /**
  * The query syntax of the contract: free text over name, wfrn and searchable fields, plus
- * {@code tag:<name>=<value>}, {@code type:<type>}, {@code state:<state>}, {@code region:<region>}
- * and {@code drift:true} terms, and a wfrn pattern as a term of its own. Quotes keep a phrase
- * together. What the parser refuses is a 400 with a problem per bad term.
+ * {@code tag:<name>=<value>}, {@code type:<type>}, {@code state:<state>}, {@code region:<region>},
+ * {@code drift:true}, {@code created:<time>} and {@code updated:<time>} terms ({@link TimeRange}),
+ * and a wfrn pattern as a term of its own. Quotes keep a phrase together. What the parser refuses
+ * is a 400 with a problem per bad term.
  */
 public final class QueryParser {
 
@@ -38,7 +40,13 @@ public final class QueryParser {
         }
     }
 
+    /** A query whose ages ({@code created:7d}) count back from the system clock; the service passes its own. */
     public static SearchQuery parse(String q, Filters filters) {
+        return parse(q, filters, Instant.now());
+    }
+
+    /** A query whose ages count back from {@code now}. */
+    public static SearchQuery parse(String q, Filters filters, Instant now) {
         List<Problem> problems = new ArrayList<>();
         if (q == null) {
             problems.add(Problem.error("required", "/q", "q is required"));
@@ -55,6 +63,8 @@ public final class QueryParser {
         String state = null;
         String region = null;
         Boolean drift = null;
+        TimeRange created = TimeRange.ALL;
+        TimeRange updated = TimeRange.ALL;
         for (String token : tokens(q)) {
             int colon = token.indexOf(':');
             String prefix = colon > 0 ? token.substring(0, colon).toLowerCase(Locale.ROOT) : null;
@@ -86,6 +96,17 @@ public final class QueryParser {
                     drift = Boolean.parseBoolean(rest);
                 } else {
                     problems.add(Problem.error("enum", "/q", "drift: is true or false, in '" + token + "'"));
+                }
+            } else if ("created".equals(prefix) || "updated".equals(prefix)) {
+                try {
+                    TimeRange range = TimeRange.parse(rest, now);
+                    if ("created".equals(prefix)) {
+                        created = created.and(range);
+                    } else {
+                        updated = updated.and(range);
+                    }
+                } catch (IllegalArgumentException e) {
+                    problems.add(Problem.error("time", "/q", e.getMessage() + ", in '" + token + "'"));
                 }
             } else if (!token.isBlank()) {
                 terms.add(token);
@@ -149,7 +170,7 @@ public final class QueryParser {
             throw new InvalidInputException("the query cannot be run", problems);
         }
         boolean includeDeleted = s == ResourceState.DELETED || patterns.stream().anyMatch(p -> !p.contains("*") && !p.contains("?"));
-        return new SearchQuery(terms, type, s, region, tags, drift, patterns, sort, limit, after, includeDeleted);
+        return new SearchQuery(terms, type, s, region, tags, drift, created, updated, patterns, sort, limit, after, includeDeleted);
     }
 
     /** The page size the contract allows: 1 to 200, 50 by default. */

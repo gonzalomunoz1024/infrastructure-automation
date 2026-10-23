@@ -1,10 +1,10 @@
 # contracts.lock
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
-# the commit is on console-root--search-indexer-contract (PR #11, stacked on PR #2) until it merges
+# the commit is on console-root--search-copilot-contract (PR #20, stacked on PR #11 and PR #2) until it merges
 branch: console-root
-commit: 4e92bfb7e0e55389003a91656c0252a83cc3badb
+commit: b0a0d52baa57fedfbe49b909dab81f18a9296ba2
 files:
-  contracts/openapi/console-search-indexer.yaml: sha256:70e52851f52c4a4cc7040fce5bcbc3c581eabb8945bfb402bcf7c37a25d2d1b5
+  contracts/openapi/console-search-indexer.yaml: sha256:0c837cb7f56b8404c94a87d668ce6f993dc91dc5a2782951721e6a06636d0006
   contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
   contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
   contracts/openapi/console-bff.yaml: sha256:620cf40998532ed610a714733c101e96d75da73694faec07592044983e2047f7

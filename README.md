@@ -1,15 +1,17 @@
 # console-search-indexer
 
-The customer console's search (work package 6.1). It follows the console's own events on Kafka
-(`state.resources`, `drift.findings`), keeps one OpenSearch document per resource, and answers the
-search, type-ahead and list counts the BFF uses for the header's global search and the filter bar
-over large lists, plus the index's status and rebuilds.
+The customer console's search (work package 6.1, and the search side of 9.1, 9.4 and 9.5). It
+follows the console's own events on Kafka (`state.resources`, `drift.findings`), keeps one
+OpenSearch document per resource, and answers the search, type-ahead and list counts the BFF uses
+for the header's global search and the filter bar over large lists, the copilot's reading of plain
+English as a list's filter, and the counts by type, tag or account behind the scorecards and the
+executive home, plus the index's status and rebuilds.
 
 This repository is one branch (`console-search-indexer`) of the console work until the services
 move to repositories of their own. It is shaped like that future repository: the Gradle root is
 the branch root, it carries its own CI, and it holds no platform files. What every service shares
 (decisions, contracts, the wfrn fixtures) lives on the hub branch, `console-root`, which this
-repository pins by commit in `contracts.lock` (hub `4e92bfb`), and the shared code comes from
+repository pins by commit in `contracts.lock` (hub `b0a0d52`), and the shared code comes from
 `console-libs` as `com.iaf.console:*`.
 
 ## Run it
@@ -36,14 +38,15 @@ profiles; `Dockerfile` builds the image from `build/libs/console-search-indexer.
 
 ## The API
 
-The hub's `contracts/openapi/console-search-indexer.yaml` 1.1.0, pinned under
+The hub's `contracts/openapi/console-search-indexer.yaml` 1.2.0, pinned under
 `src/test/resources/contracts/`; `contracts/additions.md` names anything served beyond it (nothing now).
 
 | Call | What it answers |
 |---|---|
-| `GET /v1/search?q=…` | One page of hits: `q` is free text plus `type:`, `state:`, `region:`, `tag:k=v`, `drift:` terms, wfrn patterns and quoted phrases; `type`, `region`, `state`, `tag.<name>`, `drift` parameters narrow further; `sort` is `score` (default), `name`, `-name`, `created`, `-created`, `updated` or `-updated`; `limit` 1 to 200 (50), `after` the cursor of the last page |
+| `GET /v1/search?q=…` | One page of hits: `q` is free text plus `type:`, `state:`, `region:`, `tag:k=v`, `drift:`, `created:` and `updated:` terms, wfrn patterns and quoted phrases; `type`, `region`, `state`, `tag.<name>`, `drift` parameters narrow further; `sort` is `score` (default), `name`, `-name`, `created`, `-created`, `updated` or `-updated`; `limit` 1 to 200 (50), `after` the cursor of the last page; `didYouMean` when a typo was forgiven |
 | `GET /v1/suggest?q=…` | The type-ahead: resources by name, wfrns by id, types and tags, at most `limit` (8) |
-| `GET /v1/counts` | A list's numbers: `total`, `byState` (the chips), `drift`, `cappedAt` (null: exact) |
+| `GET /v1/counts` | A list's numbers: `total`, `byState` (the chips), `drift`, `cappedAt` (null: exact); with `groupBy` (`type`, `service`, `state`, `region`, `account` or `tag:<name>`) the same numbers per key in `groups`, the largest 100; the console's own services may repeat `accountId` for up to 200 accounts and get them added up |
+| `GET /v1/search:interpret?q=…` | Plain English read as a list's filter: the type, the list's own filters (`filter.q`, `state`, `drift`, `region`, `tags`), the sort, the whole reading as one query (`q`), a sentence to show the person, how sure it is (`high`, `medium`, `low`), the words it left out (`unparsed`) and how many resources it lists (`total`); `type` keeps the reading in the list the person is on |
 | `GET /v1/index/status` | The caller's account's documents (the whole index for the console's own services), the newest event and how long ago it was, whether a rebuild runs |
 | `POST /v1/index:rebuild` | The console's own services: refill the index (one account or all) from the state service, idempotent on `Idempotency-Key`; 409 while one runs |
 | `GET /v1/index/rebuilds/{runId}` | A rebuild's progress |
@@ -57,7 +60,30 @@ account with `accountId`. The demo profile also takes the dev headers `X-Console
 cannot be read, a token gets 503 with `Retry-After`, not 401.
 
 **Budget.** Each account may run 20 queries a second with bursts of 40
-(`console.search.budget.*`); beyond it, 429 with `Retry-After`.
+(`console.search.budget.*`); beyond it, 429 with `Retry-After`. A count over several accounts spends
+one query of each account's budget.
+
+**Times.** `created:` and `updated:` take a day (`2026-10-01`, the whole UTC day), a time with its
+offset (`2026-10-01T12:00Z`, only compared) or an age (`30m`, `24h`, `7d`, `2w`), compared with `>`,
+`>=`, `<`, `<=` or as a range `a..b` that keeps both ends. An age alone means since then
+(`created:7d`), and two terms on the same field narrow together.
+
+**Typos.** A name or tag word four letters or longer still matches when it is one edit off (two
+from seven letters), the first letter typed right, as OpenSearch's `fuzziness: AUTO:4,7` counts;
+a forgiven match weighs less than an exact one. On the first page by relevance, `didYouMean` is
+the query with each forgiven word replaced by the word the hits show, read only from the page's
+own highlights, so it never names another account's words.
+
+**Plain English.** The reader is deterministic: it knows the account's types (by name, plural or
+title, and one typo away), states by their everyday names ("broken", "running", "being deleted"),
+drift ("changed outside the console", "in sync"), tags (`env=prod`, "tagged team web", "team
+payments" when the account has that tag), regions, times ("created this week", "older than 90
+days", "not updated in 30 days", "between oct 1 and oct 7") and sorts ("newest first", "recently
+updated"). Any other word is kept as free text while the list still shows something; when such
+words empty a list that would show something without them, they are left out. A union ("vms or databases"), a negation ("not failed") or a second
+value of the same filter is left out and said in `unparsed`, which makes the reading `low`, the
+copilot's cue to ask its model. `total` is counted the way the console applies the answer, with
+`filter.q` in the search box and the rest as the list's filters.
 
 ## How the index is kept
 
@@ -152,15 +178,16 @@ CONSOLE_TEST_MONGO_URI=mongodb://localhost:27017 ./gradlew build
 ```
 
 `SearchIndexContractTest` holds the in-memory twin and OpenSearch to the same behaviour (versions,
-scope, filters, scoring order, the seven sorts and their cursors, tombstones, counts, suggestions,
-highlights, sweeps); `SearchJourneyTest` runs the API as the BFF meets it on both engines, against a
-stub state service and the fake platform; `RoutesMatchContractTest` holds the handlers to the pinned
+scope, filters, scoring order, the seven sorts and their cursors, tombstones, counts and their
+groups, times, typos, suggestions, highlights, the account's vocabulary, sweeps); `PlainEnglishTest`
+pins how each kind of word is read; `SearchJourneyTest` runs the API as the BFF meets it on both
+engines, against a stub state service and the fake platform; `RoutesMatchContractTest` holds the handlers to the pinned
 contract and `contracts/additions.md`; `ArchitectureTest` holds the slices to the hexagonal rules.
 
 ## Layout
 
 `com.iaf.console.search.index` is the slice: `domain` (documents, the event folds, the query
-language, pure Java), `ports.outbound` (the index, the state service, the types, the accounts, the
+language, typo tolerance, the plain-English reader, pure Java), `ports.outbound` (the index, the state service, the types, the accounts, the
 stores), `application` (indexing, the poller, rebuilds, queries, housekeeping) and `adapters`
 (`opensearch`, `memory`, `kafka`, `state`, `platform`, `identity`, `mongo`, `web`, and `tokens`,
 the BFF's service tokens for the state and identity calls). `com.iaf.console.search.auth` checks
