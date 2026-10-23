@@ -117,6 +117,18 @@ class ManagedIamTest {
         assertThat(decide(compiled, "usr_owner", "budgets:delete", budget).allowed()).isTrue();
         assertThat(decide(compiled, "usr_owner", "cost:export", cost).allowed()).isTrue();
 
+        // blueprints and stacks (decision 33): everyone reads, operators launch and resume, admins tear down
+        String stacks = "wfrn:wf:blueprints:global:" + ACCOUNT + ":stack/*";
+        String stack = "wfrn:wf:blueprints:global:" + ACCOUNT + ":stack/stack-01jbx9r2m4k9d3c8f5r6t1w0yh";
+        assertThat(decide(compiled, "usr_viewer", "blueprints:list", stacks).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_auditor", "blueprints:get", stack).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_viewer", "blueprints:launch", stacks).suggestedRole()).isEqualTo("operator");
+        assertThat(decide(compiled, "usr_dev", "blueprints:launch", stacks).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_dev", "blueprints:resume", stack).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_dev", "blueprints:teardown", stack).suggestedRole()).isEqualTo("account-admin");
+        assertThat(decide(compiled, "usr_owner", "blueprints:teardown", stack).allowed()).isTrue();
+        assertThat(decide(compiled, "usr_auditor", "blueprints:launch", stacks).allowed()).isFalse();
+
         assertThat(decide(compiled, "usr_nobody", "compute:get", vm).reason()).isEqualTo("not a member of the account");
         assertThat(Evaluator.decide(compiled, new Principal(null, ACCOUNT, null, "console-state-service"), new Check("compute:delete", vm, null)).allowed())
                 .isTrue();

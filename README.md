@@ -31,7 +31,7 @@ drifts and `ContractCoverageTest` when an operation is not served):
 
 Access requests (`GET/POST .../access-requests`, `GET .../access-requests/{requestId}`,
 `POST .../access-requests/{requestId}:decide`) are served as the contract defines them too. The
-pin is hub `63ac333` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
+pin is hub `a0f5dbe` (hub PR #22, decision 28, which merges the cost contract of #18); nothing is
 served beyond it (`ContractCoverageTest` fails on an operation the contract lacks, so a new one goes
 to the hub first).
 
@@ -64,7 +64,7 @@ to the hub first).
   `conditions` (`region`, `account`, `service`, `type`, `requester.user`, `requester.email`,
   `requester.group`, `tag.<name>`, `context.<name>`). Actions are validated against the platform's
   resource types and catalog plus the console's own services (`iam`, `account`, `quota`, `audit`,
-  `cost`, `budgets`, `search`, `access-request`, `access-review`, `elevation`). A deny wins; without an allow the decision says which managed
+  `cost`, `budgets`, `search`, `access-request`, `access-review`, `elevation`, `blueprints`). A deny wins; without an allow the decision says which managed
   role would have allowed it (`requestable`, `suggestedRole`), so the console can offer an access
   request.
 - **Permission boundaries.** A role may name one of the account's policies as its `boundary`:

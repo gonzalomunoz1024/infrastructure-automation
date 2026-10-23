@@ -10,7 +10,8 @@ import java.util.List;
  * what a verb means is the platform's catalog. Cost and budgets (decision 25): every role reads
  * them; exporting the chargeback is an admin's and an auditor's, changing a budget an admin's. A
  * release that changes these policies reaches the accounts made before it at the next start
- * ({@code ManagedPolicyUpgrade}).
+ * ({@code ManagedPolicyUpgrade}). Blueprints (decision 33): every role reads them, operators launch and
+ * resume stacks, and tearing one down is an admin's, as deleting is.
  */
 public final class ManagedIam {
 
@@ -64,7 +65,7 @@ public final class ManagedIam {
                 new ManagedRole(OPERATOR, "Reads and every change that is not a delete, no IAM", "managed-operator",
                         "The operator role's policy: everything but deletes and IAM",
                         List.of(Statement.allowExcept("changes", List.of("*:*"), List.of("*:delete", "iam:*", "quota:set", "account:update", "access-request:get",
-                                "access-request:list", "access-request:decide", "access-review:*", "cost:export", "budgets:create", "budgets:update",
+                                "access-request:list", "access-request:decide", "access-review:*", "cost:export", "budgets:create", "budgets:update", "blueprints:teardown",
                                 "elevation:get", "elevation:list", "elevation:decide", "elevation:revoke"), all),
                                 Statement.allow("iam-reads", List.of("iam:get", "iam:list"), all))),
                 new ManagedRole(ACCOUNT_ADMIN, "Everything in the account, IAM and deletes included", "managed-account-admin",

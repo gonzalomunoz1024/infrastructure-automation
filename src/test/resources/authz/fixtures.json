@@ -217,6 +217,7 @@
                     "cost:export",
                     "budgets:create",
                     "budgets:update",
+                    "blueprints:teardown",
                     "elevation:get",
                     "elevation:list",
                     "elevation:decide",

@@ -70,6 +70,8 @@ class PolicyValidationTest {
         assertThat(ActionCatalog.consoleOnly().knows("cost:export")).isTrue();
         assertThat(ActionCatalog.consoleOnly().knows("budgets:create")).isTrue();
         assertThat(ActionCatalog.consoleOnly().knows("budgets:approve")).isFalse();
+        assertThat(ActionCatalog.consoleOnly().knows("blueprints:teardown")).isTrue();
+        assertThat(ActionCatalog.consoleOnly().knows("blueprints:delete")).isFalse();
         assertThat(Actions.isValid("compute:get")).isTrue();
         assertThat(Actions.isValid("compute")).isFalse();
         assertThat(Actions.isValid("a:b:c")).isFalse();

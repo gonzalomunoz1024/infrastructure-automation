@@ -28,7 +28,8 @@ public record ActionCatalog(Map<String, Set<String>> verbsByService, Set<String>
             Map.entry("search", Set.of("query")),
             Map.entry("access-request", Set.of("get", "list", "create", "decide")),
             Map.entry("access-review", Set.of("get", "list", "create", "decide", "cancel")),
-            Map.entry("elevation", Set.of("get", "list", "create", "decide", "revoke")));
+            Map.entry("elevation", Set.of("get", "list", "create", "decide", "revoke")),
+            Map.entry("blueprints", Set.of("get", "list", "launch", "teardown", "resume")));
 
     public ActionCatalog {
         Map<String, Set<String>> copy = new TreeMap<>();
