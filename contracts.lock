@@ -1,0 +1,10 @@
+# contracts.lock
+hub: https://github.com/gonzalomunoz1024/infrastructure-automation
+branch: console-root
+# the drift contract's additions are hub PR #14 (console-root--drift-contract, stacked on console-root--phase-0)
+commit: 59487a2c448d148be0f838f4b3597c7b1c346819
+files:
+  contracts/openapi/console-drift-service.yaml: sha256:9ee2279229077f3df283320f4d1a62d04430327c9453df7c492407d4f96442b4
+  contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
+  contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
+  contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c

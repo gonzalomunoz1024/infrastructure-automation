@@ -1,0 +1,17 @@
+console-drift-service {{ .Chart.AppVersion }} is rolling out as {{ include "console-drift-service.fullname" . }}.
+
+Profiles: {{ include "console-drift-service.profiles" . }}
+API:      http://{{ include "console-drift-service.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1/findings
+Health:   /actuator/health/readiness
+Metrics:  /actuator/prometheus
+
+Secrets this release reads (create them before the pods start):
+  {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}            the MongoDB URI of database {{ .Values.mongodb.database }}
+  {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's console-internal service-account token
+{{- if .Values.webhooks.existingSecret }}
+  {{ .Values.webhooks.existingSecret }}                                          the providers' webhook HMAC secrets
+{{- end }}
+
+Calls to the state and identity services carry service tokens from the BFF ({{ .Values.serviceTokens.tokenUrl }}),
+authenticated by the projected token of service account {{ .Release.Namespace }}:{{ include "console-drift-service.serviceAccountName" . }}
+(audience {{ .Values.serviceTokens.audience }}); the BFF must have that account registered for console-drift-service.

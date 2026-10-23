@@ -1,0 +1,799 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-drift-service
+  version: 1.0.0
+  summary: Reads every managed resource's truth from its provider on the type's interval, opens findings when it differs from the desired state, and lets the account revert, accept or ignore them.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Account scope.** Every call runs as a console account, the `acct` claim of the caller's
+    internal JWT; findings and unmanaged objects of another account answer 404, never 403. The
+    console-internal principal may name an account with `accountId`.
+
+    **How it reads.** The type's `observe` block (P-06) says which provider action to call and how
+    to map the answer; the platform executes it (`POST /api/v1/resource-types/{name}:observe-list`
+    for the paged scan, `POST /api/v1/resources/{id}:observe` for one resource, P-09). A scan
+    compares every item with the desired attributes the state service holds, ignoring the fields
+    in `observe.ignore` and the ones a finding was accepted or ignored for.
+
+    **Findings.** One open finding per resource at a time; a later scan updates its fields or
+    closes it as `vanished`. `revert` starts the type's update workflow with the desired values
+    (through the BFF's delegation when a user asks, else as the internal account), `accept` makes
+    the observed values the desired ones, `ignore` silences the fields until the desired state
+    changes.
+
+    **Reverts act for a person and never run on their own.** A revert runs through the account's
+    platform service account on behalf of the person who asked: the BFF relays its `X-On-Behalf-Of`
+    assertion for them (P-02), and a call without a person to act for is 409 `revert.needsPerson`.
+    The job carries the label `drift-finding` with the finding id and the resource's wfrn, so the
+    platform's job list ties it to the finding. While it runs the finding stays open with
+    `revertStatus: running`; it closes as `reverted` when the job succeeded and the next read
+    agrees, and a failed job leaves it open with `revertStatus: failed`.
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`. `limit` is 1 to 200, 50 by default (the plan's cap for every console API).
+
+    **Errors.** `{ error, problems?, correlationId? }`: 400 bad input, 401 no valid JWT, 404
+    unknown or out of scope, 409 a decision the finding's state refuses, 429 the provider's observe
+    budget is used up (with `Retry-After`), 502 the platform answered an error. The 409 codes open
+    `error` with a stable prefix: `finding.closed` (closed meanwhile or before; names the
+    `resolution`), `finding.reverting` (a revert job is running), `finding.notRevertable` (the type
+    has no update workflow in the catalog, or a drifted field is not one it sets),
+    `finding.unwatched` (the resource left the inventory) and `revert.needsPerson`.
+
+    **wfrns in URLs.** Findings are filtered by wfrn as a query parameter, as the platform does;
+    no public path carries a wfrn. The internal watch paths take it percent-encoded, as the state
+    service's do (`/internal/watches/wfrn%3Awf%3A...`).
+
+    **Internal operations.** `/internal/*` answers the console-internal principal only (a service
+    token, no `acct`); a person's token gets 404. They show the watch list and run a read, a scan,
+    an inventory sync or a revert-follower pass now, for operators and the other services.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Findings
+  - name: Discovery
+  - name: Webhooks
+  - name: Internal
+    description: For console services and operators (the console-internal principal)
+  - name: Health
+security:
+  - consoleJwt: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /v1/findings:
+    get:
+      operationId: listFindings
+      summary: List findings
+      description: Per resource with `wfrn`, per account otherwise; open ones by default.
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: wfrn
+          in: query
+          description: An exact wfrn, or a pattern
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - name: severity
+          in: query
+          schema: { $ref: '#/components/schemas/Severity' }
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - name: openedAfter
+          in: query
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Finding' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/findings/summary:
+    get:
+      operationId: getFindingsSummary
+      summary: Open findings counted by type and severity
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FindingsSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/findings/{findingId}:
+    parameters:
+      - $ref: '#/components/parameters/FindingId'
+    get:
+      operationId: getFinding
+      summary: Get a finding
+      tags: [Findings]
+      responses:
+        '200':
+          description: The finding
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/findings/{findingId}:revert:
+    parameters:
+      - $ref: '#/components/parameters/FindingId'
+    post:
+      operationId: revertFinding
+      summary: Put the resource back to its desired state
+      description: Starts the type's update workflow with the desired values of the drifted fields, on behalf of the person who asks (never on its own). The job carries the label `drift-finding` with the finding id; the finding stays open with `revertStatus` `running` and closes as `reverted` when the job succeeded and the next read agrees.
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+        - name: X-On-Behalf-Of
+          in: header
+          required: false
+          description: The BFF's signed assertion for the person who asked (P-02), relayed onto the platform job. Without it, and without a person the service may sign for itself (the demo), the answer is 409 `revert.needsPerson`.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Decision' }
+      responses:
+        '202':
+          description: The revert job was started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [findingId, jobId]
+                properties:
+                  findingId: { type: string }
+                  jobId: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`finding.closed`, `finding.reverting`, `finding.notRevertable`, `finding.unwatched` or `revert.needsPerson`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /v1/findings/{findingId}:accept:
+    parameters:
+      - $ref: '#/components/parameters/FindingId'
+    post:
+      operationId: acceptFinding
+      summary: Make the observed values the desired ones
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Decision' }
+      responses:
+        '200':
+          description: The finding, closed as accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`finding.closed`, or `finding.reverting` while a revert job runs'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/findings/{findingId}:ignore:
+    parameters:
+      - $ref: '#/components/parameters/FindingId'
+    post:
+      operationId: ignoreFinding
+      summary: Silence the drifted fields
+      description: Until the desired state changes, or until `until` when given.
+      tags: [Findings]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Decision'
+                - type: object
+                  properties:
+                    until: { type: string, format: date-time }
+      responses:
+        '200':
+          description: The finding, closed as ignored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`finding.closed`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/discover:
+    post:
+      operationId: startDiscovery
+      summary: Scan a type's provider for everything it has
+      description: Pages through the type's `observe.discover` action (P-09) and records what is not under management; one run per type and region at a time.
+      tags: [Discovery]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, region]
+              properties:
+                type: { type: string }
+                region: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '202':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /v1/discover/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      operationId: getDiscovery
+      summary: A discovery run's progress
+      tags: [Discovery]
+      responses:
+        '200':
+          description: The run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/unmanaged:
+    get:
+      operationId: listUnmanaged
+      summary: Objects the provider has that the console does not manage
+      tags: [Discovery]
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - name: type
+          in: query
+          required: true
+          schema: { type: string }
+        - name: region
+          in: query
+          schema: { $ref: '#/components/schemas/RegionName' }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/UnmanagedObject' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/unmanaged:import:
+    post:
+      operationId: importUnmanaged
+      summary: Take a discovered object under management
+      description: Mints a wfrn through the state service (`POST /v1/resources:import`, source `discover`) and removes the object from the unmanaged list. A discovered object has no registry record, so the import sends the provider id as its `registryId`, which the state contract requires; the resource is watched from then on and read through the type's `discover` pages.
+      tags: [Discovery]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, region, providerId]
+              properties:
+                type: { type: string }
+                region: { $ref: '#/components/schemas/RegionName' }
+                providerId: { type: string }
+                name: { type: string }
+      responses:
+        '201':
+          description: The resource is managed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wfrn]
+                properties:
+                  wfrn: { $ref: '#/components/schemas/Wfrn' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: The provider name
+        schema: { type: string, pattern: '^[a-z0-9-]{2,64}$' }
+    post:
+      operationId: receiveProviderWebhook
+      summary: A provider's change notification
+      description: Schedules an observe of the resources the notification names instead of waiting for the interval. Verified with the `X-Webhook-Signature` header (`sha256=<hex>`, an HMAC-SHA256 of the raw body with the signing material configured per provider); a bad signature, or a provider with no signing material configured, is 401.
+      tags: [Webhooks]
+      security: []
+      parameters:
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [objects]
+              properties:
+                event: { type: string }
+                at: { type: string, format: date-time }
+                objects:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  items:
+                    type: object
+                    required: [providerId]
+                    properties:
+                      providerId: { type: string }
+                      type: { type: string }
+                      region: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '202':
+          description: Scheduled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scheduled]
+                properties:
+                  scheduled: { type: integer, description: How many managed resources will be observed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /internal/watches:
+    get:
+      operationId: listWatches
+      summary: An account's watch list
+      description: The resources under watch in an account, with their tier and next read. Internal principal only.
+      tags: [Internal]
+      parameters:
+        - name: accountId
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/AccountId' }
+        - name: type
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Watch' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/watches/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/WatchWfrn'
+    get:
+      operationId: getWatch
+      summary: One resource's watch
+      tags: [Internal]
+      responses:
+        '200':
+          description: The watch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Watch' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/watches/{wfrn}:check:
+    parameters:
+      - $ref: '#/components/parameters/WatchWfrn'
+    post:
+      operationId: checkWatch
+      summary: Read one resource now
+      description: Refreshes the resource from the state service and reads it from its provider whatever its due time; the answer says what the read did to its finding.
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the read did
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wfrn, action]
+                properties:
+                  wfrn: { $ref: '#/components/schemas/Wfrn' }
+                  action: { type: string, enum: [none, opened, updated, closed, skipped, error] }
+                  findingId: { type: string }
+                  status: { type: string, enum: [open, closed] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/scan:
+    post:
+      operationId: scanNow
+      summary: One scan pass over every shard now
+      tags: [Internal]
+      parameters:
+        - name: tier
+          in: query
+          description: Only the due resources of this tier
+          schema: { type: string, enum: [hot, warm, cold] }
+      responses:
+        '200':
+          description: What the pass did
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/sync:
+    post:
+      operationId: syncNow
+      summary: Sync the watch list from the state service now
+      tags: [Internal]
+      responses:
+        '200':
+          description: What the sync changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /internal/follow:
+    post:
+      operationId: followRevertsNow
+      summary: Look at the running revert jobs now
+      tags: [Internal]
+      responses:
+        '200':
+          description: How many revert jobs had ended
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ended]
+                properties:
+                  ended: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    consoleJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "The console's internal JWT, signed by the BFF (ES256, `kid` in the header, verified against its `/.well-known/jwks.json`): `iss`, `aud`, `iat`, `exp`, `sub` (the console user id, or the service id on a service token), `acct` (the account the person acts in; absent on a service token), `region`, `groups` (the person's group names in the account), `roles` (the managed role names the person holds there, from the membership the identity service serves: `viewer`, `operator`, `account-admin`, `auditor`), `svc` (the calling service) and optionally `name` and `email`. Admin-only decisions test `roles` for `account-admin`, never a group name."
+  parameters:
+    FindingId:
+      name: findingId
+      in: path
+      required: true
+      schema: { type: string }
+    WatchWfrn:
+      name: wfrn
+      in: path
+      required: true
+      description: The resource's wfrn, percent-encoded
+      schema: { $ref: '#/components/schemas/Wfrn' }
+    AccountId:
+      name: accountId
+      in: query
+      required: false
+      description: The account to read; a console account may only name its own, the internal principal any
+      schema: { $ref: '#/components/schemas/AccountId' }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 255 }
+    ConsoleRequestId:
+      name: X-Console-Request-Id
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+  responses:
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No valid JWT, or a bad webhook signature
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: The finding is closed, or a run is already going
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: 'The provider''s observe budget is used up'
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadGateway:
+      description: The platform answered an error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+    Severity:
+      type: string
+      enum: [info, warning, critical]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items:
+            type: object
+            required: [code, message]
+            properties:
+              code: { type: string }
+              field: { type: string }
+              message: { type: string }
+        correlationId: { type: string }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    Decision:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 1000 }
+        actor: { type: string, description: The console user, when the BFF sends it for one }
+    DriftField:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string, description: 'A JSON pointer into the resource''s attributes' }
+        expected: {}
+        observed: {}
+        ignored: { type: boolean }
+    Finding:
+      type: object
+      required: [findingId, wfrn, accountId, region, type, status, severity, version, fields, openedAt, observedAt]
+      properties:
+        findingId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        status: { type: string, enum: [open, closed] }
+        severity: { $ref: '#/components/schemas/Severity' }
+        version: { type: integer }
+        fields:
+          type: array
+          items: { $ref: '#/components/schemas/DriftField' }
+        openedAt: { type: string, format: date-time }
+        observedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        resolution: { type: string, enum: [reverted, accepted, ignored, vanished] }
+        decidedBy: { type: string }
+        reason: { type: string }
+        revertJobId: { type: string }
+        revertStatus:
+          type: string
+          enum: [running, succeeded, failed]
+          description: How the revert job of `revertJobId` stands; a failed one leaves the finding open
+        ignoredUntil: { type: string, format: date-time }
+    FindingsSummary:
+      type: object
+      required: [open, byType, bySeverity]
+      properties:
+        open: { type: integer }
+        byType:
+          type: object
+          additionalProperties: { type: integer }
+        bySeverity:
+          type: object
+          additionalProperties: { type: integer }
+        lastScanAt: { type: string, format: date-time }
+    DiscoveryRun:
+      type: object
+      required: [runId, type, region, status, startedAt]
+      properties:
+        runId: { type: string }
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        status: { type: string, enum: [running, succeeded, failed] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        seen: { type: integer }
+        unmanaged: { type: integer }
+        error: { type: string }
+    UnmanagedObject:
+      type: object
+      required: [providerId, type, region, observed, seenAt]
+      properties:
+        providerId: { type: string }
+        type: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        name: { type: string }
+        observed: { type: object, additionalProperties: true }
+        seenAt: { type: string, format: date-time }
+        firstSeenAt: { type: string, format: date-time }
+    IgnoredField:
+      type: object
+      required: [path, desiredDigest, by, since]
+      properties:
+        path: { type: string, description: 'A JSON pointer into the resource''s attributes' }
+        desiredDigest: { type: string, description: The digest of the desired attributes the silence is bound to; a new desired state ends it }
+        until: { type: string, format: date-time }
+        by: { type: string }
+        since: { type: string, format: date-time }
+    Watch:
+      type: object
+      description: One managed resource as the drift service watches it
+      required: [wfrn, accountId, region, type, shard, tier, rev]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        type: { type: string }
+        service: { type: string }
+        environment: { type: string }
+        name: { type: string }
+        registryId: { type: string }
+        providerId: { type: string }
+        state: { type: string, description: The state service's lifecycle state; a change in flight is not compared }
+        desiredVersion: { type: integer }
+        desired: { type: object, additionalProperties: true, description: The desired attributes the state service holds }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        resourceUpdatedAt: { type: string, format: date-time }
+        shard: { type: integer, minimum: 0 }
+        tier: { type: string, enum: [hot, warm, cold] }
+        nextCheckAt: { type: string, format: date-time }
+        lastCheckedAt: { type: string, format: date-time }
+        lastObservationAt: { type: string, format: date-time }
+        lastObservedDigest: { type: string }
+        openFindingId: { type: string }
+        lastDriftAt: { type: string, format: date-time }
+        ignored:
+          type: array
+          items: { $ref: '#/components/schemas/IgnoredField' }
+        source: { type: string, description: '`discover` for a resource imported from discovery, read through the type''s discover pages' }
+        rev: { type: integer, description: The stored revision; every write is conditional on it }
+    ScanReport:
+      type: object
+      required: [checked, opened, updated, closed, deferred, errors, pages]
+      properties:
+        checked: { type: integer }
+        opened: { type: integer }
+        updated: { type: integer }
+        closed: { type: integer }
+        deferred: { type: integer, description: Left for a later turn (a change in flight, the observe budget, the scan's cap) }
+        errors: { type: integer }
+        pages: { type: integer, description: Provider pages read }
+    SyncReport:
+      type: object
+      required: [accounts, seen, added, changed, removed]
+      properties:
+        accounts: { type: integer }
+        seen: { type: integer }
+        added: { type: integer }
+        changed: { type: integer }
+        removed: { type: integer }

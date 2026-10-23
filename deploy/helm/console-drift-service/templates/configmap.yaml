@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "console-drift-service.fullname" . }}
+  labels:
+    {{- include "console-drift-service.labels" . | nindent 4 }}
+data:
+  # the service's settings as an application-cluster.yaml, picked up through SPRING_CONFIG_ADDITIONAL_LOCATION
+  application-cluster.yaml: |
+    server:
+      port: {{ .Values.service.targetPort }}
+    spring:
+      data:
+        mongodb:
+          database: {{ .Values.mongodb.database | quote }}
+    console:
+      region: {{ .Values.console.region | quote }}
+      wfrn:
+        partition: {{ .Values.console.wfrnPartition | quote }}
+      drift:
+        shards: {{ .Values.console.drift.shards }}
+        tiers:
+          hot: {{ .Values.console.drift.tiers.hot }}
+          warm: {{ .Values.console.drift.tiers.warm }}
+          cold: {{ .Values.console.drift.tiers.cold }}
+          recent-change: {{ .Values.console.drift.tiers.recentChange }}
+          drifted-for: {{ .Values.console.drift.tiers.driftedFor }}
+          cold-after: {{ .Values.console.drift.tiers.coldAfter }}
+        scan:
+          page-size: {{ .Values.console.drift.scan.pageSize }}
+          batch-size: {{ .Values.console.drift.scan.batchSize }}
+          list-threshold: {{ .Values.console.drift.scan.listThreshold }}
+          max-per-scan: {{ .Values.console.drift.scan.maxPerScan }}
+          observation-refresh: {{ .Values.console.drift.scan.observationRefresh }}
+        budget:
+          observe-per-minute: {{ .Values.console.drift.budget.observePerMinute }}
+          burst: {{ .Values.console.drift.budget.burst }}
+          account-share: {{ .Values.console.drift.budget.accountShare }}
+        loop:
+          enabled: {{ not .Values.temporal.enabled }}
+        sync:
+          interval: {{ .Values.console.drift.sync.interval }}
+          accounts-refresh: {{ .Values.console.drift.sync.accountsRefresh }}
+          accounts: {{ toJson .Values.console.drift.sync.accounts }}
+        follower:
+          interval: {{ .Values.console.drift.follower.interval }}
+        idempotency-ttl: {{ .Values.console.drift.idempotencyTtl }}
+        types-ttl: {{ .Values.console.drift.typesTtl }}
+        {{- if .Values.webhooks.providers }}
+        webhooks:
+          {{- range .Values.webhooks.providers }}
+          {{ .name }}:
+            secret: ${{ printf "{%s}" .key }}
+          {{- end }}
+        {{- end }}
+      state:
+        mode: http
+        base-url: {{ .Values.console.state.baseUrl | quote }}
+        timeout: {{ .Values.console.state.timeout }}
+        dev-headers: false
+      identity:
+        base-url: {{ .Values.console.identity.baseUrl | quote }}
+      service-tokens:
+        mode: bff
+        token-url: {{ .Values.serviceTokens.tokenUrl | quote }}
+        client-id: console-drift-service
+        assertion-file: /var/run/secrets/console-bff/token
+      platform:
+        base-url: {{ .Values.console.platform.baseUrl | quote }}
+        timeout: {{ .Values.console.platform.timeout }}
+      auth:
+        jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
+        issuer: {{ .Values.console.auth.issuer | quote }}
+        audiences: {{ toJson .Values.console.auth.audiences }}
+        dev-headers: false
+      temporal:
+        target: {{ .Values.temporal.target | quote }}
+        namespace: {{ .Values.temporal.namespace | quote }}
+        task-queue: {{ .Values.temporal.taskQueue | quote }}
+        iterations: {{ .Values.temporal.iterations }}
+      kafka:
+        bootstrap-servers: {{ .Values.kafka.bootstrapServers | quote }}
+        group-id: {{ .Values.kafka.groupId | quote }}
+        topics: {{ toJson .Values.kafka.topics }}
+        {{- with .Values.kafka.properties }}
+        properties:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      outbox:
+        relay:
+          enabled: {{ .Values.outbox.relay.enabled }}
+          interval: {{ .Values.outbox.relay.interval }}
+        # the service kit's producer of drift.findings: the same cluster as the consumer above
+        kafka:
+          bootstrap-servers: {{ .Values.kafka.bootstrapServers | quote }}
+          client-id: console-drift-service
+          {{- with .Values.kafka.properties }}
+          properties:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health, info, prometheus, metrics
+      endpoint:
+        health:
+          probes:
+            enabled: true

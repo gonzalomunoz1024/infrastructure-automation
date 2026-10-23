@@ -1,0 +1,164 @@
+# console-drift-service
+# Production runs the mongo, kafka and temporal profiles: MongoDB holds the findings and the
+# watch list, Kafka carries the console's events in and out, Temporal runs the shard loops. The
+# demo profile is for laptops.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/example/console-drift-service
+  tag: ""          # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  # the BFF registers the client console-drift-service with <namespace>:console-drift-service (hub decision 23)
+  name: console-drift-service
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 100
+  fsGroup: 101
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 18084
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 768Mi
+  limits:
+    memory: 1536Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Spring profiles beyond the defaults; mongo is always on in a cluster, kafka and temporal when enabled below
+extraProfiles: []
+
+console:
+  region: global
+  wfrnPartition: wf
+  drift:
+    shards: 64
+    tiers:
+      hot: 15m
+      warm: 1h
+      cold: 24h
+      recentChange: 24h
+      driftedFor: 7d
+      coldAfter: 30d
+    scan:
+      pageSize: 500
+      batchSize: 100
+      listThreshold: 20
+      maxPerScan: 5000
+      observationRefresh: 24h
+    budget:
+      observePerMinute: 300
+      burst: 50
+      accountShare: 0.25
+    sync:
+      interval: 60s
+      accountsRefresh: 5m
+      accounts: []
+    follower:
+      interval: 5s
+    idempotencyTtl: 24h
+    typesTtl: 60s
+  state:
+    baseUrl: http://console-state-service.console.svc.cluster.local
+    timeout: 30s
+  identity:
+    baseUrl: http://console-identity-service.console.svc.cluster.local
+  platform:
+    baseUrl: http://platform.platform.svc.cluster.local:8080
+    timeout: 30s
+  auth:
+    jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
+    issuer: console-bff
+    audiences: [console-drift-service, console]
+
+mongodb:
+  # the service's own database; the URI comes from a secret (key CONSOLE_MONGO_URI)
+  database: console_drift
+  existingSecret: console-drift-service-mongodb
+  uriKey: CONSOLE_MONGO_URI
+
+kafka:
+  enabled: true
+  bootstrapServers: kafka.kafka.svc.cluster.local:9092
+  groupId: console-drift-service
+  topics: [state.resources]
+  # extra consumer properties, for example security.protocol
+  properties: {}
+
+temporal:
+  # the shard loops as Temporal workflows (the plan's schedule); off, the loops run inside each pod
+  enabled: true
+  target: temporal-frontend.temporal.svc.cluster.local:7233
+  namespace: console
+  taskQueue: console-drift
+  iterations: 96
+
+outbox:
+  relay:
+    enabled: true
+    interval: 1s
+
+platformToken:
+  # the platform's console-internal service-account token: the registry, observe reads and jobs
+  existingSecret: console-drift-service-platform
+  tokenKey: CONSOLE_PLATFORM_TOKEN
+
+serviceTokens:
+  # how this service calls the state and identity services as itself (hub decision 23): a token
+  # from the BFF, authenticated by the pod's projected service-account token; no static token
+  tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
+  audience: console-bff
+  expirationSeconds: 600
+
+webhooks:
+  # the HMAC secrets of the providers that push change notifications, one secret per provider
+  existingSecret: ""
+  providers: []     # [{ name: vsphere, key: VSPHERE_WEBHOOK_SECRET }]
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+networkPolicy:
+  enabled: false
+  # who may call the API: the BFF; the webhooks come through the ingress
+  ingressFrom:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: console
+
+env: []
