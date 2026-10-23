@@ -1,0 +1,77 @@
+import { Icon, cx } from '@iaf/ui'
+import { displayWfrn } from '@iaf/console-kit'
+import { useConsole } from './console'
+import { findService, findType, idOfWfrn } from '../lib/descriptors'
+import { Link, pathFor, type Route } from './router'
+
+/*
+ * Where you are: Console home, the service, the type, the resource. Every crumb but the last is
+ * a link; the last names the page for screen readers (aria-current).
+ */
+
+export interface Crumb {
+  label: string
+  href?: string
+  mono?: boolean
+}
+
+export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => string; typeTitle: (service: string, type: string) => string }): Crumb[] {
+  const home: Crumb = { label: 'Console home', href: pathFor('home') }
+  switch (route.name) {
+    case 'home':
+      return [{ label: 'Console home' }]
+    case 'service':
+      return [home, { label: lookup.serviceTitle(route.params.service) }]
+    case 'type':
+      return [home, { label: lookup.serviceTitle(route.params.service), href: pathFor('service', { service: route.params.service }) }, { label: lookup.typeTitle(route.params.service, route.params.type) }]
+    case 'resource':
+      return [
+        home,
+        { label: lookup.serviceTitle(route.params.service), href: pathFor('service', { service: route.params.service }) },
+        { label: lookup.typeTitle(route.params.service, route.params.type), href: pathFor('type', { service: route.params.service, type: route.params.type }) },
+        { label: idOfWfrn(route.params.wfrn) ?? displayWfrn(route.params.wfrn, 32), mono: true },
+      ]
+    case 'requests':
+      return [home, { label: 'Requests' }]
+    case 'request':
+      return [home, { label: 'Requests', href: pathFor('requests') }, { label: route.params.id, mono: true }]
+    case 'iam':
+      return [home, { label: 'Identity and access' }]
+    case 'settings':
+      return [home, { label: 'Settings' }]
+    default:
+      return [home, { label: 'Not found' }]
+  }
+}
+
+export function Breadcrumbs({ route, className }: { route: Route; className?: string }) {
+  const { services, types } = useConsole()
+  const crumbs = crumbsFor(route, {
+    serviceTitle: (id) => findService(services, id)?.title ?? id,
+    typeTitle: (service, type) => findType(types, service, type)?.title ?? type,
+  })
+  if (crumbs.length <= 1) return null
+  return (
+    <nav aria-label="Breadcrumb" className={cx('mb-4 flex min-w-0 items-center gap-1.5 text-caption text-secondary', className)}>
+      <ol className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {crumbs.map((c, i) => {
+          const last = i === crumbs.length - 1
+          return (
+            <li key={`${c.label}-${i}`} className="flex min-w-0 items-center gap-1.5">
+              {i > 0 && <Icon name="chevron-right" size={11} className="shrink-0 text-tertiary" aria-hidden="true" />}
+              {c.href && !last ? (
+                <Link to={c.href} className="truncate rounded-sm transition-colors hover:text-primary">
+                  {c.label}
+                </Link>
+              ) : (
+                <span aria-current={last ? 'page' : undefined} className={cx('truncate text-primary', c.mono && 'font-mono')}>
+                  {c.label}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
