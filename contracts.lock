@@ -1,7 +1,7 @@
 {
   "$comment": "The commit of the console-root hub this workspace copied its contracts from, and the sha256 of each copy. `npm run contracts:verify` checks the copies still match; a new pin is a new commit here.",
   "hub": "console-root",
-  "commit": "efec10762d4239fa15ca8b48de31cb10c48a679f",
+  "commit": "a3e0a7951e6e80cd59909df04f3a8e361a47331b",
   "files": {
     "packages/wfrn/fixtures.json": {
       "source": "contracts/wfrn/fixtures.json",
