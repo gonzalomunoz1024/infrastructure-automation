@@ -2,7 +2,7 @@ import { get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, ApprovalsDecided, BatchAccepted, BatchInput, BatchPreview, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, BlastRadius, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, SearchHit, Suggestion } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, ActivityEntry, ApprovalsDecided, BatchAccepted, BatchInput, BatchPreview, BffConsoleType, BffJobDetail, BffJobSummary, BffRegion, BlastRadius, CommandAccepted, CommandInput, ConsolePreview, ConsoleResource, ConsoleResourceDetail, DemoPerson, Finding, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, ResourceRef, RetryFix, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
@@ -149,8 +149,8 @@ export const bff = {
     list: (params?: JobListParams) => page<BffJobSummary>(b('/jobs'), params),
     get: (jobId: string) => get<BffJobDetail>(b(`/jobs/${enc(jobId)}`)),
     cancel: (jobId: string, key?: string) => request<{ jobId: string; status: string }>('POST', b(`/jobs/${enc(jobId)}:cancel`), undefined, keyed(key)),
-    /** a paused step resumes in the same job; an ended job runs again as a new one (its id in the answer) */
-    retry: (jobId: string, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:retry`), undefined, keyed(key)),
+    /** a paused step resumes in the same job; an ended job runs again as a new one (its id in the answer); the fix's input merges over the job's own */
+    retry: (jobId: string, body?: RetryFix, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:retry`), body && (body.input || body.fromStep) ? body : undefined, keyed(key)),
     /** goes on past the step the job waits on (or the one named) */
     skip: (jobId: string, step?: string, key?: string) => request<CommandAccepted>('POST', b(`/jobs/${enc(jobId)}:skip`), step ? { step } : undefined, keyed(key)),
     /** fails the paused step for good: the completed steps' compensations run */

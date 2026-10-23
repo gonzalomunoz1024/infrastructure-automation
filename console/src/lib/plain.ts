@@ -38,11 +38,17 @@ const CODES: Record<string, { title: string; message?: string; next?: string; re
   'resource.not-found': { title: 'Not found', message: 'Nothing lives at this address: it may have been deleted or renamed.', next: 'Go back to the list and look for it there.' },
   'verb.unknown': { title: 'No such action', message: 'The provider publishes no workflow for this verb on this type.' },
   'create.unavailable': { title: 'Nothing creates this type yet', message: 'The provider has not published a create workflow for it.' },
-  'job.not-open': { title: 'This request has already ended', message: 'Only a queued, running or waiting request can be cancelled.' },
+  'job.not-open': { title: 'This request has already ended', message: 'Only a queued, running, waiting or paused request can be cancelled.' },
+  'job.not-failed': { title: 'Nothing here to run again', message: 'Only a request that failed, rolled back or paused on a failed step runs again.', next: 'Reload to see where the request is now.' },
+  'job.not-paused': { title: 'This request is no longer paused', message: 'Skip and abort act on a request waiting on a failed step, and this one moved on.', next: 'Reload to see where the request is now.' },
+  'step.unknown': { title: 'That step is not in this request', message: 'The request has no step by that name to run from.', next: 'Pick one of the steps the request lists.' },
+  'retry.fix-unsupported': { title: 'A bulk run takes no changes', message: 'Its failed rows run again as they were.', next: 'To change a row, run the action on that resource alone.' },
+  'retry.name-fixed': { title: 'A retry keeps the name', message: 'The resource was named when it was requested, and the name stays.', next: 'Leave the name as it is, or create a new resource under the new name.' },
   'csrf.missing': { title: 'Your session changed', message: 'The page was signed in as someone else, or the session was renewed.', next: 'Reload the page and try again.', retryable: true },
   'step-up.required': { title: 'Sign in again for this', message: 'A sensitive action needs a fresh sign-in.', next: 'Sign in again and come back.' },
   'quota.exceeded': { title: 'The account’s quota is used up', message: 'The account holds as many resources of this type as its quota allows.', next: 'Delete what you no longer need, or request an increase from the platform team on IAM, Access keys, Quotas.' },
-  'batch.not-implemented': { title: 'Bulk runs are not here yet', message: 'The console runs a verb on one resource at a time for now.' },
+  'batch.too-large': { title: 'Too many rows for one run', message: 'The workflow takes only so many rows in one bulk run.', next: 'Select fewer, and run the rest as another batch.' },
+  'bulk.unsupported': { title: 'This action does not run in bulk', message: 'The provider publishes no bulk route for it.', next: 'Run it on one resource at a time.' },
 }
 
 const STATUS: Record<number, { title: string; message: string; next?: string; retryable?: boolean }> = {
@@ -72,7 +78,8 @@ function detailOf(e: ApiError): string | undefined {
 /** A failed call as words: what happened, why, and what to do next. */
 export function explain(error: unknown, what?: string): Explanation {
   if (isApiError(error)) {
-    const byCode = CODES[error.stepUp ? 'step-up.required' : error.error]
+    // the BFF names a 400's code on its problems, and a 409's as the error itself
+    const byCode = CODES[error.stepUp ? 'step-up.required' : error.error] ?? CODES[error.problems?.find((p) => CODES[p.code])?.code ?? '']
     const byStatus = STATUS[error.status] ?? (error.status >= 500 ? STATUS[500] : error.status >= 400 ? STATUS[400] : undefined)
     const detail = detailOf(error)
     const base = byCode ?? byStatus ?? { title: error.error || 'Something went wrong', message: '', retryable: false }

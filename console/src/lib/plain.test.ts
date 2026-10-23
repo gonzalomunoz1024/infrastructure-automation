@@ -72,3 +72,13 @@ describe('explaining a field’s problem', () => {
     expect(lowerFirst('')).toBe('')
   })
 })
+
+describe('explaining a steered or bulk request', () => {
+  it('reads a 400’s code from its problems when the error is a sentence', () => {
+    const x = explain(new ApiError(400, { error: 'a batch runs its failed rows again as they were', problems: [{ level: 'error', code: 'retry.fix-unsupported', field: '/input', message: 'A batch’s rows run again as they were' }] }))
+    expect(x.title).toBe('A bulk run takes no changes')
+    expect(x.next).toBe('To change a row, run the action on that resource alone.')
+    expect(explain(new ApiError(409, { error: 'job.not-paused', detail: { status: 'succeeded' } })).title).toBe('This request is no longer paused')
+    expect(explain(new ApiError(400, { error: 'batch.too-large', problems: [{ level: 'error', code: 'batch.too-large', field: '/items', message: 'At most 500 rows' }] })).next).toBe('Select fewer, and run the rest as another batch.')
+  })
+})
