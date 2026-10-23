@@ -23,6 +23,8 @@ dependencies {
     implementation(libs.micrometer.observation)
     implementation(libs.micrometer.tracing)
     implementation(libs.micrometer.tracing.bridge.otel)
+    implementation(libs.micrometer.context.propagation)
+    implementation(libs.opentelemetry.exporter.otlp)
     implementation(libs.json.schema.validator)
     implementation("org.slf4j:slf4j-api")
 
