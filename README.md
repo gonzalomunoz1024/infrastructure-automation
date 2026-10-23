@@ -11,8 +11,8 @@ This repository is one branch (`console-search-indexer`) of the console work unt
 move to repositories of their own. It is shaped like that future repository: the Gradle root is
 the branch root, it carries its own CI, and it holds no platform files. What every service shares
 (decisions, contracts, the wfrn fixtures) lives on the hub branch, `console-root`, which this
-repository pins by commit in `contracts.lock` (hub `b0a0d52`), and the shared code comes from
-`console-libs` as `com.iaf.console:*`.
+repository pins by commit in `contracts.lock` (hub `37a99d6`, turn 15 of the hub's merge order),
+and the shared code comes from `console-libs` as `com.iaf.console:*`.
 
 ## Run it
 
