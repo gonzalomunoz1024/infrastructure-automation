@@ -96,8 +96,9 @@ profiles.
 | `console.ingest.rebuild-on-empty` | `true` | Rebuild from the platform's snapshot when there is no feed checkpoint |
 | `console.ingest.kafka.*` | `localhost:9092`, group `console-state-service`, topics `platform.jobs`, `platform.resources`, `identity.changes` | The Kafka consumer (`kafka` profile) |
 | `console.platform.base-url`, `token`, `timeout` | `http://localhost:18090`, `CONSOLE_PLATFORM_TOKEN`, `30s` | The platform's API and the service account this service calls it with |
-| `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-state-service, console]` | Which tokens are accepted |
-| `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token (demo only) |
+| `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-state-service]` | Which tokens are accepted: one audience, this service's |
+| `console.auth.internal-services` | `console-bff`, `console-search-indexer`, `console-drift-service`, `console-cost-service` | The services whose own tokens (no `acct`, `sub` = `svc`) act for any account |
+| `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token; the service refuses to start with them outside the `demo` profile or beside `mongo` or `kafka` |
 | `console.crypto.master-key` | `CONSOLE_MASTER_KEY` | 32 bytes, base64; random per process when unset outside `mongo` |
 | `console.outbox.relay.*` | on, `1s` | The service kit's outbox relay |
 | `console.trail.enabled`, `period`, `grace`, `interval`, `backfill` | on, `1h`, `5m`, `1m`, `24h` | The trail's digests: the period each seals (aligned to the epoch), the grace for late events, how often the digester looks, how far back its first pass reaches |
@@ -106,9 +107,14 @@ profiles.
 
 ## The API
 
-Every call carries the BFF's internal token (ES256, `iss console-bff`, `aud console-state-service`,
-`acct` the account, `sub` the user) or, for another console service, a token without `acct`, which
-may name the account with `?accountId=`. A resource of another account is a 404, never a 403.
+Every call carries the BFF's internal token (ES256, `iss console-bff`, `aud` exactly
+`console-state-service` and nothing else, hub decision 35; `acct` the account, `sub` the user) or,
+for one of the console's own services, its service token (hub decision 23): no `acct`, `sub` and
+`svc` both the service, which must be on `console.auth.internal-services`. Only such a caller may
+name the account with `?accountId=`; a token without `acct` from anyone else is refused (401). A
+resource of another account is a 404, never a 403. A body's `actor` is recorded only from a service
+acting for a person; for a person it is always the token's `sub`. `:import`, `:record-observation`,
+`:record-drift` and `:resolve-drift` are the console's own services' commands (403 for a person).
 Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A123456789012%3Avm%2Fvm-…`).
 
 | Call | Answer |
@@ -229,9 +235,11 @@ to another wfrn (409 `registry.collision`, counter `console_state_collisions_tot
 
 ## Sensitive data
 
-A field is sensitive when the type's schema marks it `x-console: {sensitive: true}` or its name
-matches `password|passwd|secret|token|credential|private-key|api-key`. Such values in `input`,
-`attributes`, `changes`, `observed` and drift fields are sealed before anything is stored:
+A field is sensitive when the type's schema marks it `x-console: {sensitive: true}`, at any depth (a
+nested property is kept as a JSON pointer, `/connection/password`, array items transparent), or its
+name matches `password|passwd|secret|token|credential|private-key|api-key` wherever it is. Such
+values anywhere in `input`, `attributes`, `changes`, `observed` and drift fields are sealed before
+anything is stored:
 AES-256-GCM under a per-account data key (`account_keys`, wrapped by the master key with the account
 as associated data), serialized as `{"$enc": "<nonce+ciphertext>", "k": 1}`. The log, the
 projection and the idempotency store only ever hold sealed values; Kafka, the trail and every
@@ -240,8 +248,10 @@ and for a person whose `roles` claim (the managed roles the BFF signs into its t
 holds `account-admin`; a group name never decides, anyone else is answered masked, and every reveal is
 logged. Destroying the
 account's data key (`identity.changes` or `POST /internal/accounts/{id}:shred`) is the crypto-shred:
-every copy, in every store and backup, is unreadable from then on, and a later seal for the same
-account gets a new key.
+every copy, in every store and backup, is unreadable from then on. A marker stays where the key
+was, so the account never gets a key again (a later seal is a 409 `account.shredded`), and every
+replica holds an unwrapped key for 60 seconds at most, so a shred handled by one pod reaches the
+others within a minute.
 
 ## Relationships
 
@@ -356,6 +366,9 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 16 | The trail is sealed by the service itself | A per-resource chain is race-free on versions and verifies one resource alone; hourly signed digests per account make deleting or editing a whole event detectable, the way CloudTrail's digest files do; keys' public halves are kept so rotation never orphans a digest |
 | 17 | Revert is a plan, never an action | The person confirms the change and it runs through the type's update workflow, its preview and IAM like any other update |
 | 18 | A move is a re-import, the tombstone written first (hub decision 30) | A wfrn names its account, so moving means a new name; writing the tombstone first keeps a registry id from being live twice, and the old name answers where it went for good |
+| 21 | One audience, and an allow-list of services (hub decision 35) | A token minted for another service, or for several, must not work here; a token without an account is a service acting as itself, and only the services that call this one are trusted to name any account |
+| 22 | Registry reads by id are vouched for | The console reads the registry with its own privileged token, so a registry id recorded on a resource pulls in a record only when it is bound to no other name or account, or the console's own tombstones show it moved the resource there |
+| 23 | `:transfer` stays a person's command, authorized by the BFF | The BFF authorizes both ends (`<service>:delete` here, `<service>:create` there, hub decision 30) with the person's own token, and only the BFF holds tokens for this audience; a service-only route would hide who moved it |
 
 ## CI and release
 

@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.kit.errors.ForbiddenException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.Problem;
 import com.iaf.console.kit.events.EventEnvelope;
@@ -141,20 +142,21 @@ public final class ResourceController {
                     "the caller acts for no account; the BFF mints with the account's token")));
         }
         AccountScope scope = principal.scope(null, body.region() != null ? body.region() : defaultRegion);
-        return command(scope, key, body, HttpStatus.CREATED, () -> inventory.mint(scope, body.command(principal.subject(), requestId)));
+        return command(scope, key, body, HttpStatus.CREATED, () -> inventory.mint(scope, body.command(principal.actor(body.actor()), requestId)));
     }
 
     @PostMapping("/v1/resources:import")
     public Mono<ResponseEntity<ObjectNode>> importResource(ServerWebExchange exchange, @RequestBody Requests.ImportRequest body,
+            @RequestParam(required = false) String accountId,
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
-        ConsolePrincipal principal = principal(exchange);
-        String account = null;
+        ConsolePrincipal principal = internalOnly(exchange, "import");
+        String account = accountId;
         if (body.wfrn() != null && !body.wfrn().isBlank()) {
             account = ResourceIdentity.of(body.wfrn()).accountId();
         }
         AccountScope scope = principal.scope(account, body.region() != null ? body.region() : defaultRegion);
-        return command(scope, key, body, HttpStatus.CREATED, () -> inventory.importResource(scope, body.command(principal.subject(), requestId)));
+        return command(scope, key, body, HttpStatus.CREATED, () -> inventory.importResource(scope, body.command(principal.actor(body.actor()), requestId)));
     }
 
     // one resource
@@ -243,6 +245,7 @@ public final class ResourceController {
     public Mono<ResponseEntity<ObjectNode>> recordObservation(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.ObservationRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        internalOnly(exchange, "record-observation");
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.recordObservation(scope, wfrn, body.command(actor, requestId)));
     }
 
@@ -250,6 +253,7 @@ public final class ResourceController {
     public Mono<ResponseEntity<ObjectNode>> recordDrift(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.DriftRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        internalOnly(exchange, "record-drift");
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.recordDrift(scope, wfrn, body.command(actor, requestId)));
     }
 
@@ -257,10 +261,25 @@ public final class ResourceController {
     public Mono<ResponseEntity<ObjectNode>> resolveDrift(ServerWebExchange exchange, @PathVariable String wfrn,
             @RequestBody Requests.ResolveDriftRequest body, @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String key,
             @RequestHeader(value = CONSOLE_REQUEST_ID, required = false) String requestId) {
+        internalOnly(exchange, "resolve-drift");
         return on(exchange, wfrn, key, body, (scope, actor) -> inventory.resolveDrift(scope, wfrn, body.command(actor, requestId)));
     }
 
     // helpers
+
+    /**
+     * The commands only the console's own services send: an import (the backfill and discovery), and
+     * the drift service's observations and findings. A person's token, even one the BFF forwards,
+     * is refused, so no one records a deletion or settles a finding past the delete workflow's or the
+     * update's authorization.
+     */
+    private static ConsolePrincipal internalOnly(ServerWebExchange exchange, String command) {
+        ConsolePrincipal principal = principal(exchange);
+        if (!principal.internal()) {
+            throw new ForbiddenException(command + " is sent by the console's own services, not for a person");
+        }
+        return principal;
+    }
 
     private interface Command extends java.util.function.BiFunction<AccountScope, String, Mono<Resource>> {
     }
@@ -268,7 +287,7 @@ public final class ResourceController {
     private Mono<ResponseEntity<ObjectNode>> on(ServerWebExchange exchange, String wfrn, String key, Object body, Command command) {
         ConsolePrincipal principal = principal(exchange);
         AccountScope scope = scopeOf(exchange, wfrn);
-        return command(scope, key, body, HttpStatus.OK, () -> command.apply(scope, principal.subject()));
+        return command(scope, key, body, HttpStatus.OK, () -> command.apply(scope, principal.actor(body instanceof Requests.Acting a ? a.actor() : null)));
     }
 
     private Mono<ResponseEntity<ObjectNode>> command(AccountScope scope, String key, Object body, HttpStatus status, Supplier<Mono<Resource>> run) {

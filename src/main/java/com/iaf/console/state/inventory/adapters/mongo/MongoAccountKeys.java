@@ -31,7 +31,8 @@ public final class MongoAccountKeys implements AccountKeysPort, MongoIndexed {
 
     @Override
     public Mono<WrappedKey> find(String accountId) {
-        return Mono.from(mongo.collection(COLLECTION).find(Filters.eq("_id", accountId)).first()).map(MongoAccountKeys::read);
+        return Mono.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("_id", accountId), Filters.ne("shredded", true))).first())
+                .map(MongoAccountKeys::read);
     }
 
     @Override
@@ -48,12 +49,17 @@ public final class MongoAccountKeys implements AccountKeysPort, MongoIndexed {
 
     @Override
     public Mono<Boolean> destroy(String accountId) {
-        return Mono.from(mongo.collection(COLLECTION).deleteOne(Filters.eq("_id", accountId))).map(r -> r.getDeletedCount() > 0);
+        // the key goes, a marker stays: a shredded account never gets a new key
+        Document marker = new Document("_id", accountId).append("shredded", true).append("shreddedAt", new java.util.Date());
+        return Mono.from(mongo.collection(COLLECTION).findOneAndReplace(Filters.eq("_id", accountId), marker,
+                        new com.mongodb.client.model.FindOneAndReplaceOptions().upsert(true)))
+                .map(before -> !before.getBoolean("shredded", false))
+                .defaultIfEmpty(false);
     }
 
     @Override
     public Flux<String> listAccounts() {
-        return Flux.from(mongo.collection(COLLECTION).find().projection(Projections.include("_id"))).map(d -> d.getString("_id"));
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.ne("shredded", true)).projection(Projections.include("_id"))).map(d -> d.getString("_id"));
     }
 
     private static WrappedKey read(Document d) {

@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -57,12 +59,23 @@ public final class SensitiveData {
     private static final int NONCE_BYTES = 12;
     private static final int TAG_BITS = 128;
     private static final int KEY_BYTES = 32;
+    private static final int MAX_DEPTH = 32;
 
     private final AccountKeysPort keys;
     private final SecretKey masterKey;
     private final Clock clock;
     private final SecureRandom random = new SecureRandom();
-    private final Map<String, Mono<SecretKey>> cache = new ConcurrentHashMap<>();
+    /**
+     * Unwrapped keys, each for {@link #KEY_TTL} at most: a shred on another replica reaches this one
+     * within that time, since the next load finds no key.
+     */
+    private final Map<String, Cached> cache = new ConcurrentHashMap<>();
+
+    /** How long an unwrapped key is used before it is looked up again. */
+    public static final Duration KEY_TTL = Duration.ofSeconds(60);
+
+    private record Cached(Mono<SecretKey> key, Instant until) {
+    }
 
     public SensitiveData(AccountKeysPort keys, byte[] masterKey, Clock clock) {
         if (masterKey == null || masterKey.length != KEY_BYTES) {
@@ -99,11 +112,13 @@ public final class SensitiveData {
             JsonNode fields = sealed.get("fields");
             if (fields instanceof ArrayNode array) {
                 for (JsonNode f : array) {
-                    if (f instanceof ObjectNode field && sensitive(pathName(Json.text(field, "path")), type)) {
+                    if (f instanceof ObjectNode field && sensitivePath(Json.text(field, "path"), type)) {
                         for (String side : List.of("expected", "observed")) {
                             JsonNode v = field.get(side);
                             if (v != null && !v.isNull() && !isSealed(v)) {
                                 field.set(side, encrypt(v, key, event.accountId()));
+                            } else if (v != null) {
+                                sealIn(v, field.path("path").asText(""), type, key, event.accountId(), 0);
                             }
                         }
                     }
@@ -116,14 +131,40 @@ public final class SensitiveData {
     private static boolean hasAnything(ObjectNode data, ResourceTypeInfo type) {
         for (String holder : List.of("input", "attributes", "changes", "observed")) {
             ObjectNode node = Json.objectField(data, holder);
-            if (node != null && node.properties().stream().anyMatch(e -> sensitive(e.getKey(), type) && !isSealed(e.getValue()))) {
+            if (node != null && unsealedIn(node, "", type, 0)) {
                 return true;
             }
         }
         JsonNode fields = data.get("fields");
         if (fields != null && fields.isArray()) {
             for (JsonNode f : fields) {
-                if (sensitive(pathName(Json.text(f, "path")), type)) {
+                if (sensitivePath(Json.text(f, "path"), type)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Whether anything under {@code node} (at the pointer {@code at}) is sensitive and still in clear, at any depth. */
+    private static boolean unsealedIn(JsonNode node, String at, ResourceTypeInfo type, int depth) {
+        if (depth > MAX_DEPTH) {
+            return false;
+        }
+        if (node instanceof ObjectNode o) {
+            for (Map.Entry<String, JsonNode> e : o.properties()) {
+                String pointer = at + "/" + e.getKey();
+                JsonNode v = e.getValue();
+                if (isSealed(v) || v == null || v.isNull()) {
+                    continue;
+                }
+                if (sensitive(e.getKey(), pointer, type) || unsealedIn(v, pointer, type, depth + 1)) {
+                    return true;
+                }
+            }
+        } else if (node instanceof ArrayNode a) {
+            for (JsonNode v : a) {
+                if (unsealedIn(v, at, type, depth + 1)) {
                     return true;
                 }
             }
@@ -132,14 +173,71 @@ public final class SensitiveData {
     }
 
     private void sealObject(ObjectNode node, ResourceTypeInfo type, SecretKey key, String accountId) {
-        List<String> names = new ArrayList<>();
-        node.fieldNames().forEachRemaining(names::add);
-        for (String name : names) {
-            JsonNode value = node.get(name);
-            if (sensitive(name, type) && value != null && !value.isNull() && !isSealed(value)) {
-                node.set(name, encrypt(value, key, accountId));
+        sealIn(node, "", type, key, accountId, 0);
+    }
+
+    /**
+     * Seals every sensitive value under {@code node}, at any depth: a field the type names (by name
+     * at the top, by JSON pointer below it) or whose name says secret is sealed whole; anything else
+     * is walked into, arrays included.
+     */
+    private void sealIn(JsonNode node, String at, ResourceTypeInfo type, SecretKey key, String accountId, int depth) {
+        if (depth > MAX_DEPTH) {
+            return;
+        }
+        if (node instanceof ObjectNode o) {
+            List<String> names = new ArrayList<>();
+            o.fieldNames().forEachRemaining(names::add);
+            for (String name : names) {
+                JsonNode value = o.get(name);
+                String pointer = at + "/" + name;
+                if (value == null || value.isNull() || isSealed(value)) {
+                    continue;
+                }
+                if (sensitive(name, pointer, type)) {
+                    o.set(name, encrypt(value, key, accountId));
+                } else {
+                    sealIn(value, pointer, type, key, accountId, depth + 1);
+                }
+            }
+        } else if (node instanceof ArrayNode a) {
+            for (JsonNode v : a) {
+                sealIn(v, at, type, key, accountId, depth + 1);
             }
         }
+    }
+
+    /** Whether the field {@code name} at {@code pointer} is sensitive: its name says secret, or the type names it, top-level by name or as a pointer. */
+    static boolean sensitive(String name, String pointer, ResourceTypeInfo type) {
+        if (SECRET_NAMES.matcher(name).find()) {
+            return true;
+        }
+        if (type == null) {
+            return false;
+        }
+        boolean top = pointer.indexOf('/', 1) < 0;
+        return top && type.sensitiveFields().contains(name) || type.sensitiveFields().contains(pointer);
+    }
+
+    /** Whether a drift field's path (a JSON pointer, or a top-level name) reaches a sensitive value: the field itself or anything holding it. */
+    private static boolean sensitivePath(String path, ResourceTypeInfo type) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String p = path.startsWith("/") ? path : "/" + path;
+        String[] parts = p.substring(1).split("/");
+        StringBuilder pointer = new StringBuilder();
+        for (String part : parts) {
+            if (part.matches("\\d+")) {
+                continue; // array items are transparent
+            }
+            pointer.append('/').append(part);
+            if (sensitive(part, pointer.toString(), type)) {
+                return true;
+            }
+        }
+        String whole = pointer.toString();
+        return type != null && type.sensitiveFields().stream().anyMatch(f -> f.startsWith(whole + "/"));
     }
 
     /** Whether a field is sensitive: the type says so, or its name does. */
@@ -148,15 +246,6 @@ public final class SensitiveData {
             return false;
         }
         return (type != null && type.sensitiveFields().contains(field)) || SECRET_NAMES.matcher(field).find();
-    }
-
-    private static String pathName(String path) {
-        if (path == null) {
-            return null;
-        }
-        String p = path.startsWith("/") ? path.substring(1) : path;
-        int slash = p.indexOf('/');
-        return slash < 0 ? p : p.substring(0, slash);
     }
 
     public static boolean isSealed(JsonNode value) {
@@ -342,20 +431,24 @@ public final class SensitiveData {
     }
 
     private Mono<SecretKey> key(String accountId) {
-        return cache.computeIfAbsent(accountId, id -> loadOrCreate(id).cache());
+        Instant now = clock.instant();
+        return cache.compute(accountId, (id, c) -> c != null && c.until().isAfter(now) ? c : new Cached(loadOrCreate(id).cache(), now.plus(KEY_TTL)))
+                .key();
     }
 
     private Mono<SecretKey> keyIfAny(String accountId) {
-        Mono<SecretKey> cached = cache.get(accountId);
-        if (cached != null) {
-            return cached;
+        Cached cached = cache.get(accountId);
+        if (cached != null && cached.until().isAfter(clock.instant())) {
+            return cached.key();
         }
-        return keys.find(accountId).map(this::unwrap).doOnNext(k -> cache.put(accountId, Mono.just(k)));
+        return keys.find(accountId).map(this::unwrap)
+                .doOnNext(k -> cache.put(accountId, new Cached(Mono.just(k), clock.instant().plus(KEY_TTL))));
     }
 
     private Mono<SecretKey> loadOrCreate(String accountId) {
         return keys.find(accountId)
                 .switchIfEmpty(Mono.defer(() -> keys.save(wrap(accountId, newDataKey()))))
+                .switchIfEmpty(Mono.error(() -> new ConflictException("account.shredded: the account's data key was destroyed; nothing new is sealed for it")))
                 .map(this::unwrap)
                 .onErrorResume(e -> {
                     cache.remove(accountId);

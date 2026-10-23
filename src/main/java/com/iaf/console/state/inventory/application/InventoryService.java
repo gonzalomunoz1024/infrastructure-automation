@@ -354,8 +354,10 @@ public final class InventoryService {
                 .flatMap(other -> {
                     metrics.collision();
                     log.warn("collision: registry id {} is bound to {} and was offered for {}", registryId, other.wfrn(), wfrn);
+                    // the holder is named only to its own account: another tenant's wfrn never leaves in an error
+                    boolean sameAccount = other.accountId().equals(ResourceIdentity.of(wfrn).accountId());
                     return Mono.<Void>error(new ConflictException("registry.collision: registry id '" + registryId + "' is bound to another resource",
-                            Map.of("registryId", registryId, "wfrn", other.wfrn())));
+                            sameAccount ? Map.of("registryId", registryId, "wfrn", other.wfrn()) : Map.of("registryId", registryId)));
                 });
     }
 

@@ -76,7 +76,8 @@ console:
   auth:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-state-service, console]
+    audiences: [console-state-service]
+    internalServices: [console-bff, console-search-indexer, console-drift-service, console-cost-service]
 
 mongodb:
   # the service's own database; the URI comes from a secret (key CONSOLE_MONGO_URI)

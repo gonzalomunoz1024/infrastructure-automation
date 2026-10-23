@@ -196,8 +196,8 @@ public class InventoryConfiguration {
     }
 
     @Bean
-    public PlatformResources platformResources(PlatformPort platform) {
-        return new PlatformResources(platform);
+    public PlatformResources platformResources(PlatformPort platform, ResourceLoader loader) {
+        return new PlatformResources(platform, loader);
     }
 
     @Bean

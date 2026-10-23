@@ -80,7 +80,7 @@ class IngestionTest {
     private final InventoryService inventory = new InventoryService(new ResourceLoader(events, projection), events, projection, types,
             new SensitiveData(new InMemoryAccountKeys(), SensitiveData.randomMasterKey(), clock), new ResourceEventPublisher(outbox), metrics, clock,
             "wf", Duration.ofDays(90));
-    private final PlatformResources registry = new PlatformResources(platform);
+    private final PlatformResources registry = new PlatformResources(platform, new ResourceLoader(events, projection));
     private final JobOutcomes outcomes = new JobOutcomes(inventory, registry, platform);
     private final ChangeRequests changes = new ChangeRequests(inventory, outcomes);
     private final PlatformEventHandler handler = new PlatformEventHandler(inventory, outcomes, registry,

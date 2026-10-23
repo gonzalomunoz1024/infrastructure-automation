@@ -34,6 +34,7 @@ data:
         jwks-uri: {{ .Values.console.auth.jwksUri | quote }}
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
+        internal-services: {{ toJson .Values.console.auth.internalServices }}
         dev-headers: false
       ingest:
         enabled: {{ .Values.ingest.enabled }}

@@ -44,7 +44,8 @@ console:
   auth:
     jwks-uri: http://localhost:18081/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-state-service, console]
+    audiences: [console-state-service]
+    internal-services: [console-bff, console-search-indexer, console-drift-service, console-cost-service]
     dev-headers: false
   crypto:
     master-key: ${CONSOLE_MASTER_KEY:}

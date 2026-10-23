@@ -105,10 +105,13 @@ class ResourceJourneyTest extends DemoServiceTest {
         assertThat(listed.get("items")).hasSize(1);
         assertThat(listed.get("items").get(0).get("wfrn").asText()).isEqualTo(wfrn);
 
-        ObjectNode tag = json.createObjectNode().put("expectedVersion", activeVersion);
+        ObjectNode tag = json.createObjectNode().put("expectedVersion", activeVersion).put("actor", "mallory");
         tag.putObject("set").put("env", "dev").put("owner-team", "web");
         JsonNode tagged = body(dana.post().uri(resource(wfrn, ":tag")).bodyValue(tag).exchange().expectStatus().isOk());
         assertThat(tagged.get("tags").get("owner-team").asText()).isEqualTo("web");
+        JsonNode tagEvents = body(dana.get().uri(resource(wfrn, "/events")).exchange().expectStatus().isOk());
+        JsonNode lastTag = tagEvents.get("items").get(tagEvents.get("items").size() - 1);
+        assertThat(lastTag.toString()).as("a person's body never names another actor").doesNotContain("\"mallory\"");
         JsonNode byTag = body(dana.get().uri("/v1/resources?tag.owner-team=web&type=vm").exchange().expectStatus().isOk());
         assertThat(byTag.get("items")).extracting(r -> r.get("wfrn").asText()).contains(wfrn);
 
@@ -118,6 +121,9 @@ class ResourceJourneyTest extends DemoServiceTest {
         JsonNode observed = body(asService("console-drift-service").post().uri(uri("/v1/wfrn/" + encode(wfrn) + ":record-observation?accountId=" + ACCOUNT))
                 .bodyValue(observation).exchange().expectStatus().isOk());
         assertThat(observed.get("observedStatus").asText()).isEqualTo("found");
+        dana.post().uri(resource(wfrn, ":record-observation")).bodyValue(observation.put("status", "not_found")).exchange().expectStatus()
+                .isForbidden();
+        observation.put("status", "found");
         assertThat(observed.get("observed").get("powerState").asText()).isEqualTo("poweredOn");
 
         // an update in the BFF's order: the platform job first, the request after it, naming the job; here the job is over first
@@ -258,7 +264,9 @@ class ResourceJourneyTest extends DemoServiceTest {
         }
         ObjectNode body = json.createObjectNode().put("type", "image").put("region", "global").put("registryId", image).put("name", "golden-image")
                 .put("source", "discover");
-        return body(client.post().uri("/v1/resources:import").bodyValue(body).exchange().expectStatus().isCreated()).get("wfrn").asText();
+        client.post().uri("/v1/resources:import").bodyValue(body).exchange().expectStatus().isForbidden();
+        return body(asService("console-drift-service").post().uri("/v1/resources:import?accountId=" + ACCOUNT).bodyValue(body).exchange()
+                .expectStatus().isCreated()).get("wfrn").asText();
     }
 
     @Test

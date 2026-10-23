@@ -76,7 +76,7 @@ class TransferTest {
     private final SensitiveData sensitive = new SensitiveData(new InMemoryAccountKeys(), SensitiveData.randomMasterKey(), clock);
     private final InventoryService inventory = new InventoryService(new ResourceLoader(events, projection), events, projection, types, sensitive,
             new ResourceEventPublisher(outbox), metrics, clock, "wf", Duration.ofDays(90));
-    private final PlatformResources registry = new PlatformResources(platform);
+    private final PlatformResources registry = new PlatformResources(platform, new ResourceLoader(events, projection));
     private final JobOutcomes outcomes = new JobOutcomes(inventory, registry, platform);
     private final PlatformEventHandler handler = new PlatformEventHandler(inventory, outcomes, registry,
             new IdempotentConsumer(new InMemoryProcessedEvents(), clock), metrics, REGION);

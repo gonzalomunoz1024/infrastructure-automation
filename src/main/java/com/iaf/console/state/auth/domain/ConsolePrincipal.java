@@ -32,6 +32,14 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
     }
 
     /**
+     * Who a command is recorded as: the token's subject, or for an internal caller acting for a
+     * person, the person it names. A person's token never names anyone else.
+     */
+    public String actor(String claimed) {
+        return internal() && claimed != null && !claimed.isBlank() ? claimed : subject;
+    }
+
+    /**
      * Whether {@code reveal=sensitive} is honored for this caller: an internal principal, or a person
      * whose {@code roles} hold {@code account-admin}. A group name never decides, and a token without
      * roles has none, so it is answered masked.
