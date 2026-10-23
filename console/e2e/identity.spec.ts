@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
-import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
+import { expectNoHorizontalOverflow, expectNoSeriousA11y } from './support'
 
 /*
  * Gate 1, in mock mode: sign in through the (mock) identity provider, pick an account, meet a
@@ -12,22 +12,6 @@ import { expect, test, type Page } from '@playwright/test'
 
 const shots = fileURLToPath(new URL('./screenshots/', import.meta.url))
 const shot = (name: string) => `${shots}${name}.png`
-
-async function expectNoSeriousA11y(page: Page, where: string) {
-  const results = await new AxeBuilder({ page }).analyze()
-  const bad = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical')
-  const lines = bad.map((v) => `${v.id} (${v.impact}): ${v.help} at ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')}`)
-  expect(lines, `serious or critical axe violations on the ${where}`).toEqual([])
-}
-
-async function expectNoHorizontalOverflow(page: Page) {
-  const widths = await page.evaluate(() => {
-    const main = document.getElementById('main')
-    return { document: document.documentElement.scrollWidth, viewport: window.innerWidth, content: main ? main.scrollWidth - main.clientWidth : 0 }
-  })
-  expect(widths.document, 'the page is no wider than the viewport').toBeLessThanOrEqual(widths.viewport)
-  expect(widths.content, 'the content does not scroll sideways').toBeLessThanOrEqual(0)
-}
 
 /** Signs in through the mock identity provider and lands on `next`. */
 async function signInAs(page: Page, name: RegExp, next = '/') {
@@ -54,7 +38,7 @@ test.describe('identity and access in mock mode', () => {
     await page.screenshot({ path: shot('signin-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'sign-in page')
 
-    // mia holds viewer in payments-dev
+    // mia holds viewer in Compute
     await signInAs(page, /Continue as Mia Chen/, '/console/compute/vm')
     await expect(page.getByRole('heading', { name: 'Virtual machines', level: 1 })).toBeVisible()
     await expect(page.locator('header [data-role="viewer"]')).toBeVisible()
@@ -131,11 +115,9 @@ test.describe('identity and access in mock mode', () => {
     const grid = page.getByRole('grid', { name: 'Virtual machines' })
     const row = grid.getByRole('row').nth(1)
     await expect(row).toBeVisible()
-    // the virtualised grid measures itself after the first paint; a click that lands during that is lost
-    await expect(async () => {
-      await row.click()
-      await expect(page).toHaveURL(/#\/console\/compute\/vm\/wfrn%3A/, { timeout: 2_000 })
-    }).toPass({ timeout: 20_000 })
+    // the name cell: the row's centre falls in the wfrn cell, where the Copy button keeps the click
+    await row.getByRole('gridcell').filter({ hasNotText: /Copy wfrn|Copied|^Select / }).first().click()
+    await expect(page).toHaveURL(/#\/console\/compute\/vm\/wfrn%3A/)
     const del = page.getByRole('button', { name: /^Delete VM/ })
     await expect(del).toHaveAttribute('data-denied', 'console-iam')
     await del.click()
@@ -158,7 +140,7 @@ test.describe('identity and access in mock mode', () => {
 
   test('the platform refuses an account whose service account lacks the scope', async ({ page }) => {
     await signInAs(page, /Continue as Raj Patel/, '/console/compute/vm')
-    await expect(page.getByRole('button', { name: /^Account: data-prod/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Account: Data / })).toBeVisible()
     const create = createButton(page)
     await expect(create).toHaveAttribute('data-denied', 'platform')
     await create.click()
@@ -167,7 +149,7 @@ test.describe('identity and access in mock mode', () => {
     await expect(refusal.getByText('The platform does not allow compute:create in this account')).toBeVisible()
     await expect(page.locator('[data-refusal="platform"]')).toBeAttached()
     await expect(refusal.getByText(/no compute:write scope/)).toBeVisible()
-    await expect(refusal.getByText('svc-data-prod')).toBeVisible()
+    await expect(refusal.getByText('svc-data')).toBeVisible()
     await page.screenshot({ path: shot('refusal-platform-desktop'), fullPage: true })
     await expectNoSeriousA11y(page, 'platform refusal')
   })
@@ -182,7 +164,7 @@ test.describe('identity and access in mock mode', () => {
     // users
     await page.getByRole('navigation', { name: 'Identity and access pages' }).getByRole('link', { name: 'Users' }).click()
     await expect(page).toHaveURL(/#\/iam\/users$/)
-    const users = page.getByRole('table', { name: /^Users of payments-dev/ })
+    const users = page.getByRole('table', { name: /^Users of Compute/ })
     await expect(users.getByRole('link', { name: 'Mia Chen' })).toBeVisible()
     await page.getByLabel('Filter users').fill('dana')
     await expect(users.getByRole('link', { name: 'Dana Whitfield' })).toBeVisible()
@@ -227,12 +209,12 @@ test.describe('identity and access in mock mode', () => {
     await expect(page.getByRole('table', { name: /^Access keys of/ }).getByText('Playwright')).toBeVisible()
     await page.screenshot({ path: shot('iam-access-keys-desktop'), fullPage: true })
 
-    // the account picker: gonzalo is also admin of data-prod
-    await page.getByRole('button', { name: /^Account: payments-dev/ }).click()
-    await page.getByRole('menuitemradio', { name: /data-prod/ }).click()
-    await expect(page.getByRole('button', { name: /^Account: data-prod/ })).toBeVisible()
+    // the account picker: gonzalo is also admin of Data
+    await page.getByRole('button', { name: /^Account: Compute/ }).click()
+    await page.getByRole('menuitemradio', { name: /^Data / }).click()
+    await expect(page.getByRole('button', { name: /^Account: Data / })).toBeVisible()
     await page.goto('/#/iam/users')
-    await expect(page.getByRole('table', { name: /^Users of data-prod/ }).getByRole('link', { name: 'Raj Patel' })).toBeVisible()
+    await expect(page.getByRole('table', { name: /^Users of Data/ }).getByRole('link', { name: 'Raj Patel' })).toBeVisible()
     await page.screenshot({ path: shot('account-switched-desktop'), fullPage: true })
   })
 

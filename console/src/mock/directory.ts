@@ -33,8 +33,8 @@ export interface DirectoryPerson {
 }
 
 export const ACCOUNTS: DirectoryAccount[] = [
-  { accountId: '123456789012', name: 'payments-dev', owningTeam: 'team-compute', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-payments-dev', platformScopes: ['compute:*', 'platform:*', 'storage:*', 'data:read', 'iam:*', 'audit:*'], createdAt: '2026-09-01T09:00:00Z' },
-  { accountId: '210987654321', name: 'data-prod', owningTeam: 'team-data', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-data-prod', platformScopes: ['data:*', 'compute:read', 'platform:read', 'storage:read', 'iam:*', 'audit:*'], createdAt: '2026-09-03T09:00:00Z' },
+  { accountId: '123456789012', name: 'Compute', owningTeam: 'team-compute', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-compute', platformScopes: ['compute:*', 'platform:*', 'storage:*', 'data:read', 'iam:*', 'audit:*'], createdAt: '2026-09-01T09:00:00Z' },
+  { accountId: '210987654321', name: 'Data', owningTeam: 'team-data', status: 'active', defaultRegion: DIRECTORY_REGION, platformServiceAccountId: 'svc-data', platformScopes: ['data:*', 'compute:read', 'platform:read', 'storage:read', 'iam:*', 'audit:*'], createdAt: '2026-09-03T09:00:00Z' },
 ]
 
 export const PEOPLE: DirectoryPerson[] = [

@@ -87,7 +87,7 @@ BFF's demo profile knows; the mock keeps the "cookie" in this browser's localSto
 user travels to the platform-fake as `X-User`, which is how it names the caller until the BFF
 fronts the platform's reads in phase 3.
 
-| Person  | payments-dev (123456789012)                     | data-prod (210987654321)        |
+| Person  | Compute (123456789012)                          | Data (210987654321)             |
 | ------- | ----------------------------------------------- | ------------------------------- |
 | gonzalo | admin (groups team-compute, team-platform, admin) | admin (group admin)             |
 | dana    | operator (team-compute, developer)              |                                 |
@@ -98,7 +98,7 @@ fronts the platform's reads in phase 3.
 
 The managed roles: `viewer` reads; `operator` reads and makes every change that is not
 destructive; `admin` does everything, including deletions and identity and access; `auditor`
-reads, the audit trail included. `data-prod`'s platform service account holds only `compute:read`,
+reads, the audit trail included. `Data`'s platform service account holds only `compute:read`,
 so creating a virtual machine there is refused by the platform layer, not by console IAM.
 
 The gate-1 story, in mock mode: sign in as Mia (viewer), open Virtual machines, press the locked
@@ -106,8 +106,8 @@ Create: the refusal names console IAM and that no statement of `viewer` allows `
 and offers Request access. Send it; sign in as Gonzalo: the bell shows one request to decide;
 approve it. Sign in as Mia again: she holds `operator` and Create is no longer locked. Sign in
 as Dana and open a machine: Delete is refused by statement `DenyDestructive` of policy
-`managed-operator`. Sign in as Raj in data-prod: Create is refused by the platform, scope
-`compute:write` missing on `svc-data-prod`.
+`managed-operator`. Sign in as Raj in Data: Create is refused by the platform, scope
+`compute:write` missing on `svc-data`.
 
 ## Checks
 
@@ -122,8 +122,13 @@ npm run contracts:verify  # the copied contracts still match contracts.lock
 
 Playwright uses the Chromium under `PLAYWRIGHT_BROWSERS_PATH` (the development container ships
 one at `/opt/pw-browsers`, which the config defaults to); only CI installs a browser. The journeys
-write the screenshots in `console/e2e/screenshots`, which are committed, and run axe on every
-page they visit (zero serious or critical findings, the WCAG 2.2 AA floor).
+run against the built app in mock mode (`npm run build:mock`, served by `vite preview`), the way
+people get it; `E2E_DEV=1 npm run e2e` drives the dev server instead, with HMR, for debugging.
+They run with reduced motion, as a person with that setting sees the console, write the
+screenshots in `console/e2e/screenshots`, which are committed, and run axe on the settled page
+everywhere they go (zero serious or critical findings, the WCAG 2.2 AA floor). `E2E_PORT=3100`
+serves the app on another port, so two checkouts can run their suites at once; never two runs in
+one checkout, which share `test-results/`.
 
 ## Design rules
 
@@ -172,10 +177,12 @@ type, so the feed must subscribe to every one).
 4. **A hand-rolled hash router**, like the platform's: `#/console/:service/:type/:wfrn` with the
    wfrn as one percent-encoded segment, typed routes, `pathFor`, and an optional
    `#/account/:accountId/` prefix. No router library.
-5. **Three Atlas tokens move for WCAG AA.** Light tertiary text becomes `#6b6b70` (5.3:1 on white),
-   the light accent `#0066cc` (5.6:1, and white on it 5.6:1) and the light critical red `#d70015`
-   (5.4:1 both ways; Atlas's `#ff3b30` reads at 3.3:1 under the white text of a danger button,
-   which phase 1 makes pressable to open a refusal); dark tertiary text becomes `#98989d`. The
+5. **Four Atlas tokens move for WCAG AA.** Light secondary text becomes `#636366` (6.0:1 on
+   white, 5.2:1 on a toast's translucent face over a dialog's backdrop, where Atlas's `#6e6e73`
+   read at 4.4:1), light tertiary text `#6b6b70` (5.3:1 on white; secondary stays the darker of
+   the two), the light accent `#0066cc` (5.6:1, and white on it 5.6:1) and the light critical red
+   `#d70015` (5.4:1 both ways; Atlas's `#ff3b30` reads at 3.3:1 under the white text of a danger
+   button, which phase 1 makes pressable to open a refusal); dark tertiary text becomes `#98989d`. The
    dark accent stays Atlas's `#0a84ff`, on which white text reads at 3.65:1, and so does the dark
    critical red: notes for P-14, since the console only overrides and never edits Atlas.
 6. **Status colour is in the dot.** `LifecycleBadge` (resource states) and `StatusBadge` (jobs
