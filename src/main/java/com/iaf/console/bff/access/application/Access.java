@@ -20,13 +20,14 @@ import reactor.core.publisher.Mono;
 
 /**
  * The console's own authorization: a session's user may do an action on a resource when the
- * account's policies say so. Decisions are cached per account, user, action and resource for a
- * short while and dropped when the account's identity changes; a refusal carries the
+ * account's policies say so. Decisions are cached per context (account, region, user and the
+ * groups the check is made with), action and resource for a short while and dropped when the
+ * account's identity changes; a refusal carries the
  * {@link Denial} the identity service explained it with, completed with the user's role.
  */
 public class Access {
 
-    private record Key(String accountId, String userId, String action, String resource) {
+    private record Key(String accountId, String region, String userId, List<String> groups, String action, String resource) {
     }
 
     private final AuthorizationPort authorization;
@@ -95,7 +96,8 @@ public class Access {
     }
 
     private static Key key(Session session, AccessCheck check) {
-        return new Key(session.accountId(), session.user().userId(), check.action(), check.resource());
+        return new Key(session.accountId(), session.region(), session.user().userId(), session.currentAccount().groups(), check.action(),
+                check.resource());
     }
 
     private static Decision withRole(Decision decision, Session session) {
