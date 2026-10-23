@@ -248,7 +248,7 @@ paths:
                 - type: object
                   required: [workflow, changes]
                   properties:
-                    jobId: { type: string }
+                    jobId: { type: string, description: 'The platform job, when the BFF started it before recording the request; a job that has already ended settles the request at once' }
                     workflow: { type: string }
                     changes: { type: object, additionalProperties: true }
       responses:
@@ -279,9 +279,38 @@ paths:
                 - type: object
                   required: [workflow]
                   properties:
-                    jobId: { type: string }
+                    jobId: { type: string, description: 'The platform job, when the BFF started it before recording the request; a job that has already ended settles the request at once' }
                     workflow: { type: string }
                     reason: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceUpdated' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+  /v1/wfrn/{wfrn}:request-retry:
+    parameters:
+      - $ref: '#/components/parameters/WfrnPath'
+    post:
+      operationId: requestRetry
+      summary: Record a retry of a failed create
+      description: 'Records `RetryRequested` and moves a `failed` resource back to `pending` (409 `resource.notFailed` in any other state). The BFF records it before it reruns the failed job with the platform''s `POST /api/v1/jobs/{id}:rerun`, a new job that keeps the original context; that job''s events end the retry as they end a create.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ConsoleRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Command'
+                - type: object
+                  properties:
+                    jobId: { type: string, description: 'The rerun job, when the BFF started it before recording the retry; a job that has already ended settles the retry at once' }
+                    workflow: { type: string, description: The workflow the retry runs; the resource's create workflow when left out }
       responses:
         '200': { $ref: '#/components/responses/ResourceUpdated' }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -621,7 +650,7 @@ components:
         id: { type: string }
         key: { type: string, description: '`<type>:<wfrn>:<version>`' }
         seq: { type: integer, description: "The service's outbox sequence" }
-        type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported] }
+        type: { type: string, enum: [ResourceRequested, ProvisioningStarted, ProvisioningSucceeded, ProvisioningFailed, UpdateRequested, Observed, DriftDetected, DriftResolved, Tagged, DeleteRequested, Deleted, Imported, RetryRequested] }
         at: { type: string, format: date-time }
         aggregate: { type: string, const: resource }
         aggregateId: { $ref: '#/components/schemas/Wfrn' }
