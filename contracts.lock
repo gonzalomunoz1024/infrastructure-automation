@@ -3,10 +3,10 @@
 # ContractsLockTest fails when a copied file drifts from the hash recorded here.
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
 branch: console-root--phase-0 (PR #2 into console-root)
-commit: b40ccc9e650c9461570bacfbe71236f79d06b538
+commit: 9edd017b0892e1fcf6e9a56177fb48f33acab7b5
 files:
   contracts/openapi/console-bff.yaml: sha256:c46d2801dfdd9e0d8878a5e65c94be2762ad5958c080317a5c87da83663da798
-  contracts/openapi/console-identity-service.yaml: sha256:72c9e2d15c37a092fb725e2826e9c59ac6ed06edc0fea3b479f83554b90c326c
+  contracts/openapi/console-identity-service.yaml: sha256:7865f72cebbc351f39a65ae8c914776a79bcdac0ed8190ecb9e2b017594ba75c
   contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
   contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
   contracts/platform/asyncapi-target.yaml: sha256:e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23

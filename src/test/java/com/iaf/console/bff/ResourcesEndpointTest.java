@@ -64,7 +64,17 @@ class ResourcesEndpointTest extends DemoApp {
             assertEquals(200, list.status(), list.body());
             assertTrue(stream(list.json().path("items")).anyMatch(i -> wfrn.equals(i.path("wfrn").asText())), list.body());
             assertEquals(200, console.get(VM + "?state=active&sort=name&limit=5", gonzalo).status());
-            assertEquals(400, console.get(VM + "?sort=sideways", gonzalo).status(), "the state service's 400 passes through");
+            Console.Reply newestFirst = console.get(VM + "?sort=-created&limit=200", gonzalo);
+            assertEquals(200, newestFirst.status(), newestFirst.body());
+            List<String> created = new java.util.ArrayList<>();
+            newestFirst.json().path("items").forEach(item -> created.add(item.path("createdAt").asText()));
+            List<String> sorted = new java.util.ArrayList<>(created);
+            sorted.sort(java.util.Comparator.reverseOrder());
+            assertEquals(sorted, created, "the console's -created is the state service's -createdAt");
+            assertEquals(200, console.get(VM + "?sort=updated", gonzalo).status());
+            Console.Reply sideways = console.get(VM + "?sort=sideways", gonzalo);
+            assertEquals(400, sideways.status(), sideways.body());
+            assertTrue(sideways.body().contains("-created"), "the refusal names the sorts the console offers: " + sideways.body());
 
             Console.Reply activity = console.getAt(VM + "/{wfrn}/activity", gonzalo, Map.of(), wfrn);
             assertEquals(200, activity.status(), activity.body());

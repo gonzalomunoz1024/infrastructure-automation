@@ -30,6 +30,7 @@ import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
 import com.iaf.console.bff.resources.domain.LineageView;
+import com.iaf.console.bff.resources.domain.ListSorts;
 import com.iaf.console.bff.resources.domain.PreviewView;
 import com.iaf.console.bff.resources.domain.ResourceRef;
 import com.iaf.console.bff.resources.domain.ResourceView;
@@ -81,6 +82,8 @@ import reactor.core.publisher.Mono;
 public class Resources {
 
     public static final String TAG_VERB = "tag";
+    static final String LIST_VERB = "list";
+    static final String GET_VERB = "get";
     private static final Logger log = LoggerFactory.getLogger(Resources.class);
     private static final Pattern PATH_PARAM = Pattern.compile("\\{([A-Za-z0-9_-]+)}");
     private static final int RECENT_JOBS = 10;
@@ -129,17 +132,24 @@ public class Resources {
 
     // ---- reads
 
+    /** One page of the account's resources of a type, as {@code <service>:list} on the type's pattern allows. */
     public Mono<Page<ResourceView>> list(Session session, String type, ListFilters filters) {
-        return types.byType(session, type).flatMap(t -> state.list(scope(session), caller(session),
-                new StateQuery(t.type(), filters.state(), filters.q(), filters.tags(), null, filters.drift(), filters.sort(),
-                        CursorPaging.pageSize(filters.limit()), filters.after()))
-                .map(page -> new Page<>(page.items().stream().map(ResourceView::summary).toList(), page.next())));
+        return types.byType(session, type).flatMap(t -> {
+            String sort = ListSorts.toState(filters.sort());
+            return access.require(session, AccessCheck.action(t.service(), LIST_VERB), typePattern(session, t))
+                    .then(Mono.defer(() -> state.list(scope(session), caller(session),
+                            new StateQuery(t.type(), filters.state(), filters.q(), filters.tags(), null, filters.drift(), sort,
+                                    CursorPaging.pageSize(filters.limit()), filters.after()))))
+                    .map(page -> new Page<>(page.items().stream().map(ResourceView::summary).toList(), page.next()));
+        });
     }
 
+    /** One resource, as {@code <service>:get} on its wfrn allows. */
     public Mono<Detail> get(Session session, String type, String wfrn, String ifNoneMatch) {
         return types.byType(session, type).flatMap(t -> {
             checkName(session, t, wfrn);
-            return state.get(scope(session), caller(session), wfrn, ifNoneMatch).flatMap(answer -> {
+            return access.require(session, AccessCheck.action(t.service(), GET_VERB), wfrn)
+                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, ifNoneMatch))).flatMap(answer -> {
                 if (answer.notModified()) {
                     return Mono.just(new Detail(null, answer.etag(), true));
                 }
@@ -162,14 +172,15 @@ public class Resources {
     public Mono<Page<ActivityEntry>> activity(Session session, String type, String wfrn, Integer limit, String after) {
         return types.byType(session, type).flatMap(t -> {
             checkName(session, t, wfrn);
-            return state.events(scope(session), caller(session), wfrn, CursorPaging.pageSize(limit), after)
+            return access.require(session, AccessCheck.action(t.service(), GET_VERB), wfrn)
+                    .then(Mono.defer(() -> state.events(scope(session), caller(session), wfrn, CursorPaging.pageSize(limit), after)))
                     .map(page -> new Page<>(page.items().stream().map(ActivityEntry::of).filter(e -> e != null).toList(), page.next()));
         });
     }
 
     /** The open finding; 404 when the resource has none. */
     public Mono<FindingView> drift(Session session, String type, String wfrn) {
-        return subject(session, type, wfrn).flatMap(s -> {
+        return readable(session, type, wfrn).flatMap(s -> {
             if (s.resource().drift() == null) {
                 return Mono.error(new NotFoundException("no open finding on " + wfrn));
             }
@@ -178,7 +189,7 @@ public class Resources {
     }
 
     public Mono<LineageView> lineage(Session session, String type, String wfrn) {
-        return subject(session, type, wfrn).flatMap(s -> lineageOf(session, s.resource()).map(lineage -> lineage
+        return readable(session, type, wfrn).flatMap(s -> lineageOf(session, s.resource()).map(lineage -> lineage
                 .map(l -> lineageView(s.resource(), l)).orElseGet(() -> LineageView.alone(s.resource()))));
     }
 
@@ -403,6 +414,20 @@ public class Resources {
             Mono<StateAnswer> read = state.get(scope(session), caller(session), wfrn, null);
             return read.map(answer -> new Subject(t, answer.resource(), answer.etag()));
         });
+    }
+
+    /** The resource for a read of one of its pages, as {@code <service>:get} on its wfrn allows. */
+    private Mono<Subject> readable(Session session, String type, String wfrn) {
+        return types.byType(session, type).flatMap(t -> {
+            checkName(session, t, wfrn);
+            return access.require(session, AccessCheck.action(t.service(), GET_VERB), wfrn)
+                    .then(Mono.defer(() -> state.get(scope(session), caller(session), wfrn, null)))
+                    .map(answer -> new Subject(t, answer.resource(), answer.etag()));
+        });
+    }
+
+    private String typePattern(Session session, ConsoleType t) {
+        return AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type());
     }
 
     /** The wfrn is the path's type, in the session's account and region; anything else is a 404, never a hint. */

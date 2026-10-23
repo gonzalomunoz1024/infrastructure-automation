@@ -11,9 +11,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -64,6 +66,8 @@ public class DemoIdentityRoutes {
     private final Map<String, Map<String, Object>> accessKeys = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> customGroups = new ConcurrentHashMap<>();
     private final Map<String, Integer> quotaOverrides = new ConcurrentHashMap<>();
+    private final Map<String, QuotaRequest> quotaRequests = new ConcurrentHashMap<>();
+    private final Object quotaLock = new Object();
 
     public DemoIdentityRoutes(DemoDirectory directory, DemoTokens tokens, ObjectProvider<DemoPlatformSeed> platformSeed, ObjectProvider<Access> access) {
         this.directory = directory;
@@ -103,9 +107,13 @@ public class DemoIdentityRoutes {
                 .andRoute(GET(a + "/quotas/{quotaKey}"), r -> member(r, this::getQuota))
                 .andRoute(PUT(a + "/quotas/{quotaKey}"), this::setQuota)
                 .andRoute(POST(a + "/quotas/{quotaKey}:request-increase"), r -> admin(r, this::requestQuotaIncrease))
+                .andRoute(GET(a + "/quota-requests/{requestId}"), r -> member(r, this::getQuotaRequest))
+                .andRoute(DELETE(a + "/quota-requests/{requestId}"), r -> member(r, this::withdrawQuotaRequest))
+                .andRoute(POST(a + "/quota-requests/{requestId}:decide"), this::decideQuotaRequest)
                 .andRoute(GET(a + "/access-requests"), r -> member(r, this::listAccessRequests))
                 .andRoute(POST(a + "/access-requests"), r -> member(r, this::createAccessRequest))
-                .andRoute(POST(a + "/access-requests/{requestId}:decide"), r -> admin(r, this::decideAccessRequest));
+                .andRoute(GET(a + "/access-requests/{requestId}"), r -> member(r, this::getAccessRequest))
+                .andRoute(POST(a + "/access-requests/{requestId}:decide"), r -> member(r, this::decideAccessRequest));
     }
 
     // ---- authentication and scoping
@@ -218,7 +226,8 @@ public class DemoIdentityRoutes {
             for (JsonNode check : body.path("checks")) {
                 String action = check.path("action").asText("");
                 Map<String, Object> d = new LinkedHashMap<>();
-                boolean allowed = !roles.isEmpty() && ManagedRoles.anyAllows(roles, action);
+                boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || "access-request:decide".equals(action)
+                        && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false));
                 d.put("allowed", allowed);
                 if (!allowed) {
                     d.put("reason", roles.isEmpty() ? "The user is not a member of account " + accountId
@@ -615,7 +624,13 @@ public class DemoIdentityRoutes {
         String accountId = request.pathVariable("accountId");
         String key = request.pathVariable("quotaKey");
         return request.bodyToMono(JsonNode.class).flatMap(body -> {
-            quotaOverrides.put(accountId + "/" + key, body.path("limit").asInt(QUOTAS.getOrDefault(key, 0)));
+            int limit = body.path("limit").asInt(QUOTAS.getOrDefault(key, 0));
+            synchronized (quotaLock) {
+                quotaOverrides.put(accountId + "/" + key, limit);
+                // a limit at or above an open request's ask makes the request moot: it is approved with that limit
+                openQuotaRequest(accountId, key).filter(open -> limit >= open.requestedLimit()).ifPresent(open -> quotaRequests.put(open.requestId(),
+                        open.decided("approved", limit, caller.get().subject(), "the limit was set to " + limit, directory.now())));
+            }
             return json(HttpStatus.OK, quota(accountId, key));
         });
     }
@@ -626,11 +641,100 @@ public class DemoIdentityRoutes {
             return error(HttpStatus.NOT_FOUND, "quota " + key + " not found");
         }
         return request.bodyToMono(JsonNode.class).flatMap(body -> {
-            if (body.path("limit").asInt(0) < 1 || body.path("reason").asText("").length() < 10) {
-                return error(HttpStatus.BAD_REQUEST, "limit (at least 1) and reason (at least 10 characters) are required");
+            int limit = body.path("limit").asInt(0);
+            String reason = body.path("reason").asText("");
+            if (limit < 1 || reason.length() < 10 || reason.length() > 1000) {
+                return error(HttpStatus.BAD_REQUEST, "limit (at least 1) and reason (10 to 1000 characters) are required");
             }
-            return json(HttpStatus.ACCEPTED, Map.of("requestId", "qreq_" + Ulid.next().toLowerCase(), "status", "open"));
+            QuotaRequest opened;
+            synchronized (quotaLock) {
+                Optional<QuotaRequest> open = openQuotaRequest(accountId, key);
+                if (open.isPresent()) {
+                    return error(HttpStatus.CONFLICT, "an increase of " + key + " is open already (" + open.get().requestId() + ")");
+                }
+                opened = new QuotaRequest("qreq_" + Ulid.next().toLowerCase(Locale.ROOT), accountId, key, limitOf(accountId, key), limit, reason, "open",
+                        null, caller.subject(), directory.now(), null, null, null);
+                quotaRequests.put(opened.requestId(), opened);
+            }
+            return json(HttpStatus.ACCEPTED, opened.body());
         });
+    }
+
+    private Mono<ServerResponse> getQuotaRequest(ServerRequest request, DemoCaller caller, String accountId) {
+        return quotaRequest(accountId, request.pathVariable("requestId")).map(r -> json(HttpStatus.OK, r.body()))
+                .orElseGet(() -> error(HttpStatus.NOT_FOUND, "quota request " + request.pathVariable("requestId") + " not found"));
+    }
+
+    /** By its requester, an account admin or the console itself; a decided request answers 409. */
+    private Mono<ServerResponse> withdrawQuotaRequest(ServerRequest request, DemoCaller caller, String accountId) {
+        String requestId = request.pathVariable("requestId");
+        synchronized (quotaLock) {
+            Optional<QuotaRequest> found = quotaRequest(accountId, requestId);
+            if (found.isEmpty()) {
+                return error(HttpStatus.NOT_FOUND, "quota request " + requestId + " not found");
+            }
+            QuotaRequest r = found.get();
+            if (!caller.internal() && !caller.subject().equals(r.requestedBy()) && !directory.isAdmin(caller.personSubject(), accountId)) {
+                return denied(caller, accountId, "quota:set");
+            }
+            if (!r.open()) {
+                return error(HttpStatus.CONFLICT, "the request is " + r.status());
+            }
+            quotaRequests.put(requestId, r.decided("withdrawn", null, caller.subject(), null, directory.now()));
+        }
+        return ServerResponse.noContent().build();
+    }
+
+    /** The platform team's decision, so the console itself only; approving sets the limit (the ask by default). */
+    private Mono<ServerResponse> decideQuotaRequest(ServerRequest request) {
+        Optional<DemoCaller> caller = caller(request);
+        if (caller.isEmpty() || !caller.get().internal()) {
+            return error(HttpStatus.NOT_FOUND, "not found");
+        }
+        String accountId = request.pathVariable("accountId");
+        String requestId = request.pathVariable("requestId");
+        return request.bodyToMono(JsonNode.class).flatMap(body -> {
+            String decision = body.path("decision").asText("");
+            boolean approve = "approve".equals(decision);
+            Integer granted = body.hasNonNull("limit") ? Integer.valueOf(body.path("limit").asInt(0)) : null;
+            String comment = body.hasNonNull("comment") ? body.path("comment").asText() : null;
+            if ((!approve && !"reject".equals(decision)) || (granted != null && granted < 1) || (comment != null && comment.length() > 2000)) {
+                return error(HttpStatus.BAD_REQUEST, "decision is approve or reject, limit at least 1, comment at most 2000 characters");
+            }
+            QuotaRequest decided;
+            synchronized (quotaLock) {
+                Optional<QuotaRequest> found = quotaRequest(accountId, requestId);
+                if (found.isEmpty()) {
+                    return error(HttpStatus.NOT_FOUND, "quota request " + requestId + " not found");
+                }
+                if (!found.get().open()) {
+                    return error(HttpStatus.CONFLICT, "the request is " + found.get().status());
+                }
+                QuotaRequest r = found.get();
+                if (approve) {
+                    int limit = granted == null ? r.requestedLimit() : granted;
+                    quotaOverrides.put(accountId + "/" + r.quotaKey(), limit);
+                    decided = r.decided("approved", limit, caller.get().subject(), comment, directory.now());
+                } else {
+                    decided = r.decided("rejected", null, caller.get().subject(), comment, directory.now());
+                }
+                quotaRequests.put(requestId, decided);
+            }
+            return json(HttpStatus.ACCEPTED, decided.body());
+        }).switchIfEmpty(Mono.defer(() -> error(HttpStatus.BAD_REQUEST, "a decision is required")));
+    }
+
+    private Optional<QuotaRequest> quotaRequest(String accountId, String requestId) {
+        return Optional.ofNullable(quotaRequests.get(requestId)).filter(r -> r.accountId().equals(accountId));
+    }
+
+    private Optional<QuotaRequest> openQuotaRequest(String accountId, String key) {
+        return quotaRequests.values().stream().filter(r -> r.open() && r.accountId().equals(accountId) && r.quotaKey().equals(key)).findFirst();
+    }
+
+    private int limitOf(String accountId, String key) {
+        Integer override = quotaOverrides.get(accountId + "/" + key);
+        return override == null ? QUOTAS.getOrDefault(key, 0) : override;
     }
 
     private Map<String, Object> quota(String accountId, String key) {
@@ -640,58 +744,157 @@ public class DemoIdentityRoutes {
         q.put("limit", override == null ? QUOTAS.get(key) : override);
         q.put("used", Math.abs((accountId + key).hashCode()) % 7);
         q.put("source", override == null ? "default" : "override");
+        openQuotaRequest(accountId, key).ifPresent(open -> q.put("pendingRequestId", open.requestId()));
         return q;
+    }
+
+    /** A quota increase request, as the identity service's {@code QuotaRequest}. */
+    private record QuotaRequest(String requestId, String accountId, String quotaKey, int currentLimit, int requestedLimit, String reason, String status,
+            Integer grantedLimit, String requestedBy, Instant requestedAt, Instant decidedAt, String decidedBy, String comment) {
+
+        boolean open() {
+            return "open".equals(status);
+        }
+
+        QuotaRequest decided(String outcome, Integer granted, String by, String note, Instant at) {
+            return new QuotaRequest(requestId, accountId, quotaKey, currentLimit, requestedLimit, reason, outcome, granted, requestedBy, requestedAt, at, by,
+                    note);
+        }
+
+        Map<String, Object> body() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("requestId", requestId);
+            m.put("accountId", accountId);
+            m.put("quotaKey", quotaKey);
+            m.put("currentLimit", currentLimit);
+            m.put("requestedLimit", requestedLimit);
+            m.put("reason", reason);
+            m.put("status", status);
+            if (grantedLimit != null) {
+                m.put("grantedLimit", grantedLimit);
+            }
+            m.put("requestedBy", requestedBy);
+            m.put("requestedAt", requestedAt);
+            if (decidedAt != null) {
+                m.put("decidedAt", decidedAt);
+                m.put("decidedBy", decidedBy);
+            }
+            if (comment != null) {
+                m.put("comment", comment);
+            }
+            return m;
+        }
     }
 
     // ---- access requests
 
+    private static final Pattern ACTION = Pattern.compile("^[a-z0-9-]{1,64}:[a-z0-9-]{1,64}$");
+
+    /** Whether the caller may read the account's whole queue: the console itself, or a role whose policy allows the action (admins and auditors). */
+    private boolean readsTheQueue(DemoCaller caller, String accountId, String action) {
+        return caller.internal() || ManagedRoles.anyAllows(directory.rolesOf(caller.personSubject(), accountId), action);
+    }
+
+    /** A person always sees their own requests; the account's queue needs {@code access-request:list}; someone else's alone is refused. */
     private Mono<ServerResponse> listAccessRequests(ServerRequest request, DemoCaller caller, String accountId) {
-        String scope = request.queryParam("scope").orElse("mine");
-        String status = request.queryParam("status").orElse(null);
-        boolean admin = caller.internal() || directory.isAdmin(caller.personSubject(), accountId);
-        String requester = "account".equals(scope) && admin ? null : caller.subject();
-        List<Map<String, Object>> items = directory.accessRequests(accountId, requester, status).stream().map(DemoIdentityRoutes::accessRequest).toList();
+        String status = request.queryParam("status").filter(v -> !v.isBlank()).orElse(null);
+        if (status != null && !AccessRequest.STATUSES.contains(status)) {
+            return error(HttpStatus.BAD_REQUEST, "status is pending, approved, rejected or expired");
+        }
+        String requester = request.queryParam("requester").filter(v -> !v.isBlank()).orElse(null);
+        String only;
+        if (readsTheQueue(caller, accountId, "access-request:list")) {
+            only = requester;
+        } else if (requester == null || requester.equals(caller.subject())) {
+            only = caller.subject();
+        } else {
+            return denied(caller, accountId, "access-request:list");
+        }
+        List<Map<String, Object>> items = directory.accessRequests(accountId, only, status).stream().map(DemoIdentityRoutes::accessRequest).toList();
         return json(HttpStatus.OK, page(items));
     }
 
+    private Mono<ServerResponse> getAccessRequest(ServerRequest request, DemoCaller caller, String accountId) {
+        String requestId = request.pathVariable("requestId");
+        Optional<AccessRequest> found = directory.accessRequest(requestId).filter(r -> r.accountId().equals(accountId));
+        if (found.isEmpty()) {
+            return error(HttpStatus.NOT_FOUND, "access request " + requestId + " not found");
+        }
+        boolean mine = !caller.internal() && caller.subject().equals(found.get().requester().userId());
+        if (!mine && !readsTheQueue(caller, accountId, "access-request:get")) {
+            return denied(caller, accountId, "access-request:get");
+        }
+        return json(HttpStatus.OK, accessRequest(found.get()));
+    }
+
+    /**
+     * Opens a request as the identity service does: the role named, else the weakest managed role
+     * that allows the action (400 when the requester may already do it); one pending request per
+     * requester and role, a second answers 409 with the pending one.
+     */
     private Mono<ServerResponse> createAccessRequest(ServerRequest request, DemoCaller caller, String accountId) {
         return request.bodyToMono(JsonNode.class).flatMap(body -> {
             String action = body.path("action").asText("");
             String reason = body.path("reason").asText("");
-            if (!action.contains(":") || reason.length() < 10) {
-                return error(HttpStatus.BAD_REQUEST, "action (<service>:<verb>) and reason (at least 10 characters) are required");
+            if (!ACTION.matcher(action).matches()) {
+                return error(HttpStatus.BAD_REQUEST, "action is <service>:<verb>");
             }
-            String role = body.path("role").asText(ManagedRoles.suggestedFor(action));
-            if (!ManagedRoles.isManaged(role)) {
-                return error(HttpStatus.BAD_REQUEST, "role must be one of " + ManagedRoles.ALL);
+            if (reason.isBlank() || reason.length() > 2000) {
+                return error(HttpStatus.BAD_REQUEST, "reason is 1 to 2000 characters");
+            }
+            if (caller.internal()) {
+                return error(HttpStatus.BAD_REQUEST, "only a user opens an access request");
             }
             DemoPerson person = directory.byUserId(caller.subject()).orElse(null);
             if (person == null) {
                 return error(HttpStatus.NOT_FOUND, "user not found");
             }
-            if (directory.hasOpenRequest(accountId, person.userId(), action, role)) {
-                return error(HttpStatus.CONFLICT, "the same request is already open");
+            String named = body.path("role").asText("").toLowerCase(Locale.ROOT);
+            String role;
+            if (!named.isBlank()) {
+                if (!ManagedRoles.isManaged(named)) {
+                    return error(HttpStatus.BAD_REQUEST, "'" + named + "' is no role of this account");
+                }
+                role = named;
+            } else {
+                role = ManagedRoles.suggestedFor(action);
+                if (ManagedRoles.anyAllows(directory.rolesOf(person.subject(), accountId), action) || !ManagedRoles.allows(role, action)) {
+                    return error(HttpStatus.BAD_REQUEST, "no managed role would allow " + action + " (or it is allowed already); name the role to ask for");
+                }
             }
-            AccessRequest created = directory.requestAccess(accountId, person, action, body.path("resource").asText(null), role, reason);
+            Optional<AccessRequest> pending = directory.pendingRequest(accountId, person.userId(), role);
+            if (pending.isPresent()) {
+                return json(HttpStatus.CONFLICT, accessRequest(pending.get()));
+            }
+            String resource = body.hasNonNull("resource") ? body.path("resource").asText() : "wfrn:wf:*:*:" + accountId + ":*";
+            AccessRequest created = directory.requestAccess(accountId, person, action, resource, role, reason);
             return json(HttpStatus.ACCEPTED, accessRequest(created));
         });
     }
 
+    /** Admins and the members of approver groups decide (the identity service decides on {@code access-request:decide}, not on a role name). */
     private Mono<ServerResponse> decideAccessRequest(ServerRequest request, DemoCaller caller, String accountId) {
         String requestId = request.pathVariable("requestId");
+        if (!caller.internal() && !directory.decidesAccessRequests(caller.personSubject(), accountId)) {
+            return denied(caller, accountId, "access-request:decide");
+        }
         return request.bodyToMono(JsonNode.class).flatMap(body -> {
             String decision = body.path("decision").asText("");
-            if (!"approve".equals(decision) && !"reject".equals(decision)) {
-                return error(HttpStatus.BAD_REQUEST, "decision is approve or reject");
+            String comment = body.hasNonNull("comment") ? body.path("comment").asText() : null;
+            if ((!"approve".equals(decision) && !"reject".equals(decision)) || (comment != null && comment.length() > 2000)) {
+                return error(HttpStatus.BAD_REQUEST, "decision is approve or reject, comment at most 2000 characters");
             }
             Optional<AccessRequest> existing = directory.accessRequest(requestId).filter(r -> r.accountId().equals(accountId));
             if (existing.isEmpty()) {
                 return error(HttpStatus.NOT_FOUND, "access request " + requestId + " not found");
             }
             if (!existing.get().open()) {
-                return error(HttpStatus.CONFLICT, "the request was already " + existing.get().status());
+                return error(HttpStatus.CONFLICT, "the request is " + existing.get().status());
             }
-            AccessRequest decided = directory.decide(requestId, decision, caller.subject(), body.path("comment").asText(null)).orElseThrow();
+            AccessRequest decided = directory.decide(requestId, decision, caller.subject(), comment).orElseThrow();
+            if (!"approved".equals(decided.status()) && !"rejected".equals(decided.status())) {
+                return error(HttpStatus.CONFLICT, "the request is " + decided.status());
+            }
             invalidate(accountId);
             return json(HttpStatus.ACCEPTED, accessRequest(decided));
         });

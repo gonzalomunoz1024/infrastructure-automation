@@ -46,6 +46,18 @@ class ManagedRolesTest {
     }
 
     @Test
+    void onlyAdminsAndAuditorsReadTheAccessRequestQueueAndOnlyAdminsDecide() {
+        assertFalse(ManagedRoles.allows(ManagedRoles.VIEWER, "access-request:list"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "access-request:get"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.AUDITOR, "access-request:list"));
+        assertTrue(ManagedRoles.allows(ManagedRoles.ADMIN, "access-request:get"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.OPERATOR, "access-request:decide"));
+        assertFalse(ManagedRoles.allows(ManagedRoles.AUDITOR, "access-request:decide"));
+        assertEquals(ManagedRoles.AUDITOR, ManagedRoles.suggestedFor("access-request:list"));
+        assertEquals(ManagedRoles.ADMIN, ManagedRoles.suggestedFor("access-request:decide"));
+    }
+
+    @Test
     void theSuggestedRoleIsTheWeakestThatAllows() {
         assertEquals(ManagedRoles.VIEWER, ManagedRoles.suggestedFor("compute:get"));
         assertEquals(ManagedRoles.OPERATOR, ManagedRoles.suggestedFor("compute:create"));

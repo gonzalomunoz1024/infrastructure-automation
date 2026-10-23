@@ -107,9 +107,9 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
-| `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns; versioned |
-| `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas}…` | Pass-through to the identity service for the session's account |
-| `GET, POST /console/v1/access-requests`, `POST …/{requestId}:decide` | Request access from a refusal; admins decide |
+| `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
+| `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
+| `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
 | `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*` | Demo profile only |
 
@@ -183,7 +183,7 @@ service to the kit's rules and adds one of its own: only `..demo..` packages may
 
 ## Tests
 
-`./gradlew test` runs 76 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 83 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).

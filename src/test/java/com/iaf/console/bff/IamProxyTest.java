@@ -103,16 +103,28 @@ class IamProxyTest extends DemoApp {
         assertEquals("account-admin", request.path("role").asText());
         assertEquals("user_mateo", request.path("requester").path("userId").asText());
         assertTrue(request.path("approvers").toString().contains("user_gonzalo"), request.toString());
-        Console.Reply duplicate = console.post("/console/v1/access-requests", mateo,
-                Map.of("action", "compute:delete", "reason", "I clean up the dev VMs every Friday"));
+        assertTrue(request.path("approvers").toString().contains("user_dana"), "an approver group's members decide too: " + request);
+        assertFalse(request.path("approvers").toString().contains("user_mateo"), request.toString());
+        Console.Reply duplicate = console.post("/console/v1/access-requests", mateo, Map.of("action", "compute:terminate", "reason", "the same role again"));
         assertEquals(409, duplicate.status(), duplicate.body());
-        Console.Reply tooShort = console.post("/console/v1/access-requests", mateo, Map.of("action", "compute:patch", "reason", "pls"));
-        assertEquals(400, tooShort.status(), tooShort.body());
+        assertEquals(requestId, duplicate.json().path("requestId").asText(), "a second request for the same role answers the pending one");
+        Console.Reply noReason = console.post("/console/v1/access-requests", mateo, Map.of("action", "compute:patch", "reason", ""));
+        assertEquals(400, noReason.status(), noReason.body());
+        Console.Reply allowedAlready = console.post("/console/v1/access-requests", mateo, Map.of("action", "compute:patch", "reason", "pls"));
+        assertEquals(400, allowedAlready.status(), "an operator may patch already: " + allowedAlready.body());
         assertTrue(console.get("/console/v1/access-requests", mateo).json().path("items").toString().contains(requestId));
+        Console.Reply someoneElses = console.get("/console/v1/access-requests?requester=user_gonzalo", mateo);
+        assertEquals(403, someoneElses.status(), someoneElses.body());
+        assertEquals("auditor", someoneElses.json().path("denied").path("suggestedRole").asText(), someoneElses.body());
+        assertEquals(200, console.get("/console/v1/access-requests/" + requestId, mateo).status(), "the requester reads their own request");
+        Console.Reply notTheirs = console.get("/console/v1/access-requests/" + requestId, console.signIn("dana"));
+        assertEquals(403, notTheirs.status(), "an operator reads no one else's request: " + notTheirs.body());
         Console.Signed gonzalo = console.signIn("gonzalo");
-        Console.Reply forAdmins = console.get("/console/v1/access-requests?scope=account&status=pending", gonzalo);
-        assertEquals(200, forAdmins.status(), forAdmins.body());
-        assertTrue(forAdmins.json().path("items").toString().contains(requestId), forAdmins.body());
+        Console.Reply queue = console.get("/console/v1/access-requests?status=pending&requester=user_mateo", gonzalo);
+        assertEquals(200, queue.status(), queue.body());
+        assertTrue(queue.json().path("items").toString().contains(requestId), queue.body());
+        assertEquals(400, console.get("/console/v1/access-requests?status=lost", gonzalo).status());
+        assertEquals(200, console.get("/console/v1/access-requests/" + requestId, gonzalo).status(), "an admin reads the queue");
         Console.Reply notAnAdmin = console.post("/console/v1/access-requests/" + requestId + ":decide", mateo, Map.of("decision", "approve"));
         assertEquals(403, notAnAdmin.status(), notAnAdmin.body());
         assertEquals("console-iam", notAnAdmin.json().path("denied").path("layer").asText());
@@ -120,7 +132,40 @@ class IamProxyTest extends DemoApp {
         assertEquals(202, decided.status(), decided.body());
         assertEquals("approved", decided.json().path("status").asText());
         assertEquals("user_gonzalo", decided.json().path("decidedBy").asText());
+        Console.Reply again = console.post("/console/v1/access-requests/" + requestId + ":decide", gonzalo, Map.of("decision", "reject"));
+        assertEquals(409, again.status(), "a decided request is not decided twice: " + again.body());
         JsonNode after = TypesEndpointTest.action(TypesEndpointTest.find(console.get("/console/v1/types", mateo).json(), "compute/vm"), "delete");
         assertTrue(after.path("allowed").asBoolean(false), "the cached decision was dropped when the membership changed");
+    }
+
+    @Test
+    void aQuotaIncreaseIsRequestedFollowedAndWithdrawn() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        Console.Reply opened = console.post("/console/v1/iam/quotas/compute:volumes:request-increase", gonzalo,
+                Map.of("limit", 400, "reason", "the nightly backups need more volumes"));
+        assertEquals(202, opened.status(), opened.body());
+        String requestId = opened.json().path("requestId").asText();
+        assertTrue(requestId.startsWith("qreq_"), opened.body());
+        assertEquals("open", opened.json().path("status").asText());
+        assertEquals(400, opened.json().path("requestedLimit").asInt());
+        assertEquals(200, opened.json().path("currentLimit").asInt());
+        Console.Reply second = console.post("/console/v1/iam/quotas/compute:volumes:request-increase", gonzalo,
+                Map.of("limit", 500, "reason", "the nightly backups need even more"));
+        assertEquals(409, second.status(), "one open request per quota: " + second.body());
+        Console.Reply quota = console.get("/console/v1/iam/quotas/compute:volumes", gonzalo);
+        assertEquals(requestId, quota.json().path("pendingRequestId").asText(), quota.body());
+        Console.Reply followed = console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo);
+        assertEquals(200, followed.status(), followed.body());
+        assertEquals("open", followed.json().path("status").asText());
+        Console.Reply decide = console.post("/console/v1/iam/quota-requests/" + requestId + ":decide", gonzalo, Map.of("decision", "approve"));
+        assertEquals(404, decide.status(), "only the platform team decides a quota request: " + decide.body());
+        Console.Reply notTheirs = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + requestId, console.signIn("dana"), null, Map.of());
+        assertEquals(403, notTheirs.status(), notTheirs.body());
+        Console.Reply withdrawn = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + requestId, gonzalo, null, Map.of());
+        assertEquals(204, withdrawn.status(), withdrawn.body());
+        Console.Reply twice = console.send(HttpMethod.DELETE, "/console/v1/iam/quota-requests/" + requestId, gonzalo, null, Map.of());
+        assertEquals(409, twice.status(), twice.body());
+        assertEquals("withdrawn", console.get("/console/v1/iam/quota-requests/" + requestId, gonzalo).json().path("status").asText());
+        assertTrue(console.get("/console/v1/iam/quotas/compute:volumes", gonzalo).json().path("pendingRequestId").isMissingNode());
     }
 }

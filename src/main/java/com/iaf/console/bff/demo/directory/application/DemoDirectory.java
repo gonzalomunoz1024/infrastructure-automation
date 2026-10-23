@@ -110,11 +110,22 @@ public class DemoDirectory {
         return rolesOf(subject, accountId).contains(ManagedRoles.ADMIN);
     }
 
+    /**
+     * Whether a person may decide the account's access requests: an admin, or a member of an
+     * approver group, whose custom {@code approver} role the identity service's demo grants
+     * {@code access-request:decide} (compute-approvers, data-approvers).
+     */
+    public boolean decidesAccessRequests(String subject, String accountId) {
+        return membership(subject, accountId)
+                .map(m -> m.roles().contains(ManagedRoles.ADMIN) || m.groups().stream().anyMatch(g -> g.endsWith("-approvers")))
+                .orElse(false);
+    }
+
     /** Adds a person to an account (creating the person when new) and bumps the account's authorization version. */
     public synchronized DemoMembership addMember(String accountId, String subject, String email, String name, List<String> groups, List<String> roles) {
         people.computeIfAbsent(subject, s -> new DemoPerson(s, name == null ? s : name, email == null ? s + "@example.com" : email, List.of()));
         List<String> effectiveRoles = roles == null || roles.isEmpty() ? List.of(ManagedRoles.VIEWER) : roles;
-        DemoMembership m = new DemoMembership(accountId, groups == null ? List.of(effectiveRoles.get(0) + "s") : groups, effectiveRoles);
+        DemoMembership m = new DemoMembership(accountId, groups == null ? List.of(ManagedRoles.groupOf(effectiveRoles.get(0))) : groups, effectiveRoles);
         memberships.computeIfAbsent(subject, s -> new ConcurrentHashMap<>()).put(accountId, m);
         bump(accountId);
         return m;
@@ -150,14 +161,10 @@ public class DemoDirectory {
 
     // access requests
 
+    /** Opens a request; the caller has checked that no pending request of the same requester and role exists ({@link #pendingRequest}). */
     public synchronized AccessRequest requestAccess(String accountId, DemoPerson requester, String action, String resource, String role, String reason) {
-        for (AccessRequest existing : accessRequests.values()) {
-            if (existing.open() && existing.accountId().equals(accountId) && existing.requester().userId().equals(requester.userId())
-                    && existing.action().equals(action) && existing.role().equals(role)) {
-                return existing;
-            }
-        }
-        List<String> approvers = members(accountId).stream().filter(e -> e.getValue().roles().contains(ManagedRoles.ADMIN)).map(e -> e.getKey().userId()).toList();
+        List<String> approvers = members(accountId).stream().filter(e -> decidesAccessRequests(e.getKey().subject(), accountId))
+                .map(e -> e.getKey().userId()).sorted().toList();
         AccessRequest request = new AccessRequest("areq_" + Ulid.next().toLowerCase(), accountId,
                 new AccessRequest.Requester(requester.userId(), requester.email(), requester.name()), action, resource, role, reason, "pending",
                 clock.instant(), null, null, null, approvers);
@@ -165,13 +172,17 @@ public class DemoDirectory {
         return request;
     }
 
+    /** One request as served now. */
     public Optional<AccessRequest> accessRequest(String requestId) {
-        return Optional.ofNullable(accessRequests.get(requestId));
+        return Optional.ofNullable(accessRequests.get(requestId)).map(r -> r.served(clock.instant()));
     }
 
+    /** The account's requests as served now (expired ones included), newest first, of one requester when one is named. */
     public List<AccessRequest> accessRequests(String accountId, String requesterUserId, String status) {
+        Instant now = clock.instant();
         List<AccessRequest> out = new ArrayList<>();
-        for (AccessRequest r : accessRequests.values()) {
+        for (AccessRequest stored : accessRequests.values()) {
+            AccessRequest r = stored.served(now);
             if (!r.accountId().equals(accountId)) {
                 continue;
             }
@@ -187,14 +198,15 @@ public class DemoDirectory {
         return out;
     }
 
-    /** Decides a request; approving grants the role. Empty when the request is unknown; the same request when already decided. */
+    /** Decides a request; approving grants the role. Empty when the request is unknown; the request as it is when no longer pending. */
     public synchronized Optional<AccessRequest> decide(String requestId, String decision, String byUserId, String comment) {
         AccessRequest request = accessRequests.get(requestId);
         if (request == null) {
             return Optional.empty();
         }
-        if (!request.open()) {
-            return Optional.of(request);
+        AccessRequest served = request.served(clock.instant());
+        if (!served.open()) {
+            return Optional.of(served);
         }
         AccessRequest decided = request.decided(decision, byUserId, comment, clock.instant());
         accessRequests.put(requestId, decided);
@@ -204,15 +216,16 @@ public class DemoDirectory {
         return Optional.of(decided);
     }
 
-    /** True when an open request with the same shape exists already. */
-    public boolean hasOpenRequest(String accountId, String requesterUserId, String action, String role) {
-        for (AccessRequest r : accessRequests.values()) {
-            if (r.open() && r.accountId().equals(accountId) && r.requester().userId().equals(requesterUserId) && r.action().equals(action)
-                    && r.role().equals(role)) {
-                return true;
+    /** The requester's pending request for a role in the account, as the identity service keeps one per requester and role. */
+    public Optional<AccessRequest> pendingRequest(String accountId, String requesterUserId, String role) {
+        Instant now = clock.instant();
+        for (AccessRequest stored : accessRequests.values()) {
+            AccessRequest r = stored.served(now);
+            if (r.open() && r.accountId().equals(accountId) && r.requester().userId().equals(requesterUserId) && r.role().equals(role)) {
+                return Optional.of(r);
             }
         }
-        return false;
+        return Optional.empty();
     }
 
     public Instant now() {

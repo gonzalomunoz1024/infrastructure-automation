@@ -17,14 +17,14 @@ import com.iaf.console.bff.session.application.CurrentSession;
 import reactor.core.publisher.Mono;
 
 /**
- * {@code /console/v1/iam/{users,groups,roles,policies,access-keys,quotas}...} and
+ * {@code /console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}...} and
  * {@code /console/v1/access-requests...}, served through the identity service for the session's
  * account. Writes go through the CSRF filter like every other write.
  */
 @RestController
 public class IamController {
 
-    private static final Set<String> RESOURCES = Set.of("users", "groups", "roles", "policies", "access-keys", "quotas");
+    private static final Set<String> RESOURCES = Set.of("users", "groups", "roles", "policies", "access-keys", "quotas", "quota-requests");
 
     private final IamProxy proxy;
 

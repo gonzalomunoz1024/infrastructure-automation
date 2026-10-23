@@ -10,8 +10,10 @@ import com.iaf.console.bff.session.domain.ActionPatterns;
  * and runs non-destructive verbs, account-admin (shown as Admin) does everything (IAM writes and
  * deletes included), auditor reads and sees the trail. The identity service creates them in every
  * account with the groups that hold them: viewers, members (operator), owners (account-admin) and
- * auditors. The identity service decides for real; this table answers the demo
- * stand-in and names the role to suggest when a verb is refused.
+ * auditors. Reading the account's access-request queue is left out of viewer and operator, as the
+ * identity service's managed policies leave it out ({@code notActions}), and deciding a request is
+ * an admin's. The identity service decides for real; this table answers the demo stand-in and
+ * names the role to suggest when a verb is refused.
  */
 public final class ManagedRoles {
 
@@ -35,7 +37,9 @@ public final class ManagedRoles {
 
     private static final List<String> READS = List.of("*:list", "*:get", "*:read", "*:describe", "*:search", "*:preview");
     private static final List<String> DESTRUCTIVE = List.of("*:delete", "*:destroy", "*:purge", "*:terminate");
-    private static final List<String> IAM_WRITES = List.of("iam:create", "iam:update", "iam:delete", "iam:rotate", "iam:decide", "iam:set");
+    private static final List<String> IAM_WRITES = List.of("iam:create", "iam:update", "iam:delete", "iam:rotate", "iam:decide", "iam:set",
+            "access-request:decide");
+    private static final List<String> QUEUE = List.of("access-request:get", "access-request:list");
     private static final List<String> AUDIT = List.of("audit:*", "jobs:list", "jobs:get", "approvals:list", "approvals:get");
 
     private ManagedRoles() {
@@ -51,11 +55,11 @@ public final class ManagedRoles {
             case ADMIN:
                 return true;
             case OPERATOR:
-                return !matchesAny(DESTRUCTIVE, action) && !matchesAny(IAM_WRITES, action);
+                return !matchesAny(DESTRUCTIVE, action) && !matchesAny(IAM_WRITES, action) && !matchesAny(QUEUE, action);
             case AUDITOR:
                 return matchesAny(READS, action) || matchesAny(AUDIT, action);
             case VIEWER:
-                return matchesAny(READS, action);
+                return matchesAny(READS, action) && !matchesAny(QUEUE, action);
             default:
                 return false;
         }
@@ -71,8 +75,14 @@ public final class ManagedRoles {
         return false;
     }
 
-    /** The weakest managed role that would allow an action: viewer for a read, admin for a delete or an IAM write, operator otherwise. */
+    /**
+     * The weakest managed role that would allow an action: auditor for the access-request queue,
+     * viewer for any other read, admin for a delete or an IAM write, operator otherwise.
+     */
     public static String suggestedFor(String action) {
+        if (matchesAny(QUEUE, action)) {
+            return AUDITOR;
+        }
         if (matchesAny(READS, action)) {
             return VIEWER;
         }
