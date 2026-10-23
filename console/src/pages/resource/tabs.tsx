@@ -4,8 +4,8 @@ import { CodeView, DotTag, ExternalLink, Facts, ResourceLineage, Section, Status
 import { useConsole } from '../../app/console'
 import { ExplainedError } from '../../app/commands'
 import { LaterButton, PHASES } from '../../app/Phase'
-import { useRefusal } from '../../app/Refusal'
-import { Link, pathFor } from '../../app/router'
+import { ActionButton, useRefusal } from '../../app/Refusal'
+import { Link, pathFor, useRoute } from '../../app/router'
 import { api, isApiError } from '../../lib/api'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor } from '../../lib/code'
@@ -13,6 +13,8 @@ import { singularOf, type ConsoleType } from '../../lib/descriptors'
 import { useQuery } from '../../lib/queries'
 import { verbsOf } from '../../lib/verbs'
 import type { ActivityEntry, ConsoleResourceDetail, Finding, Resource, Schema } from '../../lib/types'
+import { EDIT_NOT_OFFERED, editWaitNote } from './EditDrawer'
+import { HeldButton } from './HeldButton'
 
 /*
  * The tabs of a resource page. Each reads what it needs: Configuration the record (with the
@@ -124,6 +126,46 @@ function useOpenFindings(type: ConsoleType, wfrn: string, detail: ConsoleResourc
   return { open, loading: ask && list.loading, error: ask ? list.error : undefined, refetch: list.refetch }
 }
 
+/**
+ * The Configuration tab's Edit: the Actions menu's Edit configuration as a link (`?action=edit`),
+ * under the same decision; it waits while a request is in flight, and a type whose provider
+ * publishes no update workflow says so instead.
+ */
+function EditButton({ type, detail }: { type: ConsoleType; detail: ConsoleResourceDetail | undefined }) {
+  const { decide } = useConsole()
+  const route = useRoute()
+  const noun = singularOf(type.title).toLowerCase()
+  if (!type.update) {
+    return (
+      <HeldButton reason={EDIT_NOT_OFFERED} variant="secondary" size="sm" icon="edit" verb="update">
+        Edit
+      </HeldButton>
+    )
+  }
+  const decision = decide(type, 'update')
+  if (!decision.allowed) {
+    return (
+      <ActionButton decision={decision} what={`Edit this ${noun}`} verb="update" size="sm" icon="edit">
+        Edit
+      </ActionButton>
+    )
+  }
+  const wait = editWaitNote(detail, noun)
+  if (wait) {
+    return (
+      <HeldButton reason={wait} variant="secondary" size="sm" icon="edit" verb="update">
+        Edit
+      </HeldButton>
+    )
+  }
+  return (
+    <Link to={pathFor('resource', route.params, { ...route.query, action: 'edit' }, { accountId: route.accountId })} replace data-verb="update" className="inline-flex select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-surface-secondary px-3 py-1.5 text-caption font-medium text-primary transition-all duration-150 hover:bg-stroke-light active:scale-[0.97]">
+      <Icon name="edit" size={13} />
+      Edit
+    </Link>
+  )
+}
+
 function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
   const deleted = isApiError(viewError) && viewError.status === 410
   const props = type.schema.properties ?? {}
@@ -137,7 +179,7 @@ function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
   const groups = [...(ungrouped.length ? [{ group: 'Attributes', names: ungrouped }] : []), ...grouped.filter((g) => g.group !== null)]
   const known = new Set(Object.keys(props))
   const extra = Object.keys(attributes).filter((k) => !known.has(k))
-  const editable = !deleted && mutableFields(type.schema).length > 0
+  const editable = !deleted && (!!type.update || mutableFields(type.schema).length > 0)
   if (groups.length === 0 && extra.length === 0) return <EmptyState compact icon="document" title="No attributes" message="This type has no schema fields and the resource carries no attributes." />
   const value = (name: string, shown: ReactNode) => {
     const d = differs.get(name)
@@ -158,11 +200,7 @@ function Configuration({ type, wfrn, record, detail, viewError }: TabProps) {
           key={g.group ?? 'default'}
           title={g.group ?? 'Attributes'}
           actions={
-            i === 0 && editable ? (
-              <LaterButton phase={4} size="sm" icon="edit">
-                Edit
-              </LaterButton>
-            ) : undefined
+            i === 0 && editable ? <EditButton type={type} detail={detail} /> : undefined
           }
         >
           <Facts columns={3} items={g.names.map((name) => ({ label: <FieldLabel name={name} schema={props[name]} />, value: value(name, formatField(type.schema, name, attributes[name])) }))} />

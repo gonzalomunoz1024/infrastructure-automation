@@ -4,7 +4,6 @@ import { ConfirmDialog, PreviewCard, SchemaForm, defaultsFor, displayWfrn, field
 import { CodeDisclosure } from '../../app/CodeDisclosure'
 import { useConsole } from '../../app/console'
 import { FailureNote, useCommand } from '../../app/commands'
-import { Hint } from '../../app/Hint'
 import { ActionButton } from '../../app/Refusal'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor, subjectFor } from '../../lib/code'
@@ -14,6 +13,7 @@ import { useQuery } from '../../lib/queries'
 import { cleanInput, useSubmissionKey } from '../../lib/submission'
 import type { BlastRadius, CommandAccepted, CommandInput, ConsolePreview } from '../../lib/types'
 import { BlastRadiusCard, radiusLine, radiusOfRefusal } from './BlastRadius'
+import { HeldButton } from './HeldButton'
 
 /*
  * One workflow run on one resource, from the detail page's Actions (or a `?action=<verb>` link):
@@ -200,13 +200,10 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, onClose, on
         <OverlayFooter>
           <CancelButton />
           {heldBack && decision.allowed ? (
-            // held back, not refused: the reason rides in the button's name and its hint, and the button stays in the Tab order
-            <Hint label={heldReason}>
-              <Button variant="danger" icon="trash" aria-disabled="true" data-verb={action.verb} onClick={(e) => e.preventDefault()} className="cursor-not-allowed opacity-60 active:scale-100">
-                {action.title}
-                <span className="sr-only">. {heldReason}.</span>
-              </Button>
-            </Hint>
+            // held back, not refused: the reason rides in the button's name and its hint
+            <HeldButton reason={heldReason} variant="danger" icon="trash" verb={action.verb}>
+              {action.title}
+            </HeldButton>
           ) : (
             <ActionButton decision={decision} what={action.title} verb={action.verb} variant={action.destructive ? 'danger' : 'primary'} icon={action.destructive ? 'trash' : 'play'} loading={cmd.busy} disabled={policy === 'deny'} onClick={submit}>
               {action.title}

@@ -19,7 +19,7 @@ export interface CodeContext {
 
 export type CodeRequest =
   | { kind: 'create'; type: ConsoleType; action: ConsoleAction | null; body: CommandInput; context: CodeContext }
-  | { kind: 'update'; type: ConsoleType; wfrn: string; body: CommandInput; context: CodeContext }
+  | { kind: 'update'; type: ConsoleType; wfrn: string; body: CommandInput; context: CodeContext; /** the type's update workflow, when the catalog has one */ action?: ConsoleAction | null; /** the version the person read, sent as If-Match */ version?: number }
   | { kind: 'verb'; type: ConsoleType; action: ConsoleAction; wfrn: string; body: CommandInput; context: CodeContext }
   | { kind: 'record'; type: ConsoleType; wfrn: string; record: unknown; context: CodeContext }
 
@@ -62,7 +62,7 @@ function idOf(wfrn: string): string {
 
 /** A `kind: WorkflowRun` manifest: the request as a file a Git repository (and the CLI's `apply`) can carry. */
 export function workflowRunYaml(req: Exclude<CodeRequest, { kind: 'record' }>): string {
-  const action = req.kind === 'update' ? null : req.action
+  const action = req.kind === 'update' ? (req.action ?? null) : req.action
   const workflow = action?.workflow ?? (req.kind === 'update' ? `update-${req.type.name}` : `create-${req.type.name}`)
   const doc: Record<string, unknown> = {
     apiVersion: 'iaf.platform/v1',
@@ -90,7 +90,7 @@ export const SENSITIVE_PLACEHOLDER = '<sensitive: fill in>'
 /** The request with every sensitive input (the type's, or the workflow's own) replaced by a placeholder. */
 function masked(req: CodeRequest): CodeRequest {
   if (req.kind === 'record') return req
-  const action = req.kind === 'update' ? null : req.action
+  const action = req.kind === 'update' ? (req.action ?? null) : req.action
   const hidden = new Set([...req.type.sensitive, ...sensitiveFields(action?.input)])
   const input = req.body.input
   if (!Object.keys(input).some((k) => hidden.has(k))) return req
@@ -130,15 +130,18 @@ export function codeSamplesFor(request: CodeRequest): CodeSample[] {
 
   const bffUrl = req.kind === 'create' ? `${bff}/r/${enc(type.name)}` : req.kind === 'update' ? `${bff}/r/${enc(type.name)}/${enc(req.wfrn)}` : `${bff}/r/${enc(type.name)}/${enc(req.wfrn)}:${req.action.verb}`
   const bffMethod = req.kind === 'update' ? 'PATCH' : 'POST'
-  const bffCall = curlCommand({ method: bffMethod, url: bffUrl, headers: { 'Idempotency-Key': KEY_PLACEHOLDER, 'X-Csrf-Token': '<the session’s csrfToken>', Cookie: 'console_session=<your session>' }, body })
+  // an update names the version it was made against, so a change made in between is refused rather than overwritten
+  const ifMatch: Record<string, string> = req.kind === 'update' && req.version !== undefined ? { 'If-Match': String(req.version) } : {}
+  const bffCall = curlCommand({ method: bffMethod, url: bffUrl, headers: { 'Idempotency-Key': KEY_PLACEHOLDER, ...ifMatch, 'X-Csrf-Token': '<the session’s csrfToken>', Cookie: 'console_session=<your session>' }, body })
 
-  const action = req.kind === 'update' ? null : req.action
+  const action = req.kind === 'update' ? (req.action ?? null) : req.action
+  const subject = action ? (action.subject ?? subjectFor(action, type)) : undefined
   const platformCall = action
     ? curlCommand({
         method: action.method,
         url: `${origin}${platformPath(action, subjectId)}`,
         headers: { 'X-User': '<you>', 'X-On-Behalf-Of': `account:${req.context.accountId}`, 'Idempotency-Key': KEY_PLACEHOLDER },
-        body: req.kind === 'verb' ? { ...body.input, ...(subjectFor(action, type) ? { [subjectFor(action, type)!]: subjectId } : {}) } : body.input,
+        body: req.kind !== 'create' ? { ...body.input, ...(subject ? { [subject]: subjectId } : {}) } : body.input,
       })
     : `# the platform runs the type's update workflow for a PATCH through the console; it has no direct path of its own`
 
