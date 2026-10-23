@@ -20,11 +20,13 @@ import reactor.core.publisher.Mono;
  * The loops inside this process, for a single replica, the demo and the tests: the inventory sync
  * (at once, then on its interval), the scan of every shard on the loop's interval (unless the
  * {@code temporal} profile runs it), and the follower of revert jobs. A tick never overlaps the
- * one before it; a failed tick is logged and the next one runs.
+ * one before it; a failed tick, or one still running at the limit, is logged and the next one runs.
  */
 public final class InProcessLoops implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(InProcessLoops.class);
+    /** As the Temporal activities' limit: a tick still running then is cut, so one stuck call cannot stop its loop. */
+    static final Duration TICK_LIMIT = Duration.ofMinutes(14);
 
     private final ShardScanner scanner;
     private final InventorySync sync;
@@ -60,9 +62,13 @@ public final class InProcessLoops implements SmartLifecycle {
     }
 
     private static Disposable loop(String name, Duration delay, Duration period, java.util.function.Supplier<Mono<Void>> tick) {
+        return loop(name, delay, period, TICK_LIMIT, tick);
+    }
+
+    static Disposable loop(String name, Duration delay, Duration period, Duration limit, java.util.function.Supplier<Mono<Void>> tick) {
         return Flux.interval(delay, period)
                 .onBackpressureDrop()
-                .concatMap(n -> Mono.defer(tick).onErrorResume(e -> {
+                .concatMap(n -> Mono.defer(tick).timeout(limit).onErrorResume(e -> {
                     log.warn("drift {} tick failed: {}", name, e.toString());
                     return Mono.empty();
                 }), 1)

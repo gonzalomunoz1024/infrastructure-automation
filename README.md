@@ -96,12 +96,12 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.drift.scan.observation-refresh` | `24h` | An unchanged observation is sent to the state service again after this |
 | `console.drift.scan.in-flight-retry`, `error-retry` | `1m`, `5m` | When a resource with a change in flight, or whose read failed, is read again |
 | `console.drift.budget.observe-per-minute`, `burst`, `account-share` | `300`, `50`, `0.25` | The observe budget per provider and region, and one account's share of it |
-| `console.drift.loop.*`, `sync.*`, `follower.*` | on, `30s`; `60s`; `5s` | The scan loop's turn, the inventory sync's interval, the revert follower's interval |
+| `console.drift.loop.*`, `sync.*`, `follower.*` | on, `30s`; `60s`; `5s` | The scan loop's turn, the inventory sync's interval, the revert follower's interval (in this process, a tick still running after 14 minutes is cut, as a Temporal activity is) |
 | `console.drift.sync.accounts` | `[]` | Accounts to watch in addition to the ones the identity service lists |
 | `console.drift.idempotency-ttl`, `types-ttl` | `24h`, `60s` | How long an `Idempotency-Key` replays; how long resource types are cached |
 | `console.drift.webhooks.<provider>.secret` | none | The HMAC secret of a provider's change notifications |
-| `console.state.mode`, `base-url`, `timeout` | `http`, `http://localhost:18082`, `30s` | The state service |
-| `console.identity.base-url`, `timeout` | `http://localhost:18083`, `10s` | The identity service: each account's platform credentials |
+| `console.state.mode`, `base-url`, `timeout` | `http`, `http://localhost:18082`, `30s` | The state service; an answer must start within the timeout, and its body may not stall longer between reads |
+| `console.identity.base-url`, `timeout` | `http://localhost:18083`, `10s` | The identity service: each account's platform credentials (the same timeout rule) |
 | `console.service-tokens.mode` | `bff` | How this service names itself to the state and identity services: `bff` (hub decision 23) or `dev-headers` (demos) |
 | `console.service-tokens.token-url`, `client-id` | `http://localhost:18081/internal/v1/token`, `console-drift-service` | The BFF's token endpoint and this service's client id there |
 | `console.service-tokens.assertion-file` | `CONSOLE_SERVICE_ASSERTION_FILE` | The projected service-account token (audience `console-bff`) that authenticates the token request, in a cluster |
@@ -109,6 +109,7 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.service-tokens.refresh-before`, `timeout` | `60s`, `10s` | A token is asked again this long before it ends; how long the BFF may take |
 | `console.platform.base-url`, `token`, `timeout`, `account-tokens` | `http://localhost:18090`, `CONSOLE_PLATFORM_TOKEN`, `30s`, `{}` | The platform's API; per-account tokens for a dev box without the identity service |
 | `console.auth.jwks-uri`, `issuer`, `audiences` | the BFF's `/.well-known/jwks.json`, `console-bff`, `[console-drift-service, console]` | Which tokens are accepted |
+| `console.auth.jwks-timeout` | `10s` | How long a fetch of the BFF's keys may take; a failed or slow fetch is not kept, so the next request fetches again |
 | `console.auth.dev-headers` | `false` | Accept the dev headers instead of a token (demo only) |
 | `console.temporal.target`, `namespace`, `task-queue`, `iterations` | `localhost:7233`, `default`, `console-drift`, `96` | The Temporal frontend and how many turns a loop takes before it continues as new |
 | `console.kafka.bootstrap-servers`, `group-id`, `topics` | `localhost:9092`, `console-drift-service`, `[state.resources]` | The state events consumer (`kafka` profile) |

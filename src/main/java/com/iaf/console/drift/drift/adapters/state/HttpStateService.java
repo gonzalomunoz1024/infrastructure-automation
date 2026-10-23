@@ -11,6 +11,7 @@ import java.util.List;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -29,12 +30,14 @@ import com.iaf.console.drift.drift.ports.outbound.StateServicePort;
 import com.iaf.console.kit.paging.Page;
 
 import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
 
 /**
  * The state service over HTTP ({@code contracts/openapi/console-state-service.yaml}), called as the
  * {@code console-drift-service} principal: the given credentials put a service token the BFF
  * issued on each request (hub decision 23), or the dev header where the state service accepts it.
- * Every call ends after the timeout. A wfrn travels percent-encoded in the path. An error answer
+ * Every call ends after the timeout: the answer must start within it, and its body may not stall
+ * for longer between reads. A wfrn travels percent-encoded in the path. An error answer
  * becomes a {@link StateError} with the state's own error code and detail.
  */
 public final class HttpStateService implements StateServicePort {
@@ -50,7 +53,8 @@ public final class HttpStateService implements StateServicePort {
     public HttpStateService(WebClient.Builder builder, String baseUrl, ExchangeFilterFunction credentials, Duration timeout) {
         String base = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         this.baseUrl = base;
-        this.web = builder.clone().baseUrl(base).defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+        this.web = builder.clone().clientConnector(new ReactorClientHttpConnector(HttpClient.create().responseTimeout(timeout)))
+                .baseUrl(base).defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader(HttpHeaders.USER_AGENT, SERVICE)
                 .filter(credentials)
                 .filter((request, next) -> next.exchange(request).timeout(timeout))

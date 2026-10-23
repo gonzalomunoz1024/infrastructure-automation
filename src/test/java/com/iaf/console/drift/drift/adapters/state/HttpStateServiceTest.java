@@ -2,6 +2,7 @@ package com.iaf.console.drift.drift.adapters.state;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -15,6 +16,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,6 +103,40 @@ class HttpStateServiceTest {
         Seen request = seen.get(0);
         assertThat(request.query()).contains("accountId=123456789012", "sort=updatedAt", "limit=200", "updatedAfter=2026-10-23T09:00:00Z", "after=c1");
         assertThat(request.headers()).containsEntry("authorization", "Bearer svc-token");
+    }
+
+    @Test
+    void anAnswerThatStallsMidBodyEndsAtTheTimeout() throws IOException {
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newCachedThreadPool();
+        // the headers and the start of the body arrive at once, then nothing
+        HttpServer stalling = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        stalling.setExecutor(pool);
+        stalling.createContext("/", exchange -> {
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write("{\"items\":[".getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.close();
+        });
+        stalling.start();
+        try {
+            HttpStateService impatient = new HttpStateService(WebClient.builder(), "http://127.0.0.1:" + stalling.getAddress().getPort(),
+                    (request, next) -> next.exchange(request), Duration.ofMillis(300));
+            long started = System.nanoTime();
+            Throwable failure = catchThrowable(() -> impatient.listResources("123456789012", null, null, 10).block(Duration.ofSeconds(8)));
+            assertThat(failure).isNotNull();
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(3));
+        } finally {
+            release.countDown();
+            stalling.stop(0);
+            pool.shutdownNow();
+        }
     }
 
     @Test

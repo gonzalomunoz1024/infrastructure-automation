@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -16,6 +17,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.console.drift.drift.ports.outbound.PlatformCredentialsPort;
 
 import reactor.core.publisher.Mono;
+import reactor.netty.http.client.HttpClient;
 
 /**
  * The identity service's answer to {@code GET /v1/accounts/{accountId}/platform-credentials} (hub
@@ -35,10 +37,14 @@ public final class IdentityPlatformCredentials implements PlatformCredentialsPor
     private final String baseUrl;
     private final Map<String, Cached> cache = new ConcurrentHashMap<>();
 
-    /** {@code credentials} name this service to the identity service: a BFF service token (hub decision 23), or the demos' dev header. */
+    /**
+     * {@code credentials} name this service to the identity service: a BFF service token (hub decision 23), or the demos' dev header.
+     * An answer must start within {@code timeout}, and its body may not stall for longer between reads.
+     */
     public IdentityPlatformCredentials(WebClient.Builder builder, String baseUrl, ExchangeFilterFunction credentials, Duration timeout) {
         this.baseUrl = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        this.web = builder.clone().defaultHeader(HttpHeaders.USER_AGENT, "console-drift-service")
+        this.web = builder.clone().clientConnector(new ReactorClientHttpConnector(HttpClient.create().responseTimeout(timeout)))
+                .defaultHeader(HttpHeaders.USER_AGENT, "console-drift-service")
                 .filter(credentials)
                 .filter((request, next) -> next.exchange(request).timeout(timeout))
                 .build();

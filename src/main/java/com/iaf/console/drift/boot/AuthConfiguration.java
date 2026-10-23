@@ -16,7 +16,7 @@ public class AuthConfiguration {
     @Bean
     public JwtVerifier jwtVerifier(WebClient.Builder webClients, DriftProperties properties, Clock clock) {
         DriftProperties.AuthSettings auth = properties.auth();
-        return new JwtVerifier(webClients.build(), auth.jwksUri(), auth.issuer(), auth.audiences(), clock);
+        return new JwtVerifier(webClients.build(), auth.jwksUri(), auth.jwksTimeout(), auth.issuer(), auth.audiences(), clock);
     }
 
     @Bean

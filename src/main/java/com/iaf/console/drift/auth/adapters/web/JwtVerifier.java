@@ -27,11 +27,13 @@ import reactor.core.publisher.Mono;
 
 /**
  * Verifies the console's internal JWTs: ES256, signed by the BFF, whose JWKS is fetched over HTTP
- * and kept for a while (and fetched again once when a token names a key id the set does not
- * hold, for a rotation). The claims: {@code iss} the BFF, {@code aud} this service (or
- * {@code console}), {@code exp} in the future, {@code sub} who, {@code acct} the account (absent
- * on a service token), {@code region}, {@code groups}, {@code roles} (the managed roles the person
- * holds in the account, which decide admin-only things such as {@code reveal=sensitive}) and {@code svc}.
+ * within a time limit and kept for a while (and fetched again once when a token names a key id
+ * the set does not hold, for a rotation). A fetch that fails or runs out of time is not kept, so
+ * the next request fetches again rather than every request waiting on a BFF that never answers.
+ * The claims: {@code iss} the BFF, {@code aud} this service (or {@code console}), {@code exp} in
+ * the future, {@code sub} who, {@code acct} the account (absent on a service token),
+ * {@code region}, {@code groups}, {@code roles} (the managed roles the person holds in the
+ * account, which decide admin-only things such as {@code reveal=sensitive}) and {@code svc}.
  */
 public final class JwtVerifier {
 
@@ -51,15 +53,17 @@ public final class JwtVerifier {
 
     private final WebClient web;
     private final String jwksUri;
+    private final Duration fetchTimeout;
     private final String issuer;
     private final List<String> audiences;
     private final Clock clock;
     private final AtomicReference<Mono<JWKSet>> jwks = new AtomicReference<>();
     private final AtomicReference<Instant> lastRefresh = new AtomicReference<>(Instant.EPOCH);
 
-    public JwtVerifier(WebClient web, String jwksUri, String issuer, List<String> audiences, Clock clock) {
+    public JwtVerifier(WebClient web, String jwksUri, Duration fetchTimeout, String issuer, List<String> audiences, Clock clock) {
         this.web = web;
         this.jwksUri = jwksUri;
+        this.fetchTimeout = Objects.requireNonNull(fetchTimeout);
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
         this.clock = clock;
@@ -70,6 +74,7 @@ public final class JwtVerifier {
     public JwtVerifier(JWKSet keys, String issuer, List<String> audiences, Clock clock) {
         this.web = null;
         this.jwksUri = null;
+        this.fetchTimeout = null;
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
         this.clock = clock;
@@ -146,6 +151,7 @@ public final class JwtVerifier {
 
     private Mono<JWKSet> fetch() {
         return Mono.defer(() -> web.get().uri(Objects.requireNonNull(jwksUri)).retrieve().bodyToMono(String.class)
+                .timeout(fetchTimeout)
                 .map(body -> {
                     try {
                         JWKSet set = JWKSet.parse(body);

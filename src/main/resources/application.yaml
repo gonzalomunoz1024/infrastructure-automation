@@ -84,6 +84,7 @@ console:
     account-tokens: {}    # <accountId>: <token>, for a dev box without the identity service
   auth:
     jwks-uri: http://localhost:18081/.well-known/jwks.json
+    jwks-timeout: 10s     # a slower fetch of the BFF's keys fails; the next request fetches again
     issuer: console-bff
     audiences: [console-drift-service, console]
     dev-headers: false
