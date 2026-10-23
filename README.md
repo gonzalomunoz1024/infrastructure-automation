@@ -10,38 +10,24 @@ platform changes the console needs.
   design: personas, wfrn, the dynamic console, services, scale, security, roadmap, risks).
 - Platform changes: [platform-changes/README.md](platform-changes/README.md), a plan only.
 - Status: planning, 2026-10-23. All ten decisions are answered. No service branch has code yet.
-  Revised the same day after an independent review against the platform at `c9529d5`: pilot cap,
-  go/no-go gate, isolation rules, P-18 to P-21, and a phase 9 of features beyond the AWS console.
+  Revised the same day after an independent review against the platform at `c9529d5`: P-18 to
+  P-21, and a phase 9 of features beyond the AWS console. The console is built against the
+  platform as it will be after all twenty-one changes.
 
-## The pilot cap and the go/no-go gate
+## Building against the target platform
 
-Until the platform team ships three of the planned changes, the console runs on interim adapters
-to today's platform API, and those carry a pilot only:
-
-- **Pilot cap: at most 50,000 resources and 5 accounts in total.** The identity service refuses a
-  sixth account and the state service refuses imports past the cap, with a message naming the
-  changes that lift it. The reasons are in `platform-changes/README.md`, section 11.
-- **Go/no-go.** The console's scale gate (plan, gate 6) cannot pass until P-01 (event feed), P-05
-  (registry wfrns, collision-safe keys, paging) and P-09 (observe and list reads) are live on the
-  platform. Gate 2 needs each of them to have an owner on the platform team and a target date:
-
-  | Change | Owner (platform team) | Target date | Status |
-  | --- | --- | --- | --- |
-  | P-01 Event feed | to be named | to be set | planned |
-  | P-05 Registry wfrns and paging | to be named | to be set | planned |
-  | P-09 Observe and list reads | to be named | to be set | planned |
-
-- **Isolation, whatever the adapter.** Platform reads are not isolated by tenant today (P-18). No
-  service passes a platform read through to the browser: every platform response is filtered by
-  the account's owner team and every record's account is re-checked before it leaves the service.
-  A cross-account read test runs against a real platform in CI.
+Decided 2026-10-23: the console assumes every change in `platform-changes/` (P-01 to P-21) is
+rolled out, and every service is built against the platform's API as it will be after them. There
+are no interim adapters and no pilot limits. Until the platform team ships the changes, the
+services run against `platform-fake`, an in-memory implementation of the target contract
+(`platform-changes/README.md`, section 11).
 
 ## The rules of this repository layout
 
 1. **The platform is not touched.** No branch of the console work changes the platform's `main`,
    its code, content, build or docs (decided 2026-10-23). What the platform must change is written
-   up in `platform-changes/` for the platform team, and the console works around each missing
-   change until it lands (that README, section 11).
+   up in `platform-changes/` for the platform team, and the console is built as if every change
+   has shipped (that README, section 11).
 2. **One branch per service, each shaped like its own repository.** Each service will become its
    own repository. Until then, each lives on its own branch of this repository, created as an
    orphan branch: its own history, its own build at the branch root, its own CI workflow, and no
@@ -78,30 +64,30 @@ its own MongoDB database, its own Helm chart under `deploy/`, and its own
 
 - `contracts/` on this branch is the source of truth: one OpenAPI file per service API
   (`contracts/openapi/<service>.yaml`), the AsyncAPI file for the console's own Kafka topics
-  (`contracts/asyncapi/console-events.yaml`), the platform's API as the console uses it today
-  (`contracts/platform/openapi-c9529d5.json`, captured from the platform's `/openapi.json` at
-  that commit, read-only), and the wfrn fixtures (`contracts/wfrn/fixtures.json`) that the Java
+  (`contracts/asyncapi/console-events.yaml`), the platform's target API and events after the
+  planned changes (`contracts/platform/openapi-target.yaml`, `contracts/platform/asyncapi-target.yaml`),
+  the platform's API as it is today for reference (`contracts/platform/openapi-c9529d5.json`,
+  read-only), and the wfrn fixtures (`contracts/wfrn/fixtures.json`) that the Java
   and TypeScript wfrn libraries both run.
 - `console-libs` generates its clients from a pinned commit of this branch, recorded in
   `console-libs/contracts.lock`, and publishes them with a version. Services depend on a
   published version, never on a branch.
 - A breaking change to a contract is a new version of that API (`/v2`) or a new event type, and
   both versions are served for one release.
-- **Nightly platform contract check.** The platform keeps changing while the console pins
-  `c9529d5`. A nightly CI job on this branch fetches `/openapi.json` from the platform's `main`,
-  compares it with `contracts/platform/openapi-c9529d5.json` for every operation the console uses
-  (listed in `contracts/platform/used-operations.txt`), and fails on a breaking change, so the
-  console team hears about it before an adapter breaks.
+- **Nightly platform contract check.** A nightly CI job on this branch fetches `/openapi.json`
+  from the platform's `main`, compares it with the target contract for every operation the
+  console uses (listed in `contracts/platform/used-operations.txt`), reports which planned
+  changes have landed, and fails when something the console uses moves away from the target.
 - Consumers de-duplicate platform events on the event's `key`, never its `id`, and console topics
   are partitioned by wfrn.
 
-## Type overlays (until the platform's P-06 lands)
+## Type overlays
 
-The console's per-type hints and drift mappings (`console`, `observe`, `x-console`) belong on the
-platform's `kind: ResourceType`, but the platform is not changed. Until it is, they live here in
-`type-overlays/<type>.yaml`, in exactly the shape P-06 gives them, so moving them into the
-platform later is a copy. A type with no overlay still gets a full console from its schema and
-workflows; overlays only polish it.
+The console's per-type hints and drift mappings (`console`, `observe`, `x-console`) live on the
+platform's `kind: ResourceType` (P-06), owned by provider teams and published by change request
+(P-19). For the sample types, the hub drafts them in `type-overlays/<type>.yaml`, in exactly
+P-06's shape, as the input to the platform's sample content (P-15) and to `platform-fake`. A type
+with no hints still gets a full console from its schema and workflows; hints only polish it.
 
 ## Decisions
 
@@ -126,13 +112,13 @@ lands on.
 
 | Phase | Work | Branches |
 | --- | --- | --- |
-| 0 Foundations | Contracts and wfrn fixtures; convention plugins, wfrn, service-kit; the console shell in Atlas; interim adapters with isolation filters; the nightly platform contract check | `console-root`, `console-libs`, `console-web` |
+| 0 Foundations | Contracts (including the platform's target contract) and wfrn fixtures; convention plugins, wfrn, service-kit, `platform-fake`; the console shell in Atlas; the nightly platform contract check | `console-root`, `console-libs`, `console-web` |
 | 1 Sign in and IAM | Accounts, four managed roles per account, OPA bundles, platform service accounts per account; OIDC sign-in, sessions; Request access | `console-identity-service`, `console-bff`, `console-web` |
-| 2 Inventory | The state service, fed by today's platform job stream and registry reads (interim adapters), under the pilot cap; pending reaper and collision guard; per-account keys for sensitive fields | `console-state-service` |
+| 2 Inventory | The state service, fed by the platform's event feed on Kafka with snapshot rebuilds; import of the registry; pending reaper and collision guard; per-account keys for sensitive fields | `console-state-service` |
 | 3 Dynamic console | Type descriptors from today's resource types, catalog and overlays; list, detail, create, actions; view as code, command palette, plain-language errors, accessibility checks | `console-bff`, `console-web`, `console-root` (overlays) |
 | 4 Edit and delete | Update convention, bulk actions, tags, required tags, blast radius, clone | `console-bff`, `console-web`, `console-state-service` |
-| 5 Drift | Pilot only until P-09: read-only `observe-<type>` workflows run as jobs, daily, under half the team's job quota. Then list reads and hot, warm and cold tiers | `console-drift-service` |
-| 6 Search and scale | Indexer and search; load tests at the initial targets, which cannot start until P-01, P-05 and P-09 are live | `console-search-indexer` |
+| 5 Drift | List reads through the platform's observe API, hot, warm and cold tiers, per-account rate shares, one-click revert | `console-drift-service` |
+| 6 Search and scale | Indexer and search; load tests at the initial targets | `console-search-indexer` |
 | 7 Parity extras | Activity trail and evidence pack, quotas and quota requests, cost, CLI, notifications, account lifecycle, custom policies | `console-bff`, `console-identity-service`, `console-web` |
 | 8 Production | Threat model, pen test, SLO alerts, runbooks, backups and restore drill, cost estimate | every branch |
 | 9 Beyond AWS | Copilot, failure explainer, budgets, resource map, executive home, scorecards, blueprints, time travel and the other features in the plan's "Beyond the AWS console" section; off the critical path | mostly `console-bff`, `console-web`; blueprints on `console-state-service` and `console-root` (`kind: Blueprint`) |

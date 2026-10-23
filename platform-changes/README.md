@@ -7,8 +7,9 @@ a plan, not a description of code that exists.
 **This is a plan only.** Gonzalo decided on 2026-10-23 that the console work does not touch or
 modify the platform anywhere: no code, no content, no build, no docs on `main`. Every platform
 change the console needs is described here, in enough detail for the platform team to build and
-review it later. Until a change lands, the console works around its absence; section 11 says how,
-change by change, and what the workaround costs.
+review it later. Decided on 2026-10-23: the console assumes every change here is rolled out, and
+is designed against the platform as it will be after them, with no interim workarounds and no
+pilot limits. Section 11 says how the console builds and tests against that target API.
 
 The console itself (an AWS-console-like UI for the firm's internal teams, with `wfrn` resource
 names, a state service, a drift service, a search indexer and a backend-for-frontend, all built
@@ -25,9 +26,9 @@ covers what changes on the platform side so that plan can work, and why.
 - Revised 2026-10-23 after an independent review that checked this plan against the platform
   code at `c9529d5`. It added P-18 to P-21 (caller-scoped reads, publishing resource types, job
   retention and a global job stream, idempotency for every verb) and corrected P-01, P-04, P-05,
-  P-06, P-09, P-10, P-12 and sections 2, 5, 6, 8 and 11. The review found two things that matter
-  even for a pilot: platform reads are not isolated by tenant (P-18), and registry ids can collide
-  and silently merge (P-05).
+  P-06, P-09, P-10, P-12 and sections 2, 5, 6, 8 and 11. Two of its findings are risks on the
+  platform today, whatever the console does: platform reads are not isolated by tenant (P-18),
+  and registry ids can collide and silently merge (P-05).
 
 Contents
 
@@ -62,7 +63,7 @@ Contents
 8. [Risks on the platform side](#8-risks-on-the-platform-side)
 9. [Decisions this document depends on](#9-decisions-this-document-depends-on)
 10. [Appendix: examples](#10-appendix-examples)
-11. [Until a change lands: what the console does](#11-until-a-change-lands-what-the-console-does)
+11. [Building the console against the target API](#11-building-the-console-against-the-target-api)
 
 ---
 
@@ -94,12 +95,10 @@ The console is a new client of the platform, not a rewrite of it. These stay exa
 ## 2. The changes at a glance
 
 Twenty-one changes. Sizes are agent working time in minutes, as in the plan's roadmap; they include
-tests and doc updates but not review time. "Needed for full scale" is the console roadmap phase
-that cannot reach the accepted scale targets without the change. Every phase can start earlier on
-the interim adapters of section 11, which hold for a pilot only (at most 50,000 resources and 5
-accounts).
+tests and doc updates but not review time. "Needed by" is the first console roadmap phase that
+relies on the change.
 
-| ID | Change | Platform slices and folders touched | Needed for full scale | Size (min) |
+| ID | Change | Platform slices and folders touched | Needed by | Size (min) |
 | --- | --- | --- | --- | --- |
 | P-01 | Durable event feed: `platform_events` outbox, relay to Kafka, HTTP feed, snapshot endpoint | `common/events`, new `events` slice, `runs`, `resources`, `config`, Helm | Phase 2 | 195 |
 | P-02 | `X-On-Behalf-Of`: a signed assertion naming the console user | `identity`, `common/domain/Identity`, `runs`, `audit` | Phase 1 | 120 |
@@ -522,8 +521,7 @@ to change.
      `updatedAfter=<epoch ns>` and `after=<opaque cursor>` with `limit` (1 to 500), ordered by
      `(updatedNs, _id)` on P-01's index, with a `Link: rel="next"` header like P-05's paging.
      Without these parameters the answer is exactly today's. This is how a consumer without
-     Kafka catches up on jobs, and how the interim state-service adapter stops polling job by
-     job.
+     Kafka catches up on jobs.
    - Every `job.*` event's envelope carries `context` (P-01).
    - Expressions: `$job.accountId`, `$job.region`, `$job.wfrn`, `$job.labels.<name>`, null when
      absent, so a workflow author can, for example, tag a provider object with the wfrn.
@@ -1099,9 +1097,7 @@ evidence of everything done in their account.
 components move into packages both apps import, rather than being copied.
 
 **What changes.**
-Until this lands, the console's web app keeps its own copies of these components (forked from the
-platform's `frontend/` at `c9529d5`, with the fork point recorded), since the console may not
-change the platform. This change is how the two copies become one again.
+The console's web app imports these packages; it never forks the platform's components.
 
 1. **`packages/console-kit`** (new, like `packages/ui`): `SchemaForm`, `ResourcePicker`,
    `LineageGraph`, `JsonEditor`, `PreviewCard`, `StepTimeline` and `ProblemList` move here from
@@ -1171,8 +1167,8 @@ ignore the caller's teams and the resource's visibility, and `RunsQueryHandler` 
 `GET /jobs` and `GET /jobs/{id}` for every team, job inputs included, to any caller with
 `registry:read` or `jobs:read`. A per-account console service account (P-03) therefore isolates
 nothing on reads: account A's service account can read account B's resources and job inputs.
-The console works around it (section 11), but a platform that is about to have many internal
-teams on it should not rely on every client filtering correctly.
+A platform that is about to have many internal teams on it should not rely on every client
+filtering correctly, so the console relies on this change for isolation of platform reads.
 
 **What changes.**
 
@@ -1249,7 +1245,7 @@ the new service without any deploy (plan, gate 3).
 no TTL or archive: at 10,000 creations an hour and about 40 events a job, `runs_events` grows by
 about 9.6 million documents a day for ever. Second, the live job stream (`/ws` and SSE) is per job
 and per JVM: an event emitted on one replica reaches only clients connected to that replica, so
-the interim state-service adapter and any second backend replica miss events.
+clients of any other replica miss events.
 
 **What changes.**
 
@@ -1331,11 +1327,6 @@ exposure that exists today. The critical path is PR 4, PR 5, PR 7, PR 9: about 7
 four lanes the whole set is about 2,065 minutes of work done in roughly 900 minutes of elapsed
 working time.
 
-**The console's go/no-go.** The console's pilot runs on the interim adapters of section 11. It
-cannot pass its scale gate (plan, gate 6) until PR 2, PR 5 and PR 7 (P-01, P-05, P-09) are live.
-The hub README records, for each of those three, an owner on the platform team and a target date;
-until all three have both, the console's roadmap stops at the pilot cap.
-
 ## 6. Compatibility: what existing callers see
 
 | Caller | Sees after all changes |
@@ -1389,7 +1380,7 @@ until all three have both, the console's roadmap stops at the pilot cap.
 | One Temporal namespace and one task queue for every workflow | Recorded: console traffic and provider traffic share workers; the load test sizes workers, and a second task queue for console-started jobs is a later option |
 | No TTL on `runs_jobs` and `runs_events` | P-20 |
 | `waitUntil` steps wait in memory per instance | Recorded: a restart re-arms them from the Temporal timer, but long waits hold memory; not a console blocker |
-| Contract drift: the platform keeps changing while the console pins `c9529d5` | The console's nightly contract check (hub README) fetches the platform's `/openapi.json` from `main` and fails on a breaking change to anything the console uses |
+| Contract drift: the platform as built differs from the target contract the console is written against | The console's nightly contract check (hub README) compares the platform's `/openapi.json` on `main` with the target contract and fails when something the console uses differs |
 | Two builds drift apart | Contracts generated from code and compared in CI; the wfrn fixtures shared by three implementations |
 
 ## 9. Decisions this document depends on
@@ -1403,7 +1394,7 @@ Decisions from the plan that shape the platform changes:
 | 3 | Who owns customer resources | Decided 2026-10-23: the state service owns the console view, fed by the platform registry through the event feed; the console shows a pending state until the events land | P-01 and P-05 as written. The registry stays the platform's record for runs, `use` steps and lineage |
 | 4 | What a region is | Decided 2026-10-23: one region, `global`, for now, built so more can be added with no hacks | P-07 as written: `global` is an ordinary Region file and the default region; every key carries the region |
 | 6 | Events and search infrastructure | Decided 2026-10-23: Kafka and OpenSearch, which the firm already runs | P-01 as written: the relay publishes to the firm's Kafka; the HTTP feed stays for the demo profile and local runs. OpenSearch is used by the console's indexer only, not by the platform |
-| 7 | The platform and its build | Decided 2026-10-23: the console does not touch the platform anywhere; the platform stays on Maven; platform changes are only described here | This document is plan-only; section 11 is how the console works until each change lands. The wfrn library in P-05 is published by the console and only consumed by the platform if the platform team adopts it |
+| 7 | The platform and its build | Decided 2026-10-23: the console does not touch the platform anywhere; the platform stays on Maven; platform changes are only described here | This document is plan-only; the console assumes every change rolls out (section 11). The wfrn library in P-05 is published by the console and only consumed by the platform if the platform team adopts it |
 | 8 | Where the console lives | Decided 2026-10-23: each service is its own repository in concept; for now, one branch per service in this repository, with `console-root` as the hub | This document lives on `console-root`. Nothing merges into the platform's `main` |
 | 10 | Drift remediation | Decided 2026-10-23: show drift with a one-click revert, never revert automatically | P-09 has read paths only; a revert is an ordinary `update` job (P-08) started by a person |
 
@@ -1543,48 +1534,33 @@ workflow:
 
 (The exact shape is settled in PR 6, when the checks run against it.)
 
-## 11. Until a change lands: what the console does
+## 11. Building the console against the target API
 
-The console is built so that every platform change above is optional at first: each service talks
-to the platform through an outbound port, with one adapter for today's platform and one for the
-platform after the change. Swapping an adapter is a configuration change in the console, not a
-rewrite. The interim adapters work for a pilot; they do not meet the accepted scale targets
-(10 million resources, 1,000 concurrent users, hourly drift) until P-01, P-05 and P-09 land.
+Decided 2026-10-23: the console assumes all twenty-one changes are rolled out. Every console
+service is written against the platform as this document describes it, not against today's API:
+the event feed on Kafka (P-01), delegation (P-02), console service accounts (P-03), job context
+and cursors (P-04), wfrns, collision-safe keys and paging in the registry (P-05), ResourceType
+blocks (P-06), regions (P-07), the verb conventions (P-08), observe and list reads (P-09),
+account quotas (P-10), caller-scoped reads (P-18), published resource types (P-19), the global
+job stream (P-20) and idempotency for every verb (P-21). There are no interim adapters, no
+workarounds and no pilot limits; the scale targets apply from the first release.
 
-**The pilot cap.** On the interim adapters the console admits at most **50,000 resources and 5
-accounts** in total. The identity service refuses a sixth account and the state service refuses
-imports past the cap, with a message that names the platform changes that lift it. The numbers
-come from the platform as it is: `GET /resources` loads the whole collection (fine at tens of
-thousands, not millions), `GET /jobs` has no cursor, the live job stream is per job and per JVM,
-and interim drift runs as jobs under the per-team quota of 60 starts a minute (below).
+How that works while the platform team builds the changes:
 
-**Isolation, whatever the adapter.** Platform reads are not isolated by tenant until P-18. So the
-BFF never passes a platform read through to the browser: every platform response is read by an
-adapter that filters by `owner = console-<accountId>` (the team of the account's service account)
-and re-checks the account of every record against the state service's binding before anything
-leaves the service. Job inputs are never shown from a platform read; the console shows its own
-copy of the request. A cross-account read test runs against a real platform in the console's CI.
-
-| Change | Until it lands, the console | Cost of the workaround |
-| --- | --- | --- |
-| P-01 Event feed | The state service follows jobs it started through the platform's existing job stream (`/ws` and SSE) and polls `GET /jobs/{id}` until each ends; it re-reads `GET /resources` on a schedule to catch everything else. The stream is per job and per platform replica, so the poll is the guarantee and the stream only makes it faster | Polling load on the platform; a missed stream message is caught only by the next poll; a full `GET /resources` read does not scale past tens of thousands of resources, hence the pilot cap |
-| P-02 On behalf of | Jobs name the account's service account as requester; the console's own activity trail records the person and links the job id | The provider UI, approvals and evidence show the service account, not the person; an approver cannot see who asked without opening the console |
-| P-03 Console service accounts | The identity service creates accounts with today's `POST /service-accounts` (preset `invoker`, teams = the owning team); rotation creates a new account and stops using the old one | No delete or rotate API: old accounts pile up until a platform admin removes them by hand |
-| P-04 Job context | The state service keeps its own map of job id to wfrn, account and request, written when the platform answers 202 | Jobs cannot be filtered by account or wfrn on the platform side; child jobs (inline image builds) are matched by following the job's children |
-| P-05 Registry wfrns | The wfrn exists only in the console; the state service maps it to the registry id the job's `register` step returned (found through the registry record's `createdBy.jobId`). A collision guard refuses to bind a registry id that is already bound to another live wfrn and raises an alert, and a pending reaper settles any request whose job never started or never reported | Two names for one resource; a resource registered outside the console needs an explicit import; a platform-side overwrite is detected, not prevented |
-| P-06 ResourceType blocks | Console hints and `observe` mappings live in a `type-overlays/` folder on the console side, in exactly the YAML shape P-06 gives the ResourceType, so moving them later is a copy | Two places describe a type; provider teams cannot own their console hints yet; no checks in the platform's CI |
-| P-07 Regions | Nothing: with one region, `global`, today's provider endpoints are already the global region's | None today; a second region needs P-07 |
-| P-08 Verbs and subject input | The BFF derives the subject input itself from `GET /catalog` (the one input whose `x-resource.type` is the noun) and treats `verb: update` as edit | No checks catch an ambiguous subject input; a workflow with two inputs of its noun's type is left out of the Actions menu |
-| P-09 Observe | Drift checks run as ordinary jobs of a read-only `observe-<type>` workflow, which provider teams can publish through today's designer, at a long interval (default 24 hours). Where the provider has a list action, one job observes a page of resources | Every check is a job in the platform's job list, and drift shares the 60-starts-a-minute team quota with real creates. The drift service keeps itself under half of it (30 a minute, about 43,000 jobs a team a day, so about 43,000 resources a day one at a time, more with list jobs), which is why drift stays daily until P-09 |
-| P-10 Quotas | The Service Quotas page shows the console's own limits; the platform's per-team job quota still applies underneath | One team's accounts share one platform bucket |
-| P-11 Policy context | IAM is enforced in the console only; the platform's policy sees the service account | Platform policies cannot tell console requests apart |
-| P-12 Audit context | The console keeps its own activity trail, linked to platform evidence by job id | Two trails to export for an audit |
-| P-13 Reserved nouns | Nothing needed until P-01, P-07, P-09 or P-10 add endpoints | None |
-| P-14 Shared front-end packages | The console web app keeps forked copies of the components | Fixes must be made twice until the packages exist |
-| P-15 Sample content | The console's demo uses its own fixtures and overlays | The platform's demo and the console's demo can disagree |
-| P-16 Deployment | The console deploys beside the platform with its own charts; nothing in the platform's chart changes | None |
-| P-17 Documentation | This README is the documentation | None |
-| P-18 Caller-scoped reads | The isolation rules above: no pass-through, filter by owner, re-check every record's account | Every console adapter carries the isolation burden; a bug in one is a cross-account leak, which is why the cross-account test runs in CI |
-| P-19 Publishing resource types | A new type appears in the console after the platform's next deploy. The BFF compares a hash of `GET /resource-types` every 30 seconds (the platform sends no `ETag` today) and pushes changed descriptors to open consoles | "A new service in seconds" becomes "a new service after a platform deploy" |
-| P-20 Job retention and global stream | The poll in the P-01 row; the state service keeps its own copy of each job's outcome, so platform retention does not matter to it | None for the console beyond P-01's |
-| P-21 Idempotency for every verb | The BFF keeps its own idempotency record per command and wfrn (a MongoDB collection, 7 days) and never sends the platform a second `DELETE` or `PATCH` for one command; it checks the job list by `consoleRequestId` label before retrying | A retry after a lost answer needs a platform read first |
+1. **One target contract.** The hub holds the platform's API and events as they will be after
+   these changes: `contracts/platform/openapi-target.yaml` and
+   `contracts/platform/asyncapi-target.yaml`, written from this document. The console's platform
+   clients in `console-libs` are generated from them.
+2. **A faithful fake for demo and tests.** `console-libs` ships `platform-fake`, an in-memory
+   implementation of the target contract (events, delegation, observe, paging, isolation), driven
+   by the platform's recorded provider samples. Every service's demo profile and component tests
+   run against it, so the whole console runs locally before the platform changes exist.
+3. **Contract tests both ways.** The fake is checked against the target contract in CI. When the
+   platform team ships a change, the same contract tests run against the real platform, and the
+   console switches that part from the fake to the real platform by configuration.
+4. **The nightly contract check** compares the platform's live `/openapi.json` on `main` with the
+   target contract and reports which changes have landed and whether anything the console uses
+   has moved.
+5. **Type overlays become content.** Console hints and `observe` mappings for the sample types are
+   drafted on the hub in `type-overlays/`, in exactly P-06's shape, as the input to P-15; once
+   P-06 and P-19 ship, provider teams own them in their ResourceType files.
