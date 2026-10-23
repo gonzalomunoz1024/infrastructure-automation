@@ -133,6 +133,18 @@ console:
       source: ""                    # what the export was, such as "ticket export, September 2026"
       lead-time:                    # a ticket's median lead time, such as 3d
       by-workflow: {}               # the median per workflow where the export tells kinds of request apart, such as create-vm: 5d
+  assistant:                        # the console copilot (POST /console/v1/assistant/turns)
+    provider: devin                 # devin, demo (rules in this process), or anything else for none (every turn fails assistant.unavailable)
+    turns-per-minute: 10            # a person's turns in any minute, failure readings included; past it 429 with Retry-After
+    conversation-ttl: 24h           # a conversation is kept this long from its start
+    turn-timeout: 5m                # a turn not answered by then fails assistant.timeout
+    failure-wait: 5s                # how long a job's explanation waits for the copilot's reading of a failure no rule knows
+    devin:
+      base-url: https://api.devin.ai
+      # the key is CONSOLE_ASSISTANT_DEVIN_API_KEY in the environment (the Helm chart's secret), never a value in a file
+      poll-interval: 3s             # how often a turn's session is read
+      request-timeout: 30s          # one call to Devin
+      max-acu-limit: 0              # the most ACUs a session may spend; 0 leaves Devin's own limit
   web:
     origins: ["http://localhost:3000"]
   tags:                             # the organization's guardrails: every create through the console names these tags
