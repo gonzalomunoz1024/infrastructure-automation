@@ -11,3 +11,4 @@ Start with `../HANDOFF.md`, then `DEVIN-PLAYBOOK.md`.
 | `services/*.md` | Per-service engineering notes recorded by the build sessions |
 | `security-review/*.md` | The 2026-10-23 cross-service security review, per service |
 | `scripts/` | The drift/BFF cross-service journey script and its route notes |
+- [bff-remaining.md](bff-remaining.md): the BFF's four unstarted items (ChatOps, time travel and transfer, blueprints executor, WP 6.2 load tests) and where its in-progress branches stand.
