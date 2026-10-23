@@ -60,8 +60,8 @@ public record SearchProperties(
     /** An account's queries per second, and the burst it may spend at once. */
     public record BudgetSettings(Double perSecond, Integer burst) {
         public BudgetSettings {
-            perSecond = perSecond == null ? 20.0 : perSecond;
-            burst = burst == null ? 40 : burst;
+            perSecond = perSecond == null ? 30.0 : perSecond;
+            burst = burst == null ? 60 : burst;
         }
     }
 

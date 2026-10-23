@@ -44,7 +44,7 @@ The hub's `contracts/openapi/console-search-indexer.yaml` 1.2.0, pinned under
 | Call | What it answers |
 |---|---|
 | `GET /v1/search?q=…` | One page of hits: `q` is free text plus `type:`, `state:`, `region:`, `tag:k=v`, `drift:`, `created:` and `updated:` terms, wfrn patterns and quoted phrases; `type`, `region`, `state`, `tag.<name>`, `drift` parameters narrow further; `sort` is `score` (default), `name`, `-name`, `created`, `-created`, `updated` or `-updated`; `limit` 1 to 200 (50), `after` the cursor of the last page; `didYouMean` when a typo was forgiven |
-| `GET /v1/suggest?q=…` | The type-ahead: resources by name, wfrns by id, types and tags, at most `limit` (8) |
+| `GET /v1/suggest?q=…` | The type-ahead: resources by name, wfrns by id, types and tags, at most `limit` (8). Resources are found at once; the types and the account's 1,000 most used tag values, with their counts, are counted at most every 30 seconds on OpenSearch |
 | `GET /v1/counts` | A list's numbers: `total`, `byState` (the chips), `drift`, `cappedAt` (null: exact); with `groupBy` (`type`, `service`, `state`, `region`, `account` or `tag:<name>`) the same numbers per key in `groups`, the largest 100; the console's own services may repeat `accountId` for up to 200 accounts and get them added up |
 | `GET /v1/search:interpret?q=…` | Plain English read as a list's filter: the type, the list's own filters (`filter.q`, `state`, `drift`, `region`, `tags`), the sort, the whole reading as one query (`q`), a sentence to show the person, how sure it is (`high`, `medium`, `low`), the words it left out (`unparsed`) and how many resources it lists (`total`); `type` keeps the reading in the list the person is on |
 | `GET /v1/index/status` | The caller's account's documents (the whole index for the console's own services), the newest event and how long ago it was, whether a rebuild runs |
@@ -59,9 +59,11 @@ account with `accountId`. The demo profile also takes the dev headers `X-Console
 `X-Console-User`, `X-Console-Roles`, `X-Console-Region` and `X-Console-Service`. When the BFF's keys
 cannot be read, a token gets 503 with `Retry-After`, not 401.
 
-**Budget.** Each account may run 20 queries a second with bursts of 40
-(`console.search.budget.*`); beyond it, 429 with `Retry-After`. A count over several accounts spends
-one query of each account's budget.
+**Budget.** Each account may run 30 queries a second with bursts of 60 on each replica
+(`console.search.budget.*`), 90 a second on the chart's three; beyond it, 429 with `Retry-After`.
+A count over several accounts spends one query of each account's budget. The load test sized it:
+at the target, the largest account's people ask about 20 a second, so even two replicas leave it
+three times that (see Load below).
 
 **Times.** `created:` and `updated:` take a day (`2026-10-01`, the whole UTC day), a time with its
 offset (`2026-10-01T12:00Z`, only compared) or an age (`30m`, `24h`, `7d`, `2w`), compared with `>`,
@@ -166,6 +168,82 @@ the BFF's signing key never leaves it.
   10 minutes), `console.state.timeout` and `console.identity.timeout` (30 s), and the BFF's token
   endpoint above.
 
+## Load
+
+The search side of WP 6.2: the plan's targets are a search's p95 under 500 ms and a list's under
+300 ms over 10 million resources, a million of them in one account, with 1,000 people at the
+console at once. The test lives in `src/gatling` and needs no other service:
+
+- **`Estate`** is a synthetic estate the same every time for the same `load.size`,
+  `load.accounts` and `load.seed`: resource `i` is a pure function of them, so the seeder writes
+  it and the simulation finds it again with nothing passed between them. The largest account holds
+  `load.largestShare` of it (a tenth by default: a million of ten million) and the others share
+  the rest by a Zipf law. Five types (virtual machines, volumes, databases, images,
+  environments), names like `payments-api-7k2qd`, the tags `env`, `team`, `cost-centre` and a
+  unique `cmdb`, the states in a live estate's proportions, 3% drifted.
+- **`SeedEstate`** (`./gradlew seedEstate`) writes it through the service's own OpenSearch adapter,
+  so the documents, routing and versions are the ones the service writes, with refreshes and
+  replicas off while it loads. `-Pload.mode=trickle` then keeps changing it at `load.trickle`
+  writes a second, so the searches meet refreshes.
+- **`SearchSimulation`** (`./gradlew gatlingRun`) is the people: each opens lists (the counts for
+  the header and chips; the rows come from the state service), types in the header's search (a
+  suggestion per keystroke, then the search), uses the filter bar (a page newest first, sometimes
+  the next), asks the copilot, looks a resource up by its CMDB tag or its wfrn, or opens the
+  executive home (the BFF counting 20 accounts at once), thinking 5 to 15 seconds between actions.
+  One person in ten works in the largest account; the others pick an account by the square root of
+  its size. Every name, tag and wfrn lookup checks that the resource is the first hit, gate 6's
+  "search finds any resource by name, tag or wfrn". The assertions are the targets: p95 under
+  500 ms for searches, 300 ms for a list's counts and each suggestion, 1 s for the executive
+  home's 20 accounts, and under 1% failed, a 429 included.
+
+```sh
+# the estate: ten million resources in 2,000 accounts, the largest a million
+./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.opensearch=http://opensearch:9200
+# the service, ingestion off so the estate stays as seeded, dev headers on (a load environment only)
+java -jar build/libs/console-search-indexer.jar --console.ingest.enabled=false --console.auth.dev-headers=true
+# 1,000 people for 15 minutes, while 10 writes a second change the estate
+./gradlew seedEstate -Pload.size=10000000 -Pload.accounts=2000 -Pload.mode=trickle -Pload.trickle=10 -Pload.trickleFor=PT20M &
+./gradlew gatlingRun -Pload.size=10000000 -Pload.accounts=2000 -Pload.users=1000 -Pload.ramp=PT2M -Pload.duration=PT15M \
+  -Pload.baseUrl=http://console-search-indexer:18085
+```
+
+The report is in `build/reports/gatling/`; `deploy/grafana/console-search-indexer.json` is the
+dashboard for the same run from the service's side (p95 by kind of query and at the HTTP edge,
+the share within the targets, queries by outcome with the 429s, the index's lag). Every
+`load.*` property and its default is at the top of `Estate.fromProperties()` and the simulation.
+CI's **Load smoke** job runs the same harness on 100,000 resources with 30 people for a minute.
+
+**What it found** (2026-10-23, one 4-vCPU machine running OpenSearch 2.19 with a 4 GB heap, one
+replica of the service and Gatling together; 2 million resources in 200 accounts, the largest a
+million, so 17% of the people work in it; 1,000 people for 5 minutes after a 2-minute ramp):
+
+| Run | Requests | Failed | p95 overall | Suggest p95 | Search by name p95 | List counts p95 | Copilot p95 | OpenSearch CPU |
+|---|---|---|---|---|---|---|---|---|
+| 1. Budget 20 a second, one replica | 84,841 | 6.9%, all 429 | 141 ms | 182 ms | 69 ms | 44 ms | 118 ms | about 370% |
+| 2. Budget as three replicas give it | 74,458 | 0 | 1,905 ms | 1,764 ms | 1,642 ms | 1,718 ms | 4,924 ms | saturated |
+| 3. Suggestions' counts kept 30 s | 85,071 | 0 | 16 ms | 12 ms | 22 ms | 5 ms | 24 ms | about 110% |
+
+Every name, tag and wfrn lookup found its resource first in every run. Two changes came out of it:
+
+- **Suggestions no longer count the account on every keystroke.** Suggestions are more than half of
+  all requests, and each one aggregated the types and tags of every live document of the account:
+  on the million-resource account that was most of the cluster's work, and run 2, with nothing
+  turned away, saturated it (a few hub checks shared the machine during run 2, but not its
+  OpenSearch). The types and the 1,000 most used tag values are now counted once per
+  account (and type) every 30 seconds; the resources themselves are still found at once.
+- **The budget is 30 queries a second per replica, bursts of 60.** A person asks about one query
+  every 5 seconds, four a second while typing, so the largest account's people ask about 20 a
+  second at the target (11% of 1,000 people) and 30 in these runs (17%), more than one replica's
+  old 20; the chart's three replicas now give an account
+  90 a second and the two the disruption budget keeps, 60. Run 1's 429s were all that account.
+
+This is one machine standing in for a cluster, so it shows the queries' cost and the design's
+headroom, not the production numbers: those come from the same run against the load environment at
+10 million resources, with the budget as the deployment sets it and the trickle on. Run locally,
+`-Pload.size=2000000 -Pload.accounts=200 -Pload.largestShare=0.5` builds the same estate, and the
+service needs `--console.search.budget.per-second=90 --console.search.budget.burst=180` to stand for
+three replicas.
+
 ## Build and test
 
 ```sh
@@ -194,4 +272,5 @@ language, typo tolerance, the plain-English reader, pure Java), `ports.outbound`
 stores), `application` (indexing, the poller, rebuilds, queries, housekeeping) and `adapters`
 (`opensearch`, `memory`, `kafka`, `state`, `platform`, `identity`, `mongo`, `web`, and `tokens`,
 the BFF's service tokens for the state and identity calls). `com.iaf.console.search.auth` checks
-the callers; `com.iaf.console.search.boot` wires it all.
+the callers; `com.iaf.console.search.boot` wires it all. `src/gatling` is the load test (Load,
+above).

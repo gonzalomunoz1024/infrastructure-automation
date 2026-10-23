@@ -19,6 +19,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.console.search.index.adapters.SearchIndexContractTest;
 import com.iaf.console.search.index.domain.Fixtures;
 import com.iaf.console.search.index.domain.IndexedResource;
+import com.iaf.console.search.index.domain.SuggestQuery;
+import com.iaf.console.search.index.domain.Suggestion;
 import com.iaf.console.search.index.ports.outbound.SearchIndexPort;
 
 import reactor.core.publisher.Mono;
@@ -43,6 +45,24 @@ class OpenSearchIndexTest extends SearchIndexContractTest {
         // a second call finds the alias and changes nothing
         index.ensureReady().block();
         return index;
+    }
+
+    @Test
+    void suggestionsCountTypesAndTagsOncePerHalfMinute() {
+        OpenSearchIndex index = fresh();
+        index.index(Fixtures.document(Fixtures.VM, "web-03", 1, Map.of("env", "prod"), Fixtures.T0)).block();
+        assertThat(tagLabels(index, "pro")).containsExactly("env=prod (1)");
+        index.index(Fixtures.document(Fixtures.VM.substring(0, Fixtures.VM.length() - 1) + "b", "web-04", 1, Map.of("env", "prod"), Fixtures.T0)).block();
+        // the resources themselves are found at once; their counts wait for the next count
+        assertThat(index.suggest(SCOPE, SuggestQuery.of("web", null, 10)).block()).extracting(Suggestion::value).contains("web-03", "web-04");
+        assertThat(tagLabels(index, "pro")).containsExactly("env=prod (1)");
+        clock.advance(OpenSearchIndex.SUGGESTION_WORDS_TTL);
+        assertThat(tagLabels(index, "pro")).containsExactly("env=prod (2)");
+    }
+
+    private static List<String> tagLabels(OpenSearchIndex index, String prefix) {
+        return index.suggest(SCOPE, SuggestQuery.of(prefix, null, 10)).block().stream().filter(s -> s.kind() == Suggestion.Kind.TAG)
+                .map(Suggestion::label).toList();
     }
 
     @Test

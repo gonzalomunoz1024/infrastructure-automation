@@ -176,3 +176,78 @@ jobs:
             --set ingest.kafka.enabled=false --set autoscaling.enabled=true --set networkPolicy.enabled=true \
             --set metrics.serviceMonitor.enabled=true --set opensearchCredentials.existingSecret= \
             --set 'console.rebuild.accounts={123456789012}' > /dev/null
+
+  load:
+    name: Load smoke
+    # the load test's harness on a small estate (README, Load): the seeder, the simulation and gate
+    # 6's lookups by name, tag and wfrn, with every request answered; the latency targets themselves
+    # are asserted by the full run in the load environment, so the limits here catch only a gross
+    # regression on a shared runner
+    runs-on: ubuntu-latest
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.19.6
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -fs http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 40
+    env:
+      CONSOLE_LIBS_REF: ${{ vars.CONSOLE_LIBS_REF || 'console-libs--phase-0' }}
+      # the same estate for the seeder and the simulation; one node keeps no replica
+      ESTATE: -Pload.size=100000 -Pload.accounts=20 -Pload.largestShare=0.5 -Pload.replicas=0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check out console-libs
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CONSOLE_LIBS_REF }}
+          path: .libs
+      - name: Publish console-libs' convention plugins to the local Maven repository
+        working-directory: .libs/build-logic
+        run: ../gradlew publishToMavenLocal --no-daemon
+      - name: Publish console-libs to the local Maven repository
+        working-directory: .libs
+        run: ./gradlew publishToMavenLocal -x test --no-daemon
+      - name: Build the service
+        run: ./gradlew bootJar --no-daemon
+      - name: Seed the estate
+        run: ./gradlew seedEstate $ESTATE --no-daemon
+      - name: Start the service
+        # ingestion off, so the estate stays as seeded; the simulation speaks as the BFF does with
+        # the dev headers, which only a load environment of its own turns on
+        run: |
+          java -jar build/libs/console-search-indexer.jar --console.ingest.enabled=false --console.auth.dev-headers=true \
+            > "$RUNNER_TEMP/indexer.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fs http://localhost:18085/actuator/health/readiness > /dev/null; then echo "the service is ready"; exit 0; fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/indexer.log"
+          exit 1
+      - name: Run the searches
+        run: >-
+          ./gradlew gatlingRun $ESTATE --no-daemon
+          -Pload.users=30 -Pload.ramp=PT10S -Pload.duration=PT60S -Pload.thinkMin=PT1S -Pload.thinkMax=PT3S
+          -Pload.searchP95=1500 -Pload.listP95=1500 -Pload.suggestP95=1500 -Pload.homeP95=3000
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gatling-report
+          path: |
+            build/reports/gatling/
+            ${{ runner.temp }}/indexer.log
+          if-no-files-found: ignore
