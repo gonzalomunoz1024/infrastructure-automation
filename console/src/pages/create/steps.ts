@@ -49,8 +49,15 @@ export function slugOf(label: string): string {
 }
 
 export interface StepsOptions {
-  /** a Tags step before the review (tags at create time arrive with phase 4) */
+  /** a Tags step before the review */
   tags?: boolean
+  /** how many tags the account requires: the Tags step is then not optional, and says how many */
+  requiredTags?: number
+}
+
+/** Whether a problem sits on the create's tags (`/tags/<key>`, as the tag policy names them), not on its input. */
+export function isTagProblem(p: Problem): boolean {
+  return /^\/tags(\/|$)/.test(p.field ?? '')
 }
 
 export function stepsFor(schema: Schema | undefined, noun: string, opts: StepsOptions = {}): WizardStep[] {
@@ -60,7 +67,8 @@ export function stepsFor(schema: Schema | undefined, noun: string, opts: StepsOp
   if (ungrouped.length) steps.push({ id: 'details', label: `${noun.charAt(0).toUpperCase()}${noun.slice(1)} details`, kind: 'fields', fields: ungrouped })
   for (const g of grouped) if (g.group !== null) steps.push({ id: slugOf(g.group), label: g.group, kind: 'fields', fields: g.names })
   if (steps.length === 0) steps.push({ id: 'details', label: `${noun.charAt(0).toUpperCase()}${noun.slice(1)} details`, kind: 'fields', fields: [] })
-  if (opts.tags) steps.push({ id: 'tags', label: 'Tags', description: 'Optional', kind: 'tags', fields: [], optional: true })
+  const required = opts.requiredTags ?? 0
+  if (opts.tags) steps.push(required > 0 ? { id: 'tags', label: 'Tags', description: `${required} required`, kind: 'tags', fields: [] } : { id: 'tags', label: 'Tags', description: 'Optional', kind: 'tags', fields: [], optional: true })
   steps.push({ id: 'review', label: 'Review and create', kind: 'review', fields: [] })
   return steps
 }
@@ -71,9 +79,14 @@ export function stepSchema(schema: Schema | undefined, step: WizardStep): Schema
   return { type: 'object', properties: Object.fromEntries(step.fields.filter((f) => f in props).map((f) => [f, props[f]])), required: (schema?.required ?? []).filter((r) => step.fields.includes(r)) }
 }
 
-/** The index of the first step that edits a field a problem names; -1 when none does. */
+/** The index of the first step that edits a field a problem names (the Tags step for `/tags/<key>`); -1 when none does. */
 export function stepOfProblems(steps: WizardStep[], problems: Problem[]): number {
   for (const p of problems) {
+    if (isTagProblem(p)) {
+      const i = steps.findIndex((s) => s.kind === 'tags')
+      if (i >= 0) return i
+      continue
+    }
     const root = fieldRoot(p.field)
     if (!root) continue
     const i = steps.findIndex((s) => s.fields.includes(root))

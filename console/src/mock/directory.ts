@@ -377,7 +377,7 @@ export function suggestedRoleFor(dir: Directory, accountId: string, action: stri
 }
 
 /** The services the console's identity service answers for itself: the platform's role for the account never decides them. */
-const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account'])
+const CONSOLE_SERVICES = new Set(['iam', 'access-request', 'quota', 'account', 'resource-groups'])
 
 /** The platform scope an action needs: reads need `read`, deletions `admin`, everything else `write`. */
 export function platformScopeOf(action: string): string {
@@ -386,8 +386,12 @@ export function platformScopeOf(action: string): string {
   return `${service}:${kind}`
 }
 
+/** The platform judges steering a job and deciding its approvals by the job (its requester, owner team and approver groups), not by the account's service scopes. */
+const PER_JOB_SERVICES = new Set(['jobs', 'approvals'])
+
 export function platformAllows(account: DirectoryAccount, action: string): boolean {
-  if (CONSOLE_SERVICES.has(action.split(':')[0])) return true
+  const service = action.split(':')[0]
+  if (CONSOLE_SERVICES.has(service) || PER_JOB_SERVICES.has(service)) return true
   const need = platformScopeOf(action)
   return account.platformScopes.some((s) => matchesAction(s, need))
 }

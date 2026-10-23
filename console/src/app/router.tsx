@@ -7,7 +7,31 @@ import { useMemo, useSyncExternalStore, type AnchorHTMLAttributes, type MouseEve
  * off and the rest matched as usual. A wfrn in a path is one percent-encoded segment. No library.
  */
 
-export type RouteName = 'home' | 'signin' | 'service' | 'type' | 'create' | 'resource' | 'requests' | 'request' | 'iam' | 'iam-users' | 'iam-user' | 'iam-groups' | 'iam-group' | 'iam-roles' | 'iam-role' | 'iam-keys' | 'iam-requests' | 'iam-request' | 'settings' | 'not-found'
+export type RouteName =
+  | 'home'
+  | 'signin'
+  | 'service'
+  | 'type'
+  | 'create'
+  | 'resource'
+  | 'requests'
+  | 'request'
+  | 'iam'
+  | 'iam-users'
+  | 'iam-user'
+  | 'iam-groups'
+  | 'iam-group'
+  | 'iam-roles'
+  | 'iam-role'
+  | 'iam-keys'
+  | 'iam-requests'
+  | 'iam-request'
+  | 'groups'
+  | 'group'
+  | 'tag-editor'
+  | 'tag-policy'
+  | 'settings'
+  | 'not-found'
 
 export interface RouteDef {
   name: RouteName
@@ -38,12 +62,22 @@ export const ROUTES: RouteDef[] = [
   { name: 'iam-keys', pattern: '/iam/access-keys', title: 'Access keys' },
   { name: 'iam-requests', pattern: '/iam/access-requests', title: 'Access requests' },
   { name: 'iam-request', pattern: '/iam/access-requests/:id', title: 'Access request' },
+  // resource groups and tags (phase 4): across every type of the account and region
+  { name: 'groups', pattern: '/resource-groups', title: 'Resource groups' },
+  { name: 'group', pattern: '/resource-groups/:id', title: 'Resource group' },
+  { name: 'tag-editor', pattern: '/tag-editor', title: 'Tag Editor' },
+  { name: 'tag-policy', pattern: '/tag-policy', title: 'Required tags' },
   { name: 'settings', pattern: '/settings', title: 'Settings' },
 ]
 
 /** The identity and access section: the overview and every page under it. */
 export function isIamRoute(name: RouteName): boolean {
   return name === 'iam' || name.startsWith('iam-')
+}
+
+/** The resource groups and tags section: the pages that work across every type. */
+export function isTagsRoute(name: RouteName): boolean {
+  return name === 'groups' || name === 'group' || name === 'tag-editor' || name === 'tag-policy'
 }
 
 export interface Route {

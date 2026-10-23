@@ -59,6 +59,13 @@ export function crumbsFor(route: Route, lookup: { serviceTitle: (id: string) => 
       return [home, iam, { label: 'Roles', href: pathFor('iam-roles') }, { label: route.params.id, mono: true }]
     case 'iam-request':
       return [home, iam, { label: 'Access requests', href: pathFor('iam-requests') }, { label: route.params.id, mono: true }]
+    case 'groups':
+      return [home, { label: 'Resource groups' }]
+    case 'group':
+      return [home, { label: 'Resource groups', href: pathFor('groups') }, { label: route.params.id, mono: true }]
+    case 'tag-editor':
+    case 'tag-policy':
+      return [home, { label: route.def?.title ?? 'Tags' }]
     case 'settings':
       return [home, { label: 'Settings' }]
     default:

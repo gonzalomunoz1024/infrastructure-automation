@@ -3,6 +3,7 @@ import { Icon, IconButton, Portal, Tooltip, cx, useOverlayLifecycle, type IconNa
 import { createStore } from '../lib/store'
 import type { ConsoleService } from '../lib/descriptors'
 import { Link, pathFor, type Route } from './router'
+import { toolPath, toolsIn, type ToolSection } from './tools'
 
 /*
  * The left navigation of a section: a service (its landing page and each of its resource types)
@@ -63,6 +64,16 @@ export function iamNav(route: Route, accountName: string, pendingRequests?: numb
       { id: 'keys', label: 'Access keys', icon: 'key', href: pathFor('iam-keys'), active: on('iam-keys') },
       { id: 'requests', label: 'Access requests', icon: 'approval', href: pathFor('iam-requests'), active: on('iam-requests', 'iam-request'), badge: pendingRequests || undefined },
     ],
+  }
+}
+
+/** A section of the console's own tools (resource groups and tags), from the tools list. */
+export function toolsNav(section: ToolSection, route: Route): NavSection {
+  return {
+    title: section.title,
+    icon: section.icon,
+    subtitle: section.subtitle,
+    items: toolsIn(section.id).map((t) => ({ id: t.route, label: t.label, icon: t.icon, href: toolPath(t), active: t.routes.includes(route.name) })),
   }
 }
 

@@ -52,7 +52,8 @@ describe('the request banner’s words', () => {
   it('names a job by the workflow it runs: the type’s create, one of its actions, else the job’s title', () => {
     expect(jobTitle(vm, { workflow: vm.create!.workflow })).toBe(vm.create!.title)
     expect(jobTitle(vm, { workflow: action('restart').workflow, title: 'VM restart api-01' })).toBe(action('restart').title)
-    expect(jobTitle(vm, { workflow: 'update-vm', title: 'Update virtual machine api-01' })).toBe('Update virtual machine api-01')
+    expect(jobTitle(vm, { workflow: 'update-vm', title: 'Update VM api-01' })).toBe('Update VM')
+    expect(jobTitle(vm, { workflow: 'resize-disk', title: 'Resize disk of api-01' })).toBe('Resize disk of api-01')
     expect(jobTitle(vm, { workflow: 'something-else' })).toBe('The last change')
   })
 })
