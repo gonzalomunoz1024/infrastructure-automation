@@ -112,3 +112,4 @@ Add scenarios to the search indexer's Gatling harness, stacked on its PR #35. Re
 - **Caches:** measure cold and warm runs separately. Report the hit ratio from the BFF's metrics, and the p95 and p99 per route.
 - **Sessions:** sign in through the demo IdP with `login_hint=<user>`, then use the cookie and the `X-Csrf-Token`. Use a pool of demo people, so the per-person caches are realistic.
 - **Pass rule:** fail the simulation on the plan's p95 targets, using Gatling assertions.
+- Transfer: state's :transfer (PR #33, 0d6164a) answers 403 to a person's token; call it with the BFF's own service token, ?accountId=<source account>, and the person as actor.
