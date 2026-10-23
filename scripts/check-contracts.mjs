@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // Checks every contract in the hub (`npm run check`): that every YAML entry has a value, the
 // OpenAPI and AsyncAPI files, the JSON schemas, the type overlays and the region, the list of used
-// platform operations, the event catalog against the plan, and the shared wfrn fixtures against
-// the JavaScript reference.
+// platform operations, the event catalog against the plan, the shared wfrn fixtures against the
+// JavaScript reference, and the rule packs (their shape, Rego packages, remediations, and every
+// example through the declarative reference and through OPA).
 // Exits 1 on any failure; warnings are printed and do not fail the run.
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, relative, resolve, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -13,6 +16,7 @@ import addFormats from 'ajv-formats';
 import { Validator as OpenApiValidator } from '@seriousme/openapi-schema-validator';
 import { Parser as AsyncApiParser } from '@asyncapi/parser';
 import { runFixtures } from '../contracts/wfrn/reference.mjs';
+import { judge, message, regoPackage, PASS, FAIL, NOT_APPLICABLE } from '../contracts/rule-packs/reference.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const rel = (p) => relative(root, p);
@@ -233,6 +237,7 @@ function checkSchemasAndOverlays() {
   const vOverlay = validatorFor('type-overlay.schema.json');
   const vRegion = validatorFor('region.schema.json');
   const vFixtures = validatorFor('wfrn-fixtures.schema.json');
+  const vPack = validatorFor('rule-pack.schema.json');
 
   // the pinned platform content
   const sampleTypes = {};
@@ -322,7 +327,7 @@ function checkSchemasAndOverlays() {
     if (vRegion && !vRegion(region)) fail(`${rel(file)} validates against region.schema.json`, ajv.errorsText(vRegion.errors));
     else if (vRegion) ok(`${rel(file)} validates against region.schema.json`);
   }
-  return { vFixtures, errorsText: () => ajv.errorsText(vFixtures?.errors) };
+  return { vFixtures, errorsText: () => ajv.errorsText(vFixtures?.errors), vPack, packErrors: () => ajv.errorsText(vPack?.errors), sampleTypes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -391,6 +396,108 @@ function checkFixtures({ vFixtures, errorsText }) {
   else ok(`${rel(file)} passes contracts/wfrn/reference.mjs`);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 7. The rule packs (WP 9.6)
+// ---------------------------------------------------------------------------------------------
+// OPA evaluates each rule's Rego on its examples when an `opa` binary is at hand (OPA_BIN, or
+// `opa` on the PATH; CI installs a pinned one); without one the Rego half is skipped with a warning.
+function opaBinary() {
+  const candidates = [process.env.OPA_BIN, 'opa'].filter(Boolean);
+  for (const bin of candidates) {
+    const r = spawnSync(bin, ['version'], { encoding: 'utf8' });
+    if (r.status === 0) return bin;
+  }
+  return null;
+}
+
+function regoVerdict(opa, dir, rule, pkg, input) {
+  const inputFile = join(dir, 'input.json');
+  writeFileSync(inputFile, JSON.stringify(input));
+  const r = spawnSync(opa, ['eval', '--v1-compatible', '--format', 'json', '--data', join(dir, 'policy.rego'), '--input', inputFile, `data.${pkg}`],
+    { encoding: 'utf8' });
+  if (r.status !== 0) return { error: (r.stderr || r.stdout).trim() };
+  const value = JSON.parse(r.stdout).result?.[0]?.expressions?.[0]?.value ?? {};
+  if (value.applies !== true) return { verdict: NOT_APPLICABLE };
+  const deny = value.deny ?? [];
+  return { verdict: deny.length ? FAIL : PASS, messages: deny };
+}
+
+function checkRulePacks({ vPack, packErrors, sampleTypes }) {
+  const dir = join(root, 'rule-packs');
+  const files = filesUnder(dir, '.yaml');
+  if (!files.length) {
+    fail('rule-packs/ holds at least one pack');
+    return;
+  }
+  const workflows = [];
+  for (const file of filesUnder(join(root, 'contracts/platform/sample-content/workflows'), '.yaml')) workflows.push(readYaml(file));
+  const opa = opaBinary();
+  if (!opa) warn('rule packs: no opa binary (OPA_BIN or opa on the PATH); the Rego half of every example is skipped');
+  const scratch = mkdtempSync(join(tmpdir(), 'rule-packs-'));
+  const names = new Set();
+  try {
+    for (const file of files) {
+      const pack = readYaml(file);
+      if (vPack && !vPack(pack)) {
+        fail(`${rel(file)} validates against rule-pack.schema.json`, packErrors());
+        continue;
+      }
+      const name = pack.metadata.name;
+      const problems = [];
+      if (!file.endsWith(`/${name}.yaml`)) problems.push(`the file is not named after metadata.name (${name}.yaml)`);
+      if (names.has(name)) problems.push(`another pack is named ${name}`);
+      names.add(name);
+      const ids = new Set();
+      let examples = 0;
+      for (const rule of pack.spec.rules) {
+        const where = `rule ${rule.id}`;
+        if (ids.has(rule.id)) problems.push(`${where}: the id is used twice`);
+        ids.add(rule.id);
+        for (const type of rule.types) if (type !== '*' && !sampleTypes[type]) problems.push(`${where}: type ${type} is not a pinned resource type`);
+        const pkg = regoPackage(name, rule.id);
+        if (!new RegExp(`^package ${pkg.replaceAll('.', '\\.')}\\s*$`, 'm').test(rule.rego)) problems.push(`${where}: the Rego does not declare package ${pkg}`);
+        const r = rule.remediation;
+        if (r?.kind === 'workflow') {
+          // the update verb is the platform's convention for every type (P-08); others must exist in the pinned content
+          const found = r.workflow ? workflows.find((w) => w.metadata?.name === r.workflow && (!r.verb || w.metadata?.verb === r.verb))
+            : r.verb === 'update' || workflows.find((w) => rule.types.includes(w.metadata?.noun) && w.metadata?.verb === r.verb);
+          if (!found) problems.push(`${where}: no pinned workflow ${r.workflow ?? ''} with verb ${r.verb ?? ''} for ${rule.types.join(', ')}`);
+        }
+        if (r) {
+          const declared = new Set((r.inputs ?? []).map((i) => i.name));
+          const text = JSON.stringify(r.input ?? r.set ?? {});
+          for (const m of text.matchAll(/\{\{\s*\$input\.([A-Za-z0-9_-]+)\s*}}/g)) if (!declared.has(m[1])) problems.push(`${where}: $input.${m[1]} is not one of the remediation's inputs`);
+        }
+        let policyFile = null;
+        if (opa) {
+          policyFile = join(scratch, 'policy.rego');
+          writeFileSync(policyFile, rule.rego);
+          const parsed = spawnSync(opa, ['check', '--v1-compatible', policyFile], { encoding: 'utf8' });
+          if (parsed.status !== 0) {
+            problems.push(`${where}: opa check: ${(parsed.stderr || parsed.stdout).trim()}`);
+            policyFile = null;
+          }
+        }
+        for (const [i, example] of (rule.examples ?? []).entries()) {
+          examples++;
+          const declarative = judge(rule, example.input);
+          if (declarative !== example.expect) problems.push(`${where}, example ${i + 1}: the declarative check says ${declarative}, the example ${example.expect}`);
+          if (declarative === FAIL) message(rule, example.input);
+          if (policyFile) {
+            const rego = regoVerdict(opa, scratch, rule, pkg, example.input);
+            if (rego.error) problems.push(`${where}, example ${i + 1}: opa eval: ${rego.error}`);
+            else if (rego.verdict !== example.expect) problems.push(`${where}, example ${i + 1}: the Rego says ${rego.verdict}, the example ${example.expect}`);
+          }
+        }
+      }
+      if (problems.length) fail(`${rel(file)}: ids, types, Rego packages, remediations and examples`, problems.join('\n'));
+      else ok(`${rel(file)}: ${pack.spec.rules.length} rules, ${examples} examples agree${opa ? ' in the declarative check and in OPA' : ' in the declarative check'}`);
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 checkEntriesHaveValues();
 const target = await checkOpenApi();
 const asyncapi = await checkAsyncApi();
@@ -398,6 +505,7 @@ const fixtureValidator = checkSchemasAndOverlays();
 checkUsedOperations(target);
 checkEventCatalog(asyncapi);
 checkFixtures(fixtureValidator);
+checkRulePacks(fixtureValidator);
 
 console.log('');
 console.log(`${failures} failure${failures === 1 ? '' : 's'}, ${warnings} warning${warnings === 1 ? '' : 's'}`);
