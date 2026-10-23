@@ -34,4 +34,9 @@ public final class Requests {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ImportRequest(String type, String region, String providerId, String name) {
     }
+
+    /** {@code POST /v1/unmanaged:assign}: the object, the account it is handed to, a note, and who when the BFF relays it. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record AssignRequest(String type, String region, String providerId, String accountId, String note, String actor) {
+    }
 }

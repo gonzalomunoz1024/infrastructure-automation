@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingStatus;
 import com.iaf.console.drift.drift.domain.FindingsSummary;
 import com.iaf.console.drift.drift.domain.RevertStatus;
@@ -99,6 +100,24 @@ public final class InMemoryFindingStore implements FindingStorePort {
                 bySeverity.merge(f.severity().id(), 1L, Long::sum);
             }
             return new FindingsSummary(open, byType, bySeverity, null);
+        });
+    }
+
+    @Override
+    public Mono<FindingStats> countWindow(AccountScope scope, Instant since, Instant until) {
+        return tally(scope.accountId(), since, until);
+    }
+
+    @Override
+    public Mono<FindingStats> countWindowEveryAccount(Instant since, Instant until) {
+        return tally(null, since, until);
+    }
+
+    private Mono<FindingStats> tally(String accountId, Instant since, Instant until) {
+        return Mono.fromSupplier(() -> {
+            FindingStats.Tally tally = new FindingStats.Tally(accountId, since, until);
+            byId.values().stream().filter(f -> accountId == null || f.accountId().equals(accountId)).forEach(tally::add);
+            return tally.stats();
         });
     }
 

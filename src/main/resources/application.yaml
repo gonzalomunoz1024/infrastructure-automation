@@ -64,6 +64,30 @@ console:
   identity:
     base-url: http://localhost:18083
     timeout: 10s
+  # monthly costs of unmanaged objects (WP 5.3) and of resources to rightsize (WP 9.22): the cost
+  # service's list-price estimates (POST /v1/cost:estimate, audience console-cost-service) at
+  # base-url, or, with base-url empty, this price list per type: a base a month, a rate per unit of
+  # a numeric attribute, and the attribute whose value picks a price. Keys with capitals are
+  # bracketed so they bind as written.
+  cost:
+    base-url: ""
+    timeout: 5s
+    currency: USD
+    basis: list-prices
+    prices:
+      vm:
+        monthly: 5.00
+        per:
+          cpu: 14.60
+          "[memoryGb]": 3.65
+      database:
+        by: tier
+        choices:
+          "[M10]": 57.00
+          "[M30]": 388.00
+      volume:
+        per:
+          "[sizeGb]": 0.10
   # how this service names itself to the state and identity services (hub decision 23): a service
   # token from the BFF, authenticated by the pod's projected service-account token (assertion-file,
   # in a cluster) or by a JWT signed with this service's own registered EC key (signing-key-file,

@@ -38,9 +38,13 @@ repository pins by commit in `contracts.lock`, and the shared code comes from `c
   agrees; a failed job shows on the finding (`revertStatus: failed`), which stays open.
 - **Accepts and ignores**: an accept makes the observed values the desired ones on the state service;
   an ignore silences the fields until the desired state changes, or until a date.
-- **Finds what the console does not manage**: a discovery run lists each type's provider objects
-  through the platform's `:discover` operation, keeps the ones no wfrn holds, and imports a chosen
-  one into the state service.
+- **Finds what the console does not manage** (the shadow-infrastructure finder, WP 5.3): a
+  discovery run lists each type's provider objects through the platform's `:discover` operation and
+  keeps the ones no account manages. Each one gets a guess at its owning account, with the reasons
+  in plain words, and an estimated monthly cost. It can be assigned to another team's account, which
+  then lists it too, and imported into the state service by either account.
+- **Counts drift for the executive home** (WP 9.5): the findings opened and closed in a window, by
+  resolution and severity, with the mean time to close, per account or over every account.
 
 ## Run it
 
@@ -101,7 +105,9 @@ token for the BFF's service tokens, and a rendered `application-cluster.yaml`.
 | `console.drift.idempotency-ttl`, `types-ttl` | `24h`, `60s` | How long an `Idempotency-Key` replays; how long resource types are cached |
 | `console.drift.webhooks.<provider>.secret` | none | The HMAC secret of a provider's change notifications |
 | `console.state.mode`, `base-url`, `timeout` | `http`, `http://localhost:18082`, `30s` | The state service; an answer must start within the timeout, and its body may not stall longer between reads |
-| `console.identity.base-url`, `timeout` | `http://localhost:18083`, `10s` | The identity service: each account's platform credentials (the same timeout rule) |
+| `console.identity.base-url`, `timeout` | `http://localhost:18083`, `10s` | The identity service: each account's platform credentials, and the active accounts the owner guesses and assignments name, kept for `console.drift.sync.accounts-refresh` (the same timeout rule) |
+| `console.cost.base-url`, `timeout` | empty, `5s` | The cost service's `POST /v1/cost:estimate` (audience `console-cost-service`); empty uses the price list below |
+| `console.cost.currency`, `basis`, `prices.<type>` | `USD`, `list-prices`, vm, database and volume | The price list for a box without the cost service: per type a `monthly` base, a rate `per` unit of numeric attributes, and an attribute (`by`) whose value picks one of `choices` |
 | `console.service-tokens.mode` | `bff` | How this service names itself to the state and identity services: `bff` (hub decision 23) or `dev-headers` (demos) |
 | `console.service-tokens.token-url`, `client-id` | `http://localhost:18081/internal/v1/token`, `console-drift-service` | The BFF's token endpoint and this service's client id there |
 | `console.service-tokens.assertion-file` | `CONSOLE_SERVICE_ASSERTION_FILE` | The projected service-account token (audience `console-bff`) that authenticates the token request, in a cluster |
@@ -126,14 +132,16 @@ Pages are 1 to 200 items, 50 by default, with the kit's opaque cursors (`after`,
 | --- | --- |
 | `GET /v1/findings` | The account's findings, newest first; filters `wfrn` (a pattern), `status` (`open` by default, `closed`, `all`), `severity`, `type`, `region`, `openedAfter` |
 | `GET /v1/findings/summary` | Open findings by type and severity, and when the account was last scanned |
+| `GET /v1/findings/stats` | Findings opened and closed between `since` (30 days ago by default) and `until` (now), the closed ones by resolution, the opened ones by severity, open now, and the mean minutes to close; another console service may leave out `accountId` for every account |
 | `GET /v1/findings/{findingId}` | One finding: its fields (`path`, `expected`, `observed`), version, resolution, `revertJobId` and `revertStatus` |
 | `POST /v1/findings/{id}:revert` | 202 `{findingId, jobId}`; the type's update workflow runs with the desired values, on behalf of the person |
 | `POST /v1/findings/{id}:accept` | 200, the finding closed as `accepted`; the observed values are the desired ones on the state service |
 | `POST /v1/findings/{id}:ignore` | 200, closed as `ignored`; the fields stay silent until the desired state changes, or until `until` |
 | `POST /v1/discover` | 202, a discovery run over the account's discoverable types, or the `type` and `region` given |
 | `GET /v1/discover/{runId}` | The run: types read, objects seen, unmanaged found |
-| `GET /v1/unmanaged` | Provider objects no wfrn holds; filters `type`, `region` |
-| `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on |
+| `GET /v1/unmanaged` | Provider objects no account manages, with `ownerGuess`, `monthlyCost` and `assignment`; filters `type`, `region`, `owner` (`any`, `mine`: guessed to be or assigned to the account, `unknown`: no guess) |
+| `POST /v1/unmanaged:import` | 201, the object imported into the state service (`source: discover`) and watched from then on; every account's copy leaves the lists |
+| `POST /v1/unmanaged:assign` | 200, the object handed to another active account (`accountId`, `note` up to 500 characters), which lists it too until either imports it; assigning again moves it, and assigning it back to the account that found it takes the assignment off. 400 `unmanaged.unknownAccount` for this account or one the identity service does not list |
 | `POST /v1/webhooks/{provider}` | 202; `X-Webhook-Signature: sha256=<hex>` (HMAC-SHA256 of the raw body); the resources it names are read now |
 | `GET /internal/watches`, `/internal/watches/{wfrn}`, `POST /internal/watches/{wfrn}:check` | For services and operators: the watch list, one watch, read one now |
 | `POST /internal/scan`, `/internal/sync`, `/internal/follow` | Operations: one scan pass over every shard now (`?tier=` for one tier), sync the watch list now, look at the running revert jobs now |
@@ -197,9 +205,9 @@ MongoDB, one database (`console_drift`) per deployment; indexes are created at s
 
 | Collection | Document | Indexes |
 | --- | --- | --- |
-| `drift_findings` | `_id` findingId, `wfrn`, `accountId`, `region`, `type`, `status`, `severity`, `version`, `revertStatus`, `openedAt`, `doc` | unique `wfrn` where open (`one_open_finding_per_resource`), `{accountId, status, openedAt desc}`, `{wfrn, status}`, `{status, revertStatus}` |
+| `drift_findings` | `_id` findingId, `wfrn`, `accountId`, `region`, `type`, `status`, `severity`, `version`, `revertStatus`, `openedAt`, `closedAt`, `resolution`, `doc` | unique `wfrn` where open (`one_open_finding_per_resource`), `{accountId, status, openedAt desc}`, `{wfrn, status}`, `{status, revertStatus}`, and for the window counts `{accountId, openedAt}`, `{accountId, closedAt}`, `openedAt`, `closedAt` |
 | `drift_watches` | `_id` wfrn, `accountId`, `type`, `shard`, `tier`, `nextCheckAt`, `lastCheckedAt`, `providerId`, `registryId`, `rev`, `doc` | `{shard, tier, nextCheckAt}`, `{shard, nextCheckAt}`, `{accountId, type, _id}`, `{accountId, lastCheckedAt desc}`, `providerId`, `registryId` |
-| `drift_discovery_runs`, `drift_unmanaged` | a discovery run; an unmanaged provider object | `{accountId, type, region, status}`; `{accountId, type, region, _id}` |
+| `drift_discovery_runs`, `drift_unmanaged` | a discovery run; an unmanaged provider object, one copy per account that lists it, with `guessAccountId` and `assignedTo` for the owner filter | `{accountId, type, region, status}`; `{accountId, type, region, _id}`, `{accountId, _id}`, `{providerId, type, region}` |
 | `idempotency_keys` | `_id` `<accountId>:<key>`, `bodyHash`, `status`, `body`, `expiresAt` | TTL `expiresAt` |
 | `outbox`, `processed_events` | the service kit's | the service kit's |
 
@@ -208,12 +216,14 @@ MongoDB, one database (`console_drift`) per deployment; indexes are created at s
 ```
 com.iaf.console.drift
 ├── drift                         the one slice: findings and the watch list
-│   ├── domain                    Finding, Watch, DriftRules, TierRules, Observation, ObserveBudget, Shards; no Spring, no I/O
+│   ├── domain                    Finding, Watch, DriftRules, TierRules, Observation, ObserveBudget, Shards,
+│   │                             UnmanagedObject, OwnerGuesses, FindingStats, Money; no Spring, no I/O
 │   ├── ports.outbound            FindingStorePort, WatchStorePort, StateServicePort, PlatformPort, ResourceTypesPort,
-│   │                             WorkflowStarterPort, OnBehalfOfPort, DiscoveryStorePort, IdempotencyKeyPort
+│   │                             WorkflowStarterPort, OnBehalfOfPort, DiscoveryStorePort, IdempotencyKeyPort,
+│   │                             AccountDirectoryPort, CostEstimatesPort
 │   ├── application               ShardScanner, Reconciler, InventorySync, DriftService (decisions), RevertFollower,
 │   │                             DiscoveryService, WebhookService, FindingQueries, FindingEvents, StateEvents
-│   └── adapters.{web,mongo,memory,state,platform,kafka,temporal,loop}
+│   └── adapters.{web,mongo,memory,state,platform,identity,cost,kafka,temporal,loop}
 ├── auth                          ConsolePrincipal, JwtVerifier (the BFF's JWKS), ConsoleAuthWebFilter
 └── boot                          DriftProperties, the profile wiring, the demo's world alignment
 ```
@@ -236,21 +246,34 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 9 | Imported resources are read through `:discover` | The fake and the platform's `:observe-list` answer managed objects only; an imported object has a provider id and no registry record |
 | 10 | Unknown webhook providers answer 401 | The contract allows 202, 400, 401; a provider without a secret cannot be verified, which is the 401's meaning |
 | 11 | Service tokens from the BFF for this service's own calls | Hub decision 23: the state and identity services verify only the BFF's JWKS, so this service asks `POST /internal/v1/token` (client credentials with a JWT client assertion) for a five-minute token per audience, `console-state-service` and `console-identity-service`. The assertion is the pod's projected service-account token, or a JWT signed with the service's own registered key; there is no static token. Tokens are kept until a minute before they end, and a target's 401 gets one fresh token and one retry |
+| 12 | Owner guesses in steps of confidence, and only when one account is named | A tag naming an account's team, id or name is `high`; the account's or team's name as whole words in the object's name is `medium`; sharing a folder, network, cluster or pool with one account's managed resources only, or being of a type only one account manages in the region, is `low`. A step that names two accounts says nothing rather than guess wrong. The guesses read what the type's `observe.map` gives, and the managed neighbours come from the same `:discover` pages, so a guess costs no extra read |
+| 13 | An assignment is a second copy, not a pointer | The handed account lists the object with its own reads and pages, scoped like every other read; an import by either account removes every copy, and a run skips an object any account has imported |
+| 14 | Costs from the cost service, a price list without it | The cost service owns prices (WP 7.3); the drift service only asks, and an unpriced type or a failed estimate leaves `monthlyCost` out rather than fail a run |
+| 15 | Window counts by the store | Mongo answers opened and closed per window from indexed top-level `openedAt`, `closedAt` and `resolution`, so the executive home never pages through findings |
 
 ### Contract additions (raised with the hub)
 
-Hub PR #14 (`console-root--drift-contract`, the commit `contracts.lock` pins) writes these into the drift contract; all are backward compatible:
+Hub PR #14 (`console-root--drift-contract`) writes these into the drift contract; all are backward compatible:
 `revertStatus` on a finding; the `X-On-Behalf-Of` header relayed on `:revert`; the 409 codes
 `revert.needsPerson`, `finding.reverting`, `finding.notRevertable` and `finding.unwatched`; the job
 label `drift-finding` that ties a revert job to its finding; the `/internal/*` operations; and on
 an import of a discovered object, `registryId` set to the provider id, since the state contract
 requires one and a discovered object has no registry record.
 
+Hub PR #17 (`console-root--drift-finder-monitoring`, stacked on PR #14, the commit `contracts.lock` pins) adds the finder's
+`ownerGuess`, `monthlyCost`, `assignment` and `owner` filter, `POST /v1/unmanaged:assign`,
+`GET /v1/findings/stats`, the monitoring and rightsizing operations, and the BFF routes over them.
+
 ### The demo's world
 
 The fake platform answers single reads (`vm.get`, `cluster.get`) with a fixed sample and pages
 with its recorded world. At start the demo writes each recorded object's attributes into the fake's
 world (`DemoWorld`), so every read agrees with the registry and only real changes show as drift.
+It also gives the three VMs vSphere has that no account manages (`vm-1042`, `vm-1043`, `vm-2001`)
+their CPUs and memory, so the finder prices them from the demo price list; since every VM the demo
+manages is the compute account's, that account is their `low` owner guess. The demo's accounts are
+the identity service's demo pair, `123456789012` Compute (team-compute) and `210987654321` Data
+(team-data).
 
 ## CI and release
 

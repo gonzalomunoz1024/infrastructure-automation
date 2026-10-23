@@ -60,6 +60,9 @@ data:
         dev-headers: false
       identity:
         base-url: {{ .Values.console.identity.baseUrl | quote }}
+      cost:
+        base-url: {{ .Values.console.cost.baseUrl | quote }}
+        timeout: {{ .Values.console.cost.timeout }}
       service-tokens:
         mode: bff
         token-url: {{ .Values.serviceTokens.tokenUrl | quote }}

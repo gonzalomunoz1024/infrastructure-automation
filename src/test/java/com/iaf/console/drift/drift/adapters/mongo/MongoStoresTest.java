@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -14,17 +15,25 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.condition.EnabledIf;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.iaf.console.drift.drift.adapters.memory.InMemoryDiscoveryStore;
+import com.iaf.console.drift.drift.adapters.memory.InMemoryFindingStore;
+import com.iaf.console.drift.drift.domain.Assignment;
 import com.iaf.console.drift.drift.domain.DiscoveryRun;
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingField;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingStatus;
 import com.iaf.console.drift.drift.domain.Json;
+import com.iaf.console.drift.drift.domain.Money;
+import com.iaf.console.drift.drift.domain.OwnerGuess;
 import com.iaf.console.drift.drift.domain.Resolution;
 import com.iaf.console.drift.drift.domain.Severity;
 import com.iaf.console.drift.drift.domain.Tier;
 import com.iaf.console.drift.drift.domain.UnmanagedObject;
 import com.iaf.console.drift.drift.domain.Watch;
+import com.iaf.console.drift.drift.ports.outbound.DiscoveryStorePort;
+import com.iaf.console.drift.drift.ports.outbound.FindingStorePort;
 import com.iaf.console.drift.drift.ports.outbound.IdempotencyKeyPort;
 import com.iaf.console.drift.drift.ports.outbound.WatchStorePort;
 import com.iaf.console.kit.mongo.Mongo;
@@ -196,12 +205,115 @@ class MongoStoresTest {
         discovery.saveRun(run.succeeded(11, 3, T0.plusSeconds(2))).block();
         assertThat(discovery.findRunningRun(SCOPE, "vm", "global").block()).isNull();
 
-        UnmanagedObject o = new UnmanagedObject(ACCOUNT, "vm-2001", "vm", "global", "vm-2001", Json.object(), T0, T0);
+        UnmanagedObject o = UnmanagedObject.found(ACCOUNT, "vm-2001", "vm", "global", "vm-2001", Json.object(), T0);
         discovery.saveUnmanaged(o).block();
-        assertThat(discovery.listUnmanaged(SCOPE, "vm", "global", 50, null).block().items()).extracting(UnmanagedObject::providerId)
+        assertThat(discovery.listUnmanaged(SCOPE, "vm", "global", null, 50, null).block().items()).extracting(UnmanagedObject::providerId)
                 .containsExactly("vm-2001");
-        assertThat(discovery.listUnmanaged(OTHER, "vm", "global", 50, null).block().items()).isEmpty();
+        assertThat(discovery.listUnmanaged(OTHER, "vm", "global", null, 50, null).block().items()).isEmpty();
         discovery.deleteUnmanaged(SCOPE, "vm", "global", "vm-2001").block();
         assertThat(discovery.findUnmanaged(SCOPE, "vm", "global", "vm-2001").block()).isNull();
+    }
+
+    @Test
+    void anAssignedObjectHasACopyInEachAccountAndTheOwnerFilterPicks() {
+        String data = OTHER.accountId();
+        for (DiscoveryStorePort store : List.of(discovery, new InMemoryDiscoveryStore())) {
+            // a region of its own, so the other tests' objects stay out of the pages
+            OwnerGuess ours = new OwnerGuess(ACCOUNT, "Compute", "team-compute", OwnerGuess.HIGH, List.of("Tagged owner=team-compute"));
+            OwnerGuess theirs = new OwnerGuess(data, "Data", "team-data", OwnerGuess.MEDIUM, List.of("The name data-3003 contains the account's name, Data"));
+            store.saveUnmanaged(UnmanagedObject.found(ACCOUNT, "vm-3001", "vm", "lab", "web-3001", Json.object(), T0)
+                    .judged(ours, Money.of(121.8, "USD", "list-prices"))).block();
+            store.saveUnmanaged(UnmanagedObject.found(ACCOUNT, "vm-3002", "vm", "lab", "vm-3002", Json.object(), T0)).block();
+            UnmanagedObject handed = UnmanagedObject.found(ACCOUNT, "vm-3003", "vm", "lab", "data-3003", Json.object(), T0).judged(theirs, null)
+                    .assigned(new Assignment(data, "Data", ACCOUNT, "dana", "Their ETL box", T0));
+            store.saveUnmanaged(handed).block();
+            store.saveUnmanaged(handed.forAccount(data)).block();
+
+            assertThat(store.listUnmanaged(SCOPE, "vm", "lab", null, 50, null).block().items()).extracting(UnmanagedObject::providerId)
+                    .containsExactly("vm-3001", "vm-3002", "vm-3003");
+            assertThat(store.listUnmanaged(SCOPE, "vm", "lab", DiscoveryStorePort.MINE, 50, null).block().items())
+                    .extracting(UnmanagedObject::providerId).containsExactly("vm-3001");
+            assertThat(store.listUnmanaged(SCOPE, null, "lab", DiscoveryStorePort.UNKNOWN, 50, null).block().items())
+                    .extracting(UnmanagedObject::providerId).containsExactly("vm-3002");
+            Page<UnmanagedObject> mine = store.listUnmanaged(OTHER, "vm", "lab", DiscoveryStorePort.MINE, 50, null).block();
+            assertThat(mine.items()).extracting(UnmanagedObject::providerId).containsExactly("vm-3003");
+            UnmanagedObject copy = mine.items().get(0);
+            assertThat(copy.handedHere()).isTrue();
+            assertThat(copy.foundBy()).isEqualTo(ACCOUNT);
+            assertThat(copy.assignment().note()).isEqualTo("Their ETL box");
+            assertThat(copy.ownerGuess().reasons()).containsExactly("The name data-3003 contains the account's name, Data");
+
+            UnmanagedObject priced = store.findUnmanaged(SCOPE, "vm", "lab", "vm-3001").block();
+            assertThat(priced.monthlyCost().amount()).isEqualByComparingTo("121.80");
+            assertThat(priced.ownerGuess().confidence()).isEqualTo(OwnerGuess.HIGH);
+            assertThat(store.findCopies("vm", "lab", "vm-3003").collectList().block()).extracting(UnmanagedObject::accountId)
+                    .containsExactlyInAnyOrder(ACCOUNT, data);
+            // paging goes on past a full page
+            Page<UnmanagedObject> first = store.listUnmanaged(SCOPE, "vm", "lab", DiscoveryStorePort.ANY, 2, null).block();
+            assertThat(first.items()).hasSize(2);
+            assertThat(store.listUnmanaged(SCOPE, "vm", "lab", DiscoveryStorePort.ANY, 2, first.next()).block().items())
+                    .extracting(UnmanagedObject::providerId).containsExactly("vm-3003");
+        }
+    }
+
+    @Test
+    void theWindowCountsOfTheExecutiveHomeAgreeWithTheInMemoryStore() {
+        // findings of an account of their own, years before the others, so the counts are this test's only
+        String account = "333333333333";
+        AccountScope scope = AccountScope.of(account, "global", "dana");
+        Instant until = Instant.parse("2020-01-01T00:00:00Z");
+        Instant since = until.minus(Duration.ofDays(30));
+        Instant days = until;
+        InMemoryFindingStore memory = new InMemoryFindingStore();
+        List<Finding[]> history = List.of(
+                // opened in the window and still open
+                new Finding[] {windowFinding("w1", account, Severity.CRITICAL, days.minus(Duration.ofDays(2)))},
+                // opened and reverted in the window, half an hour later
+                closedAfter(windowFinding("w2", account, Severity.WARNING, days.minus(Duration.ofDays(3))), Resolution.REVERTED, Duration.ofMinutes(30)),
+                // opened before the window, accepted in it two days later: closed counts, opened does not
+                closedAfter(windowFinding("w3", account, Severity.INFO, days.minus(Duration.ofDays(31))), Resolution.ACCEPTED, Duration.ofDays(2)),
+                // opened and ignored in the window, an hour and a half later
+                closedAfter(windowFinding("w4", account, Severity.WARNING, days.minus(Duration.ofDays(10))), Resolution.IGNORED, Duration.ofMinutes(90)),
+                // opened in the window, gone after it
+                closedAfter(windowFinding("w5", account, Severity.INFO, days.minus(Duration.ofDays(1))), Resolution.VANISHED, Duration.ofDays(2)),
+                // opened and closed before the window
+                closedAfter(windowFinding("w6", account, Severity.CRITICAL, days.minus(Duration.ofDays(60))), Resolution.REVERTED, Duration.ofDays(1)),
+                // another account's, in the window
+                new Finding[] {windowFinding("w7", "444444444444", Severity.CRITICAL, days.minus(Duration.ofDays(1)))});
+        for (Finding[] versions : history) {
+            for (Finding f : versions) {
+                findings.save(f).block();
+                memory.save(f).block();
+            }
+        }
+
+        for (FindingStorePort store : List.of(findings, memory)) {
+            FindingStats stats = store.countWindow(scope, since, until).block();
+            assertThat(stats.accountId()).isEqualTo(account);
+            assertThat(stats.opened()).isEqualTo(4);
+            assertThat(stats.bySeverity()).containsExactlyInAnyOrderEntriesOf(Map.of("critical", 1L, "warning", 2L, "info", 1L));
+            assertThat(stats.closed()).isEqualTo(new FindingStats.Closed(3, 1, 1, 1, 0));
+            assertThat(stats.open()).isEqualTo(1);
+            assertThat(stats.meanMinutesToClose()).isEqualTo(1000.0);
+
+            FindingStats every = store.countWindowEveryAccount(since, until).block();
+            assertThat(every.accountId()).isNull();
+            assertThat(every.opened()).isEqualTo(5);
+            assertThat(every.bySeverity().get("critical")).isEqualTo(2L);
+            assertThat(every.closed().total()).isEqualTo(3);
+            assertThat(every.open()).isGreaterThanOrEqualTo(2);
+
+            FindingStats empty = store.countWindow(scope, since.minus(Duration.ofDays(400)), since.minus(Duration.ofDays(300))).block();
+            assertThat(empty.opened()).isZero();
+            assertThat(empty.meanMinutesToClose()).isNull();
+        }
+    }
+
+    private static Finding windowFinding(String id, String account, Severity severity, Instant openedAt) {
+        return Finding.open("f-" + id, "wfrn:wf:compute:global:" + account + ":vm/" + id, account, "global", "vm", severity, List.of(), openedAt);
+    }
+
+    private static Finding[] closedAfter(Finding open, Resolution how, Duration after) {
+        return new Finding[] {open, open.closed(how, "dana", null, open.openedAt().plus(after), null)};
     }
 }

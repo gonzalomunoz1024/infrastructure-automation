@@ -95,6 +95,11 @@ console:
     timeout: 30s
   identity:
     baseUrl: http://console-identity-service.console.svc.cluster.local
+  # the cost service's list-price estimates for unmanaged objects and rightsizing (audience
+  # console-cost-service); empty falls back to the price list in the image's application.yaml
+  cost:
+    baseUrl: http://console-cost-service.console.svc.cluster.local
+    timeout: 5s
   platform:
     baseUrl: http://platform.platform.svc.cluster.local:8080
     timeout: 30s

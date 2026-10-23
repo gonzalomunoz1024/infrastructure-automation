@@ -20,6 +20,7 @@ import com.iaf.console.drift.auth.domain.ConsolePrincipal;
 import com.iaf.console.drift.drift.domain.Decision;
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingsSummary;
 import com.iaf.console.drift.drift.domain.Severity;
 import com.iaf.console.kit.paging.CursorPaging;
@@ -30,7 +31,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * The findings API of {@code contracts/openapi/console-drift-service.yaml}: the list, the
- * summary, one finding, and the three decisions. A revert relays the BFF's
+ * summary, the window counts, one finding, and the three decisions. A revert relays the BFF's
  * {@code X-On-Behalf-Of} for the person, so the job names them.
  */
 @RestController
@@ -87,6 +88,21 @@ public final class FindingController {
             @RequestParam(required = false) String region) {
         AccountScope scope = Principals.scope(exchange, accountId, region);
         return queries.summary(scope, region != null ? region : scope.region());
+    }
+
+    /** The drift numbers of the executive home; the internal principal names no account for every account's. */
+    @GetMapping("/v1/findings/stats")
+    public Mono<FindingStats> stats(ServerWebExchange exchange,
+            @RequestParam(required = false) String accountId,
+            @RequestParam(required = false) String since,
+            @RequestParam(required = false) String until) {
+        Instant from = instant(since, "since");
+        Instant to = instant(until, "until");
+        ConsolePrincipal principal = Principals.principal(exchange);
+        if (principal.internal() && accountId == null) {
+            return queries.stats(null, from, to);
+        }
+        return queries.stats(Principals.scope(exchange, accountId, null), from, to);
     }
 
     @GetMapping("/v1/findings/{findingId}")

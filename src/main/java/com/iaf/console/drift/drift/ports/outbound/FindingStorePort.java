@@ -1,7 +1,10 @@
 package com.iaf.console.drift.drift.ports.outbound;
 
+import java.time.Instant;
+
 import com.iaf.console.drift.drift.domain.Finding;
 import com.iaf.console.drift.drift.domain.FindingQuery;
+import com.iaf.console.drift.drift.domain.FindingStats;
 import com.iaf.console.drift.drift.domain.FindingsSummary;
 import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
@@ -18,6 +21,13 @@ public interface FindingStorePort {
     Mono<Page<Finding>> list(AccountScope scope, FindingQuery query);
 
     Mono<FindingsSummary> countOpen(AccountScope scope, String region);
+
+    /** The account's findings opened and closed in {@code [since, until)}, and how many are open now. */
+    Mono<FindingStats> countWindow(AccountScope scope, Instant since, Instant until);
+
+    /** The same over every account. */
+    @GlobalRead("the platform team's executive home counts every account's findings")
+    Mono<FindingStats> countWindowEveryAccount(Instant since, Instant until);
 
     /** The one open finding on a resource, when there is one. */
     @GlobalRead("the scanner looks a resource's finding up by its name, which carries the account")

@@ -197,9 +197,12 @@ public final class InventorySync {
         return b.build();
     }
 
-    /** Whether a provider object is already under watch in the account (an import the registry does not know). */
-    public Mono<Boolean> watching(String accountId, String type, String region, String providerId) {
-        return watches.findByProviderId(providerId, type).any(w -> w.accountId().equals(accountId) && w.region().equals(region) && !w.deleted());
+    /**
+     * The account that watches this provider object, when one does (an import the registry does not
+     * know): an object any account imported is nobody's shadow infrastructure.
+     */
+    public Mono<String> watcher(String type, String region, String providerId) {
+        return watches.findByProviderId(providerId, type).filter(w -> w.region().equals(region) && !w.deleted()).map(Watch::accountId).next();
     }
 
     /** A deleted resource leaves nothing to compare: its open finding closes as vanished. */

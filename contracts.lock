@@ -2,9 +2,9 @@
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
 branch: console-root
 # the drift contract's additions are hub PR #17 (console-root--drift-finder-monitoring, stacked on PR #14's console-root--drift-contract)
-commit: 53de20e1c8a6fd765a01d1d08cab9f52883b5974
+commit: b7aae5f8d043c37b93beae5250097484c86a2c4b
 files:
-  contracts/openapi/console-drift-service.yaml: sha256:7c03c14bfc6f02691e1f846f91155d29d493b85cfc03d50a28b915cb6c2698e1
+  contracts/openapi/console-drift-service.yaml: sha256:16a1f2a2c49f1b49ed6f2791157148164ba2c6bdc754bad92b8f2382aad3fc4d
   contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
   contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
   contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c

@@ -20,7 +20,8 @@ public record DriftProperties(
         ServiceTokenSettings serviceTokens,
         TemporalSettings temporal,
         KafkaSettings kafka,
-        DemoSettings demo) {
+        DemoSettings demo,
+        CostSettings cost) {
 
     public DriftProperties {
         region = region == null || region.isBlank() ? "global" : region;
@@ -34,6 +35,7 @@ public record DriftProperties(
         temporal = temporal == null ? new TemporalSettings(null, null, null, null) : temporal;
         kafka = kafka == null ? new KafkaSettings(null, null, null, null) : kafka;
         demo = demo == null ? new DemoSettings(null, null, null) : demo;
+        cost = cost == null ? new CostSettings(null, null, null, null, null) : cost;
     }
 
     /** The partition of every wfrn this service mints ({@code wf} for the firm's one partition). */
@@ -138,6 +140,29 @@ public record DriftProperties(
         public boolean embedded() {
             return "embedded".equalsIgnoreCase(mode);
         }
+    }
+
+    /**
+     * Where the monthly cost of an unmanaged object or a resource comes from: the cost service's
+     * estimates ({@code POST /v1/cost:estimate}) at {@code base-url}, or, with no base-url, the
+     * price list here, per type.
+     */
+    public record CostSettings(String baseUrl, Duration timeout, String currency, String basis, Map<String, PriceSettings> prices) {
+        public CostSettings {
+            baseUrl = baseUrl == null ? "" : baseUrl.trim();
+            timeout = timeout == null ? Duration.ofSeconds(5) : timeout;
+            currency = currency == null || currency.isBlank() ? "USD" : currency;
+            basis = basis == null || basis.isBlank() ? "list-prices" : basis;
+            prices = prices == null ? Map.of() : Map.copyOf(prices);
+        }
+
+        public boolean service() {
+            return !baseUrl.isEmpty();
+        }
+    }
+
+    /** One type's list price: a base a month, a rate per unit of numeric attributes, and the attribute whose value picks a price. */
+    public record PriceSettings(Double monthly, Map<String, Double> per, String by, Map<String, Double> choices) {
     }
 
     /** The identity service, which answers an account's platform credential (hub decision 18). */
