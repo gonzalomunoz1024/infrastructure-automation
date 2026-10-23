@@ -36,7 +36,7 @@ UTC; nothing below is CI-verified.)**
 | BFF copilot | branch `console-bff--assistant` (no PR) | 3dc6f40 | B-2 |
 | BFF security fixes | branch `console-bff--security-wip` (no PR) | a36c65b | S-1 |
 | BFF API clients, notifications, SDK | announced as `console-bff--clients`, `console-bff--notifications`, `console-sdk`, but **not on GitHub at 19:05** | - | B-6, B-7 (check again; rebuild if absent) |
-| BFF unstarted work | specs promised as `handoff/bff-remaining.md` on this branch (ChatOps, time travel and transfer, blueprints executor, BFF load tests) | - | B-4, B-5, B-8, P-1 (BFF part) |
+| BFF unstarted work | specs in `handoff/bff-remaining.md` (written by the BFF session, 3296a6a) (ChatOps, time travel and transfer, blueprints executor, BFF load tests) | - | B-4, B-5, B-8, P-1 (BFF part) |
 | Drift 10M scan | draft PR #53 `console-drift-service--scan-load` → `--finder-and-monitoring` | 7e8c95d | P-1 (drift). The scan overran the platform-call budget; a shared walk store fix was in progress |
 | Web phase 7 and the rest of 9 | draft PR #54 `console-web--phase-7` → `console-web--phase-5` | 7207de4 | W-1 to W-7, W-9, W-10 |
 | Web phase 7 streams | `console-web--p7-access` (cdbc2ab), `--p7-cli` (b3e39bd), and WIP branches `--p7-blueprints-wip` (340db1a), `--p7-dashboards-wip` (facb1c8), `--p7-mobile-wip` (70046d9), `--p7-notify-wip` (e0d95ce), `--p7-personal-wip` (2b3ac71), `--p7-policies-wip` (dc70827), `--p7-state-wip` (0e3b80f) | see left | Each W stream continues on its own branch and is merged into `console-web--phase-7` |

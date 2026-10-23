@@ -33,7 +33,7 @@ Put these in every sub-agent's prompt:
 ## Where each lane starts (19:05 UTC)
 
 - Lane 1: S-1 continues `console-bff--security-wip`, and S-4 continues `console-web--phase-5-security-wip`.
-- Lane 2: 2a starts from draft #51 (`console-bff--phase-9`) and `console-bff--assistant`, then picks up `handoff/bff-remaining.md` once it lands. 2b starts from draft #52 (`console-bff--org`), then B-6 and B-7: check for `console-bff--clients`, `--notifications` and `console-sdk` first.
+- Lane 2: 2a starts from draft #51 (`console-bff--phase-9`) and `console-bff--assistant`, then picks up `handoff/bff-remaining.md` (it lists the BFF stack and the WIP branches too). 2b starts from draft #52 (`console-bff--org`), then B-6 and B-7: check for `console-bff--clients`, `--notifications` and `console-sdk` first.
 - Lane 3: start from draft #54 (`console-web--phase-7`) and its `console-web--p7-*` stream branches. Each stream agent keeps its own branch, and 3a merges the streams into phase-7. W-8 is PR #49.
 - Lane 4: continue `console-e2e` / `console-e2e--journey`, and don't restart them.
 - Lane 5: drift starts from draft #53 (finish the shared walk store fix for the call-budget overrun). State uses #47 and #48, search #44.
