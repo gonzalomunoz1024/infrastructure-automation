@@ -4,8 +4,9 @@ The console's backend for frontend: the one service the web app talks to. It sig
 through the enterprise identity provider, keeps their session, tells the web app what each
 resource type looks like and what the signed-in person may do with it, serves the resource pages
 over the state service (list, detail, create, update, verbs, tags, lineage, drift, batches,
-previews), the Requests page (jobs and approvals), streams live changes, and passes IAM calls
-through to the identity service.
+previews), the Requests page (jobs and approvals), streams live changes, passes IAM calls
+through to the identity service, and the drift features (findings, the shadow-infrastructure
+finder, metrics and alarms, rightsizing) through to the drift service.
 It never holds platform credentials in the browser: every platform call is made here, with the
 account's service account and a signed on-behalf-of assertion naming the person.
 
@@ -13,7 +14,8 @@ Work packages of the customer-console plan served here: **1.3** (OIDC sign-in, s
 step-up), **1.5** (the refusal names its layer, access requests), **3.1** (type descriptors),
 **3.2** and **3.3** (the resource pages, over the state service), **3.4** (live updates), and the
 BFF's side of **6.1** (global search, type-ahead and the list's counts, through the search
-indexer).
+indexer), of **5.2** and **5.3** (drift findings and the shadow-infrastructure finder) and of
+**9.21** and **9.22** (monitoring and rightsizing), through the drift service.
 
 ## Running it
 
@@ -22,8 +24,10 @@ indexer).
 ```
 
 The demo profile needs nothing else: it embeds `platform-fake` on port 18090, a small OpenID
-provider at `/demo-idp` with a user picker, and an in-process stand-in of the identity service at
-`/demo-identity`, reached over HTTP by the same adapters that will talk to the real one. Open
+provider at `/demo-idp` with a user picker, and in-process stand-ins of the identity service, the
+state service, the search indexer and the drift service at `/demo-identity`, `/demo-state`,
+`/demo-search` and `/demo-drift`, reached over HTTP by the same adapters that will talk to the
+real ones. Open
 <http://localhost:18081/auth/login?returnTo=/> and pick a person:
 
 | Person | Compute account 123456789012 | Data account 210987654321 |
@@ -37,8 +41,8 @@ provider at `/demo-idp` with a user picker, and an in-process stand-in of the id
 | noah | no account: the sign-in answers 403 | |
 
 `GET /auth/login?login_hint=dana` skips the picker, which is what the web app's Playwright runs
-use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, search indexer 18085,
-web 3000 (the project's port decision of 2026-10-23; the plan's table had state and identity the
+use. Ports: platform-fake 18090, bff 18081, state 18082, identity 18083, drift service 18084,
+search indexer 18085, web 3000 (the project's port decision of 2026-10-23; the plan's table had state and identity the
 other way round).
 
 To run against the real services, leave the demo profile off and set the settings below; the
@@ -61,9 +65,11 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.trust.kubernetes.issuer`, `jwks-uri`, `jwks`, `ca-file`, `token-file` | The cluster whose projected service-account tokens prove a client; off while `issuer` is empty |
 | `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
+| `console.drift.url`, `service-name`, `timeout` | The drift service (`http://localhost:18084` by default), the audience of the internal tokens it gets (`console-drift-service`) and how long a call may take (5s); an empty URL means the stand-in under `/demo-drift` |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
+| `console.types.demo-metrics` | Demo only: the types whose descriptor says `observe.metrics` although the platform type has no metrics read (`[vm]` in the demo profile, whose drift stand-in makes the series up) |
 | `console.live.ring-capacity`, `heartbeat`, `relay.enabled` | The replay ring per account, the SSE heartbeat, and whether this instance follows the platform feed |
 | `console.platform.fake.*` | Demo only: the embedded platform's port, step delay and seed |
 | `console.kafka.*` | With the `kafka` profile: bootstrap servers, group id, topics |
@@ -113,7 +119,12 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/r/{type}:counts` | How many resources the list's filters match: `total`, `byState` for the state chips, `drift`, `cappedAt` |
 | `GET /console/v1/search`, `GET /console/v1/suggest` | Global search with highlights and type-ahead, over the types the person may list |
 | `GET, PATCH /console/v1/r/{type}/{wfrn}`, `POST …:{verb}`, `POST …:{verb}:preview` | One resource with `can`, `ETag` and `If-None-Match`; an update (`If-Match`); a verb of the catalog; its preview |
-| `GET …/{wfrn}/activity`, `GET …/drift`, `GET …/lineage`, `PUT …/tags` | The resource's log, its open finding, what it was built from and what depends on it, its tags |
+| `GET …/{wfrn}/activity`, `GET …/lineage`, `PUT …/tags` | The resource's log, what it was built from and what depends on it, its tags |
+| `GET …/{wfrn}/drift`, `GET …/{wfrn}/metrics`, `GET …/{wfrn}/alarms` | The resource's Drift and Monitoring tabs: its findings, its metric series, its alarms |
+| `GET /console/v1/findings`, `GET …/summary`, `GET …/stats`, `GET …/{findingId}`, `POST …:revert`, `POST …:accept`, `POST …:ignore` | Drift findings with `can`, their counts and the executive numbers; a revert runs the type's update workflow for the person |
+| `POST /console/v1/discover`, `GET …/{runId}`, `GET /console/v1/unmanaged`, `POST …:import`, `POST …:assign` | The shadow-infrastructure finder: a scan, what no account manages (with owner guesses and monthly costs), taking an object under management or handing it to another account |
+| `GET /console/v1/alarms`, `PUT, DELETE …/{alarmId}` | The account's alarms, created and changed under an id the web app picks |
+| `GET /console/v1/recommendations`, `GET …/summary`, `GET …/{recommendationId}`, `POST …:apply`, `POST …:dismiss` | Rightsizing: idle and oversized resources; a resize, or a confirmed delete after a fresh sign-in |
 | `GET, POST /console/v1/resource-groups`, `GET, PATCH, DELETE …/{groupId}`, `GET …/{groupId}/resources` | Resource groups: tag queries per account and region (unique names, `ETag` and `If-Match`, `Idempotency-Key` on create) and the resources each one matches |
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel` | The account's jobs, with `can` |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
@@ -123,7 +134,7 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
 | `POST /internal/v1/token` | A service token for another console service (client credentials with a JWT client assertion); in-cluster only |
-| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*` | Demo profile only |
+| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*`, `/demo-drift/*` | Demo profile only |
 
 ## Descriptors (P-06)
 
@@ -210,6 +221,34 @@ service's records directly: the indexer's query syntax (free words and quoted ph
 scores 10, a prefix 6, a contained word 4, the wfrn 2, a tag or attribute 1), HTML-escaped
 highlights, every sort the console offers, and exact counts.
 
+## Drift, monitoring and rightsizing (WP 5.2, 5.3, 9.21, 9.22, the BFF's side)
+
+The drift service finds and remembers; the BFF decides who sees and does what, and acts for the
+person. Every call carries an internal token for the person in the session's account and region
+(the drift numbers may also be read as the console-internal principal, which the executive home
+does).
+
+- **Lists** (findings, unmanaged objects, alarms, recommendations) ask the policies once per page
+  and leave out the rows of types the person may not list, and of other accounts and regions;
+  each row's `can` says what the person may do with it (`revert`, `accept`, `ignore`;
+  `import`, `assign`; `apply`, `dismiss`).
+- **Writes** need `<service>:update` on the wfrn (a decision on a finding, an alarm, a resize, a
+  dismissal), `<service>:delete` with `confirm: true` and a fresh sign-in (a delete
+  recommendation), `<service>:create` on the type's pattern (an import, an assignment) or
+  `<service>:observe` (a discovery, a resource's metrics). A revert and an apply carry the
+  person's `X-On-Behalf-Of` assertion to the drift service, which relays it onto the platform
+  job; every write forwards `Idempotency-Key` and sends `X-Console-Request-Id`.
+- **Refusals** of the drift service pass on: its 409 codes (`finding.reverting`,
+  `recommendation.closed`...) as the BFF's coded 409, its 429 with `Retry-After`, its 502 with
+  the platform's correlation id.
+
+In the demo profile the drift service is a stand-in under `/demo-drift`: findings on the demo's
+virtual machines and the orders database, two virtual machines no account manages, made-up
+metrics with alarms over them, and two recommendations (an idle VM to delete, an oversized one to
+resize). It keeps the demo state service in step (a finding flags its resource; an import mints
+one) and verifies the BFF's assertions as the platform would. The details are in
+`contracts/additions.md` under Drift.
+
 ## Service tokens (hub decision 23)
 
 The BFF is the only issuer of internal JWTs, so every console service keeps verifying against
@@ -249,19 +288,23 @@ The assertion proves who asks, in one of two ways:
 
 Only asymmetric algorithms are accepted (ES256, ES384, RS256, PS256). A new client is a new entry
 under `console.trust.clients` (in the chart, `config.serviceTokens.clients`) with the audiences it
-needs. `/internal` is never routed by the ingress. The demos keep their dev headers.
+needs. The search indexer and the cost service may ask for the state and identity services; the
+drift service for those and the cost service too (`console-cost-service`, whose
+`POST /v1/cost:estimate` prices what it finds). `/internal` is never routed by the ingress. The
+demos keep their dev headers.
 
 ## Layout
 
 One slice per concern under `com.iaf.console.bff`: `session`, `trust`, `access`, `types`,
-`resources`, `jobs`, `live`, `iam`, `preferences`, `platform`, `identity`, `demo`. Each slice is `domain` (no Spring),
+`resources`, `resourcegroups`, `tags`, `search`, `drift`, `jobs`, `live`, `iam`, `preferences`,
+`platform`, `identity`, `demo`. Each slice is `domain` (no Spring),
 `ports/outbound`, `application`, `adapters/{inbound,outbound}`; `ArchitectureTest` holds the
 service to the kit's rules and adds one of its own: only `..demo..` packages may depend on
 `platform-fake`.
 
 ## Tests
 
-`./gradlew test` runs 108 tests in about two minutes: unit tests of the domain and one shared demo
+`./gradlew test` runs 169 tests in about two minutes: unit tests of the domain and one shared demo
 application on port 18181 for the endpoint tests, which sign in through the demo identity
 provider like a browser would. The MongoDB stores are tested when `CONSOLE_TEST_MONGO_URI` names a
 database (CI starts one).
