@@ -29,6 +29,7 @@ import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.application.SearchConfiguration;
 import com.iaf.console.bff.search.application.SearchProperties;
 import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.bff.search.domain.SearchQuery;
@@ -129,6 +130,11 @@ public class HttpSearchPort implements SearchPort {
         }
         log.debug("counts of {} accounts as the console-internal principal, for {} in {}", accountIds.size(), scope.principal(), scope.accountId());
         return get(serviceBearer(), b -> counts(b, accountIds, query), node -> node);
+    }
+
+    @Override
+    public Mono<IndexStatus> getIndexStatus(AccountScope scope, StateCaller caller) {
+        return get(scope, caller, b -> b.path("/v1/index/status").build(), node -> read(node, IndexStatus.class));
     }
 
     // ---- plumbing

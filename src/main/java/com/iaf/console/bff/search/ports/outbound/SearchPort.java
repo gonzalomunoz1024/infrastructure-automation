@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchHit;
 import com.iaf.console.bff.search.domain.SearchQuery;
@@ -38,4 +39,7 @@ public interface SearchPort {
      * session the console asks for, which no token names and the call is logged with.
      */
     Mono<JsonNode> countAcross(AccountScope scope, List<String> accountIds, CountsQuery query);
+
+    /** How far the index is behind the events ({@code /v1/index/status}), asked as the person in their account. */
+    Mono<IndexStatus> getIndexStatus(AccountScope scope, StateCaller caller);
 }

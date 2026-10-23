@@ -10,6 +10,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -26,8 +27,10 @@ import org.springframework.web.util.UriComponentsBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.application.SearchProperties;
 import com.iaf.console.bff.search.domain.CountsQuery;
+import com.iaf.console.bff.search.domain.IndexStatus;
 import com.iaf.console.bff.trust.application.Trust;
 import com.iaf.console.bff.trust.application.TrustProperties;
 import com.iaf.console.bff.trust.ports.outbound.SigningKeyPort;
@@ -46,6 +49,7 @@ class HttpSearchPortTest {
     private static final String COMPUTE = "123456789012";
     private static final String DATA = "210987654321";
     private static final AccountScope GONZALO = AccountScope.of(COMPUTE, "global", "user_gonzalo");
+    private static final StateCaller AS_GONZALO = new StateCaller("user_gonzalo", List.of("owners"), List.of("account-admin"));
 
     private final List<ClientRequest> requests = new ArrayList<>();
     private HttpStatus status = HttpStatus.OK;
@@ -55,7 +59,7 @@ class HttpSearchPortTest {
         requests.add(request);
         return Mono.just(ClientResponse.create(status).header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE).body(answer).build());
     }), () -> "http://indexer.test", trust(), new SearchProperties("http://indexer.test", "console-search-indexer", Duration.ofSeconds(5)),
-            new ObjectMapper());
+            new ObjectMapper().findAndRegisterModules());
 
     @Test
     void countsAcrossAccountsAreAskedAsTheConsoleInternalPrincipal() throws Exception {
@@ -97,6 +101,23 @@ class HttpSearchPortTest {
         answer = "{\"error\":\"the query cannot be read\",\"problems\":[{\"code\":\"query.created\",\"field\":\"/q\",\"message\":\"a time alone needs a comparison\"}]}";
         InvalidInputException refused = assertThrows(InvalidInputException.class, () -> port.countAcross(GONZALO, List.of(COMPUTE), all).block());
         assertEquals("query.created", refused.problems().get(0).code());
+    }
+
+    @Test
+    void theIndexStatusIsAskedAsThePersonInTheirAccount() throws Exception {
+        answer = "{\"documents\":12,\"lagSeconds\":2.5,\"lastEventAt\":\"2026-10-23T11:59:00Z\",\"rebuilding\":false,\"sources\":[]}";
+        IndexStatus read = port.getIndexStatus(GONZALO, AS_GONZALO).block();
+        assertEquals(Instant.parse("2026-10-23T11:59:00Z"), read.lastEventAt());
+        assertEquals(12, read.documents());
+        ClientRequest request = requests.get(0);
+        assertEquals("/v1/index/status", request.url().getPath());
+        assertNull(request.url().getQuery(), "the person's token names the account: " + request.url());
+        JWTClaimsSet claims = SignedJWT.parse(request.headers().getFirst(HttpHeaders.AUTHORIZATION).substring("Bearer ".length())).getJWTClaimsSet();
+        assertEquals(COMPUTE, claims.getStringClaim("acct"));
+        assertEquals("user_gonzalo", claims.getSubject());
+
+        answer = "{\"documents\":0,\"lagSeconds\":0,\"lastEventAt\":null}";
+        assertNull(port.getIndexStatus(GONZALO, AS_GONZALO).block().lastEventAt(), "null before the first event");
     }
 
     private static String decoded(String value) {

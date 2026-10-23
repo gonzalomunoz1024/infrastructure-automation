@@ -33,10 +33,11 @@ import reactor.core.publisher.Mono;
 
 /**
  * The search indexer's contract, served in process for the demo under {@code /demo-search}:
- * {@code /v1/search}, {@code /v1/suggest} and {@code /v1/counts}. The caller is the BFF's
- * internal JWT, read as the real indexer reads it: a user searches the token's account (another
- * account named is a 404), the console itself names one with {@code accountId}, or, for the
- * counts, up to 200 with {@code accountId} repeated.
+ * {@code /v1/search}, {@code /v1/suggest}, {@code /v1/counts} and {@code /v1/index/status}. The
+ * caller is the BFF's internal JWT, read as the real indexer reads it: a user searches the
+ * token's account (another account named is a 404), the console itself names one with
+ * {@code accountId}, or, for the counts, up to 200 with {@code accountId} repeated, and sees the
+ * whole index's status when it names none.
  */
 @Configuration(proxyBeanMethods = false)
 @Profile("demo")
@@ -66,7 +67,22 @@ public class DemoSearchRoutes {
                     Integer limit = integer(r, "limit");
                     return Map.of("items", index.suggest(account, param(r, "region"), param(r, "q"), param(r, "type"), limit == null ? 8 : limit));
                 }))
-                .andRoute(GET(PREFIX + "/v1/counts"), r -> answerAccounts(r, accounts -> index.counts(accounts, param(r, "q"), filters(r), param(r, "groupBy"))));
+                .andRoute(GET(PREFIX + "/v1/counts"), r -> answerAccounts(r, accounts -> index.counts(accounts, param(r, "q"), filters(r), param(r, "groupBy"))))
+                .andRoute(GET(PREFIX + "/v1/index/status"), this::status);
+    }
+
+    /** The index's status: a user's own account's documents (another account named is a 404), the internal principal's account or the whole index. */
+    private Mono<ServerResponse> status(ServerRequest request) {
+        Optional<DemoCaller> caller = tokens.verify(request.headers().firstHeader(HttpHeaders.AUTHORIZATION));
+        if (caller.isEmpty()) {
+            return json(HttpStatus.UNAUTHORIZED, Map.of("error", "invalid or missing token"));
+        }
+        DemoCaller c = caller.get();
+        String named = param(request, "accountId");
+        if (!c.internal() && named != null && !named.equals(c.accountId())) {
+            return json(HttpStatus.NOT_FOUND, Map.of("error", "account " + named + " not found"));
+        }
+        return json(HttpStatus.OK, index.status(c.internal() ? named : c.accountId()));
     }
 
     /** A call over accounts: the token's own for a user (another one named is a 404), the 1 to 200 named for the console-internal principal. */
