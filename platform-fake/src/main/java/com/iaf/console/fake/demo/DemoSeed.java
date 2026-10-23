@@ -228,18 +228,14 @@ public final class DemoSeed {
                     if (!family.contains(approval.jobId())) {
                         continue;
                     }
-                    // an approval is listed as soon as its step asks for it; the job pauses a moment later
-                    boolean paused = fake.jobs().get(approval.jobId()).map(j -> j.status() == JobStatus.WAITING_APPROVAL).orElse(false);
-                    if (!paused) {
-                        continue;
-                    }
+                    // the job pauses before its approval is listed, so a listed approval can be decided at once
                     try {
                         fake.jobs().decideApproval(approval, true, approver(approval.group()), "approved for the demo");
                     } catch (ApiException e) {
                         if (e.status() != 409) {
                             throw e;
                         }
-                        // the job moved on between the check and the decision; the next pass sees it
+                        // decided on an earlier pass and the job has not recorded it yet; the next pass sees it
                     }
                 }
             }

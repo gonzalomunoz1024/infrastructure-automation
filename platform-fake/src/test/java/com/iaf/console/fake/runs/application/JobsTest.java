@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -22,6 +23,7 @@ import com.iaf.console.fake.identity.domain.Delegation;
 import com.iaf.console.fake.identity.domain.DevUsers;
 import com.iaf.console.fake.identity.domain.RequestContext;
 import com.iaf.console.fake.identity.domain.Scopes;
+import com.iaf.console.fake.quotas.application.Quotas;
 import com.iaf.console.fake.runs.domain.ApprovalRecord;
 import com.iaf.console.fake.runs.domain.Job;
 import com.iaf.console.fake.runs.domain.JobEventRecord;
@@ -186,6 +188,50 @@ class JobsTest {
             }
             assertThat(events(restart)).contains("job.attention", "job.attention-resolved");
         }
+    }
+
+    @Test
+    void aDecisionTheMomentAPauseIsSeenIsNeverRefused() {
+        Job vmJob = start(console, "create-vm", vmInput("web-06", "small", "dev"));
+        await(vmJob, Job::finished);
+        String vmId = vmJob.output().path("vmId").asText();
+        Caller ops = DevUsers.byName("gonzalo");
+        String bucket = Quotas.jobKey(ops);
+        fake.quotas().put(bucket, Json.object().put("limitPerMinute", 600_000).put("burst", 1_000));
+        try {
+            race(ops, vmId);
+        } finally {
+            fake.quotas().put(bucket, Json.object().put("limitPerMinute", Quotas.DEFAULT_LIMIT).put("burst", Quotas.DEFAULT_BURST));
+        }
+    }
+
+    private static void race(Caller ops, String vmId) {
+        for (int i = 0; i < 200; i++) {
+            fake.world().mutate(Json.read("{\"provider\":\"vsphere\",\"action\":\"vm.waitForPowerState\",\"match\":{\"id\":\"" + vmId
+                    + "\"},\"fail\":{\"class\":\"timeout\",\"message\":\"slow\",\"retryable\":true,\"times\":1}}"));
+            Job restart = start(ops, "vm-restart", Json.object().put("vmId", vmId).put("reason", "race " + i));
+            // decide as soon as the approval is listed, the way the demo seed and a quick approver do
+            ApprovalRecord approval = spinUntil(restart, () -> jobs.approvals("pending", ops).stream().filter(a -> a.jobId().equals(restart.id()))
+                    .findFirst().orElse(null));
+            jobs.decideApproval(approval, true, DevUsers.byName("mia"), null);
+            spinUntil(restart, () -> restart.status() == JobStatus.NEEDS_ATTENTION ? restart : null);
+            jobs.retry(restart, Json.object(), ops, RequestContext.NONE);
+            await(restart, Job::finished);
+            assertThat(restart.status()).as("run %d", i).isEqualTo(JobStatus.SUCCEEDED);
+        }
+    }
+
+    /** Polls without sleeping, so a decision lands as close as it can to the moment the pause becomes visible. */
+    private static <T> T spinUntil(Job job, Supplier<T> seen) {
+        Instant deadline = Instant.now().plus(TIMEOUT);
+        T value;
+        while ((value = seen.get()) == null) {
+            if (Instant.now().isAfter(deadline) || job.finished()) {
+                throw new AssertionError("job " + job.id() + " stayed " + job.status().id());
+            }
+            Thread.onSpinWait();
+        }
+        return value;
     }
 
     @Test

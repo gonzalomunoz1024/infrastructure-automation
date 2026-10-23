@@ -264,7 +264,10 @@ or the push's range, else the commits since `origin/main`). `publish` runs on a 
   workflows' jobs and the jobs they may approve; details of a job that is not theirs are masked.
 - **Jobs.** Every step takes `step-delay` (250 ms by default, zero for the demo seed, 20 ms in
   the contract test). A step failure outside a `try`, a `catch` or a compensation pauses the job
-  for attention (retry, edit the input, skip, abort); `raise` fails the job at once. `abort` runs
+  for attention (retry, edit the input, skip, abort); `raise` fails the job at once. A paused job
+  takes decisions before anything shows the pause: once an approval is listed, the status reads
+  `waiting-approval` or `needs-attention`, or the event is out, a decision never meets
+  `job.notPaused` (a second decision on the same pause still does). `abort` runs
   the compensations and the workflow `catch` and ends `rolled-back` or `failed`; `cancel` stops the
   running step, emits `job.cancelled` and runs nothing else. A rerun or a resume keeps the account,
   region and wfrn of the source job and takes the new request's console request id and labels.

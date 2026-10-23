@@ -829,10 +829,6 @@ final class Interpreter {
         if (body.path("approval").path("escalation").path("to").isTextual()) {
             approval.escalate(body.path("approval").path("escalation").path("to").asText());
         }
-        job.addApproval(approval);
-        jobs.index(approval);
-        record.waiting();
-        job.status(JobStatus.WAITING_APPROVAL, clock.nanos());
         ObjectNode requested = Json.object();
         requested.put("jobId", job.id());
         requested.put("approvalId", approval.id());
@@ -844,16 +840,21 @@ final class Interpreter {
         if (job.preview() != null && !job.preview().isNull()) {
             requested.set("preview", job.preview());
         }
-        jobs.emit(job, "job.approval-requested", requested);
         ObjectNode evidence = Json.object();
         evidence.put("approvalId", approval.id());
         evidence.put("group", group);
         evidence.put("message", message);
         evidence.put("status", "requested");
-        jobs.audit().append(job.id(), "approval", job.actor(), evidence);
         Job.Decision decision;
         try {
-            decision = await(run);
+            decision = pauseFor(run, () -> {
+                job.addApproval(approval);
+                jobs.index(approval);
+                record.waiting();
+                job.status(JobStatus.WAITING_APPROVAL, clock.nanos());
+                jobs.emit(job, "job.approval-requested", requested);
+                jobs.audit().append(job.id(), "approval", job.actor(), evidence);
+            });
         } catch (Cancelled cancelled) {
             approval.decide("expired", null, clock.now(), "the job was cancelled");
             throw cancelled;
@@ -891,12 +892,13 @@ final class Interpreter {
     private Job.Decision attend(Run run, String id, StepRecord record, StepFailure failure) {
         Job job = run.job;
         AttentionRecord attention = AttentionRecord.of(id, failure.error(), clock.now());
-        job.attention(attention);
-        job.status(JobStatus.NEEDS_ATTENTION, clock.nanos());
         ObjectNode data = attention.document();
         data.put("jobId", job.id());
-        jobs.emit(job, "job.attention", data);
-        Job.Decision decision = await(run);
+        Job.Decision decision = pauseFor(run, () -> {
+            job.attention(attention);
+            job.status(JobStatus.NEEDS_ATTENTION, clock.nanos());
+            jobs.emit(job, "job.attention", data);
+        });
         job.attention(null);
         job.status(JobStatus.RUNNING, clock.nanos());
         ObjectNode resolved = Json.object();
@@ -915,10 +917,15 @@ final class Interpreter {
         return decision;
     }
 
-    /** Blocks until a person decides; a cancel, from the API or an interrupt, ends the wait. */
-    private Job.Decision await(Run run) {
+    /**
+     * Pauses the job, then makes the pause visible, then blocks until a person decides; a cancel, from the API or an
+     * interrupt, ends the wait. The job takes decisions before {@code announce} indexes the approval, sets the status or
+     * emits the event, so a decision made the moment the pause is seen never meets job.notPaused.
+     */
+    private Job.Decision pauseFor(Run run, Runnable announce) {
         CompletableFuture<Job.Decision> pending = run.job.pause();
         try {
+            announce.run();
             if (run.job.cancelRequested()) {
                 throw new Cancelled();
             }
