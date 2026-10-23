@@ -15,6 +15,13 @@ the branch root, it carries its own CI, and it holds no platform files. What eve
 repository pins by commit in `contracts.lock`, and the shared code comes from `console-libs` as
 `com.iaf.console:*`.
 
+## Unfinished (merged in as work in progress)
+
+- **The hourly scan at 10M resources (load test, from `console-drift-service--scan-load`)**: each
+  type's list is now walked once across all accounts, and discover walks run on the cold tier.
+  At 1M resources it measured 4.9 platform calls/s with nothing past its interval. The 10M run
+  has not been done.
+
 ## What it does
 
 - **Keeps a watch list** of every live resource the state service knows (the inventory sync, plus
