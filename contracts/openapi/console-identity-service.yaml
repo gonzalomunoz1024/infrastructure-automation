@@ -1350,7 +1350,7 @@ components:
       required: [accountId, platformServiceAccountId, source]
       properties:
         accountId: { $ref: '#/components/schemas/AccountId' }
-        platformServiceAccountId: { type: string, description: The platform service account (P-03, preset console) }
+        platformServiceAccountId: { type: string, description: "The platform service account (P-03, preset console)" }
         source: { type: string, enum: [local, vault], description: Where the token is }
         token: { type: string, description: 'The bearer token; with source local only' }
         vaultPath: { type: string, description: 'The Vault secret; with source vault only: console/accounts/{accountId}/platform-service-account' }
@@ -1574,7 +1574,7 @@ components:
             required: [action, resource]
             properties:
               action: { type: string, description: '`<service>:<verb>`' }
-              resource: { type: string, description: A wfrn, or a wfrn pattern }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern" }
               context:
                 type: object
                 additionalProperties: true
@@ -1631,7 +1631,7 @@ components:
       required: [action, reason]
       properties:
         action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
-        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        resource: { type: string, description: "The wfrn or pattern, as the denial named it" }
         role: { type: string, description: The managed role asked for; the denial's suggestedRole by default }
         reason: { type: string, maxLength: 2000 }
     AccessDecision:
@@ -1713,7 +1713,7 @@ components:
             required: [action, resource]
             properties:
               action: { type: string, description: '`<service>:<verb>`' }
-              resource: { type: string, description: A wfrn, or a wfrn pattern for list checks }
+              resource: { type: string, description: "A wfrn, or a wfrn pattern for list checks" }
               context:
                 type: object
                 additionalProperties: true

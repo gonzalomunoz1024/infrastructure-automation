@@ -406,7 +406,7 @@ components:
                   findingId: { type: string }
                   resolution: { $ref: '#/components/schemas/Resolution' }
                   by: { type: string }
-                  jobId: { type: string, description: The revert job, for a reverted finding }
+                  jobId: { type: string, description: "The revert job, for a reverted finding" }
     accountChanged:
       name: AccountChanged
       title: An account was created, changed or suspended
@@ -685,8 +685,8 @@ components:
               properties:
                 version: { type: integer, minimum: 1, description: "The resource's state version after this event" }
                 state: { $ref: '#/components/schemas/ResourceState', description: "The resource's state after this event" }
-                resourceType: { type: string, description: The type segment of the wfrn, repeated for consumers that filter by type }
-                jobId: { type: string, description: The platform job, when one is involved }
+                resourceType: { type: string, description: "The type segment of the wfrn, repeated for consumers that filter by type" }
+                jobId: { type: string, description: "The platform job, when one is involved" }
     FindingEvent:
       allOf:
         - $ref: '#/components/schemas/ConsoleEvent'
