@@ -39,3 +39,19 @@ springBoot {
 tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
     archiveFileName.set("console-state-service.jar")
 }
+
+// The state side of the load test (work package 6.2): src/load holds the seeder that fills MongoDB
+// with the synthetic estate through the service's own inventory; the Gatling simulation that reads
+// it lives with the search indexer's (console-search-indexer, src/gatling, StateSimulation).
+val load: SourceSet = sourceSets.create("load") {
+    compileClasspath += sourceSets.main.get().output + configurations.compileClasspath.get()
+    runtimeClasspath += output + compileClasspath + configurations.runtimeClasspath.get()
+}
+
+tasks.register<JavaExec>("seedEstate") {
+    description = "Fills MongoDB with the load test's estate (-Pload.mongo, -Pload.size, -Pload.accounts, -Pload.concurrency, -Pload.from)"
+    group = "console"
+    classpath = load.runtimeClasspath
+    mainClass.set("com.iaf.console.state.load.SeedStateEstate")
+    systemProperties(providers.gradlePropertiesPrefixedBy("load.").get())
+}
