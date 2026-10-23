@@ -125,6 +125,22 @@ public class HttpSearchPort implements SearchPort {
     }
 
     @Override
+    public Mono<JsonNode> countGroups(AccountScope scope, StateCaller caller, CountsQuery query) {
+        return get(scope, caller, b -> counts(b, List.of(), query), node -> node);
+    }
+
+    @Override
+    public Mono<JsonNode> interpret(AccountScope scope, StateCaller caller, String q, String type) {
+        return get(scope, caller, b -> {
+            Map<String, Object> vars = new HashMap<>();
+            b.path("/v1/search:interpret");
+            param(b, vars, "q", q);
+            param(b, vars, "type", type);
+            return b.build(vars);
+        }, node -> node);
+    }
+
+    @Override
     public Mono<JsonNode> countAcross(AccountScope scope, List<String> accountIds, CountsQuery query) {
         if (accountIds.isEmpty() || accountIds.size() > MAX_ACCOUNTS) {
             return Mono.error(new IllegalArgumentException("a counts call names 1 to " + MAX_ACCOUNTS + " accounts, not " + accountIds.size()));

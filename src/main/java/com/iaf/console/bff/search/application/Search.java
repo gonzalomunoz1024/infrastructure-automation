@@ -12,9 +12,11 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
+import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.platform.application.PlatformProperties;
 import com.iaf.console.bff.resources.domain.StateCaller;
 import com.iaf.console.bff.search.domain.CountsQuery;
@@ -157,6 +159,71 @@ public class Search {
     }
 
     /**
+     * Plain English read as the list's own filter: the indexer's {@code /v1/search:interpret} for
+     * the session's account, asked as the person, its answer passed on as it is. With
+     * {@code type} the reading stays in that list, which the person must be allowed to list
+     * ({@code <service>:list} on the type's pattern, refused as the list itself is, an unknown
+     * type a 404), and a reading that names a type the person may not list is refused the same
+     * way. A reading of no type counts every type, so when the person may not list them all its
+     * {@code total} is counted again over the ones they may. {@code q} is required and at most
+     * {@value #MAX_TEXT} characters; the indexer's own refusals (a longer text than it reads, a
+     * spent query budget) are passed back.
+     */
+    public Mono<JsonNode> interpret(Session session, String q, String type) {
+        return Mono.defer(() -> {
+            String text = text(q, MAX_TEXT, true);
+            String list = blankToNull(type);
+            Mono<Set<String>> allowed = list == null ? Mono.just(Set.of()) : listable(session, list);
+            return allowed.then(Mono.defer(() -> index.interpret(scope(session), caller(session), text, list)))
+                    .flatMap(reading -> seen(session, list, reading));
+        });
+    }
+
+    /** A reading as the person may see it: refused when it names a type they may not list, its total over the types they may when it names none. */
+    private Mono<JsonNode> seen(Session session, String list, JsonNode reading) {
+        String named = reading.path("type").isTextual() ? reading.path("type").asText() : null;
+        if (named != null && !named.isBlank()) {
+            return named.equals(list) ? Mono.just(reading) : listable(session, named).thenReturn(reading);
+        }
+        return catalogue(session).flatMap(catalogue -> {
+            if (catalogue.every()) {
+                return Mono.just(reading);
+            }
+            if (catalogue.allowed().isEmpty()) {
+                return Mono.just(withTotal(reading, 0));
+            }
+            JsonNode filter = reading.path("filter");
+            Map<String, String> tags = new LinkedHashMap<>();
+            filter.path("tags").properties().forEach(tag -> tags.put(tag.getKey(), tag.getValue().asText("")));
+            CountsQuery byType = new CountsQuery(textOf(filter, "q"), null, textOf(filter, "region"), textOf(filter, "state"), tags,
+                    filter.path("drift").isBoolean() ? filter.path("drift").asBoolean() : null, "type");
+            return index.countGroups(scope(session), caller(session), byType).map(counts -> {
+                long total = 0;
+                for (JsonNode group : counts.path("groups")) {
+                    if (catalogue.allowed().contains(group.path("key").asText())) {
+                        total += group.path("total").asLong();
+                    }
+                }
+                return withTotal(reading, total);
+            });
+        });
+    }
+
+    private static JsonNode withTotal(JsonNode reading, long total) {
+        if (!(reading instanceof ObjectNode object)) {
+            return reading;
+        }
+        ObjectNode copy = object.deepCopy();
+        copy.put("total", total);
+        return copy;
+    }
+
+    private static String textOf(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isTextual() && !value.asText().isBlank() ? value.asText() : null;
+    }
+
+    /**
      * Counts over accounts the caller has already decided the person may see counted (the
      * executive home's), asked as the console-internal principal with {@code accountId} repeated,
      * in calls of at most {@value SearchPort#MAX_ACCOUNTS} accounts whose answers are added up
@@ -285,19 +352,36 @@ public class Search {
             return types.byType(session, type).flatMap(t -> access.require(session, AccessCheck.action(t.service(), LIST_VERB), pattern(session, t))
                     .thenReturn(Set.of(t.type())));
         }
+        return catalogue(session).map(Listable::allowed);
+    }
+
+    /** The catalogue's types in the session's account and region, the ones the person may list there, and the first refusal. */
+    record Listable(Set<String> all, Set<String> allowed, Denial refused) {
+
+        boolean every() {
+            return allowed.containsAll(all);
+        }
+    }
+
+    private Mono<Listable> catalogue(Session session) {
         return types.list(session).flatMap(all -> {
             List<AccessCheck> checks = new ArrayList<>();
             for (ConsoleType t : all) {
                 checks.add(new AccessCheck(AccessCheck.action(t.service(), LIST_VERB), pattern(session, t)));
             }
             return access.decide(session, checks).map(decisions -> {
+                Set<String> every = new HashSet<>();
                 Set<String> allowed = new HashSet<>();
+                Denial refused = null;
                 for (int i = 0; i < all.size(); i++) {
+                    every.add(all.get(i).type());
                     if (decisions.get(i).allowed()) {
                         allowed.add(all.get(i).type());
+                    } else if (refused == null) {
+                        refused = decisions.get(i).denial();
                     }
                 }
-                return Set.copyOf(allowed);
+                return new Listable(Set.copyOf(every), Set.copyOf(allowed), refused);
             });
         });
     }

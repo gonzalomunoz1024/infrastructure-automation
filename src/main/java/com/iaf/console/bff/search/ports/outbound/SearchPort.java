@@ -34,6 +34,19 @@ public interface SearchPort {
     Mono<ResourceCounts> counts(AccountScope scope, StateCaller caller, SearchQuery query);
 
     /**
+     * A list's counts with every filter of the query, and its {@code groups} when it groups
+     * ({@code /v1/counts} as it answers), asked as the person in their account: the query's
+     * region only when it names one.
+     */
+    Mono<JsonNode> countGroups(AccountScope scope, StateCaller caller, CountsQuery query);
+
+    /**
+     * Plain English read as a list's filter ({@code /v1/search:interpret}), as the person in their
+     * account, on the list of {@code type} when it is given; the indexer's answer as it is.
+     */
+    Mono<JsonNode> interpret(AccountScope scope, StateCaller caller, String q, String type);
+
+    /**
      * The counts of 1 to {@value #MAX_ACCOUNTS} accounts added up ({@code /v1/counts} with
      * {@code accountId} repeated), as the console-internal principal; {@code scope} is the
      * session the console asks for, which no token names and the call is logged with.

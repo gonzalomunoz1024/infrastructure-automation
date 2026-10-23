@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import com.iaf.console.bff.search.application.Search;
 import com.iaf.console.bff.search.domain.ResourceCounts;
 import com.iaf.console.bff.search.domain.SearchPage;
@@ -19,9 +21,10 @@ import com.iaf.console.bff.session.application.CurrentSession;
 import reactor.core.publisher.Mono;
 
 /**
- * Global search ({@code /console/v1/search}), type-ahead ({@code /console/v1/suggest}) and a
- * list's counts ({@code /console/v1/r/{type}:counts}: the total, one count per state for the
- * filter chips, and how many have drifted), all through the search indexer.
+ * Global search ({@code /console/v1/search}), plain English read as a list's filter
+ * ({@code /console/v1/search:interpret}), type-ahead ({@code /console/v1/suggest}) and a list's
+ * counts ({@code /console/v1/r/{type}:counts}: the total, one count per state for the filter
+ * chips, and how many have drifted), all through the search indexer.
  */
 @RestController
 public class SearchController {
@@ -43,6 +46,14 @@ public class SearchController {
             @RequestParam(name = "after", required = false) String after,
             ServerWebExchange exchange) {
         return CurrentSession.required(exchange).flatMap(session -> search.search(session, q, type, limit, after));
+    }
+
+    /** The indexer's reading of plain English as the list's own filter, passed on as it is. */
+    @GetMapping(path = "/console/v1/search:interpret", produces = "application/json")
+    public Mono<JsonNode> interpret(@RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "type", required = false) String type,
+            ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> search.interpret(session, q, type));
     }
 
     @GetMapping(path = "/console/v1/suggest", produces = "application/json")
