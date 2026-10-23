@@ -88,7 +88,8 @@ describe('creating a resource through the BFF', () => {
     const done = body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))
     expect(done).toMatchObject({ jobId: accepted.jobId, status: 'succeeded' })
     expect(done.output).toMatchObject({ name: 'web-77' })
-    expect(done.can).toMatchObject({ cancel: false, rerun: true })
+    // nothing left to stop, nothing failed to retry
+    expect(done.can).toEqual([])
     expect(done.durationMs).toBe(RUN_MS)
     const events = body<{ items: { type: string }[] }>(dana.get('/api/v1/events?after=0&limit=500')).items
     expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(['job.started', 'job.finished', 'resource.registered']))
@@ -107,11 +108,22 @@ describe('creating a resource through the BFF', () => {
     expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`)).status).toBe('succeeded')
   })
 
-  it('fails a machine whose name asks for it, and shows the failure on the resource', () => {
+  it('pauses a create whose name asks to fail on its failed apply, until someone retries or aborts it', () => {
     const dana = bff('dana')
     const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'fail-01', image: 'image-demo01', size: 'small' } }))
     dana.tick(RUN_MS + 1)
-    expect(body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))).toMatchObject({ status: 'failed', failedStep: 'apply', errorClass: 'provider' })
+    const paused = body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))
+    expect(paused).toMatchObject({ status: 'needs-attention', failedStep: 'apply', errorClass: 'provider', attention: { step: 'apply', options: ['retry', 'abort'] } })
+    expect(paused.can).toEqual(['cancel', 'retry', 'abort'])
+    expect(paused.steps?.find((x) => x.id === 'apply')).toMatchObject({ status: 'failed', error: { class: 'provider' } })
+    // nothing ran past the step: the machine waits as it was
+    expect(body<ConsoleResourceDetail>(dana.get(`/console/v1/r/vm/${enc(accepted.wfrn)}`)).state).toBe('pending')
+    // the compensations undo what ran, and the machine is left failed for a retry
+    expect(dana.call('POST', `/console/v1/jobs/${accepted.jobId}:abort`).status).toBe(202)
+    const aborted = body<BffJobDetail>(dana.get(`/console/v1/jobs/${accepted.jobId}`))
+    expect(aborted).toMatchObject({ status: 'rolled-back', failedStep: 'apply', errorClass: 'provider' })
+    expect(aborted.steps?.map((x) => x.id)).toContain('compensate')
+    expect(aborted.can).toEqual(['retry'])
     expect(body<ConsoleResourceDetail>(dana.get(`/console/v1/r/vm/${enc(accepted.wfrn)}`)).state).toBe('failed')
   })
 
@@ -336,10 +348,12 @@ describe('reading resources, drift, lineage and jobs through the BFF', () => {
     expect(body<Page<BffJobSummary>>(dana.get('/console/v1/jobs?status=running')).items.every((j) => j.status === 'running')).toBe(true)
     expect(body<Page<BffJobSummary>>(dana.get('/console/v1/jobs?limit=5')).items).toHaveLength(5)
 
-    // another operator may not cancel it; the requester may
-    const mateo = bff('mateo')
-    mateo.server.data.jobs.unshift(...dana.server.data.jobs.filter((j) => j.id === accepted.jobId))
-    expect(mateo.call('POST', `/console/v1/jobs/${accepted.jobId}:cancel`).status).toBe(403)
+    // stopping a request asks jobs:cancel: a viewer may not
+    const mia = bff('mia')
+    mia.server.data.jobs.unshift(...dana.server.data.jobs.filter((j) => j.id === accepted.jobId))
+    const refused = mia.call('POST', `/console/v1/jobs/${accepted.jobId}:cancel`)
+    expect(refused.status).toBe(403)
+    expect(body<{ denied: Denial }>(refused).denied).toMatchObject({ action: 'jobs:cancel' })
     const cancelled = dana.call('POST', `/console/v1/jobs/${accepted.jobId}:cancel`)
     expect(cancelled.status).toBe(202)
     expect(cancelled.body).toEqual({ jobId: accepted.jobId, status: 'cancelled' })
@@ -354,7 +368,7 @@ describe('reading resources, drift, lineage and jobs through the BFF', () => {
     expect(server.handle({ method: 'POST', url: '/console/v1/r/vm', headers: {}, body: { input: {} } }).status).toBe(401)
     server.handle({ method: 'GET', url: '/auth/login?login_hint=dana', headers: {} })
     expect(server.handle({ method: 'POST', url: '/console/v1/r/vm', headers: {}, body: { input: {} } }).status).toBe(403)
-    expect(server.handle({ method: 'POST', url: '/console/v1/r/vm:batch', headers: { 'x-csrf-token': csrfTokenOf('dana') }, body: { verb: 'restart', items: [] } }).status).toBe(501)
+    expect(server.handle({ method: 'POST', url: '/console/v1/r/vm:batch', headers: { 'x-csrf-token': csrfTokenOf('dana') }, body: { verb: 'restart', items: [] } }).status).toBe(400)
   })
 })
 

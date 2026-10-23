@@ -7,20 +7,29 @@ import { FailureNote, useCommand } from '../../app/commands'
 import { ActionButton } from '../../app/Refusal'
 import { bff } from '../../lib/bff'
 import { codeSamplesFor, subjectFor } from '../../lib/code'
-import type { ConsoleAction, ConsoleType } from '../../lib/descriptors'
+import { singularOf, type ConsoleAction, type ConsoleType } from '../../lib/descriptors'
 import { explain } from '../../lib/plain'
 import { prefillFor } from '../../lib/prefill'
 import { useQuery } from '../../lib/queries'
 import { cleanInput, useSubmissionKey } from '../../lib/submission'
-import type { CommandAccepted, CommandInput } from '../../lib/types'
+import type { BlastRadius, CommandAccepted, CommandInput, ConsolePreview } from '../../lib/types'
+import { BlastRadiusCard, radiusLine, radiusOfRefusal } from './BlastRadius'
+import { HeldButton } from './HeldButton'
 
 /*
  * One workflow run on one resource, from the detail page's Actions (or a `?action=<verb>` link):
  * the workflow's input as a form (the resource itself filled in, fields the resource already
  * answers prefilled), a live preview of what it will touch and cost, the same request as code,
- * and for a destructive verb a confirmation that asks for the resource's name. A failure says
- * what went wrong in words, beside the fields it names.
+ * and for a destructive verb a confirmation that asks for the resource's name. A delete or a
+ * destructive verb shows what depends on the resource first (its blast radius), and a delete is
+ * held back while anything does. A failure says what went wrong in words, beside the fields it
+ * names.
  */
+
+/** The preview's policy holds a delete back because live resources depend on it. */
+export function heldBackByDependents(preview: Pick<ConsolePreview, 'policy'> | undefined): boolean {
+  return preview?.policy.decision === 'deny' && !!preview.policy.rules?.some((r) => r.id === 'dependents.exist' && r.result === 'deny')
+}
 
 export interface ActionDrawerProps {
   type: ConsoleType
@@ -72,8 +81,11 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
   const [value, setValue] = useState<SchemaValue>(() => ({ ...startValue(action.input, subject, attributes), ...withoutSubject(prefillFor(action.input, prefill), subject) }))
   const [problems, setProblems] = useState<Problem[]>([])
   const [confirming, setConfirming] = useState(false)
+  // what a delete refused at the last moment named: a dependent arrived after the preview
+  const [refusedRadius, setRefusedRadius] = useState<BlastRadius | undefined>(undefined)
   const keyFor = useSubmissionKey()
   const cmd = useCommand()
+  const noun = singularOf(type.title).toLowerCase()
 
   const input = useMemo(() => cleanInput(value), [value])
   const body: CommandInput = { input }
@@ -81,13 +93,28 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
   const debounced = useDebounce(JSON.stringify(input), 350)
   const preview = useQuery(['action-preview', type.name, wfrn, action.verb, debounced], () => bff.resources.preview(type.name, wfrn, action.verb, { input: JSON.parse(debounced) as Record<string, unknown> }), { enabled: complete })
   const decision = decide(type, action.verb)
-  const policy = complete ? preview.data?.policy.decision : undefined
+  const judged = complete ? preview.data : undefined
+  const policy = judged?.policy.decision
+  const radius = judged?.blastRadius
+  const heldBack = heldBackByDependents(judged)
+  const heldReason = `Held back: other resources depend on ${name}`
   const samples = codeSamplesFor({ kind: 'verb', type, action, wfrn, body: action.destructive ? { ...body, confirm: true } : body, context: { accountId: account.id, region: region.name } })
 
   const send = async (confirm: boolean) => {
     const payload: CommandInput = confirm ? { ...body, confirm: true } : body
     const key = keyFor(payload)
-    const accepted = await cmd.run(action.title, () => bff.resources.run(type.name, wfrn, action.verb, payload, key), {
+    setRefusedRadius(undefined)
+    const run = () =>
+      bff.resources.run(type.name, wfrn, action.verb, payload, key).catch((e: unknown) => {
+        // someone built something from it since the preview: show what, and judge the run again
+        const late = radiusOfRefusal(e)
+        if (late) {
+          setRefusedRadius(late)
+          void preview.refetch()
+        }
+        throw e
+      })
+    const accepted = await cmd.run(action.title, run, {
       quiet: true,
       invalidates: ['resources', 'jobs', `console-activity/${type.name}`],
       onProblems: setProblems,
@@ -96,6 +123,7 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
   }
 
   const submit = () => {
+    if (heldBack || policy === 'deny') return
     const found = validateAgainst(schema, value).filter((p) => !omit.includes(fieldRoot(p.field) ?? ''))
     setProblems(found)
     if (found.length) {
@@ -142,20 +170,54 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
             ) : preview.error ? (
               <FailureNote failure={explain(preview.error, 'Preview this run')} compact onRetry={() => void preview.refetch()} />
             ) : preview.data ? (
-              <PreviewCard preview={preview.data} compact title="What will happen" />
+              <>
+                {/* what would be left without what it was built from, before the steps and the cost */}
+                {radius && radius.total > 0 && !refusedRadius && (
+                  <div className="mb-4">
+                    <BlastRadiusCard radius={radius} noun={noun} name={name} verb={action.verb} compact />
+                  </div>
+                )}
+                <PreviewCard preview={preview.data} compact title="What will happen" />
+              </>
             ) : null}
-            {policy === 'deny' && <p className="mt-2 text-caption text-critical">Policy refuses this run as it stands, so it cannot be sent. Change the fields above, or ask the account’s admins.</p>}
+            {heldBack ? (
+              <p className="mt-2 text-caption text-critical" data-held-back="dependents">
+                Nothing can be deleted while other resources depend on it. Delete them or move them onto something else first, then delete {name}.
+              </p>
+            ) : (
+              policy === 'deny' && <p className="mt-2 text-caption text-critical">Policy refuses this run as it stands, so it cannot be sent. Change the fields above, or ask the account’s admins.</p>
+            )}
           </section>
 
           <CodeDisclosure samples={samples} ariaLabel={`${action.title} as code`} className="mt-6" />
 
-          <FailureNote failure={cmd.failure} shownFields={fieldNames(schema)} onDismiss={cmd.clear} className="mt-5" />
+          {refusedRadius && cmd.failure && (
+            <div className="mt-5">
+              <BlastRadiusCard radius={refusedRadius} noun={noun} name={name} verb={action.verb} compact />
+            </div>
+          )}
+          <FailureNote
+            failure={cmd.failure}
+            shownFields={fieldNames(schema)}
+            onDismiss={() => {
+              cmd.clear()
+              setRefusedRadius(undefined)
+            }}
+            className={refusedRadius && cmd.failure ? 'mt-3' : 'mt-5'}
+          />
         </OverlayBody>
         <OverlayFooter>
           <CancelButton />
-          <ActionButton decision={decision} what={action.title} verb={action.verb} variant={action.destructive ? 'danger' : 'primary'} icon={action.destructive ? 'trash' : 'play'} loading={cmd.busy} disabled={policy === 'deny'} onClick={submit}>
-            {action.title}
-          </ActionButton>
+          {heldBack && decision.allowed ? (
+            // held back, not refused: the reason rides in the button's name and its hint
+            <HeldButton reason={heldReason} variant="danger" icon="trash" verb={action.verb}>
+              {action.title}
+            </HeldButton>
+          ) : (
+            <ActionButton decision={decision} what={action.title} verb={action.verb} variant={action.destructive ? 'danger' : 'primary'} icon={action.destructive ? 'trash' : 'play'} loading={cmd.busy} disabled={policy === 'deny'} onClick={submit}>
+              {action.title}
+            </ActionButton>
+          )}
         </OverlayFooter>
       </Drawer>
       {confirming && (
@@ -170,6 +232,11 @@ export function ActionDrawer({ type, action, wfrn, name, attributes, prefill, on
             <>
               {action.workflow} runs on <span className="font-medium text-primary">{name}</span>
               {policy === 'needs-approval' ? ' once an approver says yes' : ''}. The console cannot undo it; its record and activity stay readable afterwards.
+              {radius && (
+                <span className="mt-1.5 block text-primary" data-testid="confirm-blast-radius">
+                  {radiusLine(radius)}
+                </span>
+              )}
             </>
           }
           onConfirm={() => send(true)}

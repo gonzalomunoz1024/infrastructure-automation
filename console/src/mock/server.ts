@@ -1,6 +1,6 @@
 import { serviceOf } from '../lib/descriptors'
 import type { Session } from '../lib/session'
-import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobStep, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
+import type { AccessKey, AccessRequestInput, BffConsoleAction, BffConsoleType, IamGroupInput, IamUser, JobDetail, JobSummary, Lineage, PlatformEvent, Resource } from '../lib/types'
 import { buildMockData, nextMockEvent, type MockData } from './data'
 import { liveRowOf, resourceRoutes, settleConsole, usedByTypeOf } from './commands'
 import { assistantRoutes } from './assistant'
@@ -9,6 +9,8 @@ import { explanationRoutes } from './explain'
 import { insightRoutes } from './insights'
 import { DirectoryError, PendingRequestError, accessKeyOf, accessKeysOf, accessRequestOf, accessRequestsOf, accountSummaryFor, addUser, authorize, createAccessKey, createAccessRequest, createGroup, decideAccessRequest, demoPeople, iamResource, isMember, isQuotaKey, membershipsOf, personOf, preferencesOf, putPreferences, quotaOf, quotaRequestOf, quotasOf, removeGroup, removeUser, requestQuotaIncrease, revokeAccessKey, rotateAccessKey, seedQuotaOverrides, updateGroup, updateUser, userOf, usersOf, withdrawQuotaRequest, type Decision } from './directory'
 import { consoleResourcesOf, countsOf, filterConsoleResources, searchConsoleResources, sortConsoleResources, suggestFrom, type ResourceContext } from './resources'
+import { jobRoutes, stepsOf } from './jobs'
+import { tagRoutes } from './tags'
 
 /*
  * The backends answered from the dataset, as a pure function of the request so the unit tests
@@ -154,38 +156,8 @@ function filterJobs(jobs: JobSummary[], params: URLSearchParams): JobSummary[] {
   })
 }
 
-/** The steps a job ran, drawn from its status: the platform-fake keeps only summaries. */
-export function stepsOf(job: JobSummary): JobStep[] {
-  const at = Date.parse(job.startedAt)
-  const step = (id: string, name: string, type: string, status: JobStep['status'], offset: number, extra: Partial<JobStep> = {}): JobStep => ({
-    id,
-    name,
-    type,
-    status,
-    attempt: 1,
-    startedAt: status === 'pending' ? undefined : new Date(at + offset).toISOString(),
-    durationMs: status === 'succeeded' ? 4_000 + offset / 10 : status === 'failed' ? 12_000 : undefined,
-    ...extra,
-  })
-  const failed = job.status === 'failed'
-  const running = job.status === 'running'
-  const waiting = job.status === 'waiting-approval'
-  const attention = job.status === 'needs-attention'
-  const failedStep = job.failedStep ?? 'apply'
-  const steps: JobStep[] = [step('validate', 'Validate the input', 'set', 'succeeded', 0, { input: { workflow: job.workflow, version: job.version } })]
-  if (waiting) steps.push(step('approve', 'Wait for an approval', 'approval', 'waiting', 5_000))
-  else steps.push(step('approve', 'Wait for an approval', 'approval', 'succeeded', 5_000))
-  if (job.kind === 'batch' && job.progress) steps.push(step('rollout', 'Roll out in waves', 'for', running ? 'running' : failed ? 'failed' : 'succeeded', 20_000, { items: job.progress.total }))
-  const applyStatus: JobStep['status'] = waiting ? 'pending' : failed ? 'failed' : running ? 'running' : attention ? 'waiting' : 'succeeded'
-  steps.push(
-    step(failedStep === 'apply' || !failed ? 'apply' : failedStep, failed && job.failedStep ? `Run ${job.failedStep}` : 'Apply the change', 'provider', applyStatus, 30_000, {
-      error: failed ? { class: job.errorClass ?? 'provider', message: `${job.failedStep ?? 'apply'} failed: ${job.errorClass ?? 'the provider refused'}`, retryable: job.errorClass !== 'not_found' } : undefined,
-      output: applyStatus === 'succeeded' ? { ok: true } : undefined,
-    }),
-  )
-  steps.push(step('register', 'Register the resource', 'register', applyStatus === 'succeeded' ? 'succeeded' : failed ? 'skipped' : 'pending', 60_000))
-  return steps
-}
+/** The steps a job ran, drawn by the jobs module (./jobs) for both the platform's and the BFF's job. */
+export { stepsOf }
 
 function bodyOf(req: MockRequest): Record<string, unknown> {
   const b = req.body
@@ -593,8 +565,17 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       return { status: 405, body: { error: `${method} is not allowed on the preferences` } }
     }
 
-    /* resources, previews, activity, drift, lineage, tags and jobs (phase 3) */
-    const answered = resourceRoutes(data, { session: s, body, headers: req.headers, now: now() }, path, params, method)
+    /* the tag policy, the Tag Editor and resource groups (phase 4) */
+    const routeCtx = { session: s, body, headers: req.headers, now: now() }
+    const tagged = tagRoutes(data, routeCtx, path, params, method)
+    if (tagged) return tagged
+
+    /* jobs: their steering, approvals and bulk runs (phase 4) */
+    const steered = jobRoutes(data, routeCtx, path, params, method)
+    if (steered) return steered
+
+    /* resources, previews, activity, drift, lineage and tags (phase 3) */
+    const answered = resourceRoutes(data, routeCtx, path, params, method)
     if (answered) return answered
     return notFound(`Path ${path}`)
   }
@@ -684,7 +665,7 @@ export function createMockServer(data: MockData = buildMockData(), sessions: Moc
       const job = data.jobs.find((j) => j.id === id)
       if (!job) return notFound('Job')
       const console = data.console?.jobs[id]
-      const detail: JobDetail = { ...job, steps: stepsOf(job), input: console?.input ?? { requestedBy: job.requester, channel: job.channel }, outputs: console?.output, error: job.status === 'failed' ? { class: job.errorClass, step: job.failedStep, message: `${job.failedStep ?? 'apply'} failed` } : undefined }
+      const detail: JobDetail = { ...job, steps: stepsOf(job, console), input: console?.input ?? { requestedBy: job.requester, channel: job.channel }, outputs: console?.output, error: job.status === 'failed' ? { class: job.errorClass, step: job.failedStep, message: `${job.failedStep ?? 'apply'} failed` } : undefined }
       return { status: 200, body: detail }
     }
 

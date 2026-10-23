@@ -445,6 +445,8 @@ export interface CommandInput {
   reason?: string
   /** up to 16 labels kept with the job, values up to 128 characters */
   labels?: Record<string, string>
+  /** a create's tags (phase 4): every required tag of the account's tag policy, named by the request itself */
+  tags?: Record<string, string>
 }
 
 /** What a create, update or verb answers: 202 with the job that carries it out. */
@@ -464,7 +466,7 @@ export interface PreviewStep {
   skipped?: true
 }
 
-/** The blast radius the BFF judged before a run (hub Preview). */
+/** What a run will do, touch and cost, and what policy says, judged by the BFF before it starts (hub Preview). */
 export interface ConsolePreview {
   workflow?: string
   version?: string
@@ -472,6 +474,8 @@ export interface ConsolePreview {
   affectedResources: ResourceRef[]
   cost?: { monthly: number; currency: string; detail: string }
   policy: { decision: 'allow' | 'deny' | 'needs-approval'; rules?: { id: string; result: string; message: string }[]; engine?: string }
+  /** a delete's or a destructive verb's: what depends on the resource (phase 4) */
+  blastRadius?: BlastRadius
 }
 
 /** One line of a resource's activity trail: a platform event, or a job that touched it. */
@@ -516,13 +520,138 @@ export interface BffJobSummary {
   failedStep?: string
 }
 
+/** What a person may do with a job (the BFF's `can`): stop it, or steer a step that stopped. */
+export type JobSteer = 'cancel' | 'retry' | 'skip' | 'abort'
+
+/** An approval a job waits on, or waited on, with whether this person may decide it. */
+export interface BffApproval {
+  approvalId: string
+  jobId?: string
+  workflow?: string
+  step?: string
+  group?: string
+  message?: string
+  requestedAt?: string
+  timeout?: string
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | string
+  decidedBy?: string
+  decidedAt?: string
+  comment?: string
+  wfrn?: string
+  canDecide?: boolean
+}
+
+/** A batch's rollout: cumulative percentages of the rows per wave, how many run at once, and when to stop. */
+export interface Rollout {
+  waves?: number[]
+  maxParallel?: number
+  stopIfFailedPercent?: number
+}
+
+/** One wave of a batch, as the BFF reports it. */
+export interface BatchWave {
+  index: number
+  /** the cumulative share of the rows released once this wave runs */
+  percent: number
+  size: number
+  status: 'pending' | 'waiting-approval' | 'running' | 'succeeded' | 'failed' | 'stopped' | string
+  startedAt?: string
+  endedAt?: string
+}
+
+/** One row of a batch: the resource it runs on and its own job once started. */
+export interface BatchRow {
+  index: number
+  wfrn?: string
+  jobId?: string
+  status: string
+  error?: string
+  wave: number
+}
+
+/** The batch part of a batch job (`GET /console/v1/jobs/{jobId}`, phase 4). */
+export interface BatchProgress {
+  rollout?: Rollout
+  waves: BatchWave[]
+  rows: BatchRow[]
+  /** why the batch stopped early: the failure threshold, a rejection, a cancel */
+  stoppedReason?: string
+}
+
 export interface BffJobDetail extends BffJobSummary {
   input?: Record<string, unknown>
   output?: Record<string, unknown>
   steps?: JobStep[]
-  approvals?: { approvalId?: string; group?: string; status: string; decidedBy?: string; decidedAt?: string }[]
+  approvals?: BffApproval[]
   preview?: ConsolePreview
   attention?: { step: string; options: string[]; since: string }
   children?: BffJobSummary[]
-  can?: { cancel?: boolean; retry?: boolean; skip?: boolean; abort?: boolean; rerun?: boolean }
+  /** what this person may do with it now; the BFF lists the verbs, an early mock answered an object */
+  can?: JobSteer[] | Partial<Record<JobSteer | 'rerun', boolean>>
+  batch?: BatchProgress
+}
+
+/** A retry's fix (`POST /console/v1/jobs/{jobId}:retry`): input merged over the job's own, and the step to run again from. */
+export interface RetryFix {
+  input?: Record<string, unknown>
+  fromStep?: string
+}
+
+/** The body of `POST /console/v1/r/{type}:batch` and its preview. */
+export interface BatchInput {
+  verb: string
+  /** 1 to 500 rows: the subject's wfrn for every verb but create, and the row's own input */
+  items: { wfrn?: string; input: Record<string, unknown>; tags?: Record<string, string> }[]
+  /** input every row shares, under its own */
+  defaults?: Record<string, unknown>
+  rollout?: Rollout
+  /** a destructive verb needs it */
+  confirm?: boolean
+  reason?: string
+  /** a create batch's tags, under each row's own */
+  tags?: Record<string, string>
+}
+
+export interface BatchAccepted {
+  jobId: string
+  rows: number
+  requestId: string
+  /** a create batch's minted names, one per row */
+  wfrns?: string[]
+}
+
+/** A resource that depends on another, as the blast radius names it. */
+export interface Dependent extends ResourceRef {
+  id?: string
+  /** how many hops from the resource: 1 depends on it directly */
+  depth?: number
+}
+
+/** What depends on a resource, within a depth, counted across every account (`GET .../blast-radius`). */
+export interface BlastRadius {
+  resource?: ResourceRef
+  total: number
+  direct: number
+  byAccount: { accountId: string; count: number; current?: boolean }[]
+  /** named in the session's account only, nearest first; other accounts are counted */
+  dependents: Dependent[]
+  edges: { from: string; to: string; via?: string }[]
+  depth: number
+  /** the walk stopped at 500 dependents */
+  truncated?: boolean
+}
+
+/** `POST /console/v1/r/{type}:batch:preview`: every row judged before anything runs, and what they reach together. */
+export interface BatchPreview {
+  verb: string
+  items: { index: number; wfrn?: string; name?: string; state?: string; dependents: number; named: Dependent[]; problems: { code: string; message: string; field?: string }[] }[]
+  affected: BlastRadius
+  policy: ConsolePreview['policy']
+}
+
+/** `POST /console/v1/jobs/{jobId}/approvals:decide`: what one decision decided for a request and its rows, and what it left. */
+export interface ApprovalsDecided {
+  decision: 'approve' | 'reject'
+  decided: string[]
+  left: { approvalId: string; jobId?: string; reason: string }[]
 }

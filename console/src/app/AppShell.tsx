@@ -6,12 +6,13 @@ import { useAccessRequestQueue } from './access'
 import { useConsole } from './console'
 import { Header } from './Header'
 import { RefusalProvider } from './Refusal'
-import { SectionDrawer, SectionSidebar, iamNav, serviceNav } from './ServiceSidebar'
+import { SectionDrawer, SectionSidebar, iamNav, serviceNav, toolsNav } from './ServiceSidebar'
 import { Breadcrumbs } from './Breadcrumbs'
 import { Footer } from './Footer'
 import { PlatformFeed } from './PlatformFeed'
 import { Search } from './Search'
 import { isCostRoute, isIamRoute, type PageProps, type Route, type RouteName } from './router'
+import { toolSectionOf } from './tools'
 import { costNav } from '../pages/cost/nav'
 import { CopilotPanel } from './copilot/CopilotPanel'
 import { useCopilot } from './copilot/context'
@@ -39,6 +40,10 @@ const IamRolePage = lazy(() => import('../pages/iam/RolesPage').then((m) => ({ d
 const IamAccessKeysPage = lazy(() => import('../pages/iam/AccessKeysPage'))
 const IamAccessRequestsPage = lazy(() => import('../pages/iam/AccessRequestsPage'))
 const IamAccessRequestPage = lazy(() => import('../pages/iam/AccessRequestsPage').then((m) => ({ default: m.IamAccessRequestPage })))
+const ResourceGroupsPage = lazy(() => import('../pages/groups/ResourceGroupsPage'))
+const ResourceGroupPage = lazy(() => import('../pages/groups/ResourceGroupsPage').then((m) => ({ default: m.ResourceGroupPage })))
+const TagEditorPage = lazy(() => import('../pages/tags/TagEditorPage'))
+const TagPolicyPage = lazy(() => import('../pages/tags/TagPolicyPage'))
 const SettingsPage = lazy(() => import('../pages/SettingsPage'))
 const InsightsPage = lazy(() => import('../pages/insights/InsightsPage'))
 const CostPage = lazy(() => import('../pages/cost/CostPage'))
@@ -72,6 +77,10 @@ const PAGES: Record<RouteName, ComponentType<PageProps>> = {
   'iam-keys': IamAccessKeysPage,
   'iam-requests': IamAccessRequestsPage,
   'iam-request': IamAccessRequestPage,
+  groups: ResourceGroupsPage,
+  group: ResourceGroupPage,
+  'tag-editor': TagEditorPage,
+  'tag-policy': TagPolicyPage,
   settings: SettingsPage,
   insights: InsightsPage,
   cost: CostPage,
@@ -96,7 +105,8 @@ export function AppShell({ route }: { route: Route }) {
   const service = route.params.service ? findService(services, route.params.service) : undefined
   const inIam = isIamRoute(route.name)
   const queue = useAccessRequestQueue({ enabled: inIam })
-  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, queue.toDecide.length) : isCostRoute(route.name) ? costNav(route, account.name) : null
+  const tools = toolSectionOf(route)
+  const nav = service ? serviceNav(service, route) : inIam ? iamNav(route, account.name, queue.toDecide.length) : isCostRoute(route.name) ? costNav(route, account.name) : tools ? toolsNav(tools, route) : null
 
   // the shell works without a platform: say so once, keep drawing
   useEffect(() => {

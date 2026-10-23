@@ -8,6 +8,7 @@ import { useRecent } from '../lib/recent'
 import { pathOfWfrn, useConsole } from './console'
 import { useRefusal } from './Refusal'
 import { createPath, navigate, pathFor, resourcePath, type Route } from './router'
+import { TOOLS, toolPath } from './tools'
 
 /*
  * The unified search, keyboard first (Cmd+K or Ctrl+K, or /): the Atlas command palette over the
@@ -82,6 +83,7 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
       { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'preferences appearance identity', run: () => navigate(pathFor('settings')) },
+      ...TOOLS.map((t) => ({ id: `page-${t.route}`, group: 'Pages', label: t.label, icon: t.icon, keywords: t.keywords, run: () => navigate(toolPath(t)) })),
       // phase 9
       { id: 'page-insights', group: 'Pages', label: 'Executive home', icon: 'pulse', keywords: 'insights dashboard lead time hours saved adoption', run: () => navigate(pathFor('insights')) },
       { id: 'page-cost', group: 'Pages', label: 'Cost and usage', icon: 'chart', keywords: 'cost explorer spend billing forecast', run: () => navigate(pathFor('cost')) },

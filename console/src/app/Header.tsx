@@ -6,6 +6,7 @@ import { UserMenuButton } from './UserMenuButton'
 import { useAccessRequestQueue } from './access'
 import { useConsole } from './console'
 import { Link, navigate, pathFor } from './router'
+import { TOOL_SECTIONS, toolPath, toolsIn } from './tools'
 import { formatAccountId } from '../lib/accounts'
 import { isApiError } from '../lib/api'
 import { bff, signOut, switchAccount, switchIdentity, switchRegion } from '../lib/bff'
@@ -130,6 +131,28 @@ function ServicesMenu() {
                 ))}
               </div>
             )}
+            <div className="mt-6 grid grid-cols-1 gap-x-8 gap-y-6 border-t border-stroke-light pt-5 sm:grid-cols-2 lg:grid-cols-4">
+              {TOOL_SECTIONS.map((section) => (
+                <section key={section.id} aria-labelledby={`services-tools-${section.id}`}>
+                  <h3 id={`services-tools-${section.id}`} className="flex items-center gap-2 text-sm font-semibold text-primary">
+                    <span className="flex size-7 items-center justify-center rounded-md bg-accent-tint text-accent">
+                      <Icon name={section.icon} size={15} />
+                    </span>
+                    {section.title}
+                  </h3>
+                  <ul className="mt-2 space-y-0.5">
+                    {toolsIn(section.id).map((t) => (
+                      <li key={t.route}>
+                        <Link to={toolPath(t)} onClick={close} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm text-secondary transition-colors hover:bg-surface-secondary hover:text-primary">
+                          <Icon name={t.icon} size={14} className="text-tertiary" />
+                          <span className="truncate">{t.label}</span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
           </PopoverPanel>
         </div>
       )}

@@ -9,10 +9,11 @@ import { emptyConsoleState, type MockConsoleState } from './commands'
 /*
  * The mock's dataset: the platform's captured samples (console/src/mock/samples, from the
  * platform-fake at c9529d5) plus what the planned platform changes add, so the shell shows both
- * paths. The vm type carries P-06 hints (service, console block, x-console keywords) and its
- * resources carry P-05 wfrns and accounts; every other type is served as captured, so the
- * defaults the descriptors compose are what you see for them. The identity directory (accounts,
- * people, groups, roles, policies, keys, access requests) is the BFF's side of the dataset.
+ * paths. The vm type carries P-06 hints (service, console block, x-console keywords), its
+ * resources carry P-05 wfrns and accounts, and the catalog gains P-15's `update-vm`; every other
+ * type is served as captured, so the defaults the descriptors compose are what you see for them.
+ * The identity directory (accounts, people, groups, roles, policies, keys, access requests) is the
+ * BFF's side of the dataset.
  */
 
 export interface MockData {
@@ -67,6 +68,39 @@ function withHints(types: ResourceType[]): ResourceType[] {
     if (props.environment) props.environment['x-console'] = { searchable: true }
     return vm
   })
+}
+
+/**
+ * The workflows the planned platform changes add to the samples (P-15): `update-vm`, the update
+ * convention's example (P-08), so Edit configuration has a workflow to run. Its sizes cover the
+ * ones the generated machines carry.
+ */
+function withPlannedWorkflows(catalog: CatalogEntry[]): CatalogEntry[] {
+  const updateVm: CatalogEntry = {
+    workflow: 'update-vm',
+    title: 'Update VM',
+    noun: 'vm',
+    verb: 'update',
+    persona: 'developer',
+    method: 'PATCH',
+    path: '/api/v1/vms/{vmId}',
+    previewPath: '/api/v1/vms/{vmId}:update:preview',
+    owner: 'team-compute',
+    version: '1.0.0',
+    description: 'Change a virtual machine’s CPU and memory, then record the new size.',
+    subject: 'vmId',
+    input: {
+      type: 'object',
+      required: ['vmId'],
+      properties: {
+        vmId: { type: 'string', title: 'VM', 'x-resource': { type: 'vm' } },
+        cpu: { type: 'integer', title: 'CPUs', enum: [2, 4, 8, 16], 'x-console': { mutable: true } },
+        memoryGb: { type: 'integer', title: 'Memory (GiB)', enum: [4, 8, 16, 32, 64], 'x-console': { mutable: true, format: 'gibibytes' } },
+        reason: { type: 'string', title: 'Reason', maxLength: 1000, 'x-console': { operational: true } },
+      },
+    },
+  }
+  return catalog.some((e) => e.workflow === updateVm.workflow) ? catalog : [...catalog, updateVm]
 }
 
 const GENERATED_VMS = 240
@@ -145,7 +179,7 @@ function backlog(resources: Resource[], jobs: JobSummary[]): PlatformEvent[] {
 export function buildMockData(): MockData {
   const directory = buildDirectory()
   const resourceTypes = withHints(resourcesTypesOf())
-  const catalog = catalogSample as unknown as CatalogEntry[]
+  const catalog = withPlannedWorkflows(catalogSample as unknown as CatalogEntry[])
   const resources = withContext([...(resourcesSample as unknown as Resource[]), ...generatedVms()])
   const jobs = [...(jobsSample as unknown as JobSummary[])].sort((a, b) => b.startedAt.localeCompare(a.startedAt))
   return {
