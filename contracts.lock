@@ -1,10 +1,10 @@
 # contracts.lock
 hub: https://github.com/gonzalomunoz1024/infrastructure-automation
 branch: console-root
-commit: 025e8c796e76688b9eeef417b99fc33736345b29
+commit: b40ccc9e650c9461570bacfbe71236f79d06b538
 files:
-  contracts/openapi/console-state-service.yaml: sha256:4d8e2355561bd17c51b4388b75a4748048b9a68ed55dc2c361f56afb06c768ff
-  contracts/asyncapi/console-events.yaml: sha256:4fe1a2a5a9e2ba5eac9a4606909246c60879b67c6392e056dfee1d01f5db3a18
+  contracts/openapi/console-state-service.yaml: sha256:9680cee521adc2560dbca0ef49a75cf69c89b80d94e1a5ca72c5fcb36761b758
+  contracts/asyncapi/console-events.yaml: sha256:f13310938670b17c99c863996f09725b61977b776444e6aaf666490e37e59fa3
   contracts/platform/openapi-target.yaml: sha256:9ab23b5a7d670845de881fe780c6db70106ea3d50a471ec200c856e8c696f25c
   contracts/platform/asyncapi-target.yaml: sha256:e2c1930036fdf23145a9d2ac63e264fb87956587de03507d21fcdde983465a23
   contracts/wfrn/fixtures.json: sha256:55115d10638a19f4beafe3c2560dae5b856239b63cb4665c986aad759181220d

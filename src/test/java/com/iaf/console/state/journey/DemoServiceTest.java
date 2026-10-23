@@ -58,10 +58,11 @@ public abstract class DemoServiceTest {
     }
 
     /** A client acting as another console service. */
-    /** A caller of an account whom the BFF marks as one of its admins. */
+    /** A caller of an account who holds its {@code account-admin} role (the token's {@code roles}; a group name would not do). */
     protected WebTestClient asAdmin(String accountId, String user) {
         return web.mutate().defaultHeader(ConsoleAuthWebFilter.ACCOUNT_HEADER, accountId).defaultHeader(ConsoleAuthWebFilter.USER_HEADER, user)
-                .defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, ConsolePrincipal.ACCOUNT_ADMIN).build();
+                .defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, "owners").defaultHeader(ConsoleAuthWebFilter.ROLES_HEADER, "operator," + ConsolePrincipal.ACCOUNT_ADMIN)
+                .build();
     }
 
     protected WebTestClient asService(String service) {

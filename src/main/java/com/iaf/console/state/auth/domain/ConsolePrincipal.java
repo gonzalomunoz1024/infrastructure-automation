@@ -7,11 +7,12 @@ import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.scope.AccountScope;
 
 /**
- * Who calls: the claims of the console's internal JWT. A console account's caller carries
+ * Who calls: the claims of the console's internal JWT, which the BFF signs: {@code sub}, {@code acct},
+ * {@code region}, {@code groups}, {@code roles} (the managed roles) and {@code svc}. A console account's caller carries
  * {@code acct}; the console's own services (the indexer, the drift service, the BFF acting on its
  * own) carry {@code svc} and no account, and are {@link #internal()}: they may name any account.
  */
-public record ConsolePrincipal(String subject, String accountId, String region, List<String> groups, String service) {
+public record ConsolePrincipal(String subject, String accountId, String region, List<String> groups, List<String> roles, String service) {
 
     /** The exchange attribute the authentication filter stores the principal under. */
     public static final String ATTRIBUTE = "com.iaf.console.state.principal";
@@ -19,9 +20,10 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
     public ConsolePrincipal {
         Objects.requireNonNull(subject, "subject");
         groups = groups == null ? List.of() : List.copyOf(groups);
+        roles = roles == null ? List.of() : List.copyOf(roles);
     }
 
-    /** The identity service's role of an account's admins; the BFF names it among a caller's {@code groups}. */
+    /** The managed role of an account's admins, as the token's {@code roles} claim names it (hub decision 21). */
     public static final String ACCOUNT_ADMIN = "account-admin";
 
     /** A principal that acts for no account: one of the console's own services. */
@@ -29,9 +31,13 @@ public record ConsolePrincipal(String subject, String accountId, String region, 
         return accountId == null;
     }
 
-    /** Whether {@code reveal=sensitive} is honored for this caller: the console's own services, and an account's admins. */
+    /**
+     * Whether {@code reveal=sensitive} is honored for this caller: an internal principal, or a person
+     * whose {@code roles} hold {@code account-admin}. A group name never decides, and a token without
+     * roles has none, so it is answered masked.
+     */
     public boolean mayReveal() {
-        return internal() || groups.contains(ACCOUNT_ADMIN);
+        return internal() || roles.contains(ACCOUNT_ADMIN);
     }
 
     /**

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.iaf.console.state.auth.adapters.web.ConsoleAuthWebFilter;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /** The HTTP contract: scope, encoded wfrns in paths, errors, idempotency keys, masking, internal routes. */
@@ -148,6 +149,9 @@ class ResourceApiTest extends DemoServiceTest {
         assertThat(events.get("items").get(0).get("data").get("input").get("secret").asText()).isEqualTo("***");
         JsonNode ignored = body(as(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
         assertThat(ignored.get("attributes").get("secret").asText()).isEqualTo("***");
+        JsonNode byGroupOnly = body(as(OTHER_ACCOUNT, "lee").mutate().defaultHeader(ConsoleAuthWebFilter.GROUPS_HEADER, "owners,account-admin").build()
+                .get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
+        assertThat(byGroupOnly.get("attributes").get("secret").asText()).isEqualTo("***");
         JsonNode revealed = body(asAdmin(OTHER_ACCOUNT, "lee").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());
         assertThat(revealed.get("attributes").get("secret").asText()).isEqualTo("hunter2");
         JsonNode toService = body(asService("console-bff").get().uri(resource(wfrn, "?reveal=sensitive")).exchange().expectStatus().isOk());

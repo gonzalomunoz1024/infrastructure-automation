@@ -50,7 +50,7 @@ scripts/demo.sh journey              # with the demo running: mint, read, tag, t
 The demo listens on `http://localhost:18082`, the embedded fake platform on `http://localhost:18090`,
 seeded with the two console accounts `123456789012` (compute) and `210987654321` (data). Dev headers
 stand in for the BFF's token: `X-Console-Account`, `X-Console-User`, or `X-Console-Service` for
-another console service (and `X-Console-Region`, `X-Console-Groups`). The journey test
+another console service (and `X-Console-Region`, `X-Console-Groups`, `X-Console-Roles`). The journey test
 (`ResourceJourneyTest`) drives a VM through its whole life against the same setup, including the
 platform job the BFF would start with the wfrn in its context.
 
@@ -103,7 +103,7 @@ Wfrns travel percent-encoded in paths (`/v1/wfrn/wfrn%3Awf%3Acompute%3Aglobal%3A
 | `GET /v1/resources` | The account's live resources, newest first; filters `type`, `state`, `name` (prefix), `tag.<name>`, `wfrn` (pattern), `updatedAfter`, `drift`; `sort` (`-updatedAt`, `updatedAt`, `-createdAt`, `createdAt`, `name`, `-name`); `limit` 1 to 200 (50), `after` the cursor of the last page |
 | `POST /v1/resources:mint` | 201, a `pending` resource with a fresh wfrn (`<type>-<ulid>`), before the platform knows of it |
 | `POST /v1/resources:import` | 201, an `active` resource the platform already had (`source` `backfill` or `discover`) |
-| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for the console's own services and a BFF call made for an account admin, ignored for anyone else; 410 with a `Tombstone` body after deletion |
+| `GET /v1/wfrn/{wfrn}` | The resource with `ETag: "<version>"` (304 on `If-None-Match`); `?asOf=<version>` an older version (404 for one it never had); `?reveal=sensitive` the sensitive fields in clear, for an internal principal (`svc` without `acct`) and a person whose `roles` claim holds `account-admin`, ignored for anyone else; 410 with a `Tombstone` body after deletion |
 | `GET /v1/wfrn/{wfrn}/events` | Its log in order, each entry the `state.resources` envelope (`id`, `key`, `type`, `at`, `context`, `data` with `version` and `state`), the same event under the same `id` as on the topic; `after` is a version, `limit` a page, `reveal` as on the resource |
 | `POST /v1/wfrn/{wfrn}:request-update` | `active` → `updating` with the requested `changes` |
 | `POST /v1/wfrn/{wfrn}:request-delete` | `active` or `failed` → `deleting` |
@@ -185,9 +185,10 @@ matches `password|passwd|secret|token|credential|private-key|api-key`. Such valu
 AES-256-GCM under a per-account data key (`account_keys`, wrapped by the master key with the account
 as associated data), serialized as `{"$enc": "<nonce+ciphertext>", "k": 1}`. The log, the
 projection and the idempotency store only ever hold sealed values; Kafka, the trail and every
-answer show `***`; `?reveal=sensitive` on the resource or its log decrypts for the console's own
-services and for an account's admins (the BFF names the identity service's `account-admin` role among
-the caller's `groups`), is ignored for anyone else, and is logged. Destroying the
+answer show `***`; `?reveal=sensitive` on the resource or its log decrypts for an internal principal
+and for a person whose `roles` claim (the managed roles the BFF signs into its token, hub decision 21)
+holds `account-admin`; a group name never decides, anyone else is answered masked, and every reveal is
+logged. Destroying the
 account's data key (`identity.changes` or `POST /internal/accounts/{id}:shred`) is the crypto-shred:
 every copy, in every store and backup, is unreadable from then on, and a later seal for the same
 account gets a new key.
@@ -238,12 +239,12 @@ application free of adapters, and every scoped read behind an `AccountScope`.
 | 3 | The feed is a cue, the registry the truth | `resource.registered` carries no attributes; reading the record on every registration keeps the two in step and costs one read per change, not per resource |
 | 4 | No-op commands write no event | Hourly observations of 10 million resources would otherwise be 10 million events an hour; the log stays proportional to change |
 | 5 | Sealing at the command boundary, masking by default | Secrets never reach the log or Kafka in clear; one `reveal` path to audit |
-| 6 | Tombstones for 90 days, configurable | The plan's and the contract's number (hub `025e8c7`); `console.state.tombstone-ttl` decides |
+| 6 | Tombstones for 90 days, configurable | The plan's and the contract's number (hub decision 20); `console.state.tombstone-ttl` decides |
 | 7 | Page limit 200, the kit's `CursorPaging.MAX_PAGE_SIZE` | Every console API pages 1 to 200 (default 50); `ResourceQuery.limitOf` follows the kit |
 | 8 | The log's entries are the `state.resources` envelopes | The contract's `ResourceEvent` is the P-01 envelope since hub `025e8c7`, as are `sort`, `asOf`, `reveal`, the `Idempotent-Replay` header and the `Resource` fields `changes`, `observedStatus`, `lastError`, `source`, `deletedAt`, `tombstoneUntil`; an event gets its `id` when it is decided, so the topic and the log name it the same |
-| 9 | One set of job events whatever the job (hub decision 20) | `ProvisioningStarted` keeps the state it finds; `ProvisioningSucceeded` ends a create or update in `active`; a delete job's success is recorded as `Deleted`, the tombstone; `ProvisioningFailed` leaves a create `failed` and returns an update or delete to `active`; a registration during a delete is no event |
+| 9 | One set of job events whatever the job (hub decision 20) | `ProvisioningStarted` keeps the state it finds; `ProvisioningSucceeded` ends a create or update in `active`; a delete job's success is recorded as `Deleted` alone, the tombstone, never as a `ProvisioningSucceeded` first; `ProvisioningFailed` leaves a create `failed` and returns an update or delete to `active`; a registration during a delete is no event |
 | 10 | A forbidden backfill does not fail an import | The console-internal service account holds `resources:backfill` (console-libs `f44213a`); a deployment whose token lacks it still takes what already carries a wfrn under management |
-| 11 | `reveal=sensitive` is honored for services and account admins only | The contract names the console-internal principal and a BFF call for an account admin; the BFF puts the identity service's `account-admin` role in `groups`, and anyone else is answered masked, not refused |
+| 11 | `reveal=sensitive` is honored for internal principals and account admins only | The token's `roles` claim decides (hub decision 21), never a group name; a token without roles has none; anyone else is answered masked, not refused |
 
 ## CI and release
 

@@ -44,7 +44,7 @@ class JwtVerifierTest {
 
     private static JWTClaimsSet.Builder claims() {
         return new JWTClaimsSet.Builder().issuer("console-bff").audience(List.of("console-state-service")).subject("dana")
-                .claim("acct", "123456789012").claim("region", "global").claim("groups", List.of("team-compute", "developer")).claim("svc", "console-bff")
+                .claim("acct", "123456789012").claim("region", "global").claim("groups", List.of("team-compute", "developer")).claim("roles", List.of("operator")).claim("svc", "console-bff")
                 .issueTime(Date.from(NOW)).expirationTime(Date.from(NOW.plusSeconds(60)));
     }
 
@@ -65,8 +65,21 @@ class JwtVerifierTest {
         assertThat(p.accountId()).isEqualTo("123456789012");
         assertThat(p.region()).isEqualTo("global");
         assertThat(p.groups()).containsExactly("team-compute", "developer");
+        assertThat(p.roles()).containsExactly("operator");
+        assertThat(p.mayReveal()).isFalse();
         assertThat(p.service()).isEqualTo("console-bff");
         assertThat(p.internal()).isFalse();
+    }
+
+    @Test
+    void onlyTheRolesClaimMakesAnAccountAdmin() {
+        ConsolePrincipal admin = verifier.verify(sign(key, "bff-1", claims().claim("roles", List.of("operator", "account-admin")).build())).block();
+        assertThat(admin.roles()).containsExactly("operator", "account-admin");
+        assertThat(admin.mayReveal()).isTrue();
+        ConsolePrincipal byGroupOnly = verifier.verify(sign(key, "bff-1", claims().claim("groups", List.of("owners", "account-admin")).claim("roles", null)
+                .build())).block();
+        assertThat(byGroupOnly.roles()).isEmpty();
+        assertThat(byGroupOnly.mayReveal()).isFalse();
     }
 
     @Test

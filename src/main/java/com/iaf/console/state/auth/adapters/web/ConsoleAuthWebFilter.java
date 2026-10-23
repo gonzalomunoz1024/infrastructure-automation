@@ -30,6 +30,7 @@ public final class ConsoleAuthWebFilter implements WebFilter, Ordered {
     public static final String SERVICE_HEADER = "X-Console-Service";
     public static final String REGION_HEADER = "X-Console-Region";
     public static final String GROUPS_HEADER = "X-Console-Groups";
+    public static final String ROLES_HEADER = "X-Console-Roles";
 
     private static final Logger log = LoggerFactory.getLogger(ConsoleAuthWebFilter.class);
 
@@ -69,14 +70,18 @@ public final class ConsoleAuthWebFilter implements WebFilter, Ordered {
             if (account != null || service != null) {
                 String user = headers.getFirst(USER_HEADER);
                 String region = headers.getFirst(REGION_HEADER);
-                List<String> groups = headers.getFirst(GROUPS_HEADER) == null ? List.of() : List.of(headers.getFirst(GROUPS_HEADER).split(","));
                 ConsolePrincipal principal = new ConsolePrincipal(user != null ? user : service != null ? service : "dev",
-                        account == null || account.isBlank() ? null : account, region != null ? region : defaultRegion, groups, service);
+                        account == null || account.isBlank() ? null : account, region != null ? region : defaultRegion, names(headers.getFirst(GROUPS_HEADER)),
+                        names(headers.getFirst(ROLES_HEADER)), service);
                 exchange.getAttributes().put(ConsolePrincipal.ATTRIBUTE, principal);
                 return chain.filter(exchange);
             }
         }
         return unauthorized(exchange, "unauthorized");
+    }
+
+    private static List<String> names(String header) {
+        return header == null || header.isBlank() ? List.of() : List.of(header.split(","));
     }
 
     private static Mono<Void> unauthorized(ServerWebExchange exchange, String error) {

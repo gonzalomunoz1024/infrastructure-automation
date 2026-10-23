@@ -30,7 +30,8 @@ import reactor.core.publisher.Mono;
  * and kept for a while (and fetched again once when a token names a key id the set does not
  * hold, for a rotation). The claims: {@code iss} the BFF, {@code aud} this service (or
  * {@code console}), {@code exp} in the future, {@code sub} who, {@code acct} the account (absent
- * on a service token), {@code region}, {@code groups} and {@code svc}.
+ * on a service token), {@code region}, {@code groups}, {@code roles} (the managed roles the person
+ * holds in the account, which decide admin-only things such as {@code reveal=sensitive}) and {@code svc}.
  */
 public final class JwtVerifier {
 
@@ -131,12 +132,16 @@ public final class JwtVerifier {
         String acct = claims.getStringClaim("acct");
         String region = claims.getStringClaim("region");
         String svc = claims.getStringClaim("svc");
-        List<String> groups = new ArrayList<>();
-        Object g = claims.getClaim("groups");
-        if (g instanceof List<?> list) {
-            list.forEach(x -> groups.add(String.valueOf(x)));
+        return new ConsolePrincipal(subject, acct == null || acct.isBlank() ? null : acct, region, strings(claims.getClaim("groups")),
+                strings(claims.getClaim("roles")), svc);
+    }
+
+    private static List<String> strings(Object claim) {
+        List<String> values = new ArrayList<>();
+        if (claim instanceof List<?> list) {
+            list.forEach(x -> values.add(String.valueOf(x)));
         }
-        return new ConsolePrincipal(subject, acct == null || acct.isBlank() ? null : acct, region, groups, svc);
+        return values;
     }
 
     private Mono<JWKSet> fetch() {
