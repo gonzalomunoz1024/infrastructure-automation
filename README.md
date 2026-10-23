@@ -18,6 +18,19 @@ Phase 4 changes resources in place, safely:
 - before a delete, what depends on the resource, in words and nearest first, and a delete refused
   while anything does
 
+Phase 4 adds tags and resource groups, across every type of the account and region:
+
+- the create wizard's Tags step: every tag the account requires, pre-filled from its default (the
+  environment follows the create's own field), and the person's own tags; Create waits, and says
+  why, while a required tag is blank
+- the Tags drawer on a resource's page: every tag as a name and a value, the required ones kept
+- the Tag Editor: the resources of the types chosen that carry the tags named, in one table, and a
+  dialog that sets and removes tags on up to 100 of them, saying which did not take it and why
+- resource groups: a saved tag query and the resources it matches, created, changed against the
+  version read, and deleted by typing the group's name
+- create similar: the wizard filled from a resource, in its account or handed to another
+- required tags: what each tag takes, its default and where that comes from
+
 Phase 3b makes the console change resources, with the request in view at every step:
 
 - a create wizard for every type a workflow creates, generated from the workflow's input schema:
@@ -453,12 +466,45 @@ type, so the feed must subscribe to every one).
     the edits onto it; a type with mutable fields but no update workflow says "Editing is not
     offered by this provider".
 
+38. **A create names every required tag itself.** The account's tag policy
+    (`GET /console/v1/tag-policy`) lists the tags each new resource must carry, with a list of
+    values or a pattern, and a default from the account, the organization, or the create's own
+    field (`input.<field>`). The wizard asks for each on a Tags step before the review and sends
+    `tags` on the preview and the create; the BFF never adds one a request left out, so the
+    console does not either. A value a tag may not take keeps the step; a blank one reaches the
+    review, which says what is missing, and Create stays disabled until it is set (the preview
+    says the same as a deny rule). A tag that copies a field follows it until the person sets the
+    tag. `lib/tags.ts` holds the BFF's rules word for word, so the forms and the mock agree.
+39. **The required tags stay on a resource; the Tag Editor searches by type and tags.** The Tags
+    drawer replaces a resource's tags with one PUT, so a required tag it carries keeps its row
+    (no Remove button, and the reason in words), its value checked as it is typed; a resource
+    older than the policy is offered the missing ones, never made to take them. A new tag's name
+    is 1 to 32 lowercase letters, digits or hyphens, as the state service takes it. The Tag
+    Editor's query (`type`, `tag.<name>`) lives in the address; the BFF searches no free text
+    there, so a name filter narrows the loaded page and says so. Its dialog changes up to 100
+    resources with one `tags:apply`, each its own change, cannot tick a required tag for
+    removal, and ends on how many took the change and why each other did not.
+40. **Resource groups are greyed by role, edited by version, deleted by name.** A viewer reads, an
+    operator also creates and changes, only an admin deletes (`resource-groups:<verb>`), and the
+    pages grey a write for the others before any call, as decision 16 does for identity; the
+    BFF's Denial replaces it on a 403. An edit sends `If-Match` with the version it read; a 409
+    says the group moved on and reads it again. The delete asks for the group's name at
+    `?action=delete`, so a fresh sign-in comes back to the dialog. As the identity service does,
+    the mock lets console IAM alone decide them: the platform's role for an account never does.
+41. **Create similar opens the wizard from the BFF's draft.** `?from=<wfrn>` fetches the clone
+    draft (its fields, the name as `<name>-copy`, its tags, notes on secrets, names and
+    references) and opens the wizard filled from it under a note linking to the source. Another
+    account comes from the draft's `targets`, locked where the person may not create the type:
+    the draft for it is fetched in this session, kept in sessionStorage under a one-time token,
+    and read once by that account's wizard (`#/account/<id>/.../create?draft=<token>`), which
+    switches the session to it first.
+
 ## Layout of the code
 
 ```
 console/
-  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes), their
-                  helpers and screenshots
+  e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
+                  tags, bulk), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
@@ -469,14 +515,21 @@ console/
                   descriptors, accounts, regions, recent, store, resourceList (the list's
                   filters, sorts, columns and counts), listState (the list in the query),
                   preferences (saved views and columns), keyed, csv, code (view as code), plain
-                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll
+                  (failures in words), tour, verbs, submission (Idempotency-Keys), poll, tags
+                  (the tag policy, Tag Editor, resource group and clone client, and their rules)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
-                  (resources) and the writes on a clock (commands), and the browser installer,
-                  with the samples
+                  (resources) and the writes on a clock (commands), the tag policy, Tag Editor,
+                  resource groups and clone drafts (tags), and the browser installer, with the
+                  samples
   src/pages/      one file per page; src/pages/iam/ the identity and access pages,
-                  src/pages/list/ the list's saved views menu and column chooser,
-                  src/pages/create/ the wizard's steps, src/pages/resource/ the resource page's
-                  tabs, request banner, action drawer, edit drawer and blast radius
+                  src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
+                  src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
+                  src/pages/resource/ the resource page's tabs, request banner, action drawer,
+                  edit drawer, blast radius and Tags drawer, src/pages/request/ the request
+                  page's parts (the paused step, what went wrong, approvals, a bulk run's waves
+                  and rows, retry with changes), src/pages/tags/ the Tag Editor, its apply
+                  dialog, the tag rows and the Required tags page, src/pages/groups/ the
+                  resource groups
 packages/
   console-kit/    the composites and their tests
   ui/             Atlas, untouched

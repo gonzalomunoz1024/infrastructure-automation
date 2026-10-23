@@ -19,6 +19,7 @@ import type { ConsoleResource } from '../lib/types'
 import { BulkDrawer } from './list/BulkDrawer'
 import { bulkVerbsOf } from './list/bulk'
 import { ColumnsMenu } from './list/ColumnsMenu'
+import { ApplyTagsDialog } from './tags/ApplyTagsDialog'
 import { ViewsMenu, describeTokenWith } from './list/ViewsMenu'
 import { MissingType, Stamp } from './parts'
 
@@ -115,6 +116,7 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
   // one verb on the selection, as one request in waves (WP 4.2)
   const bulkVerbs = useMemo(() => bulkVerbsOf(type), [type])
   const [bulk, setBulk] = useState<{ action: ConsoleAction; rows: ConsoleResource[] } | null>(null)
+  const [tagging, setTagging] = useState<ConsoleResource[] | null>(null)
 
   const empty = tokens.length ? (
     <EmptyState
@@ -205,6 +207,9 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
               Actions
             </MenuButton>
           )}
+          <ActionButton decision={decide('update')} what={`Tag the selected ${lower}`} verb="tag" size="sm" icon="tag" onClick={() => setTagging(selectedRows)}>
+            Manage tags
+          </ActionButton>
           <Button size="sm" icon="download" onClick={() => exportRows(selectedRows)}>
             Export selected
           </Button>
@@ -261,6 +266,15 @@ function TypeList({ type, route, create, decide }: { type: ConsoleType; route: R
         />
       )}
 
+      {tagging && (
+        <ApplyTagsDialog
+          resources={tagging.map((r) => ({ wfrn: r.wfrn, type: type.name, name: r.name, tags: r.tags }))}
+          onClose={() => setTagging(null)}
+          onApplied={(result) => {
+            if (!result.failed.length) setSelected(noSelection)
+          }}
+        />
+      )}
       {bulk && (
         <BulkDrawer
           type={type}

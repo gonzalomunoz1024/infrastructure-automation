@@ -19,6 +19,7 @@ import type { CommandAccepted } from '../lib/types'
 import { MissingType } from './parts'
 import { ActionDrawer } from './resource/ActionDrawer'
 import { EDIT_NOT_OFFERED, EditDrawer } from './resource/EditDrawer'
+import { TagsDrawer } from './resource/TagsDrawer'
 import { DeletedBanner, JobBanner, tombstoneOf } from './resource/JobBanner'
 import { DriftFact, TabContent, tabId } from './resource/tabs'
 
@@ -96,7 +97,8 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
   const editable = !!type.update || mutableFields(type.schema).length > 0
   // `edit` is Edit configuration's own, checked before the verbs
   const editing = route.query.action === 'edit' && !deleted
-  const current: ConsoleAction | undefined = route.query.action && !editing && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
+  const tagging = route.query.action === 'tags' && !deleted
+  const current: ConsoleAction | undefined = route.query.action && !editing && !tagging && !deleted ? verbs.find((a) => a.verb === route.query.action) : undefined
 
   if (!resource && !detail) {
     if (record.loading || view.loading) return <SkeletonRows n={4} />
@@ -172,7 +174,7 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
                           Edit configuration
                         </ActionMenuItem>
                       ))}
-                    <ActionMenuItem decision={decide(type, 'update')} what="Manage tags" verb="tag" icon="tag" phase={4}>
+                    <ActionMenuItem decision={decide(type, 'update')} what="Manage tags" verb="tag" icon="tag" onSelect={() => openAction('tags')}>
                       Manage tags
                     </ActionMenuItem>
                     {type.create && (
@@ -243,6 +245,19 @@ function ResourceDetail({ type, route }: { type: ConsoleType; route: Route }) {
       </div>
 
       {current && <ActionDrawer key={current.verb} type={type} action={current} wfrn={wfrn} name={name} attributes={attributes} onClose={closeAction} onAccepted={onAccepted} />}
+      {tagging && detail && (
+        <TagsDrawer
+          type={type}
+          wfrn={wfrn}
+          name={name}
+          tags={detail.tags}
+          onClose={closeAction}
+          onSaved={() => {
+            closeAction()
+            void view.refetch()
+          }}
+        />
+      )}
       {editing && detail && <EditDrawer key="edit" type={type} wfrn={wfrn} name={name} detail={detail} onClose={closeAction} onAccepted={(accepted) => type.update && onAccepted(accepted, type.update)} />}
     </>
   )

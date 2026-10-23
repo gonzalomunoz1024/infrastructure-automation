@@ -17,6 +17,8 @@ import { createMockServer, csrfTokenOf, memorySessionStore } from './server'
 const START = Date.parse('2026-10-23T10:00:00Z')
 const COMPUTE = 'wfrn:wf:compute:global:123456789012'
 const vmWfrn = (id: string) => `${COMPUTE}:vm/${id}`
+/** the account's required tags (mock/tags.ts): a create names them all */
+const TAGS = { owner: 'team-compute', 'cost-centre': 'cc-1042', 'data-class': 'internal', environment: 'dev' }
 const enc = encodeURIComponent
 const body = <T>(res: { body?: unknown }) => res.body as T
 
@@ -110,7 +112,7 @@ describe('a step that failed pauses its job', () => {
 describe('a job that ended badly runs again as a new one', () => {
   function abortedCreate(w: ReturnType<typeof world>) {
     const dana = w.as('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'fail-77', image: 'image-demo01', size: 'small' } }))
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'fail-77', image: 'image-demo01', size: 'small' }, tags: TAGS }))
     w.tick(RUN_MS + 1)
     expect(dana.call('POST', `/console/v1/jobs/${accepted.jobId}:abort`, {}).status).toBe(202)
     return { dana, accepted }
@@ -169,7 +171,7 @@ describe('a job that ended badly runs again as a new one', () => {
   it('does not run a cancelled job again', () => {
     const w = world()
     const dana = w.as('dana')
-    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'etl-90', image: 'image-demo01', size: 'small' } }))
+    const accepted = body<CommandAccepted>(dana.call('POST', '/console/v1/r/vm', { input: { name: 'etl-90', image: 'image-demo01', size: 'small' }, tags: TAGS }))
     expect(dana.call('POST', `/console/v1/jobs/${accepted.jobId}:cancel`, {}).status).toBe(202)
     expect(dana.job(accepted.jobId).can).toEqual([])
     expect(dana.call('POST', `/console/v1/jobs/${accepted.jobId}:retry`, {})).toMatchObject({ status: 409, body: { error: 'job.not-failed', detail: { status: 'cancelled' } } })
@@ -333,7 +335,7 @@ describe('bulk runs in waves', () => {
   it('creates machines in bulk, each named before its wave goes', () => {
     const w = world()
     const dana = w.as('dana')
-    const accepted = body<BatchAccepted>(dana.call('POST', '/console/v1/r/vm:batch', { verb: 'create', items: ['web-301', 'web-302'].map((name) => ({ input: { name, image: 'image-demo01', size: 'small' } })), defaults: { environment: 'dev' } }))
+    const accepted = body<BatchAccepted>(dana.call('POST', '/console/v1/r/vm:batch', { verb: 'create', items: ['web-301', 'web-302'].map((name) => ({ input: { name, image: 'image-demo01', size: 'small' } })), defaults: { environment: 'dev' }, tags: TAGS }))
     expect(accepted.wfrns).toHaveLength(2)
     expect(body<ConsoleResourceDetail>(dana.get(`/console/v1/r/vm/${enc(accepted.wfrns![0])}`))).toMatchObject({ name: 'web-301', state: 'pending' })
     // two rows of the workflow's waves (5%, 25%, then the rest) are two waves of one
@@ -341,7 +343,7 @@ describe('bulk runs in waves', () => {
     w.tick(BATCH_ROW_MS * 2 + 1)
     expect(dana.job(accepted.jobId).status).toBe('succeeded')
     expect(body<ConsoleResourceDetail>(dana.get(`/console/v1/r/vm/${enc(accepted.wfrns![1])}`))).toMatchObject({ name: 'web-302', state: 'active' })
-    const invalid = dana.call('POST', '/console/v1/r/vm:batch', { verb: 'create', items: [{ input: { name: 'Bad Name', image: 'image-demo01', size: 'small' } }] })
+    const invalid = dana.call('POST', '/console/v1/r/vm:batch', { verb: 'create', items: [{ input: { name: 'Bad Name', image: 'image-demo01', size: 'small' } }], tags: TAGS })
     expect(body<{ problems: Problem[] }>(invalid).problems[0].field).toMatch(/^\/items\/0\/input/)
   })
 
