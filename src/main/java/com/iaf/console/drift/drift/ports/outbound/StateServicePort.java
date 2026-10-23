@@ -39,7 +39,17 @@ public interface StateServicePort {
     Mono<StateResource> importResource(ImportCommand command);
 
     /**
-     * Tells the state which job carries out the update just requested. The state service learns it
+     * Records a delete request ({@code :request-delete}): the resource is {@code deleting} until the
+     * delete workflow's job ends. Applying a rightsizing recommendation to delete an idle resource
+     * calls it before the job starts, as a revert calls {@link #requestUpdate}. A default, so a
+     * stand-in written before it still compiles; both adapters answer it.
+     */
+    default Mono<StateResource> requestDelete(String wfrn, String workflow, String reason, String actor, String requestId) {
+        return Mono.error(new StateError(501, "state.notImplemented", null));
+    }
+
+    /**
+     * Tells the state which job carries out the update (or delete) just requested. The state service learns it
      * from the platform's feed on its own, so the HTTP adapter does nothing; the demo's embedded
      * stand-in has no feed and follows the job from here.
      */

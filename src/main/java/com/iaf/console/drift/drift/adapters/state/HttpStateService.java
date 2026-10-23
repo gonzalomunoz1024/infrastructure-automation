@@ -154,6 +154,17 @@ public final class HttpStateService implements StateServicePort {
     }
 
     @Override
+    public Mono<StateResource> requestDelete(String wfrn, String workflow, String reason, String actor, String requestId) {
+        ObjectNode body = Json.object();
+        body.put("workflow", workflow);
+        if (reason != null) {
+            body.put("reason", reason);
+        }
+        body.put("actor", actor);
+        return command(wfrn, ":request-delete", body, requestId, requestId == null ? null : "drift-delete:" + requestId);
+    }
+
+    @Override
     public Mono<StateResource> importResource(ImportCommand c) {
         ObjectNode body = Json.object();
         body.put("type", c.type());

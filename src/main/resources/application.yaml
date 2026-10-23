@@ -143,3 +143,38 @@ management:
 logging:
   level:
     com.iaf.console: info
+
+---
+# Monitoring and rightsizing (WP 9.21, 9.22), in their own document so the drift settings above stay
+# as they are. Series come from each type's metrics read (P-09 observe.metrics) with the account's own
+# platform credential, under the observe budget above; the demo profile makes them up instead.
+console:
+  monitoring:
+    metrics:
+      mode: platform      # platform (the type's metrics read) or demo (made-up series, demo only)
+      max-range: 92d      # GET /v1/metrics: the longest range one read may ask for
+      max-steps: 5000     # and the most steps it may hold
+    alarms:
+      enabled: true
+      interval: 1m        # every alarm is evaluated this often (the contract says every minute)
+      concurrency: 4      # resources read at once by one evaluation
+    rightsizing:
+      enabled: true
+      interval: 24h       # each resource's utilisation is read once in this
+      check-interval: 1h  # the loop wakes this often and reads the resources whose turn has come
+      initial-delay: 1m   # the first wake after a start
+      window: 14d         # how far back a read reaches (only since the resource's last change of size)
+      step: 1h            # one point per this
+      min-history: 7d     # the points a judgement needs, at that step (168)
+      idle-cpu: 5         # 95th percentiles in percent: both under these is idle (delete)
+      idle-memory: 10
+      oversized-cpu: 20   # under one of these shrinks that dimension
+      oversized-memory: 30
+      target-p95: 60      # to the smallest allowed size that keeps its 95th percentile under this
+      cpu-series: cpuPercent
+      memory-series: memoryPercent
+      cpu-field: cpu      # the size fields a resize sets
+      memory-field: memoryGb
+      min-cpu: 1          # a size without allowed values is halved down to these
+      min-memory: 2
+      concurrency: 4      # resources read at once by one pass

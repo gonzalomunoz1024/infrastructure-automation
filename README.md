@@ -199,6 +199,149 @@ every write is conditional:
   before an accept, an ignore or a new desired state decides again on the watch as it stands, so a
   stale copy never opens a finding against old values nor undoes a decision.
 
+## Monitoring and rightsizing
+
+Two more parts of the service read the same resources' metrics (WP 9.21 and WP 9.22): alarms on a
+series, and recommendations to shrink what is oversized or delete what is idle. Each is a slice of
+its own beside `drift` (`monitoring`, `rightsizing`) and uses the drift slice's watch list, resource
+types, state service, platform and job starter through their ports; the drift slice knows nothing
+of them.
+
+Series come from the type's metrics read (P-09 `observe.metrics`, `POST /api/v1/resources/{id}:metrics`),
+called with the account's own platform credential and paced by the same observe budget as the scans:
+when the budget is spent, or the platform answers 429, the caller hears 429 with the wait, and the
+budget stays empty until then. A resource of another account is a 404, never a 403. A type without a
+metrics read is a 404 `metrics.notSupported`, and so is an imported object, which has no registry
+record for the platform to read it by. Any other platform failure is a 502.
+
+| Call | Answer |
+| --- | --- |
+| `GET /v1/metrics` | A resource's series (`wfrn`, `from`, `to`, `step`): without `from` the last 24 hours, without `step` a point every 5 minutes up to a day and every hour beyond; `step` is an ISO-8601 duration of at least a minute, and one read holds at most 92 days and 5000 points. Another console service may name `accountId`; without it, the wfrn's own account |
+| `GET /v1/alarms` | The account's alarms, firing first (`alarm`, `insufficient`, `ok`), then by id; filters `wfrn`, `state` |
+| `GET /v1/alarms/{alarmId}` | One alarm: its rule, `state`, `stateSince`, `lastValue`, `lastEvaluatedAt`, `createdBy` |
+| `PUT /v1/alarms/{alarmId}` | `{wfrn, name, metric, comparison, threshold, windowMinutes}`: 201 created (`insufficient` until its first evaluation) or 200 changed (its state stays until the next one). The caller names the id, so a retried create is the same alarm; `comparison` is `above` or `below`, `metric` one of the type's series, `windowMinutes` 1 to 1440 (10 by default) |
+| `DELETE /v1/alarms/{alarmId}` | 204 |
+| `POST /internal/alarms:evaluate` | For operators: evaluate every alarm now; answers what the pass did |
+| `GET /v1/recommendations` | The account's recommendations, the largest monthly saving first; filters `type`, `kind` (`idle`, `oversized`), `status` (`open` by default, `applied`, `dismissed`, `superseded`), `wfrn` |
+| `GET /v1/recommendations/summary` | Open recommendations by kind, what they would save a month, and when the last pass read the account |
+| `GET /v1/recommendations/{id}` | One recommendation: the size now (`current`) and the one `proposed`, the utilisation behind it, its `monthlyCost` and `monthlySaving`, and once decided, who decided, why, and the `jobId` |
+| `POST /v1/recommendations/{id}:apply` | 202 `{recommendationId, jobId}`: the state service records the change, then the type's update workflow (with the proposed size) or its delete workflow starts on behalf of the person, labelled `drift-recommendation`; the recommendation is `applied` once the job is started |
+| `POST /v1/recommendations/{id}:dismiss` | 200, `dismissed` for good, or until `until` |
+| `POST /internal/utilisation` | For operators: read every resource's utilisation now (`?accountId=` for one account), whether or not its turn has come; answers what the pass did |
+
+The decisions take the drift API's headers: `Idempotency-Key` (the same key and body replay the
+first answer with `Idempotent-Replay: true`), `X-Console-Request-Id`, and on `:apply`
+`X-On-Behalf-Of`. An apply answers 409 `recommendation.closed` when the recommendation is applied,
+dismissed or superseded (and supersedes it when the resource changed size or left the inventory
+since the pass), `recommendation.changing` when a change is in flight on the resource,
+`recommendation.notApplicable` when the type has no update or delete workflow or the update does not
+set the size field, and `revert.needsPerson` when the call carries no person to act for. A dismissal
+of a closed one is a 409 `recommendation.closed` too.
+
+### Alarms
+
+An alarm compares the average of one series over its window with its threshold: `alarm` when it
+crosses it, `ok` when not, and `insufficient` when the provider gave no points (a resource that left
+the inventory gives none). `stateSince` moves only when the state changes, so it says how long an
+alarm has been firing. Every minute the evaluation takes the alarms a resource at a time, so each
+resource is read once, over the longest window its alarms need, a point a minute; a read that fails
+(a spent budget, a platform error) leaves its alarms as they were, and the next minute tries again.
+Alarms carry a revision: an evaluation that read an alarm before a person changed it leaves the
+change standing.
+
+### Recommendations
+
+Once a day, each watched resource whose type has a metrics read has the last 14 days of its CPU and
+memory read, a point an hour, and only since it last changed size; a judgement needs a week of
+points (168). On the 95th percentiles:
+
+- **idle**: CPU under 5% and memory under 10%. Applying it deletes the resource through the type's
+  delete workflow, with the person's reason, or one that names the recommendation.
+- **oversized**: CPU under 20% or memory under 30%. That dimension shrinks to the smallest allowed
+  value at which its 95th percentile, scaled to the smaller size, stays under 60%. The allowed values
+  are the update workflow's input `enum`, else the type's, else whole halvings down to 1 CPU and 2 GB.
+
+Each recommendation is priced through the service's cost estimates: an idle one saves what the
+resource costs, an oversized one the difference to the proposed size, and a resource without a price
+shows no cost or saving. A resource has at most one current recommendation (open or dismissed). A later
+pass refreshes an open one with the new numbers, replaces it when the kind changes, and supersedes it
+when the resource changed size, left the inventory or no longer qualifies. A dismissal holds until its
+date, then opens again if the resource still qualifies. A resource with a change in flight is skipped.
+Nothing is applied on its own: like a revert, that is always a person's call.
+
+### Loops
+
+| Loop | In this process | Under `temporal` |
+| --- | --- | --- |
+| `alarms` | Every `alarms.interval` (a minute) | The workflow `console-drift-<region>-alarms` |
+| `utilisation` | First after `rightsizing.initial-delay` (a minute), then every `check-interval` (an hour), reading the resources whose turn has come | The workflow `console-drift-<region>-utilisation` |
+
+Because the utilisation loop wakes often and reads only what is due, a restart does not read every
+resource again, and a pass cut short (a tick is cut after 14 minutes, as a Temporal activity is) goes
+on at the next wake.
+
+### Settings
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `console.monitoring.metrics.mode` | `platform` | Where series come from: the type's metrics read, or `demo` (made-up series, set by the demo profile only) |
+| `console.monitoring.metrics.max-range`, `max-steps` | `92d`, `5000` | How far one `GET /v1/metrics` may reach, and the most points it may hold |
+| `console.monitoring.metrics.demo.types`, `idle`, `oversized`, `busy` | `[vm]`, `[batch-01, shop-01]`, `[web-02]`, `[cache-01]` | The demo's types with series, and the resources (by name) that are idle, oversized or busy |
+| `console.monitoring.alarms.enabled`, `interval`, `concurrency` | on, `1m`, `4` | The alarm evaluation: how often, and how many resources one evaluation reads at once |
+| `console.monitoring.rightsizing.enabled`, `interval`, `check-interval`, `initial-delay` | on, `24h`, `1h`, `1m` | The utilisation pass: each resource is read once an `interval`; the loop wakes every `check-interval`, the first time after `initial-delay` |
+| `console.monitoring.rightsizing.window`, `step`, `min-history` | `14d`, `1h`, `7d` | How far back a read reaches, a point per `step`, and the history a judgement needs |
+| `console.monitoring.rightsizing.idle-cpu`, `idle-memory`, `oversized-cpu`, `oversized-memory`, `target-p95` | `5`, `10`, `20`, `30`, `60` | The lines on the 95th percentiles, in percent |
+| `console.monitoring.rightsizing.cpu-series`, `memory-series`, `cpu-field`, `memory-field` | `cpuPercent`, `memoryPercent`, `cpu`, `memoryGb` | The series read, and the size fields a resize sets |
+| `console.monitoring.rightsizing.min-cpu`, `min-memory`, `concurrency` | `1`, `2`, `4` | How far halving may go for a size without allowed values; how many resources one pass reads at once |
+
+### Collections
+
+Under the `mongo` profile, in the same database as the findings; in memory otherwise.
+
+| Collection | Document | Indexes |
+| --- | --- | --- |
+| `drift_alarms` | `_id` `<accountId>:<alarmId>`, `accountId`, `alarmId`, `wfrn`, `stateRank`, `rev`, `doc` | `{accountId, stateRank, alarmId}`, `{accountId, wfrn}`, `{wfrn, accountId, alarmId}` |
+| `drift_recommendations` | `_id` recommendationId, `accountId`, `wfrn`, `type`, `kind`, `status`, `active` (open or dismissed), `savingSort`, `rev`, `doc` | unique `wfrn` where active (`one_current_recommendation_per_resource`), `{accountId, status, savingSort desc, _id desc}`, `{active, accountId}` |
+| `drift_utilisation` | `_id` wfrn, `accountId`, `readAt`, `doc`: the last read's percentiles and samples, and the size it was read at and since when | `{accountId, readAt desc}` |
+
+### Where the code is
+
+```
+com.iaf.console.drift
+├── monitoring                    metrics and alarms (WP 9.21)
+│   ├── domain                    Alarm, AlarmInput, Comparison, MetricsWindow, ResourceMetrics, MetricsTarget
+│   ├── ports.outbound            AlarmStorePort, MetricsPort
+│   ├── application               MetricsQueries, MetricsTargets, AlarmService, AlarmEvaluator
+│   └── adapters.{web,mongo,memory,platform,demo}
+├── rightsizing                   utilisation and recommendations (WP 9.22)
+│   ├── domain                    Recommendation, RightsizingRules, SizeOptions, Utilisation, ResourceUtilisation
+│   ├── ports.outbound            RecommendationStorePort, UtilisationStorePort
+│   ├── application               UtilisationPass, RecommendationService (decisions), RecommendationQueries
+│   └── adapters.{web,mongo,memory}
+└── boot                          MonitoringProperties, MonitoringConfiguration
+```
+
+### Why it works this way
+
+| Decision | Why |
+| --- | --- |
+| The lines (idle under 5% CPU and 10% memory, oversized under 20% or 30%, a target of 60%, a week of history) are settings | The contract names idle and oversized but not where the lines are; a week of hourly points covers a weekly cycle |
+| A resize picks from what the update workflow accepts, then the type's values, then whole halvings | A proposal the workflow would refuse is no proposal, and halving is what a person would try first |
+| Applied once the job is started, with no follower | The contract: the next pass judges the new size, and a failed job leaves the resource to qualify again |
+| Each resource read once a day, by a loop that wakes hourly | A restart does not read every resource again, and a pass cut short goes on at the next wake; the reads take their turn in the account's share of the observe budget and wait when it is spent |
+| A dismissal holds until its date, a change of size or a change of kind | Set aside means set aside, but an idle VM that turns oversized is a new question |
+| The summary adds savings in one currency | Money in different currencies cannot be added; it counts the currency most open recommendations are priced in |
+| Alarms are evaluated per resource, over the longest window | One read per resource a minute, whatever the number of its alarms |
+
+### In the demo
+
+The fake platform's types have no metrics read, so the demo profile sets `metrics.mode: demo`: CPU,
+memory and disk series for the VMs, the same numbers on every read, a daily wave around a level the
+VM's name picks. `batch-01` and `shop-01` are idle, `web-02` oversized, `cache-01` busy and every
+other VM ordinary. Alarms are evaluated every 30 seconds, and the first utilisation pass runs 20
+seconds after the start, so three recommendations show within a minute. Nothing of it runs in
+production.
+
 ## Storage
 
 MongoDB, one database (`console_drift`) per deployment; indexes are created at start by each adapter.
