@@ -164,6 +164,29 @@ RequiredTag:
   `/set/<name>`, `tags.conflict` (set and removed), `tags.invalid` at `/set/<key>` for a
   required tag's value, `tags.required` at `/remove/<i>` for a required tag.
 
+**Launch more like this (WP 4.6).** `GET /r/{type}/{wfrn}/clone?account=` (the session's account
+when left out; another account of the person's, else 404; as `<service>:get` on the resource
+allows; 410 for a deleted one) answers the type's create form filled from the resource:
+
+```yaml
+CloneDraft:
+  type: string
+  workflow: string        # the create workflow
+  source: { wfrn, name, accountId, region }
+  accountId: string       # the target account
+  input: object           # the create's fields: current attributes, else what it was created with;
+                          # secrets left out, the name suggested as <name>-copy when it fits the field
+  tags: { name: value }   # the source's; an account default (owner, cost-centre) becomes the target's
+  notes: [{ field, code, message }]   # secret (not copied), name (choose one), reference (a resource
+                                      # of the source account, when the target is another)
+  targets: [{ accountId, name, current, allowed, denied? }]   # every account of the person's,
+                                      # allowed = <service>:create on the type there
+  tagPolicy: TagPolicy    # the target account's
+```
+
+Nothing is created: the wizard opens with the draft and creates as usual (`POST /r/{type}` with
+`input` and `tags`); to create in another account, the console switches to it first.
+
 ## Search
 
 `GET /console/v1/search` and `GET /console/v1/suggest` are served as the contract says, through

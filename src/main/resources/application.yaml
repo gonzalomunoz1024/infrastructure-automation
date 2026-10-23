@@ -56,6 +56,11 @@ console:
         service-account: ""
         jwks: ""
         jwks-uri: ""
+      console-cost-service:
+        audiences: [console-state-service, console-identity-service]
+        service-account: ""
+        jwks: ""
+        jwks-uri: ""
   oidc:
     issuer: ""                      # the OpenID Connect issuer; discovery is <issuer>/.well-known/openid-configuration
     client-id: console

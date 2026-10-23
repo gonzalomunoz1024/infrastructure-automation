@@ -281,7 +281,10 @@ public class DemoStateStore implements FeedListener {
                 rows.put(row.wfrn, row);
                 ObjectNode data = json.createObjectNode();
                 data.put("workflow", text(body, "workflow"));
-                data.set("attributes", row.attributes);
+                if (name != null) {
+                    data.put("name", name);
+                }
+                data.set("input", row.attributes.deepCopy());
                 event(row, "ResourceRequested", actor, null, requestId, data);
                 return remember(key, new Answer(row.resource(), false));
             }

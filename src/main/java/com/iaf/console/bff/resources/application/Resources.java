@@ -33,6 +33,7 @@ import com.iaf.console.bff.resources.domain.BatchPreview;
 import com.iaf.console.bff.resources.domain.BlastRadius;
 import com.iaf.console.bff.resources.domain.DependentsExistException;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
+import com.iaf.console.bff.resources.domain.CloneDraft;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
 import com.iaf.console.bff.resources.domain.GoneException;
@@ -443,6 +444,142 @@ public class Resources {
                                 .map(both -> both.getT1().withBlastRadius(both.getT2(), delete));
                     });
         });
+    }
+
+    /**
+     * Launch more like this (WP 4.6): the type's create form filled from the resource, for the
+     * session's account or {@code account} (another of the person's, else 404), as
+     * {@code <service>:get} on the resource allows. Each target account says whether the person
+     * may create the type there ({@code <service>:create} on its pattern).
+     */
+    public Mono<CloneDraft> cloneDraft(Session session, String type, String wfrn, String account) {
+        String target = account == null || account.isBlank() ? session.accountId() : account;
+        if (session.membership(target).isEmpty()) {
+            return Mono.error(NotFoundException.of("account", target));
+        }
+        return readable(session, type, wfrn).flatMap(s -> {
+            ConsoleAction create = actionOf(s.type(), "create");
+            return Mono.zip(tagPolicies.forAccount(session.accountId()), tagPolicies.forAccount(target), targets(session, s.type()),
+                    createInput(session, wfrn))
+                    .map(all -> {
+                        List<CloneDraft.Note> notes = new ArrayList<>();
+                        Map<String, Object> input = cloneInput(create, s.resource(), all.getT4(), !target.equals(session.accountId()), notes);
+                        Map<String, String> tags = cloneTags(s.resource().tags(), all.getT1(), all.getT2());
+                        return new CloneDraft(s.type().type(), create.workflow(),
+                                new CloneDraft.Source(s.resource().wfrn(), s.resource().name(), session.accountId(), session.region()), target, input, tags,
+                                notes, all.getT3(), all.getT2());
+                    });
+        });
+    }
+
+    /** Every account of the person's, with whether {@code <service>:create} on the type's pattern there is allowed. */
+    private Mono<List<CloneDraft.Target>> targets(Session session, ConsoleType t) {
+        return Flux.fromIterable(session.accounts()).flatMapSequential(m -> {
+            Session there = m.accountId().equals(session.accountId()) ? session : session.switchedTo(m.accountId(), session.region());
+            String pattern = AccessCheck.typePattern(platform.partition(), t.service(), session.region(), m.accountId(), t.type());
+            return access.decide(there, List.of(new AccessCheck(AccessCheck.action(t.service(), "create"), pattern)))
+                    .map(d -> new CloneDraft.Target(m.accountId(), m.name(), m.accountId().equals(session.accountId()), d.get(0).allowed(),
+                            d.get(0).allowed() ? null : d.get(0).denial()));
+        }, 4).collectList();
+    }
+
+    /**
+     * The create workflow's fields with the source's values: a secret ({@code format: password},
+     * {@code writeOnly}, {@code x-secret}) and a read-only field are left out with a note, the name
+     * is suggested anew ({@code <name>-copy} when it fits the field), and a field naming another
+     * resource gets a note when the copy goes to another account.
+     */
+    private Map<String, Object> cloneInput(ConsoleAction create, StateResource source, JsonNode createdWith, boolean elsewhere,
+            List<CloneDraft.Note> notes) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        JsonNode properties = create.input() == null ? null : create.input().get("properties");
+        JsonNode attributes = source.attributes() == null ? json.createObjectNode() : source.attributes();
+        if (properties == null || !properties.isObject()) {
+            return input;
+        }
+        properties.properties().forEach(field -> {
+            String name = field.getKey();
+            JsonNode schema = field.getValue();
+            JsonNode value = attributes.hasNonNull(name) ? attributes.get(name) : createdWith.get(name);
+            if (value == null || value.isNull()) {
+                return;
+            }
+            if ("password".equals(schema.path("format").asText()) || schema.path("writeOnly").asBoolean() || schema.path("x-secret").asBoolean()) {
+                notes.add(new CloneDraft.Note(name, "secret", name + " is a secret and is not copied; enter it again"));
+                return;
+            }
+            if (schema.path("readOnly").asBoolean()) {
+                return;
+            }
+            if ("name".equals(name)) {
+                String suggested = copyName(value.asText(), schema);
+                if (suggested == null) {
+                    notes.add(new CloneDraft.Note(name, "name", "choose a name for the copy"));
+                } else {
+                    input.put(name, suggested);
+                }
+                return;
+            }
+            if (elsewhere && schema.has("x-resource")) {
+                notes.add(new CloneDraft.Note(name, "reference", name + " names a " + schema.path("x-resource").path("type").asText("resource")
+                        + " of this account; check that the target account can use it"));
+            }
+            input.put(name, json.convertValue(value, Object.class));
+        });
+        return input;
+    }
+
+    /**
+     * The input the resource was created with, as its {@code ResourceRequested} carries it (after
+     * redaction), from the first page of its activity; empty for an imported resource. The current
+     * attributes win over it, field by field.
+     */
+    private Mono<JsonNode> createInput(Session session, String wfrn) {
+        return state.events(scope(session), caller(session), wfrn, 20, null).map(page -> {
+            for (JsonNode event : page.items()) {
+                if ("ResourceRequested".equals(event.path("type").asText()) && event.path("data").path("input").isObject()) {
+                    return event.path("data").path("input");
+                }
+            }
+            return (JsonNode) json.createObjectNode();
+        }).onErrorResume(e -> !(e instanceof Error), e -> {
+            log.warn("the activity of {} is unavailable, so the copy starts from its attributes: {}", wfrn, e.getMessage());
+            return Mono.just(json.createObjectNode());
+        });
+    }
+
+    /** {@code <name>-copy}, the name shortened until it fits the field's pattern and length; null when nothing fits. */
+    static String copyName(String name, JsonNode schema) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        String pattern = schema.path("pattern").asText(null);
+        int max = schema.path("maxLength").asInt(Integer.MAX_VALUE);
+        for (int keep = name.length(); keep > 0; keep--) {
+            String candidate = name.substring(0, keep).replaceAll("-+$", "") + "-copy";
+            if (candidate.length() <= max && (pattern == null || Pattern.matches(pattern, candidate))) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** The source's tags, each required tag that carried the source account's own default given the target account's. */
+    private static Map<String, String> cloneTags(Map<String, String> source, TagPolicy here, TagPolicy there) {
+        Map<String, String> tags = new LinkedHashMap<>(source == null ? Map.of() : source);
+        if (here.accountId() != null && here.accountId().equals(there.accountId())) {
+            return tags;
+        }
+        Map<String, String> hereDefaults = here.defaults();
+        Map<String, String> thereDefaults = there.defaults();
+        there.required().forEach(tag -> {
+            String value = tags.get(tag.key());
+            boolean accountDefault = "account".equals(tag.defaultFrom());
+            if (accountDefault && thereDefaults.get(tag.key()) != null && (value == null || value.equals(hereDefaults.get(tag.key())))) {
+                tags.put(tag.key(), thereDefaults.get(tag.key()));
+            }
+        });
+        return tags;
     }
 
     /** What depends on the resource, up to {@code depth} steps (1 to 5, 3 by default), as {@code <service>:get} on it allows. */

@@ -25,6 +25,7 @@ import com.iaf.console.bff.resources.domain.BatchAccepted;
 import com.iaf.console.bff.resources.domain.BatchInput;
 import com.iaf.console.bff.resources.domain.BatchPreview;
 import com.iaf.console.bff.resources.domain.BlastRadius;
+import com.iaf.console.bff.resources.domain.CloneDraft;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
 import com.iaf.console.bff.resources.domain.CommandInput;
 import com.iaf.console.bff.resources.domain.FindingView;
@@ -161,6 +162,13 @@ public class ResourcesController {
     public Mono<BlastRadius> blastRadius(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn,
             @RequestParam(name = "depth", required = false) Integer depth, ServerWebExchange exchange) {
         return CurrentSession.required(exchange).flatMap(session -> resources.blastRadius(session, type, wfrn, depth));
+    }
+
+    /** Launch more like this: the type's create form filled from the resource, for this account or another of the person's ({@code account}). */
+    @GetMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/clone", produces = "application/json")
+    public Mono<CloneDraft> cloneDraft(@PathVariable("type") String type, @PathVariable("wfrn") String wfrn,
+            @RequestParam(name = "account", required = false) String account, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange).flatMap(session -> resources.cloneDraft(session, type, wfrn, account));
     }
 
     @PutMapping(path = "/console/v1/r/" + TYPE + "/{wfrn}/tags", consumes = "application/json", produces = "application/json")
