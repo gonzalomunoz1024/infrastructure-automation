@@ -16,6 +16,11 @@ observe:
   interval: 1h
   notFound: missing
   # No `discover`: the MongoDB provider has no list action at c9529d5.
+cost:                               # P-22: priced by list-prices' cluster.create rate per tier
+  priceList: list-prices
+  provider: mongodb
+  action: cluster.create
+  by: tier
 schema:
   properties:
     name:
