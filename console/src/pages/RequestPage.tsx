@@ -1,66 +1,119 @@
 import { useState } from 'react'
-import { Button, Card, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, Tag, cx, duration } from '@iaf/ui'
-import { ConfirmDialog, CopyableId, ErrorState, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow } from '@iaf/console-kit'
-import { useCommand } from '../app/commands'
+import { Button, EmptyState, Icon, IconButton, JsonView, PageHeader, SkeletonRows, cx, duration } from '@iaf/ui'
+import { ConfirmDialog, CopyableId, Facts, Section, StatusBadge, StepTimeline, When, WfrnText, useNow, type Problem } from '@iaf/console-kit'
+import { ExplainedError, useCommand } from '../app/commands'
 import { pathOfWfrn, useConsole } from '../app/console'
-import { LaterButton } from '../app/Phase'
-import { href, type PageProps } from '../app/router'
-import { formatAccountId } from '../lib/accounts'
-import { api } from '../lib/api'
+import { href, navigate, pathFor, type PageProps } from '../app/router'
 import { bff } from '../lib/bff'
 import { mayJob } from '../lib/jobs'
 import { isOpenStatus, usePoll } from '../lib/poll'
 import { useQuery } from '../lib/queries'
+import { useSubmissionKey } from '../lib/submission'
+import type { RetryFix } from '../lib/types'
+import { ApprovalsCard } from './request/ApprovalsCard'
+import { AttentionCard } from './request/AttentionCard'
+import { BatchSection } from './request/BatchSection'
+import { FailureCard } from './request/FailureCard'
+import { childrenOf, decidedLine } from './request/parts'
+import { RetryDialog } from './request/RetryDialog'
 
 /*
- * One request: its facts, what went wrong if it did, the steps it ran, and its input and
- * outputs as the platform holds them. While it runs the page follows it, and its requester or an
- * admin of the account can cancel it (the BFF's job says who may).
+ * One request, as the BFF holds it (WP 4.2): its facts; the step it paused on and the ways on
+ * (retry, with changes or not, skip, abort); what went wrong; its approvals, decided here in one
+ * call; a bulk run's waves and rows; the steps it ran; its input and output. While it runs the
+ * page follows it. Every choice shows only when the BFF's `can` says this person may make it, and
+ * a retry of an ended request opens the new request it started.
  */
+
+type Asking = 'cancel' | 'skip' | 'abort' | 'retry' | null
+
+const INVALIDATES = ['jobs', 'bff-job', 'console-resource', 'console-activity', 'resources']
+
+const STEER_WORDS = {
+  cancel: { what: 'Cancel this request', title: 'Request cancelled', message: 'The platform stops it at its next safe point.' },
+  skip: { what: 'Skip the step', title: 'Step skipped', message: 'The request goes on past it.' },
+  abort: { what: 'Abort this request', title: 'Request aborted', message: 'What ran is being undone.' },
+} as const
 
 export default function RequestPage({ route }: PageProps) {
   const id = route.params.id
   const { types } = useConsole()
-  const q = useQuery(['job', id], () => api.job(id))
+  const q = useQuery(['bff-job', id], () => bff.jobs.get(id))
   const now = useNow()
   const job = q.data
-  const running = !!job && isOpenStatus(job.status)
-  // the console's copy of the job says whether this person may cancel it
-  const mine = useQuery(['bff-job', id], () => bff.jobs.get(id), { enabled: running })
+  const open = isOpenStatus(job?.status)
+  usePoll(open, () => void q.refetch())
   const cmd = useCommand()
-  const [cancelling, setCancelling] = useState(false)
-  usePoll(running, () => void q.refetch())
+  const keyFor = useSubmissionKey()
+  const [asking, setAsking] = useState<Asking>(null)
+  const [problems, setProblems] = useState<Problem[]>([])
 
   if (q.loading) return <SkeletonRows n={4} />
-  if (q.error && !job) return <ErrorState error={q.error} title="Could not load this request" onRetry={q.refetch} />
-  if (!job) return <EmptyState icon="job" title="Nothing here" message="The platform answered without a request." />
+  if (q.error && !job) return <ExplainedError error={q.error} what="Load this request" onRetry={q.refetch} />
+  if (!job) return <EmptyState icon="job" title="Nothing here" message="The console answered without a request." />
 
-  const open = job.status === 'queued' || job.status === 'running' || job.status === 'waiting-approval' || job.status === 'needs-attention'
-  const elapsed = job.durationMs !== undefined ? duration(job.durationMs) : open ? duration(now - Date.parse(job.startedAt)) : duration(null)
+  const paused = job.status === 'needs-attention'
+  const batch = job.kind === 'batch' || !!job.batch
+  const title = job.title ?? job.workflow
+  const elapsed = job.durationMs !== undefined ? duration(job.durationMs) : open && job.startedAt ? duration(now - Date.parse(job.startedAt)) : duration(null)
   const wfrnPath = pathOfWfrn(job.wfrn, types)
+  // each pause is its own decision: the key changes with it, so a second retry is not the first one replayed
+  const pause = job.attention?.since ?? job.endedAt ?? ''
+
+  /** A paused request goes on in place; an ended one runs again as a new request, which the page then shows. */
+  const retry = async (fix?: RetryFix) => {
+    const accepted = await cmd.run(paused ? 'Retry the step' : 'Run this request again', () => bff.jobs.retry(id, fix, keyFor({ retry: id, pause, fix })), {
+      quiet: asking === 'retry',
+      invalidates: INVALIDATES,
+      onProblems: setProblems,
+      done: (a) => (a.jobId === id ? { title: 'The step runs again', message: 'The request goes on from where it paused.' } : { title: 'Running it again', message: 'It runs as a new request, which this page now shows.' }),
+    })
+    if (!accepted) return
+    setAsking(null)
+    setProblems([])
+    if (accepted.jobId && accepted.jobId !== id) navigate(pathFor('request', { id: accepted.jobId }))
+    else void q.refetch()
+  }
+
+  const steer = async (verb: 'cancel' | 'skip' | 'abort') => {
+    const words = STEER_WORDS[verb]
+    const key = keyFor({ [verb]: id, pause })
+    const call = verb === 'cancel' ? () => bff.jobs.cancel(id, key) : verb === 'skip' ? () => bff.jobs.skip(id, job.attention?.step, key) : () => bff.jobs.abort(id, key)
+    await cmd.run<unknown>(words.what, call, { invalidates: INVALIDATES, done: () => ({ title: words.title, message: words.message }) })
+    void q.refetch()
+  }
+
+  const decide = async (decision: 'approve' | 'reject', comment: string | undefined) => {
+    const pending = (job.approvals ?? []).filter((a) => a.status === 'pending').map((a) => a.approvalId)
+    const result = await cmd.run(decision === 'approve' ? 'Approve this request' : 'Reject this request', () => bff.jobs.decideApprovals(id, { decision, comment }, keyFor({ decide: id, decision, comment, pending })), {
+      invalidates: INVALIDATES,
+      done: (r) => ({ title: r.decided.length ? (decision === 'approve' ? 'Approved' : 'Rejected') : 'Nothing decided', message: decidedLine(r) }),
+    })
+    void q.refetch()
+    return result
+  }
 
   return (
     <>
       <PageHeader
-        eyebrow="Request"
-        title={job.title}
-        subtitle={<CopyableId id={job.id} />}
+        eyebrow={batch ? 'Bulk request' : 'Request'}
+        title={title}
+        subtitle={<CopyableId id={job.jobId} />}
         actions={
           <>
             <IconButton label="Refresh" onClick={() => void q.refetch()}>
               <Icon name="refresh" size={16} className={cx(q.fetching && 'animate-spin')} />
             </IconButton>
-            {open ? (
-              mayJob(mine.data, 'cancel') !== false && (
-                <Button variant="secondary" icon="stop" loading={cmd.busy} onClick={() => setCancelling(true)}>
-                  Cancel request
-                </Button>
-              )
-            ) : job.status === 'failed' ? (
-              <LaterButton phase={4} variant="secondary" icon="refresh">
-                Retry
-              </LaterButton>
-            ) : null}
+            {mayJob(job, 'cancel') && (
+              <Button variant="secondary" icon="stop" disabled={cmd.busy} onClick={() => setAsking('cancel')}>
+                Cancel request
+              </Button>
+            )}
+            {!open && mayJob(job, 'retry') && (
+              <Button variant="secondary" icon="refresh" disabled={cmd.busy} onClick={() => setAsking('retry')}>
+                {batch ? 'Run failed rows again' : 'Retry'}
+              </Button>
+            )}
           </>
         }
       />
@@ -75,56 +128,56 @@ export default function RequestPage({ route }: PageProps) {
             value: (
               <span className="flex flex-wrap items-center gap-x-1.5">
                 <span className="font-mono">{job.workflow}</span>
-                <span className="text-tertiary">v{job.version}</span>
+                {job.version && <span className="text-tertiary">v{job.version}</span>}
               </span>
             ),
           },
-          { label: 'Requester', value: job.requester },
-          {
-            label: 'Channel',
-            value: (
-              <Tag size="sm" outline mono>
-                {job.channel}
-              </Tag>
-            ),
-          },
+          { label: 'Requester', value: job.requester ?? <span className="text-tertiary">Not recorded</span> },
+          { label: 'Kind', value: batch && job.progress ? `Bulk, ${job.progress.done} of ${job.progress.total} done${job.progress.failed ? `, ${job.progress.failed} failed` : ''}` : 'Single' },
           { label: 'Started', value: <When at={job.startedAt} /> },
           { label: 'Ended', value: <When at={job.endedAt} /> },
           { label: 'Duration', value: <span className="tabular-nums">{elapsed}</span> },
-          { label: 'Kind', value: job.kind === 'batch' && job.progress ? `batch · ${job.progress.done}/${job.progress.total} done${job.progress.failed ? `, ${job.progress.failed} failed` : ''}` : job.kind },
-          ...(job.accountId ? [{ label: 'Account', value: <span className="font-mono">{formatAccountId(job.accountId)}</span> }] : []),
-          ...(job.region ? [{ label: 'Region', value: job.region }] : []),
           ...(job.wfrn ? [{ label: 'Resource', value: <WfrnText wfrn={job.wfrn} size="md" href={wfrnPath ? href(wfrnPath) : undefined} />, wide: true }] : []),
         ]}
       />
 
-      {(job.status === 'failed' || job.error) && (
-        <Card title="What went wrong" subtitle={job.failedStep ? `In step ${job.failedStep}` : undefined} className="mb-8">
-          <div className="flex items-start gap-3 text-sm">
-            <Icon name="alert-triangle" size={18} className="mt-0.5 shrink-0 text-critical" />
-            <div className="min-w-0 space-y-1">
-              {job.errorClass && (
-                <div>
-                  <span className="text-secondary">Class </span>
-                  <span className="font-mono text-primary">{job.errorClass}</span>
-                </div>
-              )}
-              <p className="text-primary">{job.error?.message ?? 'The platform recorded a failure without a message.'}</p>
-            </div>
-          </div>
-        </Card>
-      )}
+      {paused && <AttentionCard job={job} busy={cmd.busy} onRetry={() => void retry()} onRetryWithChanges={() => setAsking('retry')} onSkip={() => setAsking('skip')} onAbort={() => setAsking('abort')} />}
+
+      <FailureCard job={job} />
+
+      <ApprovalsCard job={job} busy={cmd.busy} onDecide={decide} />
+
+      <BatchSection job={job} types={types} />
 
       <Section title="Steps" description="What the workflow ran, in order." className="mb-8">
-        {job.steps?.length ? <StepTimeline steps={job.steps} children={job.children} highlight={job.failedStep} defaultOpen={job.failedStep ? [job.failedStep] : []} /> : <EmptyState compact icon="list" title="No steps recorded" message="The platform kept only this request's summary." />}
+        {job.steps?.length ? (
+          <StepTimeline steps={job.steps} children={childrenOf(job)} highlight={job.attention?.step ?? job.failedStep} defaultOpen={job.failedStep ? [job.failedStep] : []} />
+        ) : (
+          <EmptyState compact icon="list" title="No steps recorded" message="The platform kept only this request’s summary." />
+        )}
       </Section>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Section title="Input">{job.input ? <JsonView value={job.input} defaultExpanded={2} /> : <p className="text-sm text-tertiary">No input recorded.</p>}</Section>
-        <Section title="Outputs">{job.outputs ? <JsonView value={job.outputs} defaultExpanded={2} /> : <p className="text-sm text-tertiary">{open ? 'Nothing yet.' : 'No outputs recorded.'}</p>}</Section>
+        <Section title="Output">{job.output ? <JsonView value={job.output} defaultExpanded={2} /> : <p className="text-sm text-tertiary">{open ? 'Nothing yet.' : 'No output recorded.'}</p>}</Section>
       </div>
 
-      {cancelling && (
+      {asking === 'retry' && (
+        <RetryDialog
+          job={job}
+          types={types}
+          busy={cmd.busy}
+          failure={cmd.failure}
+          problems={problems}
+          onSubmit={(fix) => void retry(fix)}
+          onClose={() => {
+            setAsking(null)
+            setProblems([])
+            cmd.clear()
+          }}
+        />
+      )}
+      {asking === 'cancel' && (
         <ConfirmDialog
           title="Cancel this request?"
           tone="warning"
@@ -132,18 +185,40 @@ export default function RequestPage({ route }: PageProps) {
           confirmLabel="Cancel request"
           cancelLabel="Keep it running"
           message={
-            <>
-              The platform stops <span className="font-medium text-primary">{job.title}</span> at its next safe point. Steps that already ran are not undone; a create stopped before it finished leaves nothing behind.
-            </>
+            batch ? (
+              'Rows still waiting or running stop, and no further wave goes out. Rows that already ran keep what they did.'
+            ) : (
+              <>
+                The platform stops <span className="font-medium text-primary">{title}</span> at its next safe point. Steps that already ran are not undone; a create stopped before it finished leaves nothing behind.
+              </>
+            )
           }
-          onConfirm={async () => {
-            await cmd.run('Cancel this request', () => bff.jobs.cancel(id), {
-              invalidates: ['jobs', 'bff-job', 'console-resource', 'console-activity', 'resources'],
-              done: () => ({ title: 'Request cancelled', message: 'The platform stops it at its next safe point.' }),
-            })
-            void q.refetch()
-          }}
-          onClose={() => setCancelling(false)}
+          onConfirm={() => steer('cancel')}
+          onClose={() => setAsking(null)}
+        />
+      )}
+      {asking === 'skip' && (
+        <ConfirmDialog
+          title={`Skip ${job.attention?.step ?? 'the step'}?`}
+          tone="warning"
+          icon="arrow-right"
+          confirmLabel="Skip it"
+          cancelLabel="Keep it paused"
+          message="The request goes on as if the step had done its work, though it did not. Skip it only when its change was made some other way, or it is not needed."
+          onConfirm={() => steer('skip')}
+          onClose={() => setAsking(null)}
+        />
+      )}
+      {asking === 'abort' && (
+        <ConfirmDialog
+          title="Abort this request?"
+          tone="danger"
+          icon="stop"
+          confirmLabel="Abort the request"
+          cancelLabel="Keep it paused"
+          message="The failed step fails for good and the steps that ran are undone. A resource this request was creating is left failed, so it can be retried later."
+          onConfirm={() => steer('abort')}
+          onClose={() => setAsking(null)}
         />
       )}
     </>
