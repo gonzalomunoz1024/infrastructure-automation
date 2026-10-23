@@ -232,6 +232,16 @@ public class DemoIdentityRoutes {
                 Map<String, Object> d = new LinkedHashMap<>();
                 boolean allowed = !roles.isEmpty() && (ManagedRoles.anyAllows(roles, action) || "access-request:decide".equals(action)
                         && directory.byUserId(userId).map(p -> directory.decidesAccessRequests(p.subject(), accountId)).orElse(false));
+                Optional<DemoDirectory.DenyStatement> deny = directory.deniedBy(accountId, action, check.path("resource").asText(null));
+                if (deny.isPresent()) {
+                    d.put("allowed", false);
+                    d.put("reason", "Explicitly denied: " + action + " on " + deny.get().resourcePattern());
+                    d.put("role", strongest);
+                    d.put("policyId", "demo/deny");
+                    d.put("statement", "deny " + action + " " + deny.get().resourcePattern());
+                    decisions.add(d);
+                    continue;
+                }
                 d.put("allowed", allowed);
                 if (!allowed) {
                     d.put("reason", roles.isEmpty() ? "The user is not a member of account " + accountId

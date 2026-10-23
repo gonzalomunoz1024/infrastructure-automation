@@ -24,6 +24,7 @@ import org.springframework.web.server.ServerWebExchange;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.access.domain.DeniedRow;
 import com.iaf.console.bff.resources.domain.GoneException;
 import com.iaf.console.bff.session.application.CurrentSession;
 import com.iaf.console.bff.session.domain.NoConsoleAccountException;
@@ -51,7 +52,11 @@ public class BffExceptionHandler {
 
     /** The error body with a {@code denied} block. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record DeniedBody(String error, String correlationId, Denial denied) {
+    public record DeniedBody(String error, String correlationId, Denial denied, List<DeniedRow> deniedRows) {
+
+        public DeniedBody(String error, String correlationId, Denial denied) {
+            this(error, correlationId, denied, null);
+        }
     }
 
     @ExceptionHandler(CurrentSession.NoSessionException.class)
@@ -66,7 +71,7 @@ public class BffExceptionHandler {
 
     @ExceptionHandler(DeniedException.class)
     public Mono<ResponseEntity<DeniedBody>> denied(DeniedException ex, ServerWebExchange exchange) {
-        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(new DeniedBody(ex.getMessage(), Correlation.of(exchange), ex.denial())));
+        return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).body(new DeniedBody(ex.getMessage(), Correlation.of(exchange), ex.denial(), ex.rows())));
     }
 
     /** A step-up refusal's body: the code, the sentence, and where to sign in again. */

@@ -19,6 +19,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.access.domain.Decision;
+import com.iaf.console.bff.access.domain.DeniedException;
+import com.iaf.console.bff.access.domain.DeniedRow;
+import com.iaf.console.bff.access.domain.Denial;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
 import com.iaf.console.bff.jobs.domain.JobView;
 import com.iaf.console.bff.platform.application.PlatformClients;
@@ -378,9 +381,11 @@ public class Resources {
                         List.of(Problem.error("bulk.unsupported", "/verb", action.verb() + " has no batch route"))));
             }
             String actionName = AccessCheck.action(t.service(), action.verb());
-            String pattern = AccessCheck.typePattern(platform.partition(), t.service(), session.region(), session.accountId(), t.type());
             boolean create = "create".equals(body.verb());
-            return access.require(session, actionName, pattern)
+            if (!create) {
+                requireRowWfrns(session, t, action, body);
+            }
+            return (create ? access.require(session, actionName, typePattern(session, t)) : requireEveryRow(session, actionName, body))
                     .then(sessions.requireFreshFor(session, actionName))
                     .then(Mono.fromRunnable(() -> {
                         if (action.destructive() && !body.confirmed()) {
@@ -426,15 +431,52 @@ public class Resources {
         return Flux.concat(mints).collectList();
     }
 
+    /** Every row of a batch on existing resources names one of the path's type in the session's account and region. */
+    private static void requireRowWfrns(Session session, ConsoleType t, ConsoleAction action, BatchInput body) {
+        for (int i = 0; i < body.items().size(); i++) {
+            BatchInput.Row row = body.items().get(i);
+            if (row.wfrn() == null || row.wfrn().isBlank()) {
+                throw new InvalidInputException("every row of a " + action.verb() + " batch names its resource",
+                        List.of(Problem.error("required", "/items/" + i + "/wfrn", "the resource's wfrn")));
+            }
+            checkName(session, t, row.wfrn());
+        }
+    }
+
+    /**
+     * The verb decided on every row's own wfrn, as a single command would be (a deny on some
+     * resources never matches a check on the type's {@code *}), before anything starts. One refused
+     * row refuses the whole batch: a 403 with the first refused row's denial and every refused row
+     * in {@code deniedRows}.
+     */
+    private Mono<Void> requireEveryRow(Session session, String actionName, BatchInput body) {
+        List<AccessCheck> checks = body.items().stream().map(row -> new AccessCheck(actionName, row.wfrn())).toList();
+        return access.decide(session, checks).flatMap(decisions -> {
+            List<DeniedRow> denied = new ArrayList<>();
+            Denial first = null;
+            for (int i = 0; i < decisions.size(); i++) {
+                if (!decisions.get(i).allowed()) {
+                    denied.add(new DeniedRow(i, checks.get(i).resource()));
+                    if (first == null) {
+                        first = decisions.get(i).denial();
+                    }
+                }
+            }
+            if (denied.isEmpty()) {
+                return Mono.empty();
+            }
+            Denial d = first;
+            String reason = (denied.size() == 1 ? "1 row of the batch is" : denied.size() + " rows of the batch are") + " refused, nothing was started; "
+                    + d.reason();
+            return Mono.error(new DeniedException(new Denial(d.layer(), d.action(), d.resource(), reason, d.role(), d.policyId(), d.statement(),
+                    d.scope(), d.requestable(), d.suggestedRole()), denied));
+        });
+    }
+
     private Mono<List<Row>> existingRows(Session session, ConsoleType t, CatalogEntry entry, ConsoleAction action, BatchInput body) {
         List<Mono<Row>> rows = new ArrayList<>();
         for (int i = 0; i < body.items().size(); i++) {
             BatchInput.Row row = body.items().get(i);
-            if (row.wfrn() == null || row.wfrn().isBlank()) {
-                return Mono.error(new InvalidInputException("every row of a " + action.verb() + " batch names its resource",
-                        List.of(Problem.error("required", "/items/" + i + "/wfrn", "the resource's wfrn"))));
-            }
-            checkName(session, t, row.wfrn());
             rows.add(state.get(scope(session), caller(session), row.wfrn(), null).map(answer -> {
                 StateResource r = answer.resource();
                 Map<String, Object> input = new LinkedHashMap<>(row.input());

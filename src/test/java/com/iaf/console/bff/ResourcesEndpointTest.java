@@ -18,6 +18,8 @@ import org.springframework.http.codec.ServerSentEvent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import com.iaf.console.bff.access.application.Access;
+import com.iaf.console.bff.demo.directory.application.DemoDirectory;
 import com.iaf.console.bff.platform.application.PlatformClients;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.platform.client.PlatformPort;
@@ -37,6 +39,10 @@ class ResourcesEndpointTest extends DemoApp {
 
     @Autowired
     PlatformClients clients;
+    @Autowired
+    DemoDirectory directory;
+    @Autowired
+    Access access;
 
     @Test
     void createTurnsActiveThroughTheFeedAndShowsOnEveryPage() {
@@ -192,6 +198,43 @@ class ResourcesEndpointTest extends DemoApp {
         assertEquals(2, created.json().path("wfrns").size(), "a create batch answers the minted names: " + created.body());
         assertEquals(400, console.post(VM + ":batch", gonzalo, Map.of("verb", "restart", "items", List.of(Map.of("input", Map.of())))).status(),
                 "a row without a wfrn");
+    }
+
+    @Test
+    void aBatchIsDecidedOnEveryRowAndRefusedWholeWhenOneIsDenied() {
+        Console.Signed gonzalo = console.signIn("gonzalo");
+        String allowed = createVm(gonzalo, "batch-allowed");
+        String protectedVm = createVm(gonzalo, "batch-protected");
+        // a deny on one resource never matches a check on vm/*, so only a check per row finds it
+        DemoDirectory.DenyStatement deny = directory.deny(COMPUTE, "compute:restart", protectedVm.substring(0, protectedVm.length() - 4) + "*");
+        access.invalidate(COMPUTE);
+        try {
+            long jobsBefore = stream(console.getAt(VM + "/{wfrn}", gonzalo, Map.of(), allowed).json().path("jobs")).count();
+            Console.Reply refused = console.post(VM + ":batch", gonzalo, Map.of("verb", "restart", "items", List.of(
+                    Map.of("wfrn", allowed, "input", Map.of("reason", "wave")), Map.of("wfrn", protectedVm, "input", Map.of("reason", "wave"))),
+                    "defaults", Map.of("environment", "dev")));
+            assertEquals(403, refused.status(), refused.body());
+            JsonNode denied = refused.json().path("denied");
+            assertEquals("console-iam", denied.path("layer").asText());
+            assertEquals("compute:restart", denied.path("action").asText());
+            assertEquals(protectedVm, denied.path("resource").asText(), "the denial names the refused row: " + refused.body());
+            assertEquals(1, refused.json().path("deniedRows").size(), refused.body());
+            assertEquals(1, refused.json().path("deniedRows").get(0).path("index").asInt());
+            assertEquals(protectedVm, refused.json().path("deniedRows").get(0).path("wfrn").asText());
+            assertEquals(jobsBefore, stream(console.getAt(VM + "/{wfrn}", gonzalo, Map.of(), allowed).json().path("jobs")).count(),
+                    "nothing started, not even the allowed row");
+
+            Console.Reply single = console.sendAt(HttpMethod.POST, VM + "/{wfrn}:restart", gonzalo, Map.of("input", Map.of("reason", "one")), Map.of(),
+                    protectedVm);
+            assertEquals(403, single.status(), "the single verb is refused the same way: " + single.body());
+
+            Console.Reply rest = console.post(VM + ":batch", gonzalo, Map.of("verb", "restart", "items", List.of(
+                    Map.of("wfrn", allowed, "input", Map.of("reason", "wave"))), "defaults", Map.of("environment", "dev")));
+            assertEquals(202, rest.status(), rest.body());
+        } finally {
+            directory.removeDeny(deny);
+            access.invalidate(COMPUTE);
+        }
     }
 
     @Test

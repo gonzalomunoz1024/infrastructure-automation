@@ -37,6 +37,12 @@ service, with these details the contract does not spell out yet:
   (400 `confirm.required` otherwise) and a fresh sign-in (`console.auth.step-up`).
 - `POST /r/{type}:batch` answers 400 `bulk.unsupported` for a verb without a batch route and
   400 `required` for a row without `wfrn` on a verb other than create.
+- A batch on existing resources decides `<service>:<verb>` on every row's own wfrn, as the single
+  verb does, before anything starts (a create batch decides `<service>:create` on the type's
+  pattern, as a single create does). One refused row refuses the whole batch and nothing starts:
+  403 with the first refused row's `denied` (its `resource` that row's wfrn) and `deniedRows`, every
+  refused row as `{ index, wfrn }` in batch order. A row naming another type, account or region is a
+  404, as on the single verb.
 
 ## Search
 

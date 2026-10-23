@@ -32,6 +32,7 @@ public class DemoDirectory {
     private final Map<String, Map<String, DemoMembership>> memberships = new ConcurrentHashMap<>();
     private final Map<String, AccessRequest> accessRequests = new ConcurrentHashMap<>();
     private final Map<String, AtomicLong> versions = new ConcurrentHashMap<>();
+    private final List<DenyStatement> denies = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final Clock clock;
 
     public DemoDirectory(Clock clock) {
@@ -149,6 +150,43 @@ public class DemoDirectory {
             bump(accountId);
         }
         return removed;
+    }
+
+    /**
+     * An explicit deny of an account's policies, as the identity service evaluates one: the action,
+     * and a resource pattern in which {@code *} matches anything, while a {@code *} in the resource
+     * asked about is only itself.
+     */
+    public record DenyStatement(String accountId, String action, String resourcePattern) {
+
+        boolean denies(String account, String askedAction, String resource) {
+            if (!accountId.equals(account) || !action.equals(askedAction) || resource == null) {
+                return false;
+            }
+            List<String> parts = new ArrayList<>();
+            for (String part : resourcePattern.split("\\*", -1)) {
+                parts.add(java.util.regex.Pattern.quote(part));
+            }
+            return resource.matches(String.join(".*", parts));
+        }
+    }
+
+    /** Adds a deny statement to an account (the demo has no policy editor; tests use it); the account's version moves. */
+    public DenyStatement deny(String accountId, String action, String resourcePattern) {
+        DenyStatement statement = new DenyStatement(accountId, action, resourcePattern);
+        denies.add(statement);
+        bump(accountId);
+        return statement;
+    }
+
+    public void removeDeny(DenyStatement statement) {
+        denies.remove(statement);
+        bump(statement.accountId());
+    }
+
+    /** The deny statement that refuses the action on the resource, if any. */
+    public Optional<DenyStatement> deniedBy(String accountId, String action, String resource) {
+        return denies.stream().filter(d -> d.denies(accountId, action, resource)).findFirst();
     }
 
     public long version(String accountId) {
