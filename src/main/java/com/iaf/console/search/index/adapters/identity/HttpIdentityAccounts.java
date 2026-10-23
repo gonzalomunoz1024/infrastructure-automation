@@ -2,9 +2,7 @@ package com.iaf.console.search.index.adapters.identity;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Consumer;
 
-import org.springframework.http.HttpHeaders;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -13,15 +11,16 @@ import com.iaf.console.search.index.ports.outbound.AccountsPort;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** Every console account, from the identity service's {@code GET /v1/accounts} as the internal principal, page after page. */
+/**
+ * Every console account, from the identity service's {@code GET /v1/accounts} as the internal
+ * principal (the WebClient carries this service's credentials), page after page.
+ */
 public final class HttpIdentityAccounts implements AccountsPort {
 
     private final WebClient web;
-    private final Consumer<HttpHeaders> credentials;
 
-    public HttpIdentityAccounts(WebClient web, Consumer<HttpHeaders> credentials) {
+    public HttpIdentityAccounts(WebClient web) {
         this.web = web;
-        this.credentials = credentials;
     }
 
     private record Listed(List<String> ids, String next) {
@@ -39,7 +38,7 @@ public final class HttpIdentityAccounts implements AccountsPort {
                 b.queryParam("after", after);
             }
             return b.build();
-        }).headers(credentials::accept).retrieve().bodyToMono(JsonNode.class).map(body -> {
+        }).retrieve().bodyToMono(JsonNode.class).map(body -> {
             List<String> ids = new ArrayList<>();
             body.path("items").forEach(a -> {
                 String id = a.path("accountId").asText(null);

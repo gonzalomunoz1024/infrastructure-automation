@@ -49,6 +49,7 @@ public final class StatePoller implements EventSource {
     private final AtomicLong handled = new AtomicLong();
     private final AtomicReference<Instant> lastEventAt = new AtomicReference<>();
     private final AtomicReference<String> lastError = new AtomicReference<>();
+    private final AtomicLong failures = new AtomicLong();
     private volatile Disposable ticking;
 
     public StatePoller(StateServicePort state, AccountsPort accounts, SearchIndexPort index, IndexingService indexing, CheckpointPort checkpoints,
@@ -62,15 +63,25 @@ public final class StatePoller implements EventSource {
         this.interval = interval;
     }
 
-    /** One pass over every account: the number of documents written. */
+    /** One pass over every account: the number of documents written. A pass with no failure clears the last error. */
     public Mono<Long> tick() {
-        return accounts.listAccountIds().concatWith(index.listAccountIds()).distinct()
-                .concatMap(this::poll)
-                .reduce(0L, Long::sum)
-                .doOnError(e -> {
-                    lastError.set(e.toString());
-                    log.warn("the poll failed: {}", e.toString());
-                });
+        return Mono.defer(() -> {
+            long failedBefore = failures.get();
+            return accounts.listAccountIds().concatWith(index.listAccountIds()).distinct()
+                    .concatMap(this::poll)
+                    .reduce(0L, Long::sum)
+                    .doOnSuccess(n -> {
+                        if (failures.get() == failedBefore) {
+                            // every account caught up from its checkpoint, so the last failure is behind it
+                            lastError.set(null);
+                        }
+                    })
+                    .doOnError(e -> {
+                        failures.incrementAndGet();
+                        lastError.set(e.toString());
+                        log.warn("the poll failed: {}", e.toString());
+                    });
+        });
     }
 
     private Mono<Long> poll(String accountId) {
@@ -103,6 +114,7 @@ public final class StatePoller implements EventSource {
                         return checkpoints.save(new Checkpoint(source, top, clock.instant(), checkpoint.applied() + n)).thenReturn(n);
                     })
                     .onErrorResume(e -> {
+                        failures.incrementAndGet();
                         lastError.set(e.toString());
                         log.warn("polling account {} failed: {}", accountId, e.toString());
                         return Mono.just(0L);

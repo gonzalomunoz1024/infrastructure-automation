@@ -101,9 +101,24 @@ Everything is under `console.*` with defaults that run the demo (`application.ya
 | `CONSOLE_KAFKA_BOOTSTRAP` | `console.ingest.kafka.bootstrap-servers` | `localhost:9092` |
 | `CONSOLE_MONGO_URI` | `spring.data.mongodb.uri` (profile `mongo`: rebuild runs, checkpoints) | `mongodb://localhost:27017` |
 | `CONSOLE_STATE_URL` | `console.state.url` | `http://localhost:18082` |
-| `CONSOLE_STATE_TOKEN` or `CONSOLE_SIGNING_KEY` | how this service calls the state and identity services: a static token, or a copy of the BFF's signing key (an EC JWK) to sign 60-second tokens as `svc:console-search-indexer` | none (the demo uses dev headers) |
+| `CONSOLE_AUTH_TOKEN_URL` | `console.auth.token-url`, where the BFF issues this service its tokens | `http://localhost:18081/internal/v1/token` |
+| `CONSOLE_AUTH_CLIENT_ASSERTION_FILE` or `CONSOLE_AUTH_CLIENT_KEY` | how this service proves itself to the BFF: the projected service-account token's file (a cluster), or its own private EC JWK with a `kid`, registered with the BFF (anywhere else) | none (the demo uses dev headers) |
 | `CONSOLE_IDENTITY_URL` | `console.identity.url`, the accounts a full rebuild walks | empty: `console.rebuild.accounts` |
 | `CONSOLE_PLATFORM_URL`, `CONSOLE_PLATFORM_TOKEN` | `console.platform.*`, the resource types | `http://localhost:18090` |
+
+### Calling the state and identity services
+
+The service reads the state service (whole resources, rebuilds) and the identity service (the
+accounts a full rebuild walks) as itself, with service tokens the BFF issues it (hub decision 23,
+`issueServiceToken` in `contracts/openapi/console-bff.yaml`). It asks `POST /internal/v1/token`
+with OAuth 2.0 client credentials and a JWT client assertion, one token per callee
+(`audience=console-state-service`, `audience=console-identity-service`), keeps each token for 80%
+of its five minutes, and asks once more when a callee answers 401. The assertion is the pod's
+projected service-account token (audience `console-bff`, the chart mounts it and the BFF knows
+`system:serviceaccount:<namespace>:console-search-indexer`) or, outside a cluster, a one-minute JWT
+signed with `CONSOLE_AUTH_CLIENT_KEY`, whose public half the BFF registers for the client
+(`--console.trust.clients.console-search-indexer.jwks=…` on the BFF). No secret holds a token, and
+the BFF's signing key never leaves it.
 
 ## Operate it
 
@@ -141,5 +156,6 @@ contract and `contracts/additions.md`; `ArchitectureTest` holds the slices to th
 `com.iaf.console.search.index` is the slice: `domain` (documents, the event folds, the query
 language, pure Java), `ports.outbound` (the index, the state service, the types, the accounts, the
 stores), `application` (indexing, the poller, rebuilds, queries, housekeeping) and `adapters`
-(`opensearch`, `memory`, `kafka`, `state`, `platform`, `identity`, `mongo`, `web`).
-`com.iaf.console.search.auth` checks the callers; `com.iaf.console.search.boot` wires it all.
+(`opensearch`, `memory`, `kafka`, `state`, `platform`, `identity`, `mongo`, `web`, and `tokens`,
+the BFF's service tokens for the state and identity calls). `com.iaf.console.search.auth` checks
+the callers; `com.iaf.console.search.boot` wires it all.

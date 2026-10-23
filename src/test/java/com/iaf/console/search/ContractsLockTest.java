@@ -28,6 +28,7 @@ class ContractsLockTest {
             "contracts/openapi/console-search-indexer.yaml", "src/test/resources/contracts/openapi/console-search-indexer.yaml",
             "contracts/asyncapi/console-events.yaml", "src/test/resources/contracts/asyncapi/console-events.yaml",
             "contracts/openapi/console-state-service.yaml", "src/test/resources/contracts/openapi/console-state-service.yaml",
+            "contracts/openapi/console-bff.yaml", "src/test/resources/contracts/openapi/console-bff.yaml",
             "contracts/openapi/console-identity-service.yaml", "src/test/resources/contracts/openapi/console-identity-service.yaml",
             "contracts/platform/openapi-target.yaml", "src/test/resources/contracts/platform/openapi-target.yaml");
 

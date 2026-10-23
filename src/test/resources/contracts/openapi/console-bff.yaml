@@ -1,0 +1,1885 @@
+openapi: 3.1.0
+x-status: draft
+info:
+  title: console-bff
+  version: 1.0.0
+  summary: The API the console's web app talks to, one call per screen, signed in with a session cookie.
+  description: |
+    Phase 0 draft: the names, the paths and the rules below are agreed; field lists will grow.
+
+    **Session and account scope.** The web app signs in through `/auth/login` and holds a session
+    cookie (`console_session`, HttpOnly, SameSite=Lax); every `/console/v1/*` call carries it and
+    the `X-Csrf-Token` header the session answers. The session names the current account and
+    region; every call is scoped to them. A resource of another account answers 404, never 403.
+    Switching accounts is `PUT /console/v1/session`.
+
+    **How a call reaches the platform.** The BFF holds, per console account, the account's
+    platform service account (P-03) and signs an `X-On-Behalf-Of` assertion for the session's user
+    (P-02); a command mints a wfrn at the state service first, then starts the platform job with
+    `X-Resource-Wfrn`, `X-Console-Request-Id` and `X-Job-Label-*` (P-04). The platform's job id and
+    the console request id come back on every command.
+
+    **Paging.** Lists answer `{ items, next }`; `next` is an opaque cursor, null on the last page,
+    sent back as `after`. `limit` is 1 to 200, 50 by default.
+
+    **Errors.** `{ error, problems?, denied?, detail?, correlationId? }`: 400 bad input (`problems`
+    carry the platform's `Problem` rows, with the field as a JSON pointer, so the form can mark
+    them), 401 no session, 403 the account's policies deny it (the only place the console answers
+    403: within the user's own account), 404 unknown or another account's, 409 a conflict, 429 over
+    a quota (with `Retry-After`), 502 the platform answered an error (with its `correlationId`).
+
+    **Every 403 but a missing CSRF token carries `denied`**, a `Denial`: which layer decided
+    (`console-iam`, the account's roles and policies, or `platform`, the platform's own scopes),
+    the `<service>:<verb>` action and the wfrn or pattern checked, the reason, the role, policy and
+    statement (console IAM) or scope (platform) behind it, whether the person may request access
+    and which role would grant it. A step-up refusal (a fresh sign-in is needed for the action) is
+    a 403 with `detail: { stepUp: true, action, login }`, `login` being the `/auth/login` URL to
+    send the person to. The same `Denial` greys an action in the descriptors
+    (`ConsoleAction.allowed` and `denied`), decided per session with `<service>:<verb>` on
+    `wfrn:<partition>:<service>:<region>:<account>:<type>/*`.
+
+    **IAM in the console.** `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas}` and
+    their sub-paths pass through to the identity service's `/v1/accounts/{accountId}/…` for the
+    session's account, with the identity service's schemas unchanged
+    (`contracts/openapi/console-identity-service.yaml`): `If-Match`, `If-None-Match`,
+    `Idempotency-Key` and `Content-Type` are forwarded, the status, `ETag` and body come back as
+    they were, and a 403 without a `denied` block gets one. Writes need `X-Csrf-Token` like every
+    other write. Access requests (`/console/v1/access-requests`) let a person ask for an action a
+    denial marked `requestable`; an account admin decides them.
+
+    **Keys.** `GET /.well-known/jwks.json` publishes the public keys the other console services
+    verify this service's internal tokens and `X-On-Behalf-Of` assertions with.
+
+    **Service tokens.** The BFF is the only issuer of internal JWTs. A console service that calls
+    another on its own (the search indexer reading the state service and the accounts) gets a
+    token at `POST /internal/v1/token`: OAuth 2.0 client credentials authenticated by a JWT client
+    assertion (RFC 7523), either the pod's projected Kubernetes service-account token (audience
+    `console-bff`) or a JWT the service signs with its own registered EC key. The token lives 5
+    minutes, names only the audiences asked for, carries `sub` and `svc` the service id and no
+    `acct`. The path is in-cluster only; the ingress never routes `/internal`.
+
+    **wfrns in URLs.** `/console/v1/r/{type}/{wfrn}` takes the wfrn percent-encoded; the type is
+    repeated in the path so the same template never serves two shapes, and the BFF answers 404 when
+    the wfrn's type segment is not `{type}`.
+
+    **Verbs.** A resource's actions are the catalog's verbs for its type (P-08): `create` is
+    `POST /console/v1/r/{type}`, `update` is `PATCH /console/v1/r/{type}/{wfrn}`, every other verb,
+    `delete` included, is `POST /console/v1/r/{type}/{wfrn}:{verb}`. Each has `:preview`, and a
+    verb with `bulk` has `POST /console/v1/r/{type}:batch`.
+  contact:
+    name: Customer console hub (console-root)
+servers:
+  - url: /
+tags:
+  - name: Auth
+  - name: Session
+  - name: Types
+  - name: Resources
+  - name: Commands
+  - name: Jobs
+  - name: Approvals
+  - name: Events
+  - name: Search
+  - name: Preferences
+  - name: IAM
+    description: The identity service for the session's account, passed through
+  - name: Access requests
+  - name: Keys
+  - name: Service tokens
+    description: Tokens for console services calling each other on their own (in-cluster only)
+  - name: Health
+security:
+  - session: []
+paths:
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness and readiness
+      tags: [Health]
+      security: []
+      responses:
+        '200':
+          description: Up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Down
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+  /auth/login:
+    get:
+      operationId: login
+      summary: Start the sign-in
+      description: Redirects to the identity provider (OIDC, authorization code with PKCE); `returnTo` must be a console path. `login_hint` goes to the provider as is (the demo provider then skips its picker); `stepUp=true` asks for a fresh authentication (`prompt=login`, `max_age=0`) and marks the session stepped up for the actions that need it.
+      tags: [Auth]
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          schema: { type: string, pattern: '^/' }
+        - name: login_hint
+          in: query
+          schema: { type: string }
+        - name: stepUp
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '302':
+          description: To the identity provider
+          headers:
+            Location:
+              schema: { type: string }
+  /auth/callback:
+    get:
+      operationId: loginCallback
+      summary: The identity provider's answer
+      description: Exchanges the code, resolves the user at the identity service, opens the session and redirects to `returnTo`.
+      tags: [Auth]
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: To the console, with the session cookie set
+          headers:
+            Location:
+              schema: { type: string }
+            Set-Cookie:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403':
+          description: The user belongs to no console account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: End the session
+      tags: [Auth]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: The session is gone and the cookie cleared
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+  /console/v1/session:
+    get:
+      operationId: getSession
+      summary: Who is signed in, in which account and region
+      tags: [Session]
+      responses:
+        '200':
+          description: The session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: switchSession
+      summary: Switch the account or the region
+      tags: [Session]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accountId: { $ref: '#/components/schemas/AccountId' }
+                region: { $ref: '#/components/schemas/RegionName' }
+      responses:
+        '200':
+          description: The session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/accounts:
+    get:
+      operationId: listAccounts
+      summary: The accounts the user may switch to
+      tags: [Session]
+      responses:
+        '200':
+          description: The accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccountSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/regions:
+    get:
+      operationId: listRegions
+      summary: The regions, with what each offers
+      description: The platform's regions (P-07) with their availability, cached and refreshed on `region.changed`.
+      tags: [Session]
+      responses:
+        '200':
+          description: The regions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Region' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/types:
+    get:
+      operationId: listTypes
+      summary: The resource types the console shows
+      description: One `ConsoleType` per visible type of the current region, grouped by service, built from the platform's resource types, the catalog and the hub's overlays; answers an `ETag` and honours `If-None-Match`.
+      tags: [Types]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The types
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleType' }
+        '304':
+          description: Not modified
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/types/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        description: '`<service>/<type>`, percent-encoded (`compute%2Fvm`)'
+        schema: { type: string }
+    get:
+      operationId: getType
+      summary: One type's descriptor
+      tags: [Types]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The descriptor
+          headers:
+            ETag:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleType' }
+        '304':
+          description: Not modified
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    get:
+      operationId: listResources
+      summary: List resources of a type
+      description: The account's resources of the type in the current region, from the state service, with the search index for `q`.
+      tags: [Resources]
+      parameters:
+        - name: q
+          in: query
+          description: Free text over name, wfrn, tags and searchable fields
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceState' }
+        - name: tag.<name>
+          in: query
+          schema: { type: string }
+          x-name-pattern: '^tag\.[a-z0-9-]{1,32}$'
+        - name: drift
+          in: query
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          description: 'A column, `-` for descending, for example `-created`'
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ConsoleResource' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createResource
+      summary: Create a resource
+      description: Mints the wfrn, then starts the type's create workflow with the delegation and the context. The resource shows at once in `pending`.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}:preview:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    post:
+      operationId: previewCreate
+      summary: Preview a create
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Preview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}:batch:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+    post:
+      operationId: batchCommand
+      summary: Run a verb on many resources
+      description: One platform batch (P-04's `contexts` carry each row's wfrn); for `create`, each row is minted first.
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchInput' }
+      responses:
+        '202':
+          description: The batch was accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResource
+      summary: A resource's detail page
+      description: The resource, its observed truth, its open finding, its last jobs, its neighbours and what the user may do with it, in one answer.
+      tags: [Resources]
+      responses:
+        '200':
+          description: The detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConsoleResourceDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Deleted; the tombstone says when
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      operationId: updateResource
+      summary: Update a resource
+      description: 'The type''s `update` verb (P-08): only `mutableFields` may be sent; the state service records `UpdateRequested` and the job is started with the context.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:{verb}:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+      - $ref: '#/components/parameters/VerbPath'
+    post:
+      operationId: runVerb
+      summary: Run a verb on a resource
+      description: 'Any verb of the type''s catalog but `create` and `update`: `delete`, `restart`, `upgrade` and so on. A destructive verb needs `confirm: true` in the body.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '202': { $ref: '#/components/responses/CommandAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}:{verb}:preview:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+      - $ref: '#/components/parameters/VerbPath'
+    post:
+      operationId: previewVerb
+      summary: Preview a verb on a resource
+      description: '`update` included: `POST .../{wfrn}:update:preview` previews a PATCH.'
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Preview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/r/{type}/{wfrn}/activity:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: listResourceActivity
+      summary: A resource's activity
+      description: Its state events and the platform jobs about it, newest first.
+      tags: [Resources]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ActivityEntry' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/drift:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceDrift
+      summary: A resource's open and closed findings
+      tags: [Resources]
+      responses:
+        '200':
+          description: The findings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Finding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/lineage:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    get:
+      operationId: getResourceLineage
+      summary: What a resource was built from and what depends on it
+      tags: [Resources]
+      responses:
+        '200':
+          description: The graph, within the account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lineage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/r/{type}/{wfrn}/tags:
+    parameters:
+      - $ref: '#/components/parameters/TypePath'
+      - $ref: '#/components/parameters/WfrnPath'
+    put:
+      operationId: setResourceTags
+      summary: Replace a resource's tags
+      tags: [Commands]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: { type: string, maxLength: 256 }
+      responses:
+        '200':
+          description: The tags as they now stand
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /console/v1/jobs:
+    get:
+      operationId: listJobs
+      summary: The account's jobs
+      tags: [Jobs]
+      parameters:
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: workflow
+          in: query
+          schema: { type: string }
+        - name: requester
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/JobSummary' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/jobs/{jobId}:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    get:
+      operationId: getJob
+      summary: A job with its steps
+      tags: [Jobs]
+      responses:
+        '200':
+          description: The job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/jobs/{jobId}:cancel:
+    parameters:
+      - $ref: '#/components/parameters/JobIdPath'
+    post:
+      operationId: cancelJob
+      summary: Cancel a job
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '202':
+          description: Accepted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/approvals:
+    get:
+      operationId: listApprovals
+      summary: Approvals waiting for the user, and the ones they asked for
+      tags: [Approvals]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected, expired] }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Approval' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/approvals/{approvalId}:decide:
+    parameters:
+      - name: approvalId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideApproval
+      summary: Approve or reject
+      tags: [Approvals]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                comment: { type: string, maxLength: 1000 }
+      responses:
+        '202':
+          description: Accepted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /console/v1/events:
+    get:
+      operationId: streamEvents
+      summary: Live updates for open pages
+      description: Server-sent events of the account's resources, findings and jobs; `id:` is a cursor the browser sends back as `Last-Event-ID`, `event:` is the event type and `data:` the event. `wfrn` narrows the stream to one resource.
+      tags: [Events]
+      parameters:
+        - name: wfrn
+          in: query
+          schema: { $ref: '#/components/schemas/Wfrn' }
+        - name: types
+          in: query
+          description: Comma-separated event types
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+      responses:
+        '200':
+          description: A stream of LiveEvent
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/LiveEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/search:
+    get:
+      operationId: search
+      summary: Search the account's resources
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, maxLength: 256 }
+        - name: type
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page of hits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SearchHit' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/suggest:
+    get:
+      operationId: suggest
+      summary: Type-ahead over names, wfrns, tags and types
+      tags: [Search]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 8 }
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Suggestion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /console/v1/iam/{collection}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+    get:
+      operationId: listIam
+      summary: List an IAM collection of the session's account
+      description: 'Passes through to `GET /v1/accounts/{accountId}/{collection}` of the identity service; the page shape and the items are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createIam
+      summary: Create in an IAM collection of the session's account
+      description: 'Passes through to the identity service''s POST with the body unchanged; the status (201, or 200 for an access key, whose secret is answered this once) and the body are its'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '201': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /console/v1/iam/{collection}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+    get:
+      operationId: getIam
+      summary: One IAM record of the session's account
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '304': { description: Unchanged }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateIam
+      summary: Change an IAM record
+      description: 'For users, groups, roles and quotas, as the identity service''s PATCH; `If-Match` carries the version and 409 says it moved on'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    put:
+      operationId: replaceIam
+      summary: Replace an IAM record
+      description: 'For policies, as the identity service''s PUT'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      operationId: deleteIam
+      summary: Remove an IAM record
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/iam/{collection}/{id}:{action}:
+    parameters:
+      - $ref: '#/components/parameters/IamCollection'
+      - $ref: '#/components/parameters/IamId'
+      - $ref: '#/components/parameters/IamAction'
+    post:
+      operationId: iamAction
+      summary: An IAM record's action
+      description: '`rotate` on an access key (the new secret is answered this once) and `request-increase` on a quota, as the identity service''s `:{action}` operations'
+      tags: [IAM]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IamBody' }
+      responses:
+        '200': { $ref: '#/components/responses/IamAnswer' }
+        '202': { $ref: '#/components/responses/IamAnswer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /console/v1/access-requests:
+    get:
+      operationId: listAccessRequests
+      summary: Access requests
+      description: '`scope=mine` (the default) lists the person''s own requests; `scope=account` lists every request of the account, for its admins'
+      tags: [Access requests]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AccessRequestStatus' }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [mine, account], default: mine }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/After'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessRequest' }
+                  next: { $ref: '#/components/schemas/Cursor' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      operationId: createAccessRequest
+      summary: Ask for an action a denial marked requestable
+      description: 'Opens a request to the account''s admins; the same open request (same action, resource and role) answers 409 with the existing one'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequestInput' }
+      responses:
+        '202':
+          description: The request, pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: The same request is already open
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+  /console/v1/access-requests/{requestId}:decide:
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      operationId: decideAccessRequest
+      summary: Approve or reject an access request
+      description: 'For the account''s admins; approving grants the suggested role (or the role asked for) and the requester''s next session carries it'
+      tags: [Access requests]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessDecision' }
+      responses:
+        '202':
+          description: The request, decided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRequest' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /.well-known/jwks.json:
+    get:
+      operationId: getJwks
+      summary: The BFF's public keys
+      description: The keys the other console services verify this service's internal tokens and X-On-Behalf-Of assertions with (RFC 7517); the current key and the previous one during a rotation, each with a `kid`
+      tags: [Keys]
+      security: []
+      responses:
+        '200':
+          description: The key set
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: 'public, max-age=300'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JsonWebKeySet' }
+  /internal/v1/token:
+    post:
+      operationId: issueServiceToken
+      summary: A service token for a console service
+      description: |
+        OAuth 2.0 client credentials (RFC 6749 §4.4) with a JWT client assertion (RFC 7523 §2.2).
+        The assertion is either the caller's projected Kubernetes service-account token, audience
+        `console-bff`, issued by the cluster the BFF trusts to a service account registered for a
+        client; or a JWT the client signs with a key registered for it: `iss` and `sub` the client
+        id, `aud` containing `console-bff`, `iat`, `exp` at most 5 minutes after `iat`, and a `jti`
+        never used before. Asymmetric algorithms only (ES256, ES384, RS256, PS256).
+
+        The answer is an internal JWT of the BFF (ES256, its JWKS): `iss` `console-bff`, `aud` the
+        services asked for (each registered for the client; all of them when none is asked),
+        `sub` and `svc` the client id, `iat`, `exp`, `jti`, and no `acct`, which every console service
+        treats as the console-internal principal. Errors are RFC 6749 §5.2 bodies. Not routed by
+        the ingress: in-cluster callers only.
+      tags: [Service tokens]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/ServiceTokenRequest' }
+            encoding:
+              audience: { style: form, explode: true }
+      responses:
+        '200':
+          description: The token
+          headers:
+            Cache-Control:
+              schema: { type: string }
+              description: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServiceToken' }
+        '400':
+          description: '`invalid_request` (a field is missing or malformed), `unsupported_grant_type`, `invalid_target` (an audience the client is not registered for)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+        '401':
+          description: '`invalid_client`: the assertion does not verify, has expired or was used before, or names no registered client'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthError' }
+  /console/v1/preferences:
+    get:
+      operationId: getPreferences
+      summary: The user's preferences
+      tags: [Preferences]
+      responses:
+        '200':
+          description: The preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: putPreferences
+      summary: Replace the user's preferences
+      tags: [Preferences]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Preferences' }
+      responses:
+        '200':
+          description: The preferences
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Preferences' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: console_session
+      description: The session cookie set by /auth/callback; state-changing calls also send X-Csrf-Token
+  parameters:
+    CsrfToken:
+      name: X-Csrf-Token
+      in: header
+      required: true
+      description: The token the session answers; a state-changing call without it is 403
+      schema: { type: string }
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      schema: { type: string }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: The version the caller holds; 409 when the record moved on
+      schema: { type: string }
+    IamCollection:
+      name: collection
+      in: path
+      required: true
+      schema: { type: string, enum: [users, groups, roles, policies, access-keys, quotas] }
+    IamId:
+      name: id
+      in: path
+      required: true
+      description: The record's id (a quota's key)
+      schema: { type: string }
+    IamAction:
+      name: action
+      in: path
+      required: true
+      schema: { type: string, enum: [rotate, request-increase] }
+    TypePath:
+      name: type
+      in: path
+      required: true
+      description: A resource type name
+      schema: { type: string, pattern: '^[a-z0-9-]{1,64}$' }
+    WfrnPath:
+      name: wfrn
+      in: path
+      required: true
+      description: The resource's wfrn, percent-encoded; its type segment must be the path's type
+      schema: { $ref: '#/components/schemas/Wfrn' }
+    VerbPath:
+      name: verb
+      in: path
+      required: true
+      description: 'A verb of the type''s catalog other than create and update'
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,31}$' }
+    JobIdPath:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    After:
+      name: after
+      in: query
+      required: false
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Passed through to the platform (P-21) and to the state service; the web app sends one per form submission
+      schema: { type: string, maxLength: 255 }
+  responses:
+    CommandAccepted:
+      description: The job was started
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/CommandAccepted' }
+    Preview:
+      description: What the run would do
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Preview' }
+    BadRequest:
+      description: Bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: No session
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: 'The account''s policies deny it (`denied` says which layer, why, and what to request), a step-up is needed (`detail.stepUp`), or the CSRF token is missing (no `denied`)'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    IamAnswer:
+      description: 'The identity service''s answer, unchanged: its schema for the collection (contracts/openapi/console-identity-service.yaml), its ETag'
+      headers:
+        ETag:
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/IamBody' }
+    NotFound:
+      description: Unknown, or another account's
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: A conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Over a quota
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadGateway:
+      description: The platform or a console service answered an error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Wfrn:
+      type: string
+      maxLength: 1024
+      pattern: '^wfrn:[a-z0-9-]{1,32}:[a-z0-9-]{2,32}:(|[a-z0-9-]{2,32}):(|[0-9]{12}):[a-z0-9-]{1,64}/[a-z0-9-]{1,128}(/[a-z0-9-]{1,128})*$'
+    AccountId:
+      type: string
+      pattern: '^[0-9]{12}$'
+    RegionName:
+      type: string
+      pattern: '^[a-z0-9-]{2,32}$'
+    Cursor:
+      type: [string, 'null']
+    ResourceState:
+      type: string
+      enum: [pending, active, updating, deleting, deleted, failed]
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        problems:
+          type: array
+          items: { $ref: '#/components/schemas/Problem' }
+        denied: { $ref: '#/components/schemas/Denial' }
+        detail:
+          type: object
+          description: 'More about the refusal; a step-up refusal is `{ stepUp: true, action, login }`'
+          properties:
+            stepUp: { type: boolean }
+            action: { type: string, description: 'The `<service>:<verb>` that needs a fresh sign-in' }
+            login: { type: string, description: 'The /auth/login URL to send the person to, with stepUp=true and returnTo set' }
+          additionalProperties: true
+        correlationId: { type: string }
+    Denial:
+      type: object
+      description: Why an action is refused or greyed, from the layer that decided
+      required: [layer, action, reason, requestable]
+      properties:
+        layer: { type: string, enum: [console-iam, platform], description: "The account's roles and policies, or the platform's own scopes" }
+        action: { type: string, description: '`<service>:<verb>`' }
+        resource: { type: string, description: The wfrn or pattern checked }
+        reason: { type: string, description: One sentence a person can act on }
+        role: { type: string, description: 'console-iam: the role the decision came from' }
+        policyId: { type: string, description: 'console-iam: the policy' }
+        statement: { type: string, description: 'console-iam: the statement id' }
+        scope: { type: string, description: 'platform: the scope the service account lacks' }
+        requestable: { type: boolean, description: Whether the person may open an access request for it }
+        suggestedRole: { type: string, description: The managed role that would allow it }
+    Problem:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        field: { type: string, description: A JSON pointer into the submitted body }
+        message: { type: string }
+        level: { type: string, enum: [error, warning] }
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [UP, DOWN, OUT_OF_SERVICE, UNKNOWN] }
+        components: { type: object, additionalProperties: true }
+    Session:
+      type: object
+      required: [user, account, region, csrfToken, expiresAt]
+      properties:
+        user:
+          type: object
+          required: [userId, email]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+            groups:
+              type: array
+              items: { type: string }
+        account: { $ref: '#/components/schemas/AccountSummary' }
+        region: { $ref: '#/components/schemas/RegionName' }
+        csrfToken: { type: string, description: Computed at run time, sent back as X-Csrf-Token }
+        expiresAt: { type: string, format: date-time }
+    AccountSummary:
+      type: object
+      required: [accountId, name]
+      properties:
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        name: { type: string }
+        status: { type: string }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        roles:
+          type: array
+          description: 'The managed role names the person holds in the account: viewer, operator, account-admin, auditor (shown as Viewer, Operator, Admin, Auditor)'
+          items: { type: string }
+        groups:
+          type: array
+          description: The person's groups in the account
+          items: { type: string }
+    Region:
+      type: object
+      required: [name, status, environments]
+      properties:
+        name: { $ref: '#/components/schemas/RegionName' }
+        title: { type: string }
+        status: { type: string, enum: [available, opt-in, retired] }
+        environments:
+          type: array
+          items: { type: string }
+        types:
+          type: array
+          description: The types available there
+          items: { type: string }
+    ConsoleAction:
+      type: object
+      description: One verb of the type's catalog, as the Actions menu draws it (P-08)
+      required: [verb, title, method, destructive, approval, bulk, preview, allowed]
+      properties:
+        verb: { type: string }
+        title: { type: string }
+        description: { type: string }
+        method: { type: string, enum: [POST, PATCH, DELETE], description: "The catalog entry's own method when it names one, else create is POST, update is PATCH, delete is DELETE and any other verb is POST" }
+        allowed: { type: boolean, description: 'Whether this session may run it, decided with `<service>:<verb>` on `wfrn:<partition>:<service>:<region>:<account>:<type>/*`' }
+        denied: { $ref: '#/components/schemas/Denial', description: Why not, when allowed is false }
+        destructive: { type: boolean }
+        approval: { type: boolean }
+        bulk: { type: boolean }
+        preview: { type: boolean }
+        effect: { type: string, enum: [create, change, delete, read, none, unknown] }
+        subjectInput: { type: [string, 'null'] }
+        mutableFields:
+          type: array
+          items: { type: string }
+        input: { type: object, description: The JSON Schema of the inputs the form shows (the subject left out), additionalProperties: true }
+        workflow: { type: string }
+        version: { type: string }
+        deprecated:
+          type: object
+          properties:
+            since: { type: string }
+            sunset: { type: string }
+            message: { type: string }
+    ConsoleType:
+      type: object
+      description: 'Everything the web app needs to draw a type''s list, detail and forms'
+      required: [key, type, service, plural, title, schema, states, list, detail, lifecycle, actions, etag]
+      properties:
+        key: { type: string, description: '`<service>/<type>`' }
+        type: { type: string }
+        service: { type: string }
+        plural: { type: string }
+        title: { type: string }
+        icon: { type: string }
+        description: { type: string }
+        schema: { type: object, description: The JSON Schema of the attributes with the x-console hints merged in, additionalProperties: true }
+        states:
+          type: array
+          items: { type: string }
+        list:
+          type: object
+          required: [columns]
+          properties:
+            columns:
+              type: array
+              items: { type: string }
+            defaultSort: { type: string }
+        detail:
+          type: object
+          required: [tabs]
+          properties:
+            tabs:
+              type: array
+              items: { type: string, enum: [configuration, drift, activity, relationships, tags, monitoring, permissions, json] }
+        lifecycle:
+          type: object
+          description: Platform status to lifecycle class
+          additionalProperties: { $ref: '#/components/schemas/ResourceState' }
+        observe:
+          type: object
+          properties:
+            supported: { type: boolean }
+            interval: { type: string }
+            metrics: { type: boolean }
+            discover: { type: boolean }
+        actions:
+          type: array
+          items: { $ref: '#/components/schemas/ConsoleAction' }
+        etag: { type: string }
+    ConsoleResource:
+      type: object
+      required: [wfrn, type, service, state, version, attributes, tags, createdAt, updatedAt]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        service: { type: string }
+        name: { type: string }
+        region: { $ref: '#/components/schemas/RegionName' }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        version: { type: integer }
+        attributes: { type: object, additionalProperties: true }
+        observed: { type: object, additionalProperties: true }
+        drift: { type: boolean }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastJob: { $ref: '#/components/schemas/JobSummary' }
+    ConsoleResourceDetail:
+      allOf:
+        - $ref: '#/components/schemas/ConsoleResource'
+        - type: object
+          required: [can]
+          properties:
+            finding: { $ref: '#/components/schemas/Finding' }
+            jobs:
+              type: array
+              items: { $ref: '#/components/schemas/JobSummary' }
+            builtFrom:
+              type: array
+              items: { $ref: '#/components/schemas/ResourceRef' }
+            dependents:
+              type: array
+              items: { $ref: '#/components/schemas/ResourceRef' }
+            can:
+              type: array
+              description: The verbs the user may run on this resource, from the account's policies
+              items: { type: string }
+            observedAt: { type: string, format: date-time }
+    ResourceRef:
+      type: object
+      required: [wfrn, type]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+    Lineage:
+      type: object
+      required: [resource, nodes, edges]
+      properties:
+        resource: { $ref: '#/components/schemas/ResourceRef' }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [from, to]
+            properties:
+              from: { $ref: '#/components/schemas/Wfrn' }
+              to: { $ref: '#/components/schemas/Wfrn' }
+              via: { type: string }
+    CommandInput:
+      type: object
+      description: The form's values; `confirm` for a destructive verb, `labels` become X-Job-Label-* headers
+      required: [input]
+      properties:
+        input: { type: object, additionalProperties: true }
+        confirm: { type: boolean }
+        reason: { type: string, maxLength: 1000 }
+        labels:
+          type: object
+          maxProperties: 16
+          additionalProperties: { type: string, maxLength: 128 }
+    BatchInput:
+      type: object
+      required: [verb, items]
+      properties:
+        verb: { type: string }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [input]
+            properties:
+              wfrn: { $ref: '#/components/schemas/Wfrn', description: The subject, for every verb but create }
+              input: { type: object, additionalProperties: true }
+        defaults: { type: object, additionalProperties: true }
+        rollout:
+          type: object
+          properties:
+            waves:
+              type: array
+              items: { type: integer }
+            maxParallel: { type: integer }
+            stopIfFailedPercent: { type: integer }
+        confirm: { type: boolean }
+    CommandAccepted:
+      type: object
+      required: [wfrn, jobId, requestId]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        jobId: { type: string }
+        requestId: { type: string, description: The console request id, also the X-Console-Request-Id the platform saw }
+        approval: { type: boolean, description: The job waits for an approval }
+    BatchAccepted:
+      type: object
+      required: [jobId, rows, requestId]
+      properties:
+        jobId: { type: string }
+        rows: { type: integer }
+        requestId: { type: string }
+        wfrns:
+          type: array
+          description: 'For create: the minted names, one per row'
+          items: { $ref: '#/components/schemas/Wfrn' }
+    Preview:
+      type: object
+      description: 'The platform''s Preview with wfrns on the affected resources'
+      required: [steps, affectedResources, policy]
+      properties:
+        workflow: { type: string }
+        version: { type: string }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, name, effect]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              effect: { type: string, enum: [create, change, delete, read, none, unknown] }
+              detail: { type: string }
+              skipped: { type: boolean }
+        affectedResources:
+          type: array
+          items: { $ref: '#/components/schemas/ResourceRef' }
+        cost:
+          type: object
+          properties:
+            monthly: { type: number }
+            currency: { type: string }
+            detail: { type: string }
+        policy:
+          type: object
+          required: [decision]
+          properties:
+            decision: { type: string, enum: [allow, deny, needs-approval] }
+            rules:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  result: { type: string }
+                  message: { type: string }
+    JobSummary:
+      type: object
+      required: [jobId, workflow, status]
+      properties:
+        jobId: { type: string }
+        workflow: { type: string }
+        title: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [queued, running, waiting-approval, needs-attention, succeeded, failed, cancelled, rolled-back] }
+        requester: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+        durationMs: { type: integer }
+        kind: { type: string, enum: [single, batch] }
+        progress:
+          type: object
+          properties:
+            done: { type: integer }
+            total: { type: integer }
+            failed: { type: integer }
+        errorClass: { type: string }
+        failedStep: { type: string }
+    JobDetail:
+      allOf:
+        - $ref: '#/components/schemas/JobSummary'
+        - type: object
+          properties:
+            input: { type: object, additionalProperties: true }
+            output: { type: object, additionalProperties: true }
+            steps:
+              type: array
+              items:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  type: { type: string }
+                  status: { type: string }
+                  attempt: { type: integer }
+                  startedAt: { type: string, format: date-time }
+                  endedAt: { type: string, format: date-time }
+                  durationMs: { type: integer }
+                  error:
+                    type: object
+                    properties:
+                      class: { type: string }
+                      message: { type: string }
+                      retryable: { type: boolean }
+            approvals:
+              type: array
+              items: { $ref: '#/components/schemas/Approval' }
+            preview: { $ref: '#/components/schemas/Preview' }
+            attention:
+              type: object
+              properties:
+                step: { type: string }
+                options:
+                  type: array
+                  items: { type: string }
+                since: { type: string, format: date-time }
+            children:
+              type: array
+              items: { $ref: '#/components/schemas/JobSummary' }
+            can:
+              type: array
+              description: 'cancel, retry, skip, abort, rerun as the user may'
+              items: { type: string }
+    Approval:
+      type: object
+      required: [approvalId, jobId, status]
+      properties:
+        approvalId: { type: string }
+        jobId: { type: string }
+        workflow: { type: string }
+        step: { type: string }
+        group: { type: string }
+        message: { type: string }
+        requestedAt: { type: string, format: date-time }
+        timeout: { type: string }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        decidedBy: { type: string }
+        decidedAt: { type: string, format: date-time }
+        comment: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        preview: { $ref: '#/components/schemas/Preview' }
+        canDecide: { type: boolean }
+    Finding:
+      type: object
+      required: [findingId, wfrn, status, severity, fields, openedAt]
+      properties:
+        findingId: { type: string }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        status: { type: string, enum: [open, closed] }
+        severity: { type: string, enum: [info, warning, critical] }
+        fields:
+          type: array
+          items:
+            type: object
+            required: [path]
+            properties:
+              path: { type: string }
+              expected: {}
+              observed: {}
+        openedAt: { type: string, format: date-time }
+        observedAt: { type: string, format: date-time }
+        closedAt: { type: string, format: date-time }
+        resolution: { type: string, enum: [reverted, accepted, ignored, vanished] }
+        can:
+          type: array
+          items: { type: string, enum: [revert, accept, ignore] }
+    ActivityEntry:
+      type: object
+      required: [at, kind]
+      properties:
+        at: { type: string, format: date-time }
+        kind: { type: string, enum: [event, job] }
+        type: { type: string, description: The state event type }
+        actor: { type: string }
+        job: { $ref: '#/components/schemas/JobSummary' }
+        data: { type: object, additionalProperties: true }
+    LiveEvent:
+      type: object
+      required: [type, at]
+      properties:
+        type: { type: string, description: 'A state.resources or drift.findings event type, or job.updated' }
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        at: { type: string, format: date-time }
+        version: { type: integer }
+        key: { type: string }
+        data: { type: object, additionalProperties: true }
+    SearchHit:
+      type: object
+      required: [wfrn, type, score]
+      properties:
+        wfrn: { $ref: '#/components/schemas/Wfrn' }
+        type: { type: string }
+        name: { type: string }
+        state: { $ref: '#/components/schemas/ResourceState' }
+        score: { type: number }
+        highlights:
+          type: object
+          additionalProperties: { type: string }
+    Suggestion:
+      type: object
+      required: [kind, value, label]
+      properties:
+        kind: { type: string, enum: [resource, type, tag, wfrn] }
+        value: { type: string }
+        label: { type: string }
+    Preferences:
+      type: object
+      properties:
+        theme: { type: string, enum: [system, light, dark] }
+        density: { type: string, enum: [comfortable, compact] }
+        defaultRegion: { $ref: '#/components/schemas/RegionName' }
+        pinnedTypes:
+          type: array
+          items: { type: string }
+        columns:
+          type: object
+          description: Per type key, the list columns the user chose
+          additionalProperties:
+            type: array
+            items: { type: string }
+        version: { type: integer }
+    IamBody:
+      type: object
+      description: 'A body of the identity service''s API, unchanged (contracts/openapi/console-identity-service.yaml)'
+      additionalProperties: true
+    AccessRequestStatus:
+      type: string
+      enum: [pending, approved, rejected, expired]
+    AccessRequestInput:
+      type: object
+      required: [action, reason]
+      properties:
+        action: { type: string, description: '`<service>:<verb>`, as the denial named it' }
+        resource: { type: string, description: The wfrn or pattern, as the denial named it }
+        role: { type: string, description: The role asked for; the denial's suggestedRole by default }
+        reason: { type: string, maxLength: 2000 }
+    AccessDecision:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string, maxLength: 2000 }
+    AccessRequest:
+      type: object
+      required: [requestId, accountId, requester, action, reason, status, requestedAt]
+      properties:
+        requestId: { type: string }
+        accountId: { $ref: '#/components/schemas/AccountId' }
+        requester:
+          type: object
+          required: [userId]
+          properties:
+            userId: { type: string }
+            email: { type: string }
+            name: { type: string }
+        action: { type: string }
+        resource: { type: string }
+        role: { type: string }
+        reason: { type: string }
+        status: { $ref: '#/components/schemas/AccessRequestStatus' }
+        requestedAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        comment: { type: string }
+        approvers:
+          type: array
+          description: Who may decide it
+          items: { type: string }
+    ServiceTokenRequest:
+      type: object
+      required: [grant_type, client_assertion_type, client_assertion]
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+        client_assertion_type:
+          type: string
+          enum: ['urn:ietf:params:oauth:client-assertion-type:jwt-bearer']
+        client_assertion:
+          type: string
+          description: The projected service-account token, or the JWT the client signed
+        client_id:
+          type: string
+          description: The client's service id; when sent, it must be the assertion's client
+          examples: [console-search-indexer]
+        audience:
+          type: array
+          description: The services the token is for, sent once per service; every audience registered for the client when absent
+          items: { type: string, examples: [console-state-service] }
+    ServiceToken:
+      type: object
+      required: [access_token, token_type, expires_in, audience]
+      properties:
+        access_token:
+          type: string
+          description: The internal JWT
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Seconds the token lives (300); ask again before it ends
+          examples: [300]
+        audience:
+          type: array
+          items: { type: string }
+    OAuthError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum: [invalid_request, invalid_client, unsupported_grant_type, invalid_target]
+        error_description:
+          type: string
+    JsonWebKeySet:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, kid]
+            properties:
+              kty: { type: string }
+              kid: { type: string }
+              use: { type: string }
+              alg: { type: string }
+              crv: { type: string }
+              x: { type: string }
+              y: { type: string }
+              n: { type: string }
+              e: { type: string }
+            additionalProperties: true

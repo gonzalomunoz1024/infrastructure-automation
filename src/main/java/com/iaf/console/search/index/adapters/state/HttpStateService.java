@@ -12,6 +12,7 @@ import org.springframework.web.util.UriBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.search.index.domain.StateListing;
+import com.iaf.console.search.index.adapters.tokens.ServiceTokens;
 import com.iaf.console.search.index.domain.StateResource;
 import com.iaf.console.search.index.ports.outbound.StateServicePort;
 
@@ -21,26 +22,24 @@ import reactor.util.retry.Retry;
 
 /**
  * The state service over HTTP ({@code contracts/openapi/console-state-service.yaml}), as the
- * console-internal principal: the resource by wfrn ({@code 410} is its tombstone, {@code 404}
- * nothing), and the account's list page after page, oldest change first, so a walk can resume
- * from a watermark.
+ * console-internal principal (the WebClient carries this service's credentials): the resource by
+ * wfrn ({@code 410} is its tombstone, {@code 404} nothing), and the account's list page after
+ * page, oldest change first, so a walk can resume from a watermark.
  */
 public final class HttpStateService implements StateServicePort {
 
     private static final Logger log = LoggerFactory.getLogger(HttpStateService.class);
 
     private final WebClient web;
-    private final ServiceCredentials credentials;
 
-    public HttpStateService(WebClient web, ServiceCredentials credentials) {
+    public HttpStateService(WebClient web) {
         this.web = web;
-        this.credentials = credentials;
     }
 
     @Override
     public Mono<StateResource> find(AccountScope scope, String wfrn) {
         // a URI variable is encoded strictly (":" and "/" too), as the contract asks; never encode it twice
-        return web.get().uri("/v1/wfrn/{wfrn}", wfrn).headers(credentials::apply)
+        return web.get().uri("/v1/wfrn/{wfrn}", wfrn)
                 .exchangeToMono(r -> {
                     int status = r.statusCode().value();
                     if (status == 404) {
@@ -83,7 +82,7 @@ public final class HttpStateService implements StateServicePort {
             }
             return b.build();
         };
-        return web.get().uri(uri).headers(credentials::apply)
+        return web.get().uri(uri)
                 .exchangeToMono(r -> r.statusCode().is2xxSuccessful() ? r.bodyToMono(JsonNode.class) : HttpStateService.<JsonNode>failure(r))
                 .retryWhen(transient5xx())
                 .map(body -> {
@@ -99,10 +98,13 @@ public final class HttpStateService implements StateServicePort {
                 .flatMap(text -> Mono.error(new StateServiceException(r.statusCode().value(), text)));
     }
 
+    /** A 5xx or a lost connection is asked again; a refusal (4xx, or the BFF's for a token) is not. */
     private static Retry transient5xx() {
         return Retry.backoff(3, Duration.ofMillis(200)).maxBackoff(Duration.ofSeconds(2))
-                .filter(e -> e instanceof StateServiceException s ? s.status() >= 500 : !(e instanceof IllegalArgumentException))
-                .doBeforeRetry(s -> log.debug("retrying the state service after {}", s.failure().toString()));
+                .filter(e -> e instanceof StateServiceException s ? s.status() >= 500
+                        : e instanceof ServiceTokens.Refused r ? r.status() >= 500 : !(e instanceof IllegalArgumentException))
+                .doBeforeRetry(s -> log.debug("retrying the state service after {}", s.failure().toString()))
+                .onRetryExhaustedThrow((spec, signal) -> signal.failure());
     }
 
     /** An answer of the state service that is not the one expected. */

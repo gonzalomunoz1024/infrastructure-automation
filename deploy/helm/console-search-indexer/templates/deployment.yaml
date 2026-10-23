@@ -71,18 +71,6 @@ spec:
                   name: {{ .Values.opensearchCredentials.existingSecret }}
                   key: {{ .Values.opensearchCredentials.passwordKey }}
             {{- end }}
-            - name: CONSOLE_STATE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.serviceAuth.existingSecret }}
-                  key: {{ .Values.serviceAuth.tokenKey }}
-                  optional: true
-            - name: CONSOLE_SIGNING_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.serviceAuth.existingSecret }}
-                  key: {{ .Values.serviceAuth.signingKeyKey }}
-                  optional: true
             - name: CONSOLE_PLATFORM_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -96,6 +84,9 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /config
+              readOnly: true
+            - name: bff-token
+              mountPath: /var/run/secrets/console
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -121,6 +112,14 @@ spec:
         - name: config
           configMap:
             name: {{ include "console-search-indexer.fullname" . }}
+        # the token this service shows the BFF to get its service tokens; the kubelet renews the file
+        - name: bff-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.console.auth.serviceAccountToken.audience | quote }}
+                  expirationSeconds: {{ .Values.console.auth.serviceAccountToken.expirationSeconds }}
+                  path: token
         - name: tmp
           emptyDir: {}
       {{- with .Values.topologySpreadConstraints }}

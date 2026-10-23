@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,11 +21,16 @@ import com.iaf.console.search.index.adapters.memory.InMemoryCheckpoints;
 import com.iaf.console.search.index.adapters.memory.InMemorySearchIndex;
 import com.iaf.console.search.index.domain.Fixtures;
 import com.iaf.console.search.index.domain.ResourceState;
+import com.iaf.console.search.index.domain.StateListing;
+import com.iaf.console.search.index.domain.StateResource;
 import com.iaf.console.search.index.ports.outbound.SearchIndexPort;
+import com.iaf.console.search.index.ports.outbound.StateServicePort;
 import com.iaf.console.search.support.FakeStateService;
 import com.iaf.console.search.support.FixedTypes;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /** Without Kafka the poller follows the lists from a watermark per account. */
 class StatePollerTest {
@@ -50,6 +56,29 @@ class StatePollerTest {
         assertThat(index.find(AccountScope.of(ACCOUNT, "global", "t"), Fixtures.VM).block().state()).isEqualTo(ResourceState.DELETED);
         assertThat(poller.status().handled()).isEqualTo(5);
         assertThat(poller.status().kind()).isEqualTo("poll");
+    }
+
+    @Test
+    void aFailedPollShowsUntilAPassGoesThrough() {
+        AtomicBoolean down = new AtomicBoolean(true);
+        StateServicePort flaky = new StateServicePort() {
+            @Override
+            public Mono<StateResource> find(AccountScope scope, String wfrn) {
+                return state.find(scope, wfrn);
+            }
+
+            @Override
+            public Flux<StateResource> list(AccountScope scope, StateListing listing) {
+                return down.get() ? Flux.error(new IllegalStateException("the state service is down")) : state.list(scope, listing);
+            }
+        };
+        StatePoller polling = new StatePoller(flaky, new ConfiguredAccounts(List.of(ACCOUNT)), index, indexing, checkpoints, clock, Duration.ofSeconds(1));
+        state.put(Fixtures.stateResource(Fixtures.VM, "web-01", 1, "active", Map.of("name", "web-01"), Map.of(), T0));
+        assertThat(polling.tick().block()).isZero();
+        assertThat(polling.status().lastError()).contains("the state service is down");
+        down.set(false);
+        assertThat(polling.tick().block()).isEqualTo(1);
+        assertThat(polling.status().lastError()).as("caught up, so no longer failing").isNull();
     }
 
     @Test

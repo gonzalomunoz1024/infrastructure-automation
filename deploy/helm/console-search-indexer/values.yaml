@@ -13,7 +13,9 @@ imagePullSecrets: []
 
 serviceAccount:
   create: true
-  name: ""
+  # the BFF knows this service by its service account, system:serviceaccount:<namespace>:console-search-indexer
+  # (hub decision 23), so the name stays the service's whatever the release is called
+  name: console-search-indexer
   annotations: {}
 
 podAnnotations: {}
@@ -88,6 +90,12 @@ console:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
     audiences: [console-search-indexer, console]
+    # this service's own tokens for the state and identity services come from the BFF (hub decision
+    # 23), asked for with the pod's projected service-account token: no secret holds them
+    tokenUrl: http://console-bff.console.svc.cluster.local/internal/v1/token
+    serviceAccountToken:
+      audience: console-bff
+      expirationSeconds: 3600
   rebuild:
     batchSize: 200
     # an empty index (a new cluster, a lost index) is filled from the state service at startup
@@ -117,13 +125,6 @@ opensearchCredentials:
   existingSecret: console-search-indexer-opensearch
   usernameKey: CONSOLE_OPENSEARCH_USERNAME
   passwordKey: CONSOLE_OPENSEARCH_PASSWORD
-
-serviceAuth:
-  # how this service authenticates to the state and identity services: a static service token
-  # (tokenKey) or the BFF's signing key to sign its own short-lived tokens (signingKeyKey), from one secret
-  existingSecret: console-search-indexer-service-auth
-  tokenKey: CONSOLE_STATE_TOKEN
-  signingKeyKey: CONSOLE_SIGNING_KEY
 
 platformToken:
   # the platform's internal service-account token, to read the resource types

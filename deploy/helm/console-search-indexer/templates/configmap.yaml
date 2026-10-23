@@ -41,6 +41,8 @@ data:
         issuer: {{ .Values.console.auth.issuer | quote }}
         audiences: {{ toJson .Values.console.auth.audiences }}
         dev-headers: false
+        token-url: {{ .Values.console.auth.tokenUrl | quote }}
+        client-assertion-file: /var/run/secrets/console/token
       rebuild:
         batch-size: {{ .Values.console.rebuild.batchSize }}
         on-empty: {{ .Values.console.rebuild.onEmpty }}

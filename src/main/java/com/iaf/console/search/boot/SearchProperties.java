@@ -22,12 +22,12 @@ public record SearchProperties(
     public SearchProperties {
         region = region == null || region.isBlank() ? "global" : region;
         search = search == null ? new SearchSettings(null, null, null) : search;
-        state = state == null ? new StateSettings(null, null, null, null, null) : state;
+        state = state == null ? new StateSettings(null, null, null) : state;
         platform = platform == null ? new PlatformSettings(null, null, null, null, null) : platform;
         identity = identity == null ? new IdentitySettings(null, null) : identity;
         rebuild = rebuild == null ? new RebuildSettings(null, null, null) : rebuild;
         ingest = ingest == null ? new IngestSettings(null, null, null) : ingest;
-        auth = auth == null ? new AuthSettings(null, null, null, null) : auth;
+        auth = auth == null ? new AuthSettings(null, null, null, null, null, null, null) : auth;
         index = index == null ? new IndexSettings(null) : index;
     }
 
@@ -65,8 +65,8 @@ public record SearchProperties(
         }
     }
 
-    /** The state service: where it is, and how this service authenticates to it (a token, a signing key, or the demo's dev headers). */
-    public record StateSettings(String url, String token, String signingKey, Boolean devHeaders, Duration timeout) {
+    /** The state service: where it is, and whether the demo's dev headers name this service to it (the BFF's tokens do otherwise, under console.auth). */
+    public record StateSettings(String url, Boolean devHeaders, Duration timeout) {
         public StateSettings {
             url = url == null || url.isBlank() ? "http://localhost:18082" : url;
             devHeaders = devHeaders != null && devHeaders;
@@ -130,13 +130,22 @@ public record SearchProperties(
         }
     }
 
-    /** How callers are authenticated: the BFF's JWKS, its issuer, the audiences this service answers to, and the dev headers switch. */
-    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders) {
+    /**
+     * How callers are authenticated (the BFF's JWKS, its issuer, the audiences this service answers
+     * to, the dev headers switch), and how this service gets its own tokens from the BFF (hub
+     * decision 23): the token endpoint, and the client assertion, either the projected
+     * service-account token's file or this service's own private EC JWK.
+     */
+    public record AuthSettings(String jwksUri, String issuer, List<String> audiences, Boolean devHeaders, String tokenUrl,
+            String clientAssertionFile, String clientKey) {
         public AuthSettings {
             jwksUri = jwksUri == null ? "http://localhost:18081/.well-known/jwks.json" : jwksUri;
             issuer = issuer == null ? "console-bff" : issuer;
             audiences = audiences == null || audiences.isEmpty() ? List.of("console-search-indexer", "console") : List.copyOf(audiences);
             devHeaders = devHeaders != null && devHeaders;
+            tokenUrl = tokenUrl == null || tokenUrl.isBlank() ? "http://localhost:18081/internal/v1/token" : tokenUrl.trim();
+            clientAssertionFile = clientAssertionFile == null || clientAssertionFile.isBlank() ? null : clientAssertionFile.trim();
+            clientKey = clientKey == null || clientKey.isBlank() ? null : clientKey;
         }
     }
 

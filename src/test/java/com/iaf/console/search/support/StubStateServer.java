@@ -5,6 +5,9 @@ import static org.springframework.web.reactive.function.server.RouterFunctions.r
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.http.HttpStatus;
@@ -31,13 +34,15 @@ import reactor.netty.http.server.HttpServer;
  * The state service's two reads over HTTP, as its contract serves them, from a {@link FakeStateService}:
  * {@code GET /v1/resources} (paged, oldest change first with {@code sort=updatedAt}) and
  * {@code GET /v1/wfrn/{wfrn}} (200, 410 with the tombstone, 404). A caller must name itself with
- * the dev header {@code X-Console-Service} or a bearer token, else 401.
+ * the dev header {@code X-Console-Service} or a bearer token it was not told to refuse, else 401.
  */
 public final class StubStateServer implements AutoCloseable {
 
     private final FakeStateService data;
     private final DisposableServer server;
     private final AtomicInteger unauthorized = new AtomicInteger();
+    private final Set<String> refused = ConcurrentHashMap.newKeySet();
+    private final List<String> bearers = new CopyOnWriteArrayList<>();
 
     private StubStateServer(FakeStateService data) {
         this.data = data;
@@ -62,8 +67,24 @@ public final class StubStateServer implements AutoCloseable {
         return unauthorized.get();
     }
 
+    /** Answers 401 to this bearer token from now on, as for a revoked one. */
+    public void refuse(String token) {
+        refused.add(token);
+    }
+
+    /** The bearer tokens callers sent, in order. */
+    public List<String> bearers() {
+        return List.copyOf(bearers);
+    }
+
     private boolean authenticated(ServerRequest request) {
-        boolean ok = request.headers().firstHeader("X-Console-Service") != null || request.headers().firstHeader("Authorization") != null;
+        String authorization = request.headers().firstHeader("Authorization");
+        String bearer = authorization != null && authorization.startsWith("Bearer ") ? authorization.substring(7) : null;
+        if (bearer != null) {
+            bearers.add(bearer);
+        }
+        boolean ok = bearer != null ? !refused.contains(bearer)
+                : request.headers().firstHeader("X-Console-Service") != null || authorization != null;
         if (!ok) {
             unauthorized.incrementAndGet();
         }

@@ -11,5 +11,8 @@ Secrets this release reads (create them before the pods start):
   {{- if .Values.opensearchCredentials.existingSecret }}
   {{ .Values.opensearchCredentials.existingSecret }}/{{ .Values.opensearchCredentials.usernameKey }} and {{ .Values.opensearchCredentials.passwordKey }}  OpenSearch's basic-auth user
   {{- end }}
-  {{ .Values.serviceAuth.existingSecret }}/{{ .Values.serviceAuth.tokenKey }} or {{ .Values.serviceAuth.signingKeyKey }}  how this service calls the state and identity services
   {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's internal service-account token
+
+The state and identity services are called with service tokens from the BFF ({{ .Values.console.auth.tokenUrl }}),
+asked for with this pod's service-account token; the BFF must register the client console-search-indexer
+for system:serviceaccount:{{ .Release.Namespace }}:{{ include "console-search-indexer.serviceAccountName" . }}.
