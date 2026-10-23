@@ -21,9 +21,17 @@ jobs:
           cache: npm
       - name: Install
         run: npm ci
+      - name: Install OPA
+        # a pinned release, checked against its published sha256; the rule packs' Rego runs on it
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v1.4.2/opa_linux_amd64_static
+          echo "2c0ccdbbe0b8e2a5d12d9c42d92f1f34f494ffb32d1f3c4ddc36101be637d66f  $RUNNER_TEMP/opa" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "OPA_BIN=$RUNNER_TEMP/opa" >> "$GITHUB_ENV"
       - name: Check every contract
         # the OpenAPI and AsyncAPI files, the schemas, the overlays, the used operations, the event
-        # catalog against the plan and the wfrn fixtures against the JavaScript reference
+        # catalog against the plan, the wfrn fixtures against the JavaScript reference, and the
+        # rule packs' examples through the declarative reference and through OPA
         run: npm run check
       - name: Compare the target with the pinned platform capture
         # the capture at c9529d5 must show every change as pending or landed, nothing diverged

@@ -1,0 +1,131 @@
+# The compute team's baseline for virtual machines in production: enough capacity to survive a
+# host failure gracefully, and running. Scored on what vSphere last reported where it reported
+# it (resource.effective), so a VM resized behind the console's back is judged as it is.
+apiVersion: iaf.console/v1
+kind: RulePack
+metadata:
+  name: compute-baseline
+  title: Compute baseline
+  description: Production virtual machines have at least 2 vCPUs and 4 GiB of memory, and are powered on.
+  version: 1
+  owner: team-compute
+spec:
+  rules:
+    - id: prod-min-cpu
+      title: Production VMs have at least 2 vCPUs
+      severity: warning
+      types: [vm]
+      when: { path: resource.production, equals: true }
+      check: { path: resource.effective.cpu, gte: 2 }
+      message: A production VM with fewer than 2 vCPUs.
+      remediation:
+        title: Resize to 2 vCPUs
+        kind: workflow
+        verb: update
+        input: { cpu: "{{ $input.cpu }}" }
+        inputs:
+          - { name: cpu, title: vCPUs, type: integer, default: 2 }
+      rego: |
+        package console.scorecards.compute_baseline.prod_min_cpu
+
+        import rego.v1
+
+        default applies := false
+
+        applies if {
+        	input.resource.type == "vm"
+        	input.resource.production == true
+        }
+
+        deny contains "A production VM with fewer than 2 vCPUs." if {
+        	applies
+        	not enough_cpu
+        }
+
+        enough_cpu if input.resource.effective.cpu >= 2
+      examples:
+        - { input: { resource: { type: vm, production: true, effective: { cpu: 4 } } }, expect: pass }
+        - { input: { resource: { type: vm, production: true, effective: { cpu: 1 } } }, expect: fail }
+        - { input: { resource: { type: vm, production: true, effective: {} } }, expect: fail }
+        - { input: { resource: { type: vm, production: false, effective: { cpu: 1 } } }, expect: not-applicable }
+
+    - id: prod-min-memory
+      title: Production VMs have at least 4 GiB of memory
+      severity: info
+      types: [vm]
+      when: { path: resource.production, equals: true }
+      check: { path: resource.effective.memoryGb, gte: 4 }
+      message: A production VM with less than 4 GiB of memory.
+      remediation:
+        title: Resize to 4 GiB
+        kind: workflow
+        verb: update
+        input: { memoryGb: "{{ $input.memoryGb }}" }
+        inputs:
+          - { name: memoryGb, title: Memory (GiB), type: integer, default: 4 }
+      rego: |
+        package console.scorecards.compute_baseline.prod_min_memory
+
+        import rego.v1
+
+        default applies := false
+
+        applies if {
+        	input.resource.type == "vm"
+        	input.resource.production == true
+        }
+
+        deny contains "A production VM with less than 4 GiB of memory." if {
+        	applies
+        	not enough_memory
+        }
+
+        enough_memory if input.resource.effective.memoryGb >= 4
+      examples:
+        - { input: { resource: { type: vm, production: true, effective: { memoryGb: 16 } } }, expect: pass }
+        - { input: { resource: { type: vm, production: true, effective: {} } }, expect: fail }
+
+    - id: prod-powered-on
+      title: Production VMs are powered on
+      description: Judged only once vSphere has reported a power state.
+      severity: critical
+      types: [vm]
+      when:
+        all:
+          - { path: resource.production, equals: true }
+          - { path: resource.observed.powerState, present: true }
+      check: { path: resource.observed.powerState, equals: poweredOn }
+      message: "A production VM that is not powered on ({{ resource.observed.powerState }})."
+      remediation:
+        title: Restart the VM
+        kind: workflow
+        verb: restart
+        input: { reason: "{{ $input.reason }}" }
+        inputs:
+          - { name: reason, title: Reason, default: "Compliance: a production VM was not powered on" }
+      rego: |
+        package console.scorecards.compute_baseline.prod_powered_on
+
+        import rego.v1
+
+        default applies := false
+
+        applies if {
+        	input.resource.type == "vm"
+        	input.resource.production == true
+        	present(input.resource.observed.powerState)
+        }
+
+        deny contains sprintf("A production VM that is not powered on (%v).", [input.resource.observed.powerState]) if {
+        	applies
+        	input.resource.observed.powerState != "poweredOn"
+        }
+
+        present(v) if {
+        	v != null
+        	v != ""
+        }
+      examples:
+        - { input: { resource: { type: vm, production: true, observed: { powerState: poweredOn } } }, expect: pass }
+        - { input: { resource: { type: vm, production: true, observed: { powerState: poweredOff } } }, expect: fail }
+        - { input: { resource: { type: vm, production: true, observed: {} } }, expect: not-applicable }
