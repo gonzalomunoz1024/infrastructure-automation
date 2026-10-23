@@ -82,6 +82,8 @@ export function Search({ route, onClose }: { route: Route; onClose: () => void }
       { id: 'page-iam-roles', group: 'Pages', label: 'Roles', icon: 'shield', keywords: 'iam managed policies statements', run: () => navigate(pathFor('iam-roles')) },
       { id: 'page-iam-keys', group: 'Pages', label: 'Access keys', icon: 'key', keywords: 'iam cli api credentials', run: () => navigate(pathFor('iam-keys')) },
       { id: 'page-iam-requests', group: 'Pages', label: 'Access requests', icon: 'approval', keywords: 'iam request access approvals', run: () => navigate(pathFor('iam-requests')) },
+      { id: 'page-iam-reviews', group: 'Pages', label: 'Access reviews', icon: 'audit', keywords: 'iam review campaign recertify keep remove', run: () => navigate(pathFor('iam-reviews')) },
+      { id: 'page-iam-elevations', group: 'Pages', label: 'Elevations', icon: 'clock', keywords: 'iam elevation just in time temporary role break glass', run: () => navigate(pathFor('iam-elevations')) },
       { id: 'page-settings', group: 'Pages', label: 'Settings', icon: 'settings', keywords: 'preferences appearance identity', run: () => navigate(pathFor('settings')) },
       ...TOOLS.map((t) => ({ id: `page-${t.route}`, group: 'Pages', label: t.label, icon: t.icon, keywords: t.keywords, run: () => navigate(toolPath(t)) })),
     )

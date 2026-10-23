@@ -14,6 +14,8 @@ export type { Denial, DenialLayer }
 export interface Decision {
   allowed: boolean
   denied?: Denial
+  /** allowed only by a role held for a while (WP 9.12) */
+  elevated?: boolean
 }
 
 export const ALLOWED: Decision = { allowed: true }
@@ -41,7 +43,7 @@ export function permissionsOf(types: readonly BffConsoleType[] | undefined): Per
         const denied: Denial = a.denied ?? { layer: 'console-iam', action: actionOf(t.service, a.verb), reason: a.deniedReason ?? `Your role does not allow ${actionOf(t.service, a.verb)}`, requestable: true }
         verbs[a.verb] = { allowed: false, denied }
       } else {
-        verbs[a.verb] = ALLOWED
+        verbs[a.verb] = a.elevated ? { allowed: true, elevated: true } : ALLOWED
       }
     }
     out[key] = verbs

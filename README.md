@@ -10,6 +10,22 @@ contracts this build pins.
 
 ## What is here (phases 0, 1, 3, 4 and 5)
 
+Phases 7 and 9 keep access right over time, and close the account's life:
+
+- access reviews: an admin starts a campaign over everyone's group memberships with a due date,
+  and the account's admins keep or remove each access with a reason, one at a time or a selection
+  at a time, by keyboard too (arrows move, K keeps, R removes); nobody reviews their own; the
+  progress shows on each campaign, and the rule of the due date is said wherever it shows:
+  anything not reviewed by then loses its access; the bell lists the open review to whoever may
+  work through it
+- elevations: a person asks to hold a role for 15 minutes to 8 hours with a reason, approved at
+  once by a rule or by an admin who is not them (the bell lists the asks to decide); a held role
+  shows in a banner with the time left, ends by itself or by hand, and marks the actions only it
+  allows as elevated; a refusal that a rule covers offers Ask for this role for an hour
+- the organization's accounts, for its admins: emergency (break-glass) access with its warning
+  and the line the account's trail records, and closing an account by typing its name, refused
+  while the account still holds resources, with what it holds
+
 Phase 5 decides on drift and finds what nobody manages:
 
 - a finding on the resource's Drift tab is reverted in one click: the type's update workflow runs
@@ -621,15 +637,49 @@ type, so the feed must subscribe to every one).
     arrows, Page keys, Home and End move the crosshair and whose value text reads the point. No
     chart library: the scales and ticks are `lib/chart.ts`, tested on their own.
 
+90. **A review decides who keeps a group, and the due date decides what nobody did.** A campaign
+    is the identity service's: everyone's memberships when it starts (who), one item per person
+    and group with the roles it carries (what), and a due date of 1 to 90 days. The contract has no
+    list of reviewers, so the reviewers are whoever may `access-review:decide` (the account's
+    admins, and anyone holding Admin for a while); the page and the start dialog say so, and that
+    nobody reviews their own. Every page that shows the due date says what it does: what is not
+    reviewed by then expires and the person loses the group, the last owner excepted.
+91. **Deciding many is many single decisions, by keyboard as well.** There is no batch decision,
+    so a selection is one `:decide` per item with one reason, counted as it goes, with what
+    failed named. Removing needs a reason, keeping does not. In the item list the arrows move
+    between people and K and R keep and remove the one in focus, each through the same dialog.
+92. **A held role is visible while it lasts.** The session lists the roles held for a while
+    (`account.elevations`, the identity service's `HeldElevation`); a banner above every page names
+    each with its time left, loud and red for break-glass, and reads the session again when the
+    earliest ends. The BFF marks an action that only a held role allows (`elevated` on the
+    action's decision); the button carries an "elevated" mark and the menu item says so.
+93. **The refusal offers an hour only when a rule grants it at once.** When a console IAM refusal
+    suggests a role the person lacks and an auto-approval rule (`GET .../elevation-rules`) covers
+    that role for the roles they hold through groups for 60 minutes, the refusal offers Ask for
+    this role for an hour beside Request access; once active the roles are read again, so closing
+    the dialog finds the action unlocked. Without such a rule it links to the elevations page,
+    where an admin decides. Boundary and guardrail refusals never offer it.
+94. **Closing an account and break-glass are the organization admins', and say what they do.**
+    The accounts page lists every account to organization admins (`session.organizationAdmin`;
+    404 for anyone else, which the page explains). Break-glass asks for a person, role, at most
+    4 hours, a ticket, a reason and an explicit approval, warns that it bypasses the account's
+    approvers, and shows the line the account's trail keeps. Closing lists what it ends, asks for
+    the account's name typed and a reason, and is refused while the account holds resources
+    (409 `account.hasResources` with the count of each type, the plan's rule for WP 7.7), since
+    closing leaves resources where they are. In mock mode (`mock/access.ts`) Gonzalo is the
+    organization admin and the rule is the identity service's `operators-admin-two-hours`.
+
 ## Layout of the code
 
 ```
 console/
   e2e/            the Playwright journeys (shell, identity, list, keyboard, resources, changes,
-                  tags, bulk, drift, monitoring), their helpers and screenshots
+                  tags, bulk, drift, monitoring, access), their helpers and screenshots
   src/app/        the shell: App (the session gate), AppShell, Header, UserMenuButton,
                   ServiceSidebar, Breadcrumbs, Footer, Search (the palette), PlatformFeed,
                   Refusal (the refusal dialog, ActionButton and ActionMenuItem), MenuButton, Hint,
+                  elevation (the refusal's offer of an hour, the held roles banner, the elevated
+                  mark), accessTimeBell (reviews and elevations in the bell),
                   access (the pending requests query), commands (running a change and explaining
                   its failure), CodeDisclosure, GettingStarted, the router, the console context
   src/lib/        api (fetch, traceparent, X-User, X-Csrf-Token, ETag cache, paging), bff (the
@@ -641,14 +691,17 @@ console/
                   (the tag policy, Tag Editor, resource group and clone client, and their rules),
                   rollout (a bulk run's waves), drift (the drift and unmanaged routes, and their
                   words), monitoring (metrics, alarms and rightsizing, and their words), chart
-                  (scales, ticks, time labels and the keyboard's steps)
+                  (scales, ticks, time labels and the keyboard's steps), accessReviews,
+                  elevations and organization (access over time and the accounts, and their words)
   src/mock/       the mock server (platform and BFF), the directory, the dataset, the rows
                   (resources) and the writes on a clock (commands), jobs (steering, approvals and
                   bulk runs in waves), the tag policy, Tag Editor, resource groups and clone drafts
                   (tags), drift (findings, decisions, discovery and unmanaged objects),
-                  monitoring (series, alarms and the rightsizing pass), and the browser installer,
+                  monitoring (series, alarms and the rightsizing pass), access (review campaigns,
+                  elevations, break-glass and closing accounts), and the browser installer,
                   with the samples
-  src/pages/      one file per page; src/pages/iam/ the identity and access pages,
+  src/pages/      one file per page; src/pages/iam/ the identity and access pages (access
+                  reviews and elevations among them), src/pages/organization/ the accounts page,
                   src/pages/list/ the list's saved views menu, column chooser and bulk drawer,
                   src/pages/create/ the wizard's steps, its Tags step and the clone's hand-over,
                   src/pages/resource/ the resource page's tabs (DriftTab and the decisions it

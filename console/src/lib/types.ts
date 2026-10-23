@@ -78,6 +78,16 @@ export interface AccountSummary {
   roles?: string[]
   /** the groups the person is in */
   groups?: string[]
+  /** the roles held there for a while (an elevation or break-glass access), each until its `until` (WP 9.12) */
+  elevations?: HeldElevation[]
+}
+
+/** A role held for a while, as sign-in lists it (identity `HeldElevation`). */
+export interface HeldElevation {
+  elevationId: string
+  role: string
+  kind: 'elevation' | 'break-glass'
+  until: string
 }
 
 export interface BffRegion {
@@ -133,6 +143,8 @@ export interface BffConsoleAction {
   denied?: Denial
   /** the BFF's first spelling of a refusal, before the Denial block */
   deniedReason?: string
+  /** allowed only by a role held for a while (an elevation), not by the person's groups (WP 9.12) */
+  elevated?: boolean
 }
 
 /** A type as the BFF composes it; the console reads the actions' decisions from it in phase 1. */
