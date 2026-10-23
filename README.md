@@ -71,7 +71,9 @@ variables (`console.oidc.issuer` is `CONSOLE_OIDC_ISSUER`).
 | `console.trust.service-token-lifetime`, `client-assertion-max-lifetime` | A service token lives 5 minutes; a client's own assertion may live 5 minutes at most |
 | `console.identity.url`, `console.state.url`, `console.search.url` | The identity service (`http://localhost:18083` by default), the state service (`http://localhost:18082`) and the search indexer (`http://localhost:18085`); an empty URL means the in-process stand-in the demo profile mounts (`/demo-identity`, `/demo-state`, `/demo-search`) |
 | `console.cost.url`, `service-name`, `timeout`, `check-timeout` | The cost service (`http://localhost:18086`; empty: `/demo-cost`), its token audience, and how long a create waits for the budget check and estimate (2 s; past it the create goes on without them) |
-| `console.drift.url`, `service-name`, `timeout` | The drift service, for the scorecards (`http://localhost:18084`; empty: `/demo-drift`) |
+| `console.drift.url`, `service-name`, `timeout` | The drift service, for the scorecards and the executive home's findings stats (`http://localhost:18084`; empty: `/demo-drift`, which serves scorecards only, so the demo's executive home counts no findings) |
+| `console.insights.baseline.source`, `lead-time`, `by-workflow.<workflow>` | The ticket baseline the executive home compares lead times with: where it comes from, the median ticket overall, and per workflow. With no lead time at all, hours saved is left out |
+| `console.insights.cache-ttl`, `max-jobs-per-account`, `concurrency` | How long an executive home answer is kept (5 minutes), the most requests one account counts in a period (10000), and how many accounts are read at once (8) |
 | `console.platform.base-url`, `internal-token`, `accounts.*`, `partition` | The platform, the console's internal service account, and per-account service accounts (otherwise read from the identity service's `platform-credentials`) |
 | `console.web.origins` | The web app's origins for CORS and the CSRF origin check |
 | `console.types.cache-ttl`, `console.access.cache-ttl` | How long descriptors and policy decisions are kept (also dropped on events) |
@@ -132,13 +134,15 @@ endpoints the web app asked for during phase 1, described in `contracts/addition
 | `GET /console/v1/jobs`, `GET /console/v1/jobs/{jobId}`, `POST …:cancel`, `…:retry`, `…:skip`, `…:abort` | The account's jobs, with `can`, a batch's waves and rows; retry (optionally with a fix: input and step), skip a paused step, abort with compensations |
 | `POST /console/v1/jobs/{jobId}/approvals:decide` | Every pending approval of a request and its rows the person may decide, in one call (once per wave) |
 | `GET /console/v1/approvals`, `POST …/{approvalId}:decide` | Approvals, with `canDecide` (group membership and policy) |
+| `GET /console/v1/insights` | The executive home: resources managed, requests and how many were self-served, lead time against tickets, hours saved, drift found and fixed, adoption week by week |
+| `GET /console/v1/jobs/{jobId}/explanation` | Why a job failed and what to do next: the cause, the fix and the step to run again from, whether the person may retry, how often it happened and what fixed it last |
 | `GET /console/v1/events` | Server-sent events: `job.updated`, `resource.*`, `types.changed`, `region.changed`, `resync`; replay from `Last-Event-ID`, `wfrn` and `types` filters |
 | `GET, PUT /console/v1/preferences` | Theme, density, pinned types, columns and saved views per type; versioned |
 | `/console/v1/iam/{users,groups,roles,policies,access-keys,quotas,quota-requests}…` | Pass-through to the identity service for the session's account; a quota increase is asked on its quota and followed or withdrawn under `quota-requests` |
 | `GET, POST /console/v1/access-requests`, `GET …/{requestId}`, `POST …:decide` | Request access from a refusal; everyone sees their own, admins and auditors the queue; admins and approver groups decide |
 | `GET /.well-known/jwks.json` | The keys other services verify this service's tokens with |
 | `POST /internal/v1/token` | A service token for another console service (client credentials with a JWT client assertion); in-cluster only |
-| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*` | Demo profile only |
+| `/demo-idp/*`, `/demo-identity/*`, `/demo-state/*`, `/demo-search/*`, `/demo-cost/*`, `/demo-drift/*` | Demo profile only |
 
 ## Descriptors (P-06)
 
@@ -301,6 +305,62 @@ resource and the fix's own action (`<service>:tag`, or `<service>:<verb>` with i
 relays the person's `X-On-Behalf-Of`, `Idempotency-Key` and request id, and answers the drift
 service's 200, 202, 400 and 409 as they were. The demo's stand-in under `/demo-drift` judges one
 pack, `baseline` (owner and cost-centre tags with a tags fix, a meaningful name without one).
+
+## Executive home (WP 9.5, the BFF's side)
+
+`GET /console/v1/insights?period=7d|30d|90d&scope=account|organization` (30 days and the
+organization by default) covers the accounts where `insights:get` is allowed on
+`wfrn:<partition>:insights:*:<account>:*`: the session's account, or every account of the person
+that is not closed. Every managed role reads it; none allowed is a 403 with the session account's
+Denial. The numbers, for the window from the period's start (to the minute) until now:
+
+- **Managed**: the live resources now, by service, from the search indexer's counts across the
+  accounts; at the start, those less the ones created since plus the ones created before and
+  deleted since.
+- **Requests**: the top-level platform jobs of each account started in the window on behalf of a
+  person. Self-served means it ended `succeeded` with nobody stepping in: its evidence has no
+  `decision` by a person (a failed step retried, skipped, given a new input or aborted), and it is
+  not a console retry. Every rerun the console starts carries the label `retry-of` naming the
+  failed job; the rerun copies the job's other labels and leaves the label out only when the job
+  already has the 16 the platform takes. `failed` counts `failed` and `rolled-back`.
+- **Lead time**: the nearest-rank p50 and p90 of the self-served requests' durations, against the
+  configured ticket baseline (each request's workflow's own, else the overall one); hours saved
+  adds, over the self-served requests, the baseline less the lead time, never below 0 for one.
+- **Drift**: the drift service's findings stats per account (`GET /v1/findings/stats` with the
+  BFF's service token): found, fixed, open now and the mean time to fix, weighted by the findings
+  each account closed. An account the drift service does not answer for adds nothing and sets
+  `drift.partial`; such an answer is not cached.
+- **Adoption**: every Monday-to-Sunday week (UTC) of the window, oldest first: the people who
+  started a request, the requests and the self-served ones.
+- **Accounts**: name, owning team and cost centre from the identity service's account record, the
+  cost centre otherwise the default of the account's required `cost-centre` tag, so the web can
+  join the numbers to the cost service's spend by team.
+
+An answer is kept for `console.insights.cache-ttl` per scope, period and account set. Reading the
+jobs is bounded: at most `max-jobs-per-account` requests per account, with a warning when one
+account starts more. Rolling the numbers up from the platform's feed, so the home stays cheap at
+1M resources an account, is the next step once the load tests ask for it.
+
+## Failure explainer (WP 9.2, the BFF's side)
+
+`GET /console/v1/jobs/{jobId}/explanation` explains a `failed` or `rolled-back` job, or one
+paused on a failed step (`needs-attention`), to anyone who may read the job (404 for another
+account's job; 409 `job.not-failed` with the status otherwise):
+
+- **Cause**: the error class (the paused step's while it waits, else the job's), a title in plain
+  words and the provider's message; the failed step with its attempt.
+- **Fix**: from the rules for the provider classes (`unavailable`, `rate_limited`, `timeout`,
+  `not_found`, `conflict`) and the platform's (`approval.rejected`, `resource.notReady`,
+  `resource.idCollision`, `batch.rowsFailed`, `platform.internal`), with how sure it is; a class
+  no rule knows goes to the assistant's `FailureAdvisor` when one is wired in, else to a generic
+  explanation naming the step (`low`). `source` says which (`rules` or `assistant`). The step to
+  run again from is the paused step, or the one a retry would start from. A rule never suggests
+  an input.
+- **Retry**: whether this person may retry it now, the same decision as the job's Retry button,
+  with the Denial when not.
+- **Similar**: the jobs of the same workflow in the account that failed with the same class in
+  the last 30 days (2000 at most), and the latest console retry (`retry-of`) of one of the ten
+  most recent that succeeded: who ran it and when.
 
 ## Service tokens (hub decision 23)
 
