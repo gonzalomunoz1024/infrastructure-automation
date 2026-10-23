@@ -12,6 +12,7 @@ import com.iaf.console.bff.session.domain.AccountMembership;
 import com.iaf.console.bff.session.domain.IdpUser;
 import com.iaf.console.bff.session.domain.LoginTicket;
 import com.iaf.console.bff.session.domain.LoginTicketCodec;
+import com.iaf.console.bff.session.domain.OrganizationAdmins;
 import com.iaf.console.bff.session.domain.Pkce;
 import com.iaf.console.bff.session.domain.ReturnTo;
 import com.iaf.console.bff.session.domain.ResolvedPrincipal;
@@ -26,7 +27,8 @@ import reactor.core.publisher.Mono;
  * The sign-in: {@link #start} sends the browser to the provider with PKCE and seals what the
  * callback needs into a ticket; {@link #complete} exchanges the code, verifies the ID token,
  * resolves the console user and opens the session (or, for a step-up, refreshes the current
- * session's authentication time).
+ * session's authentication time and identity provider groups). Whether the person is an
+ * organization admin is decided here, from the provider's groups, and nowhere else.
  */
 public class Login {
 
@@ -37,15 +39,17 @@ public class Login {
     private final SessionStore sessions;
     private final LoginTicketCodec tickets;
     private final SessionProperties properties;
+    private final OrganizationAdmins organizationAdmins;
     private final Clock clock;
 
     public Login(IdentityProviderPort provider, PrincipalResolverPort resolver, SessionStore sessions, LoginTicketCodec tickets,
-            SessionProperties properties, Clock clock) {
+            SessionProperties properties, OrganizationAdmins organizationAdmins, Clock clock) {
         this.provider = provider;
         this.resolver = resolver;
         this.sessions = sessions;
         this.tickets = tickets;
         this.properties = properties;
+        this.organizationAdmins = organizationAdmins;
         this.clock = clock;
     }
 
@@ -86,7 +90,8 @@ public class Login {
     private Mono<Completed> open(LoginTicket ticket, IdpUser user, Instant now) {
         return resolver.resolve(user).flatMap(resolved -> {
             Session session = newSession(user, resolved, now);
-            log.info("sign-in user={} account={} issuer={}", session.user().userId(), session.accountId(), user.issuer());
+            log.info("sign-in user={} account={} issuer={} organizationAdmin={}", session.user().userId(), session.accountId(), user.issuer(),
+                    session.organizationAdmin());
             return sessions.save(session).thenReturn(new Completed(session, ticket.returnTo(), true));
         });
     }
@@ -99,8 +104,11 @@ public class Login {
                     if (!session.issuer().equals(user.issuer()) || !session.subject().equals(user.subject())) {
                         return Mono.error(new IllegalArgumentException("the step-up was completed by another user"));
                     }
-                    Session refreshed = session.reauthenticatedAt(user.authTime() == null ? now : user.authTime());
-                    log.info("step-up user={} account={}", refreshed.user().userId(), refreshed.accountId());
+                    // the provider's groups as this sign-in names them, so a person taken out of the admin groups stops being one
+                    Session refreshed = session.reauthenticatedAt(user.authTime() == null ? now : user.authTime())
+                            .withIdpGroups(user.groups(), organizationAdmins.includes(user.groups()));
+                    log.info("step-up user={} account={} organizationAdmin={}", refreshed.user().userId(), refreshed.accountId(),
+                            refreshed.organizationAdmin());
                     return sessions.save(refreshed).thenReturn(new Completed(refreshed, ticket.returnTo(), false));
                 });
     }
@@ -109,7 +117,8 @@ public class Login {
         AccountMembership first = resolved.accounts().get(0);
         String region = first.defaultRegion() == null || first.defaultRegion().isBlank() ? "global" : first.defaultRegion();
         return new Session(Pkce.random(32), resolved.user(), List.copyOf(resolved.accounts()), first.accountId(), region, now,
-                user.authTime() == null ? now : user.authTime(), now, now.plus(properties.ttl()), user.issuer(), user.subject());
+                user.authTime() == null ? now : user.authTime(), now, now.plus(properties.ttl()), user.issuer(), user.subject(), user.groups(),
+                organizationAdmins.includes(user.groups()));
     }
 
     private static String blankToNull(String s) {

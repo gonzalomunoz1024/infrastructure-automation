@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 
 import com.iaf.console.bff.session.domain.CsrfTokens;
 import com.iaf.console.bff.session.domain.LoginTicketCodec;
+import com.iaf.console.bff.session.domain.OrganizationAdmins;
 import com.iaf.console.bff.session.domain.StepUpPolicy;
 import com.iaf.console.bff.session.ports.outbound.IdentityProviderPort;
 import com.iaf.console.bff.session.ports.outbound.PrincipalResolverPort;
@@ -54,9 +55,14 @@ public class SessionConfiguration {
     }
 
     @Bean
+    public OrganizationAdmins organizationAdmins(OrganizationProperties properties) {
+        return new OrganizationAdmins(properties.adminGroups());
+    }
+
+    @Bean
     public Login login(IdentityProviderPort provider, PrincipalResolverPort resolver, SessionStore sessions, LoginTicketCodec tickets,
-            SessionProperties properties, Clock clock) {
-        return new Login(provider, resolver, sessions, tickets, properties, clock);
+            SessionProperties properties, OrganizationAdmins organizationAdmins, Clock clock) {
+        return new Login(provider, resolver, sessions, tickets, properties, organizationAdmins, clock);
     }
 
     @Bean

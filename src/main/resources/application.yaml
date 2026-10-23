@@ -82,6 +82,8 @@ console:
     step-up:
       max-age: 10m                  # a guarded action needs an authentication at most this old
       actions: ["*:delete"]         # <service>:<verb> patterns that need a fresh authentication
+  organization:
+    admin-groups: []                # identity provider groups whose members are organization admins (decision 34); empty: nobody
   identity:
     url: http://localhost:18083     # the identity service; empty means the in-process demo stand-in under /demo-identity (demo profile)
     service-name: console-identity-service
