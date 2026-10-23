@@ -8,7 +8,7 @@
 export * from './types'
 export { isApiErrorLike, errorMessage, type ApiErrorLike } from './errors'
 export { ConsoleKitProvider, useConsoleKit, useAsync, DEFAULT_LINKS, EMPTY_DATA, type ConsoleKitData, type ConsoleKitLinks, type ConsoleKitValue, type ConsoleKitProviderProps, type ResourceRef, type AsyncState } from './provider'
-export { Mono, CopyableId, When, Facts, Section, ErrorState, TextLink, ExternalLink, EffectTag, resourceTone, checkDot, titleCase, useNow, parseDuration, countdown, deadlineOf, shortJobId, summarize, type FactItem } from './common'
+export { Mono, CopyableId, When, Facts, Section, ErrorState, TextLink, ExternalLink, safeExternalUrl, EffectTag, resourceTone, checkDot, titleCase, useNow, parseDuration, countdown, deadlineOf, shortJobId, summarize, type FactItem } from './common'
 export { xConsoleOf, isXConsoleFormat, isXConsoleWidget, columnFields, searchableFields, sensitiveFields, mutableFields, groupFields, unitOf, type FieldGroup } from './xconsole'
 export { formatValue, formatValueText, formatField, HIDDEN_VALUE, type FormatOptions } from './format'
 export { ProblemList, normalizeField, fieldRoot, problemsFor, unfieldedProblems, type ProblemListProps } from './ProblemList'
