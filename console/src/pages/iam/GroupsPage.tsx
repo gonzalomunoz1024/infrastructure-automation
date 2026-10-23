@@ -112,7 +112,7 @@ function NewGroupDialog({ onClose }: { onClose: () => void }) {
         <OverlayBody>
           <div className="space-y-5">
             <Field label="Name" htmlFor="new-group-name" required hint="2 to 64 lower-case letters, digits and dashes." error={name && !nameOk ? 'Lower-case letters, digits and dashes only, 2 to 64 of them.' : undefined}>
-              <Input id="new-group-name" mono required autoFocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="team-storage" invalid={!!name && !nameOk} />
+              <Input id="new-group-name" mono required data-autofocus value={name} onChange={(e) => setName(e.target.value.toLowerCase())} placeholder="team-storage" invalid={!!name && !nameOk} />
             </Field>
             <Field label="Description" htmlFor="new-group-description">
               <Input id="new-group-description" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Who is in it and why" />

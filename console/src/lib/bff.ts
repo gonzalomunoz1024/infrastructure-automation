@@ -1,8 +1,8 @@
-import { get, page, request, type ListParams } from './api'
+import { get, page, qs, request, type ListParams } from './api'
 import { isApiError } from './api'
 import { clearQueryCache, invalidate } from './queries'
 import { MOCK, getSession, setSessionState, signInUrl, type Session, type SessionState } from './session'
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, BffConsoleType, BffRegion, DemoPerson, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Quota, QuotaRequest, QuotaRequestInput } from './types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccessRequestStatus, AccountSummary, BffConsoleType, BffRegion, ConsoleResource, DemoPerson, IamGroup, IamGroupInput, IamPolicy, IamRole, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, ResourceCounts, ResourceFilters, SearchHit, Suggestion } from './types'
 
 /*
  * The BFF client (hub: contracts/openapi/console-bff.yaml): the session and sign-in, the
@@ -23,6 +23,11 @@ export function idempotencyKey(): string {
 }
 
 const writeHeaders = (version?: number) => ({ headers: { 'Idempotency-Key': idempotencyKey(), ...(version !== undefined ? { 'If-Match': String(version) } : {}) } })
+
+/** `GET /console/v1/r/{type}`: the filters, a sort column (`-` for descending) and a page. */
+export interface ResourceListParams extends ListParams, ResourceFilters {
+  sort?: string
+}
 
 export interface IamListParams extends ListParams {
   q?: string
@@ -83,6 +88,19 @@ export const bff = {
       /** by its requester or an admin; 409 once decided */
       withdraw: (requestId: string) => request<void>('DELETE', b(`/iam/quota-requests/${enc(requestId)}`), undefined, writeHeaders()),
     },
+  },
+
+  /* resources, from the state service through the BFF: one page per call; counts by lifecycle state */
+  resources: {
+    list: (type: string, params?: ResourceListParams) => page<ConsoleResource>(b(`/r/${enc(type)}`), params),
+    /** how many match the filters, by lifecycle state; the counts stop at `cappedAt` */
+    counts: (type: string, filters?: ResourceFilters) => get<ResourceCounts>(`${b(`/r/${enc(type)}:counts`)}${qs(filters)}`),
+  },
+  search: (params: { q: string; type?: string } & ListParams) => page<SearchHit>(b('/search'), params),
+  suggest: (q: string, limit = 8) => get<{ items: Suggestion[] }>(`${b('/suggest')}${qs({ q, limit })}`),
+  preferences: {
+    get: () => get<Preferences>(b('/preferences')),
+    put: (body: Preferences) => request<Preferences>('PUT', b('/preferences'), body, writeHeaders()),
   },
 
   /* access requests: from a refusal to the account's approvers */

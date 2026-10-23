@@ -1,8 +1,9 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, type Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 
 /**
- * Shared by the journeys: axe on the settled page, and the phone-width overflow check.
+ * Shared by the journeys: axe on the settled page, the phone-width overflow check, signing in and
+ * reaching a control with Tab.
  *
  * The suite runs with reduced motion (playwright.config.ts), so the shell's fade-in between pages
  * is instant; `settled` still waits for whatever finite animation is running, because axe reads
@@ -32,6 +33,23 @@ export async function expectNoSeriousA11y(page: Page, where: string): Promise<vo
     return `${v.id} (${v.impact}): ${v.help}\n${nodes.join('\n')}`
   })
   expect(lines, `serious or critical axe violations on the ${where}`).toEqual([])
+}
+
+/** Signs in through the mock identity provider and lands on `next`. */
+export async function signInAs(page: Page, name: RegExp, next = '/'): Promise<void> {
+  await page.goto(`/#/signin?next=${encodeURIComponent(next)}`)
+  await expect(page.getByRole('heading', { name: 'Sign in', level: 1 })).toBeVisible()
+  await page.getByRole('button', { name }).click()
+  await expect(page).not.toHaveURL(/#\/signin/)
+}
+
+/** Presses Tab until `target` has the focus, as a keyboard user would reach it; fails past `max` presses. */
+export async function tabTo(page: Page, target: Locator, max = 40): Promise<void> {
+  for (let i = 0; i < max; i++) {
+    if (await target.evaluate((el) => el === document.activeElement)) return
+    await page.keyboard.press('Tab')
+  }
+  await expect(target, `reached within ${max} presses of Tab`).toBeFocused()
 }
 
 /** The page must not scroll sideways at the width it is checked at. */

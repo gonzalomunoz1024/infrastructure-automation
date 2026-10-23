@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createMockServer, etagOf, parseCursor, stepsOf, type MockRequest } from './server'
 import { buildMockData, nextMockEvent } from './data'
-import type { JobDetail, JobSummary, Lineage, Me, PlatformEvent, Resource, ResourceType } from '../lib/types'
+import type { ConsoleResource, JobDetail, JobSummary, Lineage, Me, PlatformEvent, Preferences, Resource, ResourceCounts, ResourceType, SearchHit, Suggestion } from '../lib/types'
+import { countsOf } from './resources'
 
 const server = createMockServer()
 const get = (url: string, headers: Record<string, string> = {}) => server.handle({ method: 'GET', url, headers })
@@ -418,5 +419,144 @@ describe('the BFF: access requests', () => {
     expect(b.call('POST', '/console/v1/access-requests', { action: 'compute:create', reason: 'on call' })).toMatchObject({ status: 403, body: { denied: { action: 'access-request:create', role: 'auditor' } } })
     // and reads the account's queue
     expect(body<{ items: AccessRequest[] }>(b.call('GET', '/console/v1/access-requests')).items.map((r) => r.requestId)).toEqual(['areq_001', 'areq_002'])
+  })
+})
+
+describe('the BFF: resources, search, suggestions and preferences (phase 3)', () => {
+  it('lists the account’s rows of a type with the state service’s shape, filters, sort and pages', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const first = b.call('GET', '/console/v1/r/vm?limit=5')
+    expect(first.status).toBe(200)
+    const pageOne = first.body as { items: ConsoleResource[]; next: string | null }
+    expect(pageOne.items).toHaveLength(5)
+    expect(pageOne.next).toBeTruthy()
+    for (const r of pageOne.items) {
+      expect(r.wfrn).toMatch(/^wfrn:wf:compute:global:123456789012:vm\//)
+      expect(r.service).toBe('compute')
+      expect(['pending', 'active', 'updating', 'deleting', 'deleted', 'failed']).toContain(r.state)
+      expect(r.tags.owner).toBeTruthy()
+      expect(typeof r.version).toBe('number')
+    }
+    // the plural works too, the sort reads `-created`, and a state narrows
+    const byCreated = (b.call('GET', '/console/v1/r/vms?sort=-created&limit=200').body as { items: ConsoleResource[] }).items
+    expect(byCreated.map((r) => r.createdAt)).toEqual([...byCreated.map((r) => r.createdAt)].sort().reverse())
+    const active = (b.call('GET', '/console/v1/r/vm?state=active&limit=200').body as { items: ConsoleResource[] }).items
+    expect(active.length).toBeGreaterThan(0)
+    expect(active.every((r) => r.state === 'active')).toBe(true)
+    const drifted = (b.call('GET', '/console/v1/r/vm?drift=true&limit=200').body as { items: ConsoleResource[] }).items
+    expect(drifted.every((r) => r.drift)).toBe(true)
+    const q = (b.call('GET', '/console/v1/r/vm?q=api-01&limit=200').body as { items: ConsoleResource[] }).items
+    expect(q.length).toBeGreaterThan(0)
+    expect(q.every((r) => (r.name ?? '').includes('api-01'))).toBe(true)
+    const tagged = (b.call('GET', '/console/v1/r/vm?tag.owner=team-compute&limit=200').body as { items: ConsoleResource[] }).items
+    expect(tagged.every((r) => r.tags.owner === 'team-compute')).toBe(true)
+    expect(b.call('GET', '/console/v1/r/unicorn').status).toBe(404)
+  })
+
+  it('scopes the rows to the session’s account: the data team’s databases are not in Compute', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const inCompute = (b.call('GET', '/console/v1/r/database?limit=200').body as { items: ConsoleResource[] }).items
+    expect(inCompute.every((r) => r.tags.owner !== 'team-data')).toBe(true)
+    b.call('PUT', '/console/v1/session', { accountId: '210987654321' })
+    const inData = (b.call('GET', '/console/v1/r/database?limit=200').body as { items: ConsoleResource[] }).items
+    expect(inData.length).toBeGreaterThan(0)
+    expect(inData.every((r) => r.wfrn.includes(':210987654321:'))).toBe(true)
+  })
+
+  it('searches names first and suggests types, names and tags', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const hits = (b.call('GET', '/console/v1/search?q=api-01').body as { items: SearchHit[] }).items
+    expect(hits[0].name?.startsWith('api-01')).toBe(true)
+    expect(hits[0].score).toBeGreaterThanOrEqual(hits[hits.length - 1].score)
+    expect(b.call('GET', '/console/v1/search?q=').status).toBe(400)
+    const scoped = (b.call('GET', '/console/v1/search?q=a&type=vm').body as { items: SearchHit[] }).items
+    expect(scoped.every((h) => h.type === 'vm')).toBe(true)
+    const suggestions = (b.call('GET', '/console/v1/suggest?q=vir').body as { items: Suggestion[] }).items
+    expect(suggestions.some((s) => s.kind === 'type' && s.value === 'vm')).toBe(true)
+    expect(suggestions.findIndex((s) => s.kind === 'type')).toBe(0)
+    const owners = (b.call('GET', '/console/v1/suggest?q=team-comp&limit=3').body as { items: Suggestion[] }).items
+    expect(owners.some((s) => s.kind === 'tag' && s.value === 'owner=team-compute')).toBe(true)
+    expect(owners.length).toBeLessThanOrEqual(3)
+  })
+
+  it('keeps preferences per person with a version', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    expect(b.call('GET', '/console/v1/preferences').body).toEqual({ version: 0 })
+    const saved = b.call('PUT', '/console/v1/preferences', { columns: { 'compute/vm': ['name', 'status'] }, version: 0 })
+    expect(saved.status).toBe(200)
+    expect((saved.body as Preferences).version).toBe(1)
+    expect(b.call('PUT', '/console/v1/preferences', { version: 0 }).status).toBe(409)
+    expect(b.call('PUT', '/console/v1/preferences', { theme: 'light' }).status).toBe(200)
+    expect((b.call('GET', '/console/v1/preferences').body as Preferences).version).toBe(2)
+    b.signIn('mia')
+    expect(b.call('GET', '/console/v1/preferences').body).toEqual({ version: 0 })
+  })
+
+  it('checks saved views the way the BFF does', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const view = (over: Record<string, unknown> = {}) => ({ id: 'v_1', name: 'Failed in prod', filters: [{ property: 'status', operator: '=', value: 'failed' }], sort: '-name', pageSize: 50, createdAt: '2026-10-23T12:00:00Z', ...over })
+    const put = (views: unknown[]) => b.call('PUT', '/console/v1/preferences', { savedViews: { 'compute/vm': views } })
+    expect(put([view()]).status).toBe(200)
+    expect(put([view({ id: 'view-1' })]).status).toBe(400)
+    expect(put([view({ name: '' })]).status).toBe(400)
+    expect(put([view({ name: 'x'.repeat(81) })]).status).toBe(400)
+    expect(put([view(), view({ id: 'v_2', name: 'FAILED IN PROD' })]).status).toBe(400)
+    expect(put([view({ filters: [{ property: null, operator: ':', value: 'x'.repeat(1025) }] })]).status).toBe(400)
+    expect(put([view({ createdAt: undefined })]).status).toBe(400)
+    expect(put(Array.from({ length: 51 }, (_, i) => view({ id: `v_${i}`, name: `View ${i}` }))).status).toBe(400)
+    expect(put(Array.from({ length: 50 }, (_, i) => view({ id: `v_${i}`, name: `View ${i}` }))).status).toBe(200)
+    // the rest of the BFF's rules: operators, properties, sorts, page sizes, ids, type keys
+    expect(put([view({ filters: [{ property: 'status', operator: '~', value: 'failed' }] })]).status).toBe(400)
+    expect(put([view({ filters: [{ property: 'status label', operator: '=', value: 'failed' }] })]).status).toBe(400)
+    expect(put([view({ filters: [{ property: 'tag:owner', operator: '=', value: 'team-compute' }, { property: null, operator: ':', value: 'web' }] })]).status).toBe(200)
+    expect(put([view({ sort: 'tag:owner' })]).status).toBe(400)
+    expect(put([view({ pageSize: 0 })]).status).toBe(400)
+    expect(put([view({ pageSize: 201 })]).status).toBe(400)
+    expect(put([view({ pageSize: 200 })]).status).toBe(200)
+    expect(put([view(), view({ name: 'Another' })]).status).toBe(400)
+    expect(b.call('PUT', '/console/v1/preferences', { savedViews: { 'Compute/VM': [view()] } }).status).toBe(400)
+    expect(b.call('PUT', '/console/v1/preferences', { density: 'cosy' }).status).toBe(400)
+    expect(b.call('PUT', '/console/v1/preferences', { defaultRegion: 'Global' }).status).toBe(400)
+    expect(b.call('PUT', '/console/v1/preferences', { columns: { 'compute/vm': Array.from({ length: 41 }, (_, i) => `c${i}`) } }).status).toBe(400)
+  })
+
+  it('counts a type’s rows by lifecycle state with the list’s filters, up to the cap', () => {
+    const b = bff()
+    b.signIn('gonzalo')
+    const all: ConsoleResource[] = []
+    let after: string | null = ''
+    while (after !== null) {
+      const pageOf = b.call('GET', `/console/v1/r/vm?limit=200${after ? `&after=${after}` : ''}`).body as { items: ConsoleResource[]; next: string | null }
+      all.push(...pageOf.items)
+      after = pageOf.next
+    }
+    expect(all.length).toBeGreaterThan(200)
+    // the list leaves tombstones out unless asked for them
+    expect(all.some((r) => r.state === 'deleted')).toBe(false)
+    const deleted = (b.call('GET', '/console/v1/r/vm?limit=200&state=deleted').body as { items: ConsoleResource[] }).items
+    expect(deleted.length).toBeGreaterThan(0)
+    const counts = b.call('GET', '/console/v1/r/vm:counts')
+    expect(counts.status).toBe(200)
+    const c = counts.body as ResourceCounts
+    expect(c.total).toBe(all.length)
+    expect(c.cappedAt).toBeNull()
+    expect(c.byState.deleted).toBe(deleted.length)
+    expect(Object.values(c.byState).reduce((n, x) => n + (x ?? 0), 0)).toBe(all.length + deleted.length)
+    expect(c.byState.active).toBe(all.filter((r) => r.state === 'active').length)
+    expect(c.drift).toBe(all.filter((r) => r.drift).length)
+    // total and drift take every filter; the counts by state ignore the state filter
+    const active = b.call('GET', '/console/v1/r/vm:counts?state=active').body as ResourceCounts
+    expect(active.total).toBe(c.byState.active)
+    expect(active.byState).toEqual(c.byState)
+    expect((b.call('GET', '/console/v1/r/vm:counts?state=deleted').body as ResourceCounts).total).toBe(deleted.length)
+    expect(b.call('GET', '/console/v1/r/nope:counts').status).toBe(404)
+    // the cap: a count past it answers the cap, and cappedAt says so
+    const rows = [...all, ...deleted]
+    expect(countsOf(rows, new URLSearchParams(), 3)).toMatchObject({ total: 3, cappedAt: 3 })
   })
 })

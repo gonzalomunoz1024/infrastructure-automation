@@ -64,6 +64,8 @@ export interface VirtualTableProps<T> {
   selectedKey?: string | null
   /** a checkbox column */
   selectable?: boolean
+  /** what a row's checkbox names ("Select web-01"); the row key when left out */
+  rowLabel?: (row: T) => string
   selectedKeys?: ReadonlySet<string>
   onSelectionChange?: (keys: Set<string>) => void
   /** called once when the last rows come into view (cursor paging, infinite lists) */
@@ -116,6 +118,7 @@ export function VirtualTable<T>({
   maxHeight = '32rem',
   selectedKey,
   selectable,
+  rowLabel,
   selectedKeys,
   onSelectionChange,
   onEndReached,
@@ -291,7 +294,7 @@ export function VirtualTable<T>({
                     >
                       {selectable && (
                         <div role="gridcell" className="flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                          <Checkbox checked={!!isSelected} onChange={(on) => setSelected(key, on)} label={<span className="sr-only">Select {key}</span>} />
+                          <Checkbox checked={!!isSelected} onChange={(on) => setSelected(key, on)} label={<span className="sr-only">Select {rowLabel ? rowLabel(row) : key}</span>} />
                         </div>
                       )}
                       {columns.map((c) => {

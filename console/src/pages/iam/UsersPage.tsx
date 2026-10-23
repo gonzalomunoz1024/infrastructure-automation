@@ -108,7 +108,7 @@ function AddUserDialog({ groups, onClose }: { groups: IamGroup[]; onClose: () =>
         <OverlayBody>
           <div className="space-y-5">
             <Field label="Email" htmlFor="add-user-email" required hint="The address the identity provider knows them by.">
-              <Input id="add-user-email" type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" />
+              <Input id="add-user-email" type="email" required data-autofocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" />
             </Field>
             <Field label="Name" htmlFor="add-user-name" hint="Optional. The identity provider’s name wins at their next sign-in.">
               <Input id="add-user-name" value={name} onChange={(e) => setName(e.target.value)} />

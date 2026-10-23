@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
-import { expectNoHorizontalOverflow, expectNoSeriousA11y } from './support'
+import { expectNoHorizontalOverflow, expectNoSeriousA11y, signInAs } from './support'
 
 /*
  * Gate 1, in mock mode: sign in through the (mock) identity provider, pick an account, meet a
@@ -14,14 +14,6 @@ import { expectNoHorizontalOverflow, expectNoSeriousA11y } from './support'
 
 const shots = fileURLToPath(new URL('./screenshots/', import.meta.url))
 const shot = (name: string) => `${shots}${name}.png`
-
-/** Signs in through the mock identity provider and lands on `next`. */
-async function signInAs(page: Page, name: RegExp, next = '/') {
-  await page.goto(`/#/signin?next=${encodeURIComponent(next)}`)
-  await expect(page.getByRole('heading', { name: 'Sign in', level: 1 })).toBeVisible()
-  await page.getByRole('button', { name }).click()
-  await expect(page).not.toHaveURL(/#\/signin/)
-}
 
 async function signOut(page: Page) {
   await page.goto('/#/settings')

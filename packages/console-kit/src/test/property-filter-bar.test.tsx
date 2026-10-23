@@ -142,6 +142,25 @@ describe('PropertyFilterBar', () => {
     t.unmount()
   })
 
+  it('keeps the keys’ highlight when the list opens under a resting pointer, and follows a moving one', () => {
+    const t = mount()
+    act(() => t.input.focus())
+    t.type('stat')
+    const option = (i: number) => t.container.querySelectorAll<HTMLElement>('[role="option"]')[i]
+    const highlighted = () => t.input.getAttribute('aria-activedescendant')
+    // the browser reports the pointer entering when the list changes under it; that alone moves nothing
+    act(() => void option(1).dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    expect(highlighted()).toBe(option(0).id)
+    t.key('Enter')
+    expect(t.input.getAttribute('aria-label')).toBe('Operator for Status')
+    // a pointer that moves takes the highlight with it
+    act(() => void option(1).dispatchEvent(new MouseEvent('mousemove', { bubbles: true })))
+    expect(highlighted()).toBe(option(1).id)
+    t.key('Enter')
+    expect(t.input.getAttribute('aria-label')).toBe('Value for Status !=')
+    t.unmount()
+  })
+
   it('steps back with Backspace and clears everything with the button', () => {
     const t = mount()
     act(() => t.input.focus())

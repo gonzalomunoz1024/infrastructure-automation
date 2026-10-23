@@ -300,3 +300,111 @@ export interface DemoPerson {
   email: string
   memberships: { accountId: string; accountName: string; roles: string[] }[]
 }
+
+/* ----------------------------------------------------------------------------
+   The BFF's resource rows (console-bff.yaml ConsoleResource), search and preferences
+   ------------------------------------------------------------------------- */
+
+/** The state service's lifecycle state of a resource. */
+export type ResourceState = 'pending' | 'active' | 'updating' | 'deleting' | 'deleted' | 'failed'
+
+export const RESOURCE_STATES: readonly ResourceState[] = ['pending', 'active', 'updating', 'deleting', 'deleted', 'failed']
+
+/** A resource as `GET /console/v1/r/{type}` lists it: the state service's row, the account's view. */
+export interface ConsoleResource {
+  wfrn: string
+  type: string
+  service: string
+  name?: string
+  region?: string
+  state: ResourceState
+  version: number
+  attributes: Record<string, unknown>
+  /** what the provider last reported, when it differs from the desired attributes */
+  observed?: Record<string, unknown>
+  drift?: boolean
+  tags: Record<string, string>
+  createdAt: string
+  updatedAt: string
+  lastJob?: JobSummary
+}
+
+/** The filters `GET /console/v1/r/{type}` and its `:counts` take: free text, a state, drift and tags. */
+export type ResourceFilters = {
+  q?: string
+  state?: ResourceState
+  drift?: boolean
+  [tag: `tag.${string}`]: string | undefined
+}
+
+/**
+ * `GET /console/v1/r/{type}:counts`, with the list's filters: how many resources there are, in
+ * each lifecycle state and drifting. When exact counting would be slow the counts stop at
+ * `cappedAt` and read "1,000+". The console's addition to the contract, asked of the hub on
+ * 2026-10-23.
+ */
+export interface ResourceCounts {
+  total: number
+  byState: Partial<Record<ResourceState, number>>
+  drift: number
+  cappedAt?: number | null
+}
+
+/** One hit of `GET /console/v1/search`. */
+export interface SearchHit {
+  wfrn: string
+  type: string
+  service?: string
+  region?: string
+  name?: string
+  state?: ResourceState
+  drift?: boolean
+  tags?: Record<string, string>
+  score: number
+  /** HTML-escaped text with the matches in <em>: split on <em>, never render it as HTML */
+  highlights?: Record<string, string>
+  updatedAt?: string
+}
+
+/** One entry of `GET /console/v1/suggest`; a tag's value is the term to put in the query (`tag:env=prod`). */
+export interface Suggestion {
+  kind: 'resource' | 'type' | 'tag' | 'wfrn'
+  value: string
+  label: string
+  type?: string
+  wfrn?: string
+}
+
+/** A filter token as a saved view keeps it (the kit's FilterToken, by value). */
+export interface SavedFilter {
+  property: string | null
+  operator: string
+  value: string
+}
+
+/** A list the person named: its filters, sort and page size, per type. */
+export interface SavedView {
+  id: string
+  name: string
+  filters: SavedFilter[]
+  /** a column, `-` for descending, as the BFF sorts */
+  sort?: string
+  pageSize?: number
+  createdAt: string
+}
+
+/**
+ * The person's preferences (`/console/v1/preferences`). `savedViews` is the console's addition to
+ * the contract, asked of the hub on 2026-10-23; the BFF keeps the whole object as sent.
+ */
+export interface Preferences {
+  theme?: 'system' | 'light' | 'dark'
+  density?: 'comfortable' | 'compact'
+  defaultRegion?: string
+  pinnedTypes?: string[]
+  /** per type key (`service/type`), the list columns the person chose */
+  columns?: Record<string, string[]>
+  /** per type key, the views the person saved */
+  savedViews?: Record<string, SavedView[]>
+  version?: number
+}

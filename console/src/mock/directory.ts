@@ -1,4 +1,4 @@
-import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Quota, QuotaRequest, QuotaRequestInput } from '../lib/types'
+import type { AccessKey, AccessKeyCreated, AccessRequest, AccessRequestInput, AccountSummary, DemoPerson, Denial, DenialLayer, IamGroup, IamGroupInput, IamPolicy, IamRole, IamStatement, IamUser, Preferences, Quota, QuotaRequest, QuotaRequestInput, SavedFilter, SavedView } from '../lib/types'
 
 /*
  * The mock's identity directory, seeded as the identity service's demo seeds it (and as the BFF's
@@ -156,6 +156,8 @@ export interface Directory {
   /** `<account>/<user>` → version, bumped by every change to the user's groups */
   userVersions: Record<string, number>
   counters: { groups: number; keys: number; requests: number; quotaRequests: number }
+  /** by person: what `/console/v1/preferences` keeps (phase 3) */
+  preferences?: Record<string, Preferences>
 }
 
 export function buildDirectory(): Directory {
@@ -843,3 +845,88 @@ export function decideAccessRequest(dir: Directory, accountId: string, requestId
 }
 
 export type { DenialLayer, IamStatement }
+
+/* ----------------------------------------------------------------------------
+   Preferences (phase 3): one object per person, replaced whole, with a version
+   ------------------------------------------------------------------------- */
+
+export function preferencesOf(dir: Directory, userId: string): Preferences {
+  return dir.preferences?.[userId] ?? { version: 0 }
+}
+
+/** Replaces the person's preferences; a stale `version` is a 409, as another tab moved first. */
+export function putPreferences(dir: Directory, userId: string, next: unknown): Preferences {
+  if (!next || typeof next !== 'object' || Array.isArray(next)) throw new DirectoryError(400, 'Preferences are an object')
+  const incoming = next as Preferences
+  const current = preferencesOf(dir, userId)
+  if (incoming.version !== undefined && incoming.version !== (current.version ?? 0)) throw new DirectoryError(409, `Preferences moved on to version ${current.version ?? 0}; read them again`)
+  const problem = preferencesProblem(incoming)
+  if (problem) throw new DirectoryError(400, problem)
+  const saved: Preferences = { ...incoming, version: (current.version ?? 0) + 1 }
+  dir.preferences = { ...(dir.preferences ?? {}), [userId]: saved }
+  return saved
+}
+
+const isMap = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** The BFF's filter bar operators, and the shapes of a type key, a filter's property and a sort. */
+const SAVED_OPERATORS: readonly string[] = ['=', '!=', ':', '!:', '>', '<', '>=', '<=']
+const TYPE_KEY = /^[a-z0-9-]{1,32}\/[a-z0-9-]{1,64}$/
+const VIEW_ID = /^v_[A-Za-z0-9_-]{1,64}$/
+const FILTER_PROPERTY = /^[A-Za-z0-9_.:/-]{1,128}$/
+const VIEW_SORT = /^-?[A-Za-z][A-Za-z0-9_.]{0,63}$/
+
+/** The BFF's rules for preferences: the theme and density it knows, a region's shape, 50 pinned types, 40 columns a type, and saved views below. */
+function preferencesProblem(p: Preferences): string | null {
+  if (p.theme !== undefined && !['system', 'light', 'dark'].includes(p.theme)) return 'theme is system, light or dark'
+  if (p.density !== undefined && !['comfortable', 'compact'].includes(p.density)) return 'density is comfortable or compact'
+  if (p.defaultRegion !== undefined && (typeof p.defaultRegion !== 'string' || !/^[a-z0-9-]{2,32}$/.test(p.defaultRegion))) return 'defaultRegion is 2 to 32 lowercase letters, digits or dashes'
+  if (p.pinnedTypes !== undefined && (!Array.isArray(p.pinnedTypes) || p.pinnedTypes.length > 50)) return 'at most 50 pinned types'
+  if (p.columns !== undefined) {
+    if (!isMap(p.columns)) return 'columns maps a type key to column names'
+    if (Object.values(p.columns).some((c) => !Array.isArray(c) || c.length > 40)) return 'at most 40 columns per type'
+  }
+  if (p.savedViews !== undefined) {
+    if (!isMap(p.savedViews)) return 'savedViews maps a type key to views'
+    return savedViewsProblem(p.savedViews)
+  }
+  return null
+}
+
+/**
+ * The BFF's rules for saved views: 200 types at most, keyed `service/type`; 50 views a type, ids
+ * `v_…` and names of 1 to 80 characters each unique in the type (names ignoring case); 50 filters a
+ * view with a known operator, a column (or null for free text) and a value of 1,024 characters at
+ * most; a sort that is a column, `-` first for descending; a page size of 1 to 200; a creation time.
+ */
+function savedViewsProblem(byType: Record<string, unknown>): string | null {
+  if (Object.keys(byType).length > 200) return 'saved views for at most 200 types'
+  for (const [type, views] of Object.entries(byType)) {
+    if (!TYPE_KEY.test(type)) return 'savedViews is keyed by type key, service/type'
+    if (!Array.isArray(views)) return `savedViews.${type} is a list`
+    if (views.length > 50) return `savedViews.${type} keeps 50 views at most`
+    const ids = new Set<string>()
+    const names = new Set<string>()
+    for (const v of views as Partial<SavedView>[]) {
+      if (!isMap(v)) return `savedViews.${type}: a view is an object`
+      if (typeof v.id !== 'string' || !VIEW_ID.test(v.id)) return `A saved view's id is v_ and up to 64 letters, digits, _ or -`
+      if (typeof v.name !== 'string' || v.name.trim().length === 0 || v.name.trim().length > 80) return `A saved view's name is 1 to 80 characters`
+      if (ids.has(v.id)) return `Two views of ${type} have the id ${v.id}`
+      ids.add(v.id)
+      const key = v.name.trim().toLowerCase()
+      if (names.has(key)) return `Two views of ${type} are called "${v.name.trim()}"`
+      names.add(key)
+      const filters: unknown = v.filters ?? []
+      if (!Array.isArray(filters) || filters.length > 50) return `A saved view keeps 50 filters at most`
+      for (const f of filters as Partial<SavedFilter>[]) {
+        if (!isMap(f) || typeof f.operator !== 'string' || !SAVED_OPERATORS.includes(f.operator)) return `A saved filter's operator is one of ${SAVED_OPERATORS.join(' ')}`
+        if (f.property !== null && f.property !== undefined && (typeof f.property !== 'string' || !FILTER_PROPERTY.test(f.property))) return `A saved filter's property is a column name, or null for free text`
+        if (typeof f.value !== 'string' || f.value.length > 1024) return `A saved filter's value is 1,024 characters at most`
+      }
+      if (v.sort !== undefined && (typeof v.sort !== 'string' || !VIEW_SORT.test(v.sort))) return `A saved view's sort is a column, - first for descending`
+      if (v.pageSize !== undefined && (typeof v.pageSize !== 'number' || !Number.isInteger(v.pageSize) || v.pageSize < 1 || v.pageSize > 200)) return `A saved view's page size is 1 to 200`
+      if (typeof v.createdAt !== 'string' || Number.isNaN(Date.parse(v.createdAt))) return `A saved view carries when it was created`
+    }
+  }
+  return null
+}

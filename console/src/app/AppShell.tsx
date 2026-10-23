@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState, type ComponentType } from 'react'
-import { ErrorBoundary, useCommandK, useToast } from '@iaf/ui'
+import { Suspense, lazy, useCallback, useEffect, useState, type ComponentType } from 'react'
+import { ErrorBoundary, SkeletonRows, SkeletonText, useCommandK, useToast } from '@iaf/ui'
 import { isApiError } from '../lib/api'
 import { findService } from '../lib/descriptors'
 import { useAccessRequestQueue } from './access'
@@ -13,26 +13,35 @@ import { PlatformFeed } from './PlatformFeed'
 import { Search } from './Search'
 import { isIamRoute, type PageProps, type Route, type RouteName } from './router'
 
-import HomePage from '../pages/HomePage'
-import ServicePage from '../pages/ServicePage'
-import TypeListPage from '../pages/TypeListPage'
-import ResourceDetailPage from '../pages/ResourceDetailPage'
-import RequestsPage from '../pages/RequestsPage'
-import RequestPage from '../pages/RequestPage'
-import IamPage from '../pages/IamPage'
-import IamUsersPage, { IamUserPage } from '../pages/iam/UsersPage'
-import IamGroupsPage, { IamGroupPage } from '../pages/iam/GroupsPage'
-import IamRolesPage, { IamRolePage } from '../pages/iam/RolesPage'
-import IamAccessKeysPage from '../pages/iam/AccessKeysPage'
-import IamAccessRequestsPage, { IamAccessRequestPage } from '../pages/iam/AccessRequestsPage'
-import SettingsPage from '../pages/SettingsPage'
 import SignInPage from '../pages/SignInPage'
-import NotFoundPage from '../pages/NotFoundPage'
 
 /*
- * The frame around every page: the header, a sidebar when the route is inside a service or
- * identity and access, the content with its breadcrumbs, the status bar, the search palette,
- * the platform feed and the refusal view.
+ * Every page but the sign-in is its own chunk (route-level code splitting): the first paint loads
+ * the shell and the page it lands on, and each other page arrives the first time it is opened.
+ */
+const HomePage = lazy(() => import('../pages/HomePage'))
+const ServicePage = lazy(() => import('../pages/ServicePage'))
+const TypeListPage = lazy(() => import('../pages/TypeListPage'))
+const ResourceDetailPage = lazy(() => import('../pages/ResourceDetailPage'))
+const RequestsPage = lazy(() => import('../pages/RequestsPage'))
+const RequestPage = lazy(() => import('../pages/RequestPage'))
+const IamPage = lazy(() => import('../pages/IamPage'))
+const IamUsersPage = lazy(() => import('../pages/iam/UsersPage'))
+const IamUserPage = lazy(() => import('../pages/iam/UsersPage').then((m) => ({ default: m.IamUserPage })))
+const IamGroupsPage = lazy(() => import('../pages/iam/GroupsPage'))
+const IamGroupPage = lazy(() => import('../pages/iam/GroupsPage').then((m) => ({ default: m.IamGroupPage })))
+const IamRolesPage = lazy(() => import('../pages/iam/RolesPage'))
+const IamRolePage = lazy(() => import('../pages/iam/RolesPage').then((m) => ({ default: m.IamRolePage })))
+const IamAccessKeysPage = lazy(() => import('../pages/iam/AccessKeysPage'))
+const IamAccessRequestsPage = lazy(() => import('../pages/iam/AccessRequestsPage'))
+const IamAccessRequestPage = lazy(() => import('../pages/iam/AccessRequestsPage').then((m) => ({ default: m.IamAccessRequestPage })))
+const SettingsPage = lazy(() => import('../pages/SettingsPage'))
+const NotFoundPage = lazy(() => import('../pages/NotFoundPage'))
+
+/*
+ * The frame around every page: a skip link, the header, a sidebar when the route is inside a
+ * service or identity and access, the content with its breadcrumbs, the status bar, the search
+ * palette, the platform feed and the refusal view.
  */
 
 const PAGES: Record<RouteName, ComponentType<PageProps>> = {
@@ -88,23 +97,52 @@ export function AppShell({ route }: { route: Route }) {
   return (
     <RefusalProvider>
       <div className="flex h-dvh flex-col bg-surface">
+        <SkipLink />
         <Header onOpenSearch={openPalette} onOpenSidebar={nav ? () => setDrawerFor(route.path) : undefined} />
         <div className="flex min-h-0 flex-1">
           {nav && <SectionSidebar nav={nav} />}
-          <main id="main" className="console-content min-w-0 flex-1 overflow-y-auto px-6 py-6 lg:px-8">
+          <main id="main" tabIndex={-1} className="console-content min-w-0 flex-1 overflow-y-auto px-6 py-6 outline-none lg:px-8">
             <div key={route.path} className="mx-auto w-full max-w-7xl animate-fade-in">
               <Breadcrumbs route={route} />
               <ErrorBoundary resetKey={route.path} label="This page">
-                <Page route={route} />
+                <Suspense fallback={<PageLoading />}>
+                  <Page route={route} />
+                </Suspense>
               </ErrorBoundary>
             </div>
           </main>
         </div>
         <Footer onOpenFeed={() => setFeed((f) => !f)} feedOpen={feed} />
-        {palette && <Search onClose={() => setPalette(false)} />}
+        {palette && <Search route={route} onClose={() => setPalette(false)} />}
         {feed && <PlatformFeed onClose={() => setFeed(false)} />}
         {drawer && nav && <SectionDrawer nav={nav} onClose={() => setDrawerFor(null)} />}
       </div>
     </RefusalProvider>
+  )
+}
+
+/**
+ * The first thing Tab reaches: straight to the page's content, past the header and the sidebar.
+ * A button, not an `href="#main"`, which the hash router would read as a route.
+ */
+function SkipLink() {
+  return (
+    <button
+      type="button"
+      onClick={() => document.getElementById('main')?.focus()}
+      className="sr-only rounded-md bg-surface px-3 py-2 text-sm font-medium text-accent shadow-lg focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100]"
+    >
+      Skip to content
+    </button>
+  )
+}
+
+/** While a page's code arrives: the shape of a page, not a spinner. */
+function PageLoading() {
+  return (
+    <div role="status" aria-label="Loading the page" className="space-y-6">
+      <SkeletonText lines={2} className="max-w-md" />
+      <SkeletonRows n={4} rowClassName="h-12" />
+    </div>
   )
 }

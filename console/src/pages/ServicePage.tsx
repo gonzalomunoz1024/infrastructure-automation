@@ -1,17 +1,21 @@
 import { useEffect } from 'react'
-import { Card, EmptyState, Icon, PageHeader, SkeletonRows, Stat, formatNumber, plural } from '@iaf/ui'
+import { Card, EmptyState, Icon, PageHeader, SkeletonRows, Stat, plural, type IconName } from '@iaf/ui'
 import { ErrorState } from '@iaf/console-kit'
 import { useConsole } from '../app/console'
-import { LaterButton } from '../app/Phase'
+import { ActionButton } from '../app/Refusal'
 import { Link, pathFor, type PageProps } from '../app/router'
-import { api } from '../lib/api'
-import { countByLifecycle, findService, purposeOf, type ConsoleType } from '../lib/descriptors'
+import { bff } from '../lib/bff'
+import { findService, purposeOf, singularOf, type ConsoleType } from '../lib/descriptors'
+import { encodeTokens } from '../lib/listState'
 import { useQuery } from '../lib/queries'
 import { pushRecent } from '../lib/recent'
+import { countLabel } from '../lib/resourceList'
+import type { ResourceState } from '../lib/types'
 
 /*
- * A service's landing page: one card per resource type with how many there are in each
- * lifecycle class, or, when there are none yet, what the type is for.
+ * A service's landing page: one card per resource type with how many there are in each lifecycle
+ * state (the BFF's counts, "1,000+" past its cap), each count a link to the list filtered to it;
+ * or, when there are none yet, what the type is for and how to make the first.
  */
 
 export default function ServicePage({ route }: PageProps) {
@@ -53,14 +57,26 @@ export default function ServicePage({ route }: PageProps) {
   )
 }
 
+/** The tiles, in the order people look for them; the quiet states only when something is in them. */
+const TILES: { state: ResourceState; label: string; icon: IconName; always?: boolean }[] = [
+  { state: 'active', label: 'Active', icon: 'check', always: true },
+  { state: 'pending', label: 'Pending', icon: 'clock', always: true },
+  { state: 'failed', label: 'Failed', icon: 'alert-triangle', always: true },
+  { state: 'updating', label: 'Updating', icon: 'refresh' },
+  { state: 'deleting', label: 'Deleting', icon: 'trash' },
+  { state: 'deleted', label: 'Deleted', icon: 'trash' },
+]
+
 function TypeOverview({ type }: { type: ConsoleType }) {
-  const list = useQuery(['resources', type.plural, 'overview'], () => api.resourcesOf(type.plural, { limit: 500 }))
-  const items = list.data?.items ?? []
-  const counts = countByLifecycle(items, type)
-  const total = items.length
+  const { account, region, decide } = useConsole()
+  const counts = useQuery(['console-resource-counts', account.id, region.name, type.name, {}], () => bff.resources.counts(type.name))
+  const c = counts.data
   const listHref = pathFor('type', { service: type.service, type: type.name })
+  const filtered = (property: string, value: string) => pathFor('type', { service: type.service, type: type.name }, { f: encodeTokens([{ property, operator: '=', value }]) })
   const purpose = purposeOf(type)
   const lower = type.title.toLowerCase()
+  const noun = singularOf(type.title).toLowerCase()
+  const createTitle = type.create?.title ?? `Create ${noun}`
 
   return (
     <Card
@@ -80,33 +96,41 @@ function TypeOverview({ type }: { type: ConsoleType }) {
         </Link>
       }
     >
-      {list.loading ? (
+      {counts.loading ? (
         <SkeletonRows n={1} rowClassName="h-20" />
-      ) : list.error ? (
-        <ErrorState compact error={list.error} onRetry={list.refetch} title={`Could not count the ${lower}`} />
-      ) : total === 0 ? (
+      ) : counts.error || !c ? (
+        <ErrorState compact error={counts.error} onRetry={counts.refetch} title={`Could not count the ${lower}`} />
+      ) : c.total === 0 ? (
         <EmptyState
           compact
           icon={type.icon}
           title={`No ${lower} yet`}
-          message={`${purpose} The first one registered appears here.`}
+          message={`${purpose} The first one appears here.`}
           action={
-            <LaterButton phase={3} size="sm" variant="primary" icon="plus">
+            <ActionButton decision={decide(type, 'create')} what={createTitle} phase={3} size="sm" variant="primary" icon="plus">
               Create your first one
-            </LaterButton>
+            </ActionButton>
           }
         />
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Stat label="Total" value={formatNumber(total)} hint={list.data?.next ? 'the first 500 counted' : undefined} icon={type.icon} />
-          <Stat label="Active" value={formatNumber(counts.active)} icon="check" />
-          <Stat label="Pending" value={formatNumber(counts.pending)} icon="clock" />
-          <Stat label="Failed" value={formatNumber(counts.failed)} icon="alert-triangle" />
-          {counts.updating > 0 && <Stat label="Updating" value={formatNumber(counts.updating)} icon="refresh" />}
-          {counts.deleting + counts.deleted > 0 && <Stat label="Deleting or deleted" value={formatNumber(counts.deleting + counts.deleted)} icon="trash" />}
-          {counts.other > 0 && <Stat label="Other states" value={formatNumber(counts.other)} icon="help" />}
-        </div>
+        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-label={`${type.title} by state`}>
+          <CountTile to={listHref} label="Total" value={countLabel(c.total, c.cappedAt)} icon={type.icon} />
+          {TILES.filter((t) => t.always || (c.byState[t.state] ?? 0) > 0).map((t) => (
+            <CountTile key={t.state} to={filtered('status', t.state)} label={t.label} value={countLabel(c.byState[t.state] ?? 0, c.cappedAt)} icon={t.icon} />
+          ))}
+          {c.drift > 0 && <CountTile to={filtered('drift', 'yes')} label="Drifted" value={countLabel(c.drift, c.cappedAt)} icon="pulse" />}
+        </ul>
       )}
     </Card>
+  )
+}
+
+function CountTile({ to, label, value, icon }: { to: string; label: string; value: string; icon: IconName }) {
+  return (
+    <li>
+      <Link to={to} className="group block rounded-md">
+        <Stat label={label} value={value} icon={icon} className="ring-1 ring-transparent transition-shadow group-hover:ring-accent/50" />
+      </Link>
+    </li>
   )
 }

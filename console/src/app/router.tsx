@@ -161,6 +161,14 @@ export function resourcePath(service: string, type: string, wfrn: string): strin
   return pathFor('resource', { service, type, wfrn })
 }
 
+/**
+ * Where creating a resource of a type starts; the palette's Create items and the list's Create
+ * button go here. The type's list with `action=create` until the create wizard has its own route.
+ */
+export function createPath(service: string, type: string): string {
+  return pathFor('type', { service, type }, { action: 'create' })
+}
+
 export function currentHash(): string {
   return typeof window === 'undefined' ? '' : window.location.hash
 }
