@@ -27,6 +27,8 @@ import type { TabProps } from './tabs'
 const FOLLOW_MS = 2_000
 /** Closed findings shown before "Show all". */
 const HISTORY_SHOWN = 5
+/** A revert still to follow: the drift service closes a finding only once the revert succeeded and the next read agrees. */
+const pending = (f: { status: string; revertStatus?: string | null }) => f.status === 'open' && (f.revertStatus === 'running' || f.revertStatus === 'succeeded')
 
 /** The Drift tab: the open findings with their decisions, then the ones closed in the last 30 days. */
 export function DriftTab({ type, wfrn, detail, viewError }: TabProps) {
@@ -37,7 +39,7 @@ export function DriftTab({ type, wfrn, detail, viewError }: TabProps) {
   const items = list.data?.items ?? (detail?.finding ? [detail.finding] : [])
   const open = items.filter((f) => f.status === 'open')
   const closed = items.filter((f) => f.status === 'closed').sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''))
-  const running = open.some((f) => f.revertStatus === 'running')
+  const running = open.some(pending)
   usePoll(running, () => void list.refetch(), FOLLOW_MS)
 
   // a revert that was running and has ended: say how, and read the page's facts again
@@ -46,13 +48,13 @@ export function DriftTab({ type, wfrn, detail, viewError }: TabProps) {
     const now = list.data?.items ?? []
     for (const id of Array.from(following.current)) {
       const f = now.find((x) => x.findingId === id)
-      if (f?.revertStatus === 'running') continue
+      if (f && pending(f)) continue
       following.current.delete(id)
       if (!f || f.status === 'closed') setLive('The revert finished: the provider reports what was asked for again, and the finding is closed.')
       else if (f.revertStatus === 'failed') setLive('The revert failed: the provider still reports these values. You can revert again.')
       for (const key of decisionKeys(type)) if (!key.startsWith('console-drift')) invalidate(key)
     }
-    for (const f of now) if (f.status === 'open' && f.revertStatus === 'running') following.current.add(f.findingId)
+    for (const f of now) if (pending(f)) following.current.add(f.findingId)
   }, [list.data, type])
 
   if (!detail) return viewError ? <ExplainedError error={viewError} what="Load the drift of this resource" compact /> : <SkeletonRows n={2} />
