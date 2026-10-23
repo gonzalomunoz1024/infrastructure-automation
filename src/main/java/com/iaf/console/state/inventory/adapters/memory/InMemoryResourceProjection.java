@@ -2,6 +2,8 @@ package com.iaf.console.state.inventory.adapters.memory;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Set;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -59,8 +61,33 @@ public final class InMemoryResourceProjection implements ResourceProjectionPort 
     }
 
     @Override
+    public Flux<Resource> listExistingAt(AccountScope scope, String type, Instant at, String afterWfrn, int limit) {
+        return Flux.fromIterable(resources.values())
+                .filter(r -> scope.covers(r.accountId(), r.region()) && (type == null || type.equals(r.type()))
+                        && r.createdAt() != null && !r.createdAt().isAfter(at) && (r.live() || (r.deletedAt() != null && r.deletedAt().isAfter(at)))
+                        && (afterWfrn == null || r.wfrn().compareTo(afterWfrn) > 0))
+                .sort(Comparator.comparing(Resource::wfrn))
+                .take(limit + 1L);
+    }
+
+    @Override
     public Mono<Resource> findByRegistryId(String registryId) {
         return Flux.fromIterable(resources.values()).filter(r -> r.live() && registryId.equals(r.registryId())).next();
+    }
+
+    @Override
+    public Flux<Resource> findByRegistryIds(Collection<String> registryIds) {
+        Set<String> ids = Set.copyOf(registryIds);
+        return Flux.fromIterable(resources.values()).filter(r -> r.registryId() != null && ids.contains(r.registryId()));
+    }
+
+    @Override
+    public Flux<Resource> findDependents(Collection<String> registryIds, int limit) {
+        Set<String> ids = Set.copyOf(registryIds);
+        return Flux.fromIterable(resources.values())
+                .filter(r -> r.live() && r.builtFrom().stream().anyMatch(ids::contains))
+                .sort(Comparator.comparing(Resource::wfrn))
+                .take(limit);
     }
 
     @Override
@@ -76,6 +103,14 @@ public final class InMemoryResourceProjection implements ResourceProjectionPort 
         return Flux.fromIterable(resources.values())
                 .filter(r -> (r.state() == ResourceState.UPDATING || r.state() == ResourceState.DELETING) && r.updatedAt() != null
                         && r.updatedAt().isBefore(cutoff))
+                .sort(Comparator.comparing(Resource::updatedAt))
+                .take(limit);
+    }
+
+    @Override
+    public Flux<Resource> listTransferredBetween(Instant from, Instant to, int limit) {
+        return Flux.fromIterable(resources.values())
+                .filter(r -> r.transferredTo() != null && r.updatedAt() != null && !r.updatedAt().isBefore(from) && r.updatedAt().isBefore(to))
                 .sort(Comparator.comparing(Resource::updatedAt))
                 .take(limit);
     }

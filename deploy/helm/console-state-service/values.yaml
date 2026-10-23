@@ -76,7 +76,8 @@ console:
   auth:
     jwksUri: http://console-bff.console.svc.cluster.local/.well-known/jwks.json
     issuer: console-bff
-    audiences: [console-state-service, console]
+    audiences: [console-state-service]
+    internalServices: [console-bff, console-search-indexer, console-drift-service, console-cost-service]
 
 mongodb:
   # the service's own database; the URI comes from a secret (key CONSOLE_MONGO_URI)
@@ -104,6 +105,9 @@ crypto:
   # the master key that wraps every account's data key (32 bytes, base64), from a secret
   existingSecret: console-state-service-crypto
   masterKeyKey: CONSOLE_MASTER_KEY
+  # the trail's signing key, a private EC JWK on P-256 (optional: without it each pod signs with a
+  # key of its own, whose public half the service keeps so its digests still verify)
+  trailSigningKeyKey: CONSOLE_TRAIL_SIGNING_KEY
 
 platformToken:
   # the platform's internal service-account token for the HTTP feed, the registry and the snapshot

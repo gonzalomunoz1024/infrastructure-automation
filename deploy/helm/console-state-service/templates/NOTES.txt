@@ -8,4 +8,5 @@ Metrics:  /actuator/prometheus
 Secrets this release reads (create them before the pods start):
   {{ .Values.mongodb.existingSecret }}/{{ .Values.mongodb.uriKey }}            the MongoDB URI of database {{ .Values.mongodb.database }}
   {{ .Values.crypto.existingSecret }}/{{ .Values.crypto.masterKeyKey }}        the 32-byte base64 master key (never rotate it without re-wrapping)
+  {{ .Values.crypto.existingSecret }}/{{ .Values.crypto.trailSigningKeyKey }}  optional: the private EC JWK (P-256) that signs the trail's digests
   {{ .Values.platformToken.existingSecret }}/{{ .Values.platformToken.tokenKey }}  the platform's internal service-account token

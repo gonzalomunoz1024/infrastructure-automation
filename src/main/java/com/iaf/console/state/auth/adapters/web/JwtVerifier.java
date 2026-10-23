@@ -5,7 +5,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -53,25 +55,28 @@ public final class JwtVerifier {
     private final String jwksUri;
     private final String issuer;
     private final List<String> audiences;
+    private final Set<String> internalServices;
     private final Clock clock;
     private final AtomicReference<Mono<JWKSet>> jwks = new AtomicReference<>();
     private final AtomicReference<Instant> lastRefresh = new AtomicReference<>(Instant.EPOCH);
 
-    public JwtVerifier(WebClient web, String jwksUri, String issuer, List<String> audiences, Clock clock) {
+    public JwtVerifier(WebClient web, String jwksUri, String issuer, List<String> audiences, Collection<String> internalServices, Clock clock) {
         this.web = web;
         this.jwksUri = jwksUri;
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
+        this.internalServices = Set.copyOf(internalServices);
         this.clock = clock;
         this.jwks.set(fetch());
     }
 
     /** A verifier over a fixed key set, for tests and for a service that ships the BFF's keys. */
-    public JwtVerifier(JWKSet keys, String issuer, List<String> audiences, Clock clock) {
+    public JwtVerifier(JWKSet keys, String issuer, List<String> audiences, Collection<String> internalServices, Clock clock) {
         this.web = null;
         this.jwksUri = null;
         this.issuer = issuer;
         this.audiences = List.copyOf(audiences);
+        this.internalServices = Set.copyOf(internalServices);
         this.clock = clock;
         this.jwks.set(Mono.just(keys));
     }
@@ -122,7 +127,8 @@ public final class JwtVerifier {
             throw new InvalidToken("issuer '" + claims.getIssuer() + "' is not trusted");
         }
         List<String> aud = claims.getAudience() == null ? List.of() : claims.getAudience();
-        if (!audiences.isEmpty() && aud.stream().noneMatch(audiences::contains)) {
+        // hub decision 35: exactly one audience, this service's; a token for several services is a token for none
+        if (aud.size() != 1 || !audiences.contains(aud.get(0))) {
             throw new InvalidToken("audience " + aud + " is not this service");
         }
         String subject = claims.getSubject();
@@ -132,6 +138,12 @@ public final class JwtVerifier {
         String acct = claims.getStringClaim("acct");
         String region = claims.getStringClaim("region");
         String svc = claims.getStringClaim("svc");
+        if (acct == null || acct.isBlank()) {
+            // a token for no account is a service acting as itself (hub decision 23): sub = svc, a service this one answers
+            if (svc == null || !svc.equals(subject) || !internalServices.contains(svc)) {
+                throw new InvalidToken("a token without an account must be one of " + new java.util.TreeSet<>(internalServices) + " acting as itself");
+            }
+        }
         return new ConsolePrincipal(subject, acct == null || acct.isBlank() ? null : acct, region, strings(claims.getClaim("groups")),
                 strings(claims.getClaim("roles")), svc);
     }

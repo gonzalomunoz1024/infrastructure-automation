@@ -20,10 +20,10 @@ public interface AccountKeysPort {
 
     Mono<WrappedKey> find(String accountId);
 
-    /** Stores the key unless the account has one; answers the stored one either way. */
+    /** Stores the key unless the account has one; answers the stored one either way, and nothing for a shredded account, which never gets a key again. */
     Mono<WrappedKey> save(WrappedKey key);
 
-    /** Destroys the account's key; true when there was one. */
+    /** Destroys the account's key and remembers that it did; true when there was one. */
     Mono<Boolean> destroy(String accountId);
 
     Flux<String> listAccounts();

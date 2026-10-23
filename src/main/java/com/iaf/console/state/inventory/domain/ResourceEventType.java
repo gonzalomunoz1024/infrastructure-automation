@@ -16,7 +16,8 @@ public enum ResourceEventType {
     DELETE_REQUESTED("DeleteRequested"),
     DELETED("Deleted"),
     IMPORTED("Imported"),
-    RETRY_REQUESTED("RetryRequested");
+    RETRY_REQUESTED("RetryRequested"),
+    TRANSFERRED("Transferred");
 
     private final String wire;
 

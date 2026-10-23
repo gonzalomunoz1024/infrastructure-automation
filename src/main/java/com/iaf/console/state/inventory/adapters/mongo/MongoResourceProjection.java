@@ -2,6 +2,7 @@ package com.iaf.console.state.inventory.adapters.mongo;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -35,7 +36,8 @@ import reactor.core.publisher.Mono;
  * The projection in MongoDB: collection {@code resources}, {@code _id} the wfrn, the resource under
  * {@code doc} and the filtered and sorted fields beside it ({@code accountId}, {@code region},
  * {@code type}, {@code name}, {@code state}, {@code live}, {@code version}, {@code registryId},
- * {@code tagsFlat} as {@code name=value}, {@code drifted}, {@code updatedAtNs}, {@code createdAtNs}).
+ * {@code tagsFlat} as {@code name=value}, {@code drifted}, {@code updatedAtNs}, {@code createdAtNs},
+ * {@code deletedAtNs}, {@code builtFrom} the registry ids it was built from).
  * A write replaces the document only when its version is newer. The shard key, when the
  * collection is sharded, is {@code {accountId, type, _id}}.
  */
@@ -62,7 +64,11 @@ public final class MongoResourceProjection implements ResourceProjectionPort, Mo
                 new IndexModel(Indexes.ascending("accountId", "region", "tagsFlat")),
                 new IndexModel(Indexes.ascending("registryId"),
                         new IndexOptions().partialFilterExpression(Filters.and(Filters.exists("registryId"), Filters.eq("live", true)))),
+                new IndexModel(Indexes.ascending("registryId", "live")),
+                new IndexModel(Indexes.ascending("builtFrom", "_id"), new IndexOptions().partialFilterExpression(Filters.eq("live", true))),
                 new IndexModel(Indexes.ascending("state", "updatedAtNs")),
+                new IndexModel(Indexes.ascending("updatedAtNs"), new IndexOptions().name("transferred_updatedAtNs")
+                        .partialFilterExpression(Filters.exists("transferredTo"))),
                 new IndexModel(Indexes.ascending("expiresAt"), new IndexOptions().expireAfter(0L, TimeUnit.SECONDS))));
     }
 
@@ -81,8 +87,13 @@ public final class MongoResourceProjection implements ResourceProjectionPort, Mo
                 .append("drifted", r.drift() != null)
                 .append("updatedAtNs", Mongo.nanos(r.updatedAt()))
                 .append("createdAtNs", Mongo.nanos(r.createdAt()))
+                .append("deletedAtNs", Mongo.nanos(r.deletedAt()))
+                .append("builtFrom", r.builtFrom().isEmpty() ? null : r.builtFrom())
                 .append("expiresAt", r.deleted() ? Mongo.date(r.tombstoneUntil()) : null)
                 .append(Mongo.DOC, mongo.doc(r));
+        if (r.transferredTo() != null) {
+            d.append("transferredTo", r.transferredTo());
+        }
         Bson older = Filters.and(Filters.eq("_id", r.wfrn()), Filters.lt("version", r.version()));
         return Mono.from(mongo.collection(COLLECTION).replaceOne(older, d, new ReplaceOptions().upsert(true)))
                 .map(result -> result.getMatchedCount() > 0 || result.getUpsertedId() != null)
@@ -153,8 +164,44 @@ public final class MongoResourceProjection implements ResourceProjectionPort, Mo
     }
 
     @Override
+    public Flux<Resource> listExistingAt(AccountScope scope, String type, Instant at, String afterWfrn, int limit) {
+        long ns = Mongo.nanos(at);
+        List<Bson> filters = new ArrayList<>();
+        filters.add(Filters.eq("accountId", scope.accountId()));
+        filters.add(Filters.eq("region", scope.region()));
+        filters.add(Filters.lte("createdAtNs", ns));
+        filters.add(Filters.or(Filters.eq("live", true), Filters.gt("deletedAtNs", ns)));
+        if (type != null) {
+            filters.add(Filters.eq("type", type));
+        }
+        if (afterWfrn != null) {
+            filters.add(Filters.gt("_id", afterWfrn));
+        }
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.and(filters)).sort(Sorts.ascending("_id")).limit(limit + 1))
+                .map(d -> mongo.read(d, Resource.class));
+    }
+
+    @Override
     public Mono<Resource> findByRegistryId(String registryId) {
         return Mono.from(mongo.collection(COLLECTION).find(Filters.and(Filters.eq("registryId", registryId), Filters.eq("live", true))).first())
+                .map(d -> mongo.read(d, Resource.class));
+    }
+
+    @Override
+    public Flux<Resource> findByRegistryIds(Collection<String> registryIds) {
+        if (registryIds.isEmpty()) {
+            return Flux.empty();
+        }
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.in("registryId", registryIds))).map(d -> mongo.read(d, Resource.class));
+    }
+
+    @Override
+    public Flux<Resource> findDependents(Collection<String> registryIds, int limit) {
+        if (registryIds.isEmpty() || limit <= 0) {
+            return Flux.empty();
+        }
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.and(Filters.in("builtFrom", registryIds), Filters.eq("live", true)))
+                .sort(Sorts.ascending("_id")).limit(limit))
                 .map(d -> mongo.read(d, Resource.class));
     }
 
@@ -176,14 +223,23 @@ public final class MongoResourceProjection implements ResourceProjectionPort, Mo
     }
 
     @Override
+    public Flux<Resource> listTransferredBetween(Instant from, Instant to, int limit) {
+        return Flux.from(mongo.collection(COLLECTION)
+                .find(Filters.and(Filters.exists("transferredTo"), Filters.gte("updatedAtNs", Mongo.nanos(from)), Filters.lt("updatedAtNs", Mongo.nanos(to))))
+                .sort(Sorts.ascending("updatedAtNs")).limit(limit))
+                .map(d -> mongo.read(d, Resource.class));
+    }
+
+    @Override
     public Mono<Long> countLive() {
         return Mono.from(mongo.collection(COLLECTION).countDocuments(Filters.eq("live", true)));
     }
 
     /** The fields a document carries beside the record, for the README and the tests. */
     public static Map<String, String> indexedFields() {
-        return Map.of("accountId", "the account", "region", "the region", "type", "the type", "name", "the name", "state", "the state",
-                "live", "not a tombstone", "registryId", "the platform's id", "tagsFlat", "name=value", "drifted", "an open finding",
-                "updatedAtNs", "epoch nanoseconds");
+        return Map.ofEntries(Map.entry("accountId", "the account"), Map.entry("region", "the region"), Map.entry("type", "the type"),
+                Map.entry("name", "the name"), Map.entry("state", "the state"), Map.entry("live", "not a tombstone"),
+                Map.entry("registryId", "the platform's id"), Map.entry("tagsFlat", "name=value"), Map.entry("drifted", "an open finding"),
+                Map.entry("updatedAtNs", "epoch nanoseconds"), Map.entry("builtFrom", "the registry ids it was built from"));
     }
 }

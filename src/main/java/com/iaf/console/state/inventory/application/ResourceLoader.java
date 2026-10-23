@@ -1,5 +1,6 @@
 package com.iaf.console.state.inventory.application;
 
+import java.time.Instant;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -59,6 +60,15 @@ public final class ResourceLoader {
     public Mono<Resource> loadAsOf(AccountScope scope, String wfrn, long version) {
         return events.findEvents(scope, wfrn, 0, Integer.MAX_VALUE)
                 .takeWhile(e -> e.version() <= version)
+                .collectList()
+                .filter(list -> !list.isEmpty())
+                .map(ResourceFold::replay);
+    }
+
+    /** The resource as it was at an instant: its log folded up to the last event at or before it; empty when it did not exist yet. */
+    public Mono<Resource> loadAt(AccountScope scope, String wfrn, Instant at) {
+        return events.findEvents(scope, wfrn, 0, Integer.MAX_VALUE)
+                .takeWhile(e -> !e.at().isAfter(at))
                 .collectList()
                 .filter(list -> !list.isEmpty())
                 .map(ResourceFold::replay);

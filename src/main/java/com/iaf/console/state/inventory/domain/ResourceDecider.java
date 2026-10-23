@@ -55,7 +55,46 @@ public final class ResourceDecider {
         Json.putIf(data, "providerId", command.providerId());
         Json.putIf(data, "name", command.name());
         data.set("attributes", Json.orEmpty(command.attributes()));
+        lineage(data, command.builtFrom());
         return event(current, id, ResourceEventType.IMPORTED, now, command.meta(), null, data);
+    }
+
+    /**
+     * The resource moves to another account: a tombstone here, kept for good, that names the wfrn
+     * it becomes there. Only an idle, active resource moves.
+     */
+    public static ResourceEvent transfer(Resource current, Commands.Transfer command, ResourceIdentity to, Instant now) {
+        requireExists(current);
+        checkVersion(current, command.meta());
+        ObjectNode data = Json.object();
+        data.put("transferredTo", to.wfrn());
+        data.put("toAccountId", to.accountId());
+        Json.putIf(data, "registryId", current.registryId());
+        Json.putIf(data, "reason", command.reason());
+        return event(current, null, ResourceEventType.TRANSFERRED, now, command.meta(), null, data);
+    }
+
+    /**
+     * The other half of a transfer: the new wfrn opens with {@code Imported}, {@code source: transfer},
+     * carrying what the resource was (attributes in clear, sealed again under the new account's key
+     * when committed), its tags and lineage, and the wfrn it was.
+     */
+    public static ResourceEvent transferredIn(ResourceIdentity id, Resource from, ObjectNode attributes, Commands.Meta meta, Instant now) {
+        ObjectNode data = Json.object();
+        data.put("resourceType", id.type());
+        data.put("service", id.service());
+        data.put("source", "transfer");
+        Json.putIf(data, "registryId", from.registryId());
+        Json.putIf(data, "providerId", from.providerId());
+        Json.putIf(data, "name", from.name());
+        data.set("attributes", Json.orEmpty(attributes));
+        if (!from.tags().isEmpty()) {
+            ObjectNode tags = data.putObject("tags");
+            from.tags().forEach(tags::put);
+        }
+        lineage(data, from.builtFrom().isEmpty() ? null : from.builtFrom());
+        data.put("transferredFrom", from.wfrn());
+        return event(null, id, ResourceEventType.IMPORTED, now, meta, null, data);
     }
 
     // the API's commands
@@ -237,7 +276,8 @@ public final class ResourceDecider {
         ObjectNode attributes = Json.orEmpty(command.attributes());
         if (current.state() == ResourceState.ACTIVE && Objects.equals(command.registryId(), current.registryId())
                 && Objects.equals(attributes, Json.orEmpty(current.attributes()))
-                && (command.providerId() == null || command.providerId().equals(current.providerId()))) {
+                && (command.providerId() == null || command.providerId().equals(current.providerId()))
+                && (command.builtFrom() == null || command.builtFrom().equals(current.builtFrom()))) {
             return Optional.empty();
         }
         ObjectNode data = job(command.jobId(), command.workflow(), command.workflowVersion());
@@ -245,6 +285,7 @@ public final class ResourceDecider {
         Json.putIf(data, "providerId", command.providerId());
         Json.putIf(data, "name", command.name());
         data.set("attributes", attributes);
+        lineage(data, command.builtFrom());
         return Optional.of(event(current, null, ResourceEventType.PROVISIONING_SUCCEEDED, now, command.meta(), command.jobId(), data));
     }
 
@@ -289,7 +330,7 @@ public final class ResourceDecider {
         String region = current == null ? id.region() : current.region();
         Instant at = current != null && current.updatedAt() != null && now.isBefore(current.updatedAt()) ? current.updatedAt() : now;
         return new ResourceEvent(null, type, wfrn, accountId, region, version, null, at, after, meta == null ? null : meta.actor(), jobId,
-                meta == null ? null : meta.requestId(), data);
+                meta == null ? null : meta.requestId(), data, null, null);
     }
 
     private static ObjectNode job(String jobId, String workflow, String workflowVersion) {
@@ -329,4 +370,13 @@ public final class ResourceDecider {
     public static List<DriftField> fields(JsonNode node) {
         return new ArrayList<>(ResourceFold.fields(node));
     }
+
+    /** The registry's lineage on an event, when the command knows it: the registry ids the resource was built from. */
+    private static void lineage(ObjectNode data, List<String> builtFrom) {
+        if (builtFrom != null) {
+            var list = data.putArray("builtFrom");
+            builtFrom.stream().filter(id -> id != null && !id.isBlank()).distinct().forEach(list::add);
+        }
+    }
+
 }

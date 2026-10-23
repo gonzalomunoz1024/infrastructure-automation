@@ -1,6 +1,7 @@
 package com.iaf.console.state.inventory.domain;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
@@ -14,7 +15,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
  * its events. {@code attributes} is the desired state (as last registered or requested),
  * {@code observed} what the provider last reported, {@code drift} the open finding. A deleted
  * resource is a tombstone: its {@code state} is {@code deleted} and {@code tombstoneUntil} says how
- * long the name stays reserved.
+ * long the name stays reserved. {@code builtFrom} holds the platform registry ids the resource was
+ * built from (the registry's lineage, resolved to wfrns by the relationship reads), and
+ * {@code eventHash} the hash of its latest event: the head of its log's hash chain. A resource moved
+ * to another account is a tombstone with {@code transferredTo}, its new wfrn, kept as an alias for
+ * good; the resource it became names it in {@code transferredFrom}.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record Resource(
@@ -43,7 +48,11 @@ public record Resource(
         Instant createdAt,
         Instant updatedAt,
         Instant deletedAt,
-        Instant tombstoneUntil) {
+        Instant tombstoneUntil,
+        @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> builtFrom,
+        String eventHash,
+        String transferredTo,
+        String transferredFrom) {
 
     public Resource {
         Objects.requireNonNull(wfrn, "wfrn");
@@ -52,6 +61,7 @@ public record Resource(
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(state, "state");
         tags = tags == null ? Map.of() : Map.copyOf(new TreeMap<>(tags));
+        builtFrom = builtFrom == null ? List.of() : List.copyOf(builtFrom);
     }
 
     @JsonIgnore
@@ -72,11 +82,22 @@ public record Resource(
 
     /** The tombstone this resource is, when it is deleted. */
     public Tombstone tombstone() {
-        return new Tombstone("resource.deleted", wfrn, deletedAt, tombstoneUntil, version);
+        return transferredTo != null ? new Tombstone("resource.transferred", wfrn, deletedAt, null, version, transferredTo)
+                : new Tombstone("resource.deleted", wfrn, deletedAt, tombstoneUntil, version, null);
     }
 
     public Builder toBuilder() {
         return new Builder(this);
+    }
+
+    /** The same resource with its sealable values replaced: what sealing and revealing produce. */
+    public Resource withValues(ObjectNode newAttributes, ObjectNode newChanges, ObjectNode newObserved, Drift newDrift) {
+        Builder b = new Builder(this);
+        b.attributes = newAttributes;
+        b.changes = newChanges;
+        b.observed = newObserved;
+        b.drift = newDrift;
+        return b.build();
     }
 
     /** A mutable copy, for the fold; records stay immutable outside the domain. */
@@ -107,6 +128,10 @@ public record Resource(
         Instant updatedAt;
         Instant deletedAt;
         Instant tombstoneUntil;
+        List<String> builtFrom = List.of();
+        String eventHash;
+        String transferredTo;
+        String transferredFrom;
 
         Builder() {
         }
@@ -138,12 +163,16 @@ public record Resource(
             updatedAt = r.updatedAt;
             deletedAt = r.deletedAt;
             tombstoneUntil = r.tombstoneUntil;
+            builtFrom = r.builtFrom;
+            eventHash = r.eventHash;
+            transferredTo = r.transferredTo;
+            transferredFrom = r.transferredFrom;
         }
 
         public Resource build() {
             return new Resource(wfrn, accountId, region, type, service, name, state, version, registryId, providerId, attributes, changes,
                     observed, observedStatus, observedAt, drift, tags, requestedBy, workflow, lastJobId, lastError, source, createdAt, updatedAt,
-                    deletedAt, tombstoneUntil);
+                    deletedAt, tombstoneUntil, builtFrom, eventHash, transferredTo, transferredFrom);
         }
     }
 }

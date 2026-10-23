@@ -17,6 +17,7 @@ import com.iaf.console.platform.model.JobSummary;
 import com.iaf.console.state.inventory.domain.Commands;
 import com.iaf.console.state.inventory.domain.Resource;
 import com.iaf.console.state.inventory.domain.ResourceDecider;
+import com.iaf.console.state.inventory.domain.ResourceIdentity;
 import com.iaf.console.state.inventory.domain.ResourceState;
 
 import reactor.core.publisher.Flux;
@@ -41,6 +42,9 @@ public final class PendingReaper {
     /** The actor the reaper records its facts under. */
     public static final String REAPER = "reaper";
     static final int BATCH = 200;
+    /** How far back the reaper looks for a move between accounts cut short, and how long it leaves one in flight alone. */
+    static final Duration TRANSFER_WINDOW = Duration.ofHours(1);
+    static final Duration TRANSFER_GRACE = Duration.ofMinutes(1);
 
     private static final Logger log = LoggerFactory.getLogger(PendingReaper.class);
 
@@ -72,8 +76,31 @@ public final class PendingReaper {
         this.jobTimeout = jobTimeout;
     }
 
-    /** One pass over the overdue resources. */
+    /** One pass over the overdue resources, after finishing any move between accounts cut short. */
     public Mono<Report> tick() {
+        return finishTransfers(clock.instant()).then(Mono.defer(this::overdue));
+    }
+
+    /** Imports the resource a recent transfer names when it is not there: the move's second half never ran. */
+    Mono<Long> finishTransfers(Instant now) {
+        return projection.listTransferredBetween(now.minus(TRANSFER_WINDOW), now.minus(TRANSFER_GRACE), BATCH)
+                .concatMap(r -> {
+                    ResourceIdentity there = ResourceIdentity.of(r.transferredTo());
+                    return inventory.current(AccountScope.of(there.accountId(), there.region(), REAPER), there.wfrn()).hasElement()
+                            .flatMap(done -> done ? Mono.<Resource>empty() : inventory.completeTransfer(r))
+                            .onErrorResume(e -> {
+                                log.warn("reaper could not finish the transfer of {} to {}: {}", r.wfrn(), r.transferredTo(), e.toString());
+                                return Mono.empty();
+                            });
+                })
+                .doOnNext(after -> {
+                    metrics.reaped("transferred");
+                    log.info("reaper finished a transfer: {} is {} now", after.transferredFrom(), after.wfrn());
+                })
+                .count();
+    }
+
+    private Mono<Report> overdue() {
         Instant now = clock.instant();
         long[] counts = new long[4];
         Flux<Resource> overdue = Flux.concat(projection.listPendingBefore(now.minus(pendingTimeout), BATCH),
@@ -190,7 +217,7 @@ public final class PendingReaper {
                         return noJob;
                     }
                     return inventory.registered(scope, r.wfrn(), new Commands.Registration(null, null, null, record.id(), record.providerId(),
-                            record.name(), PlatformResources.attributes(record), meta))
+                            record.name(), PlatformResources.attributes(record), meta, PlatformResources.lineage(record)))
                             .map(after -> after.version() > r.version() ? "registered" : "waiting");
                 }))
                 .switchIfEmpty(Mono.defer(() -> r.state() == ResourceState.DELETING ? gone : noJob));

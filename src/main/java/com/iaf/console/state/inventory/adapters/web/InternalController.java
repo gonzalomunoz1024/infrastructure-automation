@@ -15,6 +15,7 @@ import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.state.auth.domain.ConsolePrincipal;
 import com.iaf.console.state.boot.StateProperties;
 import com.iaf.console.state.inventory.application.FeedSource;
+import com.iaf.console.state.inventory.application.InventoryService;
 import com.iaf.console.state.inventory.application.PendingReaper;
 import com.iaf.console.state.inventory.application.RegistryImporter;
 import com.iaf.console.state.inventory.application.SensitiveData;
@@ -30,14 +31,16 @@ import reactor.core.publisher.Mono;
 public final class InternalController {
 
     private final RegistryImporter importer;
+    private final InventoryService inventory;
     private final PendingReaper reaper;
     private final SensitiveData sensitive;
     private final List<FeedSource> feeds;
     private final String defaultRegion;
 
-    public InternalController(RegistryImporter importer, PendingReaper reaper, SensitiveData sensitive, List<FeedSource> feeds,
-            StateProperties properties) {
+    public InternalController(RegistryImporter importer, InventoryService inventory, PendingReaper reaper, SensitiveData sensitive,
+            List<FeedSource> feeds, StateProperties properties) {
         this.importer = importer;
+        this.inventory = inventory;
         this.reaper = reaper;
         this.sensitive = sensitive;
         this.feeds = List.copyOf(feeds);
@@ -78,16 +81,34 @@ public final class InternalController {
         return sensitive.shred(accountId).map(gone -> Map.of("accountId", accountId, "destroyed", gone));
     }
 
+    /**
+     * Moves an account's resources of one region to another account of the organization, an org
+     * admin's move through the BFF's service token: at most {@code limit} per call, run again while
+     * {@code more}.
+     */
+    @PostMapping("/internal/accounts/{accountId}:transfer")
+    public Mono<InventoryService.AccountTransfer> transferAccount(ServerWebExchange exchange, @PathVariable String accountId,
+            @RequestBody Requests.AccountTransferRequest body) {
+        ConsolePrincipal principal = internal(exchange);
+        if (!AccountScope.isAccountId(accountId)) {
+            throw new IllegalArgumentException("accountId is 12 digits");
+        }
+        AccountScope scope = AccountScope.of(accountId, body.region() != null ? body.region() : defaultRegion, principal.subject());
+        return inventory.transferAccount(scope, body.toAccountId(), body.reason(), body.actor() != null ? body.actor() : principal.subject(),
+                body.limit() == null ? 1000 : body.limit());
+    }
+
     @GetMapping("/internal/feed")
     public Mono<List<FeedSource.FeedStatus>> feed(ServerWebExchange exchange) {
         internal(exchange);
         return Mono.fromSupplier(() -> feeds.stream().map(FeedSource::status).toList());
     }
 
-    private static void internal(ServerWebExchange exchange) {
+    private static ConsolePrincipal internal(ServerWebExchange exchange) {
         ConsolePrincipal principal = ResourceController.principal(exchange);
         if (!principal.internal()) {
             throw new NotFoundException("not found");
         }
+        return principal;
     }
 }

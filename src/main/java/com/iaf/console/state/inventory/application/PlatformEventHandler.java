@@ -31,12 +31,15 @@ import reactor.core.publisher.Mono;
  * minted a wfrn for that the console never requested;</li>
  * <li>{@code resource.retired} is the resource's end.</li>
  * </ul>
- * The registry is read for the attributes: the feed says that, the registry says what.
+ * The registry is read for the attributes: the feed says that, the registry says what. An event
+ * about a wfrn that moved to another account applies to the resource it became.
  */
 public final class PlatformEventHandler {
 
     /** The actor every fact of the platform is recorded under. */
     public static final String PLATFORM = "platform";
+    /** The most moves between accounts an old name is followed through. */
+    static final int MAX_TRANSFERS = 8;
 
     private static final Logger log = LoggerFactory.getLogger(PlatformEventHandler.class);
 
@@ -87,39 +90,29 @@ public final class PlatformEventHandler {
     }
 
     private Mono<Void> jobStarted(FeedEvent event) {
-        Optional<Target> target = jobTarget(event);
-        if (target.isEmpty()) {
-            return Mono.empty();
-        }
         JsonNode data = event.data();
         Commands.JobStarted command = new Commands.JobStarted(Json.text(data, "jobId") != null ? Json.text(data, "jobId") : event.aggregateId(),
                 Json.text(data, "workflow"), Json.text(data, "version"), meta(event));
-        return inventory.jobStarted(target.get().scope(), target.get().wfrn(), command).then();
+        return jobTarget(event).flatMap(t -> inventory.jobStarted(t.scope(), t.wfrn(), command)).then();
     }
 
     private Mono<Void> jobFinished(FeedEvent event) {
-        Optional<Target> target = jobTarget(event);
-        if (target.isEmpty()) {
-            return Mono.empty();
-        }
         JsonNode data = event.data();
         JobOutcomes.FinishedJob job = new JobOutcomes.FinishedJob(
                 Json.text(data, "jobId") != null ? Json.text(data, "jobId") : event.aggregateId(), Json.text(data, "workflow"),
                 Json.text(data, "version"), Json.text(data, "status"), Json.text(data, "errorClass"), Json.text(data, "failedStep"),
                 Json.text(data, "message"), meta(event));
-        Target t = target.get();
-        return inventory.current(t.scope(), t.wfrn())
+        return jobTarget(event).flatMap(t -> inventory.current(t.scope(), t.wfrn())
                 .switchIfEmpty(Mono.error(() -> NotFoundException.of("resource", t.wfrn())))
-                .flatMap(current -> outcomes.apply(t.scope(), current, job))
+                .flatMap(current -> outcomes.apply(t.scope(), current, job)))
                 .then();
     }
 
     private Mono<Void> registered(FeedEvent event) {
-        Optional<Target> target = registryTarget(event);
-        if (target.isEmpty()) {
-            return Mono.empty();
-        }
-        Target t = target.get();
+        return registryTarget(event).flatMap(t -> registered(event, t));
+    }
+
+    private Mono<Void> registered(FeedEvent event, Target t) {
         JsonNode data = event.data();
         String registryId = Json.text(data, "id");
         String type = Json.text(data, "type");
@@ -155,15 +148,10 @@ public final class PlatformEventHandler {
     }
 
     private Mono<Void> retired(FeedEvent event) {
-        Optional<Target> target = registryTarget(event);
-        if (target.isEmpty()) {
-            return Mono.empty();
-        }
-        Target t = target.get();
         JsonNode data = event.data();
-        return inventory.current(t.scope(), t.wfrn())
+        return registryTarget(event).flatMap(t -> inventory.current(t.scope(), t.wfrn())
                 .filter(Resource::live)
-                .flatMap(r -> inventory.deleted(t.scope(), t.wfrn(), new Commands.Deletion(Json.text(data, "jobId"), Json.text(data, "id"), meta(event))))
+                .flatMap(r -> inventory.deleted(t.scope(), t.wfrn(), new Commands.Deletion(Json.text(data, "jobId"), Json.text(data, "id"), meta(event)))))
                 .then();
     }
 
@@ -176,14 +164,14 @@ public final class PlatformEventHandler {
         }
     }
 
-    private Optional<Target> jobTarget(FeedEvent event) {
+    private Mono<Target> jobTarget(FeedEvent event) {
         if (event.context() == null || event.context().wfrn() == null) {
-            return Optional.empty();
+            return Mono.empty();
         }
-        return target(event.context().wfrn(), event.context().accountId(), event.context().region());
+        return resolve(event.context().wfrn(), event.context().accountId(), event.context().region());
     }
 
-    private Optional<Target> registryTarget(FeedEvent event) {
+    private Mono<Target> registryTarget(FeedEvent event) {
         String wfrn = Json.text(event.data(), "wfrn");
         String accountId = Json.text(event.data(), "accountId");
         String region = Json.text(event.data(), "region");
@@ -194,7 +182,34 @@ public final class PlatformEventHandler {
             accountId = event.context().accountId();
             region = event.context().region();
         }
-        return target(wfrn, accountId, region);
+        return resolve(wfrn, accountId, region);
+    }
+
+    /**
+     * The resource an event is about. A name moved to another account stands for the resource it
+     * became until the platform re-homes its record (P-23), so the old wfrn is followed to the new;
+     * the event's account may be either end of the move.
+     */
+    private Mono<Target> resolve(String wfrn, String accountId, String region) {
+        Optional<Target> named = target(wfrn, null, region);
+        if (named.isEmpty()) {
+            return Mono.empty();
+        }
+        Target first = named.get();
+        return follow(first, 0).flatMap(t -> {
+            if (accountId != null && !accountId.equals(first.identity().accountId()) && !accountId.equals(t.identity().accountId())) {
+                log.warn("the platform sent an event about {} in the context of account {}: ignored", wfrn, accountId);
+                return Mono.empty();
+            }
+            return Mono.just(t);
+        });
+    }
+
+    private Mono<Target> follow(Target t, int hops) {
+        return inventory.current(t.scope(), t.wfrn())
+                .filter(r -> r.transferredTo() != null && hops < MAX_TRANSFERS)
+                .flatMap(r -> target(r.transferredTo(), null, null).map(next -> follow(next, hops + 1)).orElseGet(() -> Mono.just(t)))
+                .defaultIfEmpty(t);
     }
 
     private Optional<Target> target(String wfrn, String accountId, String region) {

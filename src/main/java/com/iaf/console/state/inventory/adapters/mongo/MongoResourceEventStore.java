@@ -1,19 +1,26 @@
 package com.iaf.console.state.inventory.adapters.mongo;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import org.bson.Document;
+import org.bson.conversions.Bson;
 
 import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.mongo.Mongo;
 import com.iaf.console.kit.mongo.MongoIndexed;
+import com.iaf.console.kit.paging.Cursor;
 import com.iaf.console.kit.scope.AccountScope;
+import com.iaf.console.state.inventory.domain.ActivityQuery;
+import com.iaf.console.state.inventory.domain.ResourceMatching;
 import com.iaf.console.state.inventory.application.InventoryService;
 import com.iaf.console.state.inventory.domain.ResourceEvent;
 import com.iaf.console.state.inventory.ports.outbound.ResourceEventStorePort;
 import com.mongodb.MongoException;
+import com.mongodb.client.model.Accumulators;
+import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.IndexModel;
 import com.mongodb.client.model.IndexOptions;
@@ -45,6 +52,8 @@ public final class MongoResourceEventStore implements ResourceEventStorePort, Mo
         return mongo.indexes(COLLECTION, List.of(
                 new IndexModel(Indexes.ascending("wfrn", "version"), new IndexOptions().unique(true)),
                 new IndexModel(Indexes.ascending("accountId", "region", "atNs")),
+                new IndexModel(Indexes.compoundIndex(Indexes.ascending("accountId", "region"), Indexes.descending("atNs", "_id"))),
+                new IndexModel(Indexes.ascending("atNs")),
                 new IndexModel(Indexes.ascending("expiresAt"), new IndexOptions().expireAfter(0L, TimeUnit.SECONDS))));
     }
 
@@ -79,6 +88,68 @@ public final class MongoResourceEventStore implements ResourceEventStorePort, Mo
                 .sort(Sorts.ascending("version"))
                 .limit(limit))
                 .map(d -> mongo.read(d, ResourceEvent.class));
+    }
+
+    @Override
+    public Flux<ResourceEvent> findActivity(AccountScope scope, ActivityQuery q) {
+        List<Bson> filters = scoped(scope, q.from(), q.to());
+        if (q.type() != null) {
+            filters.add(Filters.eq("type", q.type()));
+        }
+        if (q.actor() != null) {
+            filters.add(Filters.eq(Mongo.DOC + ".actor", q.actor()));
+        }
+        if (q.jobId() != null) {
+            filters.add(Filters.eq(Mongo.DOC + ".jobId", q.jobId()));
+        }
+        if (q.wfrnPattern() != null) {
+            filters.add(Filters.regex("wfrn", ResourceMatching.regexOf(q.wfrnPattern()).pattern()));
+        }
+        if (q.after() != null) {
+            long ns = q.after().sortLong();
+            filters.add(Filters.or(Filters.lt("atNs", ns), Filters.and(Filters.eq("atNs", ns), Filters.lt("_id", q.after().id()))));
+        }
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.and(filters)).sort(Sorts.descending("atNs", "_id")).limit(q.limit() + 1))
+                .map(d -> mongo.read(d, ResourceEvent.class));
+    }
+
+    @Override
+    public Flux<ResourceEvent> findBetween(AccountScope scope, Instant from, Instant to, Cursor after, int limit) {
+        if (limit <= 0) {
+            return Flux.empty();
+        }
+        List<Bson> filters = scoped(scope, from, to);
+        if (after != null) {
+            long ns = after.sortLong();
+            filters.add(Filters.or(Filters.gt("atNs", ns), Filters.and(Filters.eq("atNs", ns), Filters.gt("_id", after.id()))));
+        }
+        return Flux.from(mongo.collection(COLLECTION).find(Filters.and(filters)).sort(Sorts.ascending("atNs", "_id")).limit(limit))
+                .map(d -> mongo.read(d, ResourceEvent.class));
+    }
+
+    @Override
+    public Flux<AccountRegion> findAccountsWithEvents(Instant from, Instant to) {
+        return Flux.from(mongo.collection(COLLECTION).aggregate(List.of(
+                Aggregates.match(Filters.and(Filters.gte("atNs", Mongo.nanos(from)), Filters.lt("atNs", Mongo.nanos(to)))),
+                Aggregates.group(new Document("accountId", "$accountId").append("region", "$region"), Accumulators.min("first", "$atNs")),
+                Aggregates.sort(Sorts.ascending("first")))))
+                .map(d -> {
+                    Document id = d.get("_id", Document.class);
+                    return new AccountRegion(id.getString("accountId"), id.getString("region"));
+                });
+    }
+
+    private static List<Bson> scoped(AccountScope scope, Instant from, Instant to) {
+        List<Bson> filters = new ArrayList<>();
+        filters.add(Filters.eq("accountId", scope.accountId()));
+        filters.add(Filters.eq("region", scope.region()));
+        if (from != null) {
+            filters.add(Filters.gte("atNs", Mongo.nanos(from)));
+        }
+        if (to != null) {
+            filters.add(Filters.lt("atNs", Mongo.nanos(to)));
+        }
+        return filters;
     }
 
     @Override

@@ -64,6 +64,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.crypto.existingSecret }}
                   key: {{ .Values.crypto.masterKeyKey }}
+            - name: CONSOLE_TRAIL_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.crypto.existingSecret }}
+                  key: {{ .Values.crypto.trailSigningKeyKey }}
+                  optional: true
             - name: CONSOLE_PLATFORM_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -2,6 +2,7 @@ package com.iaf.console.state.inventory.application;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -14,25 +15,31 @@ import com.iaf.console.kit.errors.ConflictException;
 import com.iaf.console.kit.errors.InvalidInputException;
 import com.iaf.console.kit.errors.NotFoundException;
 import com.iaf.console.kit.errors.Problem;
+import com.iaf.console.kit.paging.CursorPaging;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.state.inventory.domain.Commands;
+import com.iaf.console.state.inventory.domain.EventChain;
 import com.iaf.console.state.inventory.domain.Resource;
 import com.iaf.console.state.inventory.domain.ResourceDecider;
 import com.iaf.console.state.inventory.domain.ResourceEvent;
 import com.iaf.console.state.inventory.domain.ResourceFold;
 import com.iaf.console.state.inventory.domain.ResourceIdentity;
+import com.iaf.console.state.inventory.domain.ResourceQuery;
+import com.iaf.console.state.inventory.domain.ResourceState;
 import com.iaf.console.state.inventory.domain.ResourceTypeInfo;
+import com.iaf.console.state.inventory.domain.TombstoneException;
 import com.iaf.console.state.inventory.ports.outbound.ResourceEventStorePort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceProjectionPort;
 import com.iaf.console.state.inventory.ports.outbound.ResourceTypesPort;
 
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 /**
  * The command side of the inventory. Every command loads the resource (the projection healed by
- * the log), lets the decider turn it into one event, seals the event's sensitive values, appends
- * it (the unique version is the optimistic lock), folds it onto the projection and puts it on the
+ * the log), lets the decider turn it into one event, seals the event's sensitive values, links it
+ * into the resource's hash chain, appends it (the unique version is the optimistic lock), folds it onto the projection and puts it on the
  * outbox. The platform's own facts retry a lost race; a caller's command answers 409 and lets the
  * caller look again.
  */
@@ -40,6 +47,10 @@ public final class InventoryService {
 
     /** The message prefix of the append conflict every adapter raises on a taken version. */
     public static final String VERSION_CONFLICT = "version.conflict";
+    /** The actor the second half of a transfer is recorded under. */
+    public static final String TRANSFER = "transfer";
+    /** The most resources one account-wide transfer call moves. */
+    public static final int MAX_ACCOUNT_TRANSFER = 10_000;
 
     private static final Logger log = LoggerFactory.getLogger(InventoryService.class);
     private static final Pattern REGION = Pattern.compile("^[a-z0-9-]{2,32}$");
@@ -154,6 +165,121 @@ public final class InventoryService {
                 ResourceDecider.resolveDrift(current, command, clock.instant()))));
     }
 
+    // moving resources between accounts
+
+    /**
+     * Moves a resource to another account of the organization by re-import (WP 7.7):
+     * {@code Transferred} makes it a tombstone here, kept for good as an alias of its new wfrn, and
+     * the new wfrn opens there with {@code Imported} ({@code source: transfer}), carrying the registry
+     * id, the attributes (sealed again under the new account's key), the tags and the lineage. The
+     * tombstone is written first so the registry id is never live twice; a move cut short between
+     * the two is finished by the same call again or by the reaper. Answers the resource it became.
+     * The caller has authorized both ends: the BFF asks for {@code <service>:delete} here and
+     * {@code <service>:create} there.
+     */
+    public Mono<Resource> transfer(AccountScope scope, String wfrn, Commands.Transfer command) {
+        String to = command.toAccountId();
+        if (!AccountScope.isAccountId(to)) {
+            return Mono.error(new InvalidInputException("name the account to move to",
+                    List.of(Problem.error("accountId", "/toAccountId", "an account id is exactly 12 digits"))));
+        }
+        if (to.equals(scope.accountId())) {
+            return Mono.error(new InvalidInputException("the resource is already in that account",
+                    List.of(Problem.error("sameAccount", "/toAccountId", "another account of the organization"))));
+        }
+        ResourceIdentity id;
+        try {
+            id = ResourceIdentity.of(wfrn);
+        } catch (IllegalArgumentException e) {
+            return Mono.error(new InvalidInputException("not a wfrn", List.of(Problem.error("wfrn", "/wfrn", e.getMessage()))));
+        }
+        if (!scope.covers(id.accountId(), id.region())) {
+            return Mono.error(NotFoundException.of("resource", wfrn));
+        }
+        return loader.load(scope, wfrn)
+                .switchIfEmpty(Mono.error(() -> NotFoundException.of("resource", wfrn)))
+                .flatMap(current -> {
+                    if (current.transferredTo() != null) {
+                        // moved already: finish what may have been cut short and answer where it went
+                        return ResourceIdentity.of(current.transferredTo()).accountId().equals(to) ? completeTransfer(current)
+                                : Mono.error(new TombstoneException(current.tombstone()));
+                    }
+                    return typeOrUnknown(current.type()).flatMap(type -> {
+                        ResourceIdentity there = ResourceIdentity.mint(partition, current.service() != null ? current.service() : type.service(),
+                                current.region(), to, current.type());
+                        return sensitive.attributesInClear(current) // before anything is written: a shredded account moves nothing
+                                .then(Mono.defer(() -> commit(current, ResourceDecider.transfer(current, command, there, clock.instant()), type)))
+                                .flatMap(this::completeTransfer);
+                    });
+                })
+                .doOnSuccess(r -> metrics.command("transfer", "ok"))
+                .doOnError(ConflictException.class, e -> metrics.command("transfer", "conflict"));
+    }
+
+    /** The resource a transferred tombstone names, imported there unless it is there already. */
+    Mono<Resource> completeTransfer(Resource source) {
+        ResourceIdentity there = ResourceIdentity.of(source.transferredTo());
+        AccountScope scope = AccountScope.of(there.accountId(), there.region(), TRANSFER);
+        return loader.load(scope, there.wfrn()).switchIfEmpty(Mono.defer(() -> typeOrUnknown(source.type())
+                .flatMap(type -> sensitive.attributesInClear(source).flatMap(attributes -> commit(null,
+                        ResourceDecider.transferredIn(there, source, attributes, Commands.Meta.of(TRANSFER), clock.instant()), type)))
+                .doOnNext(r -> log.info("transfer: {} became {}", source.wfrn(), r.wfrn()))));
+    }
+
+    /**
+     * What moving an account's resources did in one call: each move, old wfrn to new (the BFF
+     * re-homes each registry record, P-23), and what stayed and why.
+     */
+    public record AccountTransfer(int transferred, List<Moved> moved, List<Skipped> skipped, boolean more) {
+        public record Moved(String from, String to, String registryId) {
+        }
+
+        public record Skipped(String wfrn, String reason) {
+        }
+    }
+
+    /**
+     * Moves an account's resources of one region to another account, an org admin's move through
+     * the BFF: every active resource, at most {@code limit} per call (run it again while
+     * {@code more}); a resource in the middle of a change, or failed, stays and is listed with why.
+     */
+    public Mono<AccountTransfer> transferAccount(AccountScope scope, String toAccountId, String reason, String actor, int limit) {
+        if (limit < 1 || limit > MAX_ACCOUNT_TRANSFER) {
+            return Mono.error(new InvalidInputException("limit is 1 to " + MAX_ACCOUNT_TRANSFER,
+                    List.of(Problem.error("range", "/limit", "1 to " + MAX_ACCOUNT_TRANSFER))));
+        }
+        List<AccountTransfer.Moved> moved = new ArrayList<>();
+        List<AccountTransfer.Skipped> skipped = new ArrayList<>();
+        boolean[] more = {false};
+        Commands.Transfer command = new Commands.Transfer(toAccountId, reason, Commands.Meta.of(actor));
+        return transferPage(scope, ResourceQuery.all().withSort(ResourceQuery.Sort.NAME_ASC).withLimit(ResourceQuery.MAX_LIMIT), command, limit,
+                moved, skipped, more)
+                .then(Mono.fromSupplier(() -> new AccountTransfer(moved.size(), List.copyOf(moved), List.copyOf(skipped), more[0])));
+    }
+
+    private Mono<Void> transferPage(AccountScope scope, ResourceQuery query, Commands.Transfer command, int limit,
+            List<AccountTransfer.Moved> moved, List<AccountTransfer.Skipped> skipped, boolean[] more) {
+        return projection.list(scope, query).flatMap(page -> Flux.fromIterable(page.items())
+                .concatMap(r -> {
+                    if (moved.size() >= limit) {
+                        more[0] = true;
+                        return Mono.<Void>empty();
+                    }
+                    if (r.state() != ResourceState.ACTIVE) {
+                        skipped.add(new AccountTransfer.Skipped(r.wfrn(), r.state().busy() ? "resource.busy" : "resource.notActive"));
+                        return Mono.<Void>empty();
+                    }
+                    return transfer(scope, r.wfrn(), command).doOnNext(to -> moved.add(new AccountTransfer.Moved(r.wfrn(), to.wfrn(), to.registryId())))
+                            .onErrorResume(ConflictException.class, e -> {
+                                skipped.add(new AccountTransfer.Skipped(r.wfrn(), e.getMessage().split(":")[0]));
+                                return Mono.empty();
+                            })
+                            .then();
+                })
+                .then(Mono.defer(() -> page.next() == null || more[0] ? Mono.<Void>empty()
+                        : transferPage(scope, query.withAfter(CursorPaging.decode(page.next())), command, limit, moved, skipped, more))));
+    }
+
     // the platform's facts, applied by the ingestion and the reaper
 
     public Mono<Resource> jobStarted(AccountScope scope, String wfrn, Commands.JobStarted command) {
@@ -202,6 +328,7 @@ public final class InventoryService {
 
     private Mono<Resource> commit(Resource before, ResourceEvent event, ResourceTypeInfo type) {
         return sensitive.seal(event, type)
+                .map(sealed -> EventChain.link(sealed, before == null ? null : before.eventHash()))
                 .flatMap(events::append)
                 .flatMap(stored -> {
                     Resource after = ResourceFold.apply(before, stored);
@@ -227,8 +354,10 @@ public final class InventoryService {
                 .flatMap(other -> {
                     metrics.collision();
                     log.warn("collision: registry id {} is bound to {} and was offered for {}", registryId, other.wfrn(), wfrn);
+                    // the holder is named only to its own account: another tenant's wfrn never leaves in an error
+                    boolean sameAccount = other.accountId().equals(ResourceIdentity.of(wfrn).accountId());
                     return Mono.<Void>error(new ConflictException("registry.collision: registry id '" + registryId + "' is bound to another resource",
-                            Map.of("registryId", registryId, "wfrn", other.wfrn())));
+                            sameAccount ? Map.of("registryId", registryId, "wfrn", other.wfrn()) : Map.of("registryId", registryId)));
                 });
     }
 

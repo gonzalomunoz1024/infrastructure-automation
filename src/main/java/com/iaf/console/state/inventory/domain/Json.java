@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +15,10 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 /** The one JSON mapper of the domain: instants as ISO text, nulls left out, unknown fields ignored. */
 public final class Json {
+
+    /** A JSON object as a map, for {@code convertValue}. */
+    public static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() {
+    };
 
     public static final ObjectMapper MAPPER = JsonMapper.builder()
             .addModule(new JavaTimeModule())

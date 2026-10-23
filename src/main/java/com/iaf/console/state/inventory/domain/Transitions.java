@@ -19,7 +19,8 @@ import com.iaf.console.kit.errors.ConflictException;
  * a delete (the resource is still there, so active), {@code UpdateRequested} and {@code DeleteRequested}
  * need an idle resource (one change at a time), {@code RetryRequested} makes a failed resource pending
  * again, {@code Deleted} is the tombstone, {@code Imported} opens a resource straight in active (or
- * brings a tombstone back), and the rest leave the state alone.
+ * brings a tombstone back), {@code Transferred} moves an active resource to another account (a
+ * tombstone here that nothing brings back), and the rest leave the state alone.
  */
 public final class Transitions {
 
@@ -35,7 +36,7 @@ public final class Transitions {
                 default -> throw new ConflictException("resource.unknown: a resource opens with ResourceRequested or Imported, not " + event.wire());
             };
         }
-        if (current == DELETED && event != ResourceEventType.IMPORTED) {
+        if (current == DELETED && (event != ResourceEventType.IMPORTED || resource != null && resource.transferredTo() != null)) {
             throw new TombstoneException(resource.tombstone());
         }
         return switch (event) {
@@ -77,6 +78,12 @@ public final class Transitions {
                         detail(resource));
             };
             case DELETED -> DELETED;
+            case TRANSFERRED -> switch (current) {
+                case ACTIVE -> DELETED;
+                case PENDING, UPDATING, DELETING -> throw busy(resource, current);
+                default -> throw new ConflictException("resource.notActive: only an active resource moves to another account, this one is "
+                        + current.wire(), detail(resource));
+            };
             case OBSERVED, DRIFT_DETECTED, DRIFT_RESOLVED, TAGGED -> current;
         };
     }

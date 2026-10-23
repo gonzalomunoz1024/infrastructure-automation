@@ -92,6 +92,29 @@ public final class PlatformResourceTypes implements ResourceTypesPort {
                 });
     }
 
+    /**
+     * The sensitive properties of a schema, at any depth: a top-level one by its name, a nested one
+     * as a JSON pointer ({@code /connection/password}), array items transparent.
+     */
+    static void sensitiveIn(JsonNode schema, String at, Set<String> out, int depth) {
+        if (depth > 16) {
+            return;
+        }
+        JsonNode properties = schema.path("properties");
+        properties.fieldNames().forEachRemaining(field -> {
+            JsonNode property = properties.path(field);
+            String pointer = at + "/" + field;
+            if (property.path("x-console").path("sensitive").asBoolean(false)) {
+                out.add(at.isEmpty() ? field : pointer);
+            } else {
+                sensitiveIn(property, pointer, out, depth + 1);
+            }
+        });
+        if (schema.has("items")) {
+            sensitiveIn(schema.path("items"), at, out, depth + 1);
+        }
+    }
+
     /** What the inventory keeps of a platform type. */
     public static ResourceTypeInfo info(ResourceType type) {
         Set<String> sensitive = new HashSet<>();
@@ -99,14 +122,11 @@ public final class PlatformResourceTypes implements ResourceTypesPort {
         if (type.schema() != null) {
             JsonNode properties = type.schema().path("properties");
             properties.fieldNames().forEachRemaining(field -> {
-                JsonNode hints = properties.path(field).path("x-console");
-                if (hints.path("sensitive").asBoolean(false)) {
-                    sensitive.add(field);
-                }
-                if (hints.path("mutable").asBoolean(false)) {
+                if (properties.path(field).path("x-console").path("mutable").asBoolean(false)) {
                     mutable.add(field);
                 }
             });
+            sensitiveIn(type.schema(), "", sensitive, 0);
         }
         Map<String, String> lifecycle = type.console() == null || type.console().lifecycle() == null ? Map.of() : type.console().lifecycle();
         String notFound = type.observe() == null ? null : type.observe().notFound();

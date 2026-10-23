@@ -13,22 +13,27 @@ public final class InMemoryAccountKeys implements AccountKeysPort {
 
     private final Map<String, WrappedKey> keys = new ConcurrentHashMap<>();
 
+    private final java.util.Set<String> shredded = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     @Override
     public Mono<WrappedKey> find(String accountId) {
         return Mono.justOrEmpty(keys.get(accountId));
     }
 
     @Override
-    public Mono<WrappedKey> save(WrappedKey key) {
-        return Mono.fromSupplier(() -> {
-            WrappedKey existing = keys.putIfAbsent(key.accountId(), key);
-            return existing == null ? key : existing;
-        });
+    public synchronized Mono<WrappedKey> save(WrappedKey key) {
+        if (shredded.contains(key.accountId())) {
+            return Mono.empty();
+        }
+        WrappedKey existing = keys.putIfAbsent(key.accountId(), key);
+        return Mono.just(existing == null ? key : existing);
     }
 
     @Override
-    public Mono<Boolean> destroy(String accountId) {
-        return Mono.fromSupplier(() -> keys.remove(accountId) != null);
+    public synchronized Mono<Boolean> destroy(String accountId) {
+        boolean had = keys.remove(accountId) != null;
+        shredded.add(accountId);
+        return Mono.just(had);
     }
 
     @Override

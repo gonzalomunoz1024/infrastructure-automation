@@ -3,6 +3,7 @@ package com.iaf.console.state.inventory.domain;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TreeMap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -50,6 +51,16 @@ public final class ResourceFold {
         }
     }
 
+    /** The registry's lineage, when the event carries it: the whole list, so it replaces the one on record. */
+    private static void lineage(Resource.Builder b, ObjectNode data) {
+        JsonNode builtFrom = data.get("builtFrom");
+        if (builtFrom != null && builtFrom.isArray()) {
+            List<String> ids = new ArrayList<>();
+            builtFrom.forEach(id -> ids.add(id.asText()));
+            b.builtFrom = List.copyOf(ids);
+        }
+    }
+
     public static Resource apply(Resource current, ResourceEvent event) {
         if (current != null && event.version() != current.version() + 1) {
             throw new IllegalStateException("event " + event.key() + " does not follow version " + current.version());
@@ -57,6 +68,7 @@ public final class ResourceFold {
         ObjectNode data = Json.orEmpty(event.data());
         Resource.Builder b = current == null ? open(event, data) : current.toBuilder();
         b.version = event.version();
+        b.eventHash = event.hash();
         b.state = event.state();
         b.updatedAt = event.at();
         if (event.jobId() != null) {
@@ -78,6 +90,12 @@ public final class ResourceFold {
                 if (name != null) {
                     b.name = name;
                 }
+                lineage(b, data);
+                b.transferredFrom = Json.text(data, "transferredFrom");
+                ObjectNode tags = Json.objectField(data, "tags");
+                if (tags != null) {
+                    b.tags = new TreeMap<>(Json.stringMap(tags));
+                }
                 if (current != null && current.deleted()) {
                     // a tombstone brought back: a new life, the old deletion forgotten
                     b.deletedAt = null;
@@ -98,6 +116,7 @@ public final class ResourceFold {
             }
             case PROVISIONING_SUCCEEDED -> {
                 b.registryId = Json.text(data, "registryId");
+                lineage(b, data);
                 String providerId = Json.text(data, "providerId");
                 if (providerId != null) {
                     b.providerId = providerId;
@@ -136,6 +155,13 @@ public final class ResourceFold {
                 if (registryId != null) {
                     b.registryId = registryId;
                 }
+                b.changes = null;
+            }
+            case TRANSFERRED -> {
+                // gone from this account for good: the name stays as an alias of the one it became
+                b.deletedAt = event.at();
+                b.tombstoneUntil = null;
+                b.transferredTo = Json.text(data, "transferredTo");
                 b.changes = null;
             }
             case OBSERVED -> {

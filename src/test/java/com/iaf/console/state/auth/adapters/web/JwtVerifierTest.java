@@ -32,7 +32,8 @@ class JwtVerifierTest {
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     private final ECKey key = generate("bff-1");
-    private final JwtVerifier verifier = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-state-service", "console"), CLOCK);
+    private final JwtVerifier verifier = new JwtVerifier(new JWKSet(key.toPublicJWK()), "console-bff", List.of("console-state-service"),
+            List.of("console-bff", "console-drift-service"), CLOCK);
 
     private static ECKey generate(String kid) {
         try {
@@ -84,7 +85,7 @@ class JwtVerifierTest {
 
     @Test
     void aServiceTokenWithoutAnAccountIsInternal() {
-        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().subject("svc:console-bff").claim("acct", null).audience(List.of("console"))
+        ConsolePrincipal p = verifier.verify(sign(key, "bff-1", claims().subject("console-bff").claim("acct", null)
                 .build())).block();
         assertThat(p.internal()).isTrue();
         assertThat(p.accountId()).isNull();
@@ -98,6 +99,12 @@ class JwtVerifierTest {
     @Test
     void whatIsRefused() {
         assertInvalid(sign(key, "bff-1", claims().audience(List.of("console-drift-service")).build()), "audience");
+        assertInvalid(sign(key, "bff-1", claims().audience(List.of("console-identity-service", "console")).build()), "audience");
+        assertInvalid(sign(key, "bff-1", claims().audience(List.of("console-state-service", "console")).build()), "audience");
+        assertInvalid(sign(key, "bff-1", claims().claim("acct", null).build()), "without an account");
+        assertInvalid(sign(key, "bff-1", claims().subject("console-identity-service").claim("svc", "console-identity-service").claim("acct", null).build()),
+                "without an account");
+        assertInvalid(sign(key, "bff-1", claims().subject("console-drift-service").claim("svc", null).claim("acct", null).build()), "without an account");
         assertInvalid(sign(key, "bff-1", claims().issuer("someone-else").build()), "issuer");
         assertInvalid(sign(key, "bff-1", claims().expirationTime(Date.from(NOW.minus(Duration.ofSeconds(31)))).build()), "expired");
         assertInvalid(sign(key, "bff-1", claims().notBeforeTime(Date.from(NOW.plus(Duration.ofMinutes(5)))).build()), "not yet valid");
