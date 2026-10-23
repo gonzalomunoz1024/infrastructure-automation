@@ -259,6 +259,8 @@ export interface ChargebackReport {
   generatedAt: string
   /** a final month's: the sha256 of the published CSV of every account */
   sha256?: string
+  /** scope=organization: memberships left out because cost:export is denied there (the CSV names them in X-Console-Skipped-Accounts) */
+  skippedAccounts?: string[]
 }
 
 export interface ChargebackQuery {
@@ -267,6 +269,19 @@ export interface ChargebackQuery {
   scope?: CostScope
   /** a tag key to split each row by */
   tag?: string
+}
+
+/** A rule a budget adds to a create's review: a block while it is over, a warning when the create takes it over. */
+export interface BudgetRule {
+  id: 'budget.exceeded' | 'budget.forecast-over'
+  result: 'deny' | 'warn'
+  message: string
+  budgetId: string
+}
+
+/** The budget rules among a review's policy rules (the preview carries the budget in `budgetId`). */
+export function budgetRulesOf(rules: readonly { id: string; result: string; message: string }[] | undefined): BudgetRule[] {
+  return (rules ?? []).filter((r): r is BudgetRule => (r.id === 'budget.exceeded' || r.id === 'budget.forecast-over') && typeof (r as { budgetId?: unknown }).budgetId === 'string')
 }
 
 /** The query string of a cost report: the tags as `tag.<key>`. */
@@ -287,8 +302,9 @@ export const costApi = {
   report: (q: CostQuery) => get<CostReport>(`${b('/cost')}${qs(costParams(q))}`),
   resource: (type: string, wfrn: string) => get<ResourceCost>(b(`/r/${enc(type)}/${enc(wfrn)}/cost`)),
   priceLists: () => get<PriceLists>(b('/cost/price-lists')),
+  /** a month's rows as finance receives them; needs `cost:export`, like the CSV */
   chargeback: (q: ChargebackQuery) => get<ChargebackReport>(`${b('/cost/chargeback')}${qs(chargebackParams(q))}`),
-  /** the same rows as the CSV finance receives (needs `cost:export`) */
+  /** the CSV finance receives, as text (UTF-8, no byte order mark); needs `cost:export` on every account it covers */
   chargebackCsv: (q: ChargebackQuery) => request<string>('GET', `${b('/cost/chargeback.csv')}${qs(chargebackParams(q))}`, undefined, { headers: { Accept: 'text/csv' } }),
   budgets: {
     list: () => page<ConsoleBudget>(b('/budgets')),

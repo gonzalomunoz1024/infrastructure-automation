@@ -51,6 +51,7 @@ const CODES: Record<string, { title: string; message?: string; next?: string; re
   'retry.name-fixed': { title: 'A retry keeps the name', message: 'The resource was named when it was requested, and the name stays.', next: 'Leave the name as it is, or create a new resource under the new name.' },
   'csrf.missing': { title: 'Your session changed', message: 'The page was signed in as someone else, or the session was renewed.', next: 'Reload the page and try again.', retryable: true },
   'step-up.required': { title: 'Sign in again for this', message: 'A sensitive action needs a fresh sign-in.', next: 'Sign in again and come back.' },
+  'budget.exceeded': { title: 'A budget blocks this create', message: 'The account’s budget for this month is used up, and the budget is set to stop new resources.', next: 'Open Budgets to see which one; ask a budget owner to raise it, or delete what you no longer need.' },
   'quota.exceeded': { title: 'The account’s quota is used up', message: 'The account holds as many resources of this type as its quota allows.', next: 'Delete what you no longer need, or request an increase on Service Quotas: a rule may raise it at once.' },
   'batch.too-large': { title: 'Too many rows for one run', message: 'The workflow takes only so many rows in one bulk run.', next: 'Select fewer, and run the rest as another batch.' },
   'bulk.unsupported': { title: 'This action does not run in bulk', message: 'The provider publishes no bulk route for it.', next: 'Run it on one resource at a time.' },
