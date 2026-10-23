@@ -435,6 +435,12 @@ public class Resources {
                     }))
                     .then(types.entry(session, action.workflow()))
                     .flatMap(entry -> {
+                        Integer max = entry.batch() == null ? null : entry.batch().max();
+                        if (max != null && body.items().size() > max) {
+                            return Mono.error(new InvalidInputException("the batch is larger than " + entry.workflow() + " takes",
+                                    List.of(Problem.error("batch.too-large", "/items", entry.workflow() + " takes at most " + max + " rows in one batch, not "
+                                            + body.items().size()))));
+                        }
                         Mono<List<Row>> rows = create ? mintRows(session, t, entry, action, body, requestId, idempotencyKey)
                                 : existingRows(session, t, entry, action, body)
                                         .flatMap(found -> "delete".equals(body.verb()) ? refuseDependents(session, found) : Mono.just(found));
@@ -618,10 +624,11 @@ public class Resources {
      * the original action allows (a create's on the type's pattern; a delete also needs a fresh
      * sign-in and still no live dependents). A paused job resumes ({@code :retry}); a failed one is
      * rerun from its failed step and a rolled-back one from its first ({@code :rerun}, a new job with
-     * the source job's context and input); a finished batch runs its failed rows again. A failed
-     * create first goes back to pending on the state service ({@code :request-retry}, as a create
-     * mints before it starts); a retried update or delete is recorded as the first one was, after
-     * the platform took it.
+     * the source job's context and input); a finished batch runs its failed rows again. Then the
+     * state service hears of it as of the first request (hub decision 24): a failed create's rerun
+     * as {@code :request-retry} naming the new job, which puts the resource back to pending, a
+     * retried update or delete as {@code :request-update} or {@code :request-delete}. Rerunning
+     * first means a rerun the platform refuses records nothing and the resource keeps its failure.
      */
     public Mono<CommandAccepted> retry(Session session, String jobId, String requestId, String idempotencyKey) {
         return jobs.detail(session, jobId).flatMap(job -> {
@@ -631,7 +638,6 @@ public class Resources {
             return retries.target(session, job).flatMap(target -> access.require(session, target.actionName(), target.resource())
                     .then(sessions.requireFreshFor(session, target.actionName()))
                     .then(Mono.defer(() -> retrySubject(session, target, job.status() == JobStatus.NEEDS_ATTENTION)))
-                    .flatMap(subject -> beforeRetry(session, job, target, subject, requestId, idempotencyKey))
                     .flatMap(subject -> retryOnPlatform(session, job, target, requestId, idempotencyKey)
                             .flatMap(started -> retried(session, job, target, subject, started, requestId, idempotencyKey))));
         });
@@ -665,18 +671,6 @@ public class Resources {
         });
     }
 
-    /** A failed create goes back to pending on the state service before its job runs again, so the trail shows who retried. */
-    private Mono<Optional<StateResource>> beforeRetry(Session session, JobDetail job, JobRetries.Target target, Optional<StateResource> subject,
-            String requestId, String idempotencyKey) {
-        if (subject.isEmpty() || !target.is("create") || !StateResource.FAILED.equals(subject.get().state())) {
-            return Mono.just(subject);
-        }
-        StateResource failed = subject.get();
-        StateCommands.Retry retry = new StateCommands.Retry(failed.version(), session.user().userId(), job.id(), job.workflow());
-        return state.requestRetry(scope(session), caller(session), failed.wfrn(), retry, new StateCommands.Meta(idempotencyKey, requestId))
-                .map(Optional::of);
-    }
-
     private Mono<Started> retryOnPlatform(Session session, JobDetail job, JobRetries.Target target, String requestId, String idempotencyKey) {
         RequestOptions options = OnBehalfOf.options(trust, session, requestId, idempotencyKey);
         if (target.wfrn() != null) {
@@ -701,18 +695,26 @@ public class Resources {
         }).map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
     }
 
-    /** After the platform took the retry: a new update or delete job is recorded on the state service like the first. */
+    /**
+     * After the platform took the retry: the new job is recorded on the state service like the
+     * first request, a failed create's as {@code :request-retry} (failed back to pending, the trail
+     * naming who retried), an update's or a delete's as theirs.
+     */
     private Mono<CommandAccepted> retried(Session session, JobDetail job, JobRetries.Target target, Optional<StateResource> subject, Started started,
             String requestId, String idempotencyKey) {
         CommandAccepted answer = new CommandAccepted(target.wfrn(), started.jobId(), requestId,
                 target.action() == null ? approvalOf(started.status()) : approval(target.action(), started.status()));
         boolean resumed = started.jobId().equals(job.id());
-        if (resumed || subject.isEmpty() || !(target.is("update") || target.is("delete"))) {
+        boolean failedCreate = target.is("create") && subject.isPresent() && StateResource.FAILED.equals(subject.get().state());
+        if (resumed || subject.isEmpty() || !(target.is("update") || target.is("delete") || failedCreate)) {
             return Mono.just(answer);
         }
         StateCommands.Meta meta = new StateCommands.Meta(idempotencyKey, requestId);
         Mono<StateResource> recorded;
-        if (target.is("update")) {
+        if (failedCreate) {
+            recorded = state.requestRetry(scope(session), caller(session), target.wfrn(),
+                    new StateCommands.Retry(null, session.user().userId(), started.jobId(), job.workflow()), meta);
+        } else if (target.is("update")) {
             Map<String, Object> input = job.input() == null ? Map.of() : job.input();
             recorded = state.requestUpdate(scope(session), caller(session), target.wfrn(), new StateCommands.Update(null, session.user().userId(),
                     started.jobId(), job.workflow(), job.version(), json.valueToTree(changesOf(target.action(), input))), meta);

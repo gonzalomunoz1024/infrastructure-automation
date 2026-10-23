@@ -1,6 +1,6 @@
 # Endpoints beyond the pinned contract
 
-`contracts.lock` pins the hub's `console-bff.yaml` (console-root--phase-0 at 9edd017). The web
+`contracts.lock` pins the hub's contracts (console-root--state-retry at c6c22ab: decision 24 on console-root--phase-0). The web
 app's phase-1 thread asked for the additions below (its note:
 `console-web-phase-1/bff-contract-additions.md`); the hub folded them into the contract at
 29cdcf9 and e8992fb, and this file now only records what this service answers beyond the pinned

@@ -133,6 +133,7 @@ class RetryEndpointTest extends DemoApp {
                 .orElseThrow(() -> new AssertionError("no RetryRequested in " + activity(gonzalo, wfrn)));
         assertEquals(failed, requested.path("data").path("retryOf").asText(), "the trail names the job retried: " + requested);
         assertEquals("user_gonzalo", requested.path("actor").asText(), "and who retried: " + requested);
+        assertEquals(again, requested.path("data").path("jobId").asText(), "and the rerun that retries it: " + requested);
 
         ResourceFixtures.awaitState(console, gonzalo, wfrn, "active");
         JsonNode rerun = job(gonzalo, again);

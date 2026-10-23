@@ -315,6 +315,12 @@ public class DemoStateStore implements FeedListener {
         if (replay != null) {
             return replay;
         }
+        Row gone = rows.get(wfrn);
+        String deleteJob = text(body, "jobId");
+        if (gone != null && !gone.live() && gone.accountId.equals(accountId) && deleteJob != null && deleteJob.equals(gone.lastJobId)) {
+            // the job this delete names already deleted the resource: the tombstone, not a 410
+            return remember(key, new Answer(gone.resource(), false));
+        }
         Row row = live(accountId, wfrn);
         expectVersion(row, body);
         if (!StateResource.ACTIVE.equals(row.state) && !StateResource.FAILED.equals(row.state)) {
@@ -334,9 +340,11 @@ public class DemoStateStore implements FeedListener {
     }
 
     /**
-     * {@code :request-retry}: a failed resource goes back to {@code pending} before its failed job
-     * runs again, with {@code RetryRequested} ({@code retryOf} the failed job); anything but a
-     * failed resource is a 409 {@code resource.notFailed}.
+     * {@code :request-retry} (hub decision 24): a failed resource goes back to {@code pending} with
+     * {@code RetryRequested}, naming the rerun in {@code jobId} and the failed job in
+     * {@code retryOf}; a rerun that already ended settles it at once, a retry naming a job already
+     * on record changes nothing, and anything but a failed resource is a 409
+     * {@code resource.notFailed}.
      */
     public synchronized Answer requestRetry(String accountId, String wfrn, JsonNode body, String actor, String key, String requestId) {
         Answer replay = replay(key);
@@ -344,21 +352,38 @@ public class DemoStateStore implements FeedListener {
             return replay;
         }
         Row row = live(accountId, wfrn);
-        expectVersion(row, body);
+        String jobId = body == null ? null : text(body, "jobId");
+        if (jobId != null && jobId.equals(row.lastJobId)) {
+            return remember(key, new Answer(row.resource(), false));
+        }
         if (!StateResource.FAILED.equals(row.state)) {
             throw new ConflictException("resource.notFailed", Map.of("state", row.state));
         }
-        row.state = StateResource.PENDING;
-        ObjectNode data = json.createObjectNode();
-        if (text(body, "jobId") != null) {
-            data.put("retryOf", text(body, "jobId"));
+        if (body != null) {
+            expectVersion(row, body);
         }
-        if (text(body, "workflow") != null) {
-            data.put("workflow", text(body, "workflow"));
+        String retryOf = row.lastError != null && row.lastError.hasNonNull("jobId") ? row.lastError.get("jobId").asText() : row.lastJobId;
+        row.state = StateResource.PENDING;
+        row.lastJobId = jobId != null ? jobId : row.lastJobId;
+        ObjectNode data = json.createObjectNode();
+        data.put("workflow", body != null && text(body, "workflow") != null ? text(body, "workflow") : createWorkflow(row));
+        if (retryOf != null) {
+            data.put("retryOf", retryOf);
         }
         bump(row);
-        event(row, "RetryRequested", actor, null, requestId, data);
+        event(row, "RetryRequested", actor, jobId, requestId, data);
+        settleIfEnded(jobId);
         return remember(key, new Answer(row.resource(), false));
+    }
+
+    /** The workflow that created the resource, as its {@code ResourceRequested} named it. */
+    private static String createWorkflow(Row row) {
+        for (EventEnvelope event : row.log) {
+            if ("ResourceRequested".equals(event.type()) && event.data() != null && event.data().hasNonNull("workflow")) {
+                return event.data().get("workflow").asText();
+            }
+        }
+        return null;
     }
 
     /** A change recorded after its job already ended takes the job's outcome now. */
@@ -442,6 +467,11 @@ public class DemoStateStore implements FeedListener {
         if (jobId != null) {
             endedJobs.put(jobId, event);
         }
+        if (StateResource.FAILED.equals(row.state) || (jobId != null && row.lastJobId != null && !jobId.equals(row.lastJobId))) {
+            // a failed resource waits for the retry that names its rerun, and the outcome of a job that is no
+            // longer the one in flight changes nothing
+            return;
+        }
         String status = text(event.data(), "status");
         String requestId = event.context().consoleRequestId();
         if ("succeeded".equals(status)) {
@@ -464,13 +494,6 @@ public class DemoStateStore implements FeedListener {
                     event(row, "ProvisioningSucceeded", PLATFORM, jobId, requestId, json.createObjectNode());
                 }
                 case StateResource.DELETING -> end(row, jobId, requestId);
-                case StateResource.FAILED -> {
-                    // a retried create that went through
-                    row.lastError = null;
-                    row.state = StateResource.ACTIVE;
-                    bump(row);
-                    event(row, "ProvisioningSucceeded", PLATFORM, jobId, requestId, json.createObjectNode());
-                }
                 default -> { }
             }
             return;

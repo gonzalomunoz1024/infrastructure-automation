@@ -1,11 +1,14 @@
 package com.iaf.console.bff.jobs.application;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import com.iaf.console.bff.access.application.Access;
 import com.iaf.console.bff.access.domain.AccessCheck;
 import com.iaf.console.bff.jobs.domain.ApprovalView;
+import com.iaf.console.bff.jobs.domain.BulkDecision;
 import com.iaf.console.bff.jobs.domain.JobNotPausedException;
 import com.iaf.console.bff.jobs.domain.JobView;
 import com.iaf.console.bff.platform.application.PlatformClients;
@@ -103,12 +106,45 @@ public class Jobs {
      * create or a delete that went through it would run again on a resource that exists or is gone.
      */
     public Mono<JobView> get(Session session, String jobId) {
-        return detail(session, jobId).flatMap(job -> Mono.zip(approvals.mayDecide(session), can(session, job)).map(tuple -> {
+        return detail(session, jobId).flatMap(job -> Mono.zip(approvals.mayDecide(session), can(session, job), rowApprovals(session, job)).map(tuple -> {
             boolean policyAllows = tuple.getT1();
-            List<Object> approvals = job.approvals() == null ? null : new ArrayList<>(job.approvals().stream()
+            List<Object> shown = job.approvals() == null ? null : new ArrayList<>(job.approvals().stream()
                     .map(a -> (Object) ApprovalView.of(a, session.currentAccount().groups(), policyAllows)).toList());
-            return JobView.detail(job, approvals, tuple.getT2());
+            if (!tuple.getT3().isEmpty()) {
+                shown = shown == null ? new ArrayList<>() : shown;
+                shown.addAll(tuple.getT3());
+            }
+            return JobView.detail(job, shown, tuple.getT2());
         }));
+    }
+
+    /** A batch waits on its rows' approvals: those pending are shown on the batch, each with whether the person may decide it. */
+    private Mono<List<ApprovalView>> rowApprovals(Session session, JobDetail job) {
+        if (!JobRetries.isBatch(job) || job.children() == null || job.children().isEmpty() || job.status() == null || job.status().terminal()) {
+            return Mono.just(List.of());
+        }
+        return approvals.pendingOf(session, childIds(job));
+    }
+
+    /**
+     * Decides every pending approval of a request and its rows that the person may decide (WP 4.2:
+     * a bulk restart's wave is approved in one go), each as the person's own decision on the
+     * platform; 404 for another account's job.
+     */
+    public Mono<BulkDecision> decideApprovals(Session session, String jobId, String decision, String comment, String requestId, String idempotencyKey) {
+        return detail(session, jobId).flatMap(job -> {
+            Set<String> ids = new LinkedHashSet<>(childIds(job));
+            ids.add(job.id());
+            return approvals.decidePending(session, ids, decision, comment, requestId, idempotencyKey);
+        });
+    }
+
+    private static Set<String> childIds(JobDetail job) {
+        Set<String> ids = new LinkedHashSet<>();
+        if (job.children() != null) {
+            job.children().forEach(child -> ids.add(child.id()));
+        }
+        return ids;
     }
 
     private Mono<List<String>> can(Session session, JobDetail job) {

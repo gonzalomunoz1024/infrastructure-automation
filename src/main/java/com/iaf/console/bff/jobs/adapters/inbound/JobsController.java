@@ -12,6 +12,7 @@ import org.springframework.web.server.ServerWebExchange;
 
 import com.iaf.console.bff.jobs.application.Jobs;
 import com.iaf.console.bff.jobs.application.OnBehalfOf;
+import com.iaf.console.bff.jobs.domain.BulkDecision;
 import com.iaf.console.bff.jobs.domain.JobView;
 import com.iaf.console.bff.resources.application.Resources;
 import com.iaf.console.bff.resources.domain.CommandAccepted;
@@ -74,6 +75,19 @@ public class JobsController {
         return CurrentSession.required(exchange)
                 .flatMap(session -> jobs.abort(session, jobId, OnBehalfOf.requestId(Correlation.of(exchange)), idempotencyKey))
                 .map(accepted -> ResponseEntity.accepted().body(accepted));
+    }
+
+    /**
+     * Decides every pending approval of the request and its rows that the person may decide: a
+     * bulk request's wave in one go (WP 4.2). 202 with what was decided and what was left.
+     */
+    @PostMapping(path = "/console/v1/jobs/{jobId}/approvals:decide", consumes = "application/json", produces = "application/json")
+    public Mono<ResponseEntity<BulkDecision>> decideApprovals(@PathVariable("jobId") String jobId, @RequestBody ApprovalsController.Decide body,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey, ServerWebExchange exchange) {
+        return CurrentSession.required(exchange)
+                .flatMap(session -> jobs.decideApprovals(session, jobId, body.decision(), body.comment(), OnBehalfOf.requestId(Correlation.of(exchange)),
+                        idempotencyKey))
+                .map(decided -> ResponseEntity.accepted().body(decided));
     }
 
     /** The step to skip; the one the job waits on when left out. */
