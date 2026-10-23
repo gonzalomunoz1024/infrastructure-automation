@@ -71,6 +71,7 @@ import com.iaf.console.kit.paging.Page;
 import com.iaf.console.kit.scope.AccountScope;
 import com.iaf.console.platform.client.JobFilter;
 import com.iaf.console.platform.client.PlatformException;
+import com.iaf.console.platform.client.PlatformHeaders;
 import com.iaf.console.platform.client.PlatformPort;
 import com.iaf.console.platform.client.RequestOptions;
 import com.iaf.console.platform.model.BatchContext;
@@ -953,8 +954,21 @@ public class Resources {
             }
             String from = fix.fromStep() != null ? fix.fromStep() : JobRetries.rerunFrom(job)
                     .orElseThrow(() -> new ConflictException("the job ran no step to run again from", Map.of("jobId", job.id())));
-            return p.rerunJob(job.id(), new RerunRequest(from, input), chosen);
+            return p.rerunJob(job.id(), new RerunRequest(from, input), retryOf(chosen, job.id()));
         }).map(accepted -> new Started(accepted.body().id() == null ? job.id() : accepted.body().id(), accepted.body().status()));
+    }
+
+    /**
+     * A rerun carries {@link JobRetries#RETRY_OF_LABEL} naming the failed job, in place of the one
+     * the failed job carried when it was itself a retry, unless the job already has as many labels
+     * as the platform takes.
+     */
+    static RequestOptions retryOf(RequestOptions options, String failedJobId) {
+        if (!options.labels().containsKey(JobRetries.RETRY_OF_LABEL) && options.labels().size() >= PlatformHeaders.MAX_LABELS) {
+            log.warn("job {} has {} labels already, so its rerun is not labelled {}", failedJobId, options.labels().size(), JobRetries.RETRY_OF_LABEL);
+            return options;
+        }
+        return options.withLabel(JobRetries.RETRY_OF_LABEL, failedJobId);
     }
 
     /**

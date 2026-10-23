@@ -29,6 +29,14 @@ console:
         cost-centre: cc-1001
       "210987654321":
         cost-centre: cc-2001
+  insights:
+    baseline:                       # a made-up ticket export, so the demo's executive home shows hours saved
+      source: "Demo ticket export, September 2026"
+      lead-time: 3d
+      by-workflow:
+        create-vm: 5d
+        vm-restart: 4h
+        update-vm: 1d
 logging:
   level:
     com.iaf.console.bff: info
